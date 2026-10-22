@@ -1,7 +1,8 @@
 # Mowzie's Mobs: factions and boss encounters
 
 **Status:** design for Ben's review, revised 2026-10-21 after two adversarial reviews that were checked
-against the jars. Nothing is built. Ben approves this design before code.
+against the jars, then reworked the same day for Ben's answers (§8). Nothing is built. Ben approves
+this design before code.
 
 **Decided, and binding here:**
 - **Ben's request:** "go ahead and plan out some support for Mowzie's mobs, creating factions for the
@@ -15,10 +16,14 @@ against the jars. Nothing is built. Ben approves this design before code.
   having a way for new ones to spawn. Same with dragons, villages, etc.", and a "nash equilibrium
   between tribes / animals". §4.10 states how these two factions renew and what they need from the
   pan-species design.
+- **Ben's answers (2026-10-21, §8):** MZ-1, MZ-4, MZ-5, MZ-6, MZ-11 and MZ-13 chose (a), as
+  recommended; **MZ-3 chose (b)**, not the recommendation: the Umvuthi also leads the Invasion in
+  person (§4.5); and EQUILIBRIUM.md's EQ-4 chose (b): a Frostmaw's body comes back after `min(192, 6 ×
+  2^P)` days, P being its den's pressure (§4.2, §4.10).
 - **The pack's own TODO** (`pack/README.md:17-26`): "Boss raid system", "Natural Boss Spawning",
-  "Remove items & progression from boss mods: ... mowzies mobs", "Mowzies mobs: Natty spawns". The
-  third conflicts with parts of this plan (MZ-4).
-- **UR-1** (`DECISIONS.md:272`): rtsim can be removed and reinstalled at any time; a reset may lose
+  "Remove items & progression from boss mods: ... mowzies mobs", "Mowzies mobs: Natty spawns". Ben
+  chose to keep Mowzie's items, against the third (MZ-4 (a), §8).
+- **UR-1** (`DECISIONS.md:278`): rtsim can be removed and reinstalled at any time; a reset may lose
   only the sim's own state. §4.9 is how this plan keeps it.
 - **C16, C17, C18:** bandits, dragons, natural mobs and **bosses** attack supply lines and factories,
   even while the owner is away or offline; unwatched attacks resolve abstractly and apply on load.
@@ -71,15 +76,17 @@ your riders, and your walls hold it. Kill it and the range is quiet for a while,
 Frostmaw moves into the empty den, carrying its predecessor's grudge. On Peaceful, nothing comes.
 
 In the savannas, Umvuthana groves are villages of masked warriors around a fire pit, ruled by the
-Umvuthi, a sun-priest boss. Today they attack anyone unmasked who comes close. With this plan the
-grove is a tribe. Log its acacias, mine its hills, kill its people, and it notices: a gong sounds in
-the distance. Then a masked envoy and two guards walk to your base, ignoring your iron golem and you,
-and ask for gold. Pay, and the gold ends up in the grove's chests. Refuse, or strike them, and
-raptor-masked hunters come for your herds and the villages' herds, then a war band of masked
-warriors. Wear an Umvuthana mask and the tribe leaves you alone, as it does today. Kill the Umvuthi at
-its fire pit (its healers make it untouchable until you kill them) and the tribe breaks: its raiders
-flee and it stays quiet for days. A grove you have thinned fills back up over a few days, with
-warriors walking in from its edge.
+Umvuthi, a sun-priest boss that never takes a step. Today they attack anyone unmasked who comes close.
+With this plan the grove is a tribe. Log its acacias, mine its hills, kill its people, and it notices:
+a gong sounds in the distance. Then a masked envoy and two guards walk to your base, ignoring your iron
+golem and you, and ask for gold. Pay, and the gold ends up in the grove's chests. Refuse, or strike
+them, and raptor-masked hunters come for your herds and the villages' herds, then a war band of masked
+warriors. When the whole tribe marches on a base far from its grove, the Umvuthi comes too: a gong
+sounds behind the warriors, and out past them it waits, never moving, and summons more. Wear an
+Umvuthana mask and the tribe leaves you alone, as it does today. Kill the Umvuthi, on its throne or out
+on the invasion (its healers make it untouchable until you kill them), and every masked warrior near it
+falls with it, its raiders flee, and the tribe stays quiet until a warrior takes up its mask. A grove
+you have thinned fills back up over a few days, with warriors walking in from its edge.
 
 ## 1. Reuse table
 
@@ -91,16 +98,18 @@ warriors walking in from its edge.
 | The ice ball that unseats a rider | `EntityIceBall`: 1.6 blocks a tick, aimed ahead of its target from the target's position one tick earlier (`EntityFrostmaw.java:484-501`); hits every living entity within 2 blocks of it for 3 freeze damage and 1.0 freeze progress (`entity/effects/EntityIceBall.java:60-64`); at 1.0, `FrozenData` applies `FROZEN` for 50 ticks (`capability/FrozenData.java:260-261`) and `onFreeze` seats the entity on a new `EntityFrozenController` with `startRiding(controller, true)` (`FrozenData.java:185-199`, called from `ServerEventHandler.java:330`); vanilla `startRiding` calls `stopRiding()` first, which takes the rider off the carriage | mowziesmobs, minecraft |
 | Its prize | `mowziesmobs:ice_crystal`: dropped when a player kills it while it holds the crystal, or stolen while it sleeps | mowziesmobs |
 | Its warning | sound `mowziesmobs:frostmaw.roar` | mowziesmobs |
-| A tribe's home | `mowziesmobs:umvuthana_grove`, structure set `umvuthana_groves` (spacing 25, separation 8, 7 chunks from villages): the Umvuthi at the fire pit, 5 to 9 Umvuthana, chests with `mowziesmobs:chests/umvuthana_grove_chest` loot | mowziesmobs |
+| A tribe's home | `mowziesmobs:umvuthana_grove`, structure set `umvuthana_groves` (spacing 25, separation 8, 7 chunks from villages): the Umvuthi on its throne 18 blocks from the fire pit (`UmvuthanaGrovePieces.java:276-288`), 5 to 9 Umvuthana, chests with `mowziesmobs:chests/umvuthana_grove_chest` loot | mowziesmobs |
 | Warriors and traders | `mowziesmobs:umvuthana` (`EntityUmvuthanaMinion`): 8 health, 3 attack, a mask, always persistent (`253`), trades gold nuggets with masked players | mowziesmobs |
 | The chief's healers | `mowziesmobs:umvuthana_crane`: the Umvuthi summons them each time it loses 45 health; they heal only the Umvuthi and give it Sunblock, under which it takes no damage | mowziesmobs |
 | Hunters | `mowziesmobs:umvuthana_raptor` and `umvuthana_follower_raptor`: a raptor leads 4 or 5 followers; the raptor hunts animals and its followers take its target | mowziesmobs |
-| The chief | `mowziesmobs:umvuthi` (`EntityUmvuthi`): 150 health, sun abilities, summons Umvuthana; takes 7 gold blocks once from a masked player, then grants Sun's Blessing | mowziesmobs |
+| The chief | `mowziesmobs:umvuthi` (`EntityUmvuthi`): 150 health, sun abilities, summons Umvuthana; never walks (no movement goal, `318-358`, and `tick` zeroes its horizontal motion, `444`); takes 7 gold blocks once from a masked player, then grants Sun's Blessing, and remembers who paid (`TRADED_PLAYERS`, `729-777`); when it dies, every devoted Umvuthana within 30 blocks dies with it (`die`, `859-871`) | mowziesmobs |
+| The Umvuthi's war seat on an Invasion | its constructor, then `finalizeSpawn` with a reason other than a structure, which sets its restriction centre where it stands (`EntityUmvuthi.java:945-964`, `961`), and `setDirection` (`701`) to face the base; its summons keep to 25 blocks of that centre (`SpawnFollowersAbility`, `997-1060`, `1046`); its boss bar shows when a client starts tracking it (`MowzieEntity.startSeenByPlayer`, `527-529`), from 10 chunks (`EntityHandler.java:97`) | mowziesmobs |
+| The Umvuthi's prize | `mowziesmobs:sol_visage`, dropped when a player kills it (`loot_table/entities/umvuthi.json`, `killed_by_player`) | mowziesmobs |
 | Peace with the tribe | an Umvuthana mask on the head (`mowziesmobs:umvuthana_mask_*`): Umvuthana, raptors and the Umvuthi do not target the wearer | mowziesmobs |
 | The tribe's warning | sound `mowziesmobs:block.gong` | mowziesmobs |
 | Factions, grievance, the ladder, envoys, raids, routs, heirs | rtsim-conflict (`crates/rtsim-conflict`) | mic_rtsim |
 | Where trains really run | Create simulates every train wherever it is, loaded or not (`GlobalRailwayManager.tick`, `trains` map, lines 59 and 210); a train's position is `Carriage.getLeadingPoint().getPosition(graph)` (`Carriage.java:385`, `TravellingPoint.java:302`), its dimension the leading point's node location (`TrackNodeLocation.dimension`, `:41`) | create |
-| Whose train it is | `Train.owner`, a UUID (`Train.java:162`); who sets it in the hash-matched jar is UNVERIFIED (MZ-13) | create |
+| Whose train it is | `Train.owner`, a UUID (`Train.java:162`); who sets it in the hash-matched jar is UNVERIFIED (MZ-13 (a) uses it, P14 the fallback) | create |
 | Cargo lost from a train | I24: `attack_train` (`crates/rtsim-industry/src/engine.rs:2962`), which finds the train's current booked leg by its id (`LegIndex::leg_of`, `threat.rs:722`), and `IND_CARRIAGE_DELTA` on `Carriage.storage` | mic_rtsim_create |
 | Train arrivals and lines | industry line edges from Create train arrivals (`TrainWatch.java`; `crates/rtsim-industry/src/engine.rs:109-119`, `2100-2111`) | mic_rtsim_create |
 | Defending a station or base | the I21 survey: walls 2 blocks or more, fences and walls; Create Radars fire control with Create Big Cannons (Radars class every `Enemy` as hostile, `TrackCategory`: the Frostmaw, every Umvuthana, envoys included, and the Umvuthi); Create saws, drills, crushing wheels; iron golems, which attack every Mowzie body in this plan (`INDUSTRY.md:574-585`) | create, createbigcannons, create radars, minecraft |
@@ -122,7 +131,7 @@ warriors walking in from its edge.
 
 Sizes are estimates by analogy with code that exists; they are not measured.
 
-**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 1,900 lines plus tests:**
+**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 2,200 lines plus tests:**
 1. **Rail from sampled trains** (§4.3). `SignalKind::Rail` = 6, appended. The composition decodes
    RAIL_PASS and keeps one decayed leg count per (faction, actor) over all of that actor's passes,
    with a hysteresis band and a daily resync, pushing a rate only on those and booking one wake for
@@ -142,21 +151,35 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    and still at or above that rung's threshold, sends that rung's party again `repeat_days` after
    the last one came home (today only Siege repeats, every `siege_interval_days`,
    `engine.rs:2776`, `2814`). Absent means today's behaviour. About 40.
-4. **Chiefs that stay home:** a culture field naming the party kinds the chief rides with (today any
-   war party, `engine.rs:2265-2271`). About 40.
-5. **A chief killed at the camp** (today `chief_killed` takes a party, `engine.rs:4124-4140`): the
-   same report, death, succession and cowing as a party chief's, every party out routs home, and the
-   **killer's** feud steps down `chief_rout_steps`, floored at Notice; with no killer, or a killer
-   who has no feud, no feud steps down (§4.2). About 80.
-6. **A culture of one, and waiting for whole bodies:** the pool refills only while the pool plus
-   the members away is under the cap, so a den never fields a second Frostmaw while the first is
-   out (today the pool refills from the moment a party leaves, `engine.rs:1053-1066`). A feud that
-   cannot field its party waits for `need` = ceil(party size ÷ 2) whole bodies. Today `escalate`
-   waits for size ÷ 2 (`engine.rs:1671`), 0.5 of a body for the Frostmaw's party of 1, while
-   `send_party` needs floor(pool) × 2 ≥ size (`2236-2238`): with the pool between 0.5 and 1 the
-   wait is already over, the send fails again, and `plan_feud` books the next tick (`1569`), one
-   wake a tick, about 72,000 for a feud over the 3 days a den takes to refill from 0.5 (a den found
-   empty with a busy line, or a bold chief's cowed time under 6 days). About 30.
+4. **The chief's ride** (§4.5): a culture field `chief_rides` naming the party kinds the chief rides
+   with (today any war party, `engine.rs:2265-2271`): the Frostmaw's Raid and Invasion, the Umvuthi's
+   Invasion only. A chief rides only if its slot is home, with a body or owed, and not while the heir
+   waits for its body (§4.10). An Umvuthi whose grove is in at the muster's end stays home: the party's
+   chief flag and `chief_out` (`engine.rs:91`, reset at `1121` and `3212`) are cleared, and the band
+   goes without it. A riding Umvuthi is outside the party's units: it counts in no unit, quota,
+   strength or wave count. Its own stack, with MEMBER_CHIEF (`boundary.rs:64`), is sent only from
+   `start_fight` (`engine.rs:3307-3350`) or a later wave (`3485`), where a player watches the band
+   arrive, never from `seen` (`3624`), and a new `Party.chief_sent` remembers that it was. About 120.
+5. **A chief killed at the camp** (today `chief_killed` takes a party, `engine.rs:4124-4140`): the same
+   report, death, succession and cowing as a party chief's, every party out routs home, and the
+   **killer's** feud steps down `chief_rout_steps`, floored at Notice; with no killer, or a killer who
+   has no feud, no feud steps down (§4.2). A party whose chief is out when the chief's body left at
+   home dies (§4.9) loses its chief flag and routs with the rest; a chief killed away keeps today's
+   path, CHIEF_KILLED (`engine.rs:3975-3982`) into `chief_killed`. About 90.
+6. **A culture of one, and waiting for whole bodies:** a den's body comes back by an arrival, not a
+   rate: after a death, or for a den found empty, one booked event brings it after `min(192, 6 × 2^P)`
+   days (EQ-4 (b); EQUILIBRIUM.md §2.2's shared rule, in `rtsim-kernel::renewal`: P per den, halving
+   every 96 days, plus 1 for each Frostmaw lost to players, read when the wait starts). The wait starts
+   only while the pool plus the members away is under the cap, so a den never fields a second Frostmaw
+   while the first is out (today the pool refills from the moment a party leaves,
+   `engine.rs:1053-1066`). A feud that cannot field its party waits for `need` = ceil(party size ÷ 2)
+   whole bodies, and for a den, for the arrival. Today `escalate` waits for size ÷ 2
+   (`engine.rs:1671`), 0.5 of a body for the Frostmaw's party of 1, while `send_party` needs
+   floor(pool) × 2 ≥ size (`2236-2238`): with the pool between 0.5 and 1 the wait is already over, the
+   send fails again, and `plan_feud` books the next tick (`1569`), one wake a tick, about 72,000 for a
+   feud over the 3 days a pool at 1/6 a day takes from 0.5 to 1. The Umvuthi's heir waits for the later
+   of the cowed time and `min(192, 6 × 2^P_chief)` days (MZ-14 (a)), then for a warrior to take up the
+   mask (§4.10). About 90.
 7. **A pool cap per camp, and the camp reconciler's engine half** (§4.9). `pool_cap` is per culture
    today (`engine.rs:882`, `1062`); a camp's cap becomes the count of its bodies at FACTION_FOUND (a
    grove's 5 to 9), bounded by the culture's. Nothing at the boundary says a party has left or come
@@ -175,7 +198,11 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    stay 1 to 6 (`docs/boundary.md:1460`); the one command is AMBUSH_SPOT's removed flag if the party
    was lurking (ledger 8). `home` runs today only from the party's own last event (`engine.rs:2425`),
    so the census also cancels that event (the generational handles already make the party's other
-   pending events stale). About 450.
+   pending events stale). The Umvuthi's slot is away only while it rides with an Invasion (§4.5): a
+   census treats its body left on the throne as any body left behind, takes it only once its stack has
+   been sent, and holds that take under Rule U (§4.5). The ledger keeps the throne spot from the
+   grove's first census, and an heir is one reconcile of two lines, a warrior's removal and the chief's
+   spawn (§4.6). About 560.
 8. **Lying in wait** (§4.4): a war party at a position with no district waits out its patience (today
    it "finds nothing to raid", `engine.rs:2869-2878`), sends AMBUSH_SPOT, and rolls `ambush_milli` once
    per TRAIN_PASSED; a hit calls `attack_train` for that train id. The spot's passes come from
@@ -209,29 +236,33 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     (`engine.rs:854-861`), and a Frostmaw trades nothing. About 60 with the match arms.
 14. **Reports the engine has no record for** (§4.12): CAMP_DEATH (a camp body killed or carried off, at
     home or left behind, with its slot and generation, the killer and an op id), CHIEF_STATE
-    (latest-wins: health, crystal), TRADED (a masked trade at the grove, into `Conflict::traded`,
-    `engine.rs:2045`, which has no caller today), a haven's chest (latest-wins, as `LAIR_CHEST`),
-    NOTICE_SHOWN (a notice is kept per feud until the plugin has played it, and resent at each session
-    start), TRAIN_ROBBED (the train the robbed-train roar plays for), and the world's difficulty (no
-    war party leaves on Peaceful). An envoy party wiped out with no player among its killers withdraws
-    its demand: a new DEMAND_SETTLED outcome 5 (today 1 to 4, `docs/boundary.md:1461`) with no relief,
-    no refusal and no climb, the feud staying on Envoy (today the demand would run to its deadline and
-    expire as if refused, `demand_due`, `engine.rs:1809-1821`). About 280 with the decoding.
+    (latest-wins: health, crystal, and the players the Umvuthi has traded with, kept per grove as the
+    engine's trade memory, 16 bytes a player, cleared at a succession, §4.5), CHIEF_BODY (the chief's
+    health, crystal and trade memory, sent to Java ahead of a chief's stack or spawn), TRADED (a masked
+    trade at the grove, into `Conflict::traded`, `engine.rs:2045`, which has no caller today), a
+    haven's chest (latest-wins, as `LAIR_CHEST`), NOTICE_SHOWN (a notice is kept per feud until the
+    plugin has played it, and resent at each session start), TRAIN_ROBBED (the train the robbed-train
+    roar plays for), and the world's difficulty (no war party leaves on Peaceful). An envoy party wiped
+    out with no player among its killers withdraws its demand: a new DEMAND_SETTLED outcome 5 (today 1
+    to 4, `docs/boundary.md:1461`) with no relief, no refusal and no climb, the feud staying on Envoy
+    (today the demand would run to its deadline and expire as if refused, `demand_due`,
+    `engine.rs:1809-1821`). About 340 with the decoding and the trade memory.
 15. **Two cultures as data:** `data/cultures/frostmaw.json` and `umvuthana.json`, added to `builtin()`
     (`culture.rs:430-432`, `449`), each with `market_culture` (`Culture::resolve` errors without it,
     `culture.rs:383-387`), `chief_lifespan_days` 1,000,000 (§4.2) and the fields above. About 140
     lines of JSON.
 
-**Java, about 3,050 lines plus about 1,400 of GameTests and kit:**
-16. **ConflictBridge** in the core (MZ-1): the conflict module's Java half, which does not exist yet
-    (`crates/rtsim-jni/src/engine/conflict.rs:5`): territories (kept in a spatial hash the train
+**Java, about 3,450 lines plus about 1,750 of GameTests and kit:**
+16. **ConflictBridge** in the core (MZ-1 (a)): the conflict module's Java half, which does not exist
+    yet (`crates/rtsim-jni/src/engine/conflict.rs:5`): territories (kept in a spatial hash the train
     sampler also reads), the territory signals from vanilla block and death events, the envoy and its
     payment, the raid director (waves on an arc), steering, recalls, casualties, notices and their
     acknowledgement, the camp reconciler's plumbing (each footprint chunk's level, epochs and CAMP_OUT,
-    applying CAMP_RECONCILE, records on bodies and markers, journaled again at load; §4.9), the
-    `mic_rtsim:camp_member` attachment and its index, the Peaceful flag. Vanilla only (D4). About
-    1,250, by analogy with `core/herd/HerdBridge.java` (940). In the Carry On plugin, the pickup hook
-    (`MicRtsimCarryOn.java:39-43`) also takes tagged camp bodies: about 20.
+    applying CAMP_RECONCILE, records on bodies and markers, journaled again at load; §4.9) and
+    CHIEF_BODY's routing (§4.5), the `mic_rtsim:camp_member` attachment and its index, the Peaceful
+    flag. Vanilla only (D4). About 1,300, by analogy with `core/herd/HerdBridge.java` (940). In the
+    Carry On plugin, the pickup hook (`MicRtsimCarryOn.java:39-43`) also takes tagged camp bodies:
+    about 20.
 17. **The train sampler** in the Create plugin (`neoforge/create`, `TrainSampler.java` beside
     `TrainWatch.java`): once a second it walks `GlobalRailwayManager.trains`, reads each train's
     leading point and tests the segment from its last sample against the territory hash; it reports
@@ -245,16 +276,21 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     out of sight, and removing (§4.9); restricting a tagged Frostmaw to its den at each join;
     persistence for a robbed Frostmaw (a mixin at the steal, §4.7); the swipe at passing carriages; the
     envoy party's targeting and damage (§4.5); a mixin on `EntityUmvuthi.rememberTrade` and an event on
-    minion trades; the notice sounds. About 1,200 to 1,400, by analogy with the Ice and Fire plugin
+    minion trades; the Umvuthi's war seat (the seat search, the spawn, the gong and the recall hold)
+    and its summons tagged as the party's puppets at their join (§4.5); reading and writing its trade
+    memory (`getTradedPlayers`, `setTradedPlayersCompound`); Rule U's holds on its throne lines; and,
+    for a second body, its drops cancelled (`LivingDropsEvent`) and a mixin that gives
+    `EntityUmvuthi.die`'s `getEntitiesNearby` call an empty list, so it takes no warriors with it
+    (§4.5); the notice sounds. About 1,550 to 1,750, by analogy with the Ice and Fire plugin
     (`DragonBridge.java` 1,267, `Lairs.java` 419).
 19. **A strength hook for observed fights:** `IND_FIGHT` counts one per attacker today
     (`core/industry/Threats.java:384-385`); plugins supply a per-entity strength (§4.13). About 40.
 20. **One core exclusion tag**, `mic_rtsim:threat/ignored`, checked first in `ThreatClasses.hostile`
     (`core/industry/ThreatClasses.java:36-39`), with `mowziesmobs:foliaath` as an optional entry
     (§4.15). About 10 lines and one JSON file.
-21. **GameTests and a kit** (`MowzieGameTests`, `MowzieKit`), about 1,100 and 300, by analogy with
+21. **GameTests and a kit** (`MowzieGameTests`, `MowzieKit`), about 1,400 and 350, by analogy with
     `DragonGameTests.java` (701) and `DragonKit` (329); the rider and swipe tests build on the rail
-    fixture; and **`rtsim-cli sim mowzie`**, about 600, by analogy with `sim/conflict.rs` (423).
+    fixture; and **`rtsim-cli sim mowzie`**, about 700, by analogy with `sim/conflict.rs` (423).
 22. **Entity chunks in the journal barrier** (§4.9). The `ChunkWriteBarrier`
     (`core/journal/ChunkWriteBarrier.java:62`) notes level chunks today (`dependsOn(LevelChunk)`,
     `:170`) and puts them on disk through `ChunkMap.save`; a chunk's entities are stored apart, in
@@ -266,7 +302,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 
 No new blocks, items or entities.
 
-**Boundary records**: 14 new kinds, plus a new DEMAND_SETTLED outcome
+**Boundary records**: 15 new kinds, plus a new DEMAND_SETTLED outcome
 (next to §9 of `docs/boundary.md`; field layouts are written with the code, and the kinds are provisional: taken when the code lands, after checking other branches for the same ids):
 
 | Kind | Name | Direction | What it carries |
@@ -274,17 +310,18 @@ No new blocks, items or entities.
 | 0x080C | RAIL_PASS | Java to engine | faction, train id, train owner, the sampled point nearest the camp, entry and exit ticks |
 | 0x080D | TRAIN_PASSED | Java to engine | agent, epoch, train id, the nearest carriage's index, watched flag |
 | 0x080E | CAMP_DEATH | Java to engine | faction, body kind, its slot and generation (none for a stray), chief flag, killer kind (a player, a mob, taken by Carry On, none) and UUID, op id; carried on a marker where the body was until acknowledged (§4.9) |
-| 0x080F | CAMP_CENSUS | Java to engine | faction, a new epoch, the footprint's bodies of the camp's kinds, each by slot and generation or as a stray by UUID; the camp's tagged bodies loaded elsewhere; chief present, crystal held, health; the census player (§4.9) and its position, if any |
+| 0x080F | CAMP_CENSUS | Java to engine | faction, a new epoch, the footprint's bodies of the camp's kinds, each by slot and generation or as a stray by UUID; the camp's tagged bodies loaded elsewhere; chief present, crystal held, health; for the Umvuthi, its position and direction (the throne spot, §4.6) and the players it has traded with; the census player (§4.9) and its position, if any |
 | 0x0810 | TRADED | Java to engine | faction, player, gold nuggets that changed hands (the engine values them in coins at the grove market's price, as `Conflict::traded` takes coins), op id |
 | 0x0811 | NOTICE_SHOWN | Java to engine | faction, player |
 | 0x0812 | CAMP_BODIES | Java to engine | the answer to a CAMP_RECONCILE: faction, epoch, the reconcile's op id, and per line its slot, generation and outcome (done, nothing to do, stale); carried on the bodies and markers it changed until acknowledged (§4.9) |
 | 0x0813 | CAMP_OUT | Java to engine | faction, the epoch that ended: a footprint chunk dropped below FULL (§4.9) |
-| 0x0091 | CHIEF_STATE (latest-wins) | Java to engine | faction, health, crystal held |
+| 0x0091 | CHIEF_STATE (latest-wins) | Java to engine | faction, health, crystal held; for the Umvuthi, the players it has traded with, sent by the `rememberTrade` mixin (§4.5) |
 | 0x0092 | HAVEN_CHEST (latest-wins) | Java to engine | faction, dimension, a grove chest's position, its free slots (as `LAIR_CHEST`) |
 | 0x0093 | DIFFICULTY (latest-wins) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x8807 | AMBUSH_SPOT | engine to Java | agent, epoch, faction, dimension, the track point, the body's spot, reach; flag removed (sent whenever the lurk ends, ledger 8) |
-| 0x8808 | CAMP_RECONCILE | engine to Java | faction, epoch, an op id derived from the faction, epoch and decision, and lines: slot, generation, kind, and an action (spawn, adopt a stray by UUID, take, set out with the party's agent and epoch, remove a slot's body or a stray by UUID), chief flag, crystal (§4.9) |
+| 0x8808 | CAMP_RECONCILE | engine to Java | faction, epoch, an op id derived from the faction, epoch and decision, and lines: slot, generation, kind, and an action (spawn, adopt a stray by UUID, take, set out with the party's agent and epoch, remove a slot's body or a stray by UUID), chief flag, crystal; for an Umvuthi's spawn, the throne spot and direction (§4.6) (§4.9) |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
+| 0x880A | CHIEF_BODY | engine to Java | faction, agent and epoch (0 and the camp's epoch at home, else the party's), health, crystal held, the traded players' UUIDs; sent ahead of a chief's stack or spawn line, and to a loaded chief body whose traded set is short (§4.5) |
 
 FACTION_FOUND's reserved word (`docs/boundary.md:1421`) carries the census at discovery: the count
 of home bodies, chief present, crystal held.
@@ -300,7 +337,7 @@ disables the Wroughtnaut's `wrought_chamber` (`pack/config/structurify.json:405-
 | Mob | Where it lives (verified) | What it does today (verified) |
 |---|---|---|
 | Frostmaw | `frostmaw_spawn` dens in snowy biomes that are not ocean, river, beach, forest or taiga, height 50 to 100, away from villages and outposts (`ConfigHandler.java:443`). In this pack's biome set: 15 biomes, including `frozen_peaks`, `snowy_slopes`, `snowy_plains`, `ice_spikes` and Terralith's `emerald_peaks`, `glacial_chasm`, `rocky_mountains`. How often dens pass the 50 to 100 height check in this pack's terrain is UNVERIFIED. | Sleeps until a player comes within 8 blocks while it has a target (`EntityFrostmaw.java:590-606`); fights; goes back to sleep after 1,200 ticks without a target (`580-589`). Targets players only (`284`). Never wakes on Peaceful (`582`, `600`). Persistent while it holds its crystal (`977`); once robbed it despawns like any monster, as nothing in the den's template sets `PersistenceRequired` (`MowzieEntity.java:291-317`): at once with no player within 128 blocks, and beyond 32 blocks at 1 in 800 a tick once idle for 600 ticks, so within about a minute of the thief walking off. Wanders inside its restriction (`208-209`). |
-| Umvuthi | `umvuthana_grove` in the 8 savanna biomes, height 50 to 100 (`ConfigHandler.java:466`) | Placed at the fire pit, finalized as a structure spawn and restricted there (`UmvuthanaGrovePieces.java:276-288`). Persistent (`EntityUmvuthi.java:393`). Targets unmasked players, iron golems, zombies, skeletons, Elokosa (`318-345`). In a fight, summons Umvuthana while fewer than 4 are within 50 blocks (`488`), and cranes each time it has lost 45 health (`469-471`; `spawn_healers_threshold`, `ConfigHandler.java:473`). A crane heals only the Umvuthi (`EntityUmvuthanaCrane.java:174`) and gives it Sunblock, under which it takes no damage (`EntityUmvuthi.java:628-632`). |
+| Umvuthi | `umvuthana_grove` in the 8 savanna biomes, height 50 to 100 (`ConfigHandler.java:466`) | Placed at the template's `umvuthi` marker, 18 blocks from the fire pit, finalized as a structure spawn, with its restriction centre set to the pit and radius -1 (`UmvuthanaGrovePieces.java:276-288`), which vanilla reads as no restriction (`Mob.java:1325-1326`) but which keeps its summons within 25 blocks of the pit (`EntityUmvuthi.java:1046`). Never walks: it has no movement goal (`318-358`), its `tick` zeroes its horizontal motion (`444`), and a push moves it only up or down (`974-980`). Persistent (`393`). Targets unmasked players, iron golems, zombies, skeletons, Elokosa (`318-345`). In a fight, summons Umvuthana while fewer than 4 are within 50 blocks (`488`), and cranes each time it has lost 45 health (`469-471`; `spawn_healers_threshold`, `ConfigHandler.java:473`). A crane heals only the Umvuthi (`EntityUmvuthanaCrane.java:174`) and gives it Sunblock, under which it takes no damage (`EntityUmvuthi.java:628-632`). Out of a fight it heals 0.3 a tick (`584-594`). When it dies, every devoted Umvuthana within 30 blocks dies within 20 ticks (`die`, `859-871`), by a magic hit with no attacker (`EntityUmvuthana.java:531-535`). |
 | Umvuthana | 5 to 9 in each grove, restricted to 25 blocks of its centre (`UmvuthanaGrovePieces.java:494-507`) | Persistent (`EntityUmvuthanaMinion.java:253`). Target unmasked players, zombies, skeletons, Elokosa (`133-151`). Trade with masked players (`107`, `236-240`). |
 | Umvuthana raptor | natural spawns in savanna at y 60 or more, weight 5, groups of 1, away from villages, outposts and groves (`ConfigHandler.java:539`) | Leads 4 or 5 followers (`EntityUmvuthanaRaptor.java:191-199`), who take its target (`EntityUmvuthanaFollowerToRaptor.java:47`) and hunt on their own once leaderless (`94-97`). The raptor hunts animals with attack damage under 3 and a volume between 0.1 and 6 (`EntityUmvuthana.java:338-342`, `EntityUmvuthanaRaptor.java:88-90`): cows, sheep, pigs, chickens. |
 | Naga | natural spawns where a biome is a beach and a mountain or hill, and on `minecraft:stony_shore`, at y 68 or more, in darkness under open sky (`ConfigHandler.java:526`, `MowzieEntity.java:223-227`); in this pack, `stony_shore` only | Stays within 50 blocks of home (`EntityNaga` `MAX_DIST_FROM_HOME`, `175`, `582`). Implements `FlyingAnimal` (`EntityNaga.java:155-159`). |
@@ -381,7 +418,7 @@ The conflict engine (rtsim-conflict) exists and runs in Rust tests and `rtsim-cl
 | Faction | Camp | Chief | Members | Hates |
 |---|---|---|---|---|
 | `frostmaw` | each `mowziesmobs:frostmaw_spawn` | the Frostmaw | none besides it: a culture of one | nobody: it plunders nothing |
-| `umvuthana` | each `mowziesmobs:umvuthana_grove` | the Umvuthi, who stays home (MZ-3) | the grove's Umvuthana warriors and raptor packs | `human` (village herds) |
+| `umvuthana` | each `mowziesmobs:umvuthana_grove` | the Umvuthi, who leads the Invasion from a war seat (MZ-3 (b), §4.5) | the grove's Umvuthana warriors and raptor packs | `human` (village herds) |
 
 Every value the jar does not give and this section does not set is goblin.json's, labelled
 PLACEHOLDER (§4.14). The two cultures share goblin's thresholds `[10, 30, 50, 70, 140, 260]`, dwell
@@ -451,10 +488,14 @@ routs. What this plan adds:
 - **A third player kills it on its raid.** The party's feud steps down, as the engine does today: a
   Frostmaw raiding Iva's line and killed by Bram drops Iva's feud to Notice. Bram gets the Killing
   report, so the heir holds a small grudge against him (about 2.5, under Notice) that decays.
-- **The body.** The pool is empty while the den waits for a migrant (§4.10): at `recruits_per_day` 1/6
-  (TUNABLE) a new Frostmaw is ready six days later, and the plugin places it in the den, asleep, the
-  next time the den comes in while it is home, once no player is within 160 blocks (§4.9). Whether it
-  arrives with its crystal is MZ-4.
+- **The body** (EQ-4 (b), Ben, 2026-10-21). The pool is empty while the den waits for a migrant
+  (§4.10), and one booked arrival ends the wait after `min(192, 6 × 2^P)` days, P being the den's
+  pressure: it halves every 96 days, a game year, and gains 1 for each Frostmaw lost to players (for a
+  boss, any death no wild mob is credited with, EQUILIBRIUM.md §2.2). So a den whose Frostmaw died of
+  no player's doing has a new one in 6 days, one killed by a player for the first time in 12, and a den
+  farmed as fast as it refills settles near a 52-day wait, a kill every 54 days, about 1.8 Frostmaws a
+  game year (§4.10). The plugin places it in the den, asleep and holding its crystal (MZ-4 (a)), the
+  next time the den comes in while it is home, once no player is within 160 blocks (§4.9).
 - **Old age** (decided): `chief_lifespan_days` 1,000,000 (about 2,700 years) for both cultures, so
   the chief changes only when its body dies. Reason: an age death would make `ensure_chief` replace
   the chief with no body dying on screen, while the den's Frostmaw sleeps on unchanged; the renewal
@@ -479,11 +520,11 @@ The range feels the trains themselves, on the track they really run.
   the sampled point nearest the camp, and reports one RAIL_PASS: the faction, the train's id and
   owner, that point, the entry and exit ticks. A train that stops inside a range reports its pass when
   it leaves.
-- **The meter: one per den and actor.** Each pass counts against an actor: MZ-13's, recommended the
-  train's owner, else P14 at the line's two stations. Each (faction, actor) keeps one decayed count
-  of all that actor's passes through the range, whatever line they ran: on each pass n ← n ×
-  e^(-Δt/τ) + 1, and its rate is n ÷ τ legs a day, with τ = 2 days (PLACEHOLDER). A pass by an owned
-  train counts the moment it is reported.
+- **The meter: one per den and actor.** Each pass counts against an actor: by MZ-13 (a), the train's
+  owner, else P14 at the line's two stations. Each (faction, actor) keeps one decayed count of all that
+  actor's passes through the range, whatever line they ran: on each pass n ← n × e^(-Δt/τ) + 1, and its
+  rate is n ÷ τ legs a day, with τ = 2 days (PLACEHOLDER). A pass by an owned train counts the moment
+  it is reported.
 - **Pushing.** The composition pushes the meter's rate into the engine when it leaves a band around
   the last rate pushed (10% of it, and at least 1 leg a day, PLACEHOLDER), and when a day has passed
   since the last push (the resync, below); never while both are under the tolerance, where the
@@ -584,10 +625,10 @@ train's current booked leg, `threat.rs:722`): source `Boss`, its class, strength
 industry engine paces it: one attack per train per class per day (`cooldown_ticks` 24,000,
 `crates/rtsim-industry/src/tunables.rs:184`). The cargo lost is at most the Frostmaw's carry,
 PLACEHOLDER 64 (industry's own siege carry, `tunables.rs:180`), and at most 10% of the leg's cargo
-(`theft_cap_ppm` 100,000, `181`). It is destroyed, not carried off (ledger 10; MZ-5). The loss reaches
-the real carriage as `IND_CARRIAGE_DELTA` wherever the train is (`docs/industry-boundary.md:216`,
-`263-265`). A train with no booked leg (one not run between declared stations) has no cargo on the
-books and loses nothing.
+(`theft_cap_ppm` 100,000, `181`). It is destroyed, not carried off (ledger 10; MZ-5 (a)). The loss
+reaches the real carriage as `IND_CARRIAGE_DELTA` wherever the train is
+(`docs/industry-boundary.md:216`, `263-265`). A train with no booked leg (one not run between declared
+stations) has no cargo on the books and loses nothing.
 
 So two trains passing a waiting Frostmaw lose at most 64 items each per day: at most 256 items over a
 two-day wait. Track is never cut (I24).
@@ -605,8 +646,8 @@ players only (`284`).
   (`AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, SWIPE_ANIMATION)`, as the jar's AI does,
   `567`), turned toward the carriage. It is the jar's own area attack, so a rider within its arc is
   struck too (which entities it hits is settled by test 9). The cargo comes from the same TRAIN_PASSED
-  and roll as an unwatched pass, so a watched line loses what an unwatched one would (P28, MZ-5): the
-  delta lands within a step of the swipe, whether or not the carriage is still in view.
+  and roll as an unwatched pass, so a watched line loses what an unwatched one would (P28, MZ-5 (a)):
+  the delta lands within a step of the swipe, whether or not the carriage is still in view.
 - **The ice ball: its move against riders.** A rider is a player, so the awake Frostmaw targets them
   as the train comes. At 14.5 blocks or more, with its crystal and the 200-tick cooldown spent, it
   throws an ice ball at 1.6 blocks a tick, aimed ahead of the rider from where they were one tick
@@ -655,18 +696,19 @@ chunk, is nearer the Frostmaw than the den):
 
 ### 4.5 The Umvuthana: a tribe
 
-**Who it is.** The grove's Umvuthana are the tribe's warriors (MZ-11). At home they stay the jar's own
-entities, saved by vanilla with only the plugin's tag added (§4.9). At the grove's first census the
-plugin counts them, and that count is both the pool and the grove's own `pool_cap` (5 to 9; ledger 7).
-The Umvuthi stays a vanilla entity at its fire pit (persistent, `EntityUmvuthi.java:393`), so it keeps
-its own memory of who traded with it (`TRADED_PLAYERS`, NBT `"players"`, `779-792`). Umvuthana it
-summons in a fight are vanilla minions like the rest: strays, which the census adopts up to the grove's
-cap. Its cranes stay vanilla and are never counted: a crane heals and shields only the Umvuthi
-(`EntityUmvuthanaCrane.java:174`), so it has no place in a band away from it. The pool is a count of
-fighters, and a raptor pack counts as one. At home every pool unit is a warrior's body: a war party's
-raptor pack holds one warrior's slot, so setting out from a grove that is in it takes that warrior's
-body, and coming home it is owed one again (§4.9). A scouting raptor pack draws on no pool: it takes no
-warrior's body and turns back into none.
+**Who it is.** The grove's Umvuthana are the tribe's warriors (MZ-11 (a), Ben, 2026-10-21). At home
+they stay the jar's own entities, saved by vanilla with only the plugin's tag added (§4.9). At the
+grove's first census the plugin counts them, and that count is both the pool and the grove's own
+`pool_cap` (5 to 9; ledger 7). At home the Umvuthi is a vanilla entity on its throne (persistent,
+`EntityUmvuthi.java:393`), keeping its own memory of who traded with it (`TRADED_PLAYERS`, NBT
+`"players"`, `779-793`), which the engine also keeps; it rides with an Invasion only from a grove that
+is out (below). Umvuthana it summons in a fight at home are vanilla minions like the rest: strays,
+which the census adopts up to the grove's cap. Its cranes at home stay vanilla and are never counted: a
+crane heals and shields only the Umvuthi (`EntityUmvuthanaCrane.java:174`), so it has no place in a
+band away from it. The pool is a count of fighters, and a raptor pack counts as one. At home every pool
+unit is a warrior's body: a war party's raptor pack holds one warrior's slot, so setting out from a
+grove that is in it takes that warrior's body, and coming home it is owed one again (§4.9). A scouting
+raptor pack draws on no pool: it takes no warrior's body and turns back into none.
 
 **Units** (strength by §4.13):
 
@@ -683,8 +725,9 @@ pool holds at least half its make-up, `engine.rs:2236-2238`, and a grove starts 
 - envoy: 1 envoy and 2 warriors (goblin's pattern);
 - scouts: 1 raptor pack;
 - raid: 3 warriors and 1 raptor pack (4 units, strength 3.8);
-- invasion: 6 warriors and 2 raptor packs (8 units, strength 7.6); a grove of 5 sends 4, 3 warriors
-  and 1 pack (`send_party` floors each unit's share, 5 ÷ 8 of each, `engine.rs:2240-2247`);
+- invasion: 6 warriors and 2 raptor packs (8 units, strength 7.6), led by the Umvuthi, outside the
+  units, when it rides (below); a grove of 5 sends 4, 3 warriors and 1 pack (`send_party` floors each
+  unit's share, 5 ÷ 8 of each, `engine.rs:2240-2247`);
 - siege: empty, so Invasion is the top rung: the tribe breaks no blocks, so it cannot besiege;
 - plunder: 1 raptor pack, against village herds.
 
@@ -717,28 +760,27 @@ at the base before a word was said.
 | Raid (70) | A war band comes for the player's base. |
 | Invasion (140) | The pool's whole strength comes. |
 
-**Tribute** is gold (MZ-6), priced by value (ledger 12): the culture asks 0.5 emerald's worth per point
-of grievance (goblin's), converted at the grove market's price for gold nuggets, or at a fallback of
-9 nuggets an emerald (PLACEHOLDER: one gold ingot an emerald) until the market has a price. The
-catalogue has no gold good today, so no market has one, and the fallback carries every demand until
-the gold good and its price exist (ledger 12). Gold nuggets are the tribe's trading currency on
-screen (a masked player buys clawed logs, cooked meat, feathers,
-sticks and campfires from the grove's warriors with gold nuggets, and sells them melon, raw meat,
-beetroot, fish, acacia saplings and bones for nuggets, one offer at a time, `EntityUmvuthanaMinion.java:107`;
-the player's item goes in, `InventoryUmvuthana.java:97-105`). Paid tribute is stocked at the grove's
-haven (C24) and the plugin puts it into the grove's real chests when the grove loads (a haven chest,
-ledger 14, as `LAIR_CHEST`): a player who later raids the grove finds the gold they paid. Paying the
-Umvuthi its 7 gold blocks (`ConfigHandler.java:470-471`) is reported as tribute at the camp
-(`TRIBUTE_PAID` with agent 0): it settles the payer's demand, or with none open counts as a gift of 567
-nuggets, 63 emeralds' worth at the fallback rate. Trading with the grove's minions while masked
-(TRADED) softens the trader's feud at a tenth of a gift's rate (`Conflict::traded`,
-`engine.rs:2045-2052`).
+**Tribute** is gold (MZ-6 (a), Ben, 2026-10-21), priced by value (ledger 12): the culture asks 0.5
+emerald's worth per point of grievance (goblin's), converted at the grove market's price for gold
+nuggets, or at a fallback of 9 nuggets an emerald (PLACEHOLDER: one gold ingot an emerald) until the
+market has a price. The catalogue has no gold good today, so no market has one, and the fallback
+carries every demand until the gold good and its price exist (ledger 12). Gold nuggets are the tribe's
+trading currency on screen (a masked player buys clawed logs, cooked meat, feathers, sticks and
+campfires from the grove's warriors with gold nuggets, and sells them melon, raw meat, beetroot, fish,
+acacia saplings and bones for nuggets, one offer at a time, `EntityUmvuthanaMinion.java:107`; the
+player's item goes in, `InventoryUmvuthana.java:97-105`). Paid tribute is stocked at the grove's haven
+(C24) and the plugin puts it into the grove's real chests when the grove loads (a haven chest, ledger
+14, as `LAIR_CHEST`): a player who later raids the grove finds the gold they paid. Paying the Umvuthi
+its 7 gold blocks (`ConfigHandler.java:470-471`) is reported as tribute at the camp (`TRIBUTE_PAID`
+with agent 0): it settles the payer's demand, or with none open counts as a gift of 567 nuggets, 63
+emeralds' worth at the fallback rate. Trading with the grove's minions while masked (TRADED) softens
+the trader's feud at a tenth of a gift's rate (`Conflict::traded`, `engine.rs:2045-2052`).
 
-**Masks are honoured** (MZ-4): the jar's targeting skips a player wearing an Umvuthana mask
+**Masks are honoured** (MZ-4 (a)): the jar's targeting skips a player wearing an Umvuthana mask
 (`EntityUmvuthana.java:347-356`; the Umvuthi and minions also target the player who misbehaved,
-`EntityUmvuthi.java:322-330`, `EntityUmvuthanaMinion.java:133-139`). A masked player at a watched raid is
-not attacked; the band still fights the iron golems, which attack it. Masks drop from Umvuthana
-(one in three, for example `loot_table/entities/umvuthana_rage.json`) and lie in grove chests.
+`EntityUmvuthi.java:322-330`, `EntityUmvuthanaMinion.java:133-139`). A masked player at a watched raid
+is not attacked; the band still fights the iron golems, which attack it. Masks drop from Umvuthana (one
+in three, for example `loot_table/entities/umvuthana_rage.json`) and lie in grove chests.
 
 **What a tribe raid does.**
 - **Watched:** the real band arrives in waves on the edge of view (`spawn_edge_blocks` 112, quota 16,
@@ -759,9 +801,112 @@ not attacked; the band still fights the iron golems, which attack it. Masks drop
 **MZ-8, decided: raptor hunts are owed and plunder is eaten.** Reason: C16 to C18 already require
 attacks to land while the owner is away; a tribe raid that did nothing unwatched would break them.
 
+**The Umvuthi leads the Invasion** (MZ-3 (b), Ben, 2026-10-21). The jar's Umvuthi never takes a step
+(§3.1), so on an Invasion it does what it does at home: it sits, faces its enemy and summons. It goes
+with the band as a puppet at a *war seat*, placed out of sight behind the band's first wave, and the
+engine carries what its vanilla body would have kept.
+- **Who rides.** The Invasion only (`chief_rides`, ledger 4): an envoy, scouts, a raid and plunder go
+  without it. It sets out only from a grove that is out at the muster's end, so its body stays on the
+  throne in the saved grove and its slot is away, left (§4.9). With the grove in, it stays home: the
+  party's chief flag and `chief_out` are cleared, and the band goes without it. Reason: a body that
+  never walks cannot be handed off as warriors are (§4.9, *In plain view*), and taking it from a grove
+  that is in would empty the throne where a player may be looking. So an Umvuthi leads only against a
+  base whose player does not hold the grove at FULL, at the default view distance more than about 200
+  blocks away on an axis and 290 on a diagonal (§4.9). It does not ride while its heir waits for a body
+  (§4.10).
+- **The seat.** When the band's first wave arrives where a player watches (`start_fight`,
+  `engine.rs:3307-3350`), or at a later wave if the first found no seat, the engine sends CHIEF_BODY
+  and then the chief's own stack with MEMBER_CHIEF (`boundary.rs:64`), apart from the warriors' stacks;
+  `seen` (`3624`), a band met on the march, never sends it, so the Umvuthi appears only at a base under
+  attack. The plugin seats it on the wave's bearing, `min(160, 16 × view distance) + 8` blocks from the
+  arc's centre (PLACEHOLDER): 168 at the default view distance of 10, beyond the 160 blocks a client
+  tracks it from (`EntityHandler.java:97`, capped by the view distance, `ChunkMap.java:1331`), and
+  within the view distance plus 2 chunks, so its chunk is at FULL. The seat must be that far from every
+  player, not only the arc's centre, on dry, solid ground at the `MOTION_BLOCKING_NO_LEAVES` height
+  with room for its 1.5 × 3.2 box, in a FULL chunk. The plugin steps 8 blocks farther along the
+  bearing, 4 times at most, and with none found it holds the stack and tries again at the next wave or
+  every 100 ticks (PLACEHOLDER).
+- **Its puppet.** Its constructor; `setPos` at the seat; `finalizeSpawn` with `MobSpawnType.EVENT`,
+  which sets its restriction centre where it stands, radius -1 (`EntityUmvuthi.java:960-962`), so its
+  summons keep to 25 blocks of the seat (`1046`); `setDirection` (`701`), 1 to 4, the quarter facing
+  the arc's centre (`tick` turns it to (direction - 1) × 90 degrees, `452`); `setTradedPlayersCompound`
+  (`729`) from CHIEF_BODY; the AgentTag (`core/puppet/AgentTag.java`), so vanilla never saves it; then
+  `addFreshEntity`. Its health is CHIEF_BODY's, nearly always full: out of a fight it heals 0.3 a tick,
+  from nothing in about 575 ticks (§3.1).
+- **What a player sees.** As it is seated, the gong (`mowziesmobs:block.gong`) plays to each player in
+  the fight from 32 blocks toward the seat (PLACEHOLDER), so they know which way the chief is. Walking
+  toward it, they see it within 160 blocks, with its boss bar and music
+  (`MowzieEntity.startSeenByPlayer`, `527-529`; `EntityUmvuthi.java:983-990`). It takes them as targets
+  within its follow range of 40 blocks (`360-362`), and from there it fights as it does at home,
+  summoning warriors while fewer than 4 are within 50 blocks and cranes each time it has lost 45 health
+  (`469-471`, `488-490`). A masked player it does not target can trade with it at its seat
+  (`mobInteract`, `906-912`), reported as tribute at the camp, as at home. It adds nothing to the
+  band's strength in Lanchester or `IND_FIGHT` (P28): its summons are the fight it brings.
+- **Its summons.** Umvuthana and cranes it summons at a seat have their restriction centre on the seat
+  before they join (`1046`, ahead of `addFreshEntity`), so the plugin tags them as the party's puppets
+  at `EntityJoinLevelEvent` when that centre is a live seat: vanilla never saves them, though the jar
+  makes every minion persistent, they hold no unit, their deaths book nothing, and they despawn with
+  the party. At home its summons stay strays (above).
+- **Its recall.** When the band is recalled (`recall`, `engine.rs:3146-3167`), the warriors walk off as
+  today; the Umvuthi, which cannot, stays on its seat until no player is within 160 blocks of it, then
+  despawns. The recall's 1,200-tick timeout (`recall_timeout_ticks`, `tunables.rs:117`) is held while
+  it has a player as its target, for at most 6,000 ticks (PLACEHOLDER), so a player fighting it does
+  not see it vanish when its warriors rout.
+- **Coming home.** At `home` its slot is home again: with its body still on the throne (away, left),
+  nothing is ordered; with the body taken (away, gone), it is owed, and a spawn line places it at the
+  throne spot (§4.6) under Rule U.
+- **Trade memory moves into the engine.** The jar keeps who paid the Umvuthi in its entity data
+  (`TRADED_PLAYERS`, `729-743`) and saves it as NBT `"players"` (`779-793`). A puppet is never saved,
+  so a payment at a seat would be forgotten, and a player who paid would be asked again at home. The
+  engine keeps, per grove, the union of every report: the `rememberTrade` mixin's CHIEF_STATE
+  (`770-777`, called on a first payment, `MessageUmvuthiTrade.java:59-69`) and each census's set
+  (`getTradedPlayers`, `735`). It costs 16 bytes a player and is cleared at a succession: a new Umvuthi
+  has met nobody. CHIEF_BODY writes it into every body the engine places (a seat puppet or an heir) and
+  into a loaded body whose set is short. That write has no record of its own: if it is lost, the next
+  census sends it again. CHIEF_BODY also carries the Frostmaw puppet's health and crystal, which §4.7
+  takes from the engine but no record carried until now.
+- **The grove while it is away.** Its body stays on the throne in the saved grove. If the grove comes
+  in while the Invasion is out, by §4.9's watched test:
+  - not watched: the Invasion ends through `home`, as any party with a body left behind, and the
+    Umvuthi is home on its throne;
+  - watched, before its stack is sent: no take is ordered for it; the party's chief flag and
+    `chief_out` are cleared and the band goes on without it, and a player who visits finds it on its
+    throne;
+  - watched, its stack sent: the census takes the throne body, held under Rule U.
+- **Rule U.** Every line that takes, removes or spawns an Umvuthi at its throne waits while a player is
+  within 160 blocks of the throne, for at most 6,000 ticks (PLACEHOLDER), as a Frostmaw's spawn waits
+  (§4.9); if the epoch ends first, it is answered stale and the next census orders it again. Reason: a
+  grove's census can run with a player inside the throne's tracking range: it waits for the circle's
+  far side, so a near-side body is 142 to 158 blocks off when it runs (§4.9, *In plain view*), and the
+  throne, 18 blocks from the pit, can be nearer than 160.
+- **Two bodies, briefly.** While a take is held, the Umvuthi has its puppet at a seat and its body on
+  the throne: the one exception to I5 (§4.9), bounded by the hold's 6,000 ticks. The first of the two
+  to die is the member's death, with its loot. The plugin remembers the deaths it has reported; the
+  other body, if it dies before it is removed, drops nothing (NeoForge's cancelable
+  `LivingDropsEvent`), takes no warriors with it (the `die` mixin, ledger 18), books nothing, and is
+  removed. The same holds for a body under a held removal.
+- **Killed away.** At its seat its death is CHIEF_KILLED, as a party chief's is today
+  (`engine.rs:3975-3982`), into today's `chief_killed` (`4123-4200`): the killer's Killing report; the
+  heir succeeds at once, holding 0.5 of the old grudges (§3.3); the tribe is cowed for 6 × 1000 ÷ the
+  chief's boldness bend days; the party's feud steps down 2 rungs, from Invasion to Scouts; the band
+  routs (`end_fight` with `RECALL_ROUTED`); other parties go on. The jar's `die` kills every devoted
+  Umvuthana within 30 blocks and 20 up (`EntityUmvuthi.java:859-871`, `MowzieEntity.java:449-451`): its
+  summons, and any of the band that close, each a BAND_CASUALTIES whose killer is vanilla's credit, the
+  player who hurt it in the last 100 ticks, else none (§4.6). The player who killed it gets the Sol
+  Visage. The grove's P_chief gains 1 (EQUILIBRIUM.md §2.2's boss rule), so the heir comes later
+  (§4.10). Its slot is dead, left: the grove's next census removes the throne body, under Rule U. If
+  rtsim is removed before then, the Umvuthi is back on its throne: the jar's state wins, which UR-1
+  allows.
+- **Uninstall (UR-1).** In the usual case the Umvuthi's exposure is zero: its body stays on the throne
+  while it rides, and an uninstall finds it there. The one exposure is after a census has taken the
+  throne body while its puppet is out, for the rest of that Invasion: an uninstall then leaves the
+  grove without its Umvuthi, as §4.9 lists for any member away whose body is gone. A write-back of the
+  throne body at shutdown was rejected: Java would place a body the engine had not ordered, against I6,
+  and a crash would skip it.
+
 ### 4.6 Killing a boss at home
 
-The Umvuthi dies at its fire pit, or the Frostmaw in its den. Both bodies are vanilla there, so the
+The Umvuthi dies on its throne, or the Frostmaw in its den. Both bodies are vanilla there, so the
 plugin sees the death (`LivingDeathEvent`) and reports CAMP_DEATH with the chief flag and the killer
 (ledger 5, 14). The engine runs the camp form of `chief_killed`: the heir succeeds, the faction is
 cowed for `cowed_days` (6, scaled by the chief's boldness), the killer's feud drops two rungs (floor
@@ -772,10 +917,25 @@ drops `sol_visage` when a player kills it (`loot_table/entities/umvuthi.json`); 
 A warrior killed at the grove is a CAMP_DEATH without the chief flag: the pool loses one, and a kill
 by a player is also the killing signal (P14).
 
-The new chief's body: the Umvuthi's slot is owed a body from the end of the cowed time, and a
-reconcile's spawn line with the chief flag places it at the fire pit at the grove's next census (§4.9),
-finalized as a structure spawn and restricted to the pit, as `UmvuthanaGrovePieces.java:276-288` does.
-The Frostmaw's comes with the pool (§4.2).
+**The Umvuthi takes its warriors with it.** Its `die` finds every Umvuthana within 30 blocks and no
+more than 20 above it (`EntityUmvuthi.java:859-871`; `MowzieEntity.getEntitiesNearby`, `449-451`) and
+gives each devoted one a `timeUntilDeath` of under 20 ticks, after which it dies by a magic hit with no
+attacker (`EntityUmvuthana.java:531-535`). Every Umvuthana is devoted (`EntityUmvuthana.java:761`) but
+a follower bound to a player (`EntityUmvuthanaFollowerToPlayer.java:201`). The grove's warriors start 2
+to 11 blocks from the pit and the Umvuthi 18 (`UmvuthanaGrovePieces.java:276-288`, `494-507`), so 7 to
+29 blocks from it: most of the grove, often all of it, falls with its chief. Each is a CAMP_DEATH whose
+killer is vanilla's credit, a player who hurt that warrior in the last 100 ticks, else none, so one
+kill of the chief is not a Killing signal for every warrior. The heir's body then waits for a warrior
+to stand in the grove again (§4.10).
+
+**The new chief's body.** The Frostmaw's comes after its wait (§4.2). The Umvuthi's comes from a
+warrior: once the heir's wait is over (§4.10) and a warrior stands in the grove, one reconcile, under
+Rule U (§4.5), removes the warrior farthest from any player, whose slot is freed and the pool one less,
+and spawns the chief at the throne spot: its constructor, `setPos`, `setDirection` as the old one
+faced, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit with radius -1 (as
+`UmvuthanaGrovePieces.java:276-288` does), an empty trade memory, and the plugin's tag. The throne spot
+is the Umvuthi's position and direction at the grove's first census (CAMP_CENSUS); a grove found
+without its Umvuthi uses the fire pit, direction 1 (PLACEHOLDER).
 
 **At a station (Invasion).** A Frostmaw that finds a district within 64 blocks of its station spot
 raids it as well: Lanchester, class by its crystal, nothing broken, nothing stolen beyond the cargo
@@ -785,10 +945,10 @@ rule.
 
 | Body | At home | Away (a puppet) | State it gives back |
 |---|---|---|---|
-| Frostmaw | the jar's vanilla body, tagged by the plugin and restricted to its den (§4.9); `PersistenceRequired` set by the plugin at the steal, which also reports CHIEF_STATE: a mixin at the `setHasCrystal(false)` call in `EntityFrostmaw.tick` (`615`), not on the setter itself, which loading NBT also calls (`963`); without it the random despawn takes a robbed Frostmaw within about a minute (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health from the engine | health and crystal (CHIEF_STATE; census), death with killer |
+| Frostmaw | the jar's vanilla body, tagged by the plugin and restricted to its den (§4.9); `PersistenceRequired` set by the plugin at the steal, which also reports CHIEF_STATE: a mixin at the `setHasCrystal(false)` call in `EntityFrostmaw.tick` (`615`), not on the setter itself, which loading NBT also calls (`963`); without it the random despawn takes a robbed Frostmaw within about a minute (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health and crystal from CHIEF_BODY (§4.5) | health and crystal (CHIEF_STATE; census), death with killer |
 | Umvuthana warrior, envoy | the jar's vanilla bodies, tagged (an envoy party's three are fresh puppets, never taken from home, §4.9) | its constructor, then `finalizeSpawn` so it gets its trade table (`EntityUmvuthanaMinion.java:243-250`); mask (NBT `"mask"`), weapon (NBT `"weapon"`, `EntityUmvuthana.java:682-690`) | casualties with killer |
 | Raptor pack | not at home: a raptor pack exists only in a party | the raptor's constructor, then 4 followers through the public `(type, level, leader)` constructor (`EntityUmvuthanaFollowerToRaptor.java:33`), not `finalizeSpawn` (which adds 4 or 5 of its own, `EntityUmvuthanaRaptor.java:191-199`) | casualties |
-| Umvuthi | vanilla and tagged, always; a new chief by a reconcile's spawn line: its constructor, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit | never away (MZ-3) | death with killer |
+| Umvuthi | vanilla and tagged, on its throne; an heir spawned at the throne spot by a reconcile (§4.6): its constructor, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit, its direction | only on an Invasion, at a war seat while a player watches the fight (§4.5): its constructor, `finalizeSpawn` with `EVENT`, `setDirection`, its health and trade memory from CHIEF_BODY | its death with the killer (CAMP_DEATH at home, CHIEF_KILLED at a seat); the players it has traded with (CHIEF_STATE, census) |
 
 Steering moves the restriction centre for the bodies that walk to it, the Frostmaw
 (`EntityFrostmaw.java:208`) and the warrior (`EntityUmvuthanaMinion.java:127`); the raptor has no such
@@ -804,7 +964,7 @@ in code (P15 as built).
 | Districts | An Invasion that finds a district within 64 blocks of its spot raids it: Lanchester, class by crystal; nothing broken or stolen. | Lanchester; walls stop it; raptors owe dead animals on load. |
 | Villages | None: dens are 7 chunks or more from villages, and it plunders nothing. Villagers flee it at 10 blocks (`ServerEventHandler.java:250`). | Raptor plunder of livestock goods; villagers flee Umvuthana at 6 blocks (`247`). |
 | Ships | None: its biomes exclude ocean, river and beach. A watched fight by a river port ices water for 140 ticks. | None. |
-| Players | Watched: attacks players only. | Unmasked players, at their base (P26). |
+| Players | Watched: attacks players only. | Unmasked players, at their base (P26); on an Invasion, the Umvuthi at its seat (§4.5). |
 
 ### 4.9 The camp reconciler: bodies, saves and uninstall (UR-1)
 
@@ -834,9 +994,9 @@ open the feud wakes only at the deadline (`1548-1549`), where the demand would e
 war parties away. A raptor pack is one slot: it is one pool unit, and one warrior's body at home
 (§4.5). Each slot has a *generation*, derived from the slot and the tick its member was recruited or
 adopted by the op id rule (`docs/boundary.md:153-163`), so a replay after a crash derives the same one.
-A grove also has a slot for its Umvuthi, the chief, which is in no pool and never away (MZ-3), owed a
-body from the end of the cowed time after a death; a den's Frostmaw is its chief and its pool's one
-member. Each slot is in one of five states:
+A grove also has a slot for its Umvuthi, the chief, which is in no pool: it is away only while it rides
+with an Invasion (MZ-3 (b), §4.5), and after a death it is owed a body that waits for the heir (§4.10);
+a den's Frostmaw is its chief and its pool's one member. Each slot is in one of five states:
 
 | State | The member | Its body |
 |---|---|---|
@@ -858,7 +1018,8 @@ The invariants:
 - **I4.** No order is applied twice (*Orders and answers*, below).
 - **I5.** No member has two bodies: a spawn is ordered only for a member owed one, Java does nothing
   for a spawn whose body is already loaded, and if two loaded bodies ever carry one slot and
-  generation, the next census removes the one farther from the camp.
+  generation, the next census removes the one farther from the camp. The one exception is an Umvuthi
+  whose throne body is held under Rule U while its puppet is at a seat, for at most 6,000 ticks (§4.5).
 - **I6.** The engine books only what Java reports it found or did (CAMP_CENSUS, CAMP_BODIES,
   CAMP_DEATH), never what it ordered.
 
@@ -923,16 +1084,17 @@ when that is.
 
 **The census** (CAMP_CENSUS) carries the epoch; every body of the camp's kinds in the footprint, tagged
 (its slot and generation) or a stray (its UUID); the camp's tagged bodies loaded elsewhere, from the
-index; whether the chief is present, its crystal and health; and the *census player*: the nearest
-player whose chunk is within the view distance (`PlayerList.getViewDistance`, `PlayerList.java:771`)
-plus 2 chunks of a footprint chunk, Chebyshev, at the census tick, with its position. That is the
-player whose tickets hold the camp at FULL, so it never leaves out the player whose approach brought
-the camp in. The position comes in the census itself, not from the engine's PLAYER table, which is sent
-every 20 ticks (`docs/boundary.md:187`) and trusted for 2,400 (`player_stale_ticks`,
-`tunables.rs:118`), so a player who has just logged in or teleported beside the camp is where the
-census says. A party is **watched** if its puppets are in the world, or the census player is nearer the
-party than the camp. With no census player (a chunk loader holding the camp, a player 2,000 blocks
-away), only the puppet clause counts.
+index; whether the chief is present, its crystal and health; for the Umvuthi, its position and
+direction (the throne spot, §4.6) and the players it has traded with (§4.5); and the *census player*:
+the nearest player whose chunk is within the view distance (`PlayerList.getViewDistance`,
+`PlayerList.java:771`) plus 2 chunks of a footprint chunk, Chebyshev, at the census tick, with its
+position. That is the player whose tickets hold the camp at FULL, so it never leaves out the player
+whose approach brought the camp in. The position comes in the census itself, not from the engine's
+PLAYER table, which is sent every 20 ticks (`docs/boundary.md:187`) and trusted for 2,400
+(`player_stale_ticks`, `tunables.rs:118`), so a player who has just logged in or teleported beside the
+camp is where the census says. A party is **watched** if its puppets are in the world, or the census
+player is nearer the party than the camp. With no census player (a chunk loader holding the camp, a
+player 2,000 blocks away), only the puppet clause counts.
 
 **The reconcile.** On CAMP_CENSUS the engine marks the camp in at that epoch, voids every line of an
 earlier epoch still in flight, and compares each slot with the bodies found:
@@ -948,6 +1110,15 @@ earlier epoch still in flight, and compares each slot with the bodies found:
 Then the strays left over: a body whose generation the books retired at a death is removed; the rest
 fill new slots (adopt lines, the pool gaining each) while the camp is under its cap, and are removed
 above it. Of two bodies with one slot and generation, the one farther from the camp is removed.
+
+**The Umvuthi's slot** follows the table like any slot, with four differences. It is drawn only by an
+Invasion from a grove that is out (§4.5), so it leaves away, left, never through a set-out line. A
+census that finds its throne body while it is out takes the body only if its stack has been sent
+(`Party.chief_sent`, ledger 4); before that, the chief stays home, its slot home, body, and the party's
+chief flag and `chief_out` are cleared. Every take, removal and spawn of it waits under Rule U (§4.5).
+And while it is owed after a death, nothing is spawned and no stray fills it until the heir's wait is
+over and a warrior stands in the grove; then one reconcile removes that warrior and spawns the chief
+(§4.6).
 
 A party that ends through `home` (`engine.rs:3170`) has its survivors back in the pool, its loot
 stocked at the camp (a Frostmaw carries none, ledger 10), and its pending event cancelled; its
@@ -969,10 +1140,15 @@ a body is left behind only while its party musters or a line for it is in flight
   puppets when `seen` embodies it later (`engine.rs:3602-3610`), with the engine's health and crystal
   for a Frostmaw (CHIEF_STATE, census) and a new mask and weapon for a warrior. A raptor pack's slot
   gives up the warrior body farthest from any player, taken, as a pack's puppets are a raptor and its
-  followers.
+  followers. An Umvuthi never sets out from a grove that is in: the party's chief flag is cleared and
+  it stays on its throne (§4.5).
 - **A homecoming** (`home`): the survivors whose bodies are gone are owed again, and each gets a spawn
   line.
 - **A refill:** each whole member the pool gains is a slot owed a body, and a spawn line.
+- **An heir:** once the Umvuthi's slot is owed and the heir's wait is over (§4.10), a removal line for
+  the warrior farthest from any player and a spawn line for the chief, in one reconcile, both under
+  Rule U (§4.5, §4.6); with no warrior home, nothing until one is. A grove that stays in, as one beside
+  a player's base does, gets its heir as soon as the wait ends.
 
 While a camp is out, nothing is ordered: its slots change only by events, and its next census
 reconciles them.
@@ -987,15 +1163,16 @@ dead, left.
 **Deaths** (CAMP_DEATH, ledger 14) carry the body's slot and generation, and are journaled at the end
 of the tick (`docs/boundary.md:253`). The death of a body whose slot and generation the books hold
 kills that member wherever the books have it: at home, the pool loses one (the Umvuthi's slot is owed
-again from the end of the cowed time); away, its party loses that unit in any phase (mustering, setting
-out with its answer in flight, out with its body left); dead, nothing more. A stray's death books
-nothing. A party left with no units ends through `home`, with AMBUSH_SPOT's removed flag if it lurked.
-The chief flag runs the camp form of `chief_killed` (ledger 5), whose `go_home` routs every party out
-(`engine.rs:4183-4188`), so a Frostmaw whose left-behind body is killed ends its own raid. A tagged
-body that Carry On picks up leaves the sim (A10) through the existing hook
-(`MicRtsimCarryOn.java:39-43`, extended to tagged bodies): its tag goes and it is a CAMP_DEATH with
-killer kind taken. One removed as DISCARDED (`Entity.java:3891-3895`) by anything but the plugin (a
-despawn, another mod) is a CAMP_DEATH with killer kind none.
+again, its body waiting for the heir, §4.10); away, its party loses that unit in any phase (mustering,
+setting out with its answer in flight, out with its body left); dead, nothing more. A stray's death
+books nothing. A party left with no units ends through `home`, with AMBUSH_SPOT's removed flag if it
+lurked. The chief flag runs the camp form of `chief_killed` (ledger 5), whose `go_home` routs every
+party out (`engine.rs:4183-4188`), so a Frostmaw whose left-behind body is killed ends its own raid,
+and an Umvuthi's throne body killed while it rides ends its Invasion. A tagged body that Carry On picks
+up leaves the sim (A10) through the existing hook (`MicRtsimCarryOn.java:39-43`, extended to tagged
+bodies): its tag goes and it is a CAMP_DEATH with killer kind taken. One removed as DISCARDED
+(`Entity.java:3891-3895`) by anything but the plugin (a despawn, another mod) is a CAMP_DEATH with
+killer kind none.
 
 **Orders and answers.** The one order is CAMP_RECONCILE: faction, epoch, an op id derived from the
 faction, epoch and decision (`docs/boundary.md:153-163`), and lines, each a slot and generation with
@@ -1003,11 +1180,11 @@ what to do. It goes through the outbox in the industry reconcile's form
 (`docs/industry-boundary.md:356-362`, F27): it is not resent after a restart, but derived again at the
 camp's next census.
 - Java applies a CAMP_RECONCILE only while its camp is in that epoch, every line in the tick it
-  arrives; otherwise it answers STALE and applies nothing. The one wait is a Frostmaw's spawn: Java
-  holds that line until no player is within 160 blocks of the den's spot (the Frostmaw's tracking
-  range, `EntityHandler.java:98`) or for 6,000 ticks (PLACEHOLDER), whichever is first, so a player who
-  lives beside a den still gets its Frostmaw back; a held line still waiting when its epoch ends is
-  answered stale.
+  arrives; otherwise it answers STALE and applies nothing. The waits are a Frostmaw's spawn and the
+  Umvuthi's lines (Rule U, §4.5): Java holds such a line until no player is within 160 blocks of the
+  den's spot or the throne (their tracking ranges, `EntityHandler.java:97-98`) or for 6,000 ticks
+  (PLACEHOLDER), whichever is first, so a player who lives beside a camp still gets its boss back; a
+  held line still waiting when its epoch ends is answered stale.
 - Each line names a target state: a spawn does nothing if a body with that slot and generation is
   loaded; a take, set-out or removal does nothing if none is. With the camp in, every footprint body is
   loaded, so applying a line twice changes nothing.
@@ -1091,23 +1268,28 @@ make a second body of one, and a living member is booked dead only after three m
   within tracking range of a camp whose party is watched can also see it go. Reason, over dropping the
   body at `EntityJoinLevelEvent` before any client tracks it: the watched test needs the party's
   position, which only the engine has.
+- **The Umvuthi** is not seen to go or come: it leaves only from a grove that is out, its seat is
+  placed beyond its tracking range from every player in the fight, and every line at its throne waits
+  under Rule U.
 
 **Reset and uninstall.**
 - **A reset** recreates each faction from FACTION_FOUND, which carries the counts at the camp's first
   census: a robbed den comes back robbed (the body's `has_crystal` is 0), a grove comes back with the
-  warriors standing in it, a den found empty starts with an empty pool (§4.10). Its slots start owed,
-  with new generations, and the bodies, strays to the new books, fill them.
+  warriors standing in it and the Umvuthi on its throne, its trade memory read again from the body, a
+  den found empty starts with an empty pool (§4.10). Its slots start owed, with new generations, and
+  the bodies, strays to the new books, fill them.
 - **What an uninstall or reset loses:** members away whose bodies are gone, members owed a body, and
   the grudges, which are the sim's own. The other way round, a member that set out while its camp was
   out and died away comes back with an uninstall if its camp has not come in since (its body is removed
-  at that census), as its body was still in the saved camp: the jar's state wins, which UR-1 allows.
-  Markers not yet acknowledged stay as inert `minecraft:marker` entities (no tick, never sent to a
-  client); a datapack that selects every marker would see them.
+  at that census), as its body was still in the saved camp: the jar's state wins, which UR-1 allows. An
+  Umvuthi is exposed only after a census has taken its throne body while its puppet is out, until that
+  Invasion ends (§4.5). Markers not yet acknowledged stay as inert `minecraft:marker` entities (no
+  tick, never sent to a client); a datapack that selects every marker would see them.
 - **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as no
   player joined (`docs/deploy-rehearsal-omegasrv.md:461-462`); dragons carry the same gap. Test 4
   covers this plan's bodies.
 
-**Walked through** (walkthroughs A and B, §5; one row per change):
+**Walked through** (walkthroughs A, B and F, §5; one row per change):
 
 | When | What happens | The slots | Order, and its answer |
 |---|---|---|---|
@@ -1116,8 +1298,8 @@ make a second body of one, and a living member is booked dead only after three m
 | A, 8.5 | the muster ends; the den is out | as it was; the party marches abstractly | none |
 | A, 9.5 | the den comes in as Iva rides north, nearer the spot than the den: watched | slot 0 away, left, its party out | take; done: away, gone, a marker holding the record |
 | A, 9.5, kill it | its puppet dies by the line | slot 0 freed, no body to remove; the heir succeeds; the pool is 0 | none |
-| A, 15.5 | the pool reaches 1; the den is out | slot 0, a new generation, owed | none |
-| A, 15.5 to 17 | her trains still run: the new Frostmaw musters and sets out | drawn owed: away, gone, with its debt | none: nothing to take, nothing to spawn while it is away |
+| A, 21.5 | the wait ends, 12 days after a first kill (§4.2); the den is out | slot 0, a new generation, owed | none |
+| A, 21.5 to 23 | her trains still run: the new Frostmaw musters and sets out | drawn owed: away, gone, with its debt | none: nothing to take, nothing to spawn while it is away |
 | A, its return | `home` | owed | a spawn at the den's next census (at once if the den is in), held while a player is within 160 blocks; done: home, body |
 | B, step 1 | the grove comes in; FACTION_FOUND counts 7 | 7 owed, filled by the 7 strays | 7 adopts; done |
 | B, step 2 | Tomas kills four (CAMP_DEATH by slot) | 4 freed; the pool is 3 | none |
@@ -1128,29 +1310,51 @@ make a second body of one, and a living member is booked dead only after three m
 | B, step 4 | `home`; the grove is in | 2 owed | 2 spawns at the far edge; done |
 | B, step 5 | a raid musters, sets out and comes home; the grove is out throughout | 4 away, left; at `home`, home, body | none |
 | B, step 5 | Tomas comes back; the grove comes in | every body found | none |
+| F, step 1 | the Invasion's muster ends; the grove is out | 6 warriors', 2 packs' and the Umvuthi's slots away, left | none |
+| F, step 2 | the first wave arrives where Nadia watches; a seat is found | as they were | CHIEF_BODY, then the chief's stack: its puppet at the seat; no reconcile, the grove is out |
+| F, step 4 | Nadia kills it at its seat (CHIEF_KILLED) | the Umvuthi's slot dead, left; the heir succeeds; the summons' deaths book nothing | none |
+| F, step 5 | the survivors reach `home`; the grove is out | the survivors home, body; the slots of warriors killed at her farm dead, left | none |
+| F, step 6 | a week later she rides to the grove; it comes in while she is about 200 blocks off | the dead, left slots' bodies found, the throne body among them | removes, applied at once (no player within 160 blocks of the throne); done: freed |
+| F, step 7 | the heir's wait ends; the grove comes in later | the Umvuthi's slot owed | a warrior's removal and the chief's spawn at the throne spot, under Rule U; done: the warrior's slot freed, the chief home, body |
+| F, step 8 | Tomas is within 160 blocks of the throne as the grove comes in, the stack sent | the Umvuthi's slot away, left | a take, held while he stays; done when he leaves: away, gone |
+| F, step 8 | had she not killed it: the Invasion's `home` with the grove in | the Umvuthi's slot owed | a spawn at the throne spot under Rule U; done: home, body |
 
 ### 4.10 Renewal: heirs, migrants and regrowth
 
-Ben asked for populations that come back and settle into a balance. A separate design covers every
-species (in progress on `plan/equilibrium`; its input is `research/population-inventory-2026-10-21.md`).
-These two factions plug into it with the rules below; every rate is TUNABLE until that design sets it.
+Ben asked for populations that come back and settle into a balance. EQUILIBRIUM.md covers every species
+with one shared rule (§2.2 there: a pressure P per camp, halving every 96 days and gaining 1 for each
+loss to players, and a delay of `min(cap, base × 2^P)`); its input is
+`research/population-inventory-2026-10-21.md`. These two factions plug into it with the rules below;
+every rate it has not set is TUNABLE.
 
 | What renews | How | Rate (TUNABLE) | On screen |
 |---|---|---|---|
 | A chief (the notable) | `succeed`, at once, holding the grudges (§3.3) | immediate | nothing until a body exists |
-| A Frostmaw (the body) | the pool refills from 0 to 1 after a death, or for a den found empty; a migrant moves into the empty den | `recruits_per_day` 1/6 (6 days), as the dragons' vacant lairs refill on a delay (`respawn_delay_days` 20 in the inventory) | asleep in the den at its next census while it is home, once no player is within 160 blocks (§4.9); with or without its crystal is MZ-4 |
+| A Frostmaw (the body) | one booked arrival after a death, or for a den found empty: a migrant moves into the empty den (ledger 6) | `min(192, 6 × 2^P)` days (EQ-4 (b), Ben, 2026-10-21): 6 with no player cause, 12 after a first kill, about 52 when farmed | asleep in the den, holding its crystal (MZ-4 (a)), at its next census while it is home, once no player is within 160 blocks (§4.9) |
 | Grove warriors | the pool refills toward the grove's own cap | `recruits_per_day` 2 (goblin's): an emptied grove of 7 is whole in 3.5 days | walking in from the grove's edge: if the grove is in, as each whole body is ready, else at its next census (§4.9) |
-| The Umvuthi (the body) | after the cowed time | 6 days, scaled by boldness | at the fire pit at the next census |
+| The Umvuthi (the body) | the heir takes up the mask: after the later of the cowed time and the wait, a warrior's body is removed and the chief spawned at the throne spot (§4.6); none while no warrior is home | `min(192, 6 × 2^P_chief)` days (MZ-14 (a), §8), P_chief gaining 1 for each Umvuthi lost to players; the cowed time is 6 days scaled by boldness | on its throne at the next census, under Rule U (§4.5) |
 | Raptor packs in war parties | from the pool, as warriors are | as warriors | only in parties; a scouting pack is a fresh puppet, drawn from no pool and gone when it ends |
 
 Natural Mowzie spawns (raptor packs, Naga, Foliaath, Elokosa, Lantern, Grottol) are the jar's own and
 outside the sim; a grove's census never counts a natural raptor.
 
+**Loot supply** (MZ-4 (a)). Each heir is one more ice crystal or Sol Visage: a Frostmaw comes back
+holding its crystal, and an Umvuthi drops its Sol Visage when a player kills it. A den farmed as fast
+as it refills, each Frostmaw killed 2 days after it arrives, settles at a pressure of 3.11 and a 52-day
+wait, a kill every 54 days, about 1.8 crystals a game year (96 days): 1.79 by EQUILIBRIUM.md's closed
+form and 1.83 in its model (§3.3 there). A grove gives Sol Visages at the same rate with MZ-14 (a), and
+about 1.0 a year with (b). Stealing the crystal starts no wait: the robbed Frostmaw stays in its den
+(§4.7), and only its death brings an heir, with a new crystal, so stealing then killing still yields
+one crystal per heir. The stretch is felt at once: after a first kill the next Frostmaw is 12 days off;
+killed again 2 days after it arrives, the one after is 22 days off, then about 36 and 47, settling near
+52.
+
 **What this plan needs from the pan-species design:**
 1. **Caps.** A per-camp cap (this plan sets 1 per den and the census count per grove) and whatever
    world-level ceiling it sets per species.
 2. **Rates against pressure.** `recruits_per_day` for each culture tuned against how fast players kill
-   them, so dens and groves neither vanish nor swamp a region; this plan's 1/6 and 2 are guesses.
+   them, so dens and groves neither vanish nor swamp a region; the Frostmaw's is now EQ-4's, and the
+   tribe's 2 a day is still a guess (EQUILIBRIUM.md §2.6 item 2).
 3. **The empty camp rule.** One rule for a camp found empty or emptied for good (a migrant after a
    delay, as dragons do), shared with the dragons' vacant lairs.
 4. **Predator and prey.** Raptor hunts and village plunder take animals and livestock goods; the herds
@@ -1194,7 +1398,7 @@ The engine's strength unit is one ordinary mob: an observed fight counts one per
 | Body | Health × attack | Strength |
 |---|---|---|
 | Frostmaw | 250 × 10 (`EntityFrostmaw.java:291`) | 41.7 |
-| Umvuthi | 150 × 2 (`EntityUmvuthi.java:361`) | 5.0 (understated: its damage is its sun abilities) |
+| Umvuthi | 150 × 2 (`EntityUmvuthi.java:361`) | 5.0 (understated: its damage is its sun abilities); it adds nothing to a band's strength (§4.5) |
 | Umvuthana warrior, crane, follower | 8 × 3 (`EntityUmvuthana.java:451-452`; one attribute set, `EntityHandler.java:244`, `247-248`) | 0.4 |
 | Raptor | 10 × 6 (`EntityUmvuthanaRaptor.java:97-98`) | 1.0; a pack of 1 and 4 followers 2.6 |
 
@@ -1211,14 +1415,17 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 | Sample period, hash cell | 20 ticks, 512 blocks | PLACEHOLDER | sampler cost and pass accuracy | bench at 200 trains; test 11 on the fixture's curves |
 | Lurk offset, reach | 5 blocks off the rail, 8 blocks | PLACEHOLDER | where it stands; which passes count | test 9 |
 | Repeat | 4 days after a return | PLACEHOLDER | how often an angry Frostmaw comes back | `sim mowzie` line run; Ben's call |
-| Frostmaw carry | 64 | industry's siege carry | cargo lost per ambush | Ben's call (MZ-5) |
-| Recruits | Frostmaw 1/6 a day; tribe 2 a day | TUNABLE | heir and migrant arrival; regrowth | the pan-species design; `sim mowzie` renewal run |
+| Frostmaw carry | 64 | industry's siege carry; MZ-5 (a), Ben, 2026-10-21 | cargo lost per ambush | decided |
+| Renewal | Frostmaw `min(192, 6 × 2^P)` days, H 96; Umvuthi heir `min(192, 6 × 2^P_chief)`; tribe 2 a day | Frostmaw: EQ-4 (b), Ben; Umvuthi: MZ-14 (a), Ben; tribe TUNABLE | heir and migrant arrival; regrowth | EQUILIBRIUM.md's model; `sim mowzie` renewal runs |
 | Thresholds, dwell, half-life, patience, muster, cowed | goblin's | PLACEHOLDER | pace of the ladder | `sim mowzie` |
-| Tribute | 0.5 emerald's worth a point; fallback 9 nuggets an emerald | goblin's; PLACEHOLDER rate | the price of peace | Ben's call (MZ-6) |
+| Tribute | 0.5 emerald's worth a point; fallback 9 nuggets an emerald | goblin's; gold nuggets by MZ-6 (a), Ben; PLACEHOLDER rate | the price of peace | the grove market's gold price, once it exists (ledger 12) |
 | Party sizes | §4.5 | PLACEHOLDER: a grove of 5 can field each | raid strength | GameTest fights |
 | Strength rule | health × attack ÷ 60 | TUNABLE | Lanchester inputs | GameTest fights through `IND_FIGHT` |
 | Animals owed per raptor pack | 2 | PLACEHOLDER | herd loss to a won raid | GameTest: animals killed in a watched raid |
 | Notice and cue distance | 32 blocks toward the den; cue within 64 of a station | PLACEHOLDER | where the roar or gong comes from | listen in game |
+| War seat | `min(160, 16 × view distance) + 8` blocks on the wave's bearing; steps of 8, 4 at most; a retry every 100 ticks; its gong from 32 blocks toward it | PLACEHOLDER | where the Umvuthi sits on an Invasion | test 23 |
+| Rule U and recall holds | 6,000 ticks each | PLACEHOLDER | how long an Umvuthi's throne line waits for a player to leave; how long a fight holds its recall | tests 26, 29 |
+| Throne fallback | the fire pit, direction 1 | PLACEHOLDER | an heir at a grove found without its Umvuthi | test 30 |
 
 ### 4.15 Left out, and why
 
@@ -1269,12 +1476,15 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    - **Kill it.** Her bow and her trident do nothing; she brings a TaCZ rifle and fire. It falls after
      250 damage; she gets an ice crystal (it still had its crystal and a player killed it). Her feud
      drops to Notice, the faction is cowed for about 6 days, and the heir takes over at once, holding
-     the old grievance plus about 2.5. Six days later the pool has a new Frostmaw (MZ-4), placed asleep
+     the old grievance plus about 2.5. The den's pressure goes from 0 to 1, so the new Frostmaw arrives
+     6 × 2 = 12 days later, on day 21.5, holding its crystal (MZ-4 (a), EQ-4 (b)), and is placed asleep
      in the den when the den next comes in (walkthrough D). If her 24 legs a day still run, the
-     grievance is still over 70 when the cowed time ends, and the new Frostmaw raids within a day or
-     two. If the den has not come in since, it sets out still owed a body and carries the debt: nothing
-     is taken, no one is booked dead, no second Frostmaw appears, and its body is placed in the den
-     when it comes home (§4.9). Killing buys a week.
+     grievance is still over 70 when it arrives, long after the cowed time, so it musters at once and
+     is by the line about 1.3 days later. If the den has not come in since, it sets out still owed a
+     body and carries the debt: nothing is taken, no one is booked dead, no second Frostmaw appears,
+     and its body is placed in the den when it comes home (§4.9). Killing buys about 12 days, and each
+     kill buys more: killed again 2 days after it arrives, the next is 22 days off, then about 36 and
+     47 (§4.10).
    - **Steal its crystal first.** She drinks a potion of invisibility and walks into the den while it
      sleeps (a sleeping Frostmaw drops a target that has invisibility, `EntityFrostmaw.java:597-599`).
      She stands by the crystal in its fist: it is hers, and the Frostmaw wakes without it. The plugin
@@ -1340,11 +1550,17 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 6. He finds a Fury mask on a dead warrior and wears it. The tribe's bodies no longer target him; only
    a warrior he has provoked still does. He sells bones to the grove's warriors for nuggets: the
    tribe's grudge softens a little with each trade.
-7. Or he ends it: he walks into the grove unmasked and fights the Umvuthi at its fire pit. It summons
-   warriors while fewer than 4 are near it, and cranes each time it loses 45 health; while a crane
-   shields it with Sunblock his shots do nothing, so he shoots the cranes first. When it dies, his own
+7. Or he ends it: he walks into the grove unmasked and fights the Umvuthi on its throne, 18 blocks from
+   the fire pit. It summons warriors while fewer than 4 are within 50 blocks of it, and cranes each
+   time it loses 45 health; while a crane shields it with Sunblock his shots do nothing, so he shoots
+   the cranes first. When it dies, every warrior within 30 blocks of it falls within a second, most of
+   the grove: each is a CAMP_DEATH, his kill only if he hit that warrior in the last 100 ticks. His own
    feud drops two rungs, the tribe is cowed for about six days and its bands run home. He takes the Sol
-   Visage. When the cowed time is over, a new Umvuthi sits at the pit the next time the grove comes in.
+   Visage. The grove's pressure is now 1, so the heir is due 12 days later (MZ-14 (a)); the grove is in
+   while he is home, so the reconcile is ordered then, and applied once he is more than 160 blocks from
+   the throne or after 6,000 ticks (Rule U, §4.5): a warrior's body goes, the grove having regrown by
+   then at 2 a day, and a new Umvuthi sits on the throne. His ranch is 150 blocks from the grove, so
+   the Umvuthi never leads an Invasion against him (§4.5); walkthrough F is a farm far enough away.
 
 **C. A village herd.**
 1. A plains village 900 blocks from the grove trades wool and leather. The tribe plunders on its own
@@ -1357,26 +1573,69 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 2. She visits the den on day 12. It comes in, and she finds the ruin and no Frostmaw: its body was
    taken when the den came in while she watched it by the line (§4.4), so the census has nothing to
    remove. Had the den stayed out until she killed it, the census would now remove the body left
-   behind, its slot dead (§4.9). The pool is at 0.4, and while it is under 1 the feud waits for a whole
-   body without waking (ledger 6).
-3. On day 15.5 the pool reaches 1, a slot owed a body. Nothing shows yet: the den is out.
-4. On day 17 she flies over the den; it comes in, the census finds the den empty and the new Frostmaw's
+   behind, its slot dead (§4.9). Its next Frostmaw is due on day 21.5 (12 days after the kill, §4.2),
+   and until then the feud waits for the arrival without waking (ledger 6).
+3. On day 21.5 the new Frostmaw arrives in the books, a slot owed a body. Nothing shows yet: the den
+   is out.
+4. On day 23 she flies over the den; it comes in, the census finds the den empty and the new Frostmaw's
    slot owed (§4.9), and the plugin places it asleep in the ruin once she has flown more than 160
    blocks on. If her trains still run, it is already angry: the heir took the old grievance, and it may
    have mustered and set out before she came (A, "kill it"); then its slot is away and still owed,
    nothing is placed, and its body is placed when it comes home.
-5. Bram, another player, kills it at its den on day 20 while it sleeps (he has no feud with it). The
-   faction is cowed again, the heir grudge falls on Bram, and Iva's feud does not step down; she only
-   gains the six empty days.
+5. Bram, another player, kills it at its den on day 26 while it sleeps (he has no feud with it), and
+   takes its crystal. The faction is cowed again, the heir grudge falls on Bram, and Iva's feud does
+   not step down. The den's pressure has decayed from 1 to 0.888 since day 9.5 and gains 1, so the next
+   wait is 6 × 2^1.888 = 22.2 days, until about day 48: Iva gains those empty days.
 
 **E. Removing rtsim.**
 Ben removes mic-rtsim on day 10, while the Frostmaw waits by Iva's line and Iva has stayed at her
 smelter. The den's saved chunk still holds the vanilla body (the den has not come in since it set out),
 so after the uninstall the Frostmaw is home asleep. Had Iva ridden north as in A, step 7, the den would
 have come in while she watched the Frostmaw, its body would have been taken, and the uninstall would
-leave the den empty: the exposure §4.9 lists. The grove keeps its vanilla warriors and its Umvuthi. Ben
-reinstalls on day 30: FACTION_FOUND rebuilds both factions from their censuses (crystal held, 7
-warriors), with no grudges, and the tagged bodies, strays to the new books, fill the new slots.
+leave the den empty: the exposure §4.9 lists. The grove keeps its vanilla warriors and its Umvuthi,
+which sits on its throne even while it rides with an Invasion, unless a census took its body while its
+puppet was at a seat (§4.5). Ben reinstalls on day 30: FACTION_FOUND rebuilds both factions from their
+censuses (crystal held, 7 warriors), with no grudges, and the tagged bodies, strays to the new books,
+fill the new slots.
+
+**F. The Umvuthi leads an Invasion.**
+1. Nadia farms wheat and cattle 450 blocks from a grove of 9. For weeks she has logged acacia and
+   killed warriors inside its 200-block range, and she struck its envoy. Her grievance passes 140 and
+   the tribe climbs to Invasion: 6 warriors and 2 raptor packs, led by the Umvuthi (MZ-3 (b)), muster
+   for a day and march on her farm, her home by P26. The grove is out when the muster ends (she is at
+   her farm, far beyond the view distance plus 2 chunks), so nothing is ordered: every body stays in
+   the saved grove, their slots away with the bodies left, the Umvuthi's too.
+2. The band marches 450 blocks at 0.02 blocks a tick: 22,500 ticks, under a day. Its first wave arrives
+   on the arc 112 blocks out on the grove's side of her farm (`start_fight`). The engine sends
+   CHIEF_BODY and the Umvuthi's stack; the plugin finds dry ground on the bearing 168 blocks from her,
+   beyond the 160 blocks a client tracks it from, and seats it there facing her farm. A gong sounds
+   from behind the warriors.
+3. The warriors come over the rise and the raptors go for her cattle. She walks toward the gong and,
+   160 blocks out, sees the Umvuthi with its boss bar. Within 40 blocks it takes her as its target and
+   summons warriors around it, then cranes as it loses health. The summons are puppets: none is saved,
+   and none counts in the band.
+4. She shoots the cranes first and kills it. She gets the Sol Visage, and its summons fall with it. The
+   engine runs `chief_killed`: her Killing report, the heir succeeding with half the grudges, the tribe
+   cowed for about 6 days, her feud from Invasion to Scouts, the band routed. The grove's P_chief is 1.
+   Its slot is dead, left: its vanilla body still sits on the throne in the saved grove.
+5. The surviving warriors and packs walk off (their puppets despawn out of her sight) and reach `home`
+   about a day later, with the grove still out: their slots are home, with the bodies they left.
+6. A week later she rides to the grove. It comes in while she is still about 200 blocks off; the census
+   finds the throne body of a dead slot and the bodies of the warriors who died at her farm, and the
+   reconcile removes them at once, as no player is within 160 blocks of the throne. She finds the
+   throne empty. Had rtsim been removed before this census, the Umvuthi would be on its throne for
+   good: the jar's state wins, which UR-1 allows.
+7. Twelve days after the kill, the later of the cowed time and 6 × 2^1 days (MZ-14 (a)), the heir's
+   wait is over. The grove is out, so nothing shows until it next comes in; then one reconcile removes
+   the warrior farthest from any player and seats a new Umvuthi on the throne, its trade memory empty:
+   whoever paid the old one pays again.
+8. Had Tomas been within 160 blocks of the throne when the grove came in, during the fight at her farm
+   and after the Umvuthi's stack was sent, the census would have ordered the throne body taken, held
+   while he stayed: for up to 6,000 ticks the Umvuthi has two bodies, the one at the seat and the one
+   he sees. The first to die is the death that counts, with its Sol Visage; the other drops nothing,
+   takes no warriors with it, and is removed once he is more than 160 blocks away. Had he come before
+   the stack was sent, the census would have kept the Umvuthi home, and the band would have fought
+   Nadia without it.
 
 ## 6. Cost model
 
@@ -1399,7 +1658,11 @@ warriors), with no grudges, and the tagged bodies, strays to the new books, fill
 | Camp body index | per entity join or leave, server-wide | one attachment check |
 | Orders at a camp that is in | per war party and refill | a set-out line at a muster's end, spawn lines at a homecoming, a grove's refill (at most 2 a day): a few takes, hand-offs or spawns, each with a record on the body or a marker until acknowledged; the barrier saves the 1 to 4 entity chunks of a den (up to 25 of a grove) ahead of the journal's next write |
 | Notices | per feud | one pending bit, resent at session start |
-| Watched boss | while seen | one Frostmaw, or a band in waves of at most 16 |
+| Watched boss | while seen | one Frostmaw, or a band in waves of at most 16, plus on an Invasion an Umvuthi and its summons (under 4 Umvuthana within 50 blocks and 3 cranes within 40 of it, `EntityUmvuthi.java:469`, `488`) |
+| War seat | once per Invasion an Umvuthi leads, at its first watched wave | at most 5 heightmap reads on the bearing, one spawn, one CHIEF_BODY; while held, a retry every 100 ticks |
+| Seat summons | per entity join, server-wide | beside the camp body index's attachment check, one lookup of the joining minion's restriction centre in the live seats, usually none |
+| Trade memory | resident, per grove | 16 bytes a player who has paid its Umvuthi; one CHIEF_STATE per first payment |
+| Rule U holds | per held Umvuthi line, per tick | one nearest-player check against the throne, for at most 6,000 ticks |
 | Animals owed | per district load with a debt | one entity scan of the district's loaded chunks, capped |
 | Density | per world | at most 6.25 dens and 6.25 groves per 1,000 × 1,000 blocks; 4,096 factions (the paged sweep's top, `docs/choices-paging-modules.md:23`) of one kind at that density cover 655 million square blocks, a square about 25,600 blocks on a side |
 | Nobody near any camp, no train in any range, nothing changing | | the sampler's per-second walk only |
@@ -1419,7 +1682,8 @@ mechanism, and the moving form runs if the fixture's train moves.
 3. `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt`.
 4. `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved`, and the NBT of a tagged body and
    of a marker holds nothing a world without rtsim cannot load: the attachment is skipped with its log
-   line (`AttachmentHolder.java:162`) and the marker is inert.
+   line (`AttachmentHolder.java:162`) and the marker is inert. An Umvuthi left on its throne while it
+   rides is saved there; its seat puppet and the seat's summons are not saved.
 5. `aRefilledPoolIsSpawnedAtTheNextCensus`, for a den and a grove that are out; at a grove that is in,
    each whole warrior is spawned when it is ready (CAMP_BODIES: done); strays fill owed slots before
    any spawn; a den's Frostmaw spawn waits while a mock player is within 160 blocks, and is placed once
@@ -1464,11 +1728,11 @@ mechanism, and the moving form runs if the fixture's train moves.
       a new epoch and census, so a body left behind by a party that set out meanwhile is taken or its
       party ended, an owed body is spawned, and a left-behind body killed in between is a CAMP_DEATH by
       slot that kills its party's unit;
-    - **a member drawn while owed** (walkthrough A, "kill it"): with the den out, the pool refills to
-      an owed slot and the Frostmaw musters and sets out; the den comes in, watched and again
-      unwatched: nothing is taken, nothing is spawned, no member is booked dead, and the slot stays
-      away and gone; at `home` it is owed and spawned once; the books and the world each hold one
-      Frostmaw and one crystal throughout;
+    - **a member drawn while owed** (walkthrough A, "kill it"): with the den out, the next Frostmaw
+      arrives as an owed slot and musters and sets out; the den comes in, watched and again unwatched:
+      nothing is taken, nothing is spawned, no member is booked dead, and the slot stays away and gone;
+      at `home` it is owed and spawned once; the books and the world each hold one Frostmaw and one
+      crystal throughout;
     - **the draw order**: a grove with three bodies found, one missed and two owed sends a party of
       four: the three found and the one missed are drawn, none owed; the set-out line's answer for the
       missed one is nothing to do, and it is booked away and gone;
@@ -1517,12 +1781,44 @@ mechanism, and the moving form runs if the fixture's train moves.
       camp coming in to the take are logged against 14 to 24 (den, axis), about 50 (den, diagonal) and
       7 to 15 (grove) before the body is in tracking range (unthrottled GameTest ticks make the entity
       read span more ticks than on a live server, so the count errs high).
+23. `anInvadingUmvuthiIsPlacedAtASeatOutOfTrackingRange`: a band's first watched wave with its chief
+    sends CHIEF_BODY and then the chief's stack; the seat is on the bearing at `min(160, 16 × view
+    distance) + 8` blocks from the mock player and more than 160 from every player; on water, a cliff
+    or leaves it steps out at most 4 times and then holds; the puppet faces the player, has
+    CHIEF_BODY's health and trade memory, does not move (no horizontal motion over 200 ticks), and the
+    gong plays from the seat's side. A band met on the march (`seen`) sends no chief stack.
+24. `seatSummonsArePuppetsAndAreNotSaved`: the seat's Umvuthi, targeting a mock player, summons
+    warriors and cranes; each is tagged at its join, is in no unit or quota, and is absent from the
+    chunk's saved entities; a summons at the throne stays a stray.
+25. `theTradeMemoryRoundTripsThroughTheEngine`: a masked mock player pays the throne's Umvuthi, and
+    CHIEF_STATE carries its UUID; the seat puppet's `hasTradedWith` is true for it; a payment at the
+    seat is remembered by the next body placed on the throne; a succession clears it.
+26. `anUmvuthiKilledAtItsSeatDropsTheSolVisageAndRoutsTheInvasion`: a mock player's kill at the seat is
+    CHIEF_KILLED with that player, the Sol Visage drops, the feud goes from Invasion to Scouts, and the
+    band is recalled; while the player is its target the recall's timeout is held, for at most 6,000
+    ticks; the grove's next census removes the throne body.
+27. `killingTheUmvuthiKillsDevotedUmvuthanaWithin30Blocks`: the mock player kills the Umvuthi on its
+    throne with tagged warriors 10, 25 and 35 blocks from it: the first two die within 20 ticks, each a
+    CAMP_DEATH with killer kind none unless the mock player hurt it in the last 100 ticks; the third
+    lives, as does a follower bound to a player.
+28. `aGroveThatComesInBringsItsUmvuthiHome`: with the Umvuthi away, left: unwatched, the Invasion ends
+    through `home` and the Umvuthi stays on its throne; watched before its stack is sent, the chief
+    flag is cleared, the band goes on, and the throne body stays; watched after, the throne body is
+    taken, held as in test 29.
+29. `theUmvuthisTakeWaitsWhileAPlayerIsNear`: a take, a removal and a spawn at the throne each wait
+    while a mock player is within 160 blocks of it, and apply once it leaves or at 6,000 ticks; an
+    epoch's end answers them stale; with a take held and the seat puppet killed first, the throne body
+    killed after drops nothing, kills no warrior, books nothing, and is removed.
+30. `anUmvuthiHeirTakesAWarrior`: after the wait, one reconcile removes the warrior farthest from the
+    mock player and spawns the chief at the throne spot (`finalizeSpawn` as a structure spawn,
+    restricted to the pit, the old direction, an empty trade memory); with no warrior home nothing is
+    ordered until one is; a grove found without its Umvuthi uses the fire pit, direction 1.
 
 **`rtsim-cli sim mowzie`** (a scenario beside `sim conflict`, `main.rs:81-85`), with runs:
 1. A line through a range, with the meter: notice, raid, repeat, invasion, at §4.3's first table;
-   ambushes bounded per train per day; a kill, cowed, the heir, the body six days later. It asserts
-   on `stats.feud_wakes` (`engine.rs:1582`): a den refilling from 0.5 with a busy line wakes its feud
-   a handful of times, never once a tick.
+   ambushes bounded per train per day; a kill, cowed, the heir, the body 12 days after a first kill. It
+   asserts on `stats.feud_wakes` (`engine.rs:1582`): a den waiting for its next Frostmaw with a busy
+   line wakes its feud a handful of times, never once a tick.
 2. Cut service and stopped service: the grievance follows §4.3's second table; no raid once it is
    under 70.
 3. Reroute: the new track's passes miss the circle and the old line's meter decays.
@@ -1530,8 +1826,9 @@ mechanism, and the moving form runs if the fixture's train moves.
 5. The tribe: envoy paid at the priced demand; envoy refused, then a raid and an invasion; plunder;
    raids that leave and come home with the grove in and out (CAMP_BODIES answered as the plugin would),
    after which no census books a living survivor dead.
-6. Renewal: an emptied grove refills to its own cap; an emptied den gets a body after six days; a den
-   found empty gets a migrant.
+6. Renewal: an emptied grove refills to its own cap; a den's body comes back after `min(192, 6 × 2^P)`
+   days: 6 with no player cause, 12 after a first kill, and about 1.8 a game year when farmed
+   (EQUILIBRIUM.md §3.3); a den found empty gets a migrant.
 7. Kills: by the feud's player on a raid, by a third player on a raid, at the camp by a player with no
    feud: which feud steps down in each.
 8. Save and restore in the middle of a lurk, a cowed time, a meter's decay and a reconcile in flight,
@@ -1540,15 +1837,34 @@ mechanism, and the moving form runs if the fixture's train moves.
 9. A trunk: 14 lines at 1.7 legs a day through one range reach §4.3's trunk row, as one line of 23.8
    does; the focus follows the busiest line; two owners' trains on one line make two meters.
 10. The camp reconciler: camps coming in and out at random (a player at the edge), musters,
-    homecomings, refills, deaths in every phase, answers lost, late, replayed and stale, and session
-    restarts at random points, with Java emulated as a world of tagged bodies; after every event I1 to
-    I6 hold, and at the end no member has two bodies and no living member is booked dead unless its
-    body was lost.
+    homecomings, refills, the Umvuthi's rides, held lines and heirs, deaths in every phase, answers
+    lost, late, replayed and stale, and session restarts at random points, with Java emulated as a
+    world of tagged bodies; after every event I1 to I6 hold, and at the end no member has two bodies
+    and no living member is booked dead unless its body was lost.
+11. An Invasion with its chief: from a grove that is out the Umvuthi rides and is seated at the first
+    watched wave; from a grove that is in it stays home; killed at its seat, the band routs, the feud
+    lands on Scouts and the heir's body waits 12 days.
+12. The heir: an Umvuthi killed as fast as it comes back for 60 game years gives about 1.8 Sol Visages
+    a year at base 6 (MZ-14 (a)) and about 1.0 at base 24 (b), matching EQUILIBRIUM.md's model.
 
 **Bench:** `rtsim-cli bench scale --only factions,factions-paged` (`crates/rtsim-cli/src/main.rs:25`)
 before and after, and a sampler bench at 200 trains on the laptop.
 
 ## 8. Decisions and questions for Ben
+
+**Decided by Ben** (2026-10-21, in conversation; moved here from the questions):
+
+| Id | Ben's answer | Where it lands |
+|---|---|---|
+| MZ-1 | (a), as recommended (Ben, 2026-10-21): a vanilla `ConflictBridge` in the core owns the conflict records and the territory hash; the Mowzie plugin registers bodies, finds camps and takes censuses; the Create plugin samples trains | ledger 16 |
+| MZ-3 | **(b)**, not the recommendation (Ben, 2026-10-21): the Umvuthi also leads the Invasion in person | §4.5's war seat, Rule U and trade memory; §4.6; §4.9; ledgers 4, 5, 7, 14 and 18; walkthrough F; tests 23 to 30 |
+| MZ-4 | (a), as recommended (Ben, 2026-10-21): heirs come back, the Frostmaw with its crystal, and Mowzie's drops, masks, trades and the steal are kept | §4.2, §4.10's loot supply |
+| MZ-5 | (a), as recommended (Ben, 2026-10-21): an ambush destroys cargo, at most 64 a train a day and 10% of a leg, the same watched or not, plus the swipe and the ice balls | §4.4 |
+| MZ-6 | (a), as recommended (Ben, 2026-10-21): gold nuggets, a new phase 1 good, priced by value | §4.5, ledger 12 |
+| MZ-11 | (a), as recommended (Ben, 2026-10-21): the real warriors, saved as vanilla at home, with a census | §4.5, §4.9 |
+| MZ-13 | (a), as recommended (Ben, 2026-10-21): `Train.owner`, with P14 at the line's stations as the fallback | §4.3 |
+| EQ-4 | (b), against EQUILIBRIUM.md's recommended 24 (Ben, 2026-10-21): MOWZIE's base of 6 days, doubling with pressure, `min(192, 6 × 2^P)`: 12 days after a first kill, about 1.8 a game year farmed | §4.2, §4.10, walkthroughs A and D, sim runs 1 and 6 |
+| MZ-14 | (a), as recommended (Ben, 2026-10-21): the Umvuthi heir waits on the same base of 6 as the Frostmaw, `min(192, 6 × 2^P_chief)`: 12 days after a first kill, about 1.8 Sol Visages a game year farmed | §4.6, §4.10, renewal and tunables rows; EQUILIBRIUM.md §2.4.7 and §2.6 items 3 and 12 follow |
 
 **Decided here** (each can be undone; the reason is the plan's):
 
@@ -1568,16 +1884,16 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Peaceful | No war parties leave | §4.12. |
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
-| Robbed Frostmaw | Kept persistent in its den, set at the steal | The steal should disarm it, not remove it; otherwise stealing and leaving farms a crystal every six days without a fight. |
+| Robbed Frostmaw | Kept persistent in its den, set at the steal | The steal should disarm it, not remove it; otherwise stealing and walking off farms a crystal at each refill without a fight. |
+| War seat | On an Invasion the Umvuthi is a puppet at a seat on the wave's bearing, beyond its tracking range from every player, placed only when a wave arrives where a player watches, never from `seen` | §4.5: it never walks, so it cannot march, and a body that appears in sight or on the road breaks the picture. |
+| Chief stack | The riding Umvuthi is outside the party's units: no unit, quota, strength or wave count | §4.5: it never closes with the base, so counting it in Lanchester would score a body that does not fight there; its summons are the fight it brings. |
+| Kept at the throne | The Umvuthi rides only from a grove that is out, so its body stays on the throne; with the grove in it stays home | §4.5: the usual uninstall exposure is then zero, and no player sees a throne emptied. |
+| Rule U | Every take, removal or spawn of an Umvuthi at its throne waits while a player is within 160 blocks of it, at most 6,000 ticks | §4.5: a grove's census can run with a player inside the throne's tracking range. |
+| Trade memory | The engine keeps the union of each census's set and the `rememberTrade` mixin's reports; CHIEF_BODY writes it into each body it places; cleared at a succession | §4.5: a puppet is never saved, so the jar's own memory would forget a payment made at a seat. |
+| Seat summons | Tagged as the party's puppets at their join, by their restriction centre | §4.5: the jar makes every minion persistent, so they would otherwise be saved far from any grove. |
+| Devoted deaths | Warriors that fall with the Umvuthi are deaths with vanilla's credit (a player who hurt them in the last 100 ticks, else none) | §4.6: the jar's magic hit has no attacker; crediting the chief's killer with each would add a Killing signal per warrior for one act. |
+| Throne spot | The Umvuthi's position and direction at the grove's first census; else the fire pit, direction 1 | §4.6: the jar places it 18 blocks from the pit, at a template marker the plugin can read only from the body. |
+| Two bodies | While a throne line is held, the first death is the member's; the other body drops nothing, takes no warriors with it, books nothing, and is removed | §4.5: bounded by the hold; otherwise a visitor could take a second Sol Visage, and a second death would kill the grove's warriors again. |
+| Recall hold | An Umvuthi's recall timeout is held while it has a player target, at most 6,000 ticks | §4.5: it cannot walk off, so the timeout would make it vanish mid-fight. |
 
-**Questions** (recommended option first):
-
-| Id | Question | Recommended | Alternatives |
-|---|---|---|---|
-| MZ-1 | Where the conflict module's Java half lives (none exists; it blocks every conflict plugin) | a vanilla `ConflictBridge` in the core owns the conflict records and the territory hash; the Mowzie plugin registers bodies, finds camps, takes censuses; the Create plugin samples trains | (b) the Mowzie plugin owns the conflict range itself (the first plugin to register owns a kind, `SessionPlugins.java:23-29`, so a later goblin plugin would collide) |
-| MZ-4 | After a boss dies, and what of Mowzie's items the pack keeps (this merges MZ-4, MZ-7 and MZ-10) | (a) heirs come back (the body after 6 days, TUNABLE), the Frostmaw with its crystal; keep Mowzie's drops, masks, trades and the steal. The ice crystal and Sol Visage become renewable at one per den or grove per heir, and `tacz_new_recipes.js:994` keeps a supply of ice crystal. A Frostmaw robbed of its crystal drops none, so stealing then killing still yields one crystal per heir. | (b) the heir arrives without its crystal: no crystal renewal, and after its first death a den is melee-only, so walls hold it and riders are safe; (c) heirs with crystals, but Mowzie's items removed as the README's TODO says: masks, trades and drops go, tribute is the only peace with the tribe, and stealing the crystal still disarms but gives nothing |
-| MZ-5 | What a Frostmaw ambush does to a train (trains cannot hit it, §3.1) | (a) cargo destroyed, at most 64 a train a day and 10% of a leg, the same watched or not; watched, it swipes passing carriages from beside the track and its ice balls unseat riders | (b) a forced stop: the train is held at the spot for a time (a mixin on Create's train), so riders must face it and unwatched legs arrive late; (c) a delay only: legs arrive late, no cargo lost (INDUSTRY.md §13.8 lists delay as an alternative); (d) riders only, as in the jar: unwatched trains lose nothing |
-| MZ-13 | Whom a line's grudge falls on | (a) the train's owner (Create's `Train.owner`; who sets it is checked in the hash-matched jar before code), with P14 at the line's stations when it has none | (b) P14 at the stations: whoever spends most time in their chunks, which in multiplayer can be a bystander |
-| MZ-11 | The grove's people | (a) the real warriors, saved as vanilla at home with the plugin's tag, counted by a census each time the grove comes in (§4.9): killing them at the grove shrinks raids, and an uninstall leaves the grove as it was | (b) left vanilla, with a separate abstract pool: the grove looks the same whatever happens |
-| MZ-3 | Which bosses leave home | the Frostmaw only; the Umvuthi is fought at its grove | (b) the Umvuthi also leads the Invasion in person (it then needs a puppet form, and its trade memory moves into the engine); (c) neither |
-| MZ-6 | The tribe's tribute | (a) gold nuggets, a new phase 1 good, priced by value: 0.5 emerald's worth a point, 9 nuggets an emerald until the market has a price (135 nuggets at the Envoy threshold) | (b) emeralds, as goblins (no new good); (c) gold ingots, priced the same way (also a new phase 1 good: 15 ingots at the Envoy threshold, in coarser steps) |
+**Questions:** none open.

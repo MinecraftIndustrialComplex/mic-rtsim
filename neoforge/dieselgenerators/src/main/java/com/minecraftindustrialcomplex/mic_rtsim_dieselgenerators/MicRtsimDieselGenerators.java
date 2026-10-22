@@ -18,5 +18,6 @@ public final class MicRtsimDieselGenerators {
     public MicRtsimDieselGenerators(IEventBus modBus, ModContainer container) {
         IndustryApi.register(new DieselOilPlugin());
         RtsimApi.registerOilSource(new CdgOilSource()); // the oil gate's oil chunks (OILGATE.md §4.1)
+        HoleSeeds.register(); // a pumpjack hole seeds its district, whoever placed it (audit F1, OGC60)
     }
 }
