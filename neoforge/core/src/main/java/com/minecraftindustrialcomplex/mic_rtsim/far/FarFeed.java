@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Function;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -57,6 +58,8 @@ public final class FarFeed {
     private static final List<FarSource> SOURCES = new CopyOnWriteArrayList<>();
     private static final Map<UUID, Sub> SUBS = new LinkedHashMap<>();
     private static Sink sink = NETWORK;
+    /** Who a subscriber is: the server's player list, or a test's fake players too. */
+    private static Function<UUID, ServerPlayer> players;
     private static long ticks;
     private static final Map<String, Integer> SOURCE_ERRORS = new HashMap<>();
     private static int badVersions;
@@ -96,9 +99,22 @@ public final class FarFeed {
         SOURCES.add(source);
     }
 
+    /** Removes a source (a GameTest's). */
+    public static void removeSource(FarSource source) {
+        SOURCES.remove(source);
+    }
+
     /** Replaces where messages go (GameTests record them); null restores the network. */
     public static void setSink(Sink s) {
         sink = s == null ? NETWORK : s;
+    }
+
+    /**
+     * Replaces how a subscriber's player is found (GameTests subscribe players that never logged in, so the
+     * player list does not have them); null restores the server's player list.
+     */
+    public static void setPlayers(Function<UUID, ServerPlayer> lookup) {
+        players = lookup;
     }
 
     /** A client's subscription, from its payload (server thread). */
@@ -165,6 +181,7 @@ public final class FarFeed {
     private static void onStopped(ServerStoppedEvent event) {
         SUBS.clear();
         sink = NETWORK;
+        players = null;
         sweeps = sweepNanos = messages = bytes = records = 0;
     }
 
@@ -176,7 +193,7 @@ public final class FarFeed {
         Iterator<Sub> it = SUBS.values().iterator();
         while (it.hasNext()) {
             Sub s = it.next();
-            ServerPlayer p = server.getPlayerList().getPlayer(s.player);
+            ServerPlayer p = players != null ? players.apply(s.player) : server.getPlayerList().getPlayer(s.player);
             if (p == null) {
                 it.remove();
                 continue;
