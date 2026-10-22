@@ -70,6 +70,9 @@ public final class FarFeed {
     static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
     /** The sweeps after the first {@link #WARM_SWEEPS} (class loading and the JIT), for the bench. */
     static long warmSweeps, warmNanos, warmCpuNanos;
+    /** The server thread's CPU time in each source's collect and in the sends, over the whole run, for the bench. */
+    static final Map<String, Long> COLLECT_CPU = new LinkedHashMap<>();
+    static long sendCpuNanos;
     static final int WARM_SWEEPS = 10;
     /** The server thread's own CPU time for a sweep: wall time also counts the time the thread waited for a core. */
     private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
@@ -175,8 +178,20 @@ public final class FarFeed {
                 + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each, "
                 + (warmSweeps == 0 ? 0 : warmNanos / warmSweeps / 1000) + " us each after the first " + WARM_SWEEPS
                 + (CPU_TIME ? " (" + (warmSweeps == 0 ? 0 : warmCpuNanos / warmSweeps / 1000) + " us of CPU)" : "")
-                + ", at most " + sweepMaxNanos / 1000 + " us), " + messages + " messages, " + bytes
+                + ", at most " + sweepMaxNanos / 1000 + " us" + cpuSplit() + "), " + messages + " messages, " + bytes
                 + " bytes, " + records + " records";
+    }
+
+    private static String cpuSplit() {
+        if (!CPU_TIME || sweeps == 0)
+            return "";
+        StringBuilder b = new StringBuilder("; CPU per sweep: ");
+        COLLECT_CPU.forEach((k, v) -> b.append(k).append(' ').append(v / sweeps / 1000).append(" us, "));
+        return b.append("sends ").append(sendCpuNanos / sweeps / 1000).append(" us").toString();
+    }
+
+    private static long cpu() {
+        return CPU_TIME ? THREADS.getCurrentThreadCpuTime() : 0;
     }
 
     private static void onServerTick(ServerTickEvent.Post event) {
@@ -205,7 +220,8 @@ public final class FarFeed {
         SUBS.clear();
         sink = NETWORK;
         players = null;
-        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = 0;
+        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = sendCpuNanos = 0;
+        COLLECT_CPU.clear();
     }
 
     /** One sweep over every subscriber (a test calls it directly). */
@@ -230,7 +246,9 @@ public final class FarFeed {
             }
             List<FarItem> items = byLevel.computeIfAbsent(level, l -> collect(l, gameTime, session));
             LevelTopology topo = session != null ? session.topology(level) : LevelTopology.flat();
+            long c0 = cpu();
             send(p, s, items, topo, gameTime);
+            sendCpuNanos += cpu() - c0;
         }
     }
 
@@ -240,16 +258,24 @@ public final class FarFeed {
             run(session.farLegs, level, gameTime, all);
         for (FarSource src : SOURCES)
             run(src, level, gameTime, all);
-        return FarFilter.dedupe(all);
+        long c0 = cpu();
+        List<FarItem> out = FarFilter.dedupe(all);
+        if (CPU_TIME)
+            COLLECT_CPU.merge("dedupe", cpu() - c0, Long::sum);
+        return out;
     }
 
     private static void run(FarSource src, ServerLevel level, long gameTime, List<FarItem> all) {
+        long c0 = cpu();
         try {
             src.collect(level, gameTime, all::add);
         } catch (RuntimeException | LinkageError e) {
             int n = SOURCE_ERRORS.merge(src.name(), 1, Integer::sum);
             if (n <= 3)
                 MicRtsim.LOGGER.error("[mic_rtsim] far feed source {} failed; skipped this second", src.name(), e);
+        } finally {
+            if (CPU_TIME)
+                COLLECT_CPU.merge(src.name(), cpu() - c0, Long::sum);
         }
     }
 
