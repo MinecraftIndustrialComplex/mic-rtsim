@@ -402,6 +402,23 @@ impl PartialOrd for Q {
     }
 }
 
+/// In a glass page (G2-9): numerator and denominator as written; a page with a negative
+/// denominator, or an infinity other than `1 / 0`, is refused.
+impl crate::persist::Persist for Q {
+    fn put(&self, w: &mut rtsim_kernel::codec::Writer) {
+        w.var_i64(self.n);
+        w.var_i64(self.d);
+    }
+    fn get(r: &mut rtsim_kernel::codec::Reader<'_>) -> rtsim_kernel::codec::Result<Self> {
+        let (n, d) = (r.var_i64()?, r.var_i64()?);
+        if d > 0 || (d == 0 && n == 1) {
+            Ok(Q { n, d })
+        } else {
+            crate::persist::invalid("rational")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
