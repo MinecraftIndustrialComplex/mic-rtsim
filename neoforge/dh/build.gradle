@@ -1,0 +1,154 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+// mic_rtsim_dh: mic-rtsim's far view in Distant Horizons (research/distant-horizons-2026-10-21.md §6.1;
+// DECISIONS.md DH-1, DH-2). Its own jar and mod id, client only. It compiles against the core (the far-object
+// registry) and the pack's Distant Horizons jar, which it never bundles. It knows no other pack mod: the
+// train source is mic_rtsim_create's, which the dev client below loads beside it.
+evaluationDependsOn(':core')
+evaluationDependsOn(':create')
+
+version = mod_version
+group   = mod_group_id
+
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    maven { url = 'https://maven.neoforged.net/releases' }
+    mavenCentral()
+}
+
+// The pack's DH jar: -PdhJar=<jar>, or the copy fetchDistantHorizons downloads from Modrinth (sha512 checked).
+def dhJarFile = project.hasProperty('dhJar') ? file(project.property('dhJar'))
+        : layout.buildDirectory.file("dh/${dh_jar}").get().asFile
+def fetchDistantHorizons = tasks.register('fetchDistantHorizons') {
+    description = "Downloads ${dh_jar} from Modrinth when it is missing, and checks the pack's sha512."
+    def target = dhJarFile
+    def url = dh_url
+    def expected = dh_sha512
+    outputs.file(target)
+    onlyIf { !target.isFile() }
+    doLast {
+        if (project.hasProperty('dhJar'))
+            throw new GradleException("-PdhJar=${target}: no such file")
+        target.parentFile.mkdirs()
+        def part = new File(target.parentFile, target.name + '.part')
+        URI.create(url).toURL().withInputStream { i -> part.withOutputStream { o -> o << i } }
+        def md = java.security.MessageDigest.getInstance('SHA-512')
+        part.withInputStream { i ->
+            byte[] buf = new byte[1 << 16]
+            int n
+            while ((n = i.read(buf)) > 0) md.update(buf, 0, n)
+        }
+        def got = md.digest().encodeHex().toString()
+        if (got != expected) {
+            part.delete()
+            throw new GradleException("${url}: sha512 ${got}, expected the pack's ${expected}")
+        }
+        if (!part.renameTo(target))
+            throw new GradleException("could not move ${part} to ${target}")
+    }
+}
+def dhFiles = files(dhJarFile) { builtBy fetchDistantHorizons }
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        mappingsVersion = project.parchment_mappings_version
+        minecraftVersion = project.parchment_minecraft_version
+    }
+
+    runs {
+        // `./gradlew :dh:runClient` (inside `nix develop`, for the GL libraries): a dev client with the core,
+        // mic_rtsim_create, Create 6.0.10, DH 3.3.3 and this mod. Single player runs the stub engine, so the
+        // client needs no native engine build. -PfarBench=<trains> runs the far-view bench
+        // (docs/choices-dh-trains.md): it opens a flat world, puts that many synthetic trains on rings around
+        // spawn, records the client profiler and quits.
+        client {
+            client()
+            gameDirectory = file('run')
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', 'stub'
+            if (project.hasProperty('farBench')) {
+                systemProperty 'mic_rtsim.farbench', 'true'
+                systemProperty 'mic_rtsim.farbench.trains', project.property('farBench').toString()
+                systemProperty 'mic_rtsim.farbench.carriages', (project.findProperty('farBenchCarriages') ?: '4').toString()
+                systemProperty 'mic_rtsim.farbench.label', (project.findProperty('farBenchLabel') ?: "trains${project.property('farBench')}").toString()
+                if (project.hasProperty('farBenchDetail'))
+                    systemProperty 'mic_rtsim.farbench.detail', project.property('farBenchDetail').toString()
+            }
+            jvmArgument '-Xmx6G'
+        }
+    }
+
+    mods {
+        "mic_rtsim" {
+            sourceSet(project(':core').sourceSets.main)
+        }
+        "mic_rtsim_create" {
+            sourceSet(project(':create').sourceSets.main)
+        }
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+dependencies {
+    implementation project(':core')
+    compileOnly dhFiles
+
+    // The dev client: the native host the core requires, the Create plugin (the train source, with the
+    // Create jar it brings), and DH itself.
+    runtimeOnly project(':core').micNativeFiles
+    runtimeOnly project(':create')
+    runtimeOnly dhFiles
+
+    // Pure-Java unit tests of the staircase cut, the heading rule and the re-cut pacing (no DH, no Minecraft).
+    testImplementation(platform("org.junit:junit-bom:${junit_version}"))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
+}
+
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [
+        minecraft_version      : minecraft_version,
+        minecraft_version_range: minecraft_version_range,
+        neo_version            : neo_version,
+        neo_version_range      : neo_version_range,
+        loader_version_range   : loader_version_range,
+        mod_id                 : mod_id,
+        mod_name               : mod_name,
+        mod_license            : mod_license,
+        mod_version            : mod_version,
+        mod_authors            : mod_authors,
+        mod_description        : mod_description,
+        dh_version_range       : dh_version_range
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-Xlint:deprecation'
+}
