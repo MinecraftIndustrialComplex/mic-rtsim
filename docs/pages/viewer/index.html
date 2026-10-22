@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The New Viewer</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 26px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; white-space: nowrap; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+tr.group th { color: var(--ink); font-size: 15.5px; padding-top: 18px; }
+td .sub { display: block; color: var(--muted); font-size: 14px; }
+td.port { white-space: nowrap; font-weight: 600; }
+td.port a { display: inline-flex; align-items: center; min-height: 44px; margin-top: -10px; margin-bottom: -10px; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 6px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 600; }
+  td.port a { margin: 0; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+.cap b { color: var(--ink); font-weight: 600; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.ask { color: var(--muted); font-size: 16.5px; margin: 0 0 14px; }
+.ask strong { color: var(--ink); }
+
+/* screenshots */
+figure { margin: 18px 0 8px; }
+img { max-width: 100%; height: auto; }
+.shot img, .ba-frame img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+}
+.ba-tabs { display: none; }
+.js .ba-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 0 0 8px;
+}
+.ba-tabs button {
+  font: inherit;
+  font-size: 15px;
+  min-height: 44px;
+  min-width: 88px;
+  padding: 0 16px;
+  border: 0;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+.ba-tabs button + button { border-left: 1px solid var(--line); }
+.ba-tabs button[aria-pressed="true"] { background: var(--card); color: var(--ink); font-weight: 600; }
+.ba-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ba-frame { display: grid; gap: 10px; justify-items: start; }
+.ba-frame .tag { display: block; font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+.js .ba-frame > div { grid-area: 1 / 1; visibility: hidden; }
+.js .ba-frame > div.on { visibility: visible; }
+.js .ba-frame .tag { display: none; }
+.side { display: grid; grid-template-columns: auto 1fr; gap: 18px 26px; align-items: start; margin: 18px 0 8px; }
+.side figure { margin: 0; }
+.side ul { margin-top: 0; }
+@media (max-width: 640px) {
+  .side { grid-template-columns: 1fr; }
+}
+
+/* still open */
+.open-list { list-style: none; padding: 0; margin: 12px 0 8px; }
+.open-list li { display: grid; grid-template-columns: 2em 1fr minmax(8em, 11em); gap: 4px 14px; padding: 12px 0; border-bottom: 1px solid var(--line); max-width: none; margin: 0; }
+.open-list li:last-child { border-bottom: 0; }
+.open-list .k { font-weight: 650; color: var(--accent); font-variant-numeric: tabular-nums; }
+.open-list .w { font-size: 15px; color: var(--muted); }
+.open-list .w b { display: block; font-size: 13.5px; font-weight: 600; }
+.open-list p { margin: 0; font-size: 16.5px; }
+.open-list p + p { margin-top: 4px; font-size: 15px; color: var(--muted); }
+@media (max-width: 600px) {
+  .open-list li { grid-template-columns: 2em 1fr; }
+  .open-list .w { grid-column: 2; }
+}
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#open">Open it</a>
+  <a href="#rail">Rail</a>
+  <a href="#look">Look</a>
+  <a href="#furnaces">Furnaces</a>
+  <a href="#trains">Trains</a>
+  <a href="#industry">Factories</a>
+  <a href="#phone">Phone</a>
+  <a href="#still-open">Still open</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">The new viewer is live: Create's own track, trains drawn as their cars, factories you can read, and no furnace clutter</h1>
+  <p class="dek" data-ss-id="dek">Your ask: "Also, page with a new viewer?" It landed on 21 October (mic-viewer 335ae9c, mic-rtsim 758828d), and every viewer port on the laptop runs it now. The screenshots come from three downloaded test worlds.</p>
+  <p class="lead" data-ss-id="lead">Open <a href="http://localhost:8743">localhost:8743</a> on the laptop for StressA, the biggest rail network. Each section below takes one thing you disliked about the old map and shows it before and after. Six things are still open; none needs a decision from you.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-ports"><div class="n">9</div><div class="t">viewer ports on the new build: 5 yours, 4 previews</div></div>
+    <div class="tile" data-ss-id="kpi-furnace"><div class="n">168 &#8594; 0</div><div class="t">furnace marks in the Taiga area you screenshotted</div></div>
+    <div class="tile" data-ss-id="kpi-trains"><div class="n">160</div><div class="t">trains drawn car by car in one yard, 1 derailed in red</div></div>
+    <div class="tile" data-ss-id="kpi-open"><div class="n">6</div><div class="t">things still open, none waiting on you</div></div>
+  </div>
+</header>
+
+<section id="open" data-ss-id="open" data-ss-section>
+  <h2 data-ss-id="open-h">Open it: five viewers are yours, four are previews</h2>
+  <p data-ss-id="open-note">They listen on the laptop only, so these links work in a browser on the laptop, not on your phone.</p>
+  <div class="scroll">
+  <table class="stack" data-ss-id="ports-table">
+    <thead><tr><th>Port</th><th>World</th><th>What you see</th></tr></thead>
+    <tbody>
+      <tr><td class="port"><a href="http://localhost:8743">8743</a></td><td data-label="World">StressA <span class="sub">WorldPaperCity</span></td><td data-label="What you see">A city rail network: 150 stations, 57 trains and 23 train lines on Create track, curves included, and 39 districts. Start here.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8742">8742</a></td><td data-label="World">StressB <span class="sub">This is Create</span></td><td data-label="What you see">Create's showcase factory: 122 machines, 94 belts, 36 chain conveyors and 43 factory gauges in 7 districts. Zoom in to see the industry.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8744">8744</a></td><td data-label="World">StressC <span class="sub">New World</span></td><td data-label="What you see">One big yard: 160 trains, one of them derailed.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8740">8740</a></td><td data-label="World">core <span class="sub">the engine's test scenario</span></td><td data-label="What you see">The only map that moves. The engine runs it live at 10 times speed in the headless host, and the map rereads each save.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8741">8741</a></td><td data-label="World">Your server world <span class="sub">a local copy</span></td><td data-label="What you see">Your own world on the new viewer. Nothing from it appears on this page.</td></tr>
+      <tr class="group"><th colspan="3" data-ss-id="ports-previews">Previews: the same worlds on the same build</th></tr>
+      <tr><td class="port"><a href="http://localhost:8750">8750</a></td><td data-label="World">StressA</td><td data-label="What you see">As 8743.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8751">8751</a></td><td data-label="World">StressC</td><td data-label="What you see">As 8744.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8752">8752</a></td><td data-label="World">Your server world</td><td data-label="What you see">As 8741.</td></tr>
+      <tr><td class="port"><a href="http://localhost:8753">8753</a></td><td data-label="World">StressB</td><td data-label="What you see">As 8742.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="open-cap">The three test worlds are saves, so nothing moves on them: the status line says "Save, day 3,467 at 11:46. Nothing moves." Counts are what each map shows at its opening view.</p>
+</section>
+
+<section id="rail" data-ss-id="rail" data-ss-section>
+  <h2 data-ss-id="rail-h">Rail is real rail: Create's own track, curves and all</h2>
+  <p class="ask" data-ss-id="rail-ask"><strong>You said:</strong> "Connections between train lines are just straight lines."</p>
+  <figure class="ba" data-ss-id="fig-rail">
+    <div class="ba-tabs" role="group" aria-label="Which view">
+      <button type="button" data-v="before" aria-pressed="false">Before</button>
+      <button type="button" data-v="after" aria-pressed="true">After</button>
+    </div>
+    <div class="ba-frame">
+      <div data-v="before"><span class="tag">Before</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" alt="The old viewer on StressA: a sidebar of empty layers and error text, and a map of straight teal lines between stations"></div>
+      <div data-v="after" class="on"><span class="tag">After</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" alt="The new viewer on StressA: curved Create track coloured by network, stations with their names, train lines with arrows beside the track, and a key"></div>
+    </div>
+    <figcaption class="cap"><b>Before:</b> straight teal lines from station to station, and a sidebar in spaced capitals. <b>After:</b> the track as Create stores it, coloured by network. Stations carry their Create names. Train lines run beside the track with arrows, wider the more trips a day they carry. Districts are chunk outlines.</figcaption>
+  </figure>
+  <ul data-ss-id="rail-list">
+    <li>The track comes from Create's own <code>create_tracks.dat</code>, curves included.</li>
+    <li>rtsim's train lines follow that track instead of cutting straight across.</li>
+    <li>Tap a train line and its card reads like "A to B: coal, 3 trips a day".</li>
+  </ul>
+</section>
+
+<section id="look" data-ss-id="look" data-ss-section>
+  <h2 data-ss-id="look-h">A plain map, not a dashboard</h2>
+  <p class="ask" data-ss-id="look-ask"><strong>You said</strong> the map and its UI and UX looked like "AI slop".</p>
+  <figure class="ba" data-ss-id="fig-look">
+    <div class="ba-tabs" role="group" aria-label="Which view">
+      <button type="button" data-v="before" aria-pressed="false">Before</button>
+      <button type="button" data-v="after" aria-pressed="true">After</button>
+    </div>
+    <div class="ba-frame">
+      <div data-v="before"><span class="tag">Before</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The old viewer zoomed in on StressA's yards: an empty grey map beside a sidebar of layers marked empty, each with the same error message"></div>
+      <div data-v="after" class="on"><span class="tag">After</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The new viewer on the same spot: the yard's track, each train drawn as its cars, signals in green, amber and red, and a layer panel with counts"></div>
+    </div>
+    <figcaption class="cap"><b>Before:</b> the same spot in StressA's yards: a blank map, and a sidebar of layers marked "empty", each repeating an error. <b>After:</b> the yard itself. The layer panel counts what is on screen, and the key names only the symbols you can see.</figcaption>
+  </figure>
+  <ul data-ss-id="look-list">
+    <li>No glassy panels, gradients, emoji or spaced capitals.</li>
+    <li>One status line, like "Save, day 3,467 at 11:46. Nothing moves."</li>
+    <li>The world's own name, read from <code>level.dat</code>, in the corner.</li>
+    <li>Layers the world does not have fold away under "Not in this world".</li>
+    <li>A layer that only draws closer says "zoom in" instead of showing nothing.</li>
+    <li>Labels never cover a symbol, another label, the key or a card. A name already shown nearby is not repeated.</li>
+    <li>Create's default names, "Track Station" and "Unnamed Train", are not printed.</li>
+    <li>Light and dark themes. Laptop first, phone second.</li>
+  </ul>
+</section>
+
+<section id="furnaces" data-ss-id="furnaces" data-ss-section>
+  <h2 data-ss-id="furnaces-h">Furnaces show only inside districts</h2>
+  <p class="ask" data-ss-id="furnaces-ask"><strong>Your second screenshot</strong>, of Taiga 1 to 4, had 168 furnace marks labelled "Furnace" and "2 furnaces", where the game holds no district.</p>
+  <figure class="shot" data-ss-id="fig-taiga">
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The Taiga 1 to 4 area on the new viewer: two crossing lines with their stations and signals, and no furnace marks">
+    <figcaption class="cap"><b>After:</b> the same area shows track, stations and signals, and nothing else. The before shot is yours, so it is not repeated here.</figcaption>
+  </figure>
+  <ul data-ss-id="furnaces-list">
+    <li>A furnace of any mod, or any vanilla block, is drawn only inside a district. On its own it belongs to a house, not to industry.</li>
+    <li>Inside a district they group by what they do: "Smelting: 9 furnaces, 1 smoker". A lone one gets no label.</li>
+    <li>Machine names appear only at the closest zooms.</li>
+    <li>The game side is DS-10: a furnace will never start a district. It is on its branch and not merged yet. Until it lands, the few districts the old rule started from a furnace still show (item 6 below).</li>
+  </ul>
+</section>
+
+<section id="trains" data-ss-id="trains" data-ss-section>
+  <h2 data-ss-id="trains-h">Trains look like trains</h2>
+  <figure class="ba" data-ss-id="fig-trains">
+    <div class="ba-tabs" role="group" aria-label="Which view">
+      <button type="button" data-v="before" aria-pressed="false">Before</button>
+      <button type="button" data-v="after" aria-pressed="true">After</button>
+    </div>
+    <div class="ba-frame">
+      <div data-v="before"><span class="tag">Before</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The old viewer on StressC's yard: rows of small dots under ten repeated labels reading TRACK STATION in spaced capitals"></div>
+      <div data-v="after" class="on"><span class="tag">After</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The new viewer on the same yard: 160 trains drawn as grey cars on their tracks, one derailed train in red, and districts outlined in green"></div>
+    </div>
+    <figcaption class="cap"><b>Before:</b> StressC's yard as dots under ten "TRACK STATION" labels. <b>After:</b> 160 trains as their cars, standing in grey, one derailed in red, with districts outlined. The one "Track Station" left is a district's name (item 1 below).</figcaption>
+  </figure>
+  <figure class="shot" data-ss-id="fig-mid">
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="StressA Central on the new viewer: running trains in black and standing trains in grey on curved track, named stations, and stations with a train at them filled amber">
+    <figcaption class="cap"><b>StressA Central:</b> running trains are black and point the way they go. Standing trains are grey. A station filled amber has a train standing at it.</figcaption>
+  </figure>
+  <ul data-ss-id="trains-list">
+    <li>Each car is as long as it really is. Cars on a single bogey are spaced by the train's carriage spacing.</li>
+    <li>A train's card gives its speed in blocks a second, where it is bound, the distance left, its cargo and its schedule.</li>
+    <li>Schedule waits merge into one phrase: "wait 10 s and for redstone".</li>
+  </ul>
+</section>
+
+<section id="industry" data-ss-id="industry" data-ss-section>
+  <h2 data-ss-id="industry-h">Factories you can read</h2>
+  <p data-ss-id="industry-p">The old map showed no industry at all. The new one reads machines, power, arms, gauges, storage, belts, chain conveyors and package ports from the world's block entities. It loads them only when you zoom in, so a big world never gets a full scan up front.</p>
+  <figure class="ba" data-ss-id="fig-industry">
+    <div class="ba-tabs" role="group" aria-label="Which view">
+      <button type="button" data-v="before" aria-pressed="false">Before</button>
+      <button type="button" data-v="after" aria-pressed="true">After</button>
+      <button type="button" data-v="dark" aria-pressed="false">Dark</button>
+    </div>
+    <div class="ba-frame">
+      <div data-v="before"><span class="tag">Before</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The old viewer on StressB: terrain with a grey road and two district names in spaced capitals, and no machines"></div>
+      <div data-v="after" class="on"><span class="tag">After</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The new viewer on StressB: the factory's machines as circles, triangles and diamonds, chain conveyors, track, district outlines and a key"></div>
+      <div data-v="dark"><span class="tag">After, dark theme</span><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="The same StressB view in the dark theme"></div>
+    </div>
+    <figcaption class="cap"><b>Before:</b> StressB's factory as terrain and two names. <b>After:</b> machines by kind, chain conveyor routes, track and districts. The third view is the dark theme.</figcaption>
+  </figure>
+  <figure class="shot" data-ss-id="fig-zoom">
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="722" loading="lazy" decoding="async" alt="Close on StressB's factory: machines with red rings, chain conveyors drawn pulley to pulley as dotted lines, factory gauges, package addresses and group labels such as Crafting: 32 crafters">
+    <figcaption class="cap"><b>Closest zoom on StressB:</b> chain conveyors run pulley to pulley. Groups read "19 mechanical crafters" and "Crafting: 32 crafters". Gauges show their item ("Iron nugget, White wool"), and package addresses are labelled.</figcaption>
+  </figure>
+  <div class="scroll">
+  <table data-ss-id="symbols-table">
+    <thead><tr><th>On the map</th><th>Means</th></tr></thead>
+    <tbody>
+      <tr><td>Circle</td><td>A processing machine</td></tr>
+      <tr><td>Triangle</td><td>A power source</td></tr>
+      <tr><td>Diamond</td><td>An arm or ejector</td></tr>
+      <tr><td>Red ring</td><td>Its kinetic network is overstressed (cards give stress in su)</td></tr>
+      <tr><td>Gauge, green or amber</td><td>A factory gauge whose stock is met, or short</td></tr>
+      <tr><td>Belt with chevrons</td><td>A belt, pointing the way it runs</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figure class="shot" data-ss-id="fig-belts">
+    <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="1100" height="688" loading="lazy" decoding="async" alt="StressA's industrial stations on the new viewer: belts, crushing wheels, creative motors, storage, and two train lines labelled with their trips">
+    <figcaption class="cap"><b>StressA's industrial stations:</b> belts, machines and storage beside the track, and train lines labelled "Zatišje 1 to Policijska Postaja 2: 2 trips".</figcaption>
+  </figure>
+  <p data-ss-id="industry-cards">District cards say what a district holds first, then list its stations by name. Their state is in plain words: "Unloaded, run by rtsim" or "Stopped: a machine was destroyed".</p>
+</section>
+
+<section id="phone" data-ss-id="phone" data-ss-section>
+  <h2 data-ss-id="phone-h">On a phone</h2>
+  <div class="side" data-ss-id="phone-side">
+    <figure class="shot">
+      <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7" width="390" height="844" loading="lazy" decoding="async" alt="The new viewer on a phone: StressA Central's map fills the screen under a one-line header, with the key folded at the bottom">
+    </figure>
+    <ul data-ss-id="phone-list">
+      <li>A compact header: the world's name, search, layers and the theme.</li>
+      <li>The map fills the screen.</li>
+      <li>The key folds away at the bottom.</li>
+      <li>Shot at 390 by 844, a common phone size.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="still-open" data-ss-id="still-open" data-ss-section>
+  <h2 data-ss-id="still-open-h">Still open: six things, none waiting on you</h2>
+  <ol class="open-list" data-ss-id="open-list">
+    <li data-ss-id="open-1"><span class="k">1</span><div><p>Districts are named after a station, so StressC's read "Track Station", Create's default name.</p><p>Naming a district by what it makes needs G2's compiled graph.</p></div><span class="w"><b>Waits on</b>G2</span></li>
+    <li data-ss-id="open-2"><span class="k">2</span><div><p>At the overview, a district is only a small outline. There is no "factory here" symbol yet.</p></div><span class="w"><b>Waits on</b>a design, not started</span></li>
+    <li data-ss-id="open-3"><span class="k">3</span><div><p>A Create station's card lists the trains that call there, but not how many trips a day the rtsim line through it carries.</p><p>That needs a mapping from Create stations to rtsim stations.</p></div><span class="w"><b>Waits on</b>the station mapping</span></li>
+    <li data-ss-id="open-4"><span class="k">4</span><div><p>Overlapping cluster bubbles are nudged apart in the page, but only unit tests cover it.</p><p>None of the three worlds sends clusters at any zoom.</p></div><span class="w"><b>Waits on</b>a world big enough to cluster</span></li>
+    <li data-ss-id="open-5"><span class="k">5</span><div><p>G2's glass box has its layer ready: machines as points, flows as arrows with "N items a minute". Nothing draws into it yet.</p></div><span class="w"><b>Waits on</b>G2</span></li>
+    <li data-ss-id="open-6"><span class="k">6</span><div><p>District outlines follow the game exactly. Where the old rule started a district from a lone furnace, or carried one along a chain, the map shows it.</p><p>They go once DS-10 lands and those districts are learned again.</p></div><span class="w"><b>Waits on</b>DS-10</span></li>
+  </ol>
+  <p data-ss-id="still-open-ask">If something on the map still looks wrong to you, a screenshot is the quickest way to get it fixed.</p>
+</section>
+
+<details data-ss-react="off" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li>The build: mic-viewer main at 335ae9c and mic-rtsim main at 758828d, landed 21 October 2026.</li>
+    <li>The before shots come from the old viewer; the after shots from that build, at 1440 by 900, scaled down here. The StressB close-up is cropped.</li>
+    <li>Worlds: StressA (WorldPaperCity), StressC (New World) and StressB (This is Create), downloaded as stress-test worlds.</li>
+    <li>Port list checked against each viewer's <code>/api/world</code> on 21 October.</li>
+    <li><code>mic-viewer-create/src/draw.rs</code>: the furnace grouping and its labels.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">
+  Built from the viewer redesign notes and screenshots, 21 October 2026. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+</footer>
+
+<script>
+(function () {
+  var figs = document.querySelectorAll('.ba');
+  Array.prototype.forEach.call(figs, function (fig) {
+    var btns = fig.querySelectorAll('.ba-tabs button');
+    var views = fig.querySelectorAll('.ba-frame > div[data-v]');
+    Array.prototype.forEach.call(btns, function (b) {
+      b.addEventListener('click', function () {
+        var v = b.getAttribute('data-v');
+        Array.prototype.forEach.call(btns, function (o) {
+          o.setAttribute('aria-pressed', o === b ? 'true' : 'false');
+        });
+        Array.prototype.forEach.call(views, function (d) {
+          d.classList.toggle('on', d.getAttribute('data-v') === v);
+        });
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

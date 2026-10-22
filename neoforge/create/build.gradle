@@ -30,7 +30,8 @@ def createJar = file("${packMods}/${create_jar}")
 // Create's jar-in-jar libraries, for compiling only (never on a runtime classpath: the full Create jar
 // carries them, and two copies of a mod id is a hard FML failure).
 def createLibsDir = layout.buildDirectory.dir('create-jarjar')
-def extractCreateLibs = tasks.register('extractCreateLibs', Copy) {
+// Sync, not Copy: a build against another Create jar must not keep the old one's libraries
+def extractCreateLibs = tasks.register('extractCreateLibs', Sync) {
     description = 'Extracts Ponder (catnip), Flywheel and Registrate from the Create jar, for compiling.'
     from(zipTree(createJar)) {
         include 'META-INF/jarjar/*.jar'
@@ -113,7 +114,8 @@ var generateModMetadata = tasks.register('generateModMetadata', ProcessResources
         mod_license            : mod_license,
         mod_version            : mod_version,
         mod_authors            : mod_authors,
-        mod_description        : mod_description
+        mod_description        : mod_description,
+        create_version_range   : create_version_range
     ]
     inputs.properties replaceProperties
     expand replaceProperties

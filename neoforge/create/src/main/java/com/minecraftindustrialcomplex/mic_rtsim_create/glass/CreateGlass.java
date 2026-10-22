@@ -38,6 +38,11 @@ public final class CreateGlass implements GlassExtractor {
 
     private CreateGlass() {}
 
+    /** A new extractor with empty caches, for tests: a synthetic block entity must not seed {@link #INSTANCE}'s per-type cache. */
+    public static CreateGlass withEmptyCaches() {
+        return new CreateGlass();
+    }
+
     /**
      * Block state properties that are the model's state, not its structure: redstone power, lit, a blaze
      * burner's heat, a hopper's enabled flag, a crushing controller's VALID (its wheels turn), and a threshold
@@ -50,7 +55,8 @@ public final class CreateGlass implements GlassExtractor {
             "waterlogged", "inverted_signal", "valid", "powering");
 
     /**
-     * Per block entity type: is it Create's (by registry namespace)? Per block state: the hash of its
+     * Per block entity type: is it Create's (by registry namespace, or an addon's type whose block entity is
+     * one of Create's classes, as Create Encased's custom press, mixer and depot are)? Per block state: the hash of its
      * structural properties. Both are pure functions of interned registry objects, cached because the
      * fingerprint passes hash every block entity of every district chunk once per sweep period (the
      * largest rtsim cost on the server thread in the StressB stress world, docs/stress-worlds-results.md).
@@ -61,6 +67,24 @@ public final class CreateGlass implements GlassExtractor {
     private final it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<BlockState> stateHash =
             new it.unimi.dsi.fastutil.objects.Reference2LongOpenHashMap<>();
 
+    /** A fan recipe's name before the good: {@code create:fan_blasting/}, or an addon type's {@code garnished:fan_freezing/}. */
+    public static String fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.FanProcessingType type) {
+        if (type == com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SMOKING)
+            return "create:fan_smoking/";
+        if (type == com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.BLASTING)
+            return "create:fan_blasting/";
+        net.minecraft.resources.ResourceLocation id = com.simibubi.create.api.registry.CreateBuiltInRegistries.FAN_PROCESSING_TYPE.getKey(type);
+        return id == null ? "create:fan_other/" : id.getNamespace() + ":fan_" + id.getPath() + "/";
+    }
+
+    /** True when {@code c} or a superclass is one of Create's (an addon's block entity built on Create's). */
+    static boolean isCreateClass(Class<?> c) {
+        for (; c != null; c = c.getSuperclass())
+            if (c.getName().startsWith("com.simibubi.create."))
+                return true;
+        return false;
+    }
+
     @Override
     public long fingerprint(BlockEntity be) {
         net.minecraft.world.level.block.entity.BlockEntityType<?> type = be.getType();
@@ -69,7 +93,7 @@ public final class CreateGlass implements GlassExtractor {
             create = createType.getBoolean(type);
         } else {
             net.minecraft.resources.ResourceLocation key = net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type);
-            create = key != null && key.getNamespace().equals("create");
+            create = key != null && key.getNamespace().equals("create") || isCreateClass(be.getClass());
             createType.put(type, create);
         }
         if (!create && !(be instanceof HopperBlockEntity) && !(be instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity))

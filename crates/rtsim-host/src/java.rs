@@ -757,7 +757,8 @@ impl Java {
     /// - every command that carries an op id is answered COMMAND_RESULT failed (3): transfers,
     ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
     /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
-    ///   notices, habitat) need no answer.
+    ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
+    ///   which wait for chunks to load.
     pub fn refuse(&mut self, kind: u16, seq: u64, b: &[u8]) {
         use rtsim_conflict::boundary as cb;
         use rtsim_ecology::boundary as db;
@@ -844,6 +845,9 @@ impl Java {
                             }));
                         }
                         db::Cmd::Discard(_) => failed(self, 0),
+                        // Both wait for chunks to load (OILGATE.md §4.1, §4.6), which here never
+                        // happens: no lair, no OIL_CHUNKS.
+                        db::Cmd::PlaceLair(_) | db::Cmd::OilSurvey(_) => {}
                         db::Cmd::Steer(_) => {}
                     },
                     Err(_) => self.undecoded += 1,
@@ -953,6 +957,19 @@ impl Java {
             for (&(kind, id), name) in &self.cmd_dict {
                 if kind == wire::DICT_BODY && name == s.entity_id() {
                     dict.body[i] = id;
+                }
+                for (j, k) in [
+                    rtsim_ecology::dragon::LairKind::Roost,
+                    rtsim_ecology::dragon::LairKind::Cave,
+                ]
+                .iter()
+                .enumerate()
+                {
+                    if kind == wire::DICT_STRUCTURE
+                        && *name == rtsim_ecology::boundary::SpeciesDict::structure_name(*s, *k)
+                    {
+                        dict.structure[i][j] = id;
+                    }
                 }
             }
         }
@@ -1297,6 +1314,9 @@ impl Java {
                     },
                 );
             }
+            // The oil gate's asks (a lair placed, a survey): recorded, in Java's dimension ids.
+            D::PlaceLair(p) => p.dimension = self.java_dim(p.dimension),
+            D::OilSurvey(o) => o.dimension = self.java_dim(o.dimension),
             D::Steer(_) | D::Depart(_) => {}
         }
         self.iaf.push((seq, c));

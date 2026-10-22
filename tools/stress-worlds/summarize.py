@@ -33,11 +33,21 @@ def glass_lines(rep):
     return out
 
 
+def tail(xs):
+    """p95 and max of the window's samples (each one neoforge tps reading, a mean over the last 100 ticks)."""
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return 0.0, 0.0
+    return xs[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))], xs[-1]
+
+
 def run_line(r):
     w = r.get("windows", {})
     parts = [f"boot {r.get('boot_wall_s', 0):.0f} s wall ({r.get('boot_done_s', 0):.1f} s Done, cpu {r.get('boot_cpu_s', 0):.0f} s)"]
     for k, v in w.items():
-        parts.append(f"{k}: mspt {v.get('mspt_mean') or 0:.2f} sd {sd(v.get('mspt_samples', [])):.2f}, "
+        p95, mx = tail(v.get("mspt_samples", []))
+        parts.append(f"{k}: mspt {v.get('mspt_mean') or 0:.2f} sd {sd(v.get('mspt_samples', [])):.2f} "
+                     f"p95 {p95:.2f} max {mx:.2f}, "
                      f"cpu/tick {v.get('cpu_ms_per_tick') or 0:.1f}, srv/tick {v.get('server_thread_ms_per_tick') or 0:.2f}, "
                      f"tps {v.get('tps') or 0:.2f}")
     h = r.get("heap") or {}
@@ -47,6 +57,8 @@ def run_line(r):
     if "save_flush_s" in r:
         parts.append(f"save-all flush {r['save_flush_s']:.2f} s, world {r.get('world_bytes', 0) / 1e6:.1f} MB, "
                      f"rtsim dir {r.get('rtsim_dir_bytes', 0) / 1e3:.0f} kB, data {r.get('data_files')}")
+    if r.get("stop_crash"):
+        parts.append("crashed while stopping: " + r["stop_crash"])
     if r.get("error"):
         parts.append("ERROR " + r["error"].strip().splitlines()[-1])
     return parts

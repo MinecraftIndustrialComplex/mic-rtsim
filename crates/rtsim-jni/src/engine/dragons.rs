@@ -204,10 +204,13 @@ impl Link {
         Ok(l)
     }
 
-    /// Whether the dragons are in the world at all: no dragon and no lair means nothing to run
-    /// and nothing that touches the world.
+    /// Whether the dragons are in the world at all: no dragon, no lair and no oil known means
+    /// nothing to run and nothing that touches the world. Oil alone is enough: a field draws field
+    /// flights and asks for a lair before any dragon or lair exists (OILGATE.md §4.2, §4.4).
     fn active(&self) -> bool {
-        !self.engine.dragons.is_empty() || !self.engine.lairs.is_empty()
+        !self.engine.dragons.is_empty()
+            || !self.engine.lairs.is_empty()
+            || !self.engine.oil.is_empty()
     }
 }
 
@@ -554,15 +557,6 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
-fn cmd_size(c: &Cmd) -> usize {
-    match c {
-        Cmd::Materialize(_) => 136,
-        Cmd::Steer(_) | Cmd::Depart(_) => 56,
-        Cmd::Adopt(_) => 64,
-        Cmd::Discard(_) => 32,
-    }
-}
-
 /// Writes the queued dragon commands while they fit; each takes the next sequence. Returns the
 /// highest sequence written and whether some wait for the next buffer.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
@@ -575,20 +569,19 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         return (highest, true);
     }
     while let Some(c) = st.dragons.queue.front().cloned() {
-        // The engine's dictionary: the species bodies, and a materialization's dimension (the
-        // dragon's frame is Java's dimension id).
-        let dim_name = match &c {
-            Cmd::Materialize(m) => {
-                match st.world.java_dict.get(&(wire::DICT_DIMENSION, m.dimension)) {
-                    Some(n) => Some(n.clone()),
-                    None => {
+        // The engine's dictionary: the species bodies, a placed lair's structure, and the
+        // dimension a record names (the engine's frame is Java's dimension id).
+        let dim_name = match c.dimension() {
+            Some((_, dim)) => match st.world.java_dict.get(&(wire::DICT_DIMENSION, dim)) {
+                Some(n) => Some(n.clone()),
+                None => {
+                    st.dragons.queue.pop_front();
+                    if let Cmd::Materialize(m) = &c {
                         // Never written: the dragon must not wait for a body that never comes,
                         // so the engine hears what Java would have answered (unknown dimension).
                         log_error(&format!(
-                            "a dragon materialization in dimension {} that Java never named; rejected",
-                            m.dimension
+                            "a dragon materialization in dimension {dim} that Java never named; rejected"
                         ));
-                        st.dragons.queue.pop_front();
                         let rejected = Obs::SpawnRejected(boundary::SpawnRejected {
                             agent: m.agent,
                             epoch: m.epoch,
@@ -597,10 +590,24 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                         });
                         let gt = st.game_time;
                         ingest(st, &rejected, gt);
-                        continue;
+                    } else {
+                        // An oil gate ask (a lair placed, a survey) is only an ask: dropped.
+                        super::log_warn(&format!(
+                            "a dragon command {:#06x} in dimension {dim} that Java never named; dropped",
+                            c.kind()
+                        ));
                     }
+                    continue;
                 }
-            }
+            },
+            None => None,
+        };
+        let structure = match &c {
+            Cmd::PlaceLair(p) => Some((
+                p.species,
+                p.kind,
+                SpeciesDict::structure_name(p.species, p.kind),
+            )),
             _ => None,
         };
         let mut names: Vec<(u32, &str)> = SPECIES
@@ -610,21 +617,28 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         if let Some(n) = &dim_name {
             names.push((wire::DICT_DIMENSION, n.as_str()));
         }
-        let need = st.dict_bytes(&names) + cmd_size(&c);
+        if let Some((_, _, n)) = &structure {
+            names.push((wire::DICT_STRUCTURE, n.as_str()));
+        }
+        let need = st.dict_bytes(&names) + c.size();
         if need > w.remaining() {
             return (highest, true);
         }
         let body = SPECIES.map(|s| st.dict_id(w, wire::DICT_BODY, s.entity_id()));
-        let dict = SpeciesDict {
+        let mut dict = SpeciesDict {
             body,
             structure: [[0; 2]; 3],
         };
+        if let Some((sp, kind, n)) = &structure {
+            dict.structure[sp.index()][matches!(kind, LairKind::Cave) as usize] =
+                st.dict_id(w, wire::DICT_STRUCTURE, n);
+        }
         let dim = dim_name.map(|n| st.dict_id(w, wire::DICT_DIMENSION, &n));
         let seq = st.session_seq();
-        let mut rec = Vec::with_capacity(cmd_size(&c));
+        let mut rec = Vec::with_capacity(c.size());
         boundary::encode_cmd(seq, &c, &dict, &mut rec);
-        if let Some(d) = dim {
-            wire::put_u32(&mut rec, 32, d);
+        if let (Some(d), Some((at, _))) = (dim, c.dimension()) {
+            wire::put_u32(&mut rec, at, d);
         }
         let written = w.copy(&rec);
         debug_assert!(written, "checked to fit");
@@ -776,6 +790,49 @@ impl super::Engine {
             placed,
             unplaced,
             d.placing().count() as i64,
+        ]
+    }
+
+    /// The oil gate's counters (OILGATE.md §4, `DragonStats`): oil chunks indexed, fields,
+    /// field-flight rolls and draws, refuels, drinking raids, mB drunk, breaths, dry raids,
+    /// Encroachment reports, district raids, lairs placed, visitors gone, surveys; then `agent`'s
+    /// oil reserve now (-1 for no such dragon) and the OIL_CONFIG switches; then the engine's
+    /// clock and the field flights' probe (`Dragons::flight_probe`). Between steps; tests.
+    pub fn dragons_oil(&self, agent: u64) -> [i64; 26] {
+        let st = super::lock(&self.state);
+        let d = &st.dragons.engine;
+        let s = &d.stats;
+        let level = rtsim_ecology::dragon::dragon_of(agent)
+            .and_then(|x| d.oil_level(x, d.now()))
+            .map_or(-1, i64::from);
+        let p = d.flight_probe(d.now());
+        [
+            s.oil_chunks as i64,
+            s.fields as i64,
+            s.field_rolls as i64,
+            s.field_draws as i64,
+            s.refuels as i64,
+            s.oil_raids as i64,
+            s.oil_drunk_mb as i64,
+            s.breaths as i64,
+            s.dry_raids as i64,
+            s.encroachments as i64,
+            s.district_target_raids as i64,
+            s.lairs_placed as i64,
+            s.visitors_left as i64,
+            s.surveys as i64,
+            level,
+            i64::from(d.oil_flags),
+            d.now().0 as i64,
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            p[4],
+            p[5],
+            p[6],
+            p[7],
+            p[8],
         ]
     }
 }
