@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtsim and GregTech Lag</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; }
+h3 { font-size: 19px; margin: 22px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td strong { font-weight: 600; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td { border-bottom: 0; padding: 2px 0 6px; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 6px 0 16px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+blockquote { margin: 0 0 14px; padding: 0 0 0 0; color: var(--muted); font-style: italic; max-width: 38em; }
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#causes">Causes</a>
+  <a href="#fit">Fit</a>
+  <a href="#where">Where it fits</a>
+  <a href="#sleep">Sleep while loaded</a>
+  <a href="#size">Job size</a>
+  <a href="#prior">Prior art</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">Mostly no: GregTech's lag is in the base you stand in, and rtsim leaves loaded chunks alone</h1>
+  <p class="dek" data-ss-id="dek">Could rtsim fix the late-game GregTech lag that brings computers to a crawl? A research pass over GTNH (1.7.10) and GregTech CEu Modern (GTM), from issues, pull requests and read-only clones of both. Nothing was built or run. From the research note on main (cee7690).</p>
+  <p class="lead" data-ss-id="lead">The famous lag comes from the loaded base: machines re-searching recipes they cannot start, blocks ticking with nothing to do, and power networks that throw away their route caches on every block update. rtsim only acts on unloaded chunks, so it changes none of that. Both GregTech teams are already fixing these causes in their own code, by putting machines to sleep exactly and waking them on the event that matters. GTNH has largely done it; GTM is doing it in 8.0 and 9.0. rtsim fits only the minority case: bases kept chunk-loaded just so they keep producing, such as offline players' bases on a server and remote rigs. Nobody has measured how much lag those cause.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-energynet"><div class="n">~40%</div><div class="t">of a large GTM server's tick went to power-net cache wipes (GTM#4396)</div></div>
+    <div class="tile" data-ss-id="kpi-release"><div class="n">15 <small>months</small></div><div class="t">since GTM's last tagged 1.21.1 release; no pack found on it</div></div>
+    <div class="tile" data-ss-id="kpi-lines"><div class="n">15k <small>to 20k</small></div><div class="t">Java lines for a GTM plugin, about the Create plugin again</div></div>
+    <div class="tile" data-ss-id="kpi-none"><div class="n">0</div><div class="t">mods found that simulate GregTech machines while unloaded</div></div>
+  </div>
+</header>
+
+<section id="causes" data-ss-id="causes" data-ss-section>
+  <h2 data-ss-id="causes-h">The top three causes are work that does not change the result, and GregTech is fixing all three</h2>
+  <div class="scroll" data-ss-id="causes-wrap">
+  <table class="stack" data-ss-id="causes-table">
+    <thead><tr><th>Cause</th><th>Evidence</th><th>What GregTech is doing</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Recipe search churn.</strong> A machine looks for work it cannot do, every tick or every few ticks. ME buses, pattern buffers and 1 to 3 tick recipes multiply it</td><td data-label="Evidence">GTNH maintainers call recipe checks "the biggest offender" (<a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/4469">PR#4469</a>); one Volcanus on stocking buses costs 100 to 400 µs a tick (<a href="https://github.com/GTNewHorizons/GT-New-Horizons-Modpack/issues/21251">GTNH#21251</a>). In GTM a matched but blocked machine searches every tick: about 1 ms per idle machine on pattern buffers with a lower-tier hatch (<a href="https://github.com/GregTechCEu/GregTech-Modern/issues/3554">#3554</a>), 2 to 20 ms with duplicate handlers (<a href="https://github.com/GregTechCEu/GregTech-Modern/issues/4726">#4726</a>). Star Technology's server tick fell from about 41 ms to 13.6 ms after a player changed a base whose lag the maintainer put down to 1 to 3 tick recipes (<a href="https://github.com/StarT-Dev-Team/Star-Technology/issues/253">ST#253</a>)</td><td data-label="What GregTech is doing">GTNH: event-driven recipe checks (<a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/7141">PR#7141</a>) and batch mode. GTM: stalled machines stop ticking (<a href="https://github.com/GregTechCEu/GregTech-Modern/pull/5356">#5356</a>, merged 11 Oct), a failed-match backoff planned for 9.0 (<a href="https://github.com/GregTechCEu/GregTech-Modern/issues/5434">#5434</a>), batch mode</td></tr>
+      <tr><td><strong>2. Blocks ticking with nothing to do.</strong> Hatches, pipes and idle machines</td><td data-label="Evidence">Taking three idle hatch types off the ticker took one GTNH world from about 45 to 40 ms a tick (<a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/5900">PR#5900</a>); 20k laser vacuum pipes cost 6 ms a tick (<a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/7682">PR#7682</a>). GTM 8.0 still marks every machine changed every tick</td><td data-label="What GregTech is doing">GTNH: tick opt-outs in those PRs and <a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/7409">PR#7409</a>. GTM: machine logic already sleeps when idle; the per-tick save mark remains</td></tr>
+      <tr><td><strong>3. Networks that throw their caches away</strong></td><td data-label="Evidence">GTM's power net clears its route cache on every neighbour update, about 40% of a large server's tick; a third-party hotfix cut that to 7% (<a href="https://github.com/GregTechCEu/GregTech-Modern/issues/4396">GTM#4396</a>, self-reported). A GTNH structure check visited 100k+ blocks per change (<a href="https://github.com/GTNewHorizons/GT5-Unofficial/pull/4865">PR#4865</a>)</td><td data-label="What GregTech is doing">GTM: a pipe network rewrite, not merged yet. GTNH: the flood was cut to about 8k blocks for a synchrotron</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="causes-cap">Numbers are as quoted in each issue or PR. No profile was decoded here (every spark link was dead or unread), so the ranking is by strength of evidence, not by measured share of a tick. AE2 and client chunk rebuilds come next in both lines.</p>
+</section>
+
+<section id="fit" data-ss-id="fit" data-ss-section>
+  <h2 data-ss-id="fit-h">rtsim only helps where a base is unloaded, and only chunk-loaded bases have no better fix</h2>
+  <div class="scroll" data-ss-id="fit-wrap">
+  <table class="stack" data-ss-id="fit-table">
+    <thead><tr><th>Cause</th><th>rtsim, unloaded</th><th>A sleep mode while loaded</th><th>The better fix</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Recipe search churn</strong></td><td data-label="rtsim, unloaded">Gone, for unloaded parts only</td><td data-label="A sleep mode while loaded">Would sleep stuck machines, which needs no rates</td><td data-label="The better fix">Event-driven checks and a failed-match backoff (GTNH done; GTM #5356, #5434)</td></tr>
+      <tr><td><strong>Blocks ticking idle</strong></td><td data-label="rtsim, unloaded">Gone, for unloaded parts only</td><td data-label="A sleep mode while loaded">Gone, but progress bars and textures freeze</td><td data-label="The better fix">Tick opt-outs; dropping GTM 8.0's per-tick save mark</td></tr>
+      <tr><td><strong>Network caches</strong></td><td data-label="rtsim, unloaded">Gone, for unloaded parts only</td><td data-label="A sleep mode while loaded">No effect: any block update wakes it</td><td data-label="The better fix">Incremental invalidation; the GTM pipe network rewrite</td></tr>
+      <tr><td><strong>AE2</strong></td><td data-label="rtsim, unloaded">A grid must be all loaded or all simulated</td><td data-label="A sleep mode while loaded">No: AE2 keeps ticking</td><td data-label="The better fix">AE2 and pack fixes</td></tr>
+      <tr><td><strong>Chunk-loaded bases</strong></td><td data-label="rtsim, unloaded"><strong>The direct fit:</strong> no loaders, output credited</td><td data-label="A sleep mode while loaded">Not needed</td><td data-label="The better fix">None: GregTech has no catch-up of its own</td></tr>
+      <tr><td><strong>Client rendering</strong></td><td data-label="rtsim, unloaded">None</td><td data-label="A sleep mode while loaded">Hides activity</td><td data-label="The better fix">Fewer chunk mesh rebuilds; Angelica</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="where" data-ss-id="where" data-ss-section>
+  <h2 data-ss-id="where-h">rtsim fits bases kept loaded only to keep producing, a share nobody has measured</h2>
+  <p data-ss-id="where-who">That means multiplayer servers that keep offline players' bases chunk-loaded, remote rigs such as oil drills and mining outposts, and a base left loaded while its owner is in another dimension. Unloading those removes their whole cost, and a GregTech plugin could credit their output exactly in rate. GregTech suits rtsim's glass box better than Create does: every recipe has a fixed duration and power draw, and overclocking and parallels are integer math fixed at recipe start.</p>
+  <p data-ss-id="where-catch">The catches a plugin would have to handle:</p>
+  <ul data-ss-id="where-list">
+    <li>AE2 drops a grid node when its chunk unloads, so a grid must be one district, all loaded or all simulated. Autocrafting on request is not simulated, since nobody is requesting while it is unloaded.</li>
+    <li>In GTNH, running out of power mid-recipe voids the recipe's outputs, so the sim must book that loss or it beats reality.</li>
+    <li>GTNH's chance outputs are true random; rtsim would match their mean and drop the variance. GTM's are deterministic and match exactly.</li>
+    <li>GTNH players check output against their calculators, so only the glass box would do: the black box's learned rates replay at or below what was measured, and that shortfall is what they notice first.</li>
+  </ul>
+</section>
+
+<section id="sleep" data-ss-id="sleep" data-ss-section>
+  <h2 data-ss-id="sleep-h">Sleeping loaded factories is the wrong tool, because GregTech's cost is in transitions, not steady running</h2>
+  <ul data-ss-id="sleep-list">
+    <li><strong>A running machine is already cheap:</strong> progress plus one, and a power drain. The cost is in recipe searches, output merging and ME flushes, and batch mode already folds those, exactly.</li>
+    <li><strong>A machine stuck searching is steady at zero.</strong> Sleeping it until its inputs or power change is GTM's own planned backoff, which needs no rate model.</li>
+    <li><strong>Frozen state shows:</strong> progress bars, GUIs, Jade, active textures, sounds and redstone covers would all stop.</li>
+    <li><strong>Hidden state must be written back on wake</strong> (progress, power buffer, chance cache, maintenance), through mixins into code that 8.0 is renaming.</li>
+    <li><strong>Skipping ticks breaks tick-counter logic,</strong> which GregTech is full of. Aikar on Spigot's tile tick limiter: <a href="https://aikar.co/2015/10/08/spigot-tick-limiter-dont-use-max-tick-time/">"skipping ticks actually FULLY BREAKS Some tile entities"</a>.</li>
+  </ul>
+  <p data-ss-id="sleep-sum">What carries over from rtsim is the discipline, not the mechanism: a cost formula per system, scheduling the next moment a machine can act instead of polling, and running the mod's own formulas. Upstream these are small patches; through rtsim they would be a whole subsystem.</p>
+</section>
+
+<section id="size" data-ss-id="size" data-ss-section>
+  <h2 data-ss-id="size-h">A GTM plugin is the Create plugin again; GTNH is a rewrite that needs its team's consent</h2>
+  <h3 data-ss-id="size-gtm-h">GTM on 1.21.1, aimed at 8.0</h3>
+  <p data-ss-id="size-gtm-pre">GTM's only 1.21.1 releases are 7.0.0 and 7.0.2, from July 2025; since then there is only a rolling 8.0 snapshot, no pack was found on it, and 8.0 renames much of the API a plugin would hook. So the realistic target is GTM 8.0 once it ships for 1.21.1, and rtsim's glass-box replay (G2) has to be on main first.</p>
+  <div class="scroll" data-ss-id="size-wrap">
+  <table class="stack" data-ss-id="size-table">
+    <thead><tr><th>Piece</th><th>Size</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><strong>GregTech stores</strong></td><td data-label="Size">S</td><td data-label="What it is">Super and quantum chests and tanks, energy containers as power stores</td></tr>
+      <tr><td><strong>AE2 plugin</strong></td><td data-label="Size">M</td><td data-label="What it is">Grid storage as the factory's edge, whole-grid districts. Useful to any AE2 pack</td></tr>
+      <tr><td><strong>GregTech glass-box models</strong></td><td data-label="Size">L</td><td data-label="What it is">About the size of the Create glass extraction (9k Java lines): machines, multiblocks with their hatches, cables, generators, pipes and covers, using GTM's own recipe and overclock code</td></tr>
+      <tr><td><strong>Power as a good</strong></td><td data-label="Size">S to M</td><td data-label="What it is">EU in the goods dictionary, power-loss voiding, wireless EU stores</td></tr>
+      <tr><td><strong>GameTests and packaging</strong></td><td data-label="Size">M each</td><td data-label="What it is">A factory test corpus; shipping rtsim and its native library outside MIC</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="size-cap">Total: 15k to 20k Java lines plus a few thousand lines of Rust. The Rust engine is reused unchanged. S is up to about 500 lines, M up to 3,000, L more.</p>
+  <h3 data-ss-id="size-gtnh-h">GTNH on 1.7.10</h3>
+  <ul data-ss-id="size-gtnh">
+    <li><strong>Only the Rust engine and its JNI bridge carry over.</strong> The whole Java side (32k lines) is NeoForge 21.1 code: capabilities, attachments, chunk status, events and GameTests. 1.7.10 has none of them, so this is a rewrite, not a port.</li>
+    <li><strong>Many bespoke multiblocks</strong> (GT++, TecTech, BartWorks and others now inside GT5U) each need a model or a "not learnable" flag.</li>
+    <li><strong>The GTNH team ships everything through its own pack pipeline and has refused automation shortcuts before:</strong> "Tick acceleration will not be added for automation purposes" (<a href="https://github.com/GTNewHorizons/GT-New-Horizons-Modpack/issues/10230">GTNH#10230</a>). Nothing happens without their consent, and whether they would accept a native library is unknown.</li>
+    <li>And the lag GTNH players complain about is still in the base they stand in.</li>
+  </ul>
+</section>
+
+<section id="prior" data-ss-id="prior" data-ss-section>
+  <h2 data-ss-id="prior-h">The closest prior art is Meanwhile, which replays one block at a time</h2>
+  <p data-ss-id="prior-meanwhile"><a href="https://github.com/KURONAMI333/meanwhile">Meanwhile</a> (v0.1.0) ticks a block entity once when its chunk loads, reads what changed in its data, and repeats that for every missed tick, with completions running through the mod's real logic. It moves no items between machines. That gap, flow between machines, is what rtsim's districts and glass box solve. It is the closest shipped Minecraft equivalent of rtsim's replay and is not yet in rtsim's prior-art list.</p>
+  <p data-ss-id="prior-none">No mod or proposal was found that simulates GregTech machines while unloaded, or replaces loaded ones with rates, in either line. The fixes that worked elsewhere are the exact-sleep kind: Create: LazyTick backs off idle Create machines, and Captain of Industry made 1,500 idle machines seven times cheaper by skipping recipe searches when inputs had not changed.</p>
+  <div class="box" data-ss-id="further">
+    <p data-ss-id="further-p">Nothing here needs a decision. If you ever want to go further, the note's order is:</p>
+    <ol data-ss-id="further-list">
+      <li>Nothing in rtsim: small sleep-and-wake patches in GregTech itself, such as GTM's failed-match backoff and route caches that survive a block update.</li>
+      <li>An AE2 plugin, the one piece any AE2 pack would use. It is slice G5 on the <a href="https://spacesheep.dev/@benmac/rtsim-any-pack">any-pack page</a>.</li>
+      <li>A GregTech glass box, only once GTM 8.0 ships for 1.21.1, and only after profiling how much of a real GTM server's load is chunk-loaded bases of offline owners.</li>
+    </ol>
+  </div>
+</section>
+
+<details data-ss-id="sources" data-ss-react="off">
+  <summary>Sources</summary>
+  <ul>
+    <li>mic-rtsim main at cee7690: research/gregtech-performance-2026-10-21.md, sections 1 to 6. Research only; three agents read the web and read-only clones, and claims with a file and line were spot-checked against those clones.</li>
+    <li>GT5-Unofficial (GTNH) at 77d7f359; GregTech CEu Modern branch 1.20.1 at aae6d4e (the 8.0.0 snapshot), tag gtm-7.5.3, branch 1.21 at 36a6b38. AE2 1.21.1 and Lithium sources for the prior-art rows.</li>
+    <li>Issues and pull requests linked inline: GTNH GT5-Unofficial PRs, GT-New-Horizons-Modpack issues, GregTech-Modern issues and PRs, Star-Technology issues. Profile numbers are as quoted there; none was re-measured.</li>
+    <li>rtsim facts from INDUSTRY.md, GLASSBOX.md, SCALE.md and docs/stress-worlds-results.md on main; plugin sizes from line counts of the Create plugin and the industry crates.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026. Private page.</footer>
+
+</body>
+</html>
