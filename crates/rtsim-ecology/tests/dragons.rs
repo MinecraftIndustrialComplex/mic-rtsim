@@ -639,18 +639,34 @@ fn an_unwatched_raid_is_never_better_than_observed() {
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 
+/// P28 as Ben decided it, "bounded damage too" (the oil audit's F9, choices-oilgate.md OGC56): a
+/// grudge raid on a watched district brings the dragon in person and also books, at once, the
+/// bounded damage the same raid books on the district unwatched.
 #[test]
-fn a_watched_district_gets_a_real_fight_and_no_abstract_damage() {
-    let (d, fake, _) = grudge_raid(true, 0.0, None);
-    assert_eq!(d.stats.district_raids, 0);
-    let farm = fake.engine.district(synth::FARM).unwrap();
-    assert!(farm.watched);
-    assert!(
-        farm.attacks
+fn a_watched_district_gets_a_real_fight_and_the_same_bounded_damage() {
+    let raid = |f: &rtsim_industry::fake::FakeWorld| {
+        f.engine
+            .district(synth::FARM)
+            .unwrap()
+            .attacks
             .iter()
-            .all(|a| a.source != rtsim_industry::threat::ThreatSource::Dragon)
-    );
+            .find(|a| a.source == rtsim_industry::threat::ThreatSource::Dragon)
+            .cloned()
+            .expect("a dragon raid is booked")
+    };
+    let (d, fake, w) = grudge_raid(true, 0.0, None);
+    assert!(fake.engine.district(synth::FARM).unwrap().watched);
     assert!(d.stats.materialized >= 1, "the dragon came in person");
+    assert!(d.stats.district_raids >= 1, "{:?}", d.stats);
+    let seen = raid(&fake);
+    assert_eq!(seen.skipped, None, "{seen:?}");
+    let (_, unwatched, _) = grudge_raid(false, 0.0, None);
+    let unseen = raid(&unwatched);
+    assert_eq!((seen.at, seen.count), (unseen.at, unseen.count));
+    assert_eq!(seen.outcome, unseen.outcome);
+    assert_eq!(seen.destroyed, unseen.destroyed);
+    assert!(seen.destroyed > 0, "blocks are lost: {seen:?}");
+    d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 
 // ---- the population (P13) -----------------------------------------------------------------------
@@ -795,6 +811,79 @@ fn natural_and_spawner_dragons_are_left_alone_by_default() {
 #[test]
 fn natural_and_spawner_dragons_are_discarded_with_the_setting_on() {
     untagged_dragons_run(true);
+}
+
+/// OGB-6 and OGC66: while field flights run, a natural or spawner fire dragon (In Control's
+/// desert dragon) is discarded when it joins, since the flights replace it; another species is
+/// still left alone. With the flights off (OIL_CONFIG without them, or a zero chance) a fire one
+/// is left alone too, so In Control's dragon is the danger: never both, never neither.
+#[test]
+fn natural_fire_dragons_are_discarded_while_field_flights_run() {
+    let (mut w, mut d) = world(19);
+    assert!(!d.tun.adopt_natural_dragons);
+    let mut infra = NoInfrastructure;
+    let u = |entity: u64, spawn: SpawnKind, species: Species| {
+        Obs::Untagged(boundary::Untagged {
+            entity: (entity, entity),
+            spawn,
+            species,
+            dimension: 0,
+            flags: 0,
+            age_ticks: 90 * 24_000,
+            hunger: 50,
+            gender: Gender::Male,
+            variant: 0,
+            home: (0, 0, 0),
+            lair: 0,
+            pos: (900.0, 70.0, -900.0),
+        })
+    };
+    let discards = |d: &mut Dragons| -> Vec<(u64, u32)> {
+        d.take_commands()
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Discard(x) => Some((x.entity.0, x.reason)),
+                Cmd::Adopt(a) => panic!("a natural dragon is never adopted: {a:?}"),
+                _ => None,
+            })
+            .collect()
+    };
+    // The tunables' switches until OIL_CONFIG: flights on (OGB-6).
+    assert!(d.field_flights_on());
+    d.ingest(&mut w, &mut infra, &u(1, SpawnKind::Natural, Species::Fire), Tick(10));
+    d.ingest(&mut w, &mut infra, &u(2, SpawnKind::Spawner, Species::Fire), Tick(11));
+    d.ingest(&mut w, &mut infra, &u(3, SpawnKind::Natural, Species::Ice), Tick(12));
+    assert_eq!(discards(&mut d), vec![(1, 1), (2, 1)]);
+    assert_eq!(d.stats.discarded, 2);
+    // The plugin's OIL_CONFIG with the flights off (DragonConfig fieldFlights false).
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &Obs::OilConfig(boundary::OilConfig {
+            flags: boundary::OIL_PLACE_LAIRS,
+        }),
+        Tick(20),
+    );
+    assert!(!d.field_flights_on());
+    d.ingest(&mut w, &mut infra, &u(4, SpawnKind::Natural, Species::Fire), Tick(21));
+    assert!(discards(&mut d).is_empty(), "In Control's dragon is the danger");
+    // On again, but with no chance of a flight: still off.
+    d.ingest(
+        &mut w,
+        &mut infra,
+        &Obs::OilConfig(boundary::OilConfig {
+            flags: boundary::OIL_FIELD_FLIGHTS,
+        }),
+        Tick(30),
+    );
+    assert!(d.field_flights_on());
+    d.tun.oil.flight_chance_milli = 0;
+    assert!(!d.field_flights_on());
+    d.ingest(&mut w, &mut infra, &u(5, SpawnKind::Natural, Species::Fire), Tick(31));
+    assert!(discards(&mut d).is_empty());
+    assert_eq!(d.stats.discarded, 2);
+    assert_eq!(d.stats.adopted, 0);
+    assert!(d.dragons.is_empty());
 }
 
 // ---- trains (INDUSTRY.md §13.3, I24) -------------------------------------------------------------

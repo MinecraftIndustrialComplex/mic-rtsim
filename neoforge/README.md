@@ -211,7 +211,8 @@ The threat GameTests (`mic_rtsim` namespace, either engine; `ThreatGameTests`):
 
 | Test | What it shows |
 |---|---|
-| `thedefencesurveymeasureswallsroofsanddark` | I21, Q14 to Q16: a furnace in the open has 4 gaps of a 4-column perimeter, a closed ring 0, a doorway 1; a stone block roofs it; torches cut the dark spawnable count (256 to 154 on the stub); IND_SURVEY and IND_SURVEY_BLOCKS (wall faces, the machine, the chest) |
+| `thedefencesurveymeasureswallsroofsanddark` | I21, Q14 to Q16: a furnace in the open has 4 gaps of a 4-column perimeter, a closed ring 0, a doorway 1; a stone block three up is a roof in a flyer's reach (listed, not roofed, OGB-7) and one ten up roofs it; torches cut the dark spawnable count (256 to 154 on the stub); IND_SURVEY and IND_SURVEY_BLOCKS (wall faces, the machine, the chest) |
+| `apartlyloadeddistrictissurveyedwhereitisloaded` | F5: a district with a far unloaded chunk gets partial surveys (IND_SURVEY_BLOCKS flagged partial for the loaded chunk, no part for the unloaded one, no whole survey); a second machine joins the loaded chunk's rows |
 | `naturalspawnsaresampledwhileobserved` | I20, Q13: natural spawns of a zombie and a skeleton while observed count 1 and 1; a spawner's and a far one do not; IND_SPAWN_SAMPLE with 600 observed ticks and the dark blocks of the district and its ring |
 | `realfightsareobserved` | Q12: a golem kills a zombie (melee: 1 attacker, 1 killed, strength 1) and a creeper's explosion breaks 9 blocks (siege), each an IND_FIGHT |
 | `vanillaconditionshavenoseasons` | I12, Q19: without a season mod, IND_CONDITIONS is season 0 of 1, length 0 |
@@ -264,8 +265,11 @@ The industry plugins' GameTests (each in its plugin's namespace, with its mod's 
   are not built (Q8); an assembled, loaded radar turret is not built in a GameTest (Q17); the threat
   observation needs a real player at night (the spawn test starts it by hand); an Ender Transmission
   channel on a Sable vehicle is not tested (no Sable on the test servers; Q7).
-- **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are a
-  proposal in `iceandfire/pack-proposal/` (not applied); a real lair structure, settling, and the
+- **Ice and Fire** (docs/overnight-choices-iceandfire.md): field flights replace In Control's fire
+  dragon (OGB-6): while they run, the engine discards the fire dragons In Control spawns (OGC66); the
+  pack's In Control edits are on the pack repo's branch `oilgate-f8`, to merge when mic-rtsim enters
+  the pack's `mods/` (`iceandfire/pack-proposal/` keeps a copy for OG-10's harness); a real lair
+  structure, settling, and the
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
 - **Herds** (docs/overnight-choices-herdsmc.md): herds are founded from the world model (the habitat
   sampler, X2-11) and their climate is its (X2-9, X2-10); vanilla's own chunk-generation animals are

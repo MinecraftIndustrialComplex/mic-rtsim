@@ -869,9 +869,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   rescues count); its strongest memories and feelings pass to its heir.
 - **DRAGON_ATE**: a sim dragon killed animals (Ice and Fire's own hunting picks them from its
   `dragon_targets` tag, verified). When the kill is inside a village's bounds, those animals were the
-  village's herd and its market stock falls by the count (P28's recommendation: watched
-  consequences go through stock, prices and caravans). Summed per (dragon, prey type, village) per
-  tick.
+  village's herd and its market stock falls by the count (P28: watched consequences go through
+  stock, prices and caravans; Ben added bounded damage too, see §6.7). Summed per (dragon, prey
+  type, village) per tick.
 - **HOARD_ROBBED**: a player broke hoard piles (`iceandfire:gold_pile` for fire, `silver_pile` for
   ice, `copper_pile` for lightning, verified) or took items from a container, inside a known lair's
   box. Summed per (player, lair) per tick. The engine takes what its abstract hoard holds of each
@@ -888,7 +888,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   report, summed (PLACEHOLDER: per 20 ticks, and before its DEMATERIALIZED). Each costs one point of
   the reserve.
 - **OIL_CONFIG** (OG-3, OG-7): the plugin's two switches, sent once per session before the first
-  PLAYER. Without it the engine keeps its defaults (field flights off, lair placement on).
+  PLAYER. Without it the engine keeps its defaults (field flights on, lair placement on; OGB-6).
 - **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
   `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this
   session for a `ChestBlockEntity` inside the box with an empty slot (a chest whose loot table is not
@@ -980,8 +980,11 @@ What the bridge must do:
    `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
    (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
    pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
-   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply); the edited
-   files are ready in `neoforge/iceandfire/pack-proposal/config/incontrol/` (not applied, Z21).
+   lists (the blaze rules stay). This is a pack change; Ben chose it (DECISIONS.md OGB-6). It is built
+   on the pack repo's branch `oilgate-f8` and merges in the same pack commit that adds mic-rtsim to the
+   pack's `mods/` (OGC46); until then, the engine discards the fire dragons In Control spawns while
+   field flights run (item 3, OGC66). `neoforge/iceandfire/pack-proposal/config/incontrol/` holds the
+   same files for OG-10's harness (Z21).
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
@@ -992,8 +995,9 @@ What the bridge must do:
    structure spawn (choice Z10). In Control's spawner spawns as NATURAL (verified).
 3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
    occupant, adopts spawn-egg and command dragons as wanderers, leaves natural and spawner dragons alone
-   (R18 as amended by OG-1 and P13: they are In Control's, and are discarded only when the engine's
-   `adopt_natural_dragons` is set) and discards a second structure dragon for a lair that has one,
+   (R18 as amended by OG-1 and P13: they are In Control's; a fire one is discarded while field flights
+   run, since they replace it, OGB-6 and OGC66, and every one when the engine's `adopt_natural_dragons`
+   is set) and discards a second structure dragon for a lair that has one,
    and leaves **tamed** dragons alone (A10: a creature a player takes leaves the sim). Dragons
    hatched from eggs are tamed by Ice and Fire (verified, `DragonEggEntity.updateEggCondition`), so
    they are the player's.
@@ -1015,9 +1019,12 @@ What the bridge must do:
   youngest offspring, else its mate, else its lair, and a dragon claiming an empty lair takes over
   the lair's strongest feelings.
 - A raid on a district goes through the industry engine's threat interface (`docs/industry-
-  boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
-  P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
-  best comparable observed fight, with capped damage applied on load (C18).
+  boundary.md`): unwatched districts resolve abstractly, never better for the defender than the
+  best comparable observed fight, with capped damage applied on load (C18). A watched district
+  resolves the same way, at once, and gets a real fight too: the dragon materializes there (P28 as
+  Ben decided it, "bounded damage too"; docs/choices-oilgate.md OGC56, OGC57). Ice and Fire
+  griefing stays off, so the bounded damage is the raid's. Districts are found by any of their
+  chunks, not their centre (OGC50, OGC51).
 - **Tribute** (SINK.md §4.6, MS-5; choices MSC40 and up in docs/choices-money-sink.md). A village
   with a works purse that a lair's dragon raided becomes that lair's tributary and pays at once, then
   once a season at the calendar's season change: a share of its purse (PLACEHOLDER a quarter,
@@ -1050,8 +1057,8 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   `DragonFireEvent` it posts costs one point and is summed into DRAGON_BREATHS; at zero the event is
   cancelled, so the dragon fights with bite and claws only (OG-13). A body without flag 16 breathes
   freely and is not counted.
-- **Sends OIL_CONFIG** from its config at session start: `fieldFlights` (default false until the
-  measurement of OILGATE.md §4.8 passes) and `placeLairs` (default true).
+- **Sends OIL_CONFIG** from its config at session start: `fieldFlights` (default true since OGB-6:
+  the flights replace In Control's fire dragon, OGC46) and `placeLairs` (default true).
 - **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
   above y 15 (In Control's `minheight`).
 
@@ -1066,9 +1073,13 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   drawing fire dragons as flights that materialize with flags 8 and 16 at the edge of view.
 - **Lairs:** a field with no fire lair within reach gets one PLACE_LAIR (when flag 2 is set); every
   new fire lair asks one OIL_SURVEY around itself.
-- **Sensing:** a district near a field that forms, drills, holds oil stock or pollutes becomes an
-  Encroachment report its drinking dragons witness, against the district and the players homed
-  near it; a grudge sends a raid.
+- **Sensing:** a district with a chunk near a field that forms, drills, holds oil stock or pollutes
+  becomes an Encroachment report its drinking dragons witness, against the district, the players
+  homed near it and the players who built there in the last `grudge_window_days` (OGC50, OGC55); a
+  grudge sends a raid. Once a game day the field watches its own ground: a fire dragon of the
+  nearest fire lair in reach senses every district with a chunk near a field, with no flight
+  (OGC52, OGC53). The industry engine keeps each district's last builders from IND_EDIT, saved with
+  it (OGC54).
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 

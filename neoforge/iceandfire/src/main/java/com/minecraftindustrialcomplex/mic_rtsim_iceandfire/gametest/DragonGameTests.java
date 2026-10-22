@@ -244,9 +244,10 @@ public final class DragonGameTests {
      * Two dragons another path spawned: a spawn-egg one and a natural one (In Control's spawner spawns
      * with NATURAL). Both are reported DRAGON_UNTAGGED with their spawn kind and Ice and Fire's state;
      * the engine adopts the egg dragon (DRAGON_ADOPT: tagged, persistence-required, DRAGON_MATERIALIZED
-     * naming it) and leaves the natural one alone (R18 as amended by OG-1 and P13: In Control's dragons
-     * are the oil gate until the sim version is measured; adopt_natural_dragons is false): it is never
-     * adopted, discarded or tagged, and stays a plain Ice and Fire mob that is saved as usual. On the
+     * naming it) and leaves the natural one alone (R18 as amended by OG-1 and P13; adopt_natural_dragons
+     * is false, and field flights are off in GameTests, so nothing replaces In Control's dragon: with them
+     * on, a natural fire dragon is discarded, OGB-6 and OGC66, which the engine's own tests cover): it is
+     * never adopted, discarded or tagged, and stays a plain Ice and Fire mob that is saved as usual. On the
      * native engine the engine decides; on the stub the test answers as the engine would (the egg only).
      */
     @GameTest(template = DragonKit.ARENA, timeoutTicks = 400, batch = "dragon_untagged")
@@ -369,7 +370,9 @@ public final class DragonGameTests {
                     if (!DragonKit.nativeEngine())
                         DragonKit.adopt(d.getUUID(), stubAgent, 1, home);
                 })
-                .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0))
+                // Adopted, and its DRAGON_MATERIALIZED sent (after OG-10's arms the engine can take a step longer).
+                .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0
+                        && !about(DragonRecords.DRAGON_MATERIALIZED, bridge().agentOf(d)).isEmpty()))
                 .thenExecute(() -> {
                     agent[0] = bridge().agentOf(d);
                     agent[1] = about(DragonRecords.DRAGON_MATERIALIZED, agent[0]).get(0).view().getInt(DragonRecords.Materialized.EPOCH);

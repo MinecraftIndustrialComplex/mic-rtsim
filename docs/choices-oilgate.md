@@ -22,11 +22,15 @@ he skipped 4, so it is taken as recommended. OGB-2 and OGB-5 are built (OGC44, O
 attack, `roof_pass = (machineBlocks - roofedMachines) / machineBlocks` from the district's latest
 IND_SURVEY; 1 for a ground attack, for a district never surveyed and for one with no machines.
 "Roofed" is the survey's existing rule (the block above the machine cannot see the sky), so a glass
-roof is no roof.
+roof is no roof. OGB-7 (Ben, 2026-10-21) changed this: `roofedMachines` now counts only the machines
+whose cover lies beyond `roofReachBlocks` (OGC65), so a machine under a roof a flyer reaches counts as
+open.
 
 **OGC2. A roof stops a flyer's block damage, not its theft or its fight.** A flyer's destroyed
 blocks are `floor(n * roof_pass)` and drawn only from blocks the survey flagged roofless. Theft and
 the Lanchester fight do not see the roof: a dragon lands in the yard and takes what is in the tanks.
+OGB-7 changed this: a roof within reach is itself one of the roofless blocks a flyer draws (OGC64), and
+once it is broken the next survey finds the machine under it open.
 
 ## Knowledge (OG-8)
 
@@ -95,9 +99,9 @@ instead of coming back at once.
 
 ## Field flights (OG-3)
 
-**OGC10. Field flights are off by default; the plugin's config sends the switches.** OIL_CONFIG
-carries `fieldFlights` (default false) and `placeLairs` (default true). Off until OG-10's A/B shows
-the gate at least as dangerous as In Control at the oil sites; the engine's own default
+**OGC10. The plugin's config sends the switches.** OIL_CONFIG carries `fieldFlights` and
+`placeLairs` (default true). `fieldFlights` was off by default until OG-10's A/B showed the gate at
+least as dangerous as In Control; since OGB-6 it is on (OGC46). The engine's own default
 (`OilTunables::flags`) matches.
 
 **OGC11. Visitors are hostile and do not stay.** A field flight's dragon materializes hostile
@@ -119,6 +123,65 @@ comes near a field.
 
 **OGC19. A refuelling dragon is seen.** A dragon flying to a field passes a player's view like a
 hunting one (within two view radii of its target): the sight that tells a player where oil is.
+
+## In Control's fire dragon replaced (OGB-6, the audit's F8)
+
+**OGC46. Field flights on at the built draw; the pack's In Control change waits for mic-rtsim.**
+`DragonConfig`'s `fieldFlights` defaults true, and so does the engine's `OilTunables::flags` (field
+flights and lair placement), at the draw OGC24 built (a roll a 10 seconds per dimension, 200 alive
+per dimension, 8 per field). GameTests still start with every oil switch off (`DragonConfig.Test`).
+The pack side is built on the pack repo's branch `oilgate-f8` (bb48c52): `config/incontrol/spawner.json`
+loses its `iceandfire:fire_dragon` entry and both `onjoin` rules in `spawn.json` hold only
+`minecraft:blaze` (OG-12 (a): the blazes stay desert-keyed), the files `neoforge/iceandfire/pack-proposal/`
+held, with `index.toml` and `pack.toml` taking the two files' new hashes by hand (`packwiz refresh` in a
+fresh pack worktree also drops the raw jars that worktree lacks). It landed on `master` and was reverted
+there (33435e8): mic-rtsim is not in the pack's `mods/` yet, so on master it left the pack with neither
+danger. It merges in the same pack commit that adds mic-rtsim and its Ice and Fire plugin to `mods/`.
+Until then OGC66 keeps the switch-over whole on any server that runs the plugin. OG-10's "at least as
+dangerous as In Control" no longer gates anything (OILGATE.md §4.8).
+
+**OGC47. OG-1's exemption stays for everything but a fire dragon under field flights.**
+`adopt_natural_dragons` stays false: a natural or spawner dragon of another species is still left alone,
+and so is a fire one while field flights are off. True discards every one, as R18 had it.
+
+**OGC66. While field flights run, a natural or spawner fire dragon is discarded as it joins.** The
+engine's `untagged` discards it (reason 1, as R18) when `field_flights_on()` (the OIL_CONFIG switch, or
+the tunables' until it comes, and a chance above zero), whatever `adopt_natural_dragons` says. So the
+replacement does not hang on the pack's files: with the plugin and flights on, In Control's dragon is
+gone even while the pack still has its rule; with the flights off (`fieldFlights` false, or every
+GameTest), In Control's dragon stays the danger. Never both and never neither, on the pack's master
+today or with `oilgate-f8` merged, except a server that turns flights off after merging `oilgate-f8`,
+which has neither (the config comment says so). Rejected: tying it to `adopt_natural_dragons` alone
+(a server that turned flights off would then lose In Control's dragon too), and discarding every
+species (Ice and Fire spawns none naturally, and only the fire dragon is replaced). OG-10's arm A sends
+flights off, so it still measures In Control's dragon; arm B's rules have no fire dragon to discard.
+A discarded dragon exists from its join until the engine's next step answers (a tick or two, the same
+as R18's discard was); once `oilgate-f8` merges, In Control stops spawning it at all.
+
+**OGC48. OG-10's harness stays, as a measure.** `OilDangerGameTests` (`-Pog10`) is kept for measuring
+the field flights. Its arm A reads In Control's rules from `packMods`' config (the smoke server's
+copy), which keeps the fire dragon; it sends field flights off, so OGC66 leaves that dragon alone. If
+the copy is synced from the pack after `oilgate-f8` merges, arm A has no fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
+
+**The night run** the audit's F8 asked for (`-Pog10 -Pog10Hour=14000`, one native sample per arm,
+2026-10-21, arm A with In Control's fire dragon):
+
+| Site, arm | Dragon damage/min | First dragon hit | Distinct dragons hitting/h | Targeting or hitting/h |
+|---|---|---|---|---|
+| 1, A | 104.7 | 1,854 | 60 | 80 |
+| 1, B | 353.3 | 334 | 120 | 220 |
+| 2, A | 0 | none | 0 | 120 |
+| 2, B | 0 | none | 0 | 0 |
+| 3, A | 235.3 | 692 | 120 | 160 |
+| 3, B | 0 | none | 0 | 0 |
+
+By night the field flights beat In Control's dragon at site 1 on every measure: In Control's dragons
+hit later and less by night (OGC35's morning runs had them at 260.7 and 334.0 a minute, first hit 676
+and 563), and the drawn visitors do not. Site 2 is safe in both arms, and site 3 (no oil) has no
+dragon in B, as designed. One sample, so this shows the direction, not a median.
+In that run the suite's later lair test (`aLairsDragonIsAdoptedAndItsHoardRobbed`) read its dragon's
+DRAGON_MATERIALIZED before it was sent and crashed the server; it now waits for the record. Without
+`-Pog10` all 20 iceandfire tests passed.
 
 ## Lairs near oil (OG-7)
 
@@ -146,17 +209,20 @@ districts within `sense_reach` 400 blocks of it. The report's severity is (1 + 2
 has an oil sample + 1 if its fuel stock is at least `fuel_signal_mb` 1,000 + 1 if it pollutes)
 severity units, at most 255.
 The encroachers are the district's group actor and the players whose homes lie within the home
-radius of it.
+radius of it. Since the cheese audit: a district is near by any of its chunks (OGC50), the field
+watches its own ground once a day (OGC52, OGC53), and the district's recent builders are named too
+(OGC55).
 
 **OGC17. A grudge raids the district through the threat interface.** A dragon whose sentiment toward
 a district falls below `grudge_below` raids it as a District target: watched, a real fight there;
-unwatched, resolved by the industry engine (a drinking raid when the dragon is low).
+unwatched, resolved by the industry engine (a drinking raid when the dragon is low). Since OGC56 a
+watched district is resolved by the industry engine too, and the real fight comes on top.
 
 ## Saves and the bench
 
 **OGC23. New save magic, no migration.** The dragon pages are RTD4 and the dragons' meta RTN4 (RTD3 and RTN3 were the money sink's tribute, merged first), with
 the reserve, the visitor field and the oil index; nothing reads the old format (no backward
-compatibility before release).
+compatibility before release). Now RTD5 and RTN5 (OGC58).
 
 **OGC26. The `dragons_oil` scale sweep.** `bench scale --only dragons_oil`: the dragons sweep with a
 3 x 3 field per 8 villages known at t 0, under the same contracts (CPU per unit flat, heap slope
@@ -165,7 +231,7 @@ compatibility before release).
 ## The plugin side (`neoforge/iceandfire`, `neoforge/dieselgenerators`, core)
 
 **OGC28. The switches and OIL_CONFIG.** The plugin's server config (`DragonConfig`,
-`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (false) and `placeLairs` (true); OIL_CONFIG
+`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (true since OGB-6, OGC46) and `placeLairs` (true); OIL_CONFIG
 carries them to the engine at each session start. On a GameTest server every side effect of the gate
 starts off (no flight, no lair placed, no chunk sampled, no survey answered) and a test switches on
 what it needs: the tests share one engine and a reused world.
@@ -318,13 +384,109 @@ First hit by any hostile at site 1: A 165 and 291, B 185 and 184.
 dragon hit comes 40 to 50% later and B brings a third to a half of A's distinct dragons. Site 2 passes
 trivially (nothing reaches the sealed pocket in either arm); site 3 falls, as designed. OILGATE.md §4.8
 asks for medians over several runs by day and night; these are two runs by day, so the verdict is
-early, but both runs fail the same two measures. Field flights stay off (For Ben 1, now OGB-1 and the cheese audit).
+early, but both runs fail the same two measures. Field flights stayed off (For Ben 1, now OGB-1 and the cheese audit)
+until OGB-6 retired the pass condition and turned them on (OGC46).
 
 **Fire events per stream** (a 30-day fire dragon, native): ground fire came in 14 bursts, mostly 33 to
 38 events over 40 to 44 ticks, with 2 charges inside them; scorch in 12 bursts of 41 events over 41
 ticks; hover fire none. The dry fight: 15 points went in 31 ticks (15 events); for 300 ticks after,
 no fire got through and none hit the player; the first bite or claw came 301 ticks after the reserve
 ran out; the engine got 2 DRAGON_BREATHS records for the 15 breaths.
+
+## The audit's fixes: sensing, builders and watched raids (F2, F3, F7, F9)
+
+The oil cheese audit (`docs/oilgate-cheese-audit.md` §4) named the smallest set of fixes. These four
+are engine code in `rtsim-ecology` and `rtsim-industry`; F1, F4 and F5 are built apart (OGC60 and
+up).
+
+**OGC50. The chunk test (F3).** `Infrastructure::districts_reaching(frame, x, z, r)`: the districts
+with any chunk whose centre lies within `r` blocks of (x, z), each sited at its chunk centre nearest
+(x, z) (a tie, the lower chunk), in id order. `sense` uses it instead of the centre test
+(`districts_near`, kept as the trait's default and for callers that want centres). The industry
+link's `DistrictIndex` keeps a cell map of every district chunk beside the centres' map, and
+rebuilds both when the industry engine's `districts_rev` moves: a district declared, its chunks
+changed, or removed. Before, it rebuilt only when the number of districts changed, so a district
+that grew was looked up where it used to be. `districts_rev` is drawn from one counter for the
+whole process, starting at 1 and never saved, so an engine restored from a save never shares a
+value with an index built against another engine. Closes B2 and C3's joined districts. Unit tests
+(`infra.rs`): a well joined to a base 3,000 blocks away is sensed at the well's chunk; the index sees
+a district that grew.
+
+**OGC51. Raids find districts by chunk too.** Home raids (`raid_home`, within `HOME_RADIUS` 512
+blocks), District raids and `home_districts` use the chunk test as well. Joining a far well to a
+base no longer carries the base's centre out of reach of its owner's home raids, and a watched
+fight's site is the district's chunk nearest the home or the drink spot, where the dragon
+materializes.
+
+**OGC52. The fields' daily watch, one event for the world (F2).** One `Ev::OilWatch`, booked when
+the gate opens (OGC12) and then once a game day. It asks the infrastructure, district by district
+and chunk by chunk (`Infrastructure::districts_where`), for the first chunk centre within
+`sense_reach` 400 blocks of any oil chunk (`OilIndex::near`), and each such district is sensed
+through `sense_site`, as at a drink spot, with the severity and the once-a-day rule of OGC16. One
+event a day for every field, not one a field: the cost is one pass over the districts' chunks a day.
+The audit's other trigger, at once on a district's first deposit sample, is not built: the ecology
+engine sees no event for a deposit sample (it reads `oil_sample` as a signal), and the daily watch
+reaches a drilling district within a day. The event is saved (tag 16), so the dragons' format moves
+(OGC58). Unit test (`oilgate.rs`): a district drilling 1,000 blocks along a field from the drink
+spot is sensed within a day.
+
+**OGC53. Who watches.** Of the fire lairs within `lair_reach` 1,500 blocks of the oil chunk the
+district is nearest to (measured as OG-7's `check_lair` measures), the nearest with a live fire
+dragon in it (a tie, the lower lair); that lair's first such occupant senses the district. A vacant
+lair is passed over for the next in reach. No fire lair in reach, nobody senses it, until OG-7
+places one when a player comes near. The watch shares the dragon's once-a-day rule: a district its
+watcher sensed at a drink spot that day is not sensed again by the watch, and the other way round.
+No flight is booked; the dragon knows its ground.
+
+**OGC54. A district keeps its builders (F7).** The industry engine now keeps the player of each
+`IND_EDIT` on the district: `District::editors`, the last 8 (`EDITORS_KEPT`) distinct players with
+the tick of each one's latest edit, oldest first. Placed, Broken and Configured count; Command
+(`/rtsim district rename | merge | split | exclude`) does not, since an admin's command is not
+building. Saved with the district, so its page now starts with a magic, "IDS2" (OGC58).
+
+**OGC55. The builders are named.** `sense` names, besides the district and the players whose home
+is within `HOME_RADIUS` 512 blocks of the district's site (P26), the builders whose latest edit
+there falls within `grudge_window_days` (PLACEHOLDER 10) before the sensing, wherever they live.
+Each is registered as a player actor if new; a player named both ways gets one report. A remote
+well's builder then carries the grudge home: hunted at home and on sight. Unit test
+(`oilgate.rs`): a builder who lives far from a drilling district gets the grudge; a builder from
+before the window and a bystander do not.
+
+**OGC56. A watched raid books its bounded damage at once (F9, P28 as Ben decided it).** A dragon's
+raid on a watched district now also resolves through the threat interface, blocks and theft, under
+the same caps, cooldown and observed floor as an unwatched one, and the dragon materializes there
+for the real fight as before. Industry: `Engine::threat_in_sight`; the attack's note says
+"(watched, a real fight too)". `threat_drinking` still skips a watched district for its other
+callers (the industry's own pressure threats). Ecology: `Infrastructure::raid_in_sight`. Ice and
+Fire griefing stays off, so the real dragon breaks nothing; the bounded damage is the raid's.
+
+The audit wrote "after the real fight"; this resolves it at once, when the raid is decided, before
+the dragon materializes. Why:
+- It is deterministic, from the same inputs as an unwatched raid, so watched and unwatched agree
+  exactly (P28's own words) and the test can say so.
+- A real fight ends many ways: the dragon killed, driven off or left alone, the player gone, the
+  server stopped. Booking after it would need a saved pending raid and a hook for each ending.
+- The outcome already weighs the turrets and the floor of comparable observed fights; its passes
+  stand for the first strikes as the dragon arrives.
+
+Unit test (`dragons.rs`): a raid on a watched district books the same outcome and destroyed blocks
+as the same raid on it unwatched, and the dragon materializes.
+
+**OGC57. In person, the dragon's own costs are the real fight's.** When the dragon comes in person
+(a home raid on the hated player, always; a District raid or a refuel at the tanks, when a player
+was last seen within two view radii, 320 blocks), the raid neither burns its oil nor wounds it: the
+real breaths cost points (DRAGON_BREATHS) and the real blows wound it (DRAGON_HURT). Its theft,
+drink, ledger (eaten, burnt, hoarded), dry count and hunt record count as for an unwatched raid. A
+watched district with nobody near is raided through `raid_in_sight` too (the industry engine would
+skip it otherwise); no fight follows, so it burns and wounds as any abstract raid. At the tanks a
+watched district still draws a low dragon once a day only (the day it is first sensed); that day it
+now drinks as it arrives and comes with what it drank. Tests (`oilgate.rs`, `review3.rs`): the
+watched tank, a watched district with nobody near, and a home raid that eats at both districts.
+
+**OGC58. Saves, no migration.** The dragon pages are RTD5 and the dragons' meta RTN5 (the daily
+watch's event); an industry district page starts with "IDS2" (its builders). Nothing reads the old
+formats (no backward compatibility before release). `rtsim-view`'s fixtures are regenerated from
+fresh GameTest runs.
 
 ## The seam for the underground half (OG-9b to OG-9d, not built)
 
@@ -361,12 +523,61 @@ does. Not widened: no other block seeds without a player (the wider forms would 
 Ben's). GameTest `aPumpjackHoleSeedsWithNoPlayer` (dieselgenerators, on the stub): a hole set down
 with `level.setBlock` and no player is in its chunk's seeds, and a district forms around it.
 
+**OGC61. A partly loaded district is surveyed where it is loaded (F5).** A whole survey still needs
+every district chunk loaded: the walk and the perimeter cut need the whole area, and only a whole
+survey sends IND_SURVEY (the defence vector stays the last whole survey's). A district with some
+chunks loaded gets a partial survey: the block entities of its loaded chunks only (the machines, the
+roofs in reach and the boundary inventories), sent as IND_SURVEY_BLOCKS flagged partial, with no
+IND_SURVEY. It is due after the district's revision changes, when a loaded chunk not yet surveyed at
+this revision appears (looked at only when the district's loaded count changes, not every tick), when
+something asks for a survey, and once a survey period, as a whole one is. A result read while the
+district changed is dropped. `Threats.partialSurveys()` counts them. GameTest
+`aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded` (core, either engine).
+
+**OGC62. The engine keeps each chunk's rows until that chunk is surveyed again (F5).** Every chunk a
+survey reads gets part 0 of IND_SURVEY_BLOCKS, empty when it has no rows; part 0 replaces that chunk's
+rows and its later parts add to them. A partial survey's part 0 keeps the chunk's wall faces, which
+belong to the last whole survey's cut. The engine drops rows outside the district's chunks at each
+IND_SURVEY and each part (it keeps them all while it knows no chunks); an IND_SURVEY at a new revision
+no longer clears every row. A raid on a partly loaded district draws on every chunk's last rows. The
+fake Java's announce sends a part 0 for every district chunk. Unit test
+`a_partial_survey_keeps_the_other_chunks_rows` (threat.rs).
+
+**OGC63. IND_SURVEY_BLOCKS is 56 + 24n, one chunk a record.** 24 u64 district, 32 u32 revision,
+36 u32 part (within the chunk), 40 i32 chunkX, 44 i32 chunkZ, 48 u32 flags (1 partial), 52 u32
+reserved, 56 n × Block24; Block24's flags gain 16 roof. No compatibility work (unreleased): delete
+GameTest worlds after this lands.
+
+**OGC64. A roof in reach is a block a flyer breaks (F4, OGB-7).** For a machine without sky access the
+survey finds its column's top block that keeps the sky out: the block under the column's lowest sky
+light source, the light engine's own count, which changes with the block in the same tick. When that
+block lies within `roofReachBlocks` (ThreatConfig, 8, PLACEHOLDER as OGB-7 says) above the machine, it
+is listed with flags roofless and roof. The rows go machines, then roofs, then boundary inventories,
+each block once (a roof that is itself a machine or an inventory is not listed twice, and two machines
+under one column's roof list it once). "Roofed" keeps its meaning (the block above the machine has no
+sky access, so a glass roof is no roof); it is now read from the same sky light sources rather than
+the light engine's brightness, so a survey need not wait for lighting. Only the top block is listed:
+a roof two blocks thick within reach takes two raids (the second survey lists the lower block).
+Unit test `a_flyer_takes_a_roof_in_reach_before_the_machine_under_it` (threat.rs); GameTests
+`theDefenceSurveyMeasuresWallsRoofsAndDark` (core, either engine: a stone three up is a roof row,
+cover ten up shields) and `aRoofShieldsAMachineFromAFlyerNotFromASiege` (core, native: a dragon breaks
+a shed's roof and leaves the machines under it and under deep cover; the next survey finds the shed's
+machine open; a siege still breaks the deep-covered one). That GameTest used vanilla furnaces, which no
+longer seed a district (DS-10), so it now uses the test machine.
+
+**OGC65. `roofedMachines` counts shielded machines only.** IND_SURVEY's `roofedMachines` (and
+`lastSurvey`'s index 4) counts the machines whose cover is beyond reach. A machine under a roof in reach
+counts as open in OGC1's roof pass: a shed does not cut a flyer's blocks, it only keeps the machine off
+the list until its roof goes. `lastSurvey` index 20 counts the roofs in reach (diagnostics; no new
+IND_SURVEY field).
+
+
 ## For Ben (answered 2026-10-21)
 
 Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
 are in docs/oilgate-cheese-audit.md §5.
 
-1. **Superseded (OGB-1).** Ben judged In Control's dragons possibly overkill and set his own bar: a
+1. **Superseded (OGB-1); the switch is built (OGB-6, OGC46, OGC66; the pack side waits on its branch `oilgate-f8`).** Ben judged In Control's dragons possibly overkill and set his own bar: a
    real oil pipeline must be infeasible and cheesing it hard for a semi-casual player.
    docs/oilgate-cheese-audit.md judges the gate against that bar and asks the follow-up. The question
    as it stood: **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its
