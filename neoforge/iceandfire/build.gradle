@@ -28,6 +28,8 @@ def packMods = rootProject.file(project.findProperty('packMods') ?: rootProject.
 def iafJars = files([iaf_jar, iaf_uranus_jar, iaf_jupiter_jar, iaf_geckolib_jar].collect { "${packMods}/${it}" })
 def iafRuntime = files(["${packMods}/${iaf_architectury_jar}"])
 def iafConfig = file("${packMods}/${iaf_config}")
+def incontrolRuntime = files(["${packMods}/${incontrol_jar}"])
+def packIncontrol = file("${packMods}/${incontrol_config}")
 
 // The GameTest server runs with the pack's Ice and Fire config (Jupiter reads config/iceandfire/), not the
 // defaults Ice and Fire would write (dragon griefing on).
@@ -36,6 +38,22 @@ def packIafConfig = tasks.register('packIafConfig', Copy) {
     from iafConfig
     into file('run-gametest/config/iceandfire')
     onlyIf { iafConfig.isFile() }
+}
+
+// OG-10's two In Control arms beside the GameTest server (run-gametest/og10/a: the pack's own rules, b: the
+// pack proposal's, without the fire dragons), and no rules in its config until OilDangerGameTests loads an
+// arm. Never up to date: a run that died mid-arm must not leave an arm's rules for the next.
+def og10Rules = tasks.register('og10Rules', Copy) {
+    description = "Copies OG-10's In Control arms beside the GameTest server and empties its In Control rules."
+    into file('run-gametest/og10')
+    from(packIncontrol) { include 'spawner.json', 'spawn.json'; into 'a' }
+    from(file('pack-proposal/config/incontrol')) { include 'spawner.json', 'spawn.json'; into 'b' }
+    def rules = file('run-gametest/config/incontrol')
+    outputs.upToDateWhen { false }
+    doLast {
+        rules.mkdirs()
+        ['spawner.json', 'spawn.json'].each { new File(rules, it).text = '[]\n' }
+    }
 }
 
 neoForge {
@@ -56,6 +74,8 @@ neoForge {
             systemProperty 'neoforge.enabledGameTestNamespaces', mod_id
             systemProperty 'mic_rtsim.gametest', 'true'
             systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
+            // OG-10's danger A/B (a quarter of an hour of server time) runs only when asked for.
+            if (project.hasProperty('og10')) systemProperty 'mic_rtsim.og10', 'true'
             jvmArgument '-Xmx4G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
@@ -72,7 +92,7 @@ neoForge {
     }
 }
 
-tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packIafConfig }
+tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packIafConfig, og10Rules }
 
 dependencies {
     implementation project(':core')
@@ -81,6 +101,8 @@ dependencies {
     compileOnly iafJars
     runtimeOnly iafJars
     runtimeOnly iafRuntime
+    // In Control (the pack's own jar) for OG-10; with no rules it does nothing.
+    runtimeOnly incontrolRuntime
 }
 
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {

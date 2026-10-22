@@ -403,9 +403,11 @@ fn gametest_worlds_open_in_the_host_with_their_saved_state() {
                 .flatten()
                 .flatten()
                 .map(|e| e.path().join("run-gametest/world"));
+            // A world the stub engine ran last has an rtsim folder with only stub-pages.bin: the
+            // native store's manifest is what makes it the engine's.
             fixtures
                 .chain(checkout)
-                .filter(|w| w.join(save::PAGES).is_dir())
+                .filter(|w| w.join(save::PAGES).join("manifest.rtm").is_file())
                 .collect()
         }
     };

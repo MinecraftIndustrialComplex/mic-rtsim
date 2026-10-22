@@ -69,6 +69,10 @@ impl Default for Tunables {
                 ReportKind::Assault | ReportKind::ResidentAssault => (10 * day, -25),
                 ReportKind::Trade => (3 * day, 2),
                 ReportKind::Rescue => (10 * day, 25),
+                // PLACEHOLDER (OILGATE.md §4.5, choices-oilgate.md OGC3): an assault's weight and
+                // life; a dragon resenses a working district once a day, so it stays resented
+                // while the district works and forgets it ten days after it stops.
+                ReportKind::Encroachment => (10 * day, -25),
             };
             lifetime[k.index()] = life;
             delta[k.index()] = d;

@@ -47,15 +47,17 @@ use crate::engine::{
 };
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
+use crate::oil::{Field, OIL_FIELD_TABLE, OIL_REGION_TABLE, OilChunk, REGION_CHUNKS, Roll};
 use crate::prey::{Item, PreyLedger};
 use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
 
 /// "RTDG" was the format before the indexes moved behind the meta (PF9), "RTD2" before tribute
-/// (SINK.md §4.6); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD3");
-/// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN3");
+/// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD4");
+/// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
+/// gate).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN4");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -212,6 +214,18 @@ fn put_target(w: &mut Writer, t: &Target) {
             w.var_i64(i64::from(x));
             w.var_i64(i64::from(z));
         }
+        Target::District {
+            district,
+            frame,
+            x,
+            z,
+        } => {
+            w.u8(4);
+            w.u64(district);
+            w.u16(frame);
+            w.var_i64(i64::from(x));
+            w.var_i64(i64::from(z));
+        }
     }
 }
 
@@ -238,6 +252,12 @@ fn get_target(r: &mut Reader<'_>) -> codec::Result<Target> {
             x: i32_of(r.var_i64()?)?,
             z: i32_of(r.var_i64()?)?,
         },
+        4 => Target::District {
+            district: r.u64()?,
+            frame: r.u16()?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+        },
         t => return bad(format!("target tag {t}")),
     })
 }
@@ -253,6 +273,13 @@ fn put_purpose(w: &mut Writer, p: &Purpose) {
             w.u8(2);
             w.var_u64(u64::from(*l));
         }
+        Purpose::Refuel { field, frame, x, z } => {
+            w.u8(3);
+            w.var_u64(u64::from(*field));
+            w.u16(*frame);
+            w.var_i64(i64::from(*x));
+            w.var_i64(i64::from(*z));
+        }
     }
 }
 
@@ -261,6 +288,12 @@ fn get_purpose(r: &mut Reader<'_>) -> codec::Result<Purpose> {
         0 => Purpose::Hunt(get_target(r)?),
         1 => Purpose::Home,
         2 => Purpose::Claim(u32_of(r.var_u64()?)?),
+        3 => Purpose::Refuel {
+            field: u32_of(r.var_u64()?)?,
+            frame: r.u16()?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+        },
         t => return bad(format!("purpose tag {t}")),
     })
 }
@@ -379,6 +412,14 @@ fn put_dragon(w: &mut Writer, x: &Dragon) {
     put_opt_tick(w, x.last_grudge);
     put_items(w, &x.carried);
     put_pos_y(w, &x.rest);
+    w.var_i64(i64::from(x.oil));
+    w.u64(x.oil_at.0);
+    w.var_u64(x.visitor.map_or(0, |f| u64::from(f) + 1));
+    w.var_u64(x.sensed.len() as u64);
+    for &(d, day) in &x.sensed {
+        w.u64(d);
+        w.var_u64(u64::from(day));
+    }
 }
 
 fn get_dragon(r: &mut Reader<'_>) -> codec::Result<Dragon> {
@@ -425,6 +466,15 @@ fn get_dragon(r: &mut Reader<'_>) -> codec::Result<Dragon> {
         last_grudge: get_opt_tick(r)?,
         carried: get_items(r)?,
         rest: get_pos_y(r)?,
+        oil: i32_of(r.var_i64()?)?,
+        oil_at: Tick(r.u64()?),
+        visitor: r.var_u64()?.checked_sub(1).map(u32_of).transpose()?,
+        sensed: {
+            let n = r.len_prefix(9)?;
+            (0..n)
+                .map(|_| Ok((r.u64()?, u32_of(r.var_u64()?)?)))
+                .collect::<codec::Result<_>>()?
+        },
     })
 }
 
@@ -500,6 +550,7 @@ impl Row for Dragon {
             + self.children.capacity() * std::mem::size_of::<Handle<Dragon>>()
             + self.victims.capacity() * std::mem::size_of::<rtsim_knowledge::ActorId>()
             + btree_bytes(self.carried.len(), std::mem::size_of::<(Item, i64)>())
+            + self.sensed.capacity() * std::mem::size_of::<(u64, u32)>()
     }
 }
 
@@ -616,6 +667,16 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(node));
             w.u32(stamp);
         }
+        Ev::RefuelEnd { d, plan } => {
+            w.u8(14);
+            w.u64(d.to_bits());
+            w.u32(plan);
+        }
+        Ev::FieldRoll { frame, plan } => {
+            w.u8(15);
+            w.u16(frame);
+            w.u32(plan);
+        }
     }
 }
 
@@ -680,6 +741,14 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         13 => Ev::Tribute {
             node: u32_of(r.var_u64()?)?,
             stamp: r.u32()?,
+        },
+        14 => Ev::RefuelEnd {
+            d: h(r)?,
+            plan: r.u32()?,
+        },
+        15 => Ev::FieldRoll {
+            frame: r.u16()?,
+            plan: r.u32()?,
         },
         t => return bad(format!("dragon event {t}")),
     })
@@ -790,7 +859,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m.into())
 }
 
-const STATS: usize = 31;
+const STATS: usize = 45;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -825,6 +894,20 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.tributes,
         s.tribute_lapses,
         s.tribute_stacks,
+        s.oil_chunks,
+        s.fields,
+        s.field_rolls,
+        s.field_draws,
+        s.refuels,
+        s.oil_raids,
+        s.oil_drunk_mb,
+        s.breaths,
+        s.dry_raids,
+        s.encroachments,
+        s.district_target_raids,
+        s.lairs_placed,
+        s.visitors_left,
+        s.surveys,
     ]
 }
 
@@ -861,7 +944,78 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         tributes: v[28],
         tribute_lapses: v[29],
         tribute_stacks: v[30],
+        oil_chunks: v[31],
+        fields: v[32],
+        field_rolls: v[33],
+        field_draws: v[34],
+        refuels: v[35],
+        oil_raids: v[36],
+        oil_drunk_mb: v[37],
+        breaths: v[38],
+        dry_raids: v[39],
+        encroachments: v[40],
+        district_target_raids: v[41],
+        lairs_placed: v[42],
+        visitors_left: v[43],
+        surveys: v[44],
     }
+}
+
+fn put_region(w: &mut Writer, v: &Vec<OilChunk>) {
+    w.var_u64(v.len() as u64);
+    for c in v {
+        w.var_u64(u64::from(c.field));
+        w.u16(c.idx);
+        w.bool(c.bottomless);
+    }
+}
+
+fn get_region(r: &mut Reader<'_>) -> codec::Result<Vec<OilChunk>> {
+    let n = r.len_prefix(4)?;
+    let mut v: Vec<OilChunk> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let c = OilChunk {
+            field: u32_of(r.var_u64()?)?,
+            idx: r.u16()?,
+            bottomless: r.bool()?,
+        };
+        let per = (REGION_CHUNKS * REGION_CHUNKS) as u16;
+        if c.idx >= per || v.last().is_some_and(|l| l.idx >= c.idx) {
+            return bad(format!("oil chunk {} out of order", c.idx));
+        }
+        v.push(c);
+    }
+    Ok(v)
+}
+
+fn put_region_into(v: &Vec<OilChunk>, w: &mut Writer) {
+    put_region(w, v);
+}
+
+fn put_field(w: &mut Writer, f: &Field) {
+    w.var_u64(u64::from(f.parent));
+    w.u16(f.frame);
+    w.var_u64(u64::from(f.chunks));
+    w.u8(u8::from(f.bottomless) | u8::from(f.lair_checked) << 1);
+    w.var_u64(u64::from(f.visitors));
+}
+
+fn get_field(r: &mut Reader<'_>) -> codec::Result<Field> {
+    let parent = u32_of(r.var_u64()?)?;
+    let frame = r.u16()?;
+    let chunks = u32_of(r.var_u64()?)?;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("oil field flags {flags}"));
+    }
+    Ok(Field {
+        parent,
+        frame,
+        chunks,
+        bottomless: flags & 1 != 0,
+        lair_checked: flags & 2 != 0,
+        visitors: u32_of(r.var_u64()?)?,
+    })
 }
 
 /// What [`Dragons::save_paged`] put in a batch: hand it back with [`Dragons::saved`] once the
@@ -873,6 +1027,8 @@ pub struct DragonsTickets {
     by_key: MapTicket,
     /// Lairs by cell, the prey index's villages and its roads.
     cells: [MapTicket; 3],
+    /// The oil index's regions and fields.
+    oil: [MapTicket; 2],
     dragons: SaveTicket,
     lairs: SaveTicket,
 }
@@ -885,11 +1041,12 @@ impl DragonsTickets {
             + self.wheel.pages()
             + self.by_key.pages()
             + self.cells.iter().map(MapTicket::pages).sum::<usize>()
+            + self.oil.iter().map(MapTicket::pages).sum::<usize>()
     }
 }
 
 /// Every page table the dragons own when they page: a meta key in none of them.
-const TABLES: [u16; 7] = [
+const TABLES: [u16; 9] = [
     DRAGON_TABLE,
     Lairs::TABLE,
     WHEEL_TABLE,
@@ -897,6 +1054,8 @@ const TABLES: [u16; 7] = [
     LAIR_CELL_TABLE,
     VILLAGE_CELL_TABLE,
     ROAD_CELL_TABLE,
+    OIL_REGION_TABLE,
+    OIL_FIELD_TABLE,
 ];
 
 /// The row tables' paging counters, for the bench.
@@ -1018,6 +1177,32 @@ impl Dragons {
             w.u32(p.chest.dimension);
             p.chest.pos.iter().for_each(|v| w.var_i64(i64::from(*v)));
         }
+        // The oil gate (OILGATE.md): its switches, players' presence, the field-flight rolls,
+        // the districts sensed, and the index's counters (its maps are saved apart).
+        w.u32(self.oil_flags);
+        w.var_u64(self.presence.len() as u64);
+        for (a, (p, y, t)) in &self.presence {
+            w.u64(a.to_bits());
+            p.encode(w);
+            w.var_i64(i64::from(*y));
+            w.u64(t.0);
+        }
+        w.var_u64(self.rolls.len() as u64);
+        for (f, r) in &self.rolls {
+            w.u16(*f);
+            w.u32(r.plan);
+            w.bool(r.active);
+            w.var_u64(u64::from(r.visitors));
+        }
+        w.var_u64(self.districts.len() as u64);
+        for (a, (id, p)) in &self.districts {
+            w.u64(a.to_bits());
+            w.u64(*id);
+            p.encode(w);
+        }
+        w.var_u64(u64::from(self.oil.next_field));
+        w.var_u64(u64::from(self.oil.live));
+        w.var_u64(self.oil.chunks);
     }
 
     /// An engine from what [`Dragons::put_meta`] wrote, with empty row tables.
@@ -1130,6 +1315,35 @@ impl Dragons {
                 },
             );
         }
+        d.oil_flags = r.u32()?;
+        for _ in 0..r.len_prefix(20)? {
+            let a = h(r)?;
+            let p = Pos::decode(r)?;
+            let y = i32_of(r.var_i64()?)?;
+            d.presence.insert(a, (p, y, Tick(r.u64()?)));
+        }
+        for _ in 0..r.len_prefix(8)? {
+            let f = r.u16()?;
+            let plan = r.u32()?;
+            let active = r.bool()?;
+            let visitors = u32_of(r.var_u64()?)?;
+            d.rolls.insert(
+                f,
+                Roll {
+                    plan,
+                    active,
+                    visitors,
+                },
+            );
+        }
+        for _ in 0..r.len_prefix(20)? {
+            let a = h(r)?;
+            let id = r.u64()?;
+            d.districts.insert(a, (id, Pos::decode(r)?));
+        }
+        d.oil.next_field = u32_of(r.var_u64()?)?;
+        d.oil.live = u32_of(r.var_u64()?)?;
+        d.oil.chunks = r.var_u64()?;
         Ok(d)
     }
 
@@ -1149,6 +1363,16 @@ impl Dragons {
         self.wheel.encode_with(&mut w, |e, w| put_ev(w, e));
         put_cells(&mut w, &self.index.villages);
         put_cells(&mut w, &self.index.roads);
+        w.var_u64(self.oil.regions.len() as u64);
+        for (c, v) in &self.oil.regions {
+            put_cell(&mut w, c);
+            put_region(&mut w, v);
+        }
+        w.var_u64(self.oil.fields.len() as u64);
+        for (f, x) in &self.oil.fields {
+            w.var_u64(u64::from(*f));
+            put_field(&mut w, x);
+        }
         self.dragons.encode_all(&mut w);
         self.lairs.rows().encode_all(&mut w);
         w.into_bytes()
@@ -1170,6 +1394,18 @@ impl Dragons {
         d.wheel = PagedWheel::decode_with(r, get_ev)?;
         d.index.villages = get_cells(r)?;
         d.index.roads = get_cells(r)?;
+        let mut regions = BTreeMap::new();
+        for _ in 0..r.len_prefix(5)? {
+            let c = get_cell(r)?;
+            regions.insert(c, get_region(r)?);
+        }
+        d.oil.regions = regions.into();
+        let mut fields = BTreeMap::new();
+        for _ in 0..r.len_prefix(5)? {
+            let f = u32_of(r.var_u64()?)?;
+            fields.insert(f, get_field(r)?);
+        }
+        d.oil.fields = fields.into();
         d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
         let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
         // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
@@ -1243,11 +1479,28 @@ impl Dragons {
                 |v, w| put_ids(w, v),
             )
         });
+        let oil = [
+            self.oil.regions.save_paged(
+                batch,
+                OIL_REGION_TABLE,
+                &mut w,
+                |c, w| put_cell(w, c),
+                put_region_into,
+            ),
+            self.oil.fields.save_paged(
+                batch,
+                OIL_FIELD_TABLE,
+                &mut w,
+                |f, w| w.var_u64(u64::from(*f)),
+                |x, w| put_field(w, x),
+            ),
+        ];
         batch.put(meta_key, w.as_bytes());
         DragonsTickets {
             wheel,
             by_key,
             cells,
+            oil,
             dragons: self.dragons.rows_mut().save_dirty(batch),
             lairs: self.lairs.rows_mut().save_dirty(batch),
         }
@@ -1261,6 +1514,9 @@ impl Dragons {
         self.lair_cells.saved(a);
         self.index.villages.saved(b);
         self.index.roads.saved(c);
+        let [r, f] = t.oil;
+        self.oil.regions.saved(r);
+        self.oil.fields.saved(f);
         self.dragons.rows_mut().saved(t.dragons);
         self.lairs.rows_mut().saved(t.lairs);
     }
@@ -1274,6 +1530,9 @@ impl Dragons {
         self.lair_cells.save_failed(a);
         self.index.villages.save_failed(b);
         self.index.roads.save_failed(c);
+        let [r, f] = t.oil;
+        self.oil.regions.save_failed(r);
+        self.oil.fields.save_failed(f);
         self.dragons.rows_mut().save_failed(t.dragons);
         self.lairs.rows_mut().save_failed(t.lairs);
     }
@@ -1307,6 +1566,16 @@ impl Dragons {
             .map_err(format_err)?;
         d.index.roads =
             PagedMap::open_paged(r, ROAD_CELL_TABLE, src, get_cell, get_ids).map_err(format_err)?;
+        d.oil.regions = PagedMap::open_paged(r, OIL_REGION_TABLE, src, get_cell, get_region)
+            .map_err(format_err)?;
+        d.oil.fields = PagedMap::open_paged(
+            r,
+            OIL_FIELD_TABLE,
+            src,
+            |r| r.var_u64().and_then(u32_of),
+            get_field,
+        )
+        .map_err(format_err)?;
         if !r.is_empty() {
             return Err(PageError::Format(format!(
                 "{} trailing bytes in the dragons' meta page",
@@ -1394,6 +1663,16 @@ impl Dragons {
         if !lairs_ok {
             return bad("a lair index names a lair past the table".into());
         }
+        let nf = self.oil.next_field;
+        let oil_ok = self
+            .oil
+            .fields
+            .iter()
+            .all(|(&f, x)| f < nf && x.parent < nf)
+            && self.oil.regions.values().flatten().all(|c| c.field < nf);
+        if !oil_ok {
+            return bad("the oil index names a field past its count".into());
+        }
         for (_, e) in self.wheel.iter() {
             let ok = match *e {
                 Ev::SeenAtLair { lair, .. } | Ev::Respawn { lair, .. } => lair < nl,
@@ -1419,8 +1698,10 @@ impl Dragons {
     fn check_rows(&self) -> codec::Result<()> {
         let nl = self.lairs.len() as u32;
         let mut embodied = BTreeSet::new();
+        let nf = self.oil.next_field;
         for (id, x) in self.dragons.iter() {
             let ok = x.lair.is_none_or(|l| l < nl)
+                && x.visitor.is_none_or(|f| f < nf)
                 && match x.state {
                     State::Flying(Purpose::Claim(l))
                     | State::Embodied {

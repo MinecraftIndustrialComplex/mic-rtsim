@@ -2,7 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
 import com.iafenvoy.iceandfire.data.DragonColor;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.iafenvoy.iceandfire.entity.DragonChargeEntity;
 import com.iafenvoy.iceandfire.entity.util.HomePosition;
+import com.iafenvoy.iceandfire.entity.util.dragon.IafDragonAttacks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -40,6 +42,19 @@ import java.util.List;
  *       replaces it with the attack target's position while the dragon has a live one, picks a new random
  *       one when the dragon is within 2 blocks of it, and clamps y to {@code maxFlight}.</li>
  *   <li>{@code HomePosition(BlockPos, Level)}: the home and its dimension name, as the lair pieces set it.</li>
+ *   <li>Fire (OILGATE.md §4.3, verified with CFR against the jar, 2026-10-21): every breath goes through
+ *       {@code public final void breathAttack(double, double, double, boolean useCharge)}, which posts
+ *       {@code com.iafenvoy.iceandfire.event.DragonFireEvent} (cancellable; {@code getDragon()}) and stops
+ *       when it is cancelled. A stream posts one each tick while {@code isActuallyBreathingFire()}
+ *       ({@code fireBreathTicks > 20}), for at most {@code ageInDays * maxBreathTimeMul} ticks (the pack's
+ *       2.0); the flight manager's {@code HOVER_BLAST} posts one each tick of the {@code FIRECHARGE}
+ *       animation and spawns the charge at its tick 20. {@code FireDragonEntity.shootFireAtMob}'s ground
+ *       charge (one roll in five while {@code groundAttack} is {@code FIRE}) spawns a
+ *       {@code DragonChargeEntity} (a {@code Fireball}, owner the dragon) with no event. The attack picks
+ *       are public fields: {@code airAttack} ({@code IafDragonAttacks.Air}: {@code SCORCH_STREAM},
+ *       {@code HOVER_BLAST}, {@code TACKLE}), {@code groundAttack} ({@code IafDragonAttacks.Ground}:
+ *       {@code BITE}, {@code SHAKE_PREY}, {@code TAIL_WHIP}, {@code WING_BLAST}, {@code FIRE}) and
+ *       {@code usingGroundAttack}; {@code setBreathingFire(boolean)} starts and stops a stream.</li>
  * </ul>
  */
 public final class IafDragons {
@@ -189,5 +204,23 @@ public final class IafDragons {
 
     public static Vec3 flightTarget(DragonBaseEntity d) {
         return d.flightManager.getFlightTarget();
+    }
+
+    /** A dragon's fire charge entity, and the dragon that shot it (null when it is not one). */
+    public static DragonBaseEntity chargeOwner(Entity e) {
+        return e instanceof DragonChargeEntity c && c.getOwner() instanceof DragonBaseEntity d ? d : null;
+    }
+
+    /**
+     * A dragon out of oil fights with bite and claws (OG-13): no fire attack is picked (the air attack
+     * becomes the tackle, the ground fire a bite) and a stream it began stops.
+     */
+    public static void withoutFire(DragonBaseEntity d) {
+        if (d.airAttack != IafDragonAttacks.Air.TACKLE)
+            d.airAttack = IafDragonAttacks.Air.TACKLE;
+        if (d.groundAttack == IafDragonAttacks.Ground.FIRE)
+            d.groundAttack = IafDragonAttacks.Ground.BITE;
+        if (d.isBreathingFire())
+            d.setBreathingFire(false);
     }
 }

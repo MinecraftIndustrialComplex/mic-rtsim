@@ -1701,6 +1701,157 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The oil gate through the native engine and the fake plugin (docs/boundary.md §6.8): the
+    /// plugin's switches and an oil field open the gate; a player near the field draws a field
+    /// flight (a hostile fire dragon on a full reserve, flags 8 and 16) and, the field having no
+    /// fire lair in reach, one PLACE_LAIR in Java's dimension id; the body's breaths drain its
+    /// reserve; and across a crash the journal's replay books the breaths after the save once and
+    /// asks for no second lair.
+    #[test]
+    fn the_oil_gate_draws_a_field_flight_places_a_lair_and_replays_breaths_once() {
+        let dir = tmpdir("dragons-oil");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::OilConfig(db::OilConfig {
+            flags: db::OIL_FIELD_FLIGHTS | db::OIL_PLACE_LAIRS,
+        }));
+        // A 3 x 3 field at chunk (200, 200): blocks 3200 to 3247.
+        let chunks: Vec<db::OilChunkRec> = (0..9)
+            .map(|i| db::OilChunkRec {
+                cx: 200 + i % 3,
+                cz: 200 + i / 3,
+                amount: 40_000,
+                flags: 0,
+            })
+            .collect();
+        j.dragon_obs(&O::OilChunks(db::OilChunks {
+            dimension: dim,
+            source: db::OIL_SOURCE_CDG,
+            chunks,
+        }));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (s, _, _) = e.dragon_stats();
+        assert_eq!((s.oil_chunks, s.fields), (9, 1), "{s:?}");
+
+        // A player on the field, above y 15: the field flights roll and draw.
+        j.players = vec![(PLAYER, dim, [3224.0, 70.0, 3224.0])];
+        let drawn = |j: &Java| {
+            j.iaf.iter().find_map(|(_, c)| match c {
+                D::Materialize(m) if m.flags & db::MAT_OIL != 0 => Some(*m),
+                _ => None,
+            })
+        };
+        let mut ticks = 0;
+        while drawn(&j).is_none() {
+            assert!(
+                ticks < 12_000,
+                "no field flight drawn: {:?}",
+                e.dragon_stats()
+            );
+            j.tick();
+            ticks += 1;
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        j.idle();
+        let m = drawn(&j).unwrap();
+        assert_eq!(m.species, Species::Fire);
+        assert!(
+            m.flags & db::MAT_HOSTILE != 0,
+            "a visitor is hostile: {m:?}"
+        );
+        assert_eq!(m.target_player, PLAYER, "{m:?}");
+        let capacity = e.with_dragons(|d, _| d.tun.oil.capacity);
+        assert_eq!(m.oil, capacity, "a drawn dragon arrives full");
+        assert_eq!(m.dimension, dim, "in Java's dimension id");
+        let places: Vec<db::PlaceLair> = j
+            .iaf
+            .iter()
+            .filter_map(|(_, c)| match c {
+                D::PlaceLair(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(places.len(), 1, "one lair placed for the field: {places:?}");
+        let p = places[0];
+        assert_eq!(
+            (p.dimension, p.species, p.kind),
+            (dim, Species::Fire, LairKind::Roost)
+        );
+        assert!(
+            (3150..3300).contains(&p.x) && (3150..3300).contains(&p.z),
+            "near the field: {p:?}"
+        );
+        let (s, _, _) = e.dragon_stats();
+        assert!(s.field_draws >= 1 && s.lairs_placed == 1, "{s:?}");
+
+        // Its breaths drain the reserve (one point each).
+        let level = |e: &Engine| {
+            e.with_dragons(|d, _| {
+                let h = rtsim_ecology::dragon::dragon_of(m.agent)?;
+                d.dragons.get(h).map(|x| x.oil_level(&d.tun.oil, d.now()))
+            })
+        };
+        let full = level(&e).expect("the drawn dragon is in the sim");
+        j.dragon_obs(&O::Breaths(db::Breaths {
+            agent: m.agent,
+            epoch: m.epoch,
+            count: 30,
+        }));
+        j.idle();
+        let after = level(&e).unwrap();
+        assert!(
+            (full - 31..=full - 30).contains(&after),
+            "30 breaths: {full} to {after}"
+        );
+
+        // A save, then 20 more breaths journaled after it, and a crash.
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        j.dragon_obs(&O::Breaths(db::Breaths {
+            agent: m.agent,
+            epoch: m.epoch,
+            count: 20,
+        }));
+        j.idle();
+        let before = level(&e).unwrap();
+        assert!(before <= after - 20, "{after} to {before}");
+        assert_eq!(e.dragon_stats().0.visitors_left, 0);
+        let breaths = e.dragon_stats().0.breaths;
+        assert_eq!(breaths, 50);
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            e.dragons_restore_check(),
+            (None, false),
+            "the dragons read back to their saved state hash"
+        );
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        // The breaths after the save are booked once (a second replay would make 70), and the
+        // body the crash took ended the visit: a visitor carrying nothing leaves the sim (OGC11).
+        let (s, _, _) = e.dragon_stats();
+        assert_eq!(
+            s.breaths, breaths,
+            "the breaths after the save, once: {s:?}"
+        );
+        assert!(level(&e).is_none() && s.visitors_left >= 1, "{s:?}");
+        let (s, _, _) = e.dragon_stats();
+        assert_eq!(s.lairs_placed, 1, "the lair is not asked for again: {s:?}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// C25 (U10): with the ecology module switched off mid-session the dragons ignore their
     /// records (a hoard robbery), decide nothing (a player at the lair sees no dragon) and keep
     /// the page they had at the switch; switched on again they run on and the player sees the

@@ -383,7 +383,7 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
     out
 }
 
-/// rtsim-knowledge's report kind from its number (1 assault ... 8 resident killing).
+/// rtsim-knowledge's report kind from its number (1 assault ... 8 resident killing, 9 encroachment).
 pub fn report_kind(k: u8) -> Option<ReportKind> {
     Some(match k {
         1 => ReportKind::Assault,
@@ -394,6 +394,7 @@ pub fn report_kind(k: u8) -> Option<ReportKind> {
         6 => ReportKind::Rescue,
         7 => ReportKind::ResidentAssault,
         8 => ReportKind::ResidentKilling,
+        9 => ReportKind::Encroachment,
         _ => return None,
     })
 }
