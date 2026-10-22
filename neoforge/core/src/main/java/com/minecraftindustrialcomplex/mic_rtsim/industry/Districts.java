@@ -1329,6 +1329,9 @@ public final class Districts {
     /** GameTests: adds a chunk to a district as if detection had kept it (an unloaded member chunk). */
     public void addChunkForTest(District d, long chunk) {
         d.chunks.add(chunk);
+        // A stand-in for a far member that holds a machine: an unloaded chunk apart from the rest with no
+        // recorded seed would be dropped at the next detection (DS-10).
+        d.seedCounts.put(chunk, 1);
         d.recomputeBounds();
         byChunk.computeIfAbsent(d.dim, k -> new Long2ObjectOpenHashMap<>()).put(chunk, d);
         redeclare(d);
