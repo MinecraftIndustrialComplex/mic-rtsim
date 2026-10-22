@@ -9,6 +9,7 @@ use proptest::prelude::*;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
+use rtsim_ships::boundary::{self, By, Obs};
 use rtsim_ships::engine::{PState, Ship};
 use rtsim_ships::synth::{self, Coastal, FakeShips};
 use rtsim_ships::timetable::Phase;
@@ -471,6 +472,80 @@ fn lost_ships_come_back_in_their_own_slot() {
         "in its own slot"
     );
     assert_eq!(c.ships.stats.respawns, 1);
+}
+
+/// A pirate crew the plugin reports killed to the last man loses the ship, as an abstract fight
+/// that kills the last man does (`after_fight`), and the haven rebuilds it once its pool can man
+/// one. Before, the ship stayed active with no crew: never lost, so never rebuilt, and with no
+/// strength no lane was ever worth hunting again. `sim ships`' pirates stopped hunting for good
+/// once the fights they lost in view had whittled their crews away.
+#[test]
+fn a_pirate_crew_killed_in_view_loses_the_ship_and_its_haven_rebuilds_it() {
+    let mut c = coast(7);
+    c.ships
+        .run_until(&mut c.world, &mut NoInfrastructure, Tick::from_days(1));
+    let haven = c.haven as usize;
+    let (fought, wounded) = (
+        c.ships.havens[haven].ships[0],
+        c.ships.havens[haven].ships[1],
+    );
+    let merchant = c
+        .ships
+        .ships
+        .iter()
+        .find(|(_, x)| matches!(x.role, Role::Merchant))
+        .map(|(id, _)| id)
+        .expect("a merchant");
+    let at = c.ships.now();
+    // A fight the plugin played, lost by the pirates to the last man.
+    let crew = c.ships.ship(fought).unwrap().crew;
+    let fight = Obs::Fight(boundary::Fight {
+        attacker: Ship::agent(fought),
+        defender: Ship::agent(merchant),
+        outcome: 2,
+        attacker_crew: (crew, 0),
+        defender_crew: (4, 3),
+        attacker_hull_milli: 800,
+        defender_hull_milli: 900,
+    });
+    c.ships.ingest(&mut c.world, &fight, &c.mask, at);
+    // Wounds that kill the other pirate ship's last man.
+    let x = c.ships.ship(wounded).unwrap();
+    let damaged = Obs::Damaged(boundary::Damaged {
+        agent: Ship::agent(wounded),
+        epoch: x.epoch,
+        by: By::Other,
+        hull_milli: 700,
+        crew_lost: x.crew,
+        player: (0, 0),
+        ship: 0,
+    });
+    c.ships.ingest(&mut c.world, &damaged, &c.mask, at);
+    for p in [fought, wounded] {
+        let x = c.ships.ship(p).unwrap();
+        assert!(
+            !x.is_active(),
+            "a pirate ship with no crew is lost: {:?}",
+            x.status
+        );
+    }
+    assert_eq!(c.ships.stats.sinkings, 2);
+    assert_eq!(c.ships.pending_by_kind().get("rebuild"), Some(&2));
+    c.ships.check(&c.world).expect("conserved after the losses");
+    // With crews ashore, the haven mans both again and they hunt.
+    c.ships.havens[haven].crew_pool = 20;
+    c.ships
+        .run_until(&mut c.world, &mut NoInfrastructure, at + 12 * TICKS_PER_DAY);
+    for p in [fought, wounded] {
+        let x = c.ships.ship(p).unwrap();
+        assert!(x.is_active() && x.crew > 0, "rebuilt: {x:?}");
+    }
+    assert_eq!(c.ships.stats.rebuilds, 2);
+    assert!(
+        c.ships.stats.hunts > 0,
+        "the rebuilt pirates hunt: {:?}",
+        c.ships.stats
+    );
 }
 
 #[test]
