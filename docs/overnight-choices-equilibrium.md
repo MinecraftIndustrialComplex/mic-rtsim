@@ -44,3 +44,34 @@ unchanged; EQUILIBRIUM.md marks the slices built. Branch `feat/eq-s1-s2`.
   term §3.2 describes; S2 adds it.
 - **A camp's pool dips below its cap with nobody watching** (52 of 60 on day 480 in the conflict
   scenario, 53 of 60 on day 20 of the host soak): its parties go out and come back. `short` counts it.
+
+## What the S2 checks found (not edited)
+
+The 30-seed checks of EQC21 on the 8 x 7 ranges grid, release build, seeds 1 to 30, median [5th,
+95th] over seeds, against §3.6's model (whose wipes come at year 20 and whose numbers are 16 seeds):
+
+| Check | Engine | Model |
+|---|---|---|
+| N/K, years 10 to 20, headroom 1 | 0.78 [0.76, 0.80] | 0.59 [0.48, 0.70] (no player) |
+| N/K, headroom 1.5 | 0.83 [0.81, 0.84] | |
+| N/K, headroom 4 | 0.83 [0.82, 0.85] | |
+| World wipe: days to half the year before | 1,560 [1,368, 1,752] | 1,368 [1,248, 1,656] |
+| World wipe: days to 90% of the control | 3,096 [2,808, 3,408], every seed | 3,192 [2,873, 3,538], 94% of seeds |
+| World wipe: last year over the control | 0.95 [0.92, 0.98] | 0.92 [0.88, 0.94] |
+| World wipe: days to every range alive | 1,272 [936, 1,752] | (alive at the end in every seed) |
+| Local wipe (3 x 3 at spawn): days to half | 1,176 [792, 1,464] | 1,128 [792, 1,608] |
+| Local wipe: days to 90% of the control | 2,688 [1,944, 3,360], 26 of 30 seeds | 2,724 [2,390, 3,596], 88% of seeds |
+| Local wipe: last year over the control | 0.98 [0.84, 1.13] | 0.94 [0.85, 1.02] |
+| Local wipe: days to every range alive | 288 [120, 792] | |
+
+- **Every range is alive 40 years after both wipes in all 30 seeds,** and every seed is back to half
+  within 25 years (the longest 1,752 days, 18 years). A world wipe refills by the frontier (about 53
+  of 56 ranges per seed) and the rest by dispersal; a local wipe refills by dispersal (228 of the 270
+  wiped ranges over the 30 seeds) and the frontier (29).
+- **One band across forage headroom 1.5 to 4, and 0.05 K below it at 1:** the medians are 0.78, 0.83
+  and 0.83, within the 0.1 the check asks, and no seed spreads more than 0.15 K across the three.
+  Headroom 1 is where today's diets start to bind (EQC19).
+- **The engine's herds sit higher than the model's 0.59 K** because the grid has the phase 1 world's
+  five lairs over 56 ranges, fewer dragons per range than the model's world, so less of each range's
+  yearly production is eaten (§3.6: about 40% goes to dragons at the model's density). The wipes'
+  times match the model's because they are set by one calving a year (§3.2), not by the level.
