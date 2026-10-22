@@ -270,7 +270,9 @@ would take, plus the damage a raid does beyond the loot. If T_min is below that,
 somewhere between, nearer the top the more aggressive or hungry the speaker:
 T = T_min + (0.25 + 0.4 aggression + 0.15 hunger) x (top - T_min). This is the Nash bargaining
 range: both sides are better off with the payment than with the war. The demand's own score is
-trust x value(T) + (1 - trust) x 0.9 x the war's score, so a camp asks a payer and fights a refuser.
+trust x value(T) x (1 + demand bias / 10) + (1 - trust) x 0.9 x the war's score, less the envoy's
+effort (demand bias: goblin 0, raider 2, bandit 6, Umvuthana 10), so a camp asks a payer and fights a
+refuser, and a bandit or Umvuthana camp asks first more readily than a goblin one.
 
 The envoy party walks to the base and back: the camp learns the base's defence (2.4) whether or not
 he pays. A payment soothes the grievance (by the culture's relief, 0.7), the pride (x 0.3), adds to
