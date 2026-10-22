@@ -17,12 +17,14 @@ player names; only counts are given).
    instance moves to NeoForge 21.1.249 and Create 6.0.10; 11 jars had to move with it (section 2.2).
    The world loses one mod: Create Egg Production (40 egg collectors, 7 incubators), which has no
    build for Create 6.0.7+.
-2. **rtsim runs on it with no rtsim error or warning in the logs.** Four adopt areas (two overworld
-   bases, one in `thebrokenscript:day_b`, one in `codmod:entropy`) made 6 districts holding 1,142
-   inventories in 3 dimensions. Its cost: about 0.3 ms per tick of inventory sweeps, 7 detections
-   (237 ms in all), and one 366 ms glass box compile of the 1,787-node day_b district.
-3. **Paired MSPT (on minus off): -1.1 idle, +2.3 busy, +0.7 unloaded, +4.5 reloaded,** every window at
-   20 TPS. The A/A control (section 4) says how much of that is two servers differing.
+2. **rtsim runs on it with no rtsim error or warning in the logs** (three rtsim runs). Four adopt
+   areas (two overworld bases, one in `thebrokenscript:day_b`, one in `codmod:entropy`) made 6
+   districts holding 1,142 inventories in 3 dimensions. Two small districts passed the glass box
+   check; the day_b district's 1,787-node compile takes 366 ms.
+3. **rtsim costs about 0.6 ms per tick here.** A spark profile puts rtsim at 1.13% of the server
+   thread in the busy window (0.72% of it inventory sweeps). Paired MSPT (on minus off) was -1.1
+   idle, +2.3 busy, +0.7 unloaded, +4.5 reloaded, every window at 20 TPS, but two identical servers
+   differed by up to 12 MSPT in the A/A controls, which ran under heavier machine load (section 4).
 4. **Compat took three small changes, no new block, item or entity (D3):** Create Encased's machines
    get a glass box fingerprint, Garnished's fan recipes are named by their type, and Sophisticated
    Storage's limited barrels and shulker boxes are district stock. Slice and Dice's slicer is the one
@@ -99,8 +101,9 @@ The harness of `docs/stress-worlds-results.md` section 2 (`tools/stress-worlds/s
   day_b, entropy and the nether): idle 60 s; forceload four 12 x 12 chunk areas (two overworld
   bases, the densest day_b base, the entropy base); settle 180 s; `rtsim district adopt` at each
   centre with radius 6; busy 300 s; forceload off, unloaded 90 s; forceload on, reloaded 90 s.
-- **Pairs:** two servers side by side on their own ports (slots 42 and 44), started 5 s apart.
-  `tbsmp-ab` is off then on; `tbsmp-aa` is off and off.
+- **Pairs:** two servers side by side on their own ports, started 5 s apart: `tbsmp-ab` (off, on)
+  and `tbsmp-aa2` (off, off) on slot 42, `tbsmp-aa` (off, off) on slot 44. `tbsmp-ds10` and
+  `tbsmp-prof` are one rtsim server each.
 - **Per window:** MSPT mean, p95 and max of the 5 s samples (each sample is NeoForge's mean over the
   last 100 ticks), process CPU per tick, server thread CPU per tick, TPS, heap after a full GC
   (`jcmd`), RSS, `save-all flush` time, and rtsim's `/rtsim district perf`, `list` and `info`.
@@ -120,7 +123,7 @@ The harness of `docs/stress-worlds-results.md` section 2 (`tools/stress-worlds/s
 - Heap live after GC: 2,474 MB off, 2,491 MB on. RSS 5,945 MB and 6,270 MB.
 - `save-all flush`: 1.97 s off, 2.08 s on. rtsim's save directory: 138 kB.
 
-A/A control (`tbsmp-aa`, both arms off, the same scene and slots):
+A/A control (`tbsmp-aa`, both arms off, the same scene, slot 44):
 
 | Window | A-off mean | p95 | max | B-off mean | p95 | max | B - A | TPS A / B |
 |---|---|---|---|---|---|---|---|---|
@@ -134,7 +137,41 @@ This A/A ran while other agents' builds and GameTests loaded the laptop: a load 
 window ran at 17 TPS and the reloaded one at 9. So it bounds the noise between two identical servers
 under load (up to 6 MSPT on a window mean), not the noise at the A/B's load.
 
-AA2_TABLE
+A second A/A (`tbsmp-aa2`, on the A/B's slot 42) ran at an even higher load (about 27 idle,
+47 busy, 33 unloaded, 57 reloaded):
+
+| Window | A-off mean | p95 | max | B-off mean | p95 | max | B - A | TPS A / B |
+|---|---|---|---|---|---|---|---|---|
+| idle | 20.58 | 27.01 | 115.93 | 19.54 | 22.75 | 109.73 | -1.04 | 20.0 / 20.0 |
+| busy | 105.52 | 191.65 | 208.83 | 113.93 | 228.31 | 258.88 | +8.41 | 10.7 / 10.6 |
+| unloaded | 10.42 | 15.82 | 15.82 | 10.86 | 15.72 | 15.72 | +0.44 | 20.0 / 20.0 |
+| reloaded | 123.23 | 135.84 | 163.65 | 135.30 | 152.97 | 158.71 | +12.06 | 8.5 / 7.7 |
+
+Server thread CPU per tick (ms), the steadier measure under load, second minus first server:
+
+| Window | A/B (on - off) | A/A 1 | A/A 2 |
+|---|---|---|---|
+| idle | -0.76 | -0.07 | +0.19 |
+| busy | +2.76 | -0.51 | -0.53 |
+| unloaded | +1.03 | -2.89 | +0.10 |
+| reloaded | +4.91 | +1.85 | +1.77 |
+
+Both A/As ran at 2 to 6 times the A/B's load, so neither bounds the A/B's noise. MSPT between
+identical servers differed by up to 12 under that load; the server thread's CPU per tick, steadier,
+moved by about 0.5 ms in busy against +2.8 in the A/B. So a third run measured rtsim directly.
+
+**Spark profile** (`tbsmp-prof`, one rtsim server alone, built at 54bc16c like the A/B's on arm,
+load about 12 in busy and 8 in reloaded, close to the A/B's 9; 120 s of the busy window):
+
+- rtsim's own frames (every `com.minecraftindustrialcomplex` class) took **1.13% of the server
+  thread, about 0.57 ms per tick**: inventory sweeps (`Sampler`, `StockAccess`) 0.72%, the glass box
+  0.22%, the Create plugin 0.15%, detection (`Districts`) 0.11%, everything else under 0.05% each.
+- Create's own frames took 52.9%, block entity ticking 54.7% (inclusive, overlapping).
+- The run's MSPT: busy 40.83 (p95 44.29, max 45.71), unloaded 4.41, reloaded 40.61 (p95 43.48), all
+  at 20 TPS, each below the A/B's off arm (42.18, 5.60, 40.52). Heap live 2,456 MB.
+
+So rtsim's cost on this world is about 0.6 ms per tick in the busy window; the A/B's +2.3 and +4.5
+MSPT are mostly the difference between two servers sharing the machine, not rtsim.
 
 ## 5. rtsim on TBSMP
 
@@ -192,12 +229,12 @@ glass box, and storage not taken for production. Counts are block entities in th
 | Create Encased (createcasing) | 12,098 (7,098 encased shafts, 2,428 gearboxes, 391 depots, 176 presses, 105 mixers) | 1,448 | Its press, mixer and depot extend Create's classes but had no glass box fingerprint, so they were modelled as unknown | 19aaf5c: a block entity built on a Create class takes that class's fingerprint (GameTest) |
 | Garnished | fan recipes; 26 decorative block entities | 0 | Its fan recipe types (freezing, dye blowing) were named as blasting | 084c3de: a fan recipe is named by its type (GameTest) |
 | Sophisticated Storage | 3,737 chests, 1,035 barrels, 129 limited barrels | 611 chests and barrels, 5 limited barrels | Chests and barrels are stock through `#c:chests` and `#c:barrels`; limited barrels and shulker boxes were not | 54bc16c: both in `#mic_rtsim:district_stock` |
-| Sophisticated Storage controller, link, I/O, input, output | 31 / 6 / 4 / 20 / 14 | 23 | Proxies onto other storage: not read as inventories today (only stock and plugin inventories are). Under DS-10 they would seed a district | for DS-10: `#mic_rtsim:district_not_seed` (section 7) |
+| Sophisticated Storage controller, link, I/O, input, output | 31 / 6 / 4 / 20 / 14 | 23 | Proxies onto other storage: never read as inventories (only stock and plugin inventories are), but each seeds a district, under main's rule (any block entity with a capability) and under DS-10 unless tagged | for DS-10: `#mic_rtsim:district_not_seed` (section 7) |
 | Slice and Dice | 36 slicers, 18 sprinklers | 5 slicers | The slicer is claimed as a kinetic block; items under it pass through the model unprocessed | none yet (open question 1) |
 | Some Assembly Required, Create Food | 300 placed sandwiches | 0 | Their recipes use Create's own recipe types, which the glass box already reads | none |
 | Create: Framed | 145 sliding doors | 0 | Decorative, no capability | none |
 | Rechiseled: Create | 2 mechanical chisels | 0 | Negligible | none |
-| Lootr | 27,487 chests | 25 | Stock through `#c:chests`; never a seed | none |
+| Lootr | 27,487 chests | 25 | Boundary stock through `#c:chests`; no longer a seed under DS-10 | none |
 | The Broken Script console | 49 in the day_b area | 49 | No capability: neither a seed nor read | none |
 | Easy Villagers (not a Create addon) | iron farms, auto traders, farmers, incubators | 108 | Ticking, with item capabilities: seeds, and their output (emeralds, iron, crops) reaches the glass box only through the residual black-box node | none needed |
 | Create Egg Production (removed, section 2.2) | 40 collectors, 7 incubators | 7 | Lost with the bump | none |
@@ -226,7 +263,8 @@ Sophisticated Storage's controller, storage link, I/O, input, output and decorat
 | day_b glass box | 1,787 nodes, 366 ms | 1,593 nodes, 270 ms |
 | Stop | crashed at stop (CoD mod port, second server) | clean, 6 s, exit 0 |
 
-The run was alone on the machine (load about 6 to 10), so its MSPT is not paired: busy 50.8,
+The run was the only server on the machine (load about 12 in busy, 7 to 8 after), so its MSPT is not
+paired: busy 50.8,
 unloaded 5.3, reloaded 42.7 (TPS 18.8, 20, 20). Boot 36 s wall.
 
 - Storage no longer seeds: the one district that held only an inventory dissolved, and the
@@ -260,12 +298,16 @@ loopback only.
 ## 10. Choices made (all undoable)
 
 - The test instance runs NeoForge 21.1.249 and Create 6.0.10; the packwiz pack keeps the world's own
-  versions. The 11 moved jars are the oldest versions the link check passes, not the newest.
+  versions. The moved addon jars are the first versions the link check passes, not the newest.
 - Egg Production dropped; Supplementaries 3.1.7 kept with its known GUI break.
 - alltheleaks 0.1.17 for the unpublished 0.1.16.
 - The scene's four areas and their dimensions (overworld twice, day_b, entropy); the nether's Create
   is too thin to matter.
-- The hung B-on server of the first A/B was ended with SIGTERM (it was this session's own process).
+- The hung B-on server of the first A/B was ended with SIGTERM (this session's own process); sw.py
+  now does the same a minute after a crash at stop.
+- A second A/A and a spark-profiled rtsim run were added because the first A/A ran under heavy load.
+- DS-10 was checked on a no-commit merge build, since it has not landed; its Sophisticated Storage
+  tags were added only to that build, not committed (the tag file is DS-10's).
 - Compat as tags and fingerprints in the existing plugin, no new plugin.
 
 ## 11. Open questions (recommended option first)
