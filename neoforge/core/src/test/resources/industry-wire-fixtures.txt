@@ -79,6 +79,6 @@ CODES.sweep_flag live=1 creative=2 overstressed=4
 CODES.inv_kind ITEMS=1 FLUIDS=2 ENERGY=4 POSTBOX=8 PACKAGER_TARGET=16 PLUGIN=32
 CODES.carriage_reason Exchange=1 Loot=2
 CODES.deposit_plugin OreExcavation=1 DieselOil=2 DestroyCrude=3
-CODES.threat_class GroundMelee=0 GroundRanged=1 Flying=2 Siege=3
-CODES.block_flags PERIMETER=1 ROOFLESS=2 MACHINE=4 INVENTORY=8 ROOF=16
+CODES.threat_class GroundMelee=0 GroundRanged=1 Flying=2 Siege=3 Burrowing=4
+CODES.block_flags PERIMETER=1 ROOFLESS=2 MACHINE=4 INVENTORY=8 ROOF=16 SUBTERRANEAN=32 ARMOURED=64
 CODES.survey_flag mob_griefing=1
