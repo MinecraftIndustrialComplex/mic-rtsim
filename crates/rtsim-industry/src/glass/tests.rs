@@ -4431,6 +4431,62 @@ mod replay_path {
             assert!(e.sim_stock(D).is_none(), "frozen until a window passes");
         }
 
+        /// What counts as the same factory (G2-81): a switch's level and output and a heater's
+        /// burn and heat level are its state at the compile; their thresholds and burn per fuel,
+        /// and every other record, are its build.
+        #[test]
+        fn the_same_factory_is_its_build_not_its_state() {
+            fn complete(b: &B) -> crate::glass::store::Complete {
+                let g = b.graph();
+                crate::glass::store::Complete {
+                    end: GraphEnd {
+                        compile: 1,
+                        ..g.end
+                    },
+                    nodes: g.nodes,
+                    edges: g.edges,
+                    recipes: g.recipes,
+                    domains: g.domains,
+                }
+            }
+            let same = |held: &B, b: &B| crate::glass::same_factory(&held.graph(), &complete(b));
+            let kind =
+                |b: &B, k: NodeKind| b.nodes.iter().position(|n| n.kind == k).expect("the node");
+            let line = switched_line();
+            let ctl = kind(&line, NodeKind::Controller);
+            assert!(same(&line, &line));
+            let mut b = switched_line();
+            b.nodes[ctl].params[2] ^= 1;
+            b.nodes[ctl].params[3] = 55;
+            assert!(same(&line, &b), "the switch's state");
+            for i in [0, 1] {
+                let mut b = switched_line();
+                b.nodes[ctl].params[i] += 1;
+                assert!(!same(&line, &b), "the switch's threshold {i}");
+            }
+            let mixer = || burning_mixer([1593, i64::from(heat::KINDLED), 1600, 500], true);
+            let held = mixer();
+            let h = kind(&held, NodeKind::Heater);
+            let mut b = mixer();
+            b.nodes[h].params[0] = 20;
+            b.nodes[h].params[1] = i64::from(heat::SEETHING);
+            assert!(same(&held, &b), "the heater's state");
+            for i in [2, 3] {
+                let mut b = mixer();
+                b.nodes[h].params[i] += 1;
+                assert!(!same(&held, &b), "the heater's build {i}");
+            }
+            let mut b = mixer();
+            b.edges[0].order += 1;
+            assert!(!same(&held, &b), "an edge");
+            let mut c = complete(&held);
+            c.end.fingerprint = 1;
+            assert!(
+                !crate::glass::same_factory(&held.graph(), &c),
+                "the fingerprint"
+            );
+        }
+
         /// An edit after a restore stops the restored replay, as it stops one that never stopped.
         #[test]
         fn an_edit_after_a_restore_stops_the_glass_replay() {

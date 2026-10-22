@@ -93,9 +93,19 @@ fn empty_view<'a>(
 /// Does a new session's compile describe the factory the held compile does (G2-81)? The same
 /// END (fingerprint, the test Java itself uses for "the compile still holds", G-B3; revision,
 /// frame, window and counts) but for its number, a resend flag and the ticks it spanned, and the
-/// same records but for what is the factory's state at the compile rather than its build: the
-/// compile number, a node's `params` (a heater's burn left, a switch's level; their configuration
-/// is in the fingerprint) and a domain's level and live stress.
+/// same records but for the compile number and what is the factory's state at the compile rather
+/// than its build ([`state_slots`]; a domain's level, live stress and live capacity).
+/// A node's `params` that are its state at the compile, not its build: a heater's burn left and
+/// heat level, a controller's output and the level it read. The rest (thresholds, burn per fuel,
+/// a tank's size, a source's moments) are its build.
+fn state_slots(kind: records::NodeKind) -> &'static [usize] {
+    match kind {
+        records::NodeKind::Heater => &[0, 1],
+        records::NodeKind::Controller => &[2, 3],
+        _ => &[],
+    }
+}
+
 fn same_factory(held: &graph::Graph, c: &store::Complete) -> bool {
     use records::end_flags::RESEND;
     let (a, b) = (&held.end, &c.end);
@@ -110,10 +120,14 @@ fn same_factory(held: &graph::Graph, c: &store::Complete) -> bool {
     } == *b
         && a.flags & !RESEND == b.flags & !RESEND;
     let node = |x: &records::GraphNode, y: &records::GraphNode| {
+        let mut params = x.params;
+        for &i in state_slots(x.kind) {
+            params[i] = y.params[i];
+        }
         head(x.head, y.head)
             && records::GraphNode {
                 head: y.head,
-                params: y.params,
+                params,
                 ..x.clone()
             } == *y
     };
