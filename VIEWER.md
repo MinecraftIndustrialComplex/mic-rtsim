@@ -763,7 +763,7 @@ every module engine's tape, drains them at least once a game day, prints R and p
 | quiet (11 nodes) | 400 | 4.86 | 863,026 |
 | quiet `--markets 1000` | 400 | 496 | 8,448 |
 | memory (1,024 markets) | 20 | 538 | 7,790 |
-| dragons | 48 | 11.0 | 381,300 |
+| dragons | 48 | 9.50 | 441,506 |
 | ships | 12 | 5.58 | 751,219 |
 | herds | 200 | 3.42 | 1,224,614 |
 | conflict, ignore | 24 | 9.42 | 445,413 |
@@ -776,9 +776,10 @@ every module engine's tape, drains them at least once a game day, prints R and p
 - **What ends the full tier.** At every measured R, the 504-day horizon ends the full tier before
   its bytes do. The bytes come first only above about 8,300 rows a game day (4,194,304 / 504),
   about 16,000 markets at phase 1's rate.
-- **The dragons figure.** `sim dragons` fails 4 of its 8 story checks (the wound, the grudge raid,
-  the slayer and heir, the heir's hunt). It fails them on main at 387bb85 too, with the same output,
-  so the V3 hooks did not cause it. Its R is for a story without those raids.
+- **The dragons figure** is from 2026-10-22, when `sim dragons` passed its 8 story checks again
+  (the meeting found, not timed: docs/overnight-choices-dragons.md R27a). The V3 figure, 11.0, was
+  for a story that failed 4 of them (the wound, the grudge raid, the slayer and heir, the heir's
+  hunt), as main at 387bb85 did before V3.
 
 ### 10.5 Rollback (P29)
 
