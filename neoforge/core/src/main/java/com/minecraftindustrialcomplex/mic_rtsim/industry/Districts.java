@@ -252,7 +252,7 @@ public final class Districts {
             return;
         BlockEntity be = chunk.getBlockEntities().get(pos);
         District d = at(level.dimension(), chunk.getPos().toLong());
-        if (be != null && seed(level, be, new HashMap<>())) {
+        if (be != null && (seed(level, be, new HashMap<>()) || mayBecomeSeed(be))) {
             IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
             chunk.setData(IndustryAttachments.SEEDS.get(), s.plus(pos.asLong()));
             chunk.setUnsaved(true);
@@ -309,7 +309,7 @@ public final class Districts {
                 IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
                 IndustryAttachments.Seeds before = s;
                 for (BlockEntity be : chunk.getBlockEntities().values()) {
-                    if (seed(level, be, cache)) {
+                    if (seed(level, be, cache) || mayBecomeSeed(be)) {
                         s = s.plus(be.getBlockPos().asLong());
                     }
                 }
@@ -915,8 +915,13 @@ public final class Districts {
             IndustryAttachments.Seeds kept = s;
             for (long p : s.positions()) {
                 BlockEntity be = chunk.getBlockEntities().get(BlockPos.of(p));
-                if (be == null || be.isRemoved() || !seed(level, be, scan.seedCache))
+                if (be == null || be.isRemoved()) {
                     kept = kept.minus(p);
+                } else if (seed(level, be, scan.seedCache)) {
+                    n++;
+                } else if (!mayBecomeSeed(be)) {
+                    kept = kept.minus(p);
+                }
             }
             if (kept != s) {
                 if (kept.isEmpty())
@@ -925,7 +930,6 @@ public final class Districts {
                     chunk.setData(IndustryAttachments.SEEDS.get(), kept);
                 chunk.setUnsaved(true);
             }
-            n = kept.positions().length;
         }
         scan.seedCounts.put(c, n);
         return n;
@@ -1129,6 +1133,13 @@ public final class Districts {
      * plugin with an opinion ({@link IndustryPlugin#seed}) decides; else a block entity that ticks on the
      * server and has an item, fluid or energy capability is.
      */
+    private static boolean mayBecomeSeed(BlockEntity be) {
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS)
+            if (plugin.mayBecomeSeed(be))
+                return true;
+        return false;
+    }
+
     public boolean seed(ServerLevel level, BlockEntity be, Map<BlockPos, Boolean> cache) {
         BlockPos p = be.getBlockPos();
         Boolean known = cache.get(p);
