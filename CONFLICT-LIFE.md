@@ -252,7 +252,7 @@ that was at least a quarter of it.
 | Demand | a player or a village | an envoy with guards asking the culture's tribute good (goblin emerald, Umvuthana gold) | today's Envoy party and `Demand`; MOWZIE.md §4.5 |
 | Band | a village, a camp, a player | a small party (today's plunder party) | today's Plunder party kind |
 | Raid | a village, a camp, a player | today's Raid party | today's Raid |
-| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it; the Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), adding its own strength (MZ-3 (b), MOWZIE.md §4.5's war seat) | today's Invasion |
+| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it; the Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), adding its own strength (MZ-3 (b)); how it travels with the band and hands over is MOWZIE.md's rework under MZ-15 (DH-5), and this design decides only when | today's Invasion |
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets a share of the camp's strength (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.14) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
@@ -760,7 +760,7 @@ per tick; nothing grows with time or with dead history (memories are four slots,
 | Java: reason lines on ENVOY and NOTICE in the `ConflictBridge` | about 120 |
 | Java GameTests | about 150 |
 
-The model is `model.py` (about 1,440 lines), `run.py` (about 460) and `walk.py` (about 180).
+The model is `model.py` (1,440 lines), `run.py` (469), `walk.py` (194) and `summarize_md.py` (119).
 
 ---
 
@@ -836,7 +836,7 @@ GameTests, only where Java is involved:
 | CL-D19 | No alliances | a coalition needs a model of its own and joint parties (CL-5) |
 | CL-D20 | Reasons as codes, text written when read | 8-byte memories; no text in saves |
 | CL-D21 | Every draw from `StreamKey(seed, SYS_COUNCIL or SYS_CLASH, faction key)` slotted by the faction's own counter | a sitting does not depend on the order of other events |
-| CL-D22 | A stolen crystal is a Theft report naming the player at the steal | MOWZIE.md §4.7 reports the steal (CHIEF_STATE); this makes it a grievance and a memory |
+| CL-D22 | A stolen crystal is a Theft report naming the player at the steal | MOWZIE.md reports the steal in its CHIEF_STATE record (crystal held, §4.2); this makes it a grievance and a memory |
 | CL-D23 | Renewal, pressure, break and refound unchanged | Ben's scope: only faction fighting |
 | CL-D24 | Camps ambush caravans on the road near them (3 in 100 passing caravans are weighed) | a caravan is the natural prey of a bandit camp, and with trains it gives camps a target that is neither a village nor a player; the conflict engine has no caravan hook today (2.14) |
 
