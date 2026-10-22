@@ -366,7 +366,7 @@ are in docs/oilgate-cheese-audit.md §5.
    about 600 points (capacity 600, refuel below 240). (b) Charge a point a burst (the arm C switch) and
    keep 100: about 100 streams, so a dragon is almost never dry. (c) Keep 100 at a point a fire event:
    a dragon is dry after about three streams and finishes most fights with bite and claws.
-3. **Answered (a) (OGB-3).** **Drinking ignores the theft cap (OGC8).** (a) Keep: a dry dragon may take up to 100,000 mB (its
+3. **Answered (a) (OGB-3; at the reserve of 600 the room is up to 600,000 mB).** **Drinking ignores the theft cap (OGC8).** (a) Keep: a dry dragon may take up to 100,000 mB (its
    whole room) from one raid; the tank is the lure. (b) Hold drinking to the item theft cap (10%).
 4. **Ben skipped, taken as recommended: (a) (OGB-4).** **A visitor's lost body ends its visit (OGC11).** (a) Keep: after a restart the field flights
    draw again from fresh rolls. (b) Keep visitors through a session end as wanderers.
