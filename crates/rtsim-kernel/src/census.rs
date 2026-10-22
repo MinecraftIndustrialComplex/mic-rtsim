@@ -139,7 +139,10 @@ mod tests {
         c.site(0, 2, false, 1.0);
         c.site(2, 2, true, 0.0);
         c.site(3, 2, false, 0.0);
-        assert_eq!((c.sites, c.short, c.empty, c.broken, c.full()), (5, 1, 1, 1, 2));
+        assert_eq!(
+            (c.sites, c.short, c.empty, c.broken, c.full()),
+            (5, 1, 1, 1, 2)
+        );
         assert_eq!((c.members, c.capacity), (8, 10));
         assert!((c.mean_p() - 0.3).abs() < 1e-9);
         // No K: full or empty.

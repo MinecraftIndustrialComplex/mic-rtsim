@@ -1128,11 +1128,7 @@ impl Soak {
         };
         let last = self.samples.last().map_or(0, |s| s.day);
         let shown = |d: i64| d == 10 || d % every == 0 || d == last;
-        for s in self
-            .samples
-            .iter()
-            .filter(|s| shown(s.day))
-        {
+        for s in self.samples.iter().filter(|s| shown(s.day)) {
             eprintln!(
                 "{:>4}  {:>7}  {:>9}  {:>8}  {:>10}  {:>9}  {:>5} KiB  {:>6}",
                 s.day,
@@ -1607,7 +1603,8 @@ fn a_thousand_days_at_max_keeps_the_state_bounded() {
         "the heap does not grow: {heap:?}"
     );
     // The census (EQUILIBRIUM.md S1) counts every module's kinds on every sample.
-    let kinds = |cs: &[rtsim_kernel::census::KindCensus]| cs.iter().map(|c| c.kind).collect::<Vec<_>>();
+    let kinds =
+        |cs: &[rtsim_kernel::census::KindCensus]| cs.iter().map(|c| c.kind).collect::<Vec<_>>();
     let first = kinds(&s.census[0].1);
     for k in [
         "village.human",
