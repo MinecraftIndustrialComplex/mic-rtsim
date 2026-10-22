@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oil Cheese Audit</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --open: #8f620f;
+  --slow-bg: #f4e7c9;
+  --slow-line: #d4b878;
+  --stop-bg: #e2f0e8;
+  --stop-ink: #1d5a3b;
+  --stop-line: #93c4aa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 26px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; margin: 10px 0 8px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td .sub { display: block; color: var(--muted); font-size: 14.5px; margin-top: 4px; }
+table.cheese td.rid { font-weight: 650; white-space: nowrap; width: 3em; }
+table.cheese th:nth-child(2) { width: 30%; }
+table.cheese th:nth-child(3) { width: 34%; }
+table.cheese th:nth-child(5) { width: 15%; }
+table.ic th:first-child { width: 20%; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100% !important; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 12px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 8px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 650; font-size: 17px; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+blockquote { margin: 0 0 14px; padding: 0 0 0 0; font-style: italic; max-width: 38em; }
+
+/* status pills and map */
+.st { display: inline-block; font-weight: 650; font-size: 14px; line-height: 1.3; padding: 2px 8px; border-radius: 4px; border: 1px solid transparent; }
+.st.open { background: var(--open); color: #fff; }
+.st.slow { background: var(--slow-bg); color: var(--ink); border-color: var(--slow-line); }
+.st.stop { background: var(--stop-bg); color: var(--stop-ink); border-color: var(--stop-line); }
+.st.unv { background: #fff; color: var(--muted); border: 1px dashed #8a8a93; }
+.map { margin: 22px 0 8px; display: grid; gap: 8px; }
+.mrow { display: grid; grid-template-columns: 15.5em 1fr; gap: 4px 14px; align-items: center; }
+.mlabel { color: var(--ink); text-decoration: none; font-size: 15.5px; line-height: 1.3; min-height: 44px; display: flex; align-items: center; gap: 8px; }
+.mlabel b { color: var(--accent); font-size: 17px; min-width: 1em; }
+.mlabel:hover, .mlabel:focus { text-decoration: underline; }
+.cells { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cell { width: 52px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; font-weight: 650; font-size: 15px; text-decoration: none; border: 1px solid transparent; font-variant-numeric: tabular-nums; }
+.cell.open { background: var(--open); color: #fff; }
+.cell.slow { background: var(--slow-bg); color: var(--ink); border-color: var(--slow-line); }
+.cell.stop { background: var(--stop-bg); color: var(--stop-ink); border-color: var(--stop-line); }
+.cell.unv { background: #fff; color: var(--muted); border: 1px dashed #8a8a93; }
+.cell:hover, .cell:focus { outline: 2px solid var(--ink); outline-offset: 1px; }
+.cells .note { font-size: 14px; color: var(--muted); margin-left: 4px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 15px; color: var(--muted); margin: 10px 0 6px; max-width: none; }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.sq { display: inline-block; width: 16px; height: 16px; border-radius: 3px; border: 1px solid transparent; }
+.sq.open { background: var(--open); }
+.sq.slow { background: var(--slow-bg); border-color: var(--slow-line); }
+.sq.stop { background: var(--stop-bg); border-color: var(--stop-line); }
+.sq.unv { background: #fff; border: 1px dashed #8a8a93; }
+@media (max-width: 560px) {
+  .mrow { grid-template-columns: 1fr; gap: 0; }
+  .mlabel { min-height: 36px; }
+}
+h3 .lk { font-weight: 400; color: var(--muted); font-size: 15.5px; }
+.gintro { font-size: 16.5px; color: var(--muted); max-width: 46em; }
+
+/* the chain of links */
+.chain { list-style: none; padding: 0; margin: 14px 0 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; counter-reset: lk; }
+.chain li { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px 10px; margin: 0; max-width: none; font-size: 15.5px; line-height: 1.45; }
+.chain li.weak { background: #fff; border-color: var(--slow-line); }
+.chain .k { display: block; font-weight: 650; font-size: 16px; margin-bottom: 4px; }
+.chain .k span { color: var(--accent); margin-right: 6px; font-variant-numeric: tabular-nums; }
+.chain .by { display: block; margin-top: 8px; font-weight: 600; color: var(--accent); font-size: 14.5px; }
+
+/* fixes */
+.fixes { display: grid; gap: 12px; margin: 14px 0; }
+.fix { border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 4px; }
+.fix h3 { margin: 0 0 4px; font-size: 18px; }
+.fix .closes { font-size: 14.5px; font-weight: 600; color: var(--accent); margin: 0 0 8px; }
+.fix p { max-width: 46em; font-size: 16.5px; }
+.fix .yours { font-weight: 600; }
+
+/* decisions */
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision p, .decision li { max-width: none; }
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#verdict">Verdict</a>
+  <a href="#cheeses">The 26 cheeses</a>
+  <a href="#incontrol">In Control</a>
+  <a href="#fixes">Fixes</a>
+  <a href="#answers">Your answers</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">The oil gate fails your bar as built: 18 of 26 cheeses get past it. Nine fixes to close them are being built</h1>
+  <p class="dek" data-ss-id="dek">An audit of the oil gate as built on mic-rtsim main (02c2096), against your bar of 21 October and your reserve of 600. Neither mic-rtsim nor Deep Time is in the pack yet, so it reads the gate as it will be once both ship. Pack facts come from the pack's jars and <code>pack/</code>; nothing was run in a game. You answered its three questions on 21 October.</p>
+  <p class="lead" data-ss-id="lead">Neither In Control's dragons nor the gate's own arrivals break a block or drink a tank, so only the part that acts on a standing well counts, and it has three gaps. It never sees a well that no player placed by hand. It senses a well only near where its dragons drink, and only when they run low. And it cannot hurt a well that is roofed, underground, guarded or bigger than the loaded area. Fixes F1 to F9 close those gaps and are now being built. The ethanol rebalance is being done separately in the pack.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-open"><div class="n">18 <small>of 26</small></div><div class="t">cheeses open today; one, ethanol, on purpose</div></div>
+    <div class="tile" data-ss-id="kpi-real"><div class="n">13</div><div class="t">that are the gate's real failures, in groups A to C</div></div>
+    <div class="tile" data-ss-id="kpi-fixes"><div class="n">9</div><div class="t">fixes, now being built</div></div>
+    <div class="tile" data-ss-id="kpi-answers"><div class="n">3</div><div class="t">questions, answered</div></div>
+  </div>
+  <div class="map" data-ss-id="status-map" role="list">
+  <div class="mrow"><a class="mlabel" href="#g-a"><b>A</b> The well is never seen</a><div class="cells"><a class="cell open" role="listitem" href="#c-a1" title="A1 Your minecart trick: Open" aria-label="A1, Your minecart trick: Open">A1</a><a class="cell open" role="listitem" href="#c-a2" title="A2 Print it: Open" aria-label="A2, Print it: Open">A2</a><a class="cell open" role="listitem" href="#c-a3" title="A3 Deploy it: Open" aria-label="A3, Deploy it: Open">A3</a><a class="cell open" role="listitem" href="#c-a4" title="A4 Fly it in: Open" aria-label="A4, Fly it in: Open">A4</a><a class="cell stop" role="listitem" href="#c-a5" title="A5 Carry it in: Stopped" aria-label="A5, Carry it in: Stopped">A5</a></div></div>
+  <div class="mrow"><a class="mlabel" href="#g-b"><b>B</b> The well is seen but not sensed</a><div class="cells"><a class="cell open" role="listitem" href="#c-b1" title="B1 Drill away from the dragons&#x27; spot: Open" aria-label="B1, Drill away from the dragons&#x27; spot: Open">B1</a><a class="cell open" role="listitem" href="#c-b2" title="B2 Link it to the base: Open" aria-label="B2, Link it to the base: Open">B2</a><a class="cell stop" role="listitem" href="#c-b3" title="B3 Link it across dimensions: Stopped" aria-label="B3, Link it across dimensions: Stopped">B3</a><a class="cell slow" role="listitem" href="#c-b4" title="B4 Be quick: Slowed" aria-label="B4, Be quick: Slowed">B4</a><a class="cell slow" role="listitem" href="#c-b5" title="B5 Deal with the field&#x27;s dragon: Slowed" aria-label="B5, Deal with the field&#x27;s dragon: Slowed">B5</a></div></div>
+  <div class="mrow"><a class="mlabel" href="#g-c"><b>C</b> The well is sensed but not hurt</a><div class="cells"><a class="cell open" role="listitem" href="#c-c1" title="C1 Roof it: Open" aria-label="C1, Roof it: Open">C1</a><a class="cell open" role="listitem" href="#c-c2" title="C2 Keep nothing there: Open" aria-label="C2, Keep nothing there: Open">C2</a><a class="cell open" role="listitem" href="#c-c3" title="C3 Be bigger than the loaded area: Open" aria-label="C3, Be bigger than the loaded area: Open">C3</a><a class="cell open" role="listitem" href="#c-c4" title="C4 Go underground: Open" aria-label="C4, Go underground: Open">C4</a><a class="cell open" role="listitem" href="#c-c5" title="C5 Stand guard: Open" aria-label="C5, Stand guard: Open">C5</a><a class="cell open" role="listitem" href="#c-c6" title="C6 Live far away: Open" aria-label="C6, Live far away: Open">C6</a></div></div>
+  <div class="mrow"><a class="mlabel" href="#g-d"><b>D</b> Oil or fuel without a well</a><div class="cells"><a class="cell stop" role="listitem" href="#c-d1" title="D1 Find crude elsewhere: Stopped" aria-label="D1, Find crude elsewhere: Stopped">D1</a><a class="cell open" role="listitem" href="#c-d2" title="D2 Burn ethanol instead: Open" aria-label="D2, Burn ethanol instead: Open">D2</a><span class="note">D2 is open on purpose</span></div></div>
+  <div class="mrow"><a class="mlabel" href="#g-e"><b>E</b> Taking the oil home</a><div class="cells"><a class="cell open" role="listitem" href="#c-e1" title="E1 Backpack tank: Open" aria-label="E1, Backpack tank: Open">E1</a><a class="cell open" role="listitem" href="#c-e2" title="E2 Canisters: Open" aria-label="E2, Canisters: Open">E2</a><a class="cell slow" role="listitem" href="#c-e3" title="E3 Tanker cart or train: Slowed" aria-label="E3, Tanker cart or train: Slowed">E3</a><a class="cell open" role="listitem" href="#c-e4" title="E4 Tanker ship: Open" aria-label="E4, Tanker ship: Open">E4</a></div></div>
+  <div class="mrow"><a class="mlabel" href="#g-f"><b>F</b> The player's own danger at the oil</a><div class="cells"><a class="cell open" role="listitem" href="#c-f1" title="F1 Oil outside a desert: Open" aria-label="F1, Oil outside a desert: Open">F1</a><a class="cell unv" role="listitem" href="#c-f2" title="F2 Go at night: Unverified" aria-label="F2, Go at night: Unverified">F2</a><a class="cell slow" role="listitem" href="#c-f3" title="F3 Fly in and out: Slowed" aria-label="F3, Fly in and out: Slowed">F3</a><a class="cell open" role="listitem" href="#c-f4" title="F4 Hide in a box: Open" aria-label="F4, Hide in a box: Open">F4</a></div></div>
+</div>
+<p class="legend" data-ss-id="status-legend"><span><i class="sq open"></i>Open, 18: the gate does nothing</span><span><i class="sq slow"></i>Slowed, 4: it acts, late or weakly</span><span><i class="sq stop"></i>Stopped, 3: the trick fails</span><span><i class="sq unv"></i>Unverified, 1</span></p>
+  <p class="cap" data-ss-id="map-cap">Every cheese at a glance, by what it breaks. Tap one to read it.</p>
+</header>
+
+<section id="verdict" data-ss-id="verdict" data-ss-section>
+  <h2 data-ss-id="verdict-h">Your bar has two halves, and the gate fails the first</h2>
+  <p data-ss-id="bar-p">Your bar: a real oil pipeline must be infeasible to build, and the gate hard for a semi-casual player to cheese, for example by running in, dropping a minecart contraption as real blocks and running off laying pipe. The audit reads that as two halves:</p>
+  <ol data-ss-id="bar-list">
+    <li><strong>No standing oil works before guns.</strong> A well, a pipeline or a link home that keeps running is found, hurt and stopped, whoever or whatever built it.</li>
+    <li><strong>No cheap grab.</strong> The obvious tricks a semi-casual player tries cost real danger or real losses.</li>
+  </ol>
+  <p data-ss-id="verdict-p">Danger to the player, from In Control or from field flights, can never meet the first half: neither breaks a block or drinks a tank. The first half rests entirely on the dragons' lairs, sensing, grudges and raids, and those have the three gaps above: wells never seen (A1 to A4), sensed late or not at all (B1, B2, B4), and sensed but not hurt (C1 to C6).</p>
+
+  <h3 data-ss-id="chain-h">How the gate gets from a well to a raid</h3>
+  <p data-ss-id="chain-p">Every cheese breaks one of these links. The numbers are the gate's defaults with your reserve of 600.</p>
+  <ol class="chain" data-ss-id="chain">
+    <li class="weak"><span class="k"><span>1</span>Seen</span>A district exists. It starts only when a real player places a seed block; a fake player or a block set down any other way starts nothing.<span class="by">Broken by group A</span></li>
+    <li><span class="k"><span>2</span>Known as a well</span>A loaded chunk of the district holds a Diesel Generators pumpjack hole.</li>
+    <li class="weak"><span class="k"><span>3</span>Sensed</span>Only when a dragon arrives to drink: when its reserve is at 240 or below, at the oil chunk nearest to it. It senses districts whose centre is within 400 blocks, once a day each.<span class="by">Broken by group B</span></li>
+    <li><span class="k"><span>4</span>Grudged</span>A drilling well, or 1,000 mB of fuel in its tanks, earns a grudge; a bare district does not. A drilling well's grudge lasts about 42 days, a fuel-only one about 15.</li>
+    <li><span class="k"><span>5</span>Raided</span>A grudged district within 6,000 blocks: at most once every 3 days per dragon, up to 2 districts a raid. Unwatched, the sim resolves it; watched, the dragon comes for real.</li>
+    <li class="weak"><span class="k"><span>6</span>Hurt</span>Theft of the fuel stock, and up to 8 blocks open to the sky from the last survey. A survey runs only when every chunk of the district is loaded.<span class="by">Broken by group C</span></li>
+    <li class="weak"><span class="k"><span>7</span>Danger to the player</span>In Control's desert dragons, lair dragons and watched raids. Field flights are off.<span class="by">Broken by group F</span></li>
+  </ol>
+  <p class="cap" data-ss-id="chain-cap">The two numbers that matter most: a resting dragon drinks, and so senses, every 45 game days (about 15 hours of play), and a drilling well stays a target for about 42 days once sensed. So a well is a target for about as long as a resting dragon takes to come back.</p>
+</section>
+
+<section id="cheeses" data-ss-id="cheeses" data-ss-section>
+  <h2 data-ss-id="cheeses-h">The 26 cheeses: what a semi-casual player would try for oil before guns</h2>
+  <p data-ss-id="cheeses-p">Each with the real mechanic, what the gate does today and how likely such a player is to think of it. <strong>Open</strong>: the gate does nothing. <strong>Slowed</strong>: it acts, but late or weakly. <strong>Stopped</strong>: the trick fails. None of the rows has an integration test yet.</p>
+  <div class="box" data-ss-id="packfacts">
+    <h3>Pack facts every row leans on</h3>
+    <ul>
+      <li><strong>Oil.</strong> The only crude source is the Diesel Generators pumpjack on an oil chunk. The pack puts oil only in high-oil desert chunks. Deep Time replaces that with petroleum traps anywhere.</li>
+      <li><strong>The pumpjack</strong> pumps into its hole's 8,000 mB tank, and only while its chunk is loaded. In an rtsim world a district's flows are replayed while it is unloaded and settled into its tanks on load, so an unwatched well keeps paying.</li>
+    </ul>
+  </div>
+
+<h3 id="g-a" data-ss-id="g-a-h">A. The well is never seen <span class="lk">Breaks link 1, seen.</span></h3>
+<p class="gintro" data-ss-id="g-a-intro">A district starts only when a real player places a seed block. Anything else that sets blocks down starts nothing.</p>
+<table class="stack cheese" data-ss-id="g-a-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-a1"><td class="rid">A1</td><td data-label="The cheese"><strong>Your minecart trick.</strong> Build the pumpjack and a tank on a minecart or train contraption at home, ride it to the oil, take it apart there, hand-place the pipe down to bedrock and leave.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Taking a contraption apart sets its blocks with no place event, so no district starts: no sample, no sense, no raid. Hand-placed pipes join a district but never start one. Whether a pumpjack survives being assembled is unverified; Diesel Generators has no movement blacklist.</span></td><td data-label="How likely">High: the first idea of a Create player who has heard of the gate.</td><td data-label="Closed by">Fix F1</td></tr>
+    <tr id="c-a2"><td class="rid">A2</td><td data-label="The cheese"><strong>Print it.</strong> A Schematicannon builds the well from a schematic.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">The cannon sets its blocks with no place event.</span></td><td data-label="How likely">Medium: the cannon is mid-Create and needs gunpowder.</td><td data-label="Closed by">Fix F1</td></tr>
+    <tr id="c-a3"><td class="rid">A3</td><td data-label="The cheese"><strong>Deploy it.</strong> A Deployer, or a deployer on a contraption, places the hole.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">A Deployer places as a fake player, and rtsim ignores fake players.</span></td><td data-label="How likely">Low to medium.</td><td data-label="Closed by">Fix F1</td></tr>
+    <tr id="c-a4"><td class="rid">A4</td><td data-label="The cheese"><strong>Fly it in.</strong> Build the well on a Sable ship, fly it out and take it apart over the oil.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Sable moves blocks with no place event, and tanks keep their fluid. While aboard, ship blocks sit in plot chunks far out in the world, which the district scan never reads.</span></td><td data-label="How likely">Medium: Aeronautics is a headline mod, and crude is a Propulsion thruster fuel.</td><td data-label="Closed by">Fix F1</td></tr>
+    <tr id="c-a5"><td class="rid">A5</td><td data-label="The cheese"><strong>Carry it in.</strong> Pick up a working machine or a full tank with Carry On and set it down at the oil.</td><td data-label="Today"><span class="st stop">Stopped</span><span class="sub">Carry On refuses Create blocks, Diesel Generators included, by default, and the pack ships no Carry On config. Where it does place, it posts the place event with the real player, so the seed is recorded.</span></td><td data-label="How likely">Medium, and it fails.</td><td data-label="Closed by">None needed</td></tr>
+  </tbody>
+</table>
+
+<h3 id="g-b" data-ss-id="g-b-h">B. The well is seen but not sensed <span class="lk">Breaks link 3, sensed.</span></h3>
+<p class="gintro" data-ss-id="g-b-intro">A district is sensed only when a dragon flies in to drink, and only if the district's centre is within 400 blocks of where it drinks. A resting dragon drinks every 45 game days with your reserve of 600, about 15 hours of play. At the old reserve of 100 it was 7.5 days.</p>
+<table class="stack cheese" data-ss-id="g-b-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-b1"><td class="rid">B1</td><td data-label="The cheese"><strong>Drill away from the dragons' spot.</strong> Put the well on the end of the field nearest home, not where the dragons land.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">A low dragon drinks at the oil chunk nearest wherever it is, usually by its lair, and senses only districts whose centre is within 400 blocks. The rest of the field is never sensed.</span></td><td data-label="How likely">High, often by accident.</td><td data-label="Closed by">Fix F2</td></tr>
+    <tr id="c-b2"><td class="rid">B2</td><td data-label="The cheese"><strong>Link it to the base.</strong> Join the well to the base by pipe, belt, shaft, or an Ender Transmission fluid link.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Joined chunks make one district whose centre is the mean of all its chunks, so a big base pulls the centre far from the field. Centres are rebuilt only when the number of districts changes, so a district that grows keeps its old centre. Ender Transmission has no range, no power cost and no dimension limit.</span></td><td data-label="How likely">High: it is the obvious way to bring oil home.</td><td data-label="Closed by">Fix F3</td></tr>
+    <tr id="c-b3"><td class="rid">B3</td><td data-label="The cheese"><strong>Link it across dimensions.</strong> The same link, with the base in the Nether or another dimension.</td><td data-label="Today"><span class="st stop">Stopped</span><span class="sub">rtsim cannot join a link across dimensions, so the well stays its own small district by the oil and is sensed. What crosses the link is not simulated: a gap in the sim, not a hole in the gate.</span></td><td data-label="How likely">Low.</td><td data-label="Closed by">None needed</td></tr>
+    <tr id="c-b4"><td class="rid">B4</td><td data-label="The cheese"><strong>Be quick.</strong> Drill, fill tanks for a week or two, and pack up before the dragons notice.</td><td data-label="Today"><span class="st slow">Slowed</span>, barely<span class="sub">The first sense waits for a refuel visit: up to 45 days for a resting dragon. A short-lived well is likely never sensed.</span></td><td data-label="How likely">High: it is the natural plan for a first grab.</td><td data-label="Closed by">Fix F2</td></tr>
+    <tr id="c-b5"><td class="rid">B5</td><td data-label="The cheese"><strong>Deal with the field's dragon.</strong> Lure it away, or kill it in its sleep.</td><td data-label="Today"><span class="st slow">Slowed</span><span class="sub">Fire dragons sleep at night and wake when a player comes near. Killing one takes weapons nobody has early: every gun needs Create Big Cannons steel parts. An emptied roost refills after 20 days, from 3,000 blocks away.</span></td><td data-label="How likely">Low early.</td><td data-label="Closed by">None: killing it with real weapons is the gate working</td></tr>
+  </tbody>
+</table>
+
+<h3 id="g-c" data-ss-id="g-c-h">C. The well is sensed but not hurt <span class="lk">Breaks link 6, hurt.</span></h3>
+<p class="gintro" data-ss-id="g-c-intro">A raid hurts a well two ways: a dragon with room drinks its fuel stock, and it breaks blocks, one a pass, at most 8. A flyer breaks only blocks open to the sky, and only blocks in the last survey of the district.</p>
+<table class="stack cheese" data-ss-id="g-c-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-c1"><td class="rid">C1</td><td data-label="The cheese"><strong>Roof it.</strong> Build a shed over the pumpjack.</td><td data-label="Today"><span class="st open">Open</span> for blocks<span class="sub">A flyer breaks only blocks open to the sky, fewer as more machines are roofed, as OG-11 was approved. A fully roofed well loses no blocks; only theft reaches it.</span></td><td data-label="How likely">High once a pumpjack has burned once.</td><td data-label="Closed by">Fix F4</td></tr>
+    <tr id="c-c2"><td class="rid">C2</td><td data-label="The cheese"><strong>Keep nothing there.</strong> Pump straight into the link or a pipe home.</td><td data-label="Today"><span class="st open">Open</span>, with C1<span class="sub">Theft drinks only the fuel stock of the districts it senses. With a roof and an empty tank, a raid takes nothing and breaks nothing.</span></td><td data-label="How likely">Medium.</td><td data-label="Closed by">Fix F4</td></tr>
+    <tr id="c-c3"><td class="rid">C3</td><td data-label="The cheese"><strong>Be bigger than the loaded area.</strong> A long pipeline, or a well joined to a far base, while the chunks between stay unloaded.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">A survey runs only when every chunk of the district is loaded. With no survey there is nothing marked exposed, so a raid breaks nothing.</span></td><td data-label="How likely">Medium; it comes free with B2.</td><td data-label="Closed by">Fixes F5 and F3</td></tr>
+    <tr id="c-c4"><td class="rid">C4</td><td data-label="The cheese"><strong>Go underground.</strong> Reach the oil from a cave or shaft below y 15.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Machines underground count as roofed (C1). In Control spawns nothing below y 15, field flights roll only at y 15 or higher, and the deep layer (OG-9e) is not built.</span></td><td data-label="How likely">High: players mine anyway, and the pipe goes to bedrock.</td><td data-label="Closed by">Fix F6</td></tr>
+    <tr id="c-c5"><td class="rid">C5</td><td data-label="The cheese"><strong>Stand guard.</strong> Stay at the well, and when a dragon comes, wait it out.</td><td data-label="Today"><span class="st open">Open</span> for blocks<span class="sub">A raid on a watched district brings the dragon for real, and a real dragon breaks no blocks, since Ice and Fire griefing is off. That contradicts P28 as you decided it: "Buildings take bounded sim damage, watched or not."</span></td><td data-label="How likely">Medium.</td><td data-label="Closed by">Fix F9</td></tr>
+    <tr id="c-c6"><td class="rid">C6</td><td data-label="The cheese"><strong>Live far away.</strong> Keep the home base more than 512 blocks from the well.</td><td data-label="Today"><span class="st open">Open</span> for the player<span class="sub">Sensing names only players whose home is within 512 blocks of the district. The well is still raided; its builder is never hunted.</span></td><td data-label="How likely">High, by geography.</td><td data-label="Closed by">Fix F7</td></tr>
+  </tbody>
+</table>
+
+<h3 id="g-d" data-ss-id="g-d-h">D. Oil or fuel without a well <span class="lk">Goes around the gate.</span></h3>
+<table class="stack cheese" data-ss-id="g-d-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-d1"><td class="rid">D1</td><td data-label="The cheese"><strong>Find crude elsewhere.</strong> Loot, trades, Ore Excavation veins, or Destroy's pumpjack.</td><td data-label="Today"><span class="st stop">Stopped</span><span class="sub">No loot table, trade or feature gives crude. Ore Excavation has only a water vein. Destroy's pumpjack and seismometer are voided, and the pack removes the distillation routes.</span></td><td data-label="How likely">Medium, and it fails.</td><td data-label="Closed by">None needed</td></tr>
+    <tr id="c-d2"><td class="rid">D2</td><td data-label="The cheese"><strong>Burn ethanol instead.</strong> Ferment sugar, apples, potatoes or sugar cane with bone meal in a lidded basin (200 mB a batch), or buy moonshine from Destroy's innkeeper and distil it.</td><td data-label="Today"><span class="st open">Open</span>, on purpose<span class="sub">Your answer (OGB-8): ethanol is the pre-oil fuel. Fermenting probably survives the pack's removal script, unverified until a server log shows it. Ethanol runs Diesel Generators engines, and its Destroy distillate is a Propulsion thruster fuel. The pack is making it realistic, so it is poor in diesel engines.</span></td><td data-label="How likely">High: JEI shows it.</td><td data-label="Closed by">The ethanol rebalance, in the pack</td></tr>
+  </tbody>
+</table>
+
+<h3 id="g-e" data-ss-id="g-e-h">E. Taking the oil home <span class="lk">Not chased, by design.</span></h3>
+<p class="gintro" data-ss-id="g-e-intro">These carry oil the gate never sees, because the gate acts on the well. Each is harmless once the well is seen and hurt, and open while it is not. What a player carries home is then what they paid for at the well.</p>
+<table class="stack cheese" data-ss-id="g-e-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-e1"><td class="rid">E1</td><td data-label="The cheese"><strong>Backpack tank.</strong> A leather backpack with a tank upgrade holds 12,000 mB at copper-tier Create, and more with stack upgrades: an iron one with its first stack upgrade holds 48,000 mB.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">The gate does not watch what leaves the well.</span></td><td data-label="How likely">High.</td><td data-label="Closed by">None: closes with fixes F1 to F3</td></tr>
+    <tr id="c-e2"><td class="rid">E2</td><td data-label="The cheese"><strong>Canisters.</strong> Diesel Generators canisters hold 4,000 mB each, 1,000 more per Capacity level. They fill from a spout and cost 2 andesite alloy, a barrel and 3 iron plates.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Spouts can fill canisters in the pack's config.</span></td><td data-label="How likely">High.</td><td data-label="Closed by">None: closes with fixes F1 to F3</td></tr>
+    <tr id="c-e3"><td class="rid">E3</td><td data-label="The cheese"><strong>Tanker cart or train.</strong> Tanks on a contraption keep their fluid; Create Connected vessels hold 8,000 mB a block.</td><td data-label="Today"><span class="st slow">Slowed</span> for scheduled trains, open for ridden carts<span class="sub">A hungry dragon whose flight crosses a booked train leg raids it; a ridden cart is not booked. A broken Create tank drops empty, so tanks must travel whole.</span></td><td data-label="How likely">Medium.</td><td data-label="Closed by">None: closes with fixes F1 to F3</td></tr>
+    <tr id="c-e4"><td class="rid">E4</td><td data-label="The cheese"><strong>Tanker ship.</strong> Tanks aboard a Sable ship, Propulsion platinum tanks at 16,000 mB a block, and the ship burns crude.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">Ship blocks live in plot chunks, outside every district.</span></td><td data-label="How likely">Medium.</td><td data-label="Closed by">None: closes with fixes F1 to F3</td></tr>
+  </tbody>
+</table>
+
+<h3 id="g-f" data-ss-id="g-f-h">F. The player's own danger at the oil <span class="lk">Breaks link 7, danger to the player.</span></h3>
+<p class="gintro" data-ss-id="g-f-intro">Today the danger at the oil is In Control's desert dragons (deserts only, y 15 to 200), lair dragons and watched raids. Field flights are off.</p>
+<table class="stack cheese" data-ss-id="g-f-table">
+  <thead><tr><th scope="col">#</th><th scope="col">The cheese</th><th scope="col">Today</th><th scope="col">How likely</th><th scope="col">Closed by</th></tr></thead>
+  <tbody>
+    <tr id="c-f1"><td class="rid">F1</td><td data-label="The cheese"><strong>Oil outside a desert.</strong> On a Deep Time world, use a petroleum trap under a forest.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">In Control's fire dragon spawns only in deserts, and field flights are off. Lairs still form near the field (OG-7).</span></td><td data-label="How likely">Certain on Deep Time worlds.</td><td data-label="Closed by">Fix F8</td></tr>
+    <tr id="c-f2"><td class="rid">F2</td><td data-label="The cheese"><strong>Go at night.</strong> Wait for dark and go in while the dragons sleep.</td><td data-label="Today"><span class="st unv">Unverified</span><span class="sub">Fire dragons sleep at night and wake when a player comes close. Whether In Control's or the sim's dragons doze off near a player at night is not measured: the danger test ran by day only.</span></td><td data-label="How likely">Medium: players notice sleeping dragons.</td><td data-label="Closed by">Fix F8's night run of the danger test</td></tr>
+    <tr id="c-f3"><td class="rid">F3</td><td data-label="The cheese"><strong>Fly in and out.</strong> On a Cobblemon flyer: Skarmory spawns in deserts and badlands by day, and the pack's only Poke Ball recipe is cheap. Jetpacks and elytra are End-gated.</td><td data-label="Today"><span class="st slow">Slowed</span><span class="sub">A dragon targets any player within 128 blocks, mounted or not, and ride stamina runs out. Whether a flyer outruns a fire dragon is unverified.</span></td><td data-label="How likely">Medium for Cobblemon players.</td><td data-label="Closed by">None named</td></tr>
+    <tr id="c-f4"><td class="rid">F4</td><td data-label="The cheese"><strong>Hide in a box.</strong> A sealed hut at the well.</td><td data-label="Today"><span class="st open">Open</span><span class="sub">With griefing off, a wild dragon breaks no block and does not dig, so a closed room stops it (unverified in play that no breath reaches inside). With C5, the well also stays whole while the player hides.</span></td><td data-label="How likely">High: it is the first instinct when a dragon appears.</td><td data-label="Closed by">Fix F9: the hut still saves the player, but no longer the well</td></tr>
+  </tbody>
+</table>
+
+  <p data-ss-id="cheeses-sum"><strong>The gate's real failures are the twelve open rows in A to C, with B4.</strong> E's rows close by themselves once those do. D2 is open on purpose: you made ethanol the pre-oil fuel (OGB-8), and the pack is rebalancing it so it is poor in diesel engines.</p>
+</section>
+
+<section id="incontrol" data-ss-id="incontrol" data-ss-section>
+  <h2 data-ss-id="incontrol-h">In Control's fire dragon is not needed once fixes F1 to F3 land</h2>
+  <p data-ss-id="incontrol-p">What each source of danger does for the two halves of your bar:</p>
+  <table class="stack ic" data-ss-id="incontrol-table">
+    <thead><tr><th scope="col">Source</th><th scope="col">Half 1: standing works</th><th scope="col">Half 2: a quick grab</th><th scope="col">Where it misses</th></tr></thead>
+    <tbody>
+      <tr><td>In Control's fire dragon (on today)</td><td data-label="Half 1: standing works">Nothing: Ice and Fire griefing is off, so it breaks no block and takes no oil.</td><td data-label="Half 2: a quick grab">Real danger at the oil, in deserts.</td><td data-label="Where it misses">Below y 15; outside deserts, where Deep Time puts most oil; anywhere it cannot reach the player. Its dragons are not sim dragons: they never drink, sense or hold a grudge.</td></tr>
+      <tr><td>Field flights (built, off)</td><td data-label="Half 1: standing works">Nothing, for the same reason.</td><td data-label="Half 2: a quick grab">The same kind of arrivals, keyed to oil chunks wherever they are, at y 15 or higher. At site 1: the same damage per minute as In Control, first contact 40 to 50% later.</td><td data-label="Where it misses">Below y 15, on purpose: that is the deep layer's job.</td></tr>
+      <tr><td>Lairs, sensing, grudges and the roof rule (on)</td><td data-label="Half 1: standing works">The only part that acts on a well, a pipeline or a link home. Today it fails: the open rows in A to C.</td><td data-label="Half 2: a quick grab">Slow: the first sense waits for a refuel visit, up to 45 days a dragon.</td><td data-label="Where it misses">Wells it never sees, sees late or cannot hurt.</td></tr>
+    </tbody>
+  </table>
+  <p data-ss-id="incontrol-j1">Presence danger matters only for the second half's window: the time between a player reaching the oil and the first dragon coming for the works. With fix F2 that window shrinks from weeks to the field dragon's next decision, which a resting dragon makes every half game day. Field flights close what is left, from the first minute and wherever the oil is. In Control does the same only in deserts, and only above y 15.</p>
+  <p data-ss-id="incontrol-j2">So matching In Control, the danger test's pass condition (OG-10), is no longer the test. The test is <a href="#cheeses">the list of cheeses</a>: every one stopped or slowed. Until fixes F1 to F3 land, the pack keeps In Control as it is, since switching it off first would only remove danger.</p>
+  <p data-ss-id="incontrol-ans"><strong>You chose to replace it</strong> (OGB-6, <a href="#answers">below</a>).</p>
+</section>
+
+<section id="fixes" data-ss-id="fixes" data-ss-section>
+  <h2 data-ss-id="fixes-h">Nine fixes, now being built</h2>
+  <p data-ss-id="fixes-p">The smallest set that closes the open rows. None adds a new entity, block or item. Two change something you approved, and you answered both (F4, F8). The rest are code choices inside rtsim.</p>
+  <div class="fixes" data-ss-id="fix-list">
+    <div class="fix" data-ss-id="fix-f1">
+      <h3>F1. A pumpjack starts its own district, whoever placed it</h3>
+      <p class="closes">Closes A1 to A4</p>
+      <p>The pumpjack hole is the only way to pump crude, so seeing every hole sees every well. The Diesel Generators plugin records any hole it finds in a loaded chunk as a seed, on chunk load and from a hook on the hole's first server tick. A hole set down by a contraption, a ship, a Schematicannon or a Deployer is seen within a tick, and the rest of the dropped-off base joins by connection. It is a pumpjack-only exception to DS-10, the rule that only a player's own placement starts a district.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f2">
+      <h3>F2. The field watches its own ground</h3>
+      <p class="closes">Closes B1 and B4</p>
+      <p>Instead of waiting for a dragon to drink nearby, a fire dragon from the nearest fire lair senses a district the moment it starts drilling, and once a game day for every district with a chunk within 400 blocks of a field. No flight is needed: it files the same report a visit would. Sensing then no longer depends on the reserve.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f3">
+      <h3>F3. Sense by chunks, not by the centre</h3>
+      <p class="closes">Closes B2, and C3 for joined districts</p>
+      <p>Sensing checks every chunk of a district, not its centre, and the district index rebuilds whenever any district changes. A well joined to a base by pipe, belt, shaft or Ender Transmission is sensed as the well it is, and its raids pick from the whole district: linking a well to the base brings the dragons to the base.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f4">
+      <h3>F4. A roof delays a flyer; it does not stop one</h3>
+      <p class="closes">Closes C1 and C2</p>
+      <p class="yours">Your answer (OGB-7).</p>
+      <p>The survey also lists the top block above each roofed machine when it lies within 8 blocks (a placeholder), marked open to the sky. A flyer breaks it like any open block, and the next survey finds the machine open. A shed buys a raid or two. More than 8 blocks of cover still shields, and the deep layer (F6) covers that.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f5">
+      <h3>F5. Survey what is loaded</h3>
+      <p class="closes">Closes C3</p>
+      <p>A district bigger than the loaded area is never surveyed today, so raids on it break nothing. The loaded chunks are surveyed instead, and each chunk keeps its last survey until it is surveyed again. The perimeter cut, which needs the whole area, keeps the all-loaded rule.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f6">
+      <h3>F6. Build the underground half, as decided</h3>
+      <p class="closes">Closes C4</p>
+      <p>OG-9e's Death Worm oil nest, asleep until a pumpjack drills. It is already your decision, and its hooks are in place.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f7">
+      <h3>F7. Name the builders</h3>
+      <p class="closes">Closes C6</p>
+      <p>Sensing names the players who placed or broke blocks in the district in the last 10 days (a placeholder), as well as those whose home is within 512 blocks. A remote well's builder is then hunted at home and on sight, wherever they live. Each district keeps its last few editors, saved with it.</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f8">
+      <h3>F8. Danger where the oil is</h3>
+      <p class="closes">Closes cheese F1, and the first minutes of a grab</p>
+      <p class="yours">Your answer (OGB-6).</p>
+      <p>Field flights go on and In Control's fire dragon comes out, once F1 to F3 ship; the blazes stay. Before either is trusted at night, the danger test runs by night too (cheese F2).</p>
+    </div>
+    <div class="fix" data-ss-id="fix-f9">
+      <h3>F9. A watched raid does the bounded damage too, as P28 decided</h3>
+      <p class="closes">Closes C5 and cheese F4</p>
+      <p>You decided P28 as "bounded damage too", but the build followed the earlier recommendation, so a watched raid only brought the real dragon. Now a watched raid also books blocks and theft after the fight, as an unwatched one does. Standing guard in a box keeps the player alive; it no longer keeps the well.</p>
+    </div>
+  </div>
+
+  <h3 data-ss-id="notfixed-h">Not fixed, on purpose</h3>
+  <ul data-ss-id="notfixed">
+    <li><strong>Carrying oil home</strong> (group E). Once F1 to F3 make every well seen and hurt, what a player carries home is what they paid for at the well.</li>
+    <li><strong>Killing the field's dragons with real weapons</strong> (B5) is the gate working: an emptied roost stands 20 days before a replacement comes from 3,000 blocks away.</li>
+    <li><strong>Ethanol</strong> (D2): your answer, done in the pack, not in the gate.</li>
+  </ul>
+
+  <div class="box" data-ss-id="audit-choices">
+    <h3>Decided in the audit; each can be undone</h3>
+    <ul>
+      <li>F1 covers pumpjacks only. Its wider forms (any seed block that appears near oil without a player, or any machine anywhere, whoever placed it) would amend DS-10, and would be yours.</li>
+      <li>F2's sensing dragon comes from the nearest fire lair in reach of the field.</li>
+      <li>F4's roof reach of 8 blocks and F7's window of 10 days are placeholders.</li>
+    </ul>
+  </div>
+  <p data-ss-id="tests-p">Each fix brings its own tests: unit tests in the Rust engine for F2 to F5, F7 and F9, and for F1 a GameTest that sets a hole down with no player.</p>
+</section>
+
+<section id="answers" data-ss-id="answers" data-ss-section>
+  <h2 data-ss-id="answers-h">You answered all 3 on 21 October</h2>
+  <p data-ss-id="answers-p">Logged as OGB-6 to OGB-8. Two as recommended; for ethanol you chose your own way.</p>
+
+  <div class="decision" data-ss-id="ans-1">
+    <h3>1. Is In Control's fire dragon still needed?</h3>
+    <p class="rec">Your answer, as recommended: replace it.</p>
+    <p>When rtsim ships with F1 to F3, field flights go on at the built draw, In Control's fire dragon rule comes out, the blazes stay, and the danger test's "at least as dangerous as In Control" pass condition is retired. Danger then follows the deposits, from one system whose dragons drink, sense and remember (OGB-6).</p>
+  </div>
+
+  <div class="decision" data-ss-id="ans-2">
+    <h3>2. Does a roof stop a flying raid?</h3>
+    <p class="rec">Your answer, as recommended: the roof is breakable.</p>
+    <p>A roof within 8 blocks above a machine is itself a block a flyer can break, so a shed buys a raid or two. This replaces OG-11's full shield (OGB-7).</p>
+  </div>
+
+  <div class="decision" data-ss-id="ans-3">
+    <h3>3. Ethanol: behind oil, or the pre-oil fuel?</h3>
+    <p class="rec">Your answer: "Pre-oil but re-balance it to make it kinda shit as fuel for diesel engines. (I'm pretty sure if we make it realistic it'll balance itself.)"</p>
+    <p>Ethanol stays the pre-oil fuel, with its fermenting and moonshine routes, made realistic: low energy per litre and very low cetane, so it is poor in diesel engines. The rebalance is being done separately in the pack, not in the gate's build (OGB-8).</p>
+  </div>
+</section>
+
+<details data-ss-react="off" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li><code>docs/oilgate-cheese-audit.md</code> on mic-rtsim main (40fc3c8; D2, PF1 and the answers recorded in c413e4a): the links, the 26 rows with their citations, the In Control judgement and the fixes.</li>
+    <li>Your answers: <code>DECISIONS.md</code> rows OGB-6 to OGB-8 (ece190e). Your bar: OGB-1.</li>
+    <li>Code read for the links: <code>crates/rtsim-ecology/src/oil.rs</code> and <code>infra.rs</code>, <code>crates/rtsim-industry/src/threat.rs</code>, <code>Threats.java</code>, <code>IndustryEvents.java</code> and <code>Districts.java</code>.</li>
+    <li>Pack files read: <code>pack/config/incontrol/spawn.json</code>, the <code>oil_biomes</code> tag, <code>createdieselgenerators-server.toml</code>, <code>voided_content.js</code>, <code>oilyunification.js</code>, <code>sophisticatedbackpacks-server.toml</code>, <code>tacz_new_recipes.js</code> and <code>iaf-common.json</code>, with the mod jars. Nothing was run in a game.</li>
+    <li>The field flights figures: the danger test at site 1 (OGC35), as on the <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate#test">oil gate page</a>.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">
+  Built from docs/oilgate-cheese-audit.md and DECISIONS.md on mic-rtsim main (c413e4a), 21 October 2026. <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate">The oil gate page</a> &middot; <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+</footer>
+</body>
+</html>
