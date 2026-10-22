@@ -468,6 +468,29 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native void nDragonsOil(long handle, long agent, long[] out)`: the oil gate's counters
+/// and `agent`'s reserve (`Engine::dragons_oil`). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDragonsOil<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    agent: jlong,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let info = e.dragons_oil(agent as u64);
+        let n = out.len(env)?.min(info.len());
+        out.set_region(env, 0, &info[..n])?;
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassReport(long handle, long district)`: the district's glass report
 /// (`Engine::glass_report`, the layout of `rtsim_industry::glass::report::Report::to_f64s`); null
 /// while it has no complete compile. Between steps; tests and operators.
@@ -487,6 +510,25 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
             Some(v) => doubles(env, &v),
             None => Ok(JDoubleArray::null()),
         }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native double[] nIndustryThreatProbe(long handle, long district)`: one district's
+/// threat state (`Engine::industry_threat_probe`). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryThreatProbe<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+) -> JDoubleArray<'l> {
+    env.with_env(|env| -> Result<JDoubleArray<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        doubles(env, &e.industry_threat_probe(district as u64))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }

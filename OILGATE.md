@@ -1,6 +1,15 @@
 # The oil gate
 
-**Status:** design for Ben's review, 2026-10-20. Nothing is built. Ben approves this design before code.
+**Status:** Ben approved OG-1 to OG-8 and OG-10 to OG-13 as recommended (2026-10-21). The dragon
+half is built (2026-10-21): the engine side in `crates/rtsim-ecology/src/oil.rs` (with the drinking
+raid and the roof gate in `crates/rtsim-industry`), the plugin side in `neoforge/iceandfire`, the
+records in docs/boundary.md §6 and §6.8, the choices in `docs/choices-oilgate.md` (OGC#). Field
+flights ship switched off (`fieldFlights` false) until §4.8's measurement passes; In Control is
+untouched. §4.8 was first measured on 2026-10-21 (two runs by day, OGC35): at site 1 the gate's field
+flights matched In Control's damage per minute but hit 40 to 50% later and brought a third to a half
+as many dragons, so the gate does not pass yet (For Ben 1 in the choices file). The underground half
+(OG-9, §4.6) is not built; its seam is in `docs/choices-oilgate.md`. The design below is as approved;
+where the build chose a number or a detail, the choices file says so.
 
 **Decided, and binding here:**
 - **P13:** the desert dragon spawner is a progression gate: oil sits behind guns, through hostile
@@ -158,7 +167,9 @@ leaves them alone; true restores R18's discard (R18a).
   - **Other levels:** CDG's own `getBaseOilAmount` for each chunk when it first generates, on the
     server thread under a per-tick budget (the 12,800 biome lookups are cheap on a generated chunk,
     which holds its biomes; their cost is UNVERIFIED until the bench). Lairs also ask for the chunks
-    within their reach (§4.4), sampled ahead of generation under the same budget.
+    within their reach (§4.4), sampled ahead of generation under the same budget. (Built: the chunks of
+    that ask in memory are sampled at once and the rest as they load, since a chunk not in memory cost
+    79 ms on a real overworld; OGC43.)
 - **A field** is a connected group (8-neighbour) of oil chunks. Its record: the canonical chunk set
   (TP4), its centre, finite oil known (from deposit samples once drilled), bottomless or not, and which
   dragons drink there.
@@ -331,6 +342,8 @@ threat there is vanilla's own, placed where the oil is:
   count TUNABLE), and B is above zero at site 4. Site 3 is expected to fall: danger follows deposits.
 - **Then, and only then,** Ben removes the fire dragon rule from In Control's two files and OG-1's
   exemption ends. The blaze rule is a separate choice (OG-12).
+- **Measured** 2026-10-21 (sites 1 to 3, two runs by day, `OilDangerGameTests` with `-Pog10`): not yet
+  passed. The table and the harness are OGC35 in `docs/choices-oilgate.md`.
 
 ## 5. Walkthroughs
 
@@ -385,7 +398,8 @@ threat there is vanilla's own, placed where the oil is:
    spawn a dragon.
 3. The placed feature at y below 15 in a desert chunk: shriekers that can summon, a warden on the fourth
    warning.
-4. CDG's `getBaseOilAmount` time on generated and ungenerated chunks (bench).
+4. CDG's `getBaseOilAmount` time on generated and ungenerated chunks (bench). Measured: 3.2 ms in memory,
+   79 ms a chunk not in memory on a real overworld (OGC43).
 5. TaCZ r6: do the pack's gun recipes load.
 6. The measurement of §4.8.
 

@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 
 use rtsim_industry::district::Presence;
 use rtsim_industry::engine::Engine;
-use rtsim_industry::ids::{DistrictId, Good, GoodVec, TrainId};
+use rtsim_industry::ids::{DistrictId, Good, GoodClass, GoodVec, TrainId};
+use rtsim_industry::obs::DepositPluginId;
 use rtsim_industry::threat::{Threat, ThreatTarget};
 use rtsim_kernel::clock::Tick;
 use rtsim_settle::Pos;
@@ -42,6 +43,16 @@ pub struct RaidOutcome {
     pub machine_lost: bool,
     /// Why nothing happened ("watched", "cooldown", "read-only phase").
     pub skipped: Option<&'static str>,
+}
+
+/// What a dragon drinking at an oil field senses of a district near it (OILGATE.md §4.5, OG-8):
+/// an oil deposit sampled there (a pumpjack or a CDG oil chunk in its books), Destroy's level
+/// pollution sampled there, and the fuel in its stock, mB.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DistrictSignals {
+    pub oil_sample: bool,
+    pub polluted: bool,
+    pub fuel_mb: i64,
 }
 
 /// A booked train leg a dragon's leg can meet: the train, and the window both are under way in.
@@ -74,6 +85,16 @@ pub trait Infrastructure {
     /// A raid on a train under way (I24): the cargo it lost, if any. Track is never cut.
     fn raid_train(&mut self, _t: &Threat) -> Option<GoodVec> {
         None
+    }
+    /// A raid that also drinks (OG-5): the survivors take the goods named in `fuels` (item names;
+    /// a name also matches its `name/<hash>` variants) first, up to `room` units. Without a fuel
+    /// stock to drink from it is a plain raid.
+    fn raid_drinking(&mut self, t: &Threat, _fuels: &[String], _room: i64) -> Option<RaidOutcome> {
+        self.raid(t)
+    }
+    /// What a dragon senses of `district` (OG-8). Nothing by default.
+    fn signals(&mut self, _district: DistrictId, _fuels: &[String]) -> DistrictSignals {
+        DistrictSignals::default()
     }
 }
 
@@ -165,6 +186,53 @@ impl DistrictIndex {
     }
 }
 
+impl IndustryLink<'_> {
+    /// The industry goods that are fuel, in the order of `fuels`, then by id; deposits never are.
+    fn fuel_goods(&self, fuels: &[String]) -> Vec<Good> {
+        let mut out: Vec<(usize, Good)> = Vec::new();
+        for (g, i) in self.engine.goods() {
+            if i.class == GoodClass::Deposit {
+                continue;
+            }
+            let rank = fuels.iter().position(|f| {
+                i.name == *f
+                    || i.name
+                        .strip_prefix(f.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            });
+            if let Some(r) = rank {
+                out.push((r, *g));
+            }
+        }
+        out.sort_unstable();
+        out.into_iter().map(|(_, g)| g).collect()
+    }
+
+    fn raid_with(&mut self, t: &Threat, fuels: &[Good], room: i64) -> Option<RaidOutcome> {
+        let ThreatTarget::District(d) = t.target else {
+            self.engine.threat_drinking(t, fuels, room);
+            return None;
+        };
+        let before = self.engine.district(d)?.attacks.len();
+        self.engine.threat_drinking(t, fuels, room);
+        let dist = self.engine.district(d)?;
+        // The engine keeps a bounded history; the newest entry is this attack's.
+        let r = dist.attacks.back()?;
+        if dist.attacks.len() == before && r.at != t.at.max(self.engine.now()) {
+            return None;
+        }
+        Some(RaidOutcome {
+            survived: r.outcome.map_or(0.0, |o| o.survived),
+            floor: r.outcome.and_then(|o| o.floor),
+            untested: r.outcome.is_some_and(|o| o.untested),
+            stolen: r.stolen.clone(),
+            destroyed_blocks: r.destroyed,
+            machine_lost: r.machine_lost,
+            skipped: r.skipped,
+        })
+    }
+}
+
 impl Infrastructure for IndustryLink<'_> {
     fn districts_near(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
         self.index.refresh(self.engine);
@@ -205,27 +273,45 @@ impl Infrastructure for IndustryLink<'_> {
     }
 
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
-        let ThreatTarget::District(d) = t.target else {
-            self.engine.threat(t);
-            return None;
+        self.raid_with(t, &[], 0)
+    }
+
+    fn raid_drinking(&mut self, t: &Threat, fuels: &[String], room: i64) -> Option<RaidOutcome> {
+        let goods = self.fuel_goods(fuels);
+        self.raid_with(t, &goods, room)
+    }
+
+    fn signals(&mut self, district: DistrictId, fuels: &[String]) -> DistrictSignals {
+        let goods = self.fuel_goods(fuels);
+        let stock = match self.engine.sim_stock(district) {
+            Some(s) => s,
+            None => self
+                .engine
+                .district(district)
+                .map_or_else(GoodVec::new, |d| d.effective_stock()),
         };
-        let before = self.engine.district(d)?.attacks.len();
-        self.engine.threat(t);
-        let dist = self.engine.district(d)?;
-        // The engine keeps a bounded history; the newest entry is this attack's.
-        let r = dist.attacks.back()?;
-        if dist.attacks.len() == before && r.at != t.at.max(self.engine.now()) {
-            return None;
+        let fuel_mb = goods.iter().map(|g| stock.get(*g).max(0)).sum();
+        let Some(d) = self.engine.district(district) else {
+            return DistrictSignals::default();
+        };
+        let names = self.engine.goods();
+        let oil_sample = d.deposits.values().any(|s| {
+            matches!(
+                s.plugin,
+                DepositPluginId::DieselOil | DepositPluginId::DestroyCrude
+            ) && (s.infinite || s.remaining > 0)
+        });
+        let polluted = d.deposits.values().any(|s| {
+            s.remaining > 0
+                && names
+                    .get(&s.good)
+                    .is_some_and(|i| rtsim_industry::deposit::is_level_pollution(&i.name))
+        });
+        DistrictSignals {
+            oil_sample,
+            polluted,
+            fuel_mb,
         }
-        Some(RaidOutcome {
-            survived: r.outcome.map_or(0.0, |o| o.survived),
-            floor: r.outcome.and_then(|o| o.floor),
-            untested: r.outcome.is_some_and(|o| o.untested),
-            stolen: r.stolen.clone(),
-            destroyed_blocks: r.destroyed,
-            machine_lost: r.machine_lost,
-            skipped: r.skipped,
-        })
     }
 
     fn good_name(&self, g: Good) -> Option<String> {

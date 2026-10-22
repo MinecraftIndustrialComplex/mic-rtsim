@@ -23,12 +23,14 @@
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
+use rtsim_ecology::boundary::{self, Obs, OilChunkRec, OilChunks};
 use rtsim_ecology::engine::Dragons;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_ecology::synth;
 use rtsim_ecology::tunables::DragonTunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_world::World;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +50,45 @@ pub struct DragonConfig {
     /// Paged runs: ticks between saves (Minecraft's autosave: 6,000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub save_every: Option<u64>,
+    /// The oil gate on (OILGATE.md): fields over the grid from the start, so fire dragons burn,
+    /// wake low and fly to drink.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub oil: bool,
+}
+
+/// Oil fields of 3 by 3 chunks over `w`'s extent, one per eight villages, reported as Deep Time's
+/// traps at the start (the gate opens with them).
+fn add_oil(w: &mut World, d: &mut Dragons, seed: u64) {
+    let (mut x0, mut x1, mut z0, mut z1) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for n in &w.nodes {
+        x0 = x0.min(n.pos.x);
+        x1 = x1.max(n.pos.x);
+        z0 = z0.min(n.pos.z);
+        z1 = z1.max(n.pos.z);
+    }
+    let key = StreamKey::new(seed, SystemId::named("bench.oil"), 0);
+    let mut chunks = Vec::new();
+    for k in 0..(w.nodes.len() / 8).max(1) as u64 {
+        let mut r = key.slot(k);
+        let cx = (x0 + r.below((x1 - x0).max(1) as u64) as i32) >> 4;
+        let cz = (z0 + r.below((z1 - z0).max(1) as u64) as i32) >> 4;
+        for j in 0..9 {
+            chunks.push(OilChunkRec {
+                cx: cx + j % 3,
+                cz: cz + j / 3,
+                amount: 1,
+                flags: 0,
+            });
+        }
+    }
+    for part in chunks.chunks(boundary::OIL_CHUNKS_MAX) {
+        let o = Obs::OilChunks(OilChunks {
+            dimension: 0,
+            source: boundary::OIL_SOURCE_DEEP_TIME,
+            chunks: part.to_vec(),
+        });
+        d.ingest(w, &mut NoInfrastructure, &o, Tick::ZERO);
+    }
 }
 
 /// The paged sweeps' world: two dragons (lairs) per village, so density stays at the fixed-grid
@@ -86,6 +127,9 @@ pub fn run(c: &DragonConfig) -> Measured {
     let mut d = Dragons::new(c.seed, DragonTunables::default(), Tick::ZERO);
     let lairs = synth::bench_lairs(&w, c.dragons as usize, 1, c.seed);
     synth::populate(&mut w, &mut d, &lairs, Tick::ZERO);
+    if c.oil {
+        add_oil(&mut w, &mut d, c.seed);
+    }
     d.run_until(&mut w, &mut NoInfrastructure, warm);
     let before = d.stats;
     sys::reset_heap_peak();
@@ -235,6 +279,9 @@ fn run_paged(c: &DragonConfig, budget: usize, save_every: u64) -> Measured {
     let mut d = Dragons::new(c.seed, DragonTunables::default(), Tick::ZERO);
     let lairs = synth::bench_lairs(&w, c.dragons as usize, 1, c.seed);
     synth::populate(&mut w, &mut d, &lairs, Tick::ZERO);
+    if c.oil {
+        add_oil(&mut w, &mut d, c.seed);
+    }
     let dir = super::scale::scratch_dir("dragons-paged");
     let _ = std::fs::remove_dir_all(&dir);
     let store = Arc::new(RwLock::new(

@@ -966,6 +966,66 @@ impl Engine {
             .report(DistrictId(district))
             .map(|r| r.to_f64s())
     }
+
+    /// One district's threat state for tests (the roof gate, OG-11), flat: whether the engine
+    /// has it (1 or 0), watched, presence (0 unloaded, 1 partial, 2 live), loaded chunks, exposed
+    /// blocks and the roofless ones, blocks waiting to be destroyed, attack reports; then the last
+    /// report's tick, skipped (0 no, 1 watched, 2 cooldown, 3 other), strength through, defender,
+    /// survived, survivors and blocks destroyed; then the engine's threats taken, attacks and
+    /// attacks skipped; then the link's commands queued and kept, written, dropped, failed by
+    /// Java, the front command's name waits, and the module switch (1 on). Between steps.
+    pub fn industry_threat_probe(&self, district: u64) -> Vec<f64> {
+        use rtsim_industry::district::Presence;
+        use rtsim_industry::obs::BlockFlags;
+        let st = lock(&self.state);
+        let l = &st.industry;
+        let mut v = vec![0.0; 25];
+        if let Some(d) = l.engine.district(DistrictId(district)) {
+            let exposed = &d.defence.exposed;
+            v[0] = 1.0;
+            v[1] = if d.watched { 1.0 } else { 0.0 };
+            v[2] = match d.presence {
+                Presence::Unloaded => 0.0,
+                Presence::Partial => 1.0,
+                Presence::Live => 2.0,
+            };
+            v[3] = d.loaded_chunks.len() as f64;
+            v[4] = exposed.len() as f64;
+            v[5] = exposed
+                .iter()
+                .filter(|b| b.flags & BlockFlags::ROOFLESS != 0)
+                .count() as f64;
+            v[6] = d.destroy_pending.values().map(Vec::len).sum::<usize>() as f64;
+            v[7] = d.attacks.len() as f64;
+            if let Some(a) = d.attacks.back() {
+                v[8] = a.at.0 as f64;
+                v[9] = match a.skipped {
+                    None => 0.0,
+                    Some("watched") => 1.0,
+                    Some("cooldown") => 2.0,
+                    Some(_) => 3.0,
+                };
+                if let Some(o) = a.outcome {
+                    v[10] = o.through;
+                    v[11] = o.defender;
+                    v[12] = o.survived;
+                }
+                v[13] = f64::from(a.survivors);
+                v[14] = f64::from(a.destroyed);
+            }
+        }
+        v[15] = l.stats.threats as f64;
+        v[16] = l.engine.stats.attacks as f64;
+        v[17] = l.engine.stats.attacks_skipped as f64;
+        v[18] = l.queue.len() as f64;
+        v[19] = l.outbox.len() as f64;
+        v[20] = l.stats.commands_written as f64;
+        v[21] = l.stats.dropped as f64;
+        v[22] = l.stats.results_failed as f64;
+        v[23] = f64::from(l.name_waits);
+        v[24] = if l.enabled { 1.0 } else { 0.0 };
+        v
+    }
 }
 
 /// The glass check offline, for the stub engine's GameTests (choice GB80): a fresh industry engine

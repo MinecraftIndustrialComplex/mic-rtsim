@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragons Guard Oil</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --old: #8a8a93;
+  --new: #2a78d6;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 26px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td.num, th.num { text-align: right; white-space: nowrap; }
+tr.group th { color: var(--ink); font-size: 15.5px; padding-top: 18px; }
+td .sub { display: block; color: var(--muted); font-size: 14px; }
+td.new { color: var(--ink); font-weight: 600; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 6px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+  table.stack td.short::before { display: inline; margin-right: 8px; }
+  table.stack td:first-child { font-weight: 600; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+.formula { font-family: var(--mono); font-size: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 12px 0 14px; line-height: 1.7; max-width: 38em; }
+
+/* timelines */
+.tl { list-style: none; padding: 0; margin: 10px 0 16px; }
+.tl li { display: grid; grid-template-columns: 7.4em 1fr; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--line); max-width: 46em; margin: 0; }
+.tl li:last-child { border-bottom: 0; }
+.tl .d { font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 16px; padding-top: 1px; }
+@media (max-width: 480px) {
+  .tl li { grid-template-columns: 1fr; gap: 0; }
+}
+
+/* diagrams */
+figure { margin: 18px 0 8px; }
+.panel-h { font-size: 15.5px; font-weight: 600; margin: 0 0 4px; }
+svg.dg { display: block; width: 100%; height: auto; }
+svg.dg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 13.5px; fill: var(--ink); }
+svg.dg text.m { fill: var(--muted); }
+svg.dg text.b { font-weight: 650; }
+.waits { max-width: 520px; }
+
+/* line plots */
+.legend { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 15px; margin: 0 0 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { display: inline-block; width: 18px; height: 3px; border-radius: 2px; }
+.sw.old { background: var(--old); }
+.sw.new { background: var(--new); }
+.plot {
+  --pl: 40px; --pr: 92px; --pt: 18px; --pb: 30px;
+  position: relative;
+  height: clamp(250px, 40vw, 330px);
+  touch-action: pan-y;
+  font-size: 14px;
+  line-height: 1.2;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: crosshair;
+}
+.plot.small { --pr: 66px; height: 200px; }
+.plot svg {
+  position: absolute;
+  left: var(--pl); top: var(--pt);
+  width: calc(100% - var(--pl) - var(--pr));
+  height: calc(100% - var(--pt) - var(--pb));
+  overflow: visible;
+}
+.plot svg .g { stroke: var(--line); stroke-width: 1; }
+.plot svg .base { stroke: #b9b9c2; stroke-width: 1; }
+.plot svg .s { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.plot .at {
+  position: absolute;
+  left: calc(var(--pl) + (100% - var(--pl) - var(--pr)) * var(--x, 0));
+  top: calc(var(--pt) + (100% - var(--pt) - var(--pb)) * (1 - var(--y, 0)));
+  white-space: nowrap;
+}
+.plot .yl { left: 0; width: calc(var(--pl) - 7px); text-align: right; transform: translateY(-50%); color: var(--muted); font-variant-numeric: tabular-nums; }
+.plot .xl { top: calc(100% - var(--pb) + 7px); transform: translateX(-50%); color: var(--muted); font-variant-numeric: tabular-nums; }
+.plot .xl.unit { transform: none; margin-left: 6px; display: none; }
+.plot .sl { left: calc(100% - var(--pr) + 8px); transform: translateY(-50%); font-weight: 600; font-size: 14px; }
+.plot .pt, .plot .hd { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px #fff; transform: translate(-50%, -50%); pointer-events: none; }
+.plot .hd { width: 11px; height: 11px; }
+.plot .xh { position: absolute; top: var(--pt); bottom: var(--pb); width: 1px; background: #8a8a93; transform: translateX(-0.5px); pointer-events: none; }
+.plot .tip {
+  position: absolute; top: calc(var(--pt) + 4px);
+  background: #fff; border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px 10px 6px; font-size: 14px; line-height: 1.45;
+  box-shadow: 0 2px 10px rgba(26, 26, 31, 0.08);
+  pointer-events: none; white-space: nowrap; font-variant-numeric: tabular-nums;
+  z-index: 2;
+}
+.plot .tip i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+.plot [hidden] { display: none; }
+.multi { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px 30px; margin: 14px 0 6px; }
+
+/* paired bars */
+.bars { margin: 14px 0 6px; display: grid; gap: 14px; }
+.bar { display: grid; grid-template-columns: minmax(9em, 14em) 1fr; gap: 4px 14px; align-items: center; font-size: 15.5px; }
+.bar .lbl { line-height: 1.35; font-weight: 600; }
+.bar .tracks { display: grid; gap: 4px; }
+.bar .track { display: flex; align-items: center; gap: 8px; }
+.bar .fill { height: 12px; border-radius: 0 4px 4px 0; flex: none; width: calc((100% - 11em) * var(--w)); min-width: 3px; }
+.bar .fill.old { background: var(--old); }
+.bar .fill.new { background: var(--new); }
+.bar .fill.range { background: #c4c4cb; }
+.bar .fill.range b { display: block; height: 100%; width: var(--lo); background: var(--old); }
+.bar .v { font-variant-numeric: tabular-nums; font-size: 14.5px; white-space: nowrap; }
+.bar .v.old { color: var(--muted); }
+@media (max-width: 560px) {
+  .bar { grid-template-columns: 1fr; }
+}
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }
+.two .box { margin: 0; }
+
+/* decided list */
+.decided h3 { font-size: 17px; margin: 22px 0 6px; }
+.decided ul { font-size: 16.5px; }
+.decided li { max-width: 46em; }
+
+/* decisions */
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision ul { margin-top: 4px; font-size: 16.5px; }
+.decision p, .decision li { max-width: none; }
+.decision .alt-h { font-size: 15px; font-weight: 600; color: var(--muted); margin: 10px 0 2px; }
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+
+/* page 8 */
+.bar .fill.a { background: #c4c4cb; }
+.bar .fill.a b { display: block; height: 100%; width: var(--lo); background: var(--old); }
+.bar .fill.b { background: #a9c8ef; }
+.bar .fill.b b { display: block; height: 100%; width: var(--lo); background: var(--new); }
+.bar .lbl .sub { display: block; font-weight: 400; font-size: 14px; color: var(--muted); }
+.verdict { font-weight: 600; }
+.verdict.ok { color: #1f7a4d; }
+.verdict.no { color: #8f620f; }
+.sw.a { background: var(--old); }
+.sw.b { background: var(--new); }
+.tiles.three { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#meets">At an oil field</a>
+  <a href="#reserve">Reserve</a>
+  <a href="#test">Danger test</a>
+  <a href="#decide">Decide</a>
+  <a href="#decided">Decided</a>
+  <a href="#next">Next</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">Dragons now guard oil: they need it to breathe fire, nest near it and raid whoever works it. The gate's own arrivals stay off, and 5 questions are yours</h1>
+  <p class="dek" data-ss-id="dek">The oil gate's dragon half, built as you approved it (OG-1 to OG-8 and OG-10 to OG-13) and merged to mic-rtsim main at 5f8b403. The underground half comes next and is not built.</p>
+  <p class="lead" data-ss-id="lead">Fire dragons now carry a fuel reserve. Time and every breath of fire drain it, and they refill by resting on an oil field or by drinking a base's tanks. One with none fights with bite and claws. Every oil field gets a fire lair within reach, and dragons raid districts that work near their oil. A roof now stops a flying raid's block damage. In Control's own desert dragons and blazes are untouched. The gate's own arrivals at oil, the field flights, failed the danger test against In Control, so they ship switched off.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-built"><div class="n">12</div><div class="t">decisions built: all you approved for the dragon half</div></div>
+    <div class="tile" data-ss-id="kpi-iaf"><div class="n">20 <small>of 20</small></div><div class="t">Ice and Fire GameTests, on the native engine and the stub</div></div>
+    <div class="tile" data-ss-id="kpi-core"><div class="n">63 <small>of 63</small></div><div class="t">core GameTests</div></div>
+    <div class="tile" data-ss-id="kpi-rust"><div class="n">about 835</div><div class="t">Rust tests</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">5</div><div class="t">questions for you, each with a recommendation</div></div>
+  </div>
+</header>
+
+<section id="meets" data-ss-id="meets" data-ss-section>
+  <h2 data-ss-id="meets-h">What a player meets at an oil field now</h2>
+  <ol class="tl" data-ss-id="meets-tl">
+    <li><span class="d">Arriving</span><span>In Control's desert dragons arrive as before, and the sim leaves natural dragons alone (OG-1). The gate's own arrivals at oil, the field flights, are built but switched off (question 1).</span></li>
+    <li><span class="d">Watching</span><span>A fire dragon low on fuel flies to the nearest oil within 3,000 blocks and rests there for an hour of game time. A player who sees one pass learns where oil is.</span></li>
+    <li><span class="d">Lairs</span><span>Choosing a lair weighs the distance to oil. A field with no fire lair within 1,500 blocks gets one fire roost placed near it, once, when a player first comes near.</span></li>
+    <li><span class="d">Building</span><span>A dragon at a field senses every district within 400 blocks of it, once a day. An oil sample, a fuel stock of 1,000 mB or more, and pollution each make it worse. A working district stays resented, and is forgotten 10 days after it stops.</span></li>
+    <li><span class="d">Raids</span><span>A grudge sends a raid on the district. The grudge falls on the district and on players whose home is near it. Watched, the dragon comes in person and fights. Unwatched, the industry engine resolves the raid. A dragon low on fuel drinks the tanks first (question 3).</span></li>
+    <li><span class="d">Roofs</span><span>A flyer's block damage shrinks with the share of the district's machines under a roof. Glass is no roof. The fight and the theft still happen: the dragon lands in the yard.</span></li>
+    <li><span class="d">Dry</span><span>A dragon with an empty reserve cannot breathe fire. It fights with bite and claws, at half strength while the sim resolves the fight.</span></li>
+  </ol>
+  <p class="cap" data-ss-id="meets-cap">In Control's desert blazes are untouched (OG-12). Oil in the ground never runs down for a dragon (OG-6): it is in nobody's books. A world with no oil known yet plays as before; the gate opens on the first oil chunk reported.</p>
+</section>
+
+<section id="reserve" data-ss-id="reserve" data-ss-section>
+  <h2 data-ss-id="reserve-h">The fuel reserve lasts about three streams of fire</h2>
+  <p data-ss-id="reserve-p">Fire dragons only: ice and lightning dragons do not use oil. The numbers are placeholders until you answer question 2.</p>
+  <div class="tiles three" data-ss-id="reserve-tiles">
+    <div class="tile" data-ss-id="res-cap"><div class="n">100</div><div class="t">points when full; refuels below 40</div></div>
+    <div class="tile" data-ss-id="res-time"><div class="n">12.5 <small>game days</small></div><div class="t">from full to empty with no fire: a point every 3,000 ticks, the pack's hunger rate</div></div>
+    <div class="tile" data-ss-id="res-stream"><div class="n">35 to 41</div><div class="t">points in one stream of fire, a point per fire event</div></div>
+  </div>
+  <ul data-ss-id="reserve-list">
+    <li>Drinking from a base: 1,000 mB of fuel is one point. Fuel goods go first, in this order: Destroy's crude, Diesel Generators' oil, crude, diesel, gasoline.</li>
+    <li>What a dragon drinks leaves the base's stock as theft and is booked as burnt in the dragons' ledger, so oil is never created or lost between the two books.</li>
+    <li>A dry dragon's raid hits at half strength and burns nothing. In a measured fight, the dragon's 15 points went in 31 ticks, and no fire reached the player after that.</li>
+  </ul>
+</section>
+
+<section id="test" data-ss-id="test" data-ss-section>
+  <h2 data-ss-id="test-h">The danger test: field flights are not yet as dangerous as In Control</h2>
+  <p data-ss-id="test-p">OG-10 put a guarded mock player at three desert sites and counted every dragon blow for 3,600 ticks from morning. Arm A is the pack as it is, with In Control's desert dragons. Arm B removes those spawn rules and turns field flights on. The switch needs B at least as dangerous as A. Two runs per arm.</p>
+  <div class="legend" data-ss-id="test-legend">
+    <span><i class="sw a" aria-hidden="true"></i>A: In Control</span>
+    <span><i class="sw b" aria-hidden="true"></i>B: field flights</span>
+    <span>Dark part: the lower run; light part: up to the higher run</span>
+  </div>
+  <div class="bars" data-ss-id="test-bars">
+    <div class="bar" data-ss-id="bar-dmg">
+      <div class="lbl">Dragon damage a minute<span class="sub"><span class="verdict ok">B holds</span>: higher is more dangerous</span></div>
+      <div class="tracks">
+        <div class="track"><span class="fill a" style="--w:0.835;--lo:0.7805" aria-hidden="true"><b></b></span><span class="v old">A: 260.7 and 334.0</span></div>
+        <div class="track"><span class="fill b" style="--w:0.889;--lo:0.9848" aria-hidden="true"><b></b></span><span class="v">B: 350.3 and 355.7</span></div>
+      </div>
+    </div>
+    <div class="bar" data-ss-id="bar-first">
+      <div class="lbl">First dragon hit, in ticks<span class="sub"><span class="verdict no">B falls short</span>: lower is more dangerous; B is 40 to 50% later</span></div>
+      <div class="tracks">
+        <div class="track"><span class="fill a" style="--w:0.6145;--lo:0.8328" aria-hidden="true"><b></b></span><span class="v old">A: 563 and 676</span></div>
+        <div class="track"><span class="fill b" style="--w:0.930;--lo:0.7977" aria-hidden="true"><b></b></span><span class="v">B: 816 and 1,023</span></div>
+      </div>
+    </div>
+    <div class="bar" data-ss-id="bar-distinct">
+      <div class="lbl">Distinct dragons hitting, an hour<span class="sub"><span class="verdict no">B falls short</span>: a third to a half of A's</span></div>
+      <div class="tracks">
+        <div class="track"><span class="fill a" style="--w:0.9;--lo:0.6667" aria-hidden="true"><b></b></span><span class="v old">A: 240 and 360</span></div>
+        <div class="track"><span class="fill b" style="--w:0.3;--lo:1" aria-hidden="true"><b></b></span><span class="v">B: 120 and 120</span></div>
+      </div>
+    </div>
+    <div class="bar" data-ss-id="bar-target">
+      <div class="lbl">Dragons targeting or hitting, an hour<span class="sub">for context</span></div>
+      <div class="tracks">
+        <div class="track"><span class="fill a" style="--w:0.9333;--lo:0.7857" aria-hidden="true"><b></b></span><span class="v old">A: 440 and 560</span></div>
+        <div class="track"><span class="fill b" style="--w:0.3333;--lo:0.9" aria-hidden="true"><b></b></span><span class="v">B: 180 and 200</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="cap" data-ss-id="test-cap">Site 1, on the surface over oil. 20 ticks are a second of game time, so A's first dragon hit came after 28 and 34 seconds and B's after 41 and 51. Other hostiles reached the player as fast in both arms: first hit by anything at 165 and 291 ticks in A, 185 and 184 in B.</p>
+  <div class="scroll">
+  <table class="stack" data-ss-id="sites-table">
+    <thead><tr><th>Site</th><th>Where</th><th>A: In Control</th><th>B: field flights</th><th>Reading</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td data-label="Where">On the surface over oil</td><td data-label="A: In Control">260.7 and 334.0 a minute</td><td data-label="B: field flights">350.3 and 355.7 a minute</td><td data-label="Reading">Fails on first hit and on how many dragons come</td></tr>
+      <tr><td>2</td><td data-label="Where">A sealed pocket over oil at y 10</td><td data-label="A: In Control">none</td><td data-label="B: field flights">none</td><td data-label="Reading">Passes: nothing reaches the pocket in either arm</td></tr>
+      <tr><td>3</td><td data-label="Where">On the surface, no oil</td><td data-label="A: In Control">293.7 and 326.7 a minute</td><td data-label="B: field flights">none</td><td data-label="Reading">Falls, as designed: the danger follows oil, not desert</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p data-ss-id="test-early">The verdict is early. The plan asks for medians over several runs, by day and by night; these are two runs by day. Both runs fail the same two measures, so field flights stay off until a re-measure passes (question 1).</p>
+</section>
+
+<section id="decide" data-ss-id="decide" data-ss-section>
+  <h2 data-ss-id="decide-h">Your 5 questions</h2>
+  <p data-ss-id="decide-p">The recommended option is first in each. Until you answer, the build keeps what it has now: field flights off, a reserve of 100, drinking free of the theft cap, a lost visitor's visit ended, and the exact oil lookup on every new chunk.</p>
+
+  <div class="decision" data-ss-id="q1">
+    <h3>1. Field flights: what makes the gate dangerous enough to switch?</h3>
+    <p class="rec">Recommended: (a) keep them off, raise their draw and measure again.</p>
+    <p>Keep <code>fieldFlights</code> false and In Control's fire dragon rules as they are. Raise the flights' draw: <code>flight_chance_milli</code> from 100 to 250 and <code>flight_cap_field</code> from 8 to 12, both placeholders. Measure again with at least 5 runs per site, by day and by night, and switch when B is at least A at sites 1 and 2.</p>
+    <p class="alt-h">The other options</p>
+    <ul>
+      <li>(b) Judge danger by damage a minute alone, which B already meets, and switch now: remove the fire dragon from In Control's <code>spawner.json</code> and both <code>spawn.json</code> rules. The proposed files are in <code>neoforge/iceandfire/pack-proposal/</code>.</li>
+      <li>(c) Turn flights on alongside In Control. Danger at oil sites roughly doubles until the rule goes.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="q2">
+    <h3>2. How big is the fuel reserve?</h3>
+    <p class="rec">Recommended: (a) a point per fire event, capacity 600, refuelling below 240.</p>
+    <p>Size the reserve from fights. If a fight is about five streams, three fights are about 600 points. Today's 100 lasts about three streams.</p>
+    <div class="scroll">
+    <table class="stack" data-ss-id="q2-table">
+      <thead><tr><th>Option</th><th>Costs</th><th class="num">Full reserve</th><th class="num">Lasts</th></tr></thead>
+      <tbody>
+        <tr><td>(a) Recommended</td><td data-label="Costs">A point per fire event</td><td class="num" data-label="Full reserve">600</td><td class="num" data-label="Lasts">about 15 streams</td></tr>
+        <tr><td>(b)</td><td data-label="Costs">A point per burst</td><td class="num" data-label="Full reserve">100</td><td class="num" data-label="Lasts">about 100 streams</td></tr>
+        <tr><td>(c) As built</td><td data-label="Costs">A point per fire event</td><td class="num" data-label="Full reserve">100</td><td class="num" data-label="Lasts">about 3 streams</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="alt-h">The other options</p>
+    <ul>
+      <li>(b) A point per burst, keeping 100: a dragon is almost never dry.</li>
+      <li>(c) Keep 100 at a point per fire event: a dragon is dry after about three streams and finishes most fights with bite and claws.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="q3">
+    <h3>3. May a drinking dragon take more than the theft cap?</h3>
+    <p class="rec">Recommended: (a) yes: drinking stays free of the cap.</p>
+    <p>A dry dragon may take its whole room from one raid: up to 100,000 mB with today's reserve, and 600,000 mB if question 2 goes to 600. The tank is the lure that draws a dry dragon to a base.</p>
+    <p class="alt-h">The other option</p>
+    <ul>
+      <li>(b) Hold drinking to the item theft cap, 10% of a stock.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="q4">
+    <h3>4. Does a visitor whose body is lost end its visit?</h3>
+    <p class="rec">Recommended: (a) yes, keep the rule.</p>
+    <p>A field flight's dragon is a visitor. If its body is lost, because the session ended or the server crashed, its visit ends. After a restart, field flights draw again from fresh rolls.</p>
+    <p class="alt-h">The other option</p>
+    <ul>
+      <li>(b) Keep visitors through a session end, as wanderers.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="q5">
+    <h3>5. Should the oil lookup on new chunks get a cheap first check?</h3>
+    <p class="rec">Recommended: (a) yes: skip chunks whose biomes cannot hold oil.</p>
+    <p>Sampling new chunks for oil costs about 3 ms a tick while players explore. Diesel Generators' <code>getBaseOilAmount</code> makes 12,800 biome lookups a chunk: 3.2 ms on average for a chunk in memory, 14.8 ms at most. One sample always runs in a tick with work. The cheap first look skips a chunk none of whose biomes can hold oil under the pack's rule, and keeps the exact call for the rest. The dieselgenerators GameTest would check it against <code>getBaseOilAmount</code>.</p>
+    <p class="alt-h">The other option</p>
+    <ul>
+      <li>(b) Keep it as it is.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="decided" class="decided" data-ss-id="decided" data-ss-section>
+  <h2 data-ss-id="decided-h">Decided while building: 43 choices, each can be undone</h2>
+  <p data-ss-id="decided-p">Logged as OGC1 to OGC43 in <code>docs/choices-oilgate.md</code>. Every number is a placeholder until measurement sets it.</p>
+
+  <h3>Roofs</h3>
+  <ul>
+    <li>The roof gate measures the unroofed share of the district's surveyed machines; ground attacks and unsurveyed districts pass in full (OGC1).</li>
+    <li>A roof stops a flyer's block damage, not its theft or its fight (OGC2).</li>
+  </ul>
+
+  <h3>The reserve</h3>
+  <ul>
+    <li>Fire dragons only (OGC4). Capacity 100, a point every 3,000 ticks and a point per breath, as a closed form with no per-tick work (OGC5). Every write restarts the time drain (OGC6).</li>
+    <li>The gate opens on the first oil known, with every fire dragon full (OGC12). A roosting dragon wakes to refuel only from above the refuel level (OGC13).</li>
+    <li>A breath is one Ice and Fire fire event, which fires every tick of a stream (OGC29). A dry dragon strikes at half strength (OGC18) with bite and claws: its air attack becomes a tackle and its ground fire a bite (OGC30).</li>
+  </ul>
+
+  <h3>Refuelling</h3>
+  <ul>
+    <li>Oil chunks are indexed in 32 by 32 chunk regions and joined into fields; amounts are not kept (OGC7).</li>
+    <li>Drinking takes fuel goods first, up to the reserve's room, free of the theft cap (OGC8). Stolen fuel is booked as theft and burnt, so the books balance (OGC9).</li>
+    <li>Refuelling weighs like hunger: the reserve's room minus the flight's cost, within 3,000 blocks; a hungry dragon refuels only when that beats its best prey (OGC14).</li>
+    <li>A low dragon at a field raids the nearby district with the most fuel. If a player watches it, the dragon comes in person, hostile, on the day it first senses the district (OGC15).</li>
+  </ul>
+
+  <h3>Field flights</h3>
+  <ul>
+    <li>Off by default; the plugin's config sends the switches (OGC10, OGC28).</li>
+    <li>They reproduce In Control's own process: a roll every 10 seconds on average per dimension, for a player within 100 blocks of oil and at or above y 15, at most 200 drawn dragons a dimension and 8 a field, with Ice and Fire's own age, colour and sex rolls (OGC24). A player counts for 200 ticks after his last report (OGC25).</li>
+    <li>Visitors arrive hostile and do not stay: one carrying nothing leaves the sim; one carrying valuables claims a vacant lair or stays a wanderer (OGC11, OGC33).</li>
+    <li>A dragon flying to refuel is seen like a hunting one (OGC19).</li>
+  </ul>
+
+  <h3>Lairs</h3>
+  <ul>
+    <li>One fire roost placed per field with no fire lair within 1,500 blocks, checked once and saved (OGC20). Placement goes through vanilla's place-structure path, nearest the field first, on a free site with no player within 48 blocks (OGC32).</li>
+    <li>Each new fire lair surveys the oil within 1,024 blocks (OGC21). An oil request in a dimension Java never named is dropped (OGC22). Oil alone now wakes the native dragon engine (OGC27).</li>
+  </ul>
+
+  <h3>Sensing</h3>
+  <ul>
+    <li>Encroachment is a new report kind: as bad as an assault and lasting 10 days; only dragons witness it, so villages never gossip it (OGC3).</li>
+    <li>Each district is sensed once a day within 400 blocks of a field (OGC16). A grudge raids through the same threat interface as other raids (OGC17).</li>
+  </ul>
+
+  <h3>Cost, core and saves</h3>
+  <ul>
+    <li>The oil sampler shares 4 samples and 2 ms a tick, and sends only chunks with oil (OGC31).</li>
+    <li>A survey samples only chunks in memory, and the rest when they load. A chunk not in memory cost 79 ms to sample, so one survey of up to 13,000 chunks would have added about 80 ms to every tick for over 15 minutes (OGC43).</li>
+    <li>A change in core, outside the gate: a district that gains a chunk while loaded now tells the engine, so a raid on a new factory breaks what it should; before, it broke nothing until the chunks reloaded (OGC41).</li>
+    <li>New save format with no migration, as there is no backward compatibility before release (OGC23). A <code>dragons_oil</code> scale sweep in the bench (OGC26).</li>
+    <li>Test harness choices: guarded mock players, clocks caught up on GameTest servers, the danger test's three sites, and every counted suite on fresh worlds (OGC34 to OGC40, OGC42).</li>
+  </ul>
+</section>
+
+<section id="next" data-ss-id="next" data-ss-section>
+  <h2 data-ss-id="next-h">Next: the underground threat, not built</h2>
+  <p data-ss-id="next-p">OG-9e: a Death Worm oil nest, placed on the first load of each oil chunk and asleep until a pumpjack drills, under a new threat class for burrowing attackers. Nothing of it exists yet, but its hooks are in place:</p>
+  <ul data-ss-id="next-list">
+    <li>Every new oil chunk passes one spot in the engine, whatever reported it: that is where a nest will be queued.</li>
+    <li>A command id is reserved for placing the nest on a chunk's first load.</li>
+    <li>Field flights already stop below y 15, the depth where the nest takes over.</li>
+    <li>A record kind for a drilled chunk's sample is defined, so drilling can reach the engine.</li>
+  </ul>
+</section>
+
+<details data-ss-react="off" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li>mic-rtsim main at 5f8b403, "Merge feat/oilgate-dragons: the dragon half of the oil gate (OG-1 to OG-8, OG-10 to OG-13)".</li>
+    <li><code>docs/choices-oilgate.md</code>: OGC1 to OGC43, the OG-10 results table (OGC35), the fire events per stream, the seam for the underground half and the five questions ("For Ben").</li>
+    <li><code>OILGATE.md</code>: the design as approved, its status line and the §8 proposals OG-1 to OG-13. <code>DECISIONS.md</code>: BR-OG and OG-9 to OG-9e.</li>
+    <li>The OG-10 harness: <code>OilDangerGameTests</code> in <code>neoforge/iceandfire</code>, native only, two runs per arm on 21 October 2026.</li>
+    <li>Test counts as reported for the merge: Ice and Fire GameTests 20 of 20 on the native engine and the stub, core 63 of 63, about 835 Rust tests.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">
+  Built from docs/choices-oilgate.md and OILGATE.md on mic-rtsim main (5f8b403), 21 October 2026. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+</footer>
+</body>
+</html>
