@@ -104,7 +104,6 @@ class Params:
     grow_unloaded: float = 0.01         # TUNABLE: sim growth toward beds while unloaded
     settler_base: float = 16.0          # TUNABLE
     settler_cap: float = 192.0
-    settler_reach: int = 3              # regions (1,536 blocks)
     ribbit_clock: float = 10.0          # engine: one house and one ribbit per 10 prosperous days
     ribbit_extra: int = 8
     # ---- conflict camps
@@ -301,11 +300,15 @@ class World:
         self.c_events = 0
         # pirate havens
         self.h_ex = draw(p.haven_rate, far)
-        self.h_pool = np.where(self.h_ex, p.crew if not p.proposed else p.crew_cap, 0).astype(float)
-        self.h_ships = np.zeros(shp + (p.ship_slots,), bool)
-        self.h_due = np.where(self.h_ex[..., None], 0.0, INF) * np.ones(shp + (p.ship_slots,))
+        # as the engine founds a haven: every slot manned, and one spare crew in the pool (`first_crew`),
+        # in both modes, so "slots manned" compares like with like
+        self.h_pool = np.where(self.h_ex, p.crew, 0).astype(float)
+        self.h_ships = np.broadcast_to(self.h_ex[..., None], shp + (p.ship_slots,)).copy()
+        self.h_due = np.full(shp + (p.ship_slots,), INF)
         self.h_P = Pressure(shp, p)
         self.h_routes = rng.uniform(0.3, 0.9, size=shp + (3,))   # p_win per merchant route
+        # havens with a lane the gate would hunt (3 p - 6 (1 - p) > 0, so p > 2/3); the rest rest in port
+        self.h_hunts = self.h_routes.max(-1) > 2.0 / 3.0
         self.h_merch_due = np.zeros(shp + (3,))
         self.h_events = 0
         self.h_captures = 0
@@ -493,16 +496,8 @@ class World:
             start = need & np.isinf(self.v_due)
             self.v_due = np.where(start, t + self.v_P.delay(t, p.settler_base, p.settler_cap), self.v_due)
             ready = need & (self.v_due <= t)
-            if ready.any():
-                donor_ok = self.v_ex & (pop > 0.6 * K) & (pop >= 4)
-                for s, y, x in np.argwhere(ready):
-                    y0, y1 = max(0, y - p.settler_reach), min(G, y + p.settler_reach + 1)
-                    x0, x1 = max(0, x - p.settler_reach), min(G, x + p.settler_reach + 1)
-                    cand = donor_ok[s, y0:y1, x0:x1] * pop[s, y0:y1, x0:x1]
-                    if cand.max() > 0:      # a neighbour sends two; otherwise a family from afar
-                        dy, dx = np.unravel_index(np.argmax(cand), cand.shape)
-                        pop[s, y0 + dy, x0 + dx] -= 2
-                    pop[s, y, x] += 2
+            if ready.any():         # a family from beyond the explored edge (Frontier): no donor loses anyone
+                pop = np.minimum(pop + 2 * ready, K)
                 self.v_due = np.where(ready, INF, self.v_due)
                 self.v_events += int(ready.sum())
         else:
@@ -622,7 +617,7 @@ class World:
         avail = self.h_merch_due <= t
         for k in range(p.ship_slots):
             ship = self.h_ships[..., k]
-            go = ship & (rng.random(ship.shape) < min(1.0, p.hunt_p * dt))
+            go = ship & self.known & (rng.random(ship.shape) < min(1.0, p.hunt_p * dt))
             if not go.any():
                 continue
             if p.proposed:     # best response: the open route with the best expected value, if any
@@ -694,6 +689,8 @@ class World:
             "pirate_ships": (self.h_ships & kn[..., None]).sum((1, 2, 3)),
             "pirate_crew": np.where(kn, self.h_pool, 0).sum((1, 2)),
             "havens": (kn & self.h_ex).sum((1, 2)),
+            "pirate_ships_hunting": (self.h_ships & (kn & self.h_hunts)[..., None]).sum((1, 2, 3)),
+            "havens_hunting": (kn & self.h_ex & self.h_hunts).sum((1, 2)),
         }
 
     def events(self):
