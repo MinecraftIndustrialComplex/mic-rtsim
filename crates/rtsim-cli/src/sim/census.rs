@@ -403,7 +403,10 @@ mod tests {
         assert_eq!(n.mean_p(), 0.0);
         let h = kind(&cs, "herd.range");
         let alive: u64 = e.h.totals(e.h.now()).iter().sum();
-        assert_eq!(h.sites as usize, rtsim_ecology::herds::synth::scenario_herds().len());
+        assert_eq!(
+            h.sites as usize,
+            rtsim_ecology::herds::synth::scenario_herds().len()
+        );
         assert_eq!(h.members, alive);
         assert!(h.capacity > 0 && h.empty == 0);
         // A player kills both worms of one nest: it is empty, and its pressure is up.
@@ -446,7 +449,10 @@ mod tests {
         }
         let c = kind(&s.census(), "ship.haven").clone();
         assert_eq!((c.members, c.empty), (0, 1), "{c:?}");
-        assert!((c.mean_p() - 1.0).abs() < 1e-3, "two of two slots sunk: {c:?}");
+        assert!(
+            (c.mean_p() - 1.0).abs() < 1e-3,
+            "two of two slots sunk: {c:?}"
+        );
 
         // Conflict: one camp, its pool at the culture's cap.
         let mut s = Scenario::new(Kind::Conflict, 3);
