@@ -808,7 +808,9 @@ impl Dragons {
             return;
         }
         self.end_visit(d);
-        match self.vacant_lair(d, at) {
+        // It takes a lair as any newcomer does (EQUILIBRIUM.md §2.4.1): only an empty one whose
+        // wait has ended and whose ground would feed it.
+        match self.vacant_lair(w, d, at) {
             Some(l) => {
                 let name = self.lairs[l as usize].name.clone();
                 self.note(
