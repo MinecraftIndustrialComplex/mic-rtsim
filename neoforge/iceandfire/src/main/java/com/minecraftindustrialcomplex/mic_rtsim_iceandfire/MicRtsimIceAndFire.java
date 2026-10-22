@@ -59,6 +59,8 @@ public final class MicRtsimIceAndFire {
         ATTACHMENTS.register(modBus);
         DragonConfig.register(container);
         RtsimApi.registerPlugin(DragonBridge.INSTANCE);
+        // The far feed's embodied dragons and every species' look (docs/boundary.md §12.3)
+        DragonFeedSource.register();
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.LOWEST, false, FinalizeSpawnEvent.class, MicRtsimIceAndFire::onFinalizeSpawn);
         bus.addListener(EventPriority.LOWEST, false, DragonFireEvent.class, MicRtsimIceAndFire::onFire);
