@@ -328,8 +328,7 @@ public final class TrainWatch {
                     ind.port(d, IndRecords.Port.TRAIN_CARGO, IndRecords.NO_INVENTORY, CreateIds.of(train.id), 0, port);
                     cargoPorts++;
                 }
-                GlobalStation st = train.getCurrentStation();
-                if (docked != null && st != null && docked.station.equals(st.id) && docked.dim.equals(stop.dim))
+                if (docked != null && CreateIds.of(docked.station) == stop.station && docked.dim.equals(stop.dim))
                     ports(ind, d, stop.station, ind.level(stop.dim), docked.psis);
             }
             LEAVING.add(new Leaving(new WeakReference<>(train), stop.station, stop.district, ind.gameTime()));
@@ -617,6 +616,19 @@ public final class TrainWatch {
         LOOSE.remove(train.id);
         DOCKS.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
+    }
+
+    /**
+     * Test helper: an interface at {@code psi} docked with the train while it stands at {@code station}, as
+     * {@link #docking} records it. A synthetic train has no carriage entity, so nothing docks on its own.
+     */
+    public static void dockedForTest(Train train, GlobalStation station, ResourceKey<Level> dim, BlockPos psi) {
+        Docks d = DOCKS.get(train.id);
+        if (d == null || !d.station.equals(station.id)) {
+            d = new Docks(station.id, dim, new HashSet<>());
+            DOCKS.put(train.id, d);
+        }
+        d.psis.add(psi.immutable());
     }
 
     /** Test helper: forget which ports were sent, so the next loaded stop journals them again. */
