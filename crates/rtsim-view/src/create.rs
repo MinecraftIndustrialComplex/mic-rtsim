@@ -11,7 +11,7 @@
 //! The rtsim train lines (`industry.lines`) are redrawn along the track when both of their stations
 //! are Create stations of one network, so a line runs where its trains run.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -67,6 +67,8 @@ pub struct CreateLayers {
     can_land: bool,
     /// The line layer composed per frame, keyed by the base layer's version.
     lines: Mutex<HashMap<String, (u64, LayerRows)>>,
+    /// Each frame's district chunks: a block that only joins a district draws only in one.
+    districts: HashMap<String, HashSet<(i32, i32)>>,
 }
 
 impl CreateLayers {
@@ -101,6 +103,7 @@ impl CreateLayers {
             block_rows: Mutex::new(HashMap::new()),
             routes: HashMap::new(),
             lines: Mutex::new(HashMap::new()),
+            districts: HashMap::new(),
         }
     }
 
@@ -154,9 +157,15 @@ impl CreateLayers {
             .collect()
     }
 
-    /// Queues the chunks of `dim` the view will want first: districts' (given) and those round
-    /// every station.
-    pub fn want_at_open(&self, districts: &[(String, Vec<(i32, i32)>)]) {
+    /// Keeps the districts' chunks (by frame id), and queues the chunks the view will want first:
+    /// the districts' and those round every station.
+    pub fn want_at_open(&mut self, districts: &[(String, Vec<(i32, i32)>)]) {
+        for (frame, chunks) in districts {
+            self.districts
+                .entry(frame.clone())
+                .or_default()
+                .extend(chunks.iter().copied());
+        }
         if let Some(r) = &self.rail {
             let mut by_dim: BTreeMap<&str, Vec<(i32, i32)>> = BTreeMap::new();
             for s in &r.stations {
@@ -258,13 +267,24 @@ impl CreateLayers {
             .survey
             .all(frame)
             .iter()
-            .flat_map(|c| c.iter().cloned())
+            .flat_map(|c| c.iter().filter(|t| self.shown(frame, t)).cloned())
             .collect();
         let mut w = SceneWriter::new();
         draw::block_marks(&things, frame, &mut w);
         let rows = Arc::new(w.finish(0, 0.0).layers);
         m.insert(frame.to_owned(), (v, Arc::clone(&rows)));
         rows
+    }
+
+    /// Whether `t`, read in `frame`, is on the map. A furnace or any vanilla block never starts a
+    /// district in the game (DS-10), and alone it is a house, not industry: it shows only in a
+    /// district's chunks. A world with no districts shows none of them.
+    fn shown(&self, frame: &str, t: &Thing) -> bool {
+        !t.member_only
+            || self
+                .districts
+                .get(frame)
+                .is_some_and(|d| d.contains(&(t.pos[0] >> 4, t.pos[2] >> 4)))
     }
 
     /// The line layer with routed lines in place of straight ones.
@@ -378,7 +398,10 @@ impl CreateLayers {
         for dim in self.survey.dims() {
             let chunks = self.survey.all(&dim);
             out.extend(draw::find_things(
-                chunks.iter().flat_map(|c| c.iter()),
+                chunks
+                    .iter()
+                    .flat_map(|c| c.iter())
+                    .filter(|t| self.shown(&dim, t)),
                 &dim,
                 &dim,
                 q,
@@ -416,5 +439,41 @@ impl CreateLayers {
     /// Why the rail is missing, if it did not read.
     pub fn rail_error(&self) -> Option<&str> {
         self.rail_error.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mic_viewer_create::blocks::{Detail, Kind};
+
+    fn thing(id: &str, x: i32, z: i32) -> Thing {
+        Thing {
+            pos: [x, 64, z],
+            id: id.into(),
+            kind: Kind::Machine,
+            net: None,
+            speed: 0.0,
+            active: None,
+            member_only: id.starts_with("minecraft:"),
+            detail: Detail::None,
+        }
+    }
+
+    #[test]
+    fn furnaces_show_only_in_a_district() {
+        let dir = std::env::temp_dir().join(format!("rtsim-view-shown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = CreateLayers::open(&dir, Box::new(|| {}));
+        let o = "minecraft:overworld";
+        // No districts: no furnace anywhere, every Create machine.
+        assert!(!c.shown(o, &thing("minecraft:furnace", 5, 5)));
+        assert!(c.shown(o, &thing("create:mechanical_press", 5, 5)));
+        c.want_at_open(&[(o.to_owned(), vec![(0, 0), (-1, 0)])]);
+        assert!(c.shown(o, &thing("minecraft:furnace", 5, 5)));
+        assert!(c.shown(o, &thing("minecraft:smoker", -3, 15)));
+        assert!(!c.shown(o, &thing("minecraft:furnace", 17, 5)));
+        assert!(!c.shown("minecraft:the_nether", &thing("minecraft:furnace", 5, 5)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
