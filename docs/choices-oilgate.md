@@ -576,7 +576,8 @@ It breaks one block a worm, choosing subterranean blocks first, then machines, t
 and only machines and boundary inventories that are not armoured; it carries nothing off. The
 defence arrays (IND_SPAWN_SAMPLE's spawns, IND_SURVEY's turretStrength and guards) stay four long
 (`ThreatClass::SURVEYED`); the natural pressure loop runs over the four surveyed classes only. The
-district page's per-class arrays grew to five, so a district page is "IDS3". Unit test
+district page's per-class arrays grew to five, so a district page is "IDS4" (the stations' ports
+took "IDS3" on main first, SG32 and SG34). Unit test
 `burrowers_pass_walls_and_turrets_and_spare_armoured_floors` (threat.rs).
 
 **OGC82. The survey marks underground and armoured blocks.** IND_SURVEY_BLOCKS' Block24 flags gain 32

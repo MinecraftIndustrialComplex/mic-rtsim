@@ -642,6 +642,7 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::TrainArrived(c) => c.district,
         Obs::TrainDeparted(c) => c.district,
         Obs::Package(p) => p.district,
+        Obs::StationPorts(p) => p.district,
         Obs::ReconcileResult(r) => r.district,
         Obs::SpawnSample(s) => s.district,
         Obs::Fight(f) => f.district,
