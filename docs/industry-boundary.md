@@ -146,7 +146,10 @@ revision replaces the old lists. Detection (I2) is the Java side's.
 
 **Edits and staleness.** IND_EDIT (a `BlockEvent` with a player inside the district) makes a learned
 district Stale (I5: stale freezes) and discards the open window. IND_DISCARD discards the open window
-only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3).
+only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
+district keeps the players of its last edits (placed, broken, configured; not commands): the last 8
+distinct players with the tick of each one's latest edit, saved with it, so the dragons can name a
+well's builders (docs/choices-oilgate.md OGC54).
 
 **Load states.** IND_LOAD_STATE is sent when the count of block-ticking chunks crosses 0 or the total.
 - **Live:** the replay catches up to now and stops, and the engine reconciles everything it did
@@ -196,7 +199,10 @@ while the source runs (I13). A source that is live is assumed to be running (F21
 attacks there are real fights (INDUSTRY.md §13.1). The sampler sends it when it changes and every few
 seconds while it holds; an unloaded district is never watched. Attacks on a district that is
 unwatched resolve abstractly: applied at once, as a reconcile round, if its chunks are loaded; at the
-next load if not (C18).
+next load if not (C18). A dragon raid on a watched district resolves the same way, at once, through
+`threat_in_sight`, while the dragon also comes in person (P28 as Ben decided it, "bounded damage
+too"; docs/choices-oilgate.md OGC56); the industry's own threats still leave a watched district to
+its real fights.
 
 **Threat data.**
 - **IND_SPAWN_SAMPLE:** natural hostile spawns counted while a player was in the district at night,

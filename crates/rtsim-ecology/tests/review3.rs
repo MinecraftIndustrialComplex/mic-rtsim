@@ -327,7 +327,9 @@ fn a_home_in_another_dimension_is_not_raided() {
 }
 
 /// Raided at an unwatched district, then meeting a watched one, the dragon comes in person; what
-/// it ate at the first stays eaten (the ledger has it) and fills it.
+/// it ate at the first stays eaten (the ledger has it) and fills it. Since the oil audit's F9
+/// (choices-oilgate.md OGC56) the watched district is raided too, in sight: its bounded damage
+/// and theft are booked as the dragon arrives, so it eats there as well.
 #[test]
 fn a_raid_that_ends_in_a_real_fight_keeps_what_it_ate() {
     let mut infra = Sites {
@@ -348,7 +350,7 @@ fn a_raid_that_ends_in_a_real_fight_keeps_what_it_ate() {
         ..Sites::default()
     };
     let (mut d, x) = grudge(0, 0, &mut infra);
-    assert_eq!(infra.raided, vec![DistrictId(1)]);
+    assert_eq!(infra.raided, vec![DistrictId(1), DistrictId(2)]);
     let mats: Vec<boundary::Materialize> = d
         .take_commands()
         .into_iter()
@@ -360,9 +362,9 @@ fn a_raid_that_ends_in_a_real_fight_keeps_what_it_ate() {
     let m = mats
         .last()
         .expect("it came in person to the watched district");
-    // 20 beef at 2 points each went into the ledger as eaten.
+    // 20 beef from each district went into the ledger as eaten.
     let eaten: i128 = d.ledger.eaten.values().sum();
-    assert_eq!(eaten, 20);
+    assert_eq!(eaten, 40);
     // It was hungry (below 60) when it left; 40 points of beef put it well above.
     assert!(
         m.hunger >= 80,

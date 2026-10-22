@@ -53,11 +53,13 @@ use crate::species::{Gender, Species};
 use crate::tunables::{DragonTunables, PreyKind};
 
 /// "RTDG" was the format before the indexes moved behind the meta (PF9), "RTD2" before tribute
-/// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD4");
+/// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md), "RTD4" before the fields' daily watch
+/// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch); no older
+/// save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD5");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
-/// gate).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN4");
+/// gate, "RTN4" before the fields' daily watch).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN5");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -677,6 +679,7 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u16(frame);
             w.u32(plan);
         }
+        Ev::OilWatch => w.u8(16),
     }
 }
 
@@ -750,6 +753,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             frame: r.u16()?,
             plan: r.u32()?,
         },
+        16 => Ev::OilWatch,
         t => return bad(format!("dragon event {t}")),
     })
 }
