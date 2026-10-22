@@ -35,7 +35,10 @@ import java.util.UUID;
  *       from the first engagement of a hostile mob there to {@code fightGapTicks} without one;</li>
  *   <li><b>IND_SURVEY</b> and <b>IND_SURVEY_BLOCKS</b> (I21): the defence vector and the exposed block set,
  *       recomputed when the district's revision changes, after player edits in it, and every
- *       {@code surveyPeriodTicks} while it is loaded ({@link SurveyJob}).</li>
+ *       {@code surveyPeriodTicks} while it is loaded ({@link SurveyJob}). A partly loaded district gets
+ *       IND_SURVEY_BLOCKS alone, for its loaded chunks, after a change and when a chunk it has not surveyed
+ *       since loads; the engine keeps each chunk's rows until that chunk is surveyed again (the oil gate
+ *       audit's F5, OGC61).</li>
  * </ul>
  * Choices Q10 to Q19 in docs/overnight-choices-indplugins.md.
  */
@@ -47,6 +50,7 @@ public final class Threats {
 
     // counters for /rtsim district perf and the GameTests
     long surveys;
+    long partialSurveys;
     long surveysAborted;
     long spawnSamples;
     long spawnsCounted;
@@ -59,9 +63,16 @@ public final class Threats {
 
     /** One district's threat state this session. */
     static final class State {
+        /** The revision of the last whole survey. */
         int surveyedRevision = -1;
+        /** The last survey of either kind. */
         long surveyedAt = Long.MIN_VALUE / 2;
         boolean dirty;
+        // F5: the district chunks surveyed (whole or partly) at chunksRevision, and the loaded count last seen
+        int chunksRevision = -1;
+        final it.unimi.dsi.fastutil.longs.LongOpenHashSet surveyedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        int loadedSeen = -1;
+        boolean unsurveyedLoaded;
         // the last survey's numbers, for the samples and the GameTests
         int darkDistrict = -1;
         int darkRing = -1;
@@ -99,8 +110,9 @@ public final class Threats {
 
     /**
      * The last survey of a district, or null: {perimeterColumns, perimeterGaps, darkSpawnable, machines,
-     * roofed, killAtGaps, guards[0..3], turret[0..3] x 1000, revision, exposed blocks, dark in the ring,
-     * cut computed (1), this district's survey count, ground level}.
+     * roofed (shielded), killAtGaps, guards[0..3], turret[0..3] x 1000, revision, exposed blocks, dark in
+     * the ring, cut computed (1), this district's survey count, ground level, roofed machines whose roof is
+     * within reach (OGB-7)}.
      */
     public long[] lastSurvey(long district) {
         State s = states.get(district);
@@ -124,6 +136,7 @@ public final class Threats {
         for (State s : states.values()) {
             s.surveyedRevision = -1;
             s.surveyedAt = Long.MIN_VALUE / 2;
+            s.chunksRevision = -1;
         }
     }
 
@@ -142,6 +155,11 @@ public final class Threats {
 
     public long surveys() {
         return surveys;
+    }
+
+    /** Surveys of partly loaded districts, their loaded chunks' exposed blocks only (F5). */
+    public long partialSurveys() {
+        return partialSurveys;
     }
 
     public long fights() {
@@ -424,6 +442,14 @@ public final class Threats {
                 if (job.aborted) {
                     surveysAborted++;
                     job = null;
+                } else if (job.done() && !job.whole) {
+                    SurveyJob j = job;
+                    job = null;
+                    try {
+                        finishPartial(j, now);
+                    } catch (RuntimeException e) {
+                        ind.fail("the partial survey of district " + j.district.id, e);
+                    }
                 } else if (job.done()) {
                     // The walk and the two minimum cuts read only the job's own maps: off the server thread
                     // (a wide district's cut can take tens of milliseconds).
@@ -438,18 +464,133 @@ public final class Threats {
         int minInterval = ThreatConfig.get(ThreatConfig.SURVEY_MIN_INTERVAL);
         int period = ThreatConfig.get(ThreatConfig.SURVEY_PERIOD);
         for (District d : ind.districts.all()) {
-            if (d.chunks.isEmpty() || ind.districts.loadedChunks(d) < d.chunks.size())
+            int loaded = ind.districts.loadedChunks(d);
+            if (d.chunks.isEmpty() || loaded == 0)
                 continue;
+            // The perimeter cut needs the whole area: a whole survey only when every chunk is loaded. A partly
+            // loaded district is surveyed for its loaded chunks' exposed blocks (F5).
+            boolean whole = loaded >= d.chunks.size();
             State s = state(d);
-            boolean due = s.surveyedRevision != d.revision || s.dirty || now - s.surveyedAt >= period;
+            boolean due = whole ? s.surveyedRevision != d.revision || s.dirty || now - s.surveyedAt >= period
+                    : s.dirty || now - s.surveyedAt >= period || unsurveyedLoaded(d, s, loaded);
             if (!due || now - s.surveyedAt < minInterval)
                 continue;
             ServerLevel level = ind.level(d.dim);
             if (level == null)
                 continue;
             s.dirty = false;
-            job = new SurveyJob(d, level, now, ThreatConfig.get(ThreatConfig.SPAWN_RING));
+            job = new SurveyJob(d, level, now, ThreatConfig.get(ThreatConfig.SPAWN_RING), whole);
             return;
+        }
+    }
+
+    /**
+     * Whether a loaded chunk of a partly loaded district has not been surveyed since its revision (F5). The
+     * chunks are looked at only when the district's loaded count changes, not every tick.
+     */
+    private boolean unsurveyedLoaded(District d, State s, int loaded) {
+        if (s.chunksRevision != d.revision) {
+            s.chunksRevision = d.revision;
+            s.surveyedChunks.clear();
+            s.loadedSeen = -1;
+        }
+        if (loaded != s.loadedSeen) {
+            s.loadedSeen = loaded;
+            s.unsurveyedLoaded = false;
+            ServerLevel level = ind.level(d.dim);
+            if (level != null)
+                for (long c : d.chunks)
+                    if (!s.surveyedChunks.contains(c) && level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) != null) {
+                        s.unsurveyedLoaded = true;
+                        break;
+                    }
+        }
+        return s.unsurveyedLoaded;
+    }
+
+    /** Notes the chunks a survey read, at its revision (F5). */
+    private static void noteSurveyed(State s, SurveyJob j) {
+        if (s.chunksRevision != j.revision) {
+            s.chunksRevision = j.revision;
+            s.surveyedChunks.clear();
+        }
+        s.surveyedChunks.addAll(j.surveyed);
+        s.unsurveyedLoaded = false;
+    }
+
+    /**
+     * A partly loaded district's survey (F5): IND_SURVEY_BLOCKS for each loaded chunk read, flagged partial,
+     * so the engine replaces those chunks' rows (their wall faces stay) and keeps the others'. No IND_SURVEY:
+     * the defence vector is the last whole survey's.
+     */
+    private void finishPartial(SurveyJob j, long now) {
+        District d = j.district;
+        if (ind.district(d.id) != d || d.revision != j.revision)
+            return; // the district changed while it read
+        State s = state(d);
+        List<SurveyJob.Exposed> exposed = new ArrayList<>();
+        addBlockRows(j, exposed, ThreatConfig.get(ThreatConfig.SURVEY_MAX_BLOCKS));
+        journalRows(d, j, exposed, true);
+        noteSurveyed(s, j);
+        s.surveyedAt = now;
+        partialSurveys++;
+    }
+
+    /** The machines, the roofs within reach (each once, and not a block already listed), then the boundary stock, to {@code cap}. */
+    private static void addBlockRows(SurveyJob j, List<SurveyJob.Exposed> exposed, int cap) {
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet listed = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (SurveyJob.Exposed e : j.machineBlocks)
+            listed.add(e.pos().asLong());
+        for (SurveyJob.Exposed e : j.inventoryBlocks)
+            listed.add(e.pos().asLong());
+        for (SurveyJob.Exposed e : j.machineBlocks)
+            if (exposed.size() < cap)
+                exposed.add(e);
+        for (SurveyJob.Exposed e : j.roofBlocks)
+            if (exposed.size() < cap && listed.add(e.pos().asLong()))
+                exposed.add(e);
+        for (SurveyJob.Exposed e : j.inventoryBlocks)
+            if (exposed.size() < cap)
+                exposed.add(e);
+    }
+
+    /**
+     * IND_SURVEY_BLOCKS, one chunk at a time (F5): every chunk the survey read gets part 0, empty if it has no
+     * row, so the engine drops what was there; a chunk's rows past {@code MAX_BLOCKS} go in its later parts.
+     */
+    private void journalRows(District d, SurveyJob j, List<SurveyJob.Exposed> exposed, boolean partial) {
+        Map<Long, List<SurveyJob.Exposed>> byChunk = new java.util.LinkedHashMap<>();
+        for (long c : j.surveyed)
+            byChunk.put(c, new ArrayList<>());
+        for (SurveyJob.Exposed e : exposed)
+            byChunk.computeIfAbsent(ChunkPos.asLong(e.pos().getX() >> 4, e.pos().getZ() >> 4), k -> new ArrayList<>()).add(e);
+        int max = IndRecords.SurveyBlocks.MAX_BLOCKS;
+        for (Map.Entry<Long, List<SurveyJob.Exposed>> chunk : byChunk.entrySet()) {
+            List<SurveyJob.Exposed> rows = chunk.getValue();
+            long c = chunk.getKey();
+            for (int from = 0, part = 0; from < rows.size() || part == 0; from += max, part++) {
+                int n = Math.min(max, rows.size() - from);
+                ByteBuffer b = ind.journal(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.size(n), n);
+                b.putLong(IndRecords.SurveyBlocks.DISTRICT, d.id);
+                b.putInt(IndRecords.SurveyBlocks.REVISION, j.revision);
+                b.putInt(IndRecords.SurveyBlocks.PART, part);
+                b.putInt(IndRecords.SurveyBlocks.CHUNK_X, ChunkPos.getX(c));
+                b.putInt(IndRecords.SurveyBlocks.CHUNK_Z, ChunkPos.getZ(c));
+                b.putInt(IndRecords.SurveyBlocks.FLAGS, partial ? IndRecords.SurveyBlocks.PARTIAL : 0);
+                for (int i = 0; i < n; i++) {
+                    SurveyJob.Exposed e = rows.get(from + i);
+                    int at = IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK;
+                    b.putInt(at + IndRecords.SurveyBlocks.B_X, e.pos().getX());
+                    b.putInt(at + IndRecords.SurveyBlocks.B_Y, e.pos().getY());
+                    b.putInt(at + IndRecords.SurveyBlocks.B_Z, e.pos().getZ());
+                    b.putInt(at + IndRecords.SurveyBlocks.B_STATE, ind.boundary.dictId(IndRecords.DICT_BLOCK_STATE, BlockStateParser.serialize(e.state())));
+                    b.putInt(at + IndRecords.SurveyBlocks.B_FLAGS, e.flags());
+                    b.putInt(at + IndRecords.SurveyBlocks.B_INVENTORY, e.inventory());
+                }
+                ind.commit(b);
+                if (n == 0)
+                    break;
+            }
         }
     }
 
@@ -493,7 +634,8 @@ public final class Threats {
         r.putInt(IndRecords.Survey.AMMO_PER_ENGAGEMENT, 0);
         ind.commit(r);
 
-        // The exposed set: wall faces first (ground attackers break in there), then machines, then stock.
+        // The exposed set: wall faces first (ground attackers break in there), then machines, the roofs over
+        // them within a flyer's reach (OGB-7), then stock.
         List<SurveyJob.Exposed> exposed = new ArrayList<>();
         int cap = ThreatConfig.get(ThreatConfig.SURVEY_MAX_BLOCKS);
         for (long c : walk.wallColumns()) {
@@ -515,34 +657,9 @@ public final class Threats {
             if (!st.isAir())
                 exposed.add(new SurveyJob.Exposed(p, st, IndRecords.SurveyBlocks.FLAG_PERIMETER, IndRecords.NO_INVENTORY));
         }
-        for (SurveyJob.Exposed e : j.machineBlocks)
-            if (exposed.size() < cap)
-                exposed.add(e);
-        for (SurveyJob.Exposed e : j.inventoryBlocks)
-            if (exposed.size() < cap)
-                exposed.add(e);
-        int part = 0;
-        int max = IndRecords.SurveyBlocks.MAX_BLOCKS;
-        for (int from = 0; from < exposed.size() || (from == 0 && part == 0); from += max, part++) {
-            int n = Math.min(max, exposed.size() - from);
-            ByteBuffer b = ind.journal(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.size(n), n);
-            b.putLong(IndRecords.SurveyBlocks.DISTRICT, d.id);
-            b.putInt(IndRecords.SurveyBlocks.REVISION, j.revision);
-            b.putInt(IndRecords.SurveyBlocks.PART, part);
-            for (int i = 0; i < n; i++) {
-                SurveyJob.Exposed e = exposed.get(from + i);
-                int at = IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK;
-                b.putInt(at + IndRecords.SurveyBlocks.B_X, e.pos().getX());
-                b.putInt(at + IndRecords.SurveyBlocks.B_Y, e.pos().getY());
-                b.putInt(at + IndRecords.SurveyBlocks.B_Z, e.pos().getZ());
-                b.putInt(at + IndRecords.SurveyBlocks.B_STATE, ind.boundary.dictId(IndRecords.DICT_BLOCK_STATE, BlockStateParser.serialize(e.state())));
-                b.putInt(at + IndRecords.SurveyBlocks.B_FLAGS, e.flags());
-                b.putInt(at + IndRecords.SurveyBlocks.B_INVENTORY, e.inventory());
-            }
-            ind.commit(b);
-            if (n == 0)
-                break;
-        }
+        addBlockRows(j, exposed, cap);
+        journalRows(d, j, exposed, false);
+        noteSurveyed(s, j);
 
         if (!j.machineBlocks.isEmpty()) {
             BlockPos m = j.machineBlocks.get(0).pos();
@@ -556,7 +673,8 @@ public final class Threats {
         s.lastSurvey = new long[] {walk.perimeterColumns(), walk.perimeterGaps(), j.darkDistrict, j.machines, j.roofed, walk.killAtGaps(),
                 guards[0], guards[1], guards[2], guards[3],
                 Math.round(j.turretStrength[0] * 1000), Math.round(j.turretStrength[1] * 1000), Math.round(j.turretStrength[2] * 1000),
-                Math.round(j.turretStrength[3] * 1000), j.revision, exposed.size(), j.darkRing, walk.cutComputed() ? 1 : 0, ++s.surveyCount, j.ground()};
+                Math.round(j.turretStrength[3] * 1000), j.revision, exposed.size(), j.darkRing, walk.cutComputed() ? 1 : 0, ++s.surveyCount, j.ground(),
+                j.roofReachable};
         surveys++;
         lastSurveyNanos = System.nanoTime() - t0;
         if (!walk.cutComputed())

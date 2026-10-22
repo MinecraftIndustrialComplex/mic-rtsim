@@ -536,6 +536,7 @@ fn code_tables(out: &mut String) {
         ("ROOFLESS".to_string(), BlockFlags::ROOFLESS),
         ("MACHINE".to_string(), BlockFlags::MACHINE),
         ("INVENTORY".to_string(), BlockFlags::INVENTORY),
+        ("ROOF".to_string(), BlockFlags::ROOF),
     ];
     table(out, "block_flags", &rows);
 
@@ -1360,6 +1361,9 @@ fn main() {
         let district = district(&mut f, &mut g);
         let revision = f.u32("revision", g.u32());
         let part = f.u32("part", g.u32());
+        let chunk_x = f.i32("chunk_x", g.i32(Sign::Neg));
+        let chunk_z = f.i32("chunk_z", g.i32(Sign::Pos));
+        f.sym("partial", true);
         f.sym("n_blocks", 2);
         let blocks: Vec<ExposedBlock> = (0..2)
             .map(|i| {
@@ -1390,6 +1394,8 @@ fn main() {
             district,
             revision,
             part,
+            chunk: (chunk_x, chunk_z),
+            partial: true,
             blocks,
         };
         obs(

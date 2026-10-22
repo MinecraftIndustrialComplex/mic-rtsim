@@ -540,12 +540,21 @@ public final class IndRecords {
         public static final int FLAG_MOB_GRIEFING = 1;
     }
 
-    /** IND_SURVEY_BLOCKS (journaled), aux = n Block24. */
+    /**
+     * IND_SURVEY_BLOCKS (journaled), aux = n Block24. One chunk's exposed blocks (the oil gate audit's F5,
+     * OGC61): part 0 of a chunk replaces that chunk's rows in the engine, later parts add to them, and a
+     * chunk no survey reaches keeps its rows. {@link #PARTIAL}: a survey of a partly loaded district, which
+     * has no walk, so the chunk's wall faces from the last whole survey stay.
+     */
     public static final class SurveyBlocks {
         public static final int DISTRICT = 24; // u64
         public static final int REVISION = 32; // u32
-        public static final int PART = 36;     // u32
-        public static final int BLOCKS = 40;   // n x Block24
+        public static final int PART = 36;     // u32, within the chunk
+        public static final int CHUNK_X = 40;  // i32
+        public static final int CHUNK_Z = 44;  // i32
+        public static final int FLAGS = 48;    // u32: PARTIAL
+        // 52: u32 reserved
+        public static final int BLOCKS = 56;   // n x Block24
         /** Block24: i32 x, i32 y, i32 z, u32 state (BLOCK_STATE), u32 flags, u32 inventory (0xFFFFFFFF none). */
         public static final int B_X = 0;
         public static final int B_Y = 4;
@@ -564,6 +573,11 @@ public final class IndRecords {
         public static final int FLAG_ROOFLESS = 2;
         public static final int FLAG_MACHINE = 4;
         public static final int FLAG_INVENTORY = 8;
+        /** The top block over a roofed machine, within {@code roofReachBlocks} of it: a flyer can break it (OGB-7). */
+        public static final int FLAG_ROOF = 16;
+
+        /** Header {@link #FLAGS}: a partial survey (the chunk's wall faces stay). */
+        public static final int PARTIAL = 1;
     }
 
     /** Threat classes (IND_FIGHT aux, the SPAWNS, TURRET_STRENGTH and GUARDS arrays; wire.rs {@code class_code}). */
