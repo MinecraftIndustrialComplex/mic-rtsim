@@ -146,6 +146,8 @@ public final class RtsimSession {
     public final Phase1 phase1;
     /** The industry module (C15 to C19, INDUSTRY.md): districts, the stock sampler, ports, reconciles. */
     public final com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry;
+    /** The engine's dragon legs for the far feed (FAR_LEG, docs/boundary.md §12), per session. */
+    public final com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs farLegs = new com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs();
     /** Every level's topology (TP18): sent to the engine, read by the bridge's steering. */
     final com.minecraftindustrialcomplex.mic_rtsim.topology.TopologyTracker topology =
             new com.minecraftindustrialcomplex.mic_rtsim.topology.TopologyTracker();
