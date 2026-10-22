@@ -65,7 +65,7 @@ public final class FarFeed {
     private static int badVersions;
 
     // Totals since the server started, for /rtsim perf and the bench
-    static long sweeps, sweepNanos, messages, bytes, records;
+    static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
 
     private FarFeed() {}
 
@@ -160,7 +160,8 @@ public final class FarFeed {
     /** One line for /rtsim perf. */
     public static String describe() {
         return SUBS.size() + " subscribers, " + SOURCES.size() + " sources; " + sweeps + " sweeps ("
-                + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each), " + messages + " messages, " + bytes
+                + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each, at most " + sweepMaxNanos / 1000
+                + " us), " + messages + " messages, " + bytes
                 + " bytes, " + records + " records";
     }
 
@@ -170,7 +171,9 @@ public final class FarFeed {
             return;
         long t0 = System.nanoTime();
         sweep(event.getServer());
-        sweepNanos += System.nanoTime() - t0;
+        long took = System.nanoTime() - t0;
+        sweepNanos += took;
+        sweepMaxNanos = Math.max(sweepMaxNanos, took);
         sweeps++;
     }
 
@@ -179,10 +182,12 @@ public final class FarFeed {
     }
 
     private static void onStopped(ServerStoppedEvent event) {
+        if (sweeps > 0) // the server's cost of the feed, for the bench (neoforge/README.md)
+            MicRtsim.LOGGER.info("[mic_rtsim] far feed at stop: {}", describe());
         SUBS.clear();
         sink = NETWORK;
         players = null;
-        sweeps = sweepNanos = messages = bytes = records = 0;
+        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = 0;
     }
 
     /** One sweep over every subscriber (a test calls it directly). */

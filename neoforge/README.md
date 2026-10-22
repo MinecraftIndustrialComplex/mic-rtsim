@@ -112,7 +112,8 @@ Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
   trains, as in phase 1.
 
 The client's `far bench result` lines then include a `dragons:` line and a `feed:` line (messages, bytes and
-records a second, objects held).
+records a second, objects held), and the integrated server logs `far feed at stop` when it stops: the cost of
+its once-a-second sweeps (mean and worst) over the whole run, warm-up included.
 
 ## What is here
 
