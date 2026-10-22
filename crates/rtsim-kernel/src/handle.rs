@@ -227,6 +227,23 @@ impl<T> Arena<T> {
         })
     }
 
+    /// Live entries whose index is in `indices`, in index order.
+    pub fn iter_range(
+        &self,
+        indices: std::ops::Range<u64>,
+    ) -> impl Iterator<Item = (Handle<T>, &T)> {
+        let n = self.slots.len() as u64;
+        let (lo, hi) = (indices.start.min(n) as usize, indices.end.min(n) as usize);
+        self.slots[lo..hi.max(lo)]
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, s)| {
+                s.value
+                    .as_ref()
+                    .map(|v| (Handle::from_parts((lo + i) as u32, s.generation), v))
+            })
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Handle<T>, &mut T)> {
         self.slots.iter_mut().enumerate().filter_map(|(i, s)| {
             let generation = s.generation;
@@ -336,6 +353,17 @@ mod tests {
     use super::*;
     use crate::codec::{Reader, Writer};
     use proptest::prelude::*;
+
+    #[test]
+    fn iter_range_keeps_to_its_indices() {
+        let mut a = Arena::new();
+        let hs: Vec<_> = (0..8u32).map(|i| a.insert(i)).collect();
+        a.remove(hs[4]);
+        let got: Vec<u32> = a.iter_range(2..6).map(|(_, v)| *v).collect();
+        assert_eq!(got, vec![2, 3, 5]);
+        assert_eq!(a.iter_range(6..100).count(), 2);
+        assert_eq!(a.iter_range(50..60).count(), 0);
+    }
 
     #[test]
     fn handle_is_six_bytes_and_null_is_zero() {

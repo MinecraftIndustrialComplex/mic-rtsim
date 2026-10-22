@@ -439,7 +439,8 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   (param: level), 9 control (param: 1 stop when on, 2 run when on), 10 observe, 11 line, 12 drop.
 - **Node flags:** 1 bounded, 2 any output blocks, 4 stochastic (params 2 and 3: a craft's output
   second moment as a fraction), 8 fluid, 16 calibrated (TUNABLE), 32 on a moving frame, 64 pass-through (an in-place machine on a line passes goods no recipe matches).
-- **Edge flags:** 1 deny list, 2 fluid, 4 bounded, 8 a filtered side.
+- **Edge flags:** 1 deny list, 2 fluid, 4 bounded, 8 a filtered side, 16 through (a belt's own link to its
+  next element: the through traffic, which insertions onto that belt do not wait for, GB72).
 - **Rules:** 1 to 7 the brass tunnel's modes (split, forced split, round robin, forced round robin,
   prefer nearest, randomize, synchronize), 8 prefer first, 9 merge, 10 andesite split, 11 side insert.
 - **Models, recipe types, heat levels:** as `records.rs` lists them (`model::MILLSTONE` 10, ...).

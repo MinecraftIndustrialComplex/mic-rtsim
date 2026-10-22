@@ -7,6 +7,7 @@ use rtsim_kernel::clock::TICKS_PER_DAY;
 use serde::Serialize;
 
 use crate::calendar::{Calendar, Season};
+use crate::oil::OilTunables;
 use crate::prey::PreyTable;
 use crate::species::{Species, SpeciesData};
 
@@ -142,6 +143,8 @@ pub struct DragonTunables {
     /// be at least as dangerous; OILGATE.md OG-1). TUNABLE, default false: set true only after
     /// the oil gate (OILGATE.md OG-10) measures at least as dangerous as In Control.
     pub adopt_natural_dragons: bool,
+    /// The oil gate (OILGATE.md §4): the reserve, refuelling, field flights, sensing.
+    pub oil: OilTunables,
 }
 
 impl Default for DragonTunables {
@@ -189,6 +192,7 @@ impl Default for DragonTunables {
             victims_kept: 4,
             herd_risk: 2,
             adopt_natural_dragons: false,
+            oil: OilTunables::default(),
         }
     }
 }

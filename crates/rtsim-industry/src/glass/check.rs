@@ -91,6 +91,10 @@ struct Window {
     st: f64,
     stt: f64,
     goods: BTreeMap<Good, (Acc, Cum)>,
+    /// Per read store and good: the predicted cumulative change, and (Σy, Σty, Σp, Σtp) of its
+    /// sampled level and that prediction, for the per-store slopes the replay's residual is split
+    /// by (G2-8).
+    stores: BTreeMap<(u32, Good), (f64, [f64; 4])>,
 }
 
 /// One good's verdict in a completed window.
@@ -121,6 +125,8 @@ pub struct WindowResult {
     pub ticks: u64,
     pub verdict: u32,
     pub goods: Vec<GoodResult>,
+    /// Per read store and good: (inventory, good, measured slope, predicted slope) per tick.
+    pub stores: Vec<(u32, Good, f64, f64)>,
 }
 
 /// A probed buffer's first and latest total in the current probe set.
@@ -145,16 +151,16 @@ const EVENTS_KEPT: usize = 16;
 
 /// A heater lit on the burn it had at the compile, as the model spends it.
 #[derive(Clone, Debug, PartialEq)]
-struct Burn {
-    node: u32,
+pub struct Burn {
+    pub node: u32,
     /// Burn ticks left.
-    left: f64,
+    pub left: f64,
     /// The insertion threshold (`params[3]`): above it the heater refuses fuel.
-    thr: f64,
+    pub thr: f64,
 }
 
 impl Burn {
-    fn phase(&self) -> u8 {
+    pub fn phase(&self) -> u8 {
         if self.left > self.thr {
             burn::REFUSING
         } else if self.left > 0.0 {
@@ -165,7 +171,7 @@ impl Burn {
     }
 
     /// Burn spent per tick: all of it while refusing, less what its fuel pays for while taking.
-    fn spend(&self, fed: f64) -> f64 {
+    pub fn spend(&self, fed: f64) -> f64 {
         match self.phase() {
             burn::REFUSING => 1.0,
             burn::TAKING => (1.0 - fed).max(0.0),
@@ -174,7 +180,7 @@ impl Burn {
     }
 
     /// Ticks until its phase changes at that spend, if it will.
-    fn until(&self, fed: f64) -> Option<f64> {
+    pub fn until(&self, fed: f64) -> Option<f64> {
         let r = self.spend(fed);
         match self.phase() {
             burn::REFUSING => Some(self.left - self.thr),
@@ -198,11 +204,17 @@ pub struct Compiled {
     pub sol: Solution,
     /// Recent solves by regime key, newest last.
     cache: VecDeque<(u64, Solution)>,
+    /// The glass replay's parts (choice G2-22): the cache keeps `glass.regimeCache` per part.
+    pub cache_parts: usize,
     pub solves: u32,
     pub cache_hits: u32,
     pub solve_micros: f64,
     win: Option<Window>,
     pub last: Option<WindowResult>,
+    /// The latest window that passed (G-B4: the compile may replay), and whether an IND_EDIT came
+    /// after it (the compile no longer matches the blocks until Java recompiles: no replay).
+    pub passed: Option<WindowResult>,
+    pub edited: bool,
     pub windows_completed: u32,
     pub strikes: u32,
     /// Per (inventory, good): its stock as of the last sweep, spent and refilled as the model
@@ -221,6 +233,10 @@ pub struct Compiled {
     pub probe_set: Vec<u32>,
     pub probes: BTreeMap<u32, ProbeTrack>,
     pub events: VecDeque<GlassEvent>,
+    /// The glass replay's regimes, breakpoints and oscillation fallbacks since the compile.
+    pub replay_regimes: u32,
+    pub replay_breakpoints: u32,
+    pub replay_oscillations: u32,
 }
 
 /// One district's glass state.
@@ -237,6 +253,13 @@ pub struct DistrictGlass {
     pub ticking: BTreeSet<crate::ids::ChunkPos>,
     /// Model codes demoted to measured here (G-B14), kept across compiles.
     pub demoted: BTreeSet<u32>,
+    /// The glass replay running while the district is away (G2), if any.
+    pub replay: Option<super::replay::Replay>,
+    /// What replays the district now ([`report::replay_model`]) and since when.
+    pub replay_model: u32,
+    pub replay_since: Option<Tick>,
+    /// Why this compile's glass replay fell back (cleared by a new compile or a live district).
+    pub fallback: Option<super::replay::Fallback>,
 }
 
 /// What a sweep sees of the district.
@@ -246,10 +269,32 @@ pub struct View<'a> {
     pub ports: &'a GoodVec,
 }
 
+/// The nodes the controllers stop, from their switch states (`ctrl_on`, before inversion).
+pub(crate) fn gates(graph: &Graph, ctrl_on: &[bool], gate_off: &mut [bool]) {
+    for g in gate_off.iter_mut() {
+        *g = false;
+    }
+    for v in 0..graph.nodes.len() as u32 {
+        for &e in graph.control_in.of(v) {
+            let ed = graph.edge(e);
+            // The param already includes the inversion (GB51).
+            let signal = ctrl_on[ed.from as usize];
+            let off = match ed.param {
+                CONTROL_STOP_WHEN_ON => signal,
+                CONTROL_RUN_WHEN_ON => !signal,
+                _ => false,
+            };
+            if off {
+                gate_off[v as usize] = true;
+            }
+        }
+    }
+}
+
 /// What a store must hold of a good to supply it. A good the graph also brings into the store
 /// needs `glass.holdingStacks` stacks (below, the store passes on what it receives: a chest a funnel
 /// keeps nearly empty is not a source); a good nothing brings in needs one unit (GB100).
-fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fed: bool) -> i64 {
+pub(crate) fn holding_threshold(goods: &dyn GoodLookup, g: Good, stacks: i64, fed: bool) -> i64 {
     if !fed {
         return 1;
     }
@@ -323,11 +368,14 @@ impl Compiled {
             key: 0,
             sol: Solution::default(),
             cache: VecDeque::new(),
+            cache_parts: 1,
             solves: 0,
             cache_hits: 0,
             solve_micros: 0.0,
             win: None,
             last: None,
+            passed: None,
+            edited: false,
             windows_completed: 0,
             strikes: 0,
             stock_est: BTreeMap::new(),
@@ -340,6 +388,9 @@ impl Compiled {
             probe_set: Vec::new(),
             probes: BTreeMap::new(),
             events: VecDeque::new(),
+            replay_regimes: 0,
+            replay_breakpoints: 0,
+            replay_oscillations: 0,
         }
     }
 
@@ -437,25 +488,7 @@ impl Compiled {
                 }
             }
         }
-        for g in self.regime.gate_off.iter_mut() {
-            *g = false;
-        }
-        for v in 0..n as u32 {
-            for &e in self.graph.control_in.of(v) {
-                let ed = self.graph.edge(e);
-                let c = ed.from as usize;
-                // The param already includes the inversion (GB51).
-                let signal = self.ctrl_on[c];
-                let off = match ed.param {
-                    CONTROL_STOP_WHEN_ON => signal,
-                    CONTROL_RUN_WHEN_ON => !signal,
-                    _ => false,
-                };
-                if off {
-                    self.regime.gate_off[v as usize] = true;
-                }
-            }
-        }
+        gates(&self.graph, &self.ctrl_on, &mut self.regime.gate_off);
     }
 
     /// Solves the current regime if its key changed (or from the cache).
@@ -478,11 +511,49 @@ impl Compiled {
         self.solves += 1;
         self.sol = sol.clone();
         if tun.regime_cache > 0 {
-            if self.cache.len() >= tun.regime_cache {
+            while self.cache.len() >= tun.regime_cache * self.cache_parts.max(1) {
                 self.cache.pop_front();
             }
             self.cache.push_back((key, sol));
         }
+    }
+
+    /// Solves any regime through the regime cache (the glass replay's regimes, G2): a cached
+    /// regime costs a lookup. The compile's own regime and solution are untouched.
+    pub fn solve_regime(&mut self, rg: &Regime, tun: &GlassTunables) -> Solution {
+        let key = rg.key();
+        if let Some(i) = self.cache.iter().position(|(k, _)| *k == key) {
+            let (k, sol) = self.cache.remove(i).expect("found");
+            self.cache.push_back((k, sol.clone()));
+            self.cache_hits += 1;
+            return sol;
+        }
+        let t0 = std::time::Instant::now();
+        let sol = solve::solve(&self.graph, rg, tun);
+        self.solve_micros = t0.elapsed().as_secs_f64() * 1e6;
+        self.solves += 1;
+        if tun.regime_cache > 0 {
+            while self.cache.len() >= tun.regime_cache * self.cache_parts.max(1) {
+                self.cache.pop_front();
+            }
+            self.cache.push_back((key, sol.clone()));
+        }
+        sol
+    }
+
+    /// Heaters lit on their compile-time burn, as the model has spent them to [`Compiled::model_at`].
+    pub fn heaters(&self) -> &[Burn] {
+        &self.heaters
+    }
+
+    /// The tick the model's heaters have reached.
+    pub fn model_at(&self) -> Tick {
+        self.model_at
+    }
+
+    /// May the district replay on this compile (G-B4): a window of it passed, and no edit since.
+    pub fn eligible(&self) -> bool {
+        self.passed.is_some() && !self.edited
     }
 
     /// The first solve, at acceptance, from what the engine knows of the inventories.
@@ -499,6 +570,23 @@ impl Compiled {
         self.ready_at = self
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+    }
+
+    /// Each read store's level per good, each inventory once.
+    fn store_levels(&self, view: &View<'_>) -> BTreeMap<(u32, Good), i64> {
+        let mut out = BTreeMap::new();
+        for v in 0..self.graph.nodes.len() as u32 {
+            let Some(inv) = self.graph.node(v).inventory else {
+                continue;
+            };
+            let Some(c) = self.contents(v, view) else {
+                continue;
+            };
+            for (g, a) in c.iter() {
+                out.insert((inv, g), a);
+            }
+        }
+        out
     }
 
     /// The district's measured stock: the read stores' inventories, each counted once.
@@ -612,6 +700,7 @@ impl Compiled {
             let raw = net * dt;
             let clamped = raw.max(-*est);
             *est += clamped;
+            win.stores.entry((inv, g)).or_default().0 += clamped;
             if clamped != raw {
                 *corr.entry(g).or_insert(0.0) += clamped - raw;
             }
@@ -657,13 +746,30 @@ impl Compiled {
     }
 
     /// Adds the sample at `at` to the open window.
-    fn sample(&mut self, at: Tick, stock: &BTreeMap<Good, i64>, ports: &GoodVec, unbounded: bool) {
+    fn sample(
+        &mut self,
+        at: Tick,
+        stock: &BTreeMap<Good, i64>,
+        per: &BTreeMap<(u32, Good), i64>,
+        ports: &GoodVec,
+        unbounded: bool,
+    ) {
         let Some(win) = self.win.as_mut() else { return };
         let t = at.0.saturating_sub(win.start.0) as f64;
         win.n += 1;
         win.st += t;
         win.stt += t * t;
         win.last = at;
+        for &k in per.keys() {
+            win.stores.entry(k).or_default();
+        }
+        for (k, (p, acc)) in win.stores.iter_mut() {
+            let y = per.get(k).copied().unwrap_or(0) as f64;
+            acc[0] += y;
+            acc[1] += t * y;
+            acc[2] += *p;
+            acc[3] += t * *p;
+        }
         for (&g, &a) in stock {
             win.goods.entry(g).or_insert_with(|| {
                 (
@@ -779,7 +885,20 @@ impl Compiled {
                 samples: win.n,
             });
         }
+        let stores = win
+            .stores
+            .iter()
+            .map(|(&(inv, g), (_, a))| {
+                (
+                    inv,
+                    g,
+                    slope(n, win.st, win.stt, a[0], a[1]),
+                    slope(n, win.st, win.stt, a[2], a[3]),
+                )
+            })
+            .collect();
         WindowResult {
+            stores,
             start: win.start,
             ticks: w as u64,
             verdict: if any_fail {
@@ -960,9 +1079,10 @@ impl Compiled {
         self.district_revision = Some(view.revision);
         self.advance(at, tun);
         let stock = self.stock(view);
+        let per = self.store_levels(view);
         let unbounded = self.sol.has_unbounded;
         if self.win.is_some() {
-            self.sample(at, &stock, view.ports, unbounded);
+            self.sample(at, &stock, &per, view.ports, unbounded);
             self.sweeps_sampled += 1;
             let done = self
                 .win
@@ -973,6 +1093,10 @@ impl Compiled {
                 let res = self.judge(&win, tun.checksum_z);
                 self.windows_completed += 1;
                 out = self.act(&res, tun);
+                if res.verdict == report::verdict::PASS {
+                    self.passed = Some(res.clone());
+                    self.edited = false;
+                }
                 self.last = Some(res);
                 // The next window starts here, with this sample.
                 self.win = Some(Window {
@@ -981,7 +1105,7 @@ impl Compiled {
                 });
                 self.read_state(view, goods, tun);
                 self.resolve(tun, false);
-                self.sample(at, &stock, view.ports, unbounded);
+                self.sample(at, &stock, &per, view.ports, unbounded);
                 self.set_stock(view);
                 self.last_sweep = Some(at);
                 return out;
@@ -994,7 +1118,7 @@ impl Compiled {
                 start: at,
                 ..Window::default()
             });
-            self.sample(at, &stock, view.ports, self.sol.has_unbounded);
+            self.sample(at, &stock, &per, view.ports, self.sol.has_unbounded);
             self.sweeps_sampled += 1;
         }
         self.set_stock(view);
@@ -1157,6 +1281,16 @@ impl Compiled {
             district_revision: self.district_revision,
             last_discard: dg.last_discard.map(|(t, r)| (t.0, r)),
             discards: dg.discards,
+            replay: report::ReplayReport {
+                model: dg.replay_model,
+                since: dg.replay_since.map(|t| t.0),
+                regimes: self.replay_regimes,
+                breakpoints: self.replay_breakpoints,
+                oscillations: self.replay_oscillations,
+                cut_edges: dg.replay.as_ref().map_or(0, |r| r.cut_edges()),
+                eligible: self.eligible(),
+                learned_sources: dg.replay.as_ref().map_or(0, |r| r.learned_sources()),
+            },
             goods: goods.into_values().collect(),
         }
     }

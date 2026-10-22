@@ -80,7 +80,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)
+    rtsim_kernel::page::rename_over(&tmp, path)
 }
 
 /// The archive's size limits (§10.4, VWD-4; every field TUNABLE).

@@ -451,7 +451,8 @@ never waits on the writer. The tap follows the same discipline:
    encodes parts only while hand-over h + 1 has not been submitted (`O[(h + 1) & 1].published`, an
    acquire load, checked between parts) and for at most 250 µs a step (TUNABLE). A part is never
    split, so a step whose input is ready waits for at most one part's encode; parts are capped in rows
-   so that stays far under the budget (the encode time per part is UNVERIFIED; V4 measures it). The
+   so that stays far under the budget (measured in V4: a full unit encodes in 0.13 to 0.15 ms at the
+   bench maxima, and a ready step waited at most 0.063 ms in the tests; §16 "V4 as built"). The
    tap stands down for the whole step when hand-over h held more than one TICK record (the engine was
    behind) or step h took more than half a tick (25 ms, TUNABLE). Each cycle goes: the header and
    the global parts, then the focus regions' parts and samples (`write_samples`), then the other
@@ -483,7 +484,9 @@ never waits on the writer. The tap follows the same discipline:
    caches the counts, so evicted land costs a scan of its pages once, not per request.
 
 **Parts are small and stable.** A part is encoded whole, so every table is bucketed until each part
-holds at most 2,000 rows (TUNABLE), the 4,096 villages included. Things that stay put (villages,
+holds at most 2,000 rows (TUNABLE), the 4,096 villages included, and fewer where a row costs more to
+encode: V4 caps each layer so a full unit encodes in about 150 µs (500 villages, 64 markets' prices;
+§16 "V4 as built"). Things that stay put (villages,
 lairs, districts, docks) are bucketed by region. Movers (caravans, bands, dragons, ships, parties,
 trains, herds) are bucketed by id and carry their legs, and the sidecar places them by the leg, so a
 mover encoded at one step and a region encoded at another can never show it twice or lose it.
@@ -495,13 +498,16 @@ are unchanged most of the time and cost an encode but no write.
 
 **Its cost and its freshness.** With 4,096 villages, 512 dragons, 814 ships and 100,000 district
 summaries (the largest counts the benches ran), plus 10,000 rows of caravans, bands and parties
-(ESTIMATE: no bench has run that count), at about 40 bytes a row (ESTIMATE), a full cycle is about
-4.6 MB (derived: 115,422 rows × 40 bytes). The tap has at most 5 ms of encoding a second (derived:
-250 µs × 20 steps), so a full cycle takes 4.6 MB divided by 5 ms a second times the encode rate: about
-0.9 s at 1 GB/s, about 9 s at 100 MB/s (two illustrations; the encode rate is UNVERIFIED and V4
-measures it), and longer when the engine has little slack. That is why the focus goes first: what an
-op is looking at is fresh within a tap period or two, the rest within the cycle, whose measured
-length the header carries and the page shows per layer.
+(ESTIMATE: no bench has run that count), a full cycle is 115,422 rows. V4 measured the encode at the
+bench maxima (§16 "V4 as built"): 196 to 241 ns a row for villages, roads and messengers, 1,693 ns for
+a market's prices, about 47 bytes a row, 3,093 rows a ms overall (161 MB/s). The tap has at most 5 ms
+of encoding a second (derived: 250 µs × 20 steps), so a full cycle at that rate is about 37 ms of
+encoding and about 7.5 s of cycle (derived). District summaries were not measured at scale: at 1 µs a
+row (ESTIMATE) they alone are 100 ms of encoding and the cycle about 21 s. It is longer when the
+engine has little slack. That is why the focus goes first: what an op is looking at is fresh within a
+tap period or two, the rest within the cycle, whose measured length the header carries and the page
+shows per layer. A world whose whole cycle takes less than a tap period is encoded once a period, not
+again and again.
 
 ### 5.3 Peeks, and opening a store read only
 
@@ -519,8 +525,10 @@ length the header carries and the page shows per layer.
   no file open between reads, checks every record's CRC32, and on a missing file or a bad record
   reopens from the root and retries, three times (TUNABLE), then reports the store as busy. On
   Windows its files are opened with `FILE_SHARE_DELETE`, so the engine can still rename and delete
-  them; that this keeps every save working while a sidecar reads is UNVERIFIED, and V4 tests it on
-  Windows.
+  them. V4 ran this under Wine 11: deletes and appends succeed while a reader holds files open, but
+  a log fold's replace of the root fails while a reader has the root open, which poisons the store.
+  On recent Windows on NTFS, std's POSIX-semantics rename should avoid that (UNVERIFIED; §16 "V4 as
+  built", exit test (e)).
 
 ### 5.4 The tests that prove it
 
@@ -1028,7 +1036,7 @@ For Deep Time's coordinator to review.
 | Piece | Where | When | Cost | Grows with | Never with |
 |---|---|---|---|---|---|
 | Lease check | step thread, then IO lane | every step; a `stat` every 200 steps (10 s, TUNABLE), every 40 while leased | one integer comparison per step; one `stat` per 10 s; reading a few hundred bytes when the lease changed | | world size, watchers |
-| View tap | step tail (after commands are published), then IO lane | only while leased, and only while the next hand-over has not arrived | at most 250 µs a step (TUNABLE) encoding, plus at most one part's encode when a hand-over arrives (UNVERIFIED, measured in V4); none when the engine is behind; one commit of changed parts per tap period, waiting behind other IO-lane work | rows, cycle length | anything while not leased |
+| View tap | step tail (after commands are published), then IO lane | only while leased, and only while the next hand-over has not arrived | at most 250 µs a step (TUNABLE) encoding, plus at most one unit's encode when a hand-over arrives (measured in V4: a full unit 0.13 to 0.15 ms at the bench maxima; a ready step waited at most 0.063 ms in the tests); none when the engine is behind; one commit of changed parts per tap period, waiting behind other IO-lane work | rows, cycle length | anything while not leased |
 | Archive append | step thread | at archived events, always | a 32-byte push | events | entities, time |
 | Archive flush and compaction | IO lane | at each save | chunk writes; compaction at most 4 MiB a save (TUNABLE) | events | world size |
 | Archive disk | `<world>/rtsim/archive/` | always | at most 256 MiB (TUNABLE) | | time (capped) |
@@ -1326,6 +1334,158 @@ For Deep Time's coordinator to review.
     save's chunks until the engine's next start cuts them.
   - The index is rewritten whole at every flush and compaction step: about 2 MB a save at 5,000
     chunks.
+
+**V4 as built** (feat/viewer-tap, 2026-10-21), where it differs from §5.2, §5.4 and §15:
+- **Where it lives.**
+  - **`rtsim-parts`** holds the part format, the view store's header, the lease and the
+    `ViewSource` trait (§4.3).
+  - **`rtsim-layers`** holds every module's layer builders, moved out of V1's `rtsim-view`
+    `layers.rs`. The tap and the save viewer run the same builders, so a layer reads the same live
+    and from a save.
+  - **The tap** is `rtsim-jni/src/engine/tap.rs`. Its one hook is after the step publishes. It
+    touches nothing in `take_save`, the page commit, the engine's open or the recording hooks.
+- **The format is V1's, and ready for V6.** Parts are V1's layer descriptors and generic rows. A
+  reader skips a row kind it does not know by the row's length, and a part kind it does not know by
+  its key. V6's graph parts can therefore be added as new kinds without a format change.
+- **The header** (version 2) carries:
+  - per layer: its version, its rows and its `per_unit`;
+  - the resident set, the archive serial, the cycle time and the epoch;
+  - the tap's counters, including each layer's encode cost (`unit_nanos_max.<layer>`,
+    `rows_per_unit.<layer>`, `nanos_per_row.<layer>`).
+  `/api/status` shows the header, so the page can show what each layer costs.
+- **`ViewSource`.**
+  - **Reads.** It takes `&self` only, and nothing reads past now. Reads go through the kernel's
+    resident-only path, so a row whose page is evicted reads as absent and loads nothing. The
+    unit is then marked not resident, and the sidecar draws it from the sim pages (§5.2 item 6).
+  - **No samples yet.** `write_samples` writes nothing: no rtsim layer has an Individual level yet
+    (§6).
+- **Units, not parts, are the job.**
+  - **What a unit is.** A unit is a range of `per_unit` keys of one layer. A stay-put layer's unit
+    writes one part per region its rows fall in.
+  - **The cap.** A unit is never split, so a ready step waits for at most one unit. `per_unit` is
+    set per layer from the measured encode cost, aiming at about 150 µs for a full unit. The
+    values: villages, roads, messengers and trains 500; ship lanes and districts 256; lairs, docks,
+    ships and stations 128; herds 8; everything else 64.
+  - **Estimates.** Herds (8) comes from two samples, about 27 µs a herd. Districts, stations, lines
+    and trains are ESTIMATES: no run had them at scale.
+  - **Sidecar compatibility.** The sidecar rebuckets the units it draws from a save with the
+    header's `per_unit`, so a sidecar built with other caps still lines up with the engine.
+- **One cycle a period.** When a whole cycle has run, the tap rests until the period (2 s) since
+  the cycle began is over, and the focus and archive refresh on the same period. A small world is
+  then encoded once every 2 s. Before this change, a whole cycle fit in one step's slack, and the
+  test world was encoded about 37,000 times in a 100-day run.
+- **Pending archive rows** (V3's `archive.pending()`) are one more part, keyed by the archive
+  serial. The sidecar keeps the rows whose serial is at or above the last save's, so a row shows
+  once, from the store or from the archive.
+- **The live source and the host source.**
+  - **Live.** `rtsim-cli view --live` reads the tap's view store and the last save. It reads the
+    save for evicted units, cards, the archive and base maps (`/api/world` source "live"). SSE
+    frame notices follow the store's commits.
+  - **Host.** `rtsim-cli run --view` keeps V2's host source, which rereads the fork's saves. The
+    host does not use the tap.
+  - **Tests.** The live-vs-save tests (`rtsim-view/tests/harness.rs`) flush the tap at the save's
+    state. Every layer must draw the save viewer's marks in every frame, every card must have the
+    same sections, and the timeline the same rows. Opening the live source without a lease writer
+    must write nothing.
+- **Lease details.**
+  - **Focus.** The focus is stored sorted, with no repeats.
+  - **Watchers.** The lease is renewed while a stream is open, and not deleted when the last page
+    closes. It simply runs out after 30 s.
+  - **Shutdown.** Ctrl-C or SIGTERM removes the lease and exits; a second signal exits at once.
+- **Exit test (a), lockstep** (`rtsim-host/tests/tap.rs`, release, the populated world):
+  - **The runs.** 100 game days leased, with a page hammering every route and moving its focus,
+    against 100 days with no lease. The leased run is paced at 150 ms a game day so the tap has
+    slack.
+  - **The checks.** The state hashes agree every day. The hand-overs carried back the same records
+    in the same order, and the sim pages were byte for byte the same at the end.
+  - **The tap.** It ran in 848 steps. The longest tapped step took 0.283 ms (budget 0.250 ms); it
+    went over budget 3 times, by at most 0.033 ms. It encoded 185 units, the longest in 0.079 ms;
+    the longest job was 0.086 ms, and a ready hand-over waited at most 0.063 ms. There were 8
+    cycles (the last 149 ms) and 8 commits (the longest 1.95 ms), with 79 parts written and 66
+    dropped as unchanged.
+- **Exit test (a), under load** (`rtsim-host/tests/tap_load.rs`):
+  - **The setup.** The process was pinned to 2 CPUs with 3 spinning threads, a server tick every
+    ms, and 100 game days at stride 240.
+  - **The tap stood down.** Java saw 1,315 hand-overs holding more than one TICK, and the engine
+    stood down as behind 1,314 times. The one it missed came before the lease was first read.
+  - **Budget.** It tapped 3,460 steps, the longest 0.254 ms, over budget by at most 0.004 ms. The
+    longest job was 0.077 ms, and there were 5 commits.
+- **Exit test (b), no lease.** Paired side by side (`rtsim-cli run` of `origin/main` at aca3c3a
+  against this branch on the populated world, `--speed max --no-fsync --threads 2,2`, each pinned
+  to two cores of its own, the cores swapped every pair, a load average of 25 to 30 from other
+  work):
+  - **Stride 2,400, 4,000 game days, 4 pairs:** 165.9 µs a step waiting on the engine on main
+    against 166.7 on the branch; 828.1 against 829.5 µs of wall a step; 120.9 against 120.7 game
+    days a second. No pair differed by more than 4.3 µs (3%) on the engine.
+  - **Stride 240, 4,000 game days, 6 pairs:** 26.8 µs against 26.5 on the engine; 90.9 against
+    90.8 µs of wall. No pair differed by more than 1.5 µs.
+  - **Verdict.** Unchanged within noise. Unleased, a step costs one `try_lock`, an atomic load and a
+    `stat` every 200 steps on the IO lane.
+- **Exit test (c), the encode per part** (`rtsim-jni/tests/tap.rs`, 4,096 villages, release):
+  - **Per layer at the bench maxima:**
+    - villages: 241 ns a row, 0.141 ms per 500-row unit, about 47 bytes a row;
+    - prices: 1,693 ns a row, 0.150 ms per 64-row unit;
+    - roads: 196 ns a row, 0.130 ms per unit;
+    - messengers: 225 ns a row, 0.147 ms per unit.
+    Overall that is 3,093 rows a ms, or 161 MB/s.
+  - **On the small populated world**, costs per row include about 5 µs a unit. Factions, dragons
+    and lairs take 3 to 6.5 µs a row; prices 2 to 3 µs; villages, docks, lanes and ships 0.6 to
+    1.3 µs; roads and messengers 0.4 to 0.8 µs.
+  - **Cycle length.** On the test world a whole cycle is about 14 units, about 120 µs of encoding,
+    and it runs once a period. At the bench maxima the estimate is about 37 ms of encoding and a
+    cycle of about 7.5 s (§5.2).
+- **Exit test (d), the server thread's hand-over** (`rtsim-host/tests/tap.rs`): the same world at a
+  server's pace (a tick every ms, stride 240, 100 game days).
+  - **Leased hand-over:** p50 2.4 µs, p99 18.8, p99.9 457, most 1,067.
+  - **Unleased hand-over:** p50 2.6, p99 15.4, p99.9 259, most 1,634.
+  - **Steps:** p50 87.1 µs leased against 90.6 µs unleased.
+  - **The bound.** The test holds the median within twice the unleased one plus 20 µs, and the p99
+    within twice plus 200 µs. The lockstep compares every record handed back, in order.
+- **Exit test (e), Windows.** Run as the prompt allows, under Wine 11 (mic_native's Windows build
+  already runs there). The kernel's `tests/read_while_saving.rs` was cross-built with cargo-xwin
+  and has two tests:
+  - **Held open.** Before each of 60 saves, a handle is open on every file in the store (up to
+    12), and the saves compact segments, delete them and fold the log.
+  - **Readers in a loop.** A writer saves as fast as it can while three readers open the store
+    read only and read every page in a loop.
+
+  Both pass on Linux. Under Wine both **fail at the first log fold**: replacing the root
+  (`manifest.rtm`, a temporary file renamed over it) is refused with "Access denied" while a reader
+  has the root open, even only for its read.
+  - **What succeeds under Wine.** With the folds left out, everything else does: 60 saves with
+    every file held open (54 segments deleted, 192 pages compacted), and 1,928 saves against the
+    looping readers.
+  - **Why.** Wine 11's server refuses to replace any open file whatever its share mode
+    (`server/fd.c`, "can't replace an opened file"). It also ignores the POSIX-semantics flag that
+    std's `fs::rename` falls back to on "Access denied" (`FILE_RENAME_FLAG_POSIX_SEMANTICS`,
+    logged as an unsupported flag).
+  - **Real Windows.** Recent Windows 10 and 11 on NTFS honour that flag, so the fold should succeed
+    there (UNVERIFIED: not run on a Windows PC). Windows behaves as Wine does on volumes or versions
+    without POSIX semantics.
+  - **The cost of a refused fold.** It poisons the store (page.rs `checkpoint`), and the save
+    fails. The same race touches the tap's own view store, whose commits fold too, and the lease,
+    which the sidecar renames while the engine reads it.
+  - **The fix belongs to the page store** (V4 keeps out of the commit path): retry the root's
+    replace on Windows for a few milliseconds. A read-only reader holds the root only for the
+    length of one read.
+- **Open from V4:**
+  - FIXED in 2d05352: Windows: the fold's root replace against a reader (exit test (e) above). Every
+    replace under the world folder now goes through `rtsim_kernel::page::rename_over`, which on
+    Windows retries a refused rename (access denied or a sharing violation) 5 times over 155 ms.
+    `read_while_saving.rs` passes under Wine 11 (3 of 3; without the retry 0 of 3). The readers
+    open with std's default sharing (including `FILE_SHARE_DELETE`) and hold a file for one open,
+    read and close. Real Windows is still UNVERIFIED.
+  - The encode costs of districts, stations, lines, trains, herds and conflict at scale are not
+    measured, so their caps are ESTIMATES.
+  - The header's cycle time has millisecond resolution.
+  - No layer has samples yet (`write_samples` is a no-op).
+  - The tap's timing tests (`tap.rs`: overrun, wait past the job, lease writes) flake when the
+    laptop's load is above about 50. They pass at normal load, and 4 of 4 combined runs passed at
+    load 53 to 61.
+  - Once, under load 72, the lockstep test found pages that differ between the leased and the
+    unleased run; the message was not captured and about 15 reruns did not repeat it.
+    `assert_lockstep` now prints the table, the row id, both lengths, the first differing byte and
+    both generations, so the next one can be traced. UNEXPLAINED.
 
 ---
 

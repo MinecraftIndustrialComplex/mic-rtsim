@@ -468,6 +468,29 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native void nDragonsOil(long handle, long agent, long[] out)`: the oil gate's counters
+/// and `agent`'s reserve (`Engine::dragons_oil`). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDragonsOil<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    agent: jlong,
+    out: JLongArray<'l>,
+) {
+    env.with_env(|env| -> Result<(), JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let info = e.dragons_oil(agent as u64);
+        let n = out.len(env)?.min(info.len());
+        out.set_region(env, 0, &info[..n])?;
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassReport(long handle, long district)`: the district's glass report
 /// (`Engine::glass_report`, the layout of `rtsim_industry::glass::report::Report::to_f64s`); null
 /// while it has no complete compile. Between steps; tests and operators.
@@ -487,6 +510,25 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
             Some(v) => doubles(env, &v),
             None => Ok(JDoubleArray::null()),
         }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native double[] nIndustryThreatProbe(long handle, long district)`: one district's
+/// threat state (`Engine::industry_threat_probe`). Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryThreatProbe<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+) -> JDoubleArray<'l> {
+    env.with_env(|env| -> Result<JDoubleArray<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        doubles(env, &e.industry_threat_probe(district as u64))
     })
     .resolve::<ThrowRuntimeExAndDefault>()
 }
@@ -511,6 +553,90 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         match crate::engine::glass_offline(&raw, district as u64) {
             Ok(Some(v)) => doubles(env, &v),
             Ok(None) => Ok(JDoubleArray::null()),
+            Err(m) => {
+                set_last_error(&m);
+                Err(JniError::JniCall(jni::errors::JniError::InvalidArguments))
+            }
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native long[] nGlassReplayOffline(byte[] records, long district)`: the chunk
+/// reconciles a fresh industry engine would send `district` over a record stream
+/// (`engine::glass_replay_offline`, the stub engine's G2 exit GameTests), flat triples
+/// `(inventory, good, delta)`, once per op id; empty when there are none. No handle: pure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nGlassReplayOffline<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    records: JByteArray<'l>,
+    district: jlong,
+) -> JLongArray<'l> {
+    env.with_env(|env| -> Result<JLongArray<'l>, JniError> {
+        if records.is_null() {
+            return Err(JniError::NullPtr("records"));
+        }
+        let raw = env.convert_byte_array(&records)?;
+        match crate::engine::glass_replay_offline(&raw, district as u64) {
+            Ok(v) => {
+                let arr = env.new_long_array(v.len())?;
+                arr.set_region(env, 0, &v)?;
+                Ok(arr)
+            }
+            Err(m) => {
+                set_last_error(&m);
+                Err(JniError::JniCall(jni::errors::JniError::InvalidArguments))
+            }
+        }
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native String nIndustryNotes(long handle, long district, long from)`: the industry
+/// engine's log lines about the district from tick `from` on, joined by newlines
+/// (`Engine::industry_notes`); "" when there are none. Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryNotes<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    district: jlong,
+    from: jlong,
+) -> JString<'l> {
+    env.with_env(|env| -> Result<JString<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let lines = e.industry_notes(district as u64, from.max(0) as u64);
+        JString::from_str(env, lines.join("\n"))
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+/// `static native String nGlassNotesOffline(byte[] records, long district, long from)`: the
+/// same lines from the fresh industry engine of `nGlassOffline` over a record stream
+/// (`engine::glass_notes_offline`, the stub engine's G2 exit GameTests). No handle: pure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nGlassNotesOffline<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    records: JByteArray<'l>,
+    district: jlong,
+    from: jlong,
+) -> JString<'l> {
+    env.with_env(|env| -> Result<JString<'l>, JniError> {
+        if records.is_null() {
+            return Err(JniError::NullPtr("records"));
+        }
+        let raw = env.convert_byte_array(&records)?;
+        match crate::engine::glass_notes_offline(&raw, district as u64, from.max(0) as u64) {
+            Ok(lines) => JString::from_str(env, lines.join("\n")),
             Err(m) => {
                 set_last_error(&m);
                 Err(JniError::JniCall(jni::errors::JniError::InvalidArguments))

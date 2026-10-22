@@ -111,7 +111,7 @@ public final class BridgeEvents {
 
     private static void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
-        TraderSpawning.sync(server);
+        TraderSpawning.announce(true);
         RtsimSession.startGlobal(server);
     }
 
@@ -266,7 +266,7 @@ public final class BridgeEvents {
         RtsimCommands.register(event.getDispatcher());
     }
 
-    /** The server config changed: re-sync the trader gamerule and tell the engine the module switches. */
+    /** The server config changed: tell the engine the module switches (and the log who owns the traders). */
     private static void onConfigReload(ModConfigEvent.Reloading event) {
         if (event.getConfig().getSpec() != RtsimConfig.SPEC)
             return;
@@ -276,9 +276,12 @@ public final class BridgeEvents {
         server.execute(() -> moduleSwitchesChanged(server));
     }
 
-    /** Applies the module switches now. Called on config reload and by the GameTests. */
+    /**
+     * Applies the module switches now. Called on config reload and by the GameTests. The trader veto
+     * needs no sync (it reads the switches at every spawner tick); this only logs it.
+     */
     public static void moduleSwitchesChanged(MinecraftServer server) {
-        TraderSpawning.sync(server);
+        TraderSpawning.announce(false);
         RtsimSession s = RtsimSession.current();
         if (s != null)
             s.onModulesChanged();

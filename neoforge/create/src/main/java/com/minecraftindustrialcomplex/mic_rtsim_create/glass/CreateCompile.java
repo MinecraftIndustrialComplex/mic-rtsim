@@ -2004,7 +2004,13 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
     }
 
-    /** A belt's chain: links between its elements in movement order, takers, and the end's edge. */
+    /**
+     * A belt's chain: links between its elements in movement order, takers, and the end's edge. The
+     * belt's own links are THROUGH: an insertion onto a segment (a belt's end, a funnel, a chute)
+     * does not wait for the items carried along it ({@code BeltInventory.canInsertAtFromSide} only
+     * looks at earlier insertions from the same side, GB72). The end's edge is the next belt's
+     * insertion, not THROUGH.
+     */
     private void beltEdges(Belt b) {
         if (b.elements.isEmpty())
             return;
@@ -2021,7 +2027,9 @@ final class CreateCompile implements GlassExtractor.Compile {
                     int m = prev == NONE ? b.entry(e.getKey()) : prev;
                     if (infos.get(m) == null || infos.get(m).kind != K.BELT) {
                         int nm = b.newMover(b.segments.get(e.getKey()));
-                        edge(GlassRecords.Edge.BELT, m, nm);
+                        GraphBuilder.Edge se = edge(GlassRecords.Edge.BELT, m, nm);
+                        if (se != null)
+                            se.flag(GlassRecords.Edge.THROUGH);
                         m = nm;
                     }
                     GraphBuilder.Edge te = edge(GlassRecords.Edge.ADJACENCY, m, n);
@@ -2033,8 +2041,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 }
                 if (prev != NONE) {
                     GraphBuilder.Edge le = edge(GlassRecords.Edge.BELT, prev, n);
-                    if (le != null)
+                    if (le != null) {
                         le.order(1);
+                        le.flag(GlassRecords.Edge.THROUGH);
+                    }
                 }
                 prev = n;
             }

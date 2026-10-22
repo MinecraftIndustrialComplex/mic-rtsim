@@ -76,6 +76,44 @@ public final class GlassExtractionGameTests {
     }
 
     /**
+     * An addon's block entity type whose block entity is one of Create's classes (Create Encased's
+     * {@code createcasing:custom_depot}, {@code custom_press} and {@code custom_mixer} in the TBSMP world) has
+     * a part like Create's own, so a change to its structure asks for a new compile: a depot under a
+     * non-Create type (a barrel's, so the constructor accepts a barrel's state) fingerprints non-zero, and a
+     * real barrel still has none. The cache is per type (one type, one class), so each check has its own
+     * fresh extractor, which also keeps the shared one clean.
+     */
+    @GameTest(template = YARD, batch = "glass_extract_fp", timeoutTicks = 100)
+    public static void anAddonsCreateBlockEntityHasAPart(GameTestHelper helper) {
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos barrel = new BlockPos(bx + 3, y, z + 2);
+        set(helper, barrel, Blocks.BARREL.defaultBlockState());
+        com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass x = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.withEmptyCaches();
+        check("a vanilla barrel has none", x.fingerprint(helper.getLevel().getBlockEntity(barrel)) == 0);
+        com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass fresh = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.withEmptyCaches();
+        com.simibubi.create.content.logistics.depot.DepotBlockEntity depot = new com.simibubi.create.content.logistics.depot.DepotBlockEntity(
+                net.minecraft.world.level.block.entity.BlockEntityType.BARREL, barrel.above(), Blocks.BARREL.defaultBlockState());
+        check("an addon's depot has a part", fresh.fingerprint(depot) != 0);
+        helper.succeed();
+    }
+
+    /**
+     * A fan recipe of a type other than smoking and blasting (Garnished's freezing and dye blowing in the
+     * TBSMP world) is named by its type's registry id, not as blasting. Create's splashing stands in for an
+     * addon's type here: the dev server has no addon types.
+     */
+    @GameTest(template = YARD, batch = "glass_extract_fp", timeoutTicks = 100)
+    public static void anAddonsFanTypeIsNamedByItsId(GameTestHelper helper) {
+        String smoking = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SMOKING);
+        String blasting = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.BLASTING);
+        String other = com.minecraftindustrialcomplex.mic_rtsim_create.glass.CreateGlass.fanRecipePrefix(com.simibubi.create.content.kinetics.fan.processing.AllFanProcessingTypes.SPLASHING);
+        check("smoking keeps its name: " + smoking, smoking.equals("create:fan_smoking/"));
+        check("blasting keeps its name: " + blasting, blasting.equals("create:fan_blasting/"));
+        check("another type is named by its id: " + other, other.equals("create:fan_splashing/"));
+        helper.succeed();
+    }
+
+    /**
      * A chest of wheat over a chute over a millstone on a creative motor at 64 RPM. The compile reaches
      * the engine complete; its graph has the chest's STORE, the chute's MOVER (store to chute to
      * millstone), the millstone MACHINE in a one-level domain at 64 RPM with the milling recipe for wheat
