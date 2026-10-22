@@ -12,7 +12,7 @@ section 2.16 is the alliance design. Section 8 has the answers, and CL-6 and CL-
 alliances raise.
 
 **What the revision changed.** The engine's abstract fights are deterministic: the stronger side wins
-(`village_outcome`, `engine.rs:4343-4365`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
+(`village_outcome`, `engine.rs:4350-4377`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
 model rolled Lanchester odds as a chance to win, and so did EQUILIBRIUM.md's gate. The model now
 fights as the engine does: a losing raid comes from a wrong belief, never from dice. Every number below
 is from the corrected model. MZ-15 (MOWZIE.md on main) settles marches, and section 2.12 follows it.
@@ -90,10 +90,12 @@ Calendar: a game day is 24,000 ticks; a game year is 96 days, four seasons of 24
   better or be safer side by side swear a pact against one foe: a camp, a village or a player. A
   sworn camp calls its ally instead of marching alone, and the ally comes or refuses; the two
   contingents fight together, by the engine's law and certain. Pacts lapse, break on refusals, and are
-  betrayed by hungry chiefs who never swore them. A pact against a player is told to him. Between
-  camps the engine's law is linear, so two parties together kill no more than the two apart, and pacts
-  are rare: in the valley left alone, one about every seven years and a joint fight about every 28,
-  and the fights on players do not change (4.5).
+  betrayed mostly by hungry chiefs who never swore them. A pact against a player is told to him.
+  Between camps the engine's law is linear, so two parties together kill no more than the two apart,
+  and pacts are rare: in the valley left alone, one about every seven years and a joint fight about
+  every 28, and the fights on players do not change (4.5). As designed a player almost never meets
+  one: a joint party came at the fortress about once in 4,450 server hours and at the hunter about
+  once in 9,300, and never at the others (CL-7).
 
 What the player sees, in the model's numbers (section 4):
 
@@ -459,7 +461,7 @@ today (PM-C2).
 | `Feud` | belief: mean and variance of the log | 8 | |
 | | trust: paid and refused | 8 | fading toward even (192 days) |
 | | wounded pride W | 4 | halves over pride_half, read at the grievance's anchor |
-| | memories (4) | 32 | 8 bytes each: kind u8, flags u8 (hostile, and so on), count u16 (saturating; a name index for a dead chief; for the six kinds that name a second camp, a u8 count and that camp's feud index, 2.16), weight u16, day u16 |
+| | memories (4) | 32 | 8 bytes each: kind u8, flags u8 (hostile, and so on), count u16 (saturating; a name index for a dead chief; for the six kinds that name a second party, a camp or the player a pact is sworn against, a u8 count and its feud index, 2.16), weight u16, day u16 |
 | | away until, truce until, last warning, paid until, refused at | 20 | days |
 | | the swearing chief | 4 | the chief's ordinal (`Faction::chiefs`) |
 | | the defeat floor: strength and day | 8 | |
@@ -572,7 +574,7 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   a raider one of 23, a bandit one of 20; a Mowzie band never exceeds it) keeps its whole strength in
   the fight's books. Its column is embodied up to the quota, and the members past it stay in the
   record and walk in along the route from the ticking edge as the quota frees, as `start_fight`'s
-  later waves send only the members not yet in Minecraft (`spawn_wave`, `engine.rs:3364-3378`). The
+  later waves send only the members not yet in Minecraft (`spawn_wave`, `engine.rs:3378-3390`). The
   player sees the band the far view drew, arriving in two or three bunches. The two contingents of a
   joint party share one quota of 16 (2.16, CL-D49).
 
@@ -669,7 +671,8 @@ nobody, camps swore and then marched alone (CL-D44).
   last 48 days.
 
 A camp may hold several pacts, each with one camp against one foe, and at most four at once (the list
-on its faction row, below; the model has no cap and never had a camp in more than two). While a pact
+on its faction row, below; the model has no cap and never had a camp in more than two). A camp holding
+four makes no offer and refuses any. While a pact
 runs, the two camps' hunters share the border: no clash between them.
 
 **What a pact is worth.** An offer is one of the acts a sitting weighs toward x (2.6), on the same
@@ -737,11 +740,12 @@ pride (+0.2), with a memory: "Mudhollow would not come against the Grey Outpost 
 **The joint fight.** The two contingents fight x together, by the engine's law and certain, as every
 fight is (CL-D25). The engine fights one party at a time today, so the joint resolve is new (2.15),
 built on the same calls:
-- **At a camp or a village:** one `village_outcome` on A + AB against d, its floor drawn from both
-  camps' fights seen (each shared its own at the swearing). Each contingent loses the same share of
-  its members. A destroyed party destroys both contingents, and a chief who led either falls with it
-  (CL-D41). The take is the joint carry left standing, capped by the target's loot share of each
-  good, and split by carry.
+- **At a camp or a village:** one `village_outcome` on A + AB against d, its `observed` list the union
+  of both camps' observed fights (each shared its own at the swearing), which floors the attackers'
+  surviving share as it does for one camp; 2.4's belief floor is another thing. Each contingent loses
+  the same share of its members. A destroyed party destroys both contingents, and a chief who led either
+  falls with it (CL-D41). The take is the joint carry left standing, capped by the target's loot share
+  of each good, and split by carry.
 - **At a player's base:** one `Threat` for each threat class, on both contingents' members of that
   class summed (count, strength, loads), resolved once by `threat.rs`. Each contingent loses
   `abstract_loss_share` of its own held-back members of the class (`engine.rs:2977-2980`), and the
@@ -786,8 +790,9 @@ chief who swore) and 10 more. A council that does it anyway ends the pact. The b
 the gravest insult: +1 pride, +40 grievance, and a memory of weight 3, "Ashpit broke its oath and fell
 on us in the summer of year 12". Every camp that knows the betrayer trusts its word less (kb + 1): it
 counts less on the betrayer's help, so a pact with it is worth less. The betrayer's reason names the
-oath: "Gitz broke the oath sworn with Mudhollow against the Grey Outpost", or, for an heir, "Gitz had
-not sworn it".
+oath: "Gitz broke the oath sworn with Mudhollow against the Grey Outpost", or, for an heir, "Gitz was
+not chief when Ashpit swore". The oath binds the chief who held the seat at the swearing, not whoever
+spoke it: a war leader who speaks for his chief and takes the seat later is an heir to it (3.6).
 
 **Deterrence.** Falling on a camp costs more for each of its sworn allies that can reach the attacker,
 whoever the pact is against: up to 4 each, by that ally's strength against the attacker's own
@@ -812,8 +817,13 @@ refuse.
   you." FACTION_NOTICE's reason gains the ally, 8 bytes (88), and the notice is kept until shown
   (NOTICE_SHOWN, MOWZIE.md §4.12).
 - **A joint party's reason names both camps:** "beside the Grey Outpost, sworn against player Ben".
-- A pact against a camp or a village is not told: no one sees it, and a player learns of it from its
-  parties.
+- **Pacts between camps are told to players near them** (CL-9 (a), open). A player both camps reach
+  is told, by a notice line with no sound, when they swear ("Ashpit and Mudhollow have sworn against
+  the Grey Outpost"), when they march together ("Ashpit and Mudhollow march on the Grey Outpost") and
+  when one falls on the other ("Mudhollow broke its oath and fell on Ashpit"). These are three notice
+  kinds on FACTION_NOTICE as it stands (88 bytes with the ally); no row grows. In the valley left alone
+  they would come about 0.15, 0.04 and 0.03 times a year. Under CL-9 (b) a pact against a camp or a
+  village is not told: no one sees it, and a player learns of it from its parties.
 
 **What the player sees.**
 - An envoy naming two camps, often first, and the notice of the pact.
@@ -852,13 +862,14 @@ starts with no pacts, as every council starts fresh (2.11).
 About 16 bytes on each faction, 40 on each feud toward a camp and 4 on each toward a player. A feud
 toward a village has no ally fields.
 
-**Memories that name two camps.** Six memory kinds name a second camp: "we lost 9 at the Grey Outpost
+**Memories that name two parties.** Six memory kinds name a second party, a camp or the player a
+pact is sworn against: "we lost 9 at the Grey Outpost
 beside Mudhollow", "the Grey Outpost drove us and Mudhollow off", "Ashpit and Mudhollow raided us", "the
 Grey Outpost raided Ashpit, our ally", "Mudhollow would not come against the Grey Outpost" and
 "Mudhollow sent too few against the Grey Outpost". The 8-byte slot keeps its shape: for these kinds its
-count is a u8 (the dead of one fight fit) and the other u8 is the second camp's index in the camp's own
-feud list. If that feud has been dropped when the memory is read, the line says "an ally" or "another
-camp".
+count is a u8 (the dead of one fight fit) and the other u8 is the second party's index in the camp's
+own feud list. If that feud has been dropped when the memory is read, the line says "an ally" or
+"another camp" for a camp, and "a player" for a player.
 
 **Events and draws.** No new event kind. An offer and a call are answered inside the caller's sitting:
 the answer reads the other camp's rows, a page load when they are not resident, as a fight on a camp
@@ -926,7 +937,8 @@ which is all that needs stopping.
   raptor takes its leader's target with `setTarget(leader.getTarget())`
   (`EntityUmvuthanaFollowerToRaptor:48`); the Umvuthi hands its target on with
   `umvuthana.setTarget(entity.getTarget())` (`EntityUmvuthi:1093`). None overrides `isAlliedTo`.
-- **The raider bodies** are vanilla pillagers (PLAN.md's fallback), goal-based.
+- **The raider bodies** are vanilla pillagers, vindicators and, in an invasion, a ravager (PLAN.md's
+  fallback; `data/cultures/raider.json`): goal-based `Raider` mobs that retarget through `setTarget`.
 - **The goblin bodies** are abstract until P8. Whichever mod P8 picks for them must retarget through
   `setTarget` or `StartAttacking`: a gate on that choice, and GameTest 5 runs on it then.
 
@@ -994,8 +1006,9 @@ Seed 1002: 111 Frostmaw deaths in 50 years over the two dens (median 110).
    Frostmaw before me in the spring of year 1." He kills it on d41.
 4. **Y1 d55 and d80.** The Pass Den's heir, arrived on d51, raids him for the same reason and takes
    44; so does the North Den's next heir on d80, the day it arrives.
-5. **Y1 d78.** The Sun Grove asks 14 gold. A grove raid on his walls (3.8, or 12.6 with the Umvuthi,
-   against 30) would take nothing, so his script refuses. The gong follows, about once a year.
+5. **Y1 d78.** The Sun Grove asks 14 gold. A grove raid on his walls (3.8), or an invasion with the
+   Umvuthi (12.6), against 30 would take nothing, so his script refuses. The gong follows, about once a
+   year.
 6. **Y2.** He steals on d11, d58 and d75. The Pass Den raids him on d32, d61, d75 and d84, 21 days, 3
    days and the same day after a theft, and again: "honour: player Ben stole the crystal". Each raid
    wins and takes 44.
@@ -1151,11 +1164,13 @@ against the Grey Outpost, which hates goblins and is the strongest camp in reach
    does the next, sworn in Y14, unused.
 4. **Y12 d5.** Crowsnest (bandits) asks the Grey Outpost to swear against Ashpit. Refused: raiders
    hate bandits.
-5. **Y22 d8 to Y23 d75.** Mudhollow (its war leader Gitz speaking) swears with Ashpit. 163 days
-   later Mudhollow, in winter hunger and under a chief who had not sworn it, invades Ashpit: "winter
-   hunger; Gitz had not sworn the oath sworn with Ashpit against the Grey Outpost". It wins, losing 18,
-   and takes 60. The pact ends in betrayal: Ashpit takes it as the gravest insult, and every camp that
-   knows Mudhollow trusts its word less.
+5. **Y22 d8 to Y23 d75.** Mudhollow swears with Ashpit, its war leader Gitz speaking for its chief
+   Ozzit; 17 days later Gitz is chief. 163 days after the swearing Mudhollow, in winter hunger, invades
+   Ashpit: "winter hunger; Gitz had not sworn the oath sworn with Ashpit against the Grey Outpost". The
+   oath binds the chief who held the seat when it was sworn, not the speaker, so Gitz weighs it as an
+   heir does, once; the engine's line says so ("Gitz was not chief when Mudhollow swore"), where the
+   model's says "had not sworn". Mudhollow wins, losing 18, and takes 60. The pact ends in betrayal:
+   Ashpit takes it as the gravest insult, and every camp that knows Mudhollow trusts its word less.
 6. **Y26 d31 to Y29 d55.** Ashpit's elder Snag swears with Mudhollow. Mudhollow's first call is
    refused; twice in Y27 it calls again and Ashpit comes: two joint invasions of the Grey Outpost, each
    won (17 and 5 dead for 83; 15 and 5 for 81). In Y29 Ashpit refuses twice, and the second refusal
@@ -1173,10 +1188,10 @@ At the fortress (3.1), joint parties are rarer still: 3 in 16 worlds of 50 years
 - Seed 1014, Y11 d9: Mudhollow invades with 26 beside the Grey Outpost's 23, "newly sworn against
   player Ben; empty stores", and finds him home: all 49 die.
 
-What Ben sees in seed 1002: the notice that the Grey Outpost and Mudhollow have sworn against him,
-then two columns of two cultures arriving together while he is away, and a base robbed of 297 on his
-return. Over the 64 fortress worlds a joint party came at him about once in 140 years and won about
-once in 240 (CL-6).
+What Ben sees in seed 1002: the notice that the Grey Outpost and Mudhollow have sworn against him.
+While he is away, two columns arrive together. He comes home to a base robbed of 297, and 53 days
+later of 94 more. Over the 64 fortress worlds a joint party came at him about once in 140 years and
+won about once in 250 (CL-6).
 
 ---
 
@@ -1325,7 +1340,7 @@ railway a passing train is the occasion of 35%.
 - Alliances (2.16): an offer and a call are answered inside the caller's sitting, and a joint fight
   resolves the day it is decided, so the two marches, the nearer contingent's longer muster and a
   first arrival's wait are not modelled; nor are the shared quota and the target listener. No player
-  swears with a camp, and no pact holds more than two camps.
+  swears with a camp (CL-8), and no pact holds more than two camps.
 
 ### 4.5 Alliances
 
@@ -1350,10 +1365,10 @@ pact or a call changes what a camp does. Each comparison is paired by seed (`ext
 | Railway at 4 legs | caravan ambushes a year by Ashpit, Crowsnest, the Grey Outpost | 0.16, 0.30, 0.26 | 0.15, 0.29, 0.23 | |
 
 Nothing a player feels moves: no paired difference comes near significance, and the Frostmaw's rates
-are the same to two places. No camp died out and no war became endless in either arm. The one change
+move by 0.02 a year at most. No camp died out and no war became endless in either arm. The one change
 is the fortress's: with alliances off every fight on Ben is lost; with them on, two camps sworn against
-him have beaten his walls while he was away, 0.004 a year (about once in 240 years), and taken about
-one item a year from him on average.
+him have beaten his walls while he was away, 13 times in 3,200 world-years (0.004 a year, about once
+in 250 years), and taken about one item a year from him on average.
 
 **The alliances themselves** (`results/summary.md`):
 
@@ -1365,20 +1380,41 @@ one item a year from him on average.
 | Multi | 0.089 | 0.032 (50%, 48%) | 0.016 (0.0034 on Ash; 0.0025) | 0.007 | 0.012 | the goblin pair, 0.087; Ashpit with the Grey Outpost against Ash, 0.001 |
 | Railway | 0.121 | 0.036 (32%, 54%) | 0.012 (0) | 0 | 0.021 | the goblin pair |
 
-The rest of the calls found the ally busy. A pact runs a median of about 100 days (mean 135 to 154).
-Four in five lapse; about one in five ends in betrayal; a handful end in refusals. Every betrayal in
-the valley (82 in 64 worlds, `extra/betray.py`) is a hungry goblin camp invading its kin, and 59 of
-them came under a chief who had not sworn the oath. The joint fights between camps are
-won: 99% in the valley. The joint fights on players are what the single ones are: at the fortress
-43% lost (the parties that found Ben home), at Ash 27%.
+The rest of the calls found the ally busy. A pact runs a median of about 100 days (mean 134 to 154).
+Four in five lapse; about one in six ends in betrayal (14% to 18% by scenario); a handful end in
+refusals. Every betrayal in the valley left alone (82 in 64 worlds, `extra/betray.py`; 86 at the
+fortress, 70 at the farmer's, 67 on the railway, 39 in multi) is a hungry goblin camp invading its
+kin, and 59 of the 82 came under a chief who was not chief when his camp swore (about five of those
+59 had spoken the oath as war leader or elder and took the seat later, as Gitz in 3.6). The joint
+fights between camps are won: 99% in the valley.
 
-**No blocs.** In 310 of the 320 worlds (`extra/bloc.py`) no camp held more than one pact at a time.
-In the other 10, all fortress worlds, Mudhollow held two: with Ashpit against the Grey Outpost, and with
-the Grey Outpost or the Sun Grove against Ben. No pact holds more than two camps, and the faction
-row's room for four open pacts (5.1) was never more than half used.
+Joint parties on players do better than single ones. At the fortress 13 of 23 won, every win while Ben
+was away; of the 10 lost, 7 found him home and 3 found him away but were too weak for his walls. No
+single party ever wins there: the strongest is 36 against his 40, even with him away. At Ash 27% of
+joint parties were lost, against 41% of single ones.
 
-**Why they are rare.** Four things keep them so, and each is the design working, not a tunable set
-low:
+**How often a player meets one.** A game year of 96 days is 32 hours of a running server:
+
+| As designed | Once in (world-years) | About (server hours) |
+|---|---|---|
+| A pact sworn against Ben at the fortress | 119 | 3,800 |
+| A joint party at the fortress | 139 | 4,450 |
+| A joint win at the fortress | 246 | 7,900 |
+| A joint party at Ash, the hunter | 291 | 9,300 |
+| A joint fight between camps, in the valley left alone | 28 | 880 |
+
+As designed, a player almost never meets an alliance. Bea, the farmer and the railway owner met none in
+3,200 world-years each; Ben would play about 3,800 server hours before two camps swore against him,
+and Ash about 9,300 before a joint party came. Between camps they are part of the valley's history,
+which a player sees only as far as he hears it (CL-9).
+
+**No blocs.** In 310 of the 320 worlds (`extra/bloc.py`) no camp held more than one pact at a time. In
+the other 10, all fortress worlds, Mudhollow held two: with Ashpit against the Grey Outpost, and with
+the Sun Grove against Ben. No pact holds more than two camps, and the faction row's room for four open
+pacts (5.1) was never more than half used.
+
+**Why they are rare.** Two reasons are the model's structure; the rest are tunables, which CL-7
+turns:
 - **The law.** Between camps the fight is linear (2.16): a winning party loses d / A of its members, so
   two parties together lose about the dead one party of their joint strength would, each its share. A
   pact buys the carry of more survivors and the wins a camp could not take alone, and the ally pays for
@@ -1388,11 +1424,20 @@ low:
 - **Who can swear.** Both must quarrel with the foe, reach it and each other. In this valley only the
   two goblin camps against the Grey Outpost pass often: they are kin (+4), and the raiders, the
   strongest camp in reach of both, hate goblins. Every other pair weighs a culture's hate (-10) or has
-  no shared foe worth it.
-- **Half the calls are refused.** The ally's council weighs its own dead and its share against the
-  shame of refusing, and about half the time the dead win.
-- **Oaths do not outlive chiefs.** Chiefs turn over about eight times a camp a decade (3.5); an heir
-  is bound once, not three times over, and nearly three betrayals in four are his.
+  no shared foe worth it. The structure is who quarrels with whom and who reaches whom; the weights,
+  kin +4 and hate -10, are tunables.
+- **Most pacts lapse.** A pact runs Exp(`pact_days` 192) days, and four in five end so, most before
+  any call: the largest ender.
+- **Half the calls are refused.** The ally's council weighs its own dead, its share and the effort of
+  sending (`pact_effort` 3) against the shame of refusing (weight 1.0), and about half the time the
+  dead win.
+- **Oaths do not outlive chiefs.** Chiefs turn over about eight times a camp a decade (3.5). The oath
+  binds the chief who held the seat at the swearing three times over (the oath multiplier, 3); an heir
+  is bound once, and 59 of the 82 betrayals in the valley are heirs'.
+
+Between camps the structure sets the rate; against players the tunables do. The warm arm below turns
+four of them and multiplies Ash's joint parties 13 times, joint demands in multi 22 times and offers 5
+times.
 
 **Warmer alliances.** Doubling a pact's run (`pact_days` 384), cutting the effort of sending to 1,
 and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.py`):
@@ -1404,11 +1449,12 @@ and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.
 | Multi | Ash 0.372 fights a year, 33 loot; joint parties at him 0.044 a year, 0.035 won; joint demands 0.156; 72 pacts of Ashpit and the Grey Outpost against him; Bea 0.129 | 0.322, 24; 0.0034, 0.0025; 0.007; 4; 0.141 |
 
 Warm, the hunter is the one who feels it: the two camps he provokes swear against him, and against
-the design as it stands his fights rise by 16% and his losses to them by 41%. The fortress still loses
-almost nothing. Fights between camps fall a little: a sworn camp calls before it marches, and a camp
-with a sworn ally is a costlier target. As designed, alliances are a
-rare event a player may meet once in a long game and remember; warm, they are the hunter's standing
-problem. CL-7 asks which Ben wants.
+the design as it stands his fights rise by 16% (paired +0.050 a year, sign p 0.0002) and the loot
+taken from him by 41% (+9.6 a year, p 0.0001). The fortress still loses almost nothing, and Bea's
+fights do not rise. Fights between camps fall a little (1.08 a world-year against 1.16; sign test
+p 0.10, not significant). The cause is not measured; probably a sworn camp calls before it marches,
+and a camp with a sworn ally is a costlier target. As designed, a player almost never meets an
+alliance; warm, they are the hunter's standing problem. CL-7 asks which Ben wants.
 
 ---
 
@@ -1427,10 +1473,11 @@ problem. CL-7 asks which Ben wants.
 | Pact fields (2.16): the open-pact list, the fields on each feud toward a camp, `hurt` on each toward a player | the paged faction row | 16 a faction, about 40 a camp feud, 4 a player feud |
 | A joint attack's partner (2.16) | `Party`, resident while the party lives | 8 bytes and a bit a party |
 
-The faction row (about 450 bytes encoded with two feuds, PM-C1) grows to about 1.4 to 1.7 KB with four
-feuds toward nodes; it is paged, 4 factions a page (PM-C12), so it costs disk, page loads and saves,
-not resident memory. Resident memory grows by the clash event, about 100 bytes a faction: about 0.4 MB
-at 4,096 factions on top of PM-C13's 3.17 MB.
+The faction row (about 450 bytes encoded with two feuds, PM-C1) grows to about 1.6 to 1.9 KB with four
+feuds toward nodes and the pact fields (about 180 bytes of it with four camp feuds); it is paged, 4
+factions a page (PM-C12), so it costs disk, page loads and saves, not resident memory. Resident memory
+grows by the clash event, about 100 bytes a faction: about 0.4 MB at 4,096 factions on top of PM-C13's
+3.17 MB.
 
 ### 5.2 CPU
 
@@ -1445,15 +1492,15 @@ at 4,096 factions on top of PM-C13's 3.17 MB.
 | An offer of a pact, a call (2.16) | at most 0.07 offers and 0.013 calls a faction-year in the valley scenarios (the fortress's) | inside the caller's sitting: the other camp's rows read (a page load when not resident) and its answer scored as one more act |
 | Deterrence (2.16) | at each sitting, for each camp weighed as a target | the target's open-pact list, on its faction row: one row read, a page load when not resident (neighbours often share a page of 4) |
 
-**Step CPU.** Sittings replace plunders about one for one, and a sitting's arithmetic is small beside
-a page load (about 5 microseconds plus 0.45 decode a faction, PM-C12). What grows is the row: decoding
-a row three times the size, against today's 52.3 microseconds a faction-day at 1,024 factions, gives
-an estimated 52 to 60 (inferred).
+**Step CPU.** Sittings replace plunders about one for one, and a sitting's arithmetic is small beside a
+page load (about 5 microseconds plus 0.45 decode a faction, PM-C12). What grows is the row: decoding a
+row three to four times the size, against today's 52.3 microseconds a faction-day at 1,024 factions,
+gives an estimated 52 to 60 (inferred).
 
-**Save CPU.** A page of four rows of 1.4 to 1.7 KB is about the bytes of PM-C12's 16-a-page runs
+**Save CPU.** A page of four rows of 1.6 to 1.9 KB is a little over the bytes of PM-C12's 16-a-page runs
 (16 rows of 450). Those saved 44 times a day for 125 ms of CPU a day at 1,024 factions and 162 times
 for 801 ms at 4,096, against 13 and 37 ms, and 47 and 276 ms, at today's 4 a page. So expect save CPU
-about three times today's: about 110 to 125 ms a game day at 1,024 factions, about 800 at 4,096
+about three times today's: about 120 to 140 ms a game day at 1,024 factions, about 900 at 4,096
 (inferred; the paged sweep measures it, test 17). If that is too much, the feuds toward nodes can
 live in a page of their own, loaded only by sittings.
 
@@ -1480,7 +1527,8 @@ two numbers, the floor and the stock one pair each).
 | Java GameTests 5 and 6 | about 150 |
 
 The model is `model.py` (2,356 lines, about 680 of them alliances), `run.py` (615), `walk.py` (233) and
-`summarize_md.py` (165).
+`summarize_md.py` (165), with eight measuring scripts in `extra/` (326 lines; their outputs are in
+`results/alliances.txt`).
 
 ---
 
@@ -1543,12 +1591,13 @@ seeds unless said. The model's value for each is in brackets.
     reproduce the earlier results exactly].
 22. `a_pact_needs_a_shared_foe`: every pact sworn joins two camps that reach each other and the foe,
     both quarrelling with it or kin with one quarrelling; none by the Frostmaw; none against the
-    railway or a caravan.
+    railway or a caravan; a camp holding four pacts makes no offer and refuses one.
 23. `the_joint_fight_is_the_engines`: at a camp or a village, a joint fight's outcome equals
-    `village_outcome` on A + AB and d with both camps' floors, and each contingent loses the same share
-    of its members; at a player's base, each class's outcome equals `threat.rs` on both contingents'
-    members of that class, and each contingent loses `abstract_loss_share` of its own held-back
-    members of the class; the take splits by carry; each camp's pressure counts its own dead only.
+    `village_outcome` on A + AB and d with both camps' observed fights, and each contingent loses the
+    same share of its members; at a player's base, each class's outcome equals `threat.rs` on both
+    contingents' members of that class, and each contingent loses `abstract_loss_share` of its own
+    held-back members of the class; the take splits by carry; each camp's pressure counts its own dead
+    only.
 24. `the_oath_binds_and_frays`: a camp sworn against x sends no party alone on x that its ally could
     join, unless the ally refused or was busy at the call; a refusal adds 1 strain, and a pact past 2
     ends; a betrayal ends the pact and sets W + 1, +40 and a memory of weight 3 on the betrayed.
@@ -1556,6 +1605,9 @@ seeds unless said. The model's value for each is in brackets.
     alone keeps its fights a year within 5% [7.4 and 7.3], no endless war and no camp dying out [none
     in either], and the fortress at most 0.3 fights a year [0.12]; on Peaceful no call is made and no
     joint party leaves.
+26. `a_pact_is_news_nearby` (CL-9 (a)): when two camps swear, march together, or one falls on the
+    other, every player both camps reach gets one notice of that kind naming both, and no other player
+    gets one.
 
 GameTests, only where Java is involved:
 
@@ -1626,7 +1678,7 @@ GameTests, only where Java is involved:
 | CL-D41 | A chief who leads falls with a destroyed party, and with a chance of a tenth of his party's loss in a win | a beaten invasion is a story about its leader |
 | CL-D42 | EQUILIBRIUM.md §2.6 item 11: the census does not recall a band's living members | MZ-15: the march goes on; a recall broke it at every visit to a camp |
 | CL-D43 | A pact joins two camps against one foe both quarrel with (or kin, one quarrelling), offered only when a joint war's gain or the guard against a feared foe is above 0, sworn by both chiefs, lapsing after Exp(192) days | an alliance needs a reason both sides see; a lapse keeps pacts from lasting for ever |
-| CL-D44 | The oath binds: a camp sworn against x calls its ally rather than march alone on a party the ally could join; refusing a call costs 1.0 of the oath's truce cost, 3 times over for the chief who swore | under the linear law a camp that can win alone gains little beside an ally; with pacts that bound nobody, camps swore and then marched alone |
+| CL-D44 | The oath binds: a camp sworn against x calls its ally rather than march alone on a party the ally could join; refusing a call costs 1.0 of the oath's truce cost, 3 times over for the chief who swore; the oath binds the chief who held the seat at the swearing, not the speaker, so a war leader who spoke it and takes the seat later is an heir to it | under the linear law a camp that can win alone gains little beside an ally; with pacts that bound nobody, camps swore and then marched alone |
 | CL-D45 | A joint fight is a new joint resolve on the engine's parts: one `village_outcome` on the sum at a camp or a village (each contingent the same share), one `threat.rs` resolve per class on the summed members at a base; the take splits by carry; each camp books its own dead, pressure and memories | the engine owns the truth (P3) and fights one party at a time today; pressure is per site (EQUILIBRIUM.md §2.4.5) |
 | CL-D46 | Strain: +1 for a refusal, +1 for the ally and +0.5 for the caller after a lost joint fight, +1 for a contingent under 0.8 of what was counted on; a pact ends above 2; strain halves over 96 days | a pact should fray from what happens inside it, not on a clock |
 | CL-D47 | Betrayal costs the oath and 10 more; the betrayed takes +1 pride, +40 grievance and a memory of weight 3; every camp that knows the betrayer counts less on its help | a broken oath is the gravest insult, and a reputation |
@@ -1637,7 +1689,7 @@ GameTests, only where Java is involved:
 | CL-D52 | Ally weight by culture: Frostmaw 0, raider 0.8, bandit 1.2, the others 1.0; no ally counts on the grove's invasion | a council of one swears with no one; the Umvuthi's pride is its own (2.10) |
 | CL-D53 | Peaceful: pacts may be sworn; no call is made and no joint party leaves | MOWZIE.md §4.12 |
 | CL-D54 | Alliances draw from their own stream (`SYS_ALLY` in the engine, `arng` in the model); with them off the world is the one before them, draw for draw | a clean same-seed control for every comparison (4.5) |
-| CL-D55 | A pact against a player is told by a notice naming both camps; a joint envoy and a joint party name the ally | CL-1 (a): a faction tells the player why |
+| CL-D55 | A pact against a player is told by a notice naming both camps; a joint envoy and a joint party name the ally; pacts between camps are told to the players both camps reach while CL-9 is open (its (a)) | CL-1 (a): a faction tells the player why; without the notices a player almost never sees an alliance (4.5) |
 
 ---
 
@@ -1668,5 +1720,7 @@ for CL-5):
 
 | Id | Question | Options | Why it is yours |
 |---|---|---|---|
-| CL-6 | **May two sworn camps beat a strong base while its owner is away?** | (a) **Yes, rarely (Recommended):** a pact against a player is told to him when it is sworn, and its joint party fights as any party does. At the fortress, two camps sworn against Ben found him away and won about once in 240 world-years (3.6, 4.5): 97% of the fights on him are still lost, and he loses about one item a year on average. (b) No: a player is never the foe of a pact; pacts are sworn only against camps and villages, and every fight on a fortress is lost, as in CL-4. | It changes CL-4's answer, "every one lost by the attackers", and lets walls fail while their owner is away. |
+| CL-6 | **May two sworn camps beat a strong base while its owner is away?** | (a) **Yes, rarely (Recommended):** a pact against a player is told to him when it is sworn, and its joint party fights as any party does. At the fortress, two camps sworn against Ben found him away and won 13 times in 3,200 world-years, about once in 250 (about 7,900 server hours; 3.6, 4.5). A win takes about 297 items (10 of the 13; 94 or 61 in the rest); 97% of the fights on him are still lost, and he loses about one item a year on average. A pact is the only way his walls ever fall: no single party wins there, even when he is away. (b) No: a player is never the foe of a pact; pacts are sworn only against camps and villages, and every fight on a fortress is lost, as in CL-4. | It changes CL-4's answer, "every one lost by the attackers", and lets walls fail while their owner is away. |
 | CL-7 | **How common should alliances be?** | (a) **As designed (Recommended):** rare. In the valley one pact about every seven years and a joint fight about every 28; nothing a player feels changes (4.5). The weights are TUNABLE, like every number here, and can be warmed later without a format change. (b) Warm (4.5): pacts run twice as long and cost less to send and to swear across a hate. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loss, and joint envoys about twenty times as often. | It decides whether an alliance is a rare story or a standing answer to a player who provokes. |
+| CL-8 | **Can a player swear with a camp?** | (a) **Not in this build (Recommended):** pacts are between camps; a player deals with a camp by tribute, truce and feud, as now. (b) Yes: a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call a player can answer, a place to show it, and rules for his refusals and his betrayals. | It is a new mechanic players use, with its own interface. |
+| CL-9 | **Should players see pacts between camps?** | (a) **A notice to the players both camps reach (Recommended):** when they swear, when they march together and when one betrays the other (2.16, "Envoys and notices"); in the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance (4.5). (b) Nothing, as designed so far: a player learns of a pact only when it is sworn against him or its parties reach him. | It decides whether the valley's politics is news a player reads or history he never sees. |
