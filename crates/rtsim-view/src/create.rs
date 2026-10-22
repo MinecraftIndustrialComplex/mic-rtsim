@@ -365,12 +365,28 @@ impl CreateLayers {
 
     /// Stations and trains whose names hold `q`, best first.
     pub fn find(&self, q: &str, limit: usize) -> Vec<(u8, Found)> {
-        let Some(r) = &self.rail else {
-            return Vec::new();
+        let mut out = match &self.rail {
+            Some(r) => {
+                let dims = r.dims.clone();
+                let frame_of = move |d: i32| dims.get(d as usize).cloned().unwrap_or_default();
+                draw::find(r, &frame_of, q, limit)
+            }
+            None => Vec::new(),
         };
-        let dims = r.dims.clone();
-        let frame_of = move |d: i32| dims.get(d as usize).cloned().unwrap_or_default();
-        draw::find(r, &frame_of, q, limit)
+        // The machines, gauges and addresses read so far (round the stations and in the
+        // districts at open, and wherever the page has looked closely).
+        for dim in self.survey.dims() {
+            let chunks = self.survey.all(&dim);
+            out.extend(draw::find_things(
+                chunks.iter().flat_map(|c| c.iter()),
+                &dim,
+                &dim,
+                q,
+            ));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.label.cmp(&b.1.label)));
+        out.truncate(limit);
+        out
     }
 
     /// The block entities read in `chunks` of `frame` (asking for those not read yet, first),

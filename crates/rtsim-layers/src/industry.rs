@@ -133,6 +133,36 @@ pub fn chunk_box(d: &District) -> (i32, i32, i32, i32) {
     b
 }
 
+/// Trips a Minecraft day (24,000 ticks) a line ran, over the time it was seen; None when it ran once
+/// or was seen for less than a day.
+pub fn line_per_day(l: &LineEdge) -> Option<f64> {
+    let seen = l.last.0.saturating_sub(l.first.0);
+    (l.trips > 1 && seen >= 24_000).then(|| l.trips as f64 * 24_000.0 / seen as f64)
+}
+
+/// A line's width in pixels: 2 for a line that hardly runs, up to 7, with the trips a day (or the
+/// trips, for a line seen less than a day).
+pub fn line_width(l: &LineEdge) -> f64 {
+    let x = line_per_day(l).unwrap_or(l.trips as f64);
+    (2.0 + 2.0 * (1.0 + x).log10()).min(7.0)
+}
+
+/// A district state ([`district_state`]) in words for a card or the key.
+pub fn district_state_words(state: &str) -> &'static str {
+    match state {
+        "live" => "Loaded, run by the game",
+        "suspended" => "Partly loaded, paused",
+        "running" => "Unloaded, run by rtsim",
+        "out of season" => "Learned, idle this season",
+        "learning" => "Being learned",
+        "learned" => "Learned",
+        "damaged" => "Stopped: a machine was destroyed",
+        "stale" => "Stopped: edited since it was learned",
+        "not learnable" => "Stopped: not learnable",
+        _ => "Unknown",
+    }
+}
+
 /// What the engine's inspect would call a district. A learned district is "running" when it
 /// replays and "out of season" when not; `replays: None` leaves it "learned" for the caller.
 pub fn district_state(d: &District, replays: Option<bool>) -> &'static str {

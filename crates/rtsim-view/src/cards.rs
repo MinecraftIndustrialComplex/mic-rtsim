@@ -10,7 +10,7 @@ use rtsim_ecology::dragon::{LairKind, Purpose, State, Target};
 use rtsim_ecology::herds::HerdId;
 use rtsim_ecology::species::SpeciesData;
 use rtsim_industry::cluster::PoolKey;
-use rtsim_industry::engine::ProcessPeek;
+use rtsim_industry::engine::{LineEdge, ProcessPeek};
 use rtsim_industry::ids::Good;
 use rtsim_kernel::handle::Handle;
 use rtsim_settle::{Culture, NodeKind};
@@ -705,16 +705,24 @@ pub fn span(ticks: u64) -> String {
 }
 
 /// A line's label on the map: "Ironworks to Docks: 42 trips".
-pub fn line_label(saved: &Saved, v: &IndustryView, a: u64, b: u64, trips: u64) -> String {
-    let t = if trips == 1 {
-        "1 trip".to_owned()
-    } else {
-        format!("{trips} trips")
+pub fn line_label(saved: &Saved, v: &IndustryView, a: u64, b: u64, l: &LineEdge) -> String {
+    let how_often = match rtsim_layers::industry::line_per_day(l) {
+        Some(d) if d >= 10.0 => format!("{} trips a day", d.round()),
+        Some(d) => format!("{} trips a day", (d * 10.0).round() / 10.0),
+        None if l.trips == 1 => "1 trip".to_owned(),
+        None => format!("{} trips", l.trips),
     };
+    let top = l
+        .cargo
+        .iter()
+        .filter(|(_, n)| *n != 0)
+        .max_by_key(|(g, n)| (n.saturating_abs(), std::cmp::Reverse(*g)))
+        .map(|(g, _)| v.good_title(g).to_lowercase());
     format!(
-        "{} to {}: {t}",
+        "{} to {}: {}{how_often}",
         v.station_title(&saved.names, a),
-        v.station_title(&saved.names, b)
+        v.station_title(&saved.names, b),
+        top.map_or_else(String::new, |g| format!("{g}, "))
     )
 }
 
@@ -825,16 +833,15 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     let d = v.district(id)?;
     let name = district_name(saved, v, id);
     let (x, z) = d.centre();
+    let state = rtsim_layers::industry::district_state_words(d.state);
     let mut c = Card::new("industry.districts", id, name)
-        .subtitle(d.state)
+        .subtitle(state)
         .at(x, z)
-        .field("State", d.state)
-        .field("Chunks", d.chunks)
-        .field("Inventories", d.inventories)
-        .field("Watched", d.watched);
+        .field("State", state)
+        .field_unit("Size", d.chunks, "chunks");
     let mut sec = Section::new("Stations");
     for s in d.stations.iter().take(ROWS) {
-        sec.push(Field::new(&format!("Station {s}"), "").link("industry.stations", s));
+        sec.push(Field::new(&v.station_title(&saved.names, *s), "").link("industry.stations", s));
     }
     c = c.section(sec);
     match v.inspect(&*saved.source, id) {
