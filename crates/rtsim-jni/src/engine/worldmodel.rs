@@ -26,9 +26,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use rtsim_ecology::herds::habitat::{
-    FoundingTunables, HabitatClimate, RegionPlan, plan_region, region_herd_name,
-};
+use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, RegionPlan, plan_region};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::page::{PageKey, PageStore, SaveBatch};
 use rtsim_space::habitat::{DICT_BIOME, HABITAT, HabitatRecord, KNOWN_END, KnownRecord};
@@ -263,8 +261,9 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
 }
 
 /// Before the herds run: regions with new cells are judged for a herd (one per suitable region,
-/// once: the region is marked when decided). Only while the herds' switch is on; regions wait
-/// meanwhile.
+/// once: the region is marked when decided). A founded region is a herd range for good: when
+/// its herd dies out the herds found it again (EQUILIBRIUM.md §2.4.2), so the mark means
+/// "judged", never "dead". Only while the herds' switch is on; regions wait meanwhile.
 pub(super) fn simulate(st: &mut State) {
     {
         let mut w = st.worldmodel.world.write();
@@ -293,7 +292,7 @@ pub(super) fn simulate(st: &mut State) {
             {
                 continue;
             }
-            if herds::has_herd_named(st, &region_herd_name(k)) {
+            if herds::has_range(st, k) {
                 RegionPlan::Barren // founded before a crash took the mark: decided
             } else {
                 plan_region(&**w, &climate, k, FOUNDING_SEED, &st.worldmodel.founding)
@@ -404,7 +403,7 @@ impl super::Engine {
         let frame = dim as u16;
         let k = RegionKey::of_block(frame, x, z);
         let h = &st.herds.engine;
-        let found = h.by_name(&region_herd_name(k));
+        let found = h.range_herds((k.frame, k.rx, k.rz)).first().copied();
         let herd = found.map_or(0, |id| rtsim_ecology::herds::herd::agent_of(id) as i64);
         let herd_pos = found.map_or((0, 0), |id| h.position(id, h.now()));
         let (cells, regions, marks) = w.sampled_ref().map_or((0, 0, 0), |s| {

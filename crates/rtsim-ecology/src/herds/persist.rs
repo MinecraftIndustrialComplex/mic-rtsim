@@ -48,8 +48,10 @@ use super::tunables::HerdTunables;
 const MAGIC: u32 = u32::from_le_bytes(*b"RTHD");
 /// 2: the rows moved to row tables (key order, the herd's regions in its row), the active set and
 /// the predator map are saved. 3: the wheel and the claims follow the rest of the meta, as blobs
-/// or as page headers (docs/choices-paging-followups.md PF8).
-const VERSION: u8 = 3;
+/// or as page headers (docs/choices-paging-followups.md PF8). 4: a herd row is a range (its K,
+/// range, home and vacancy, the ledger's dispersal), the region index holds each range's herd,
+/// and the stats count renewals (EQUILIBRIUM.md S2; no migration before release).
+const VERSION: u8 = 4;
 
 /// The herds' page tables: the caller's meta key must be in none of them.
 pub const TABLES: [u16; 5] = [
@@ -162,7 +164,7 @@ fn get_route(r: &mut Reader<'_>) -> codec::Result<Route> {
 
 fn put_ledger(w: &mut Writer, l: &HerdLedger) {
     for v in [
-        l.founded, l.born, l.died, l.starved, l.killed, l.eaten, l.taken, l.lost,
+        l.founded, l.born, l.died, l.starved, l.killed, l.eaten, l.taken, l.lost, l.arrived, l.left,
     ] {
         w.var_u64(v);
     }
@@ -178,6 +180,8 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<HerdLedger> {
         eaten: r.var_u64()?,
         taken: r.var_u64()?,
         lost: r.var_u64()?,
+        arrived: r.var_u64()?,
+        left: r.var_u64()?,
     })
 }
 
@@ -186,6 +190,12 @@ fn put_herd(w: &mut Writer, x: &Herd) {
     w.u8(x.species.index() as u8);
     w.u64(x.seed);
     w.u16(x.frame);
+    w.var_u64(x.k);
+    w.u16(x.range.0);
+    w.var_i64(i64::from(x.range.1));
+    w.var_i64(i64::from(x.range.2));
+    put_xz(w, x.home);
+    put_opt_tick(w, x.vacant);
     w.var_u64(x.classes.len() as u64);
     x.classes.iter().for_each(|c| put_class(w, c));
     w.var_u64(x.next_index);
@@ -249,6 +259,10 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
         HerdSpecies::from_index(u32::from(s)).map_or_else(|| bad(format!("species {s}")), Ok)?;
     let seed = r.u64()?;
     let frame = r.u16()?;
+    let k = r.var_u64()?;
+    let range = (r.u16()?, i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?);
+    let home = get_xz(r)?;
+    let vacant = get_opt_tick(r)?;
     let classes = (0..r.len_prefix(6)?)
         .map(|_| get_class(r))
         .collect::<codec::Result<Vec<_>>>()?;
@@ -322,6 +336,10 @@ fn get_herd(r: &mut Reader<'_>) -> codec::Result<Herd> {
         species,
         seed,
         frame,
+        k,
+        range,
+        home,
+        vacant,
         classes,
         next_index,
         condition,
@@ -408,7 +426,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
 }
 
 /// Every stats counter in field order.
-fn stats_array(s: &HerdStats) -> [u64; 23] {
+fn stats_array(s: &HerdStats) -> [u64; STATS] {
     [
         s.events,
         s.stale,
@@ -433,10 +451,19 @@ fn stats_array(s: &HerdStats) -> [u64; 23] {
         s.predations,
         s.duplicate_ops,
         s.late_records,
+        s.vacated,
+        s.frontier_foundings,
+        s.frontier_postponed,
+        s.dispersals,
+        s.dispersed,
+        s.recolonised,
     ]
 }
 
-fn stats_of(v: [u64; 23]) -> HerdStats {
+/// Stats counters saved.
+const STATS: usize = 29;
+
+fn stats_of(v: [u64; STATS]) -> HerdStats {
     HerdStats {
         events: v[0],
         stale: v[1],
@@ -461,6 +488,12 @@ fn stats_of(v: [u64; 23]) -> HerdStats {
         predations: v[20],
         duplicate_ops: v[21],
         late_records: v[22],
+        vacated: v[23],
+        frontier_foundings: v[24],
+        frontier_postponed: v[25],
+        dispersals: v[26],
+        dispersed: v[27],
+        recolonised: v[28],
     }
 }
 
@@ -665,7 +698,7 @@ impl Herds {
             }
             h.follows.insert(p, hs);
         }
-        let mut s = [0u64; 23];
+        let mut s = [0u64; STATS];
         for v in &mut s {
             *v = r.var_u64()?;
         }
