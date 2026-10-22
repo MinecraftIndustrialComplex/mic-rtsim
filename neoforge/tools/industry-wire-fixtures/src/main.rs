@@ -26,11 +26,11 @@ use rtsim_industry::cmd::{
 };
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use rtsim_industry::obs::{
-    BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
-    DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
-    FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
-    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, SweepEnd, Timed,
-    TrainCall, TrainDeparture,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
+    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
+    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
+    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -398,6 +398,27 @@ fn code_tables(out: &mut String) {
     })
     .collect();
     table(out, "port_kind", &rows);
+
+    // IND_TRAIN_ARRIVED flags, when the cargo was read (choice SG30): bits 1 and 2.
+    let rows: Vec<_> = [
+        CargoFrom::Arrival,
+        CargoFrom::Approach,
+        CargoFrom::Departure,
+    ]
+    .into_iter()
+    .map(|cargo_from| {
+        let b = obs_bytes(Obs::TrainArrived(TrainCall {
+            train: TrainId(1),
+            station: StationId(2),
+            district: d,
+            simulated: false,
+            cargo_from,
+            carriages: Vec::new(),
+        }));
+        (format!("{cargo_from:?}"), u32_at(&b, 48))
+    })
+    .collect();
+    table(out, "cargo_from", &rows);
 
     // IND_PACKAGE direction, at 36.
     let rows: Vec<_> = [Direction::In, Direction::Out]
@@ -1019,12 +1040,44 @@ fn main() {
         let station = StationId(f.u64("station", g.u64()));
         let district = district(&mut f, &mut g);
         f.sym("simulated", true);
+        f.sym("cargo_from", "Arrival");
         let carriages = carriages(&mut f, &mut g, &[1, 2]);
         let o = Obs::TrainArrived(TrainCall {
             train,
             station,
             district,
             simulated: true,
+            cargo_from: CargoFrom::Arrival,
+            carriages,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_TRAIN_ARRIVED,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // A loaded call whose cargo was read as the train approached (choice SG30).
+        let name = "IND_TRAIN_ARRIVED_APPROACH";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let train = TrainId(f.u64("train", g.u64()));
+        let station = StationId(f.u64("station", g.u64()));
+        let district = district(&mut f, &mut g);
+        f.sym("simulated", false);
+        f.sym("cargo_from", "Approach");
+        let carriages = carriages(&mut f, &mut g, &[2]);
+        let o = Obs::TrainArrived(TrainCall {
+            train,
+            station,
+            district,
+            simulated: false,
+            cargo_from: CargoFrom::Approach,
             carriages,
         });
         obs(
@@ -1087,6 +1140,34 @@ fn main() {
             &mut out,
             name,
             wire::IND_STATION,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Three inventories: 52 bytes, padded to 56.
+        let name = "IND_STATION_PORTS";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let station = StationId(f.u64("station", g.u64()));
+        let district = district(&mut f, &mut g);
+        let n = 3usize;
+        f.sym("n_inventories", n);
+        let inventories: Vec<u32> = (0..n)
+            .map(|i| f.u32(&format!("inventory{i}"), g.u32()))
+            .collect();
+        let o = Obs::StationPorts(StationPorts {
+            station,
+            district,
+            inventories,
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_STATION_PORTS,
             seq,
             Timed { at, obs: o },
             &f,

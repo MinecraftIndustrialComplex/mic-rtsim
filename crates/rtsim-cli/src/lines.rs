@@ -104,6 +104,19 @@ fn report(world: &Path) -> Result<Value, String> {
                 "unload": names_of(&rule.unload),
                 "load": names_of(&rule.load),
                 "observed": rule.observed,
+                // The station's port inventories (IND_STATION_PORTS, SG32) and, per good, what
+                // its recent loaded calls moved and the most a simulated call loads (SG34).
+                "ports": rule.ports,
+                "per_call": rule
+                    .per_call
+                    .iter()
+                    .map(|(g, c)| (iv.good_name(*g), json!(c.iter().collect::<Vec<_>>())))
+                    .collect::<serde_json::Map<_, _>>(),
+                "load_cap": rule
+                    .load
+                    .iter()
+                    .map(|g| (iv.good_name(*g), json!(rule.load_cap(*g))))
+                    .collect::<serde_json::Map<_, _>>(),
             }));
         }
     }
@@ -197,7 +210,9 @@ fn print_text(v: &Value) {
             goods(&l["cargo_per_trip"])
         );
     }
-    println!("exchange rules (district, station: unload; load; observed stops):");
+    println!(
+        "exchange rules (district, station: unload; load; observed stops; ports; most loaded per simulated call):"
+    );
     for r in v["exchange"].as_array().into_iter().flatten() {
         let list = |k: &str| {
             r[k].as_array()
@@ -210,12 +225,14 @@ fn print_text(v: &Value) {
                 .unwrap_or_default()
         };
         println!(
-            "  district {}, {}: unload {}; load {}; observed {}",
+            "  district {}, {}: unload {}; load {}; observed {}; ports {}; cap {}",
             r["district"],
             r["station"]["name"].as_str().unwrap_or("?"),
             list("unload"),
             list("load"),
-            r["observed"]
+            r["observed"],
+            r["ports"],
+            r["load_cap"]
         );
     }
 }
