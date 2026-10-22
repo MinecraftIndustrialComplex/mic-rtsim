@@ -129,7 +129,7 @@ fn days_back(
     let (mut half, mut all) = (None, None);
     let mut t = from;
     while t < from + limit * TICKS_PER_DAY && all.is_none() {
-        t = t + TICKS_PER_DAY / 4;
+        t += TICKS_PER_DAY / 4;
         idle(c, fake, t);
         let (up, n) = manned(&c.ships, c.haven);
         if half.is_none() && 2 * up >= n {
@@ -212,7 +212,9 @@ fn kill_all_pirates() {
                     "seed {seed}: second kill-all waits {again:?}, first {first:?}"
                 );
                 assert!(
-                    again.iter().all(|&w| w <= f64::from(tun.refit.cap_days) + 1e-6),
+                    again
+                        .iter()
+                        .all(|&w| w <= f64::from(tun.refit.cap_days) + 1e-6),
                     "{again:?}"
                 );
             }
@@ -250,7 +252,11 @@ fn crew_pool_is_bounded() {
         let mut c = coast(seed);
         let h = c.haven;
         let start = c.ships.havens[h as usize].pool_milli;
-        assert_eq!(start, tun.sea.pirate_crew * 1000, "one spare crew at founding");
+        assert_eq!(
+            start,
+            tun.sea.pirate_crew * 1000,
+            "one spare crew at founding"
+        );
         // Nobody watches: no fight, no top-up, the pool is the closed form from day 0.
         let mut fake = FakeShips::new(f64::from(tun.view_radius));
         for d in [1u64, 10, 29, 72, 200] {
@@ -295,7 +301,7 @@ fn crew_pool_is_bounded() {
                 assert!(c.ships.crew_pool_milli(h, t) <= cap);
                 assert!(c.ships.havens[h as usize].pool_milli <= cap);
             }
-            t = t + 3 * TICKS_PER_DAY;
+            t += 3 * TICKS_PER_DAY;
             idle(&mut c, &mut fake, t);
             assert!(c.ships.crew_pool_milli(h, t) <= cap);
             c.ships.check_indexes().expect("indexes hold");
@@ -378,7 +384,6 @@ fn a_haven_with_no_lane_worth_hunting_rests() {
     });
 }
 
-
 /// A fight in view can be reported after the hunt ran out and the pirate left for home. That
 /// late report once made the pirate's homecoming stale (the fight sent it home again, and a
 /// pirate not hunting ignores that), so it idled forever with nothing booked: seed 4 of
@@ -398,15 +403,16 @@ fn a_late_fight_report_never_strands_a_pirate() {
         // The first pirate on its way home.
         let mut t = Tick::ZERO;
         let (p, arrive) = loop {
-            t = t + step;
+            t += step;
             assert!(t < Tick::from_days(90), "seed {seed}: no pirate went home");
             idle(&mut c, &mut fake, t);
-            let found = c.ships.havens[c.haven as usize].ships.iter().find_map(|&p| {
-                match state(&c, p) {
+            let found = c.ships.havens[c.haven as usize]
+                .ships
+                .iter()
+                .find_map(|&p| match state(&c, p) {
                     Some(PState::Homebound { arrive }) if arrive > t + step => Some((p, arrive)),
                     _ => None,
-                }
-            });
+                });
             if let Some(f) = found {
                 break f;
             }
@@ -432,7 +438,7 @@ fn a_late_fight_report_never_strands_a_pirate() {
         // It gets home, rests and sails again within 20 days of landing.
         let mut sailed = false;
         while !sailed && t < arrive + 20 * TICKS_PER_DAY {
-            t = t + step;
+            t += step;
             idle(&mut c, &mut fake, t);
             sailed = t > arrive
                 && matches!(
@@ -440,7 +446,11 @@ fn a_late_fight_report_never_strands_a_pirate() {
                     Some(PState::Outbound { .. } | PState::Hunting { .. })
                 );
         }
-        assert!(sailed, "seed {seed}: pirate {p:?} stranded as {:?}", state(&c, p));
+        assert!(
+            sailed,
+            "seed {seed}: pirate {p:?} stranded as {:?}",
+            state(&c, p)
+        );
         c.ships.check_indexes().expect("indexes hold");
         day(t)
     });
@@ -470,16 +480,14 @@ fn unattended(seed: u64, stretches: u64, years: u64) -> Vec<Stretch> {
     let (mut samples, mut hunts0, mut rebuilds0) = (0u32, 0u64, 0u64);
     let mut t = Tick::ZERO;
     while t < Tick::from_days(stretches * years * YEAR) {
-        t = t + 24 * TICKS_PER_DAY;
+        t += 24 * TICKS_PER_DAY;
         idle(&mut c, &mut fake, t);
         let (up, n) = manned(&c.ships, h);
         st.manned += up as f64 / n as f64;
         samples += 1;
         st.pool_max = st.pool_max.max(c.ships.crew_pool_milli(h, t));
-        st.pending_max = st
-            .pending_max
-            .max(c.ships.pending_by_kind().values().sum());
-        if t.0 % (years * YEAR * TICKS_PER_DAY) == 0 {
+        st.pending_max = st.pending_max.max(c.ships.pending_by_kind().values().sum());
+        if t.0.is_multiple_of(years * YEAR * TICKS_PER_DAY) {
             st.manned /= f64::from(samples);
             st.hunts = c.ships.stats.hunts - hunts0;
             st.rebuilds = c.ships.stats.rebuilds - rebuilds0;

@@ -3479,7 +3479,14 @@ impl Ships {
             .is_some_and(|p| matches!(p.state, PState::Hunting { .. }));
         if hunting {
             let plan = self.bump(s);
-            self.schedule(at, Ev::Bored { ship: s, plan, reason });
+            self.schedule(
+                at,
+                Ev::Bored {
+                    ship: s,
+                    plan,
+                    reason,
+                },
+            );
         }
     }
 
@@ -3795,7 +3802,10 @@ impl Ships {
                     format!(
                         "haven {h} waits for crew: {:.1} ashore of {need}{}",
                         f64::from(pool) / 1000.0,
-                        ready.map_or(String::new(), |t| format!(", hired by day {:.2}", day_of(t)))
+                        ready.map_or(String::new(), |t| format!(
+                            ", hired by day {:.2}",
+                            day_of(t)
+                        ))
                     ),
                 );
             }

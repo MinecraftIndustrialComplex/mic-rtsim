@@ -279,9 +279,7 @@ fn persistence(o: &Options, tun: &ShipTunables) -> Persistence {
             slots: crews.len() as u32,
             crews,
             pool: f64::from(s.crew_pool_milli(h as u32, at)) / 1000.0,
-            pressure: hv
-                .pressure
-                .now(d as u32, tun.refit.half_life_days),
+            pressure: hv.pressure.now(d as u32, tun.refit.half_life_days),
             hunts: st.hunts - last.hunts,
             fruitless: st.fruitless - last.fruitless,
             fights: st.fights_observed - last.fights_observed,
