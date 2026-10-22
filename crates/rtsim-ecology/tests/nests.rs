@@ -70,7 +70,7 @@ impl Infrastructure for Pumps {
     }
 
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
-        self.raids.push(t.clone());
+        self.raids.push(*t);
         Some(RaidOutcome {
             survived: 1.0,
             floor: None,
