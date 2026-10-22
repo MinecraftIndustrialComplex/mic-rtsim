@@ -104,8 +104,8 @@ pub enum Role {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Status {
     Active,
-    /// Sunk or captured at `since`; relaunched at `back` (merchants and navies; pirates wait for
-    /// their haven).
+    /// Sunk or captured at `since`; relaunched at `back` (merchants and navies), or refitted from
+    /// then once the haven's pool can man it (pirates, EQUILIBRIUM.md §2.4.6).
     Lost {
         since: Tick,
         back: Tick,
@@ -385,8 +385,11 @@ pub(crate) enum Ev {
         ship: ShipId,
     },
     /// A lost pirate ship's slot is due its refit (it waits on, if the pool cannot man it yet).
+    /// `plan` as in `Decide`: a slot has one live refit, and a capture that re-plans it voids the
+    /// older one.
     Refit {
         ship: ShipId,
+        plan: u32,
     },
 }
 
@@ -933,7 +936,7 @@ impl Ships {
     }
 
     /// Crew joining haven `h`'s pool (captured crews, M2), up to the cap. A slot that is due its
-    /// refit and waits on crew looks again now.
+    /// refit and waits on crew looks again now (re-planned, so its later look is void).
     fn add_crew(&mut self, h: u32, crew: u32, at: Tick) {
         self.settle_pool(h, at);
         let cap = self.tun.crew_pool_cap * 1000;
@@ -950,7 +953,8 @@ impl Ships {
             })
             .collect();
         for s in waiting {
-            self.schedule(at, Ev::Refit { ship: s });
+            let plan = self.bump(s);
+            self.schedule(at, Ev::Refit { ship: s, plan });
         }
     }
 
@@ -2069,7 +2073,7 @@ impl Ships {
                 }
             }
             Ev::Respawn { ship } => self.respawn(w, ship, at),
-            Ev::Refit { ship } => self.refit(w, ship, at),
+            Ev::Refit { ship, plan } => self.refit(w, ship, plan, at),
         }
     }
 
@@ -3454,6 +3458,9 @@ impl Ships {
     }
 
     fn check_hold(&mut self, w: &World, p: ShipId, at: Tick) {
+        if !self.ships[p].is_active() {
+            return;
+        }
         let full = Self::hold_slot_milli(w, &self.ships[p].cargo)
             >= i64::from(self.tun.pirate_hold_slots) * 1000;
         let hull = self.ships[p].hull_milli < 400;
@@ -3723,6 +3730,7 @@ impl Ships {
         let x = &mut self.ships[s];
         x.status = Status::Lost { since: at, back };
         x.plan = x.plan.wrapping_add(1);
+        let plan = x.plan;
         self.set_embodied(s, false);
         self.stats.sinkings += 1;
         self.tape
@@ -3739,7 +3747,7 @@ impl Ships {
                     Self::label(&self.ships[s])
                 )
             });
-        self.schedule(back, Ev::Refit { ship: s });
+        self.schedule(back, Ev::Refit { ship: s, plan });
         self.note(
             at,
             "sunk",
@@ -3754,11 +3762,11 @@ impl Ships {
     /// A lost pirate ship's slot is refitted when its wait is over and the haven's pool can man
     /// it (§2.4.6): the lost row comes back with a new captain. Short of crew, it waits for the
     /// moment hires make up the crew (one event), or less if a capture fills the pool first.
-    fn refit(&mut self, w: &mut World, s: ShipId, at: Tick) {
+    fn refit(&mut self, w: &mut World, s: ShipId, plan: u32, at: Tick) {
         let Some(x) = self.ships.get(s) else {
             return;
         };
-        if !matches!(x.status, Status::Lost { back, .. } if back <= at) {
+        if x.plan != plan || !matches!(x.status, Status::Lost { back, .. } if back <= at) {
             return;
         }
         let Some(h) = self.haven_of(s) else {
@@ -3770,7 +3778,8 @@ impl Ships {
             // Never, if hires cannot reach a crew: a capture wakes it.
             let ready = self.crew_ready_at(h, need, at).map(|t| t.max(at + 1));
             if let Some(t) = ready {
-                self.schedule(t, Ev::Refit { ship: s });
+                let plan = self.bump(s);
+                self.schedule(t, Ev::Refit { ship: s, plan });
             }
             if self.log_enabled {
                 self.note(
@@ -3896,7 +3905,11 @@ impl Ships {
                 }
             }
             Obs::Damaged(d) => {
-                let Some(s) = self.ship_of(d.agent, d.epoch) else {
+                // A lost ship's late report changes nothing (its slot's refit keeps its plan).
+                let Some(s) = self
+                    .ship_of(d.agent, d.epoch)
+                    .filter(|&s| self.ships[s].is_active())
+                else {
                     return;
                 };
                 let before = self.ships[s].hull_milli;
