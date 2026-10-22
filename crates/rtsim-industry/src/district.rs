@@ -177,6 +177,9 @@ pub struct SimSpan {
     /// part holds and the district owes, when goods cross from it) and the events (imports wait
     /// there, G2-14); their change from their start is owed.
     pub glass: bool,
+    /// A black-box replay's change already placed in the covered inventories' `held` before a
+    /// station call (choice SG35); `base` moved with it, so the made-since figure adds it back.
+    pub folded: GoodVec,
 }
 
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
@@ -232,6 +235,49 @@ pub struct ExchangeRule {
     pub unload: BTreeSet<Good>,
     pub load: BTreeSet<Good>,
     pub observed: u32,
+    /// The inventories the station's interfaces serve (IND_STATION_PORTS, choice SG32): a
+    /// simulated call books against these only, and moves nothing while there are none.
+    pub ports: Vec<u32>,
+    /// Per good, what the last loaded calls moved in its current direction, newest last, at
+    /// most [`PER_CALL_WINDOW`] (choice SG34). A simulated load takes at most their median.
+    pub per_call: BTreeMap<Good, VecDeque<i64>>,
+}
+
+/// How many loaded calls a station's per-call amount remembers (SG34). PLACEHOLDER.
+pub const PER_CALL_WINDOW: usize = 8;
+
+impl ExchangeRule {
+    /// The most a simulated call loads of `g`: the median of what the last loaded calls moved,
+    /// the upper one of an even count (SG34). Not the mean, which the first calls of a new line
+    /// (little made yet) hold down and one catch-up call after an absence pushes up; not the
+    /// largest, which that catch-up call sets for good.
+    pub fn load_cap(&self, g: Good) -> i64 {
+        let Some(calls) = self.per_call.get(&g).filter(|c| !c.is_empty()) else {
+            return 0;
+        };
+        let mut sorted: Vec<i64> = calls.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2].max(0)
+    }
+
+    /// One loaded call's change of `g` (positive: unloaded into the district). Called before
+    /// the unload and load sets take the call, so a change of direction starts afresh.
+    pub fn learn_amount(&mut self, g: Good, n: i64) {
+        let unload = n > 0;
+        let same = if unload {
+            self.unload.contains(&g)
+        } else {
+            self.load.contains(&g)
+        };
+        let calls = self.per_call.entry(g).or_default();
+        if !same {
+            calls.clear();
+        }
+        if calls.len() == PER_CALL_WINDOW {
+            calls.pop_front();
+        }
+        calls.push_back(n.saturating_abs());
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -306,9 +352,10 @@ pub struct District {
 pub const EDITORS_KEPT: usize = 8;
 
 /// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
-/// district page had no magic and no editors; "IDS3", OG-9e: the latest sweep merged, and a fifth
-/// threat class in the defence record). No older page opens.
-pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS3");
+/// district page had no magic and no editors; "IDS3" adds the stations' ports and per-call
+/// amounts, choices SG32 and SG34; "IDS4", OG-9e: the latest sweep merged, and a fifth threat
+/// class in the defence record). No older page opens.
+pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS4");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -793,7 +840,8 @@ mod persist_impls {
         base,
         season,
         invs,
-        glass
+        glass,
+        folded
     });
     persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {
@@ -812,7 +860,9 @@ mod persist_impls {
     persist_struct!(ExchangeRule {
         unload,
         load,
-        observed
+        observed,
+        ports,
+        per_call
     });
     persist_struct!(SweepBuf {
         sweep,

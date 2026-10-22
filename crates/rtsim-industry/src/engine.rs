@@ -170,6 +170,15 @@ pub struct Stats {
     pub reconciles_ahead: u64,
     /// Level-wide pollution pushed to the level while its district was unloaded (I14).
     pub pollution_pushes: u64,
+    /// Loaded calls by when their cargo was read (choice SG30): as the train approached, at its
+    /// departure from its previous district station, or at `arriveAt` (late: the station's
+    /// interfaces may have moved goods already).
+    pub arrivals_approach: u64,
+    pub arrivals_departure: u64,
+    pub arrivals_late: u64,
+    /// Simulated calls at a station with an exchange rule but no known ports: nothing moved
+    /// (choice SG33).
+    pub exchanges_portless: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -212,7 +221,13 @@ struct PendingExchange {
     entries: Vec<(u32, Good, i64)>,
     /// Loot from a train leg (I24) rather than a station exchange.
     loot: bool,
+    /// A station exchange's bookings on the station's port inventories (choice SG33).
+    ports: Vec<PortBooking>,
 }
+
+/// One booking of a simulated station call: (inventory, good, delta into the inventory, booked
+/// on its glass store pool).
+type PortBooking = (u32, Good, i64, bool);
 
 /// A fraction as an archive magnitude: thousandths.
 fn per_mille(f: f64) -> i64 {
@@ -719,6 +734,11 @@ impl Engine {
                     dist.revision = decl.revision;
                     dist.chunks.clear();
                     dist.inventories.clear();
+                    // A new revision numbers its inventories afresh: the stations' ports come
+                    // again from their next loaded calls (choice SG32).
+                    for rule in dist.exchange.values_mut() {
+                        rule.ports.clear();
+                    }
                     dist.learner.discard();
                     dist.learner.coupling.reset();
                 }
@@ -915,6 +935,14 @@ impl Engine {
                 self.stations.insert(s.station, Station { decl: s.clone() });
             }
             Obs::Package(p) => self.package(at, p),
+            Obs::StationPorts(p) => {
+                let mut inventories = p.inventories.clone();
+                inventories.sort_unstable();
+                inventories.dedup();
+                let dist = self.district_mut(p.district);
+                dist.stations.insert(p.station);
+                dist.exchange.entry(p.station).or_default().ports = inventories;
+            }
             Obs::ReconcileResult(r) => self.reconcile_result(at, r),
             Obs::CarriageResult(r) => self.carriage_result(at, r),
             Obs::SpawnSample(s) => {
@@ -1408,6 +1436,7 @@ impl Engine {
             season,
             invs: part,
             glass: false,
+            folded: GoodVec::new(),
         });
         self.stats.sims_started += 1;
         if let Some(dg) = self.glass.districts.get_mut(&d) {
@@ -1708,6 +1737,7 @@ impl Engine {
             season,
             invs: part,
             glass: true,
+            folded: GoodVec::new(),
         });
         self.stats.sims_started += 1;
         self.glass.stats.replays += 1;
@@ -2523,6 +2553,11 @@ impl Engine {
             }
         }
         if !c.simulated {
+            match c.cargo_from {
+                crate::obs::CargoFrom::Approach => self.stats.arrivals_approach += 1,
+                crate::obs::CargoFrom::Departure => self.stats.arrivals_departure += 1,
+                crate::obs::CargoFrom::Arrival => self.stats.arrivals_late += 1,
+            }
             self.arrivals
                 .insert((c.train, c.station), c.carriages.clone());
             return;
@@ -2537,62 +2572,73 @@ impl Engine {
             // Frozen: interfaces do nothing while unloaded, as in vanilla.
             return;
         };
-        let d = c.district;
-        let carriages = c.carriages.clone();
-        // A Portable Storage Interface unloads only into room: the receivers' room at the last
-        // sample, less what the replay has already added (F19).
-        let mut room: BTreeMap<Good, (i64, i64)> = BTreeMap::new();
-        for &g in &rule.unload {
-            let mut r = 0i64;
-            let mut any = false;
-            for inv in dist
-                .inventories
-                .values()
-                .filter(|i| !i.destroyed && i.received.contains(&g))
-            {
-                any = true;
-                r += reconcile::room_for(&inv.state(), &inv.effective(), g, &self.goods);
-            }
-            if !any {
-                for inv in dist.inventories.values().filter(|i| !i.destroyed) {
-                    r += reconcile::room_for(&inv.state(), &inv.effective(), g, &self.goods);
-                }
-            }
-            let base = dist.sim.as_ref().map_or(0, |s| s.base.get(g));
-            room.insert(g, (r, base));
-        }
-        let goods = &self.goods;
-        let entries = self.clusters.apply(h, at, |cl, at| {
-            let mut entries = Vec::new();
-            for car in &carriages {
-                let mut cargo = car.goods.clone();
-                for &g in &rule.unload {
-                    let (r, base) = room[&g];
-                    let level = cl.level(PoolKey::Stock(d, g)).unwrap_or(0);
-                    let free = (r - (level - base).max(0)).max(0);
-                    let n = cargo.get(g).min(free);
-                    if n > 0 {
-                        let got = cl.add_to_pool(PoolKey::Stock(d, g), n, false, at);
-                        cargo.add(g, -got);
-                        entries.push((car.index, g, -got));
-                    }
-                }
-                for &g in &rule.load {
-                    let have = cl.level(PoolKey::Stock(d, g)).unwrap_or(0);
-                    let room = carriage_room(car, &cargo, g, goods);
-                    let n = have.min(room);
-                    if n > 0 {
-                        let got = -cl.add_to_pool(PoolKey::Stock(d, g), -n, false, at);
-                        cargo.add(g, got);
-                        entries.push((car.index, g, got));
-                    }
-                }
-            }
-            entries
-        });
-        let Some(entries) = entries else {
+        let Some(span) = dist.sim.as_ref() else {
             return;
         };
+        let d = c.district;
+        let glass = span.glass;
+        if !rule
+            .ports
+            .iter()
+            .filter_map(|i| dist.inventories.get(i))
+            .any(|i| !i.destroyed && !i.doomed && span.invs.contains(&i.decl.index))
+        {
+            if rule.unload.is_empty() && rule.load.is_empty() {
+                return;
+            }
+            self.stats.exchanges_portless += 1;
+            if self.log_enabled {
+                let what = format!(
+                    "station exchange with train {} skipped: the station's ports are not known",
+                    c.train.0
+                );
+                self.note(d, at, what);
+            }
+            return;
+        }
+        // A black-box replay's change so far lands in its inventories first, as a reconcile
+        // would place it, so the ports hold what the replay made (choice SG35).
+        if !glass {
+            let of: BTreeSet<Good> = rule.unload.union(&rule.load).copied().collect();
+            self.fold_replay(h, d, at, &of);
+        }
+        // The station's own port inventories, still standing and in the replay (choice SG33):
+        // never the district's whole stock, which its factories draw on.
+        let dist = &self.districts[&d];
+        let Some(span) = dist.sim.as_ref() else {
+            return;
+        };
+        let ports: Vec<reconcile::InvState> = rule
+            .ports
+            .iter()
+            .filter_map(|i| dist.inventories.get(i))
+            .filter(|i| !i.destroyed && !i.doomed && span.invs.contains(&i.decl.index))
+            .map(Inventory::state)
+            .collect();
+        let carriages = c.carriages.clone();
+        let goods = &self.goods;
+        let booked = self.clusters.apply(h, at, |cl, at| {
+            exchange_on_ports(cl, at, d, glass, &rule, &ports, &carriages, goods)
+        });
+        let Some((entries, bookings)) = booked else {
+            return;
+        };
+        // Bookings outside a glass store pool are the inventories' own: held, counted in their
+        // contents and sent at the reconcile. A black-box span's base moves with its stock pool,
+        // so the reconcile's net leaves them out.
+        if let Some(dist) = self.districts.get_mut(&d) {
+            for &(inv, g, n, store) in &bookings {
+                if store {
+                    continue;
+                }
+                if let Some(i) = dist.inventories.get_mut(&inv) {
+                    i.held.add(g, n);
+                }
+                if !glass && let Some(span) = dist.sim.as_mut() {
+                    span.base.add(g, n);
+                }
+            }
+        }
         self.after_cluster(h, at);
         self.glass_touch(d, at);
         if entries.is_empty() {
@@ -2626,6 +2672,7 @@ impl Engine {
                 train: c.train,
                 entries,
                 loot: false,
+                ports: bookings,
             },
         );
         self.out.push(cmd);
@@ -2685,6 +2732,10 @@ impl Engine {
         if fix.is_empty() {
             return;
         }
+        if !ex.ports.is_empty() {
+            self.unbook_ports(at, &ex, &fix);
+            return;
+        }
         let d = ex.district;
         if let Some(&h) = self.cluster_of.get(&d) {
             let f = fix.clone();
@@ -2706,6 +2757,139 @@ impl Engine {
             }
         } else if let Some(dist) = self.districts.get_mut(&d) {
             dist.owed.merge(&fix);
+        }
+    }
+
+    /// Places a black-box replay's change so far in `of` over the inventories it covers, by the
+    /// reconcile's own plan, as their `held` (choice SG35), and moves the span's base with it. A
+    /// station call then reads the ports as the replay left them: without it, a port's `held` from
+    /// earlier calls grows without bound while the replay's change waits for the reconcile, and
+    /// the two never meet inside the port's room. What the plan cannot place stays in the net.
+    fn fold_replay(&mut self, h: RegionId<Cluster>, d: DistrictId, at: Tick, of: &BTreeSet<Good>) {
+        let keys: Vec<Good> = of
+            .iter()
+            .copied()
+            .filter(|g| {
+                matches!(
+                    self.goods.get(g).map(|i| i.class),
+                    Some(GoodClass::Item | GoodClass::Fluid)
+                ) && !self.is_live(*g)
+            })
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let Some(levels) = self.clusters.apply(h, at, |cl, _| {
+            keys.iter()
+                .filter_map(|&g| cl.level(PoolKey::Stock(d, g)).map(|l| (g, l)))
+                .collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+        let Some(dist) = self.districts.get_mut(&d) else {
+            return;
+        };
+        let Some(span) = dist.sim.as_ref() else {
+            return;
+        };
+        let mut net = GoodVec::new();
+        for (g, l) in levels {
+            net.add(g, l - span.base.get(g));
+        }
+        if net.is_empty() {
+            return;
+        }
+        let covered: Vec<reconcile::InvState> = dist
+            .inventories
+            .values()
+            .filter(|i| !i.destroyed && span.invs.contains(&i.decl.index))
+            .map(Inventory::state)
+            .collect();
+        let plan = reconcile::plan(&covered, &net, &self.goods);
+        let mut placed = GoodVec::new();
+        for p in &plan.deltas {
+            if let Some(i) = dist.inventories.get_mut(&p.inventory) {
+                i.held.add(p.good, p.delta);
+                placed.add(p.good, p.delta);
+            }
+        }
+        if let Some(span) = dist.sim.as_mut() {
+            span.base.merge(&placed);
+            span.folded.merge(&placed);
+        }
+    }
+
+    /// Takes back what a station exchange booked and the carriage did not take (choice SG33),
+    /// on the same port inventories, newest booking first. `fix` is into the district.
+    fn unbook_ports(&mut self, at: Tick, ex: &PendingExchange, fix: &GoodVec) {
+        let d = ex.district;
+        let mut owed = GoodVec::new();
+        let mut back: Vec<PortBooking> = Vec::new();
+        for (g, f) in fix.iter() {
+            let mut left = f;
+            for &(inv, bg, n, store) in ex.ports.iter().rev() {
+                if bg != g || left == 0 || n.signum() == left.signum() {
+                    continue;
+                }
+                let r = if left > 0 { left.min(-n) } else { left.max(-n) };
+                back.push((inv, g, r, store));
+                left -= r;
+            }
+            owed.add(g, left);
+        }
+        let glass = self
+            .districts
+            .get(&d)
+            .and_then(|x| x.sim.as_ref())
+            .map(|s| s.glass);
+        match (self.cluster_of.get(&d).copied(), glass) {
+            (Some(h), Some(glass)) => {
+                let done = self.clusters.apply(h, at, |cl, at| {
+                    back.iter()
+                        .map(|&(inv, g, r, store)| {
+                            if store && cl.pool(PoolKey::Store(d, inv, g)).is_some() {
+                                (
+                                    cl.add_to_pool(PoolKey::Store(d, inv, g), r, false, at),
+                                    true,
+                                )
+                            } else if glass {
+                                (r, false)
+                            } else {
+                                (cl.add_to_pool(PoolKey::Stock(d, g), r, false, at), false)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                });
+                self.after_cluster(h, at);
+                self.glass_touch(d, at);
+                let done = done.unwrap_or_default();
+                if let Some(dist) = self.districts.get_mut(&d) {
+                    for (k, &(inv, g, r, _)) in back.iter().enumerate() {
+                        let (got, store) = done.get(k).copied().unwrap_or((0, false));
+                        owed.add(g, r - got);
+                        if store {
+                            continue;
+                        }
+                        if let Some(i) = dist.inventories.get_mut(&inv) {
+                            i.held.add(g, got);
+                        }
+                        if !glass && let Some(span) = dist.sim.as_mut() {
+                            span.base.add(g, got);
+                        }
+                    }
+                }
+            }
+            // The replay is over: the next reconcile places it.
+            _ => {
+                for &(_, g, r, _) in &back {
+                    owed.add(g, r);
+                }
+            }
+        }
+        if !owed.is_empty()
+            && let Some(dist) = self.districts.get_mut(&d)
+        {
+            dist.owed.merge(&owed);
         }
     }
 
@@ -2731,6 +2915,7 @@ impl Engine {
                     .entry(dep.station)
                     .or_default();
                 for (g, n) in diff.iter() {
+                    rule.learn_amount(g, n);
                     if n > 0 {
                         rule.unload.insert(g);
                         rule.load.remove(&g);
@@ -3490,6 +3675,7 @@ impl Engine {
                 train,
                 entries,
                 loot: true,
+                ports: Vec::new(),
             },
         );
         self.out.push(cmd);
@@ -3561,6 +3747,7 @@ impl Engine {
         if let (Some(v), Some(span)) = (&view, &dist.sim) {
             let now = stock_of(v, d);
             made_since = now.minus(&span.base);
+            made_since.merge(&span.folded);
             let runs: Vec<Run> = v
                 .runs
                 .iter()
@@ -3744,6 +3931,127 @@ fn space_free(dist: &District, goods: &impl GoodLookup) -> bool {
     })
 }
 
+/// A simulated station call on the station's own port inventories (choices SG33, SG34): unloads
+/// go into the ports' room, the ports that received the good while learning first; loads come out
+/// of what the ports hold, at most the learned amount per call. A black-box span moves the
+/// district's stock pool as well (its processes see the goods come and go); a glass span moves a
+/// port's store pool where it has one for the good, and otherwise only the port's own contents.
+/// A black-box caller has folded the replay's change so far into the ports first (SG35), so
+/// their contents are what the replay made. Returns the carriage entries (carriage, good, delta into the carriage) and the bookings (inventory, good,
+/// delta into it, on its store pool).
+#[allow(clippy::too_many_arguments)]
+fn exchange_on_ports(
+    cl: &mut Cluster,
+    at: Tick,
+    d: DistrictId,
+    glass: bool,
+    rule: &crate::district::ExchangeRule,
+    ports: &[reconcile::InvState],
+    carriages: &[Carriage],
+    goods: &BTreeMap<Good, GoodInfo>,
+) -> (Vec<(u32, Good, i64)>, Vec<PortBooking>) {
+    let mut entries = Vec::new();
+    let mut bookings = Vec::new();
+    let mut cargo: Vec<GoodVec> = carriages.iter().map(|c| c.goods.clone()).collect();
+    // The ports' contents as this call leaves them.
+    let mut contents: Vec<GoodVec> = ports.iter().map(|p| p.contents.clone()).collect();
+    // A glass span's store pool of the port and good, if it has one: its level is the port's.
+    let store = |cl: &Cluster, inv: u32, g: Good| {
+        if glass {
+            cl.level(PoolKey::Store(d, inv, g))
+        } else {
+            None
+        }
+    };
+    let book = |cl: &mut Cluster, inv: u32, g: Good, n: i64, on_store: bool| -> i64 {
+        if on_store {
+            cl.add_to_pool(PoolKey::Store(d, inv, g), n, false, at)
+        } else if glass {
+            n
+        } else {
+            cl.add_to_pool(PoolKey::Stock(d, g), n, false, at)
+        }
+    };
+    for &g in &rule.unload {
+        let carried: i64 = cargo.iter().map(|v| v.get(g).max(0)).sum();
+        if carried <= 0 {
+            continue;
+        }
+        let receivers = ports.iter().any(|p| p.received.contains(&g));
+        let mut placed = 0i64;
+        for (k, p) in ports.iter().enumerate() {
+            let want = carried - placed;
+            if want <= 0 {
+                break;
+            }
+            if receivers && !p.received.contains(&g) {
+                continue;
+            }
+            let level = store(cl, p.index, g);
+            let mut now = contents[k].clone();
+            if let Some(l) = level {
+                now.set(g, l);
+            }
+            let n = want.min(reconcile::room_for(p, &now, g, goods));
+            if n <= 0 {
+                continue;
+            }
+            let got = book(cl, p.index, g, n, level.is_some());
+            if got > 0 {
+                contents[k].add(g, got);
+                bookings.push((p.index, g, got, level.is_some()));
+                placed += got;
+            }
+        }
+        let mut left = placed;
+        for (ci, car) in carriages.iter().enumerate() {
+            let n = cargo[ci].get(g).max(0).min(left);
+            if n > 0 {
+                cargo[ci].add(g, -n);
+                entries.push((car.index, g, -n));
+                left -= n;
+            }
+        }
+    }
+    for &g in &rule.load {
+        let room: i64 = carriages
+            .iter()
+            .enumerate()
+            .map(|(ci, car)| carriage_room(car, &cargo[ci], g, goods))
+            .sum();
+        let mut want = rule.load_cap(g).min(room);
+        let mut taken = 0i64;
+        for (k, p) in ports.iter().enumerate() {
+            if want <= 0 {
+                break;
+            }
+            let level = store(cl, p.index, g);
+            let have = level.unwrap_or_else(|| contents[k].get(g));
+            let n = want.min(have);
+            if n <= 0 {
+                continue;
+            }
+            let got = -book(cl, p.index, g, -n, level.is_some());
+            if got > 0 {
+                contents[k].add(g, -got);
+                bookings.push((p.index, g, -got, level.is_some()));
+                taken += got;
+                want -= got;
+            }
+        }
+        let mut left = taken;
+        for (ci, car) in carriages.iter().enumerate() {
+            let n = carriage_room(car, &cargo[ci], g, goods).min(left);
+            if n > 0 {
+                cargo[ci].add(g, n);
+                entries.push((car.index, g, n));
+                left -= n;
+            }
+        }
+    }
+    (entries, bookings)
+}
+
 fn carriage_room(car: &Carriage, cargo: &GoodVec, g: Good, goods: &impl GoodLookup) -> i64 {
     match goods.class(g) {
         GoodClass::Item => {
@@ -3829,6 +4137,10 @@ mod persist_impls {
         cluster_settles,
         reconciles_ahead,
         pollution_pushes,
+        arrivals_approach,
+        arrivals_departure,
+        arrivals_late,
+        exchanges_portless,
     });
     persist_struct!(Books {
         minted,
@@ -3867,7 +4179,8 @@ mod persist_impls {
         district,
         train,
         entries,
-        loot
+        loot,
+        ports
     });
 
     fn globals(e: &Engine, w: &mut Writer) {
