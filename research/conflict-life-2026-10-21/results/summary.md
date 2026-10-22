@@ -1,93 +1,120 @@
 # Conflict-life model: results
 
-64 seeds per scenario and mode, 50 game years each; run took 322.8 s. `ladder` is today's engine (EQ-5 (c)), `gate` is EQUILIBRIUM 2.5 (EQ-5 (a)), `life` is CONFLICT-LIFE.md.
+64 seeds per scenario and mode, 50 game years each; run took 242.0 s. `ladder` is today's engine (EQ-5 (c)), `gate` is EQUILIBRIUM 2.5 (EQ-5 (a)), `life` is CONFLICT-LIFE.md.
 
 ## Fights per world-year, losses, stability
 
 | Scenario | Mode | Fights a year: mean [p5, median, p95] | Years with none | Camp-on-camp a year | Lost share | Lost a year | Endless war | Surge | Extinct | Decade with no camp fight | No camp fight at all |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| alone | ladder | 29.9 [22, 30, 37] | 0.00 | 10.11 | 0.45 | 13.45 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| alone | gate | 11.5 [9, 12, 15] | 0.00 | 0.00 | 0.17 | 2.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| alone | life | 10.2 [5, 10, 17] | 0.00 | 2.26 | 0.18 | 1.83 | 0.06 | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_adaptive | ladder | 0.0 [0, 0, 0] | 1.00 | 0.00 | n/a | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_adaptive | gate | 0.0 [0, 0, 0] | 1.00 | 0.00 | n/a | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_adaptive | life | 0.0 [0, 0, 0] | 0.97 | 0.00 | 0.14 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_fortress | ladder | 9.0 [4, 10, 10] | 0.00 | 0.00 | 0.99 | 8.88 | 0.00 | 0.05 | 0.00 | 1.00 | 1.00 |
+| alone | ladder | 30.1 [23, 30, 38] | 0.00 | 10.16 | 0.34 | 10.12 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| alone | gate | 12.6 [9, 12, 18] | 0.00 | 2.07 | 0.12 | 1.55 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 |
+| alone | life | 7.3 [3, 7, 14] | 0.00 | 1.16 | 0.02 | 0.17 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 |
+| duel_adaptive | ladder | 9.1 [4, 10, 10] | 0.00 | 0.00 | 0.99 | 8.96 | 0.00 | 0.03 | 0.00 | 1.00 | 1.00 |
+| duel_adaptive | gate | 2.3 [0, 3, 4] | 0.23 | 0.00 | 0.76 | 1.76 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_adaptive | life | 0.1 [0, 0, 1] | 0.95 | 0.00 | 0.05 | 0.00 | 0.00 | 0.02 | 0.00 | 1.00 | 1.00 |
+| duel_fortress | ladder | 8.8 [4, 10, 10] | 0.00 | 0.00 | 1.00 | 8.83 | 0.00 | 0.06 | 0.00 | 1.00 | 1.00 |
 | duel_fortress | gate | 0.0 [0, 0, 0] | 1.00 | 0.00 | n/a | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_fortress | life | 0.1 [0, 0, 1] | 0.89 | 0.00 | 0.84 | 0.09 | 0.00 | 0.09 | 0.00 | 1.00 | 1.00 |
-| duel_stubborn | ladder | 21.4 [19, 21, 23] | 0.00 | 0.00 | 0.22 | 4.75 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_stubborn | gate | 12.5 [10, 12, 15] | 0.00 | 0.00 | 0.22 | 2.74 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_stubborn | life | 3.2 [2, 3, 5] | 0.00 | 0.00 | 0.05 | 0.15 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_weak | ladder | 0.0 [0, 0, 0] | 1.00 | 0.00 | n/a | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_fortress | life | 0.0 [0, 0, 0] | 0.99 | 0.00 | 1.00 | 0.01 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_stubborn | ladder | 23.6 [21, 24, 24] | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_stubborn | gate | 10.4 [10, 10, 11] | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_stubborn | life | 3.4 [2, 3, 5] | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
+| duel_weak | ladder | 13.5 [0, 22, 24] | 0.42 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
 | duel_weak | gate | 0.0 [0, 0, 0] | 1.00 | 0.00 | n/a | 0.00 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| duel_weak | life | 0.1 [0, 0, 1] | 0.91 | 0.00 | 0.04 | 0.00 | 0.00 | 0.06 | 0.00 | 1.00 | 1.00 |
-| farmer | ladder | 30.1 [22, 30, 38] | 0.00 | 10.09 | 0.45 | 13.52 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| farmer | gate | 11.7 [9, 12, 15] | 0.00 | 0.00 | 0.18 | 2.08 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| farmer | life | 10.9 [6, 10, 18] | 0.00 | 2.20 | 0.19 | 2.13 | 0.08 | 0.00 | 0.00 | 0.00 | 0.00 |
-| fortress | ladder | 30.1 [23, 30, 37] | 0.00 | 7.26 | 0.44 | 13.33 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| fortress | gate | 11.6 [9, 12, 15] | 0.00 | 0.00 | 0.18 | 2.06 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| fortress | life | 9.7 [5, 9, 17] | 0.00 | 1.97 | 0.20 | 1.96 | 0.05 | 0.00 | 0.00 | 0.00 | 0.00 |
-| multi | ladder | 33.4 [27, 33, 40] | 0.00 | 7.41 | 0.55 | 18.47 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| multi | gate | 16.2 [12, 16, 20] | 0.00 | 0.00 | 0.36 | 5.81 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| multi | life | 8.0 [4, 8, 13] | 0.00 | 1.60 | 0.20 | 1.59 | 0.06 | 0.00 | 0.00 | 0.00 | 0.00 |
-| multi_nospill | ladder | 33.4 [27, 33, 40] | 0.00 | 7.41 | 0.55 | 18.47 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| multi_nospill | gate | 16.2 [12, 16, 20] | 0.00 | 0.00 | 0.36 | 5.81 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| multi_nospill | life | 8.0 [4, 8, 13] | 0.00 | 1.59 | 0.19 | 1.55 | 0.08 | 0.00 | 0.00 | 0.00 | 0.00 |
-| railway | ladder | 30.0 [22, 30, 38] | 0.00 | 10.08 | 0.45 | 13.47 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
-| railway | gate | 33.6 [30, 34, 37] | 0.00 | 0.00 | 0.18 | 5.92 | 0.00 | 0.00 | 0.00 | 1.00 | 1.00 |
-| railway | life | 12.0 [7, 12, 19] | 0.00 | 1.91 | 0.20 | 2.36 | 0.05 | 0.00 | 0.00 | 0.00 | 0.00 |
+| duel_weak | life | 0.2 [0, 0, 1] | 0.87 | 0.00 | 0.00 | 0.00 | 0.00 | 0.09 | 0.00 | 1.00 | 1.00 |
+| farmer | ladder | 30.1 [23, 30, 38] | 0.00 | 10.07 | 0.33 | 10.02 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| farmer | gate | 12.9 [9, 12, 19] | 0.00 | 2.12 | 0.12 | 1.60 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| farmer | life | 9.3 [4, 9, 16] | 0.00 | 1.19 | 0.02 | 0.18 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| fortress | ladder | 29.7 [23, 30, 37] | 0.00 | 7.18 | 0.33 | 9.91 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| fortress | gate | 13.0 [9, 13, 18] | 0.00 | 1.64 | 0.16 | 2.06 | 0.00 | 0.00 | 0.00 | 0.03 | 0.00 |
+| fortress | life | 7.3 [3, 7, 14] | 0.00 | 1.11 | 0.04 | 0.30 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| multi | ladder | 32.0 [26, 32, 39] | 0.00 | 7.24 | 0.46 | 14.71 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| multi | gate | 14.6 [11, 15, 18] | 0.00 | 0.64 | 0.26 | 3.78 | 0.00 | 0.00 | 0.00 | 0.12 | 0.00 |
+| multi | life | 4.9 [2, 5, 9] | 0.00 | 0.58 | 0.06 | 0.29 | 0.00 | 0.00 | 0.00 | 0.05 | 0.00 |
+| multi_nospill | ladder | 32.0 [26, 32, 39] | 0.00 | 7.24 | 0.46 | 14.71 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| multi_nospill | gate | 14.6 [11, 15, 18] | 0.00 | 0.64 | 0.26 | 3.78 | 0.00 | 0.00 | 0.00 | 0.12 | 0.00 |
+| multi_nospill | life | 4.8 [2, 5, 9] | 0.00 | 0.56 | 0.06 | 0.29 | 0.00 | 0.00 | 0.00 | 0.09 | 0.00 |
+| railway | ladder | 29.9 [22, 30, 38] | 0.00 | 10.03 | 0.33 | 10.00 | 1.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| railway | gate | 12.8 [9, 12, 18] | 0.00 | 2.13 | 0.13 | 1.61 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| railway | life | 8.3 [4, 8, 14] | 0.00 | 0.75 | 0.06 | 0.52 | 0.00 | 0.00 | 0.00 | 0.02 | 0.00 |
 
 ## How formulaic
 
-| Scenario | Mode | Interval CV median [p10, p90] | Pair CV median [p10, p90] | Next act called to the day | Culture spread (JS) | Spread of a camp's fights a year (CV over seeds) | Story overlap of two seeds |
+| Scenario | Mode | Interval CV median [p10, p90] | Pair CV median [p10, p90] | Next act called to the day | Culture spread (JS) | Spread of a camp's fights a year (CV over seeds) | Story overlap of two seeds (chance) | Excess dispersion of a camp's years median [p10, p90] |
+|---|---|---|---|---|---|---|---|---|
+| alone | ladder | 0.83 [0.77, 0.91] | 0.83 [0.77, 0.91] | 0.18 | 0.000 | 0.04 | 0.52 (0.49) | 0.00 [0.00, 0.00] |
+| alone | gate | 0.83 [0.67, 1.94] | 1.30 [0.68, 2.21] | 0.17 | 0.004 | 0.10 | 0.38 (0.36) | 0.00 [0.00, 1.06] |
+| alone | life | 0.84 [0.71, 1.06] | 0.78 [0.55, 1.09] | 0.02 | 0.011 | 0.15 | 0.09 (0.07) | 0.31 [0.00, 0.61] |
+| duel_adaptive | ladder | 0.24 [0.12, 0.39] | 0.24 [0.12, 0.39] | 0.98 | 0.014 | 0.06 | 0.53 (0.34) | 0.00 [0.00, 0.00] |
+| duel_adaptive | gate | 1.29 [1.27, 1.30] | 1.29 [1.27, 1.30] | 0.11 | 0.000 | 0.02 | 0.61 (0.14) | 0.48 [0.41, 0.53] |
+| duel_adaptive | life | 0.79 [0.41, 1.23] | 0.79 [0.41, 1.23] | 0.04 | 0.002 | n/a | 0.18 (0.16) | n/a [n/a, n/a] |
+| duel_fortress | ladder | 0.26 [0.19, 0.40] | 0.26 [0.19, 0.40] | 0.98 | 0.014 | 0.07 | 0.45 (0.28) | 0.00 [0.00, 0.00] |
+| duel_fortress | gate | n/a [n/a, n/a] | n/a [n/a, n/a] | 1.00 | 0.000 | n/a | 1.00 (0.95) | n/a [n/a, n/a] |
+| duel_fortress | life | n/a [n/a, n/a] | n/a [n/a, n/a] | 0.08 | 0.002 | n/a | 0.23 (0.23) | n/a [n/a, n/a] |
+| duel_stubborn | ladder | 0.19 [0.15, 0.21] | 0.19 [0.15, 0.21] | 0.98 | 0.000 | 0.00 | 0.99 (0.93) | 0.00 [0.00, 0.00] |
+| duel_stubborn | gate | 0.25 [0.24, 0.26] | 0.25 [0.24, 0.26] | 0.14 | 0.000 | 0.00 | 0.65 (0.53) | 0.00 [0.00, 0.00] |
+| duel_stubborn | life | 0.54 [0.48, 0.58] | 0.54 [0.48, 0.58] | 0.02 | 0.027 | 0.06 | 0.15 (0.13) | 0.00 [0.00, 0.00] |
+| duel_weak | ladder | 0.19 [0.16, 0.22] | 0.19 [0.16, 0.22] | 0.99 | 0.392 | 0.78 | 0.57 (0.53) | 0.07 [0.00, 0.54] |
+| duel_weak | gate | n/a [n/a, n/a] | n/a [n/a, n/a] | 0.33 | 0.000 | n/a | 0.54 (0.35) | n/a [n/a, n/a] |
+| duel_weak | life | 0.93 [0.59, 1.50] | 0.93 [0.59, 1.50] | 0.04 | 0.004 | n/a | 0.16 (0.15) | n/a [n/a, n/a] |
+| farmer | ladder | 0.84 [0.76, 0.96] | 0.84 [0.76, 0.96] | 0.17 | 0.001 | 0.03 | 0.49 (0.45) | 0.00 [0.00, 0.00] |
+| farmer | gate | 0.86 [0.67, 1.89] | 1.18 [0.68, 2.32] | 0.16 | 0.005 | 0.10 | 0.35 (0.33) | 0.00 [0.00, 1.08] |
+| farmer | life | 0.84 [0.67, 1.01] | 0.77 [0.55, 1.08] | 0.02 | 0.010 | 0.14 | 0.09 (0.07) | 0.22 [0.00, 0.55] |
+| fortress | ladder | 0.79 [0.48, 0.92] | 0.81 [0.44, 0.89] | 0.16 | 0.000 | 0.03 | 0.49 (0.44) | 0.00 [0.00, 0.00] |
+| fortress | gate | 0.84 [0.68, 1.77] | 1.34 [0.68, 2.54] | 0.17 | 0.016 | 0.08 | 0.40 (0.38) | 0.00 [0.00, 0.81] |
+| fortress | life | 0.84 [0.70, 1.02] | 0.76 [0.54, 1.08] | 0.02 | 0.010 | 0.15 | 0.08 (0.07) | 0.34 [0.00, 0.60] |
+| multi | ladder | 0.66 [0.48, 0.81] | 0.83 [0.46, 1.36] | 0.18 | 0.001 | 0.03 | 0.44 (0.39) | 0.00 [0.00, 0.00] |
+| multi | gate | 0.74 [0.57, 0.98] | 0.92 [0.66, 1.69] | 0.09 | 0.005 | 0.05 | 0.36 (0.34) | 0.00 [0.00, 0.00] |
+| multi | life | 0.71 [0.57, 0.89] | 0.74 [0.51, 1.07] | 0.02 | 0.010 | 0.15 | 0.09 (0.07) | 0.00 [0.00, 0.51] |
+| multi_nospill | ladder | 0.66 [0.48, 0.81] | 0.83 [0.46, 1.36] | 0.18 | 0.001 | 0.03 | 0.44 (0.39) | 0.00 [0.00, 0.00] |
+| multi_nospill | gate | 0.74 [0.57, 0.98] | 0.92 [0.66, 1.69] | 0.09 | 0.005 | 0.05 | 0.36 (0.34) | 0.00 [0.00, 0.00] |
+| multi_nospill | life | 0.71 [0.55, 0.88] | 0.73 [0.52, 1.05] | 0.02 | 0.010 | 0.15 | 0.09 (0.08) | 0.00 [0.00, 0.48] |
+| railway | ladder | 0.83 [0.78, 0.91] | 0.83 [0.78, 0.91] | 0.18 | 0.000 | 0.04 | 0.51 (0.48) | 0.00 [0.00, 0.00] |
+| railway | gate | 0.83 [0.68, 1.93] | 1.27 [0.69, 2.31] | 0.17 | 0.004 | 0.09 | 0.38 (0.35) | 0.00 [0.00, 1.04] |
+| railway | life | 0.79 [0.61, 0.97] | 0.75 [0.52, 1.03] | 0.04 | 0.010 | 0.17 | 0.13 (0.11) | 0.00 [0.00, 0.52] |
+
+## Refusals and guards: can a watcher call the day?
+
+Refusal lag: days from a refused envoy to that camp's next fight on the target (within a year). Commonest lag: the share of lags within a day of the commonest one. Guards lag: days from the railway taking its guards off to the next train robbed.
+
+| Scenario | Mode | Refusals a year | Followed by a fight | Lag median [p10, p90] | Commonest lag (share within 1) | Fight within a day | Guards lag median [p10, p90] (n, CV) |
 |---|---|---|---|---|---|---|---|
-| alone | ladder | 0.83 [0.77, 0.92] | 0.83 [0.77, 0.92] | 0.18 | 0.000 | 0.04 | 0.50 |
-| alone | gate | 0.76 [0.68, 0.90] | 0.76 [0.68, 0.90] | 0.15 | 0.000 | 0.05 | 0.44 |
-| alone | life | 0.88 [0.70, 1.06] | 1.04 [0.76, 1.72] | 0.02 | 0.017 | 0.15 | 0.07 |
-| duel_adaptive | ladder | n/a [n/a, n/a] | n/a [n/a, n/a] | 1.00 | 0.000 | n/a | 1.00 |
-| duel_adaptive | gate | n/a [n/a, n/a] | n/a [n/a, n/a] | 0.33 | 0.000 | n/a | 0.54 |
-| duel_adaptive | life | 0.59 [0.44, 0.86] | 0.59 [0.44, 0.86] | 0.04 | 0.003 | n/a | 0.18 |
-| duel_fortress | ladder | 0.27 [0.17, 0.38] | 0.27 [0.17, 0.38] | 0.97 | 0.017 | 0.07 | 0.33 |
-| duel_fortress | gate | n/a [n/a, n/a] | n/a [n/a, n/a] | 1.00 | 0.000 | n/a | 1.00 |
-| duel_fortress | life | 0.87 [0.62, 1.18] | 0.87 [0.62, 1.18] | 0.07 | 0.005 | n/a | 0.22 |
-| duel_stubborn | ladder | 0.22 [0.20, 0.24] | 0.22 [0.20, 0.24] | 0.65 | 0.000 | 0.01 | 0.96 |
-| duel_stubborn | gate | 0.34 [0.33, 0.35] | 0.34 [0.33, 0.35] | 0.11 | 0.000 | 0.01 | 0.64 |
-| duel_stubborn | life | 0.56 [0.53, 0.60] | 0.56 [0.53, 0.60] | 0.01 | 0.020 | 0.06 | 0.16 |
-| duel_weak | ladder | n/a [n/a, n/a] | n/a [n/a, n/a] | 1.00 | 0.000 | n/a | 1.00 |
-| duel_weak | gate | n/a [n/a, n/a] | n/a [n/a, n/a] | 0.33 | 0.000 | n/a | 0.52 |
-| duel_weak | life | 0.81 [0.45, 1.19] | 0.81 [0.45, 1.19] | 0.04 | 0.003 | n/a | 0.17 |
-| farmer | ladder | 0.83 [0.77, 0.94] | 0.83 [0.77, 0.94] | 0.17 | 0.001 | 0.04 | 0.48 |
-| farmer | gate | 0.78 [0.67, 1.07] | 0.78 [0.67, 1.07] | 0.14 | 0.003 | 0.05 | 0.42 |
-| farmer | life | 0.89 [0.74, 1.08] | 1.01 [0.77, 1.70] | 0.02 | 0.011 | 0.16 | 0.07 |
-| fortress | ladder | 0.79 [0.49, 0.90] | 0.79 [0.49, 0.90] | 0.16 | 0.000 | 0.03 | 0.47 |
-| fortress | gate | 0.75 [0.67, 0.87] | 0.75 [0.67, 0.87] | 0.27 | 0.010 | 0.06 | 0.52 |
-| fortress | life | 0.85 [0.70, 1.02] | 0.99 [0.72, 1.62] | 0.02 | 0.014 | 0.15 | 0.07 |
-| multi | ladder | 0.67 [0.50, 0.81] | 0.83 [0.59, 1.31] | 0.16 | 0.001 | 0.03 | 0.44 |
-| multi | gate | 0.74 [0.30, 0.96] | 0.74 [0.30, 1.00] | 0.09 | 0.002 | 0.07 | 0.38 |
-| multi | life | 0.74 [0.58, 0.94] | 0.91 [0.61, 1.55] | 0.02 | 0.013 | 0.13 | 0.08 |
-| multi_nospill | ladder | 0.67 [0.50, 0.81] | 0.83 [0.59, 1.31] | 0.16 | 0.001 | 0.03 | 0.44 |
-| multi_nospill | gate | 0.74 [0.30, 0.96] | 0.74 [0.30, 1.00] | 0.09 | 0.002 | 0.07 | 0.38 |
-| multi_nospill | life | 0.74 [0.58, 0.95] | 0.89 [0.62, 1.55] | 0.02 | 0.012 | 0.15 | 0.08 |
-| railway | ladder | 0.83 [0.78, 0.91] | 0.83 [0.78, 0.91] | 0.18 | 0.000 | 0.03 | 0.51 |
-| railway | gate | 0.70 [0.17, 0.88] | 0.70 [0.17, 0.88] | 0.52 | 0.000 | 0.04 | 0.78 |
-| railway | life | 0.89 [0.67, 1.09] | 0.98 [0.69, 1.59] | 0.04 | 0.013 | 0.18 | 0.11 |
+| duel_adaptive | ladder | 0.02 | 1.00 | 10 [10, 10] | 10 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_adaptive | gate | 0.89 | 1.00 | 3 [3, 3] | 3 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_adaptive | life | 0.00 | 1.00 | 3 [2, 4] | 2 (0.50) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_fortress | ladder | 0.02 | 1.00 | 10 [10, 10] | 10 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_fortress | life | 0.01 | 0.00 | n/a [n/a, n/a] | n/a (n/a) | n/a | n/a [n/a, n/a] (0, n/a) |
+| duel_stubborn | ladder | 0.02 | 1.00 | 10 [10, 10] | 10 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_stubborn | gate | 3.10 | 1.00 | 3 [3, 3] | 3 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| duel_stubborn | life | 0.49 | 1.00 | 4 [1, 14] | 3 (0.40) | 0.11 | n/a [n/a, n/a] (0, n/a) |
+| duel_weak | ladder | 0.01 | 1.00 | 10 [10, 10] | 10 (0.97) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| farmer | life | 0.15 | 0.15 | 3 [1, 37] | 3 (0.55) | 0.18 | n/a [n/a, n/a] (0, n/a) |
+| fortress | ladder | 0.02 | 1.00 | 9 [9, 10] | 9 (1.00) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| fortress | gate | 0.67 | 0.99 | 3 [3, 3] | 3 (0.99) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| fortress | life | 0.37 | 0.30 | 4 [1, 65] | 3 (0.41) | 0.11 | n/a [n/a, n/a] (0, n/a) |
+| multi | ladder | 0.06 | 0.64 | 9 [2, 37] | 9 (0.55) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| multi | gate | 1.80 | 0.99 | 3 [3, 3] | 3 (0.98) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| multi | life | 0.64 | 0.46 | 8 [2, 67] | 3 (0.26) | 0.08 | n/a [n/a, n/a] (0, n/a) |
+| multi_nospill | ladder | 0.06 | 0.64 | 9 [2, 37] | 9 (0.55) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| multi_nospill | gate | 1.80 | 0.99 | 3 [3, 3] | 3 (0.98) | 0.00 | n/a [n/a, n/a] (0, n/a) |
+| multi_nospill | life | 0.69 | 0.45 | 8 [2, 69] | 3 (0.26) | 0.08 | n/a [n/a, n/a] (0, n/a) |
+| railway | life | 0.62 | 0.31 | 11 [2, 78] | 3 (0.24) | 0.07 | 27 [5, 74] (1354, 0.81) |
 
 ## Duels (game.py's setting: one goblin camp, one base, grievance 9 a day)
 
 | Player | Mode | Wars a year, years 1-5 | Wars a year, last decade | Raiders killed a year | Tribute a year | Defence year 10 | Defence at the end |
 |---|---|---|---|---|---|---|---|
-| adaptive | ladder | 0.0 | 0.0 | 0 | 406 | 12 | 12 |
-| adaptive | gate | 0.0 | 0.0 | 0 | 195 | 12 | 12 |
-| adaptive | life | 0.1 | 0.0 | 0 | 228 | 12 | 12 |
-| fortress | ladder | 6.0 | 9.6 | 65 | 0 | 80 | 80 |
+| adaptive | ladder | 6.8 | 9.6 | 65 | 0 | 26 | 26 |
+| adaptive | gate | 3.6 | 2.2 | 23 | 1 | 24 | 23 |
+| adaptive | life | 0.1 | 0.0 | 0 | 158 | 12 | 12 |
+| fortress | ladder | 5.5 | 9.6 | 65 | 0 | 80 | 80 |
 | fortress | gate | 0.0 | 0.0 | 0 | 0 | 80 | 80 |
-| fortress | life | 0.1 | 0.1 | 3 | 0 | 80 | 80 |
-| stubborn | ladder | 21.0 | 21.3 | 60 | 0 | 6 | 6 |
-| stubborn | gate | 12.2 | 12.5 | 35 | 0 | 6 | 6 |
-| stubborn | life | 3.5 | 3.1 | 4 | 0 | 6 | 6 |
-| weak | ladder | 0.0 | 0.0 | 0 | 406 | 6 | 6 |
-| weak | gate | 0.0 | 0.0 | 0 | 362 | 6 | 6 |
-| weak | life | 0.1 | 0.1 | 0 | 255 | 6 | 6 |
+| fortress | life | 0.1 | 0.0 | 0 | 0 | 80 | 80 |
+| stubborn | ladder | 23.2 | 23.7 | 45 | 0 | 6 | 6 |
+| stubborn | gate | 10.2 | 10.4 | 20 | 0 | 6 | 6 |
+| stubborn | life | 3.7 | 3.4 | 3 | 0 | 6 | 6 |
+| weak | ladder | 6.0 | 14.7 | 28 | 138 | 6 | 6 |
+| weak | gate | 0.0 | 0.0 | 0 | 329 | 6 | 6 |
+| weak | life | 0.6 | 0.1 | 0 | 177 | 6 | 6 |
 
 ## What started the life-mode fights (share of fights)
 
@@ -95,102 +122,102 @@ A driver is any motive that was at least a quarter of the push toward the fight;
 
 | Scenario | Top motive | Drivers | Loot only | Occasion |
 |---|---|---|---|---|
-| alone | hunger 0.45, loot 0.33, glory 0.12, pride 0.09, preempt 0.00, revenge 0.00 | loot 0.51, hunger 0.49, glory 0.24, pride 0.11, revenge 0.01, preempt 0.01 | 0.19 | restless 0.80, caravan 0.16, provoked 0.04, news 0.01 |
-| duel_adaptive | loot 0.68, hunger 0.24, revenge 0.05, glory 0.02 | loot 0.92, hunger 0.42, glory 0.35, revenge 0.13 | 0.12 | restless 1.00 |
-| duel_fortress | hunger 0.96, loot 0.03, revenge 0.01 | hunger 0.96, loot 0.03, revenge 0.03 | 0.01 | restless 0.83, refused 0.17 |
-| duel_stubborn | loot 0.74, revenge 0.12, pride 0.10, glory 0.03, hunger 0.00 | loot 0.94, revenge 0.53, pride 0.19, glory 0.13, hunger 0.00 | 0.27 | restless 0.79, refused 0.21 |
-| duel_weak | loot 0.76, glory 0.12, hunger 0.09, revenge 0.02 | loot 0.91, glory 0.72, hunger 0.14, revenge 0.09 | 0.09 | restless 1.00 |
-| farmer | hunger 0.40, loot 0.32, pride 0.17, glory 0.11, preempt 0.00, revenge 0.00 | loot 0.48, hunger 0.44, glory 0.22, pride 0.19, revenge 0.01, preempt 0.00 | 0.18 | restless 0.76, caravan 0.14, provoked 0.08, news 0.01, refused 0.00 |
-| fortress | hunger 0.40, loot 0.37, glory 0.13, pride 0.10, preempt 0.00, revenge 0.00 | loot 0.56, hunger 0.44, glory 0.26, pride 0.11, revenge 0.01, preempt 0.01 | 0.21 | restless 0.78, caravan 0.16, provoked 0.03, refused 0.02, news 0.01 |
-| multi | loot 0.41, hunger 0.26, glory 0.19, pride 0.13, revenge 0.00, preempt 0.00 | loot 0.59, glory 0.34, hunger 0.29, pride 0.15, revenge 0.02, preempt 0.00 | 0.24 | restless 0.77, caravan 0.15, provoked 0.04, refused 0.03, news 0.01 |
-| multi_nospill | loot 0.41, hunger 0.27, glory 0.19, pride 0.13, revenge 0.00, preempt 0.00 | loot 0.59, glory 0.34, hunger 0.29, pride 0.15, revenge 0.02, preempt 0.00 | 0.24 | restless 0.78, caravan 0.15, provoked 0.04, refused 0.02, news 0.01 |
-| railway | loot 0.54, hunger 0.28, glory 0.10, pride 0.07, revenge 0.02, preempt 0.00 | loot 0.71, hunger 0.31, glory 0.21, revenge 0.13, pride 0.09, preempt 0.00 | 0.32 | restless 0.56, train 0.29, caravan 0.11, provoked 0.02, refused 0.01, news 0.01 |
+| alone | hunger 0.55, loot 0.41, glory 0.03, pride 0.01 | loot 0.64, hunger 0.62, glory 0.13, pride 0.02, preempt 0.00 | 0.24 | restless 0.83, caravan 0.14, provoked 0.02, news 0.01 |
+| duel_adaptive | loot 0.69, hunger 0.21, glory 0.06, revenge 0.03 | loot 0.93, glory 0.47, hunger 0.30, revenge 0.13 | 0.13 | restless 0.99, refused 0.01 |
+| duel_fortress | loot 0.62, revenge 0.38 | loot 0.75, revenge 0.75, glory 0.06 | 0.25 | restless 1.00 |
+| duel_stubborn | loot 0.77, revenge 0.19, pride 0.04, glory 0.00, hunger 0.00 | loot 0.95, revenge 0.69, pride 0.08, glory 0.04, hunger 0.00 | 0.23 | restless 0.95, refused 0.05 |
+| duel_weak | loot 0.66, glory 0.20, revenge 0.08, hunger 0.06 | loot 0.85, glory 0.54, revenge 0.28, hunger 0.09 | 0.11 | restless 1.00 |
+| farmer | hunger 0.45, loot 0.32, pride 0.21, glory 0.02 | loot 0.51, hunger 0.50, pride 0.22, glory 0.10, preempt 0.00, revenge 0.00 | 0.19 | restless 0.79, caravan 0.11, provoked 0.08, news 0.02, refused 0.00 |
+| fortress | hunger 0.54, loot 0.42, glory 0.03, pride 0.02, revenge 0.00 | loot 0.66, hunger 0.61, glory 0.13, pride 0.02, revenge 0.00, preempt 0.00 | 0.24 | restless 0.82, caravan 0.14, provoked 0.02, news 0.01, refused 0.00 |
+| multi | loot 0.53, hunger 0.32, glory 0.09, pride 0.06, revenge 0.00 | loot 0.74, hunger 0.38, glory 0.26, pride 0.08, revenge 0.01, preempt 0.00 | 0.29 | restless 0.80, caravan 0.13, news 0.03, provoked 0.03, refused 0.01 |
+| multi_nospill | loot 0.53, hunger 0.32, glory 0.09, pride 0.06, revenge 0.00 | loot 0.74, hunger 0.37, glory 0.27, pride 0.08, revenge 0.00, preempt 0.00 | 0.29 | restless 0.80, caravan 0.13, news 0.03, provoked 0.02, refused 0.01 |
+| railway | loot 0.63, hunger 0.30, glory 0.05, revenge 0.01, pride 0.01, preempt 0.00 | loot 0.83, hunger 0.37, glory 0.16, revenge 0.07, pride 0.02, preempt 0.00 | 0.42 | restless 0.54, train 0.35, caravan 0.08, provoked 0.01, news 0.01, refused 0.01 |
 
 ## Fights by target (a world-year; in brackets, the share the attacker lost)
 
 | Scenario | Mode | Camps | Villages | Players | Trains and caravans |
 |---|---|---|---|---|---|
-| alone | ladder | 10.11 (0.98) | 19.80 (0.18) | 0.00 | 0.00 |
-| alone | gate | 0.00 | 11.54 (0.17) | 0.00 | 0.00 |
-| alone | life | 2.26 (0.52) | 6.31 (0.09) | 0.00 | 1.59 (0.05) |
-| duel_adaptive | ladder | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_adaptive | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_adaptive | life | 0.00 | 0.00 | 0.03 (0.14) | 0.00 |
-| duel_fortress | ladder | 0.00 | 0.00 | 8.96 (0.99) | 0.00 |
+| alone | ladder | 10.16 (1.00) | 19.93 (0.00) | 0.00 | 0.00 |
+| alone | gate | 2.07 (0.75) | 10.57 (0.00) | 0.00 | 0.00 |
+| alone | life | 1.16 (0.12) | 5.13 (0.01) | 0.00 | 1.03 (0.00) |
+| duel_adaptive | ladder | 0.00 | 0.00 | 9.07 (0.99) | 0.00 |
+| duel_adaptive | gate | 0.00 | 0.00 | 2.32 (0.76) | 0.00 |
+| duel_adaptive | life | 0.00 | 0.00 | 0.06 (0.05) | 0.00 |
+| duel_fortress | ladder | 0.00 | 0.00 | 8.83 (1.00) | 0.00 |
 | duel_fortress | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_fortress | life | 0.00 | 0.00 | 0.11 (0.84) | 0.00 |
-| duel_stubborn | ladder | 0.00 | 0.00 | 21.38 (0.22) | 0.00 |
-| duel_stubborn | gate | 0.00 | 0.00 | 12.45 (0.22) | 0.00 |
-| duel_stubborn | life | 0.00 | 0.00 | 3.19 (0.05) | 0.00 |
-| duel_weak | ladder | 0.00 | 0.00 | 0.00 | 0.00 |
+| duel_fortress | life | 0.00 | 0.00 | 0.01 (1.00) | 0.00 |
+| duel_stubborn | ladder | 0.00 | 0.00 | 23.58 (0.00) | 0.00 |
+| duel_stubborn | gate | 0.00 | 0.00 | 10.37 (0.00) | 0.00 |
+| duel_stubborn | life | 0.00 | 0.00 | 3.40 (0.00) | 0.00 |
+| duel_weak | ladder | 0.00 | 0.00 | 13.49 (0.00) | 0.00 |
 | duel_weak | gate | 0.00 | 0.00 | 0.00 | 0.00 |
-| duel_weak | life | 0.00 | 0.00 | 0.09 (0.04) | 0.00 |
-| farmer | ladder | 10.09 (0.98) | 19.89 (0.18) | 0.10 (0.26) | 0.00 |
-| farmer | gate | 0.00 | 11.57 (0.18) | 0.15 (0.32) | 0.00 |
-| farmer | life | 2.20 (0.54) | 6.19 (0.09) | 0.94 (0.30) | 1.58 (0.05) |
-| fortress | ladder | 7.26 (0.98) | 19.85 (0.18) | 2.97 (0.89) | 0.00 |
-| fortress | gate | 0.00 | 11.52 (0.17) | 0.07 (0.72) | 0.00 |
-| fortress | life | 1.97 (0.55) | 5.86 (0.10) | 0.34 (0.66) | 1.56 (0.05) |
-| multi | ladder | 7.41 (0.99) | 17.10 (0.20) | 8.85 (0.88) | 0.00 |
-| multi | gate | 0.00 | 11.56 (0.17) | 4.67 (0.81) | 0.00 |
-| multi | life | 1.60 (0.50) | 4.73 (0.10) | 0.50 (0.44) | 1.21 (0.07) |
-| multi_nospill | ladder | 7.41 (0.99) | 17.10 (0.20) | 8.85 (0.88) | 0.00 |
-| multi_nospill | gate | 0.00 | 11.56 (0.17) | 4.67 (0.81) | 0.00 |
-| multi_nospill | life | 1.59 (0.50) | 4.72 (0.10) | 0.49 (0.44) | 1.18 (0.06) |
-| railway | ladder | 10.08 (0.98) | 19.91 (0.18) | 0.00 | 0.00 |
-| railway | gate | 0.00 | 11.54 (0.17) | 0.00 | 22.05 (0.18) |
-| railway | life | 1.91 (0.54) | 5.10 (0.09) | 0.16 (0.32) | 4.80 (0.17) |
+| duel_weak | life | 0.00 | 0.00 | 0.17 (0.00) | 0.00 |
+| farmer | ladder | 10.07 (1.00) | 19.91 (0.00) | 0.13 (0.00) | 0.00 |
+| farmer | gate | 2.12 (0.75) | 10.64 (0.00) | 0.18 (0.00) | 0.00 |
+| farmer | life | 1.19 (0.11) | 5.15 (0.01) | 1.92 (0.01) | 1.03 (0.00) |
+| fortress | ladder | 7.18 (1.00) | 19.78 (0.00) | 2.74 (1.00) | 0.00 |
+| fortress | gate | 1.64 (0.78) | 10.59 (0.00) | 0.79 (0.99) | 0.00 |
+| fortress | life | 1.11 (0.13) | 5.06 (0.01) | 0.13 (1.00) | 1.00 (0.00) |
+| multi | ladder | 7.24 (1.00) | 17.31 (0.01) | 7.47 (0.98) | 0.00 |
+| multi | gate | 0.64 (0.87) | 10.61 (0.00) | 3.35 (0.96) | 0.00 |
+| multi | life | 0.58 (0.22) | 3.20 (0.01) | 0.47 (0.28) | 0.65 (0.00) |
+| multi_nospill | ladder | 7.24 (1.00) | 17.31 (0.01) | 7.47 (0.98) | 0.00 |
+| multi_nospill | gate | 0.64 (0.87) | 10.61 (0.00) | 3.35 (0.96) | 0.00 |
+| multi_nospill | life | 0.56 (0.23) | 3.16 (0.01) | 0.44 (0.31) | 0.64 (0.00) |
+| railway | ladder | 10.03 (1.00) | 19.84 (0.00) | 0.00 | 0.00 |
+| railway | gate | 2.13 (0.75) | 10.64 (0.00) | 0.00 | 0.00 |
+| railway | life | 0.75 (0.15) | 3.76 (0.01) | 0.17 (0.00) | 3.58 (0.11) |
 
 ## Each player's share (a year)
 
-| Scenario | Mode | Player | Fights on him | Attackers killed there | Tribute paid |
-|---|---|---|---|---|---|
-| farmer | ladder | P:Ben | 0.10 | 0.0 | 0 |
-| farmer | gate | P:Ben | 0.15 | 0.0 | 0 |
-| farmer | life | P:Ben | 0.94 | 0.3 | 5 |
-| fortress | ladder | P:Ben | 2.97 | 39.3 | 0 |
-| fortress | gate | P:Ben | 0.07 | 1.2 | 0 |
-| fortress | life | P:Ben | 0.34 | 5.4 | 0 |
-| multi | ladder | P:Ash | 8.85 | 83.8 | 0 |
-| multi | ladder | P:Bea | 0.00 | 0.0 | 76 |
-| multi | gate | P:Ash | 4.67 | 50.6 | 0 |
-| multi | gate | P:Bea | 0.00 | 0.0 | 0 |
-| multi | life | P:Ash | 0.41 | 5.0 | 0 |
-| multi | life | P:Bea | 0.09 | 0.1 | 369 |
-| multi_nospill | ladder | P:Ash | 8.85 | 83.8 | 0 |
-| multi_nospill | ladder | P:Bea | 0.00 | 0.0 | 76 |
-| multi_nospill | gate | P:Ash | 4.67 | 50.6 | 0 |
-| multi_nospill | gate | P:Bea | 0.00 | 0.0 | 0 |
-| multi_nospill | life | P:Ash | 0.42 | 5.1 | 0 |
-| multi_nospill | life | P:Bea | 0.07 | 0.1 | 363 |
-| railway | ladder | P:rail | 0.00 | 0.0 | 0 |
-| railway | gate | P:rail | 0.00 | 0.0 | 0 |
-| railway | life | P:rail | 0.16 | 1.5 | 0 |
+| Scenario | Mode | Player | Fights on him | Attackers killed there | Loot taken | Tribute paid | Loot and tribute as a share of his income |
+|---|---|---|---|---|---|---|---|
+| farmer | ladder | P:Ben | 0.13 | 0.0 | 6 | 0 | 0.01 |
+| farmer | gate | P:Ben | 0.18 | 0.0 | 9 | 0 | 0.02 |
+| farmer | life | P:Ben | 1.92 | 0.1 | 92 | 0 | 0.19 |
+| fortress | ladder | P:Ben | 2.74 | 39.4 | 0 | 0 | 0.00 |
+| fortress | gate | P:Ben | 0.79 | 16.0 | 0 | 0 | 0.00 |
+| fortress | life | P:Ben | 0.13 | 2.9 | 0 | 0 | 0.00 |
+| multi | ladder | P:Ash | 7.47 | 79.7 | 10 | 0 | 0.02 |
+| multi | ladder | P:Bea | 0.00 | 0.0 | 0 | 1 | 0.00 |
+| multi | gate | P:Ash | 3.34 | 48.0 | 15 | 0 | 0.03 |
+| multi | gate | P:Bea | 0.00 | 0.0 | 0 | 0 | 0.00 |
+| multi | life | P:Ash | 0.33 | 4.6 | 25 | 0 | 0.05 |
+| multi | life | P:Bea | 0.14 | 0.1 | 25 | 272 | 0.62 |
+| multi_nospill | ladder | P:Ash | 7.47 | 79.7 | 10 | 0 | 0.02 |
+| multi_nospill | ladder | P:Bea | 0.00 | 0.0 | 0 | 1 | 0.00 |
+| multi_nospill | gate | P:Ash | 3.34 | 48.0 | 15 | 0 | 0.03 |
+| multi_nospill | gate | P:Bea | 0.00 | 0.0 | 0 | 0 | 0.00 |
+| multi_nospill | life | P:Ash | 0.36 | 5.0 | 27 | 0 | 0.06 |
+| multi_nospill | life | P:Bea | 0.08 | 0.1 | 15 | 268 | 0.59 |
+| railway | ladder | P:rail | 0.00 | 0.0 | 0 | 0 | 0.00 |
+| railway | gate | P:rail | 0.00 | 0.0 | 0 | 0 | 0.00 |
+| railway | life | P:rail | 0.17 | 1.6 | 20 | 0 | 0.04 |
 
 ## Work (life): what the engine does a faction-year
 
-| Scenario | Council sittings a faction-year | Relations weighed a sitting | Acts a faction-year |
-|---|---|---|---|
-| alone | 9.5 | 3.9 | 5.1 |
-| duel_adaptive | 16.4 | 1.0 | 8.0 |
-| duel_fortress | 18.1 | 1.0 | 8.3 |
-| duel_stubborn | 11.3 | 1.0 | 6.3 |
-| duel_weak | 16.2 | 1.0 | 7.9 |
-| farmer | 9.6 | 4.2 | 5.5 |
-| fortress | 10.2 | 4.4 | 5.6 |
-| multi | 10.5 | 5.0 | 5.8 |
-| multi_nospill | 10.6 | 5.0 | 5.9 |
-| railway | 14.2 | 4.2 | 6.3 |
+| Scenario | Council sittings a faction-year | Sittings a year by culture | Relations weighed a sitting | Acts a faction-year | Rows touched a faction-day |
+|---|---|---|---|---|---|
+| alone | 9.4 | bandit 11.5, frostmaw 3.9, goblin 13.7, raider 9.9, umvuthana 9.5 | 3.9 | 4.9 | 0.112 |
+| duel_adaptive | 16.3 | goblin 16.3 | 1.0 | 7.8 | 0.170 |
+| duel_fortress | 18.4 | goblin 18.4 | 1.0 | 8.2 | 0.192 |
+| duel_stubborn | 10.5 | goblin 10.5 | 1.0 | 5.8 | 0.145 |
+| duel_weak | 15.9 | goblin 15.9 | 1.0 | 7.6 | 0.167 |
+| farmer | 9.5 | bandit 11.7, frostmaw 3.5, goblin 13.7, raider 9.9, umvuthana 10.6 | 4.2 | 5.5 | 0.116 |
+| fortress | 10.1 | bandit 11.6, frostmaw 3.9, goblin 14.5, raider 11.3, umvuthana 10.9 | 4.5 | 5.5 | 0.118 |
+| multi | 10.5 | bandit 11.1, frostmaw 3.9, goblin 16.7, raider 11.8, umvuthana 9.4 | 5.0 | 5.7 | 0.118 |
+| multi_nospill | 10.6 | bandit 11.1, frostmaw 3.9, goblin 17.1, raider 11.8, umvuthana 9.4 | 5.0 | 5.8 | 0.119 |
+| railway | 14.2 | bandit 11.2, frostmaw 13.0, goblin 21.6, raider 9.4, umvuthana 9.5 | 4.2 | 6.1 | 0.162 |
 
 ## Unattended for centuries (life, alone)
 
 | Seed | Fights a year by century | Camp-on-camp a year by century |
 |---|---|---|
-| 7000 | 9.1, 10.1, 9.2, 9.0, 11.1 | 1.88, 1.99, 1.62, 1.44, 2.45 |
-| 7001 | 8.7, 10.4, 10.4, 10.2, 10.0 | 1.54, 2.05, 2.19, 2.11, 2.19 |
-| 7002 | 10.5, 10.4, 9.8, 10.6, 10.0 | 3.09, 3.09, 2.65, 3.00, 3.06 |
-| 7003 | 10.9, 11.0, 10.7, 10.3, 10.4 | 3.14, 2.53, 2.59, 2.81, 2.66 |
-| 7004 | 10.3, 11.3, 10.1, 10.9, 10.6 | 2.32, 2.77, 2.50, 2.37, 2.71 |
-| 7005 | 10.3, 9.8, 11.2, 9.6, 10.3 | 2.08, 2.32, 2.94, 1.72, 2.11 |
-| 7006 | 10.4, 9.4, 9.8, 9.3, 10.3 | 2.16, 1.93, 2.01, 2.19, 2.31 |
-| 7007 | 10.5, 10.6, 10.3, 10.6, 10.8 | 2.64, 2.65, 2.65, 2.10, 2.33 |
+| 7000 | 6.7, 7.5, 7.6, 7.4, 7.5 | 0.99, 1.25, 1.30, 1.19, 1.31 |
+| 7001 | 7.1, 6.8, 7.2, 7.7, 7.8 | 1.15, 1.16, 1.11, 1.26, 1.37 |
+| 7002 | 8.4, 7.6, 7.5, 7.7, 7.3 | 1.53, 1.26, 1.15, 1.12, 1.16 |
+| 7003 | 6.8, 6.5, 6.4, 7.1, 7.7 | 0.92, 0.94, 0.95, 1.07, 1.18 |
+| 7004 | 7.2, 7.1, 7.5, 6.8, 6.9 | 1.09, 1.13, 1.28, 0.94, 1.23 |
+| 7005 | 7.2, 7.3, 8.4, 7.4, 7.8 | 1.08, 1.26, 1.56, 1.14, 1.21 |
+| 7006 | 7.4, 6.1, 6.6, 6.9, 6.5 | 1.15, 0.87, 0.92, 1.08, 0.89 |
+| 7007 | 7.8, 6.7, 7.7, 8.3, 7.0 | 1.45, 0.93, 1.17, 1.48, 1.04 |

@@ -221,6 +221,16 @@ belonging to it, and a **pressure** P:
     loader) would never see a next load. So when a wait ends with the site already loaded, the plugin
     runs the census there and then and places the arrival if no player is within 128 blocks; if one is,
     it tries again a game day later (one wheel entry).
+  - **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
+    the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
+    and the far view draws from about a kilometre away. So the 128-block rule does not apply to it: its
+    bodies are placed where its march puts them as they come inside the ticking area, the column's
+    head 133 to 160 blocks off at a simulation distance of 10 and 101 to 131 at 8, and nothing appears
+    that was not already walking toward the player. A party that reaches a watched target with no
+    bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its own
+    route: placed at the farthest ticking point on that route back from the target, it walks the rest,
+    instead of today's waves on the arc 112 blocks out. That point is past 128 blocks at a simulation
+    distance of 10; at 8 it can be as near as 113, the nearest a server that short allows.
 - **Bounds.** n never exceeds K. The sim never creates a site: sites are the structures the world
   generated (C22), or the herd ranges the world model sampled.
 - **The oil gate** (OILGATE.md on main) adds two dragon sources near oil fields, and they are its
@@ -601,8 +611,10 @@ consider a rung) and adds a best response:
    defence it met after every fight, and decaying back to a prior (15) with a half-life of 96 days
    when nothing is learnt.
 2. **Expected value of a war rung** against `D̂`: `EV = p x min(carry, stock) - warrior_value x
-   E[warriors lost] + revenge`, with `p = A^2 / (A^2 + D̂^2)` (Lanchester's square law, as `threat.rs`
-   already uses), `warrior_value` 3 loot items, and **revenge bounded:** `10 x g / (g + 100)` for
+   E[warriors lost] + revenge`, with `p = A^2 / (A^2 + D̂^2)`, the gate's own belief of its chance (not
+   the engine's: the abstract fight draws nothing, the stronger side wins, by `village_outcome`'s
+   linear law, `engine.rs:4343-4365`, or `threat.rs`'s square law where turrets dominate,
+   `rtsim-industry threat.rs:403-427`; CONFLICT-LIFE.md §2.1), `warrior_value` 3 loot items, and **revenge bounded:** `10 x g / (g + 100)` for
    grievance g, so hate alone never pays for a suicide raid.
 3. **Terms first.** If the best rung has `EV > 0` and grievance has reached the envoy rung, the faction
    sends an envoy demanding `T = (EV + X) / 2`, the midpoint of the bargaining range between what the
@@ -613,7 +625,7 @@ consider a rung) and adds a best response:
 4. **Otherwise hold, and probe.** With no rung worth sending, the faction holds. Every 48 days at the
    scouts rung it sends scouts, which refresh its belief.
 5. **Faction against faction:** the same EV rule, with the target camp's pool as the defence. A party
-   of 12 against a camp at strength (40 to 60) wins one time in 12 to 27 (the square law), so camps at strength never
+   of 12 against a camp at strength (40 to 60) has a p of one in 12 to 27, and in the engine it never wins (the fight is certain), so camps at strength never
    attack each other: the background feuds of today (2 to 20 a world-year in the model) stop in a world
    with no player, and a camp falls on a neighbour only after a player, a dragon or a break has thinned
    it (§3.6). Ben rejected this with the rest of EQ-5 (§5.1).
@@ -629,8 +641,9 @@ Pirates use the same rule for route choice (§2.4.6). Dragons do not bargain: tr
 ### 2.6 What MOWZIE.md must match
 
 `plan/mowzie` is not edited here. At `be38b77`, MOWZIE.md must change these to match this design.
-Another session is revising MOWZIE.md now; its uncommitted copy already splits §4.9's census into
-the dead left behind, the living away and the rest, which item 11 builds on.
+MOWZIE.md on main has since taken them up through MZ-15 (`c0d6563`, the Invasion marches visibly),
+which is Ben's later and explicit choice: where the two differ, MZ-15 wins, and items 8 and 11 now
+follow it.
 
 1. **§4.2 and §4.10, the Frostmaw body:** `recruits_per_day` 1/6 (a new Frostmaw 6 days after a death)
    becomes the shared rule: `min(192, 6 x 2^P)` days, P per den with H 96, `P += 1` for each Frostmaw
@@ -662,7 +675,10 @@ the dead left behind, the living away and the rest, which item 11 builds on.
    away (§2.3). The ledger's times are world game time (§2.3).
 8. **§4.9 and §4.10, arrivals:** HOME_SPAWN never places into a camp with a player within 128 blocks;
    a den's Frostmaw is OnLoad only (asleep), a grove's warriors may WalkIn from the far edge. A camp
-   that never unloads gets its census and arrival when the wait ends (§2.2).
+   that never unloads gets its census and arrival when the wait ends (§2.2). A war party on the march
+   is not an arrival (§2.2, MZ-15): its bodies come where BAND_MARCH puts them as they enter the
+   ticking area, at whatever distance that is, and one that reaches a watched target with no bodies
+   walks in along its route from the ticking edge instead of appearing on the 112-block arc.
 9. **Events and kill credit:** every death report carries `LossCause` and the credited player
    (§2.2's four cases; CAMP_DEATH's killer is vanilla's kill credit or the killer's owner, and an
    unclaimed death of the Frostmaw or the Umvuthi is the player's); HOME_CENSUS is the SITE_CENSUS and
@@ -672,10 +688,12 @@ the dead left behind, the living away and the rest, which item 11 builds on.
 11. **§4.9, the census:** step 3's "the missing ones died unseen, and the pool loses them" becomes
     **missing** (§2.3): a player's loss unless rtsim was absent since the last census, its UUID kept,
     and a missing body that reappears is home again or a stray whose death raises the den's or grove's
-    pressure. The removals of step 1 take only the dead left behind (the living away are recalled, as
-    the uncommitted copy has it; at `be38b77` §4.9 removes a left-behind body "whether that member is
-    still away or has died since"), clamped to the bodies the census finds (a world that ran without
-    rtsim may have lost them already).
+    pressure. The removals of step 1 take every body a party on the road left behind, its member alive
+    or dead, and the census never ends the party (MZ-15, MOWZIE.md §4.9 and §4.16): the march goes on,
+    a living member away is counted with its party and not recalled, and a party ends only at its own
+    home or at its last death. Removals are clamped to the bodies the census finds (a world that ran
+    without rtsim may have lost them already). The cost is UR-1's: once its camp has come in, a member
+    is away for the rest of its march, and an uninstall then loses it (§2.3).
 12. **§4.10 item 5 and §7, tests:** `sim mowzie` reports in the `sim census` format (§4, slice S1), and
     the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, about
     1.8 a year: §3.3's 1.79 closed form, the figure MOWZIE.md's "Loot supply" states for a den and,
@@ -1078,7 +1096,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | Settlers are a family from beyond the explored edge; no village gives any | Taking two from a donor would mean removing vanilla villagers the player may have traded with, cured or named (C2, A10); villagers carry no loot, so a frontier family mints nothing that matters. |
 | Growth inside a site (villagers breeding, a village's growth while unloaded, the Ribbit refill) and haven hires are not slowed by pressure | They are bounded by beds, houses and the crew cap and carry no boss loot; pressure throttles what comes from outside (settlers, migrants, newcomers, refits). |
 | Ribbit residents booked when they exist; refill before building | Today pop is booked before the house exists, and houses never empty; growth stays Ribbit houses only (M3/M4). |
-| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. |
+| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, 101 to 131 blocks off at a simulation distance of 8, having walked toward the player from about a kilometre in the far view; one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
 | Pirate crew pools capped at 18 and fed by hires at 0.25 a day; refit after `min(96, 4 x 2^P)`; a haven with no lane worth hunting rests | Today the pool has no source but captures, so fleets die out; the cap keeps a haven from hoarding crews; a haven that rests is the best response to strong lanes, and a lane's odds move with escorts and navy. |
 | Merchant and navy ships unchanged | They are the economy's carriers, not a population; their 2-day refill already works. |

@@ -175,8 +175,8 @@ def main():
     L += walk("railway", lambda w: {"RAIL", "P:rail"}, lambda w: fights_on(w, {"RAIL"}), 8,
               "A railway through goblin land",
               "A line runs past Ashpit (goblins) and the Pass Den (a Frostmaw), 12 legs a day. The line's owner "
-              "(defence 30) never pays; after three robberies in 30 days he puts guards on the trains for a "
-              "year.", rail_legs=12.0)
+              "(defence 30) never pays; after three robberies in 30 days he puts guards on the trains for "
+              "48 to 144 days, as long as he feels he must.", rail_legs=12.0)
     L += rail_sweep()
     L += walk("multi", lambda w: {"P:Ash", "P:Bea"}, lambda w: fights_on(w, {"P:Bea"}), 8,
               "Multiplayer: one provokes, another suffers",

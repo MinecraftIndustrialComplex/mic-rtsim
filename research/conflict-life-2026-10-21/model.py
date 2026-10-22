@@ -3,8 +3,8 @@
 
 One world: a valley of factions (two goblin camps, a bandit camp, a pillager outpost, an Umvuthana
 grove, two Frostmaw dens), two villages, a caravan road, and per scenario a railway and scripted
-players. The same physics (pools, recruits under EQUILIBRIUM's pressure, stores and seasons, battles by
-Lanchester's square law, dragons, news) runs under three decision rules:
+players. The same physics (pools, recruits under EQUILIBRIUM's pressure, stores and seasons, the engine's
+deterministic abstract fights, dragons, news) runs under three decision rules:
 
   ladder  today's grievance ladder (rtsim-conflict at aa898aa: plan_feud and escalate), EQ-5 (c)
   gate    EQUILIBRIUM.md section 2.5's gate, EQ-5 (a)
@@ -32,21 +32,40 @@ def season(t):
     return int(t // 24) % 4
 
 
-def battle(rng, A, d):
-    """Lanchester's square law, as threat.rs and game.py use it. Returns (won, attacker loss share,
-    defender loss share)."""
+def battle(A, d, law="linear"):
+    """The engine's abstract fight, deterministic: `village_outcome` (rtsim-conflict engine.rs
+    4343-4365, the linear law) for camps, villages, caravans and the railway, and `threat.rs`
+    (rtsim-industry 403-427, the square law where turrets dominate) for a player's base. The attackers
+    win when A > d and keep (A - d) / A of their party (linear) or sqrt(A^2 - d^2) / A (square); a
+    party that loses is destroyed (survived 0). No observed-fight floor: the model has no embodied
+    fights. Defenders (new: today's raid on a haven or a village kills none of them): a defence that
+    wins loses the strength the attackers took, A / d of it (linear) or 1 - sqrt(1 - (A/d)^2)
+    (square); one that loses breaks and loses half, more against a much stronger attack
+    (min(1, A / 2d)). Returns (won, attacker loss share, defender loss share)."""
     if A <= 0:
         return False, 1.0, 0.0
     d = max(d, 1e-6)
-    pw = A * A / (A * A + d * d)
-    win = rng.random() < pw
-    if win:
-        la = 1 - math.sqrt(max(0.0, 1 - (d / A) ** 2)) if A > d else 0.5
-        ld = min(1.0, 0.5 * max(1.0, A / d))
-    else:
-        la = min(1.0, 0.5 * max(1.0, d / A))
-        ld = 1 - math.sqrt(max(0.0, 1 - (A / d) ** 2)) if d > A else 0.5
-    return win, la, ld
+    if A > d:
+        la = d / A if law == "linear" else 1 - math.sqrt(1 - (d / A) ** 2)
+        return True, la, min(1.0, 0.5 * A / d)
+    ld = A / d if law == "linear" else 1 - math.sqrt(max(0.0, 1 - (A / d) ** 2))
+    return False, 1.0, ld
+
+
+def fight_in_person(rng, A, d):
+    """A fight a player is at in person (he wakes a Frostmaw at its den): Minecraft decides it, not the
+    engine, so the model draws it, the stronger side winning with odds A^2 : d^2."""
+    return rng.random() < A * A / (A * A + d * d)
+
+
+def believed(A, Dhat, law, doubt):
+    """What a council expects of an attack of strength A on a defence it guesses at Dhat: the chance to
+    win (the engine's fight is certain, the council's count of the enemy is not: log-normal doubt) and
+    the share of the party lost on a win; a lost party is destroyed."""
+    pw = 0.5 * (1 + math.erf(math.log(A / max(Dhat, 1e-6)) / (doubt * math.sqrt(2)))) if A > 0 else 0.0
+    q = min(Dhat / A, 0.99) if A > 0 else 1.0
+    lw = q if law == "linear" else 1 - math.sqrt(1 - q * q)
+    return pw, lw
 
 
 def tenure(rng, mean):
@@ -56,6 +75,8 @@ def tenure(rng, mean):
 
 
 def lw_ll(A, d):
+    """EQUILIBRIUM.md §2.5's gate believes the square law's odds and losses (its own rule, kept as
+    written for the baseline)."""
     lw = 1 - math.sqrt(max(0.0, 1 - (d / A) ** 2)) if A > d else 0.5
     ll = min(1.0, 0.5 * max(1.0, d / A))
     return lw, ll
@@ -82,7 +103,7 @@ class Culture:
     respite: float
     cowed: float
     chief_days: float               # mean tenure of a chief (today's chief_lifespan_days)
-    home_str: float                 # defence per member at home
+    home_str: float                 # strength of a member defending at home
     eat: float                      # stores eaten per member per day
     plunder_mean: float             # today's Poisson plunder (ladder and gate)
     # the mind (life)
@@ -115,6 +136,13 @@ class Culture:
     ambush_w: float = 1.0
     kin_cost: float = 25.0          # raiding a camp of one's own culture
     preempt_w: float = 0.0
+    units: dict | None = None       # rung -> ((count, strength each), ...): send_party floors each share
+    kin_grudge: float = 0.0         # grievance at whoever killed the camp's one member (Frostmaw)
+    kin_pride: float = 0.0
+    guard_share: float = 0.25       # share of the members at home who stand to arms when a camp is attacked
+                                    # (today's Haven fields pool_cap / 4, engine haven_defence_per_pop 1.0)
+    heir_wait: bool = False         # the chief comes back only after min(192, 6 x 2^P_chief) days
+    one_by_one: bool = False        # warriors refill one at a time, each after min(96, 6 x 2^P) days
 
 
 def P(size, strength, carry):
@@ -154,7 +182,11 @@ UMVUTHANA = Culture(
     eat=0.3, plunder_mean=12,
     bold=0.5, aggr=0.45, soc=0.65, spread=0.15, tau=2.5, greed=1.2, pride_w=18, pride_half=48,
     refusal_pride=0.9, insult_pride=1.2, fear_w=1.5, fear_half=32, glory_w=3, restless_days=200,
-    wake_days=16, effort=6, demand_bias=10, hunts=True, invasion_pride=0.8, chief_str=5.0)
+    wake_days=16, effort=6, demand_bias=10, hunts=True, invasion_pride=0.8, chief_str=5.0,
+    # MOWZIE.md §4.5: raid 3 warriors (0.4) and 1 raptor pack (2.6); invasion 6 and 2, the Umvuthi's 5.0
+    # added while it rides with it (12.6); EQUILIBRIUM.md §2.4.7 and MZ-14 (a) for the refill and heir
+    units={4: ((3, 0.4), (1, 2.6)), 5: ((6, 0.4), (2, 2.6))}, heir_wait=True, one_by_one=True,
+    guard_share=1.0)             # the whole grove stands around the throne, and the Umvuthi (5.0) with it
 FROSTMAW = Culture(
     name="frostmaw", pool_cap=1, recruits=0.0,
     party={3: P(0, 0, 0), 4: P(1, 41.7, 64), 5: P(1, 41.7, 64), 6: P(1, 41.7, 64), 8: P(1, 41.7, 64)},
@@ -163,7 +195,8 @@ FROSTMAW = Culture(
     eat=0.5, plunder_mean=1e9,
     council=False, bold=0.5, aggr=0.5, soc=0.1, spread=0.25, tau=3.0, greed=1.0, pride_w=25,
     pride_half=96, insult_pride=1.5, fear_w=1.0, fear_half=16, glory_w=0, restless_days=1e9,
-    wake_days=30, effort=14, demand_bias=-99, scout_w=0, warn_w=8, ambush_w=1.0)
+    wake_days=30, effort=14, demand_bias=-99, scout_w=0, warn_w=8, ambush_w=1.0,
+    kin_grudge=80.0, kin_pride=2.0)
 
 CULTURES = {c.name: c for c in (GOBLIN, BANDIT, RAIDER, UMVUTHANA, FROSTMAW)}
 HATES = {"goblin": {"human", "bandit"}, "bandit": {"human", "ribbit"},
@@ -173,9 +206,12 @@ NAMES = {
     "goblin": ["Grukk", "Snag", "Mott", "Brakka", "Ozzit", "Nub", "Skarl", "Gitz", "Vorr", "Lugg"],
     "bandit": ["Harl", "Black Tam", "Wenna", "Rook", "Old Cass", "Jory", "Fenn", "Mags"],
     "raider": ["Captain Vask", "Orren", "Captain Hesk", "Dorn", "Isk", "Captain Mol", "Talv"],
-    "umvuthana": ["the Umvuthi"],
+    # the Umvuthi is the grove's chief; its other two voices are masked warriors (MOWZIE.md's masks)
+    "umvuthana": ["the Fury mask", "the Fear mask", "the Rage mask", "the Misery mask", "the Bliss mask",
+                  "the Faith mask"],
     "frostmaw": ["the Frostmaw"],
 }
+CHIEF_NAMES = {"umvuthana": "the Umvuthi"}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -188,6 +224,7 @@ class Voice:
     soc: float
     standing: float
     since: float
+    uid: int = 0            # the notable's ordinal: an oath is sworn by this one, not by a name
 
 
 @dataclass
@@ -206,7 +243,13 @@ class Rel:
     paid_until: float = -1.0
     memories: list = field(default_factory=list)   # [salience, day, text, hostile]
     away_until: float = -1.0         # word came that the player is away from his base until about then
-    truce_by: str = ""               # the chief who swore the truce running now
+    truce_by: int = -1               # the chief (voice uid) who swore the truce running now
+    truce_name: str = ""
+    stock_hat: float = 100.0         # what the camp believes the target holds, from its last look
+    stock_seen: float = 0.0          # the day of that look
+    guards_news: float = -1e9        # the day word came that the trains ride without guards
+    floor: float = 0.0               # the strongest party of ours it destroyed: it is at least that strong
+    floor_t: float = 0.0
     last_warn: float = -1e9
     # ladder and gate state
     step: int = 0
@@ -223,6 +266,8 @@ class Faction:
         self.c = culture
         self.pool = culture.pool_cap
         self.away = 0.0
+        self.out = []                   # parties on the road home: (day back, members, chief with it)
+        self.chief_out = False
         self.P = 0.0
         self.P_t = 0.0
         self.stores = 40.0 * culture.eat * culture.pool_cap
@@ -240,6 +285,13 @@ class Faction:
         self.chief_dies = t + tenure(rng, culture.chief_days)
         self.names_used = 0
         self.recent_names: list[str] = []
+        self.bend = 1.0 + 0.5 * (int(rng.integers(0, 256)) - 128) / 128   # Temperament bend(Aggressive, 50)
+        self.sittings = 0
+        self.chief_back = -1.0          # heir_wait: the grove has no chief until then
+        self.P_chief = 0.0
+        self.P_chief_t = 0.0
+        self.next_recruit = None        # one_by_one: the day the next warrior comes
+        self.pending = []
         if culture.council:
             for role, st in (("chief", 1.0), ("war", 0.7), ("elder", 0.6)):
                 self.voices.append(self.new_voice(role, st, rng, t))
@@ -259,21 +311,52 @@ class Faction:
         taken = {x.name for x in self.voices} | set(self.recent_names[-3:])
         names = [n for n in NAMES[c.name] if n not in taken] or NAMES[c.name]
         nm = names[int(rng.integers(len(names)))]
+        if role == "chief" and c.name in CHIEF_NAMES:
+            nm = CHIEF_NAMES[c.name]
         self.names_used += 1
-        return Voice(role, nm, b, a, s, standing, t)
+        return Voice(role, nm, b, a, s, standing, t, uid=self.names_used)
 
     def chief(self):
         return self.voices[0]
 
+    def has_chief(self, t):
+        return t >= self.chief_back
+
+    def muster(self, rung):
+        """The party a rung sends from the members at home: (members, strength, carry). With a unit
+        make-up, `send_party` floors each unit's share (engine.rs 2240-2247); otherwise in proportion."""
+        size, A0, carry = self.c.party[rung]
+        home = self.home()
+        if size <= 0:
+            return 0, A0, carry
+        units = (self.c.units or {}).get(rung)
+        q = min(1.0, home / size)
+        if units:
+            counts = [math.floor(k * q + 1e-9) for k, _ in units]
+            n = sum(counts)
+            return n, sum(k * s for k, (_, s) in zip(counts, units)), carry * n / size
+        n = min(home, size)
+        return n, A0 * n / size, carry * n / size
+
     def home(self):
         return max(0.0, self.pool - self.away)
 
-    def defence(self):
+    def defence(self, t=None):
+        """What an attack on the camp meets: the members at home who stand to arms, and a chief on its
+        throne (the Umvuthi) unless it is out with a band or the grove waits for one."""
         if self.dead:
             return 0.0
         if self.c.name == "frostmaw":
             return self.c.home_str
-        return self.home() * self.c.home_str
+        d = self.home() * self.c.guard_share * self.c.home_str
+        if self.c.heir_wait and self.chief_back < 0 and not self.chief_out:
+            d += self.c.chief_str
+        return d
+
+    def field_share(self, base):
+        """Share of the camp out hunting and herding, where a skirmish finds them: a small camp has most
+        of its members out, a big one a share."""
+        return max(base, min(1.0, 4.0 / max(self.pool, 1.0)))
 
     def hunger(self):
         need = HUNGRY_DAYS * self.c.eat * max(self.pool, 1.0)
@@ -359,6 +442,7 @@ class World:
             p.d0 = p.d
         self.rail = sc.rail
         self.rail_d = 1.0
+        self.guards_off = []        # days the railway took its guards off
         self.news = []              # (deliver_t, fid, kind, about, obs)
         self.life = dict(LIFE_DEFAULTS)
         self.life.update(sc.life)
@@ -406,8 +490,15 @@ class World:
                     r.sigma = gstar * (1 - 2 ** (-1 / f.c.g_half))
                 else:
                     r.sigma = 3.0          # the railway is industry in goblin land
+        # what each camp believes its targets hold: camps, villages, caravans and the railway it knows, a
+        # player's new base a guess (100) until it looks
+        for f in self.factions.values():
+            for x, r in f.rel.items():
+                if x not in self.players:
+                    r.stock_hat = self.target_stock(x)
         self.dragon_until = {}
         self.debug = False
+        self.touches = 0            # rows a sitting or an act reads or writes (page loads at one row a page)
         self.sittings = 0           # council sittings (decide calls past the busy check)
         self.matters = 0            # relations weighed over all sittings
         self.hostile_pairs = sorted({tuple(sorted((a, b))) for a, f in self.factions.items() for b in f.rel
@@ -480,6 +571,20 @@ class World:
     def can_pay(self, x):
         return x in self.players
 
+    def believed_stock(self, x, r):
+        """What the camp thinks x holds: its last look, refilled at the rate it knows such places refill."""
+        if x in self.villages:
+            rate, cap = 1.0, 150.0
+        elif x in self.players:
+            rate, cap = 5.0, 400.0
+        else:
+            return r.stock_hat
+        return min(cap, r.stock_hat + rate * (self.t - r.stock_seen))
+
+    def look(self, r, x):
+        r.stock_hat = self.target_stock(x)
+        r.stock_seen = self.t
+
     # ------------------------------------------------------------------------------- physics
     def pressure(self, f):
         return f.P * 2 ** (-(self.t - f.P_t) / 96.0)
@@ -492,21 +597,49 @@ class World:
     def day_faction(self, f):
         t = self.t
         c = f.c
+        if f.out:
+            for item in [o for o in f.out if o[0] <= t]:
+                f.out.remove(item)
+                f.away = max(0.0, f.away - item[1])
+            f.chief_out = any(o[2] for o in f.out)
+            if not f.out:
+                f.away = 0.0
         if c.name == "frostmaw":
             if f.dead and t >= f.dead_until:
                 f.dead = False
                 f.pool = 1
                 old = f.voices[0]
                 f.voices = [f.new_voice("chief", 1.0, self.rng, t)]
-                for r in f.rel.values():          # the heir takes the grudges at half (heir_grudge_factor)
+                for x, r in f.rel.items():        # the heir takes the grudges at half (heir_grudge_factor)
                     r.g *= 0.5
                     r.W *= 0.5
                     for m in r.memories:
                         m[0] *= 0.5
+                    if x in self.players and r.W > 0.3:
+                        self.occasion(f, "provoked", x)    # it wakes knowing who killed the last one
                 self.log(f, "arrive", "", reason=f"a new Frostmaw takes the den after {old.name} died")
+        elif c.one_by_one:
+            # EQUILIBRIUM.md §2.4.7: one warrior at a time, each after min(96, 6 x 2^P) days
+            if f.pool < c.pool_cap:
+                if f.next_recruit is None:
+                    f.next_recruit = t + min(96.0, 6.0 * 2 ** self.pressure(f))
+                elif t >= f.next_recruit:
+                    f.pool = min(c.pool_cap, math.floor(f.pool + 1e-9) + 1)
+                    f.next_recruit = None
+            else:
+                f.next_recruit = None
         else:
             P = self.pressure(f)
-            f.pool = min(c.pool_cap, f.pool + c.recruits / 2 ** P * (1.0 if f.stores > 0 else 0.25))
+            f.pool = min(c.pool_cap, f.pool + c.recruits / 2 ** P)
+        if c.heir_wait and f.chief_back >= 0 and t >= f.chief_back:
+            # MZ-14 (a): a warrior of the grove takes up the mask; the grove's count falls by one
+            if f.pool >= 1:
+                f.pool -= 1
+                f.chief_back = -1.0
+                f.voices[0] = f.new_voice("chief", 1.0, self.rng, t)
+                self.log(f, "succession", "", reason=f"a warrior of {f.name} takes up the Umvuthi's mask")
+            else:
+                f.chief_back = t + 1           # a grove with no warrior waits for one first
         sm = SEASON_MULT[season(t)]
         if t % YEAR == 0:
             f.year_mult = float(np.clip(self.rng.normal(1.0, 0.2), 0.5, 1.5))
@@ -515,14 +648,14 @@ class World:
         inc = c.eat * c.pool_cap * sm * f.year_mult * f.ground
         f.stores = min(f.stores + inc - c.eat * f.pool, LARDER_DAYS * c.eat * max(c.pool_cap, 1.0))
         if f.stores < 0:
-            if c.name != "frostmaw":
-                f.pool = max(0.0, f.pool - 0.02 * f.pool)   # hungry members drift away
-            f.stores = 0.0
+            f.stores = 0.0      # hunger drives the council; it changes no renewal (CL-D23, Ben's scope)
         f.fear *= 2 ** (-1 / c.fear_half)
-        for r in f.rel.values():
+        for x, r in f.rel.items():
             r.g = r.g * 2 ** (-1 / c.g_half) + r.sigma
             r.W *= 2 ** (-1 / c.pride_half)
-            r.s2 = min(1.0, r.s2 + self.life["belief_drift"])
+            # what it saw grows stale: a camp's numbers change from season to season, a base's walls
+            # stand (a quarter of the drift)
+            r.s2 = min(1.0, r.s2 + self.life["belief_drift"] * (self.life["wall_drift"] if x in self.players else 1.0))
             r.ta = 1 + (r.ta - 1) * 2 ** (-1 / 192)
             r.tb = 1 + (r.tb - 1) * 2 ** (-1 / 192)
             for m in r.memories:
@@ -544,13 +677,23 @@ class World:
         t = self.t
         old = f.chief()
         f.recent_names.append(old.name)
-        if f.c.council:
+        if f.c.heir_wait:
+            # MZ-14 (a): the grove has no Umvuthi for the later of its cowed time and min(192, 6 x 2^P)
+            # days; then a warrior takes up the mask (day_faction)
+            if killer is not None and killer in self.players:
+                f.P_chief = f.P_chief * 2 ** (-(t - f.P_chief_t) / 96.0) + 1.0
+                f.P_chief_t = t
+            P = f.P_chief * 2 ** (-(t - f.P_chief_t) / 96.0)
+            f.chief_back = t + max(f.c.cowed, min(192.0, 6.0 * 2 ** P))
+            f.heir_until = t + YEAR if killer is not None else t + 24
+        elif f.c.council:
             war = f.voices[1]
             war.role = "chief"
             war.standing = 1.0
             f.voices[0] = war
             f.voices[1] = f.new_voice("war", 0.7, self.rng, t)
-            f.heir_until = t + YEAR
+            # a new war leader must prove himself: for a season, or a year when his chief was killed
+            f.heir_until = t + (YEAR if killer is not None else 24)
             f.chief_dies = t + tenure(self.rng, f.c.chief_days)
             for r in f.rel.values():
                 r.g *= 0.5 + 0.5 * war.aggr      # the heir keeps the grudges he cares about
@@ -559,7 +702,10 @@ class World:
             r.W = min(2.0, r.W + 1.0)
             r.g += 40
             self.remember(f, killer, 3.0, f"{self.tname(killer)} killed {old.name}, our chief, {self.when(t)}")
-        self.log(f, "succession", killer or "", reason=f"{old.name} {how}; {f.chief().name} leads now")
+        if f.c.heir_wait:
+            self.log(f, "succession", killer or "", reason=f"{old.name} {how}; the grove waits for a new one")
+        else:
+            self.log(f, "succession", killer or "", reason=f"{old.name} {how}; {f.chief().name} leads now")
 
     def world_day(self):
         t = self.t
@@ -603,7 +749,7 @@ class World:
                         rr.W = min(2.0, rr.W + 0.3 * (1 - rr.W / 2))
                         self.remember(victim, doer.id, 1.0 + k / 2,
                                       f"{doer.name}'s hunters killed {k:.0f} of ours at the border {self.when(t)}")
-                        self.occasion(victim, "provoked", doer.id, delay=1 + rng.exponential(3))
+                        self.occasion(victim, "provoked", doer.id)
             # caravans pass the camps near the road: an opportunity
             if rng.random() < 1 / 3:
                 for fid in self.caravan_near:
@@ -615,8 +761,12 @@ class World:
                     f = self.factions[fid]
                     if rng.random() < self.life["notice_train"]:
                         self.occasion(f, "train", "RAIL")
-            if t >= self.players.get("P:rail", PlayerScript("", "", 0, False, 0, ())).escort_until:
+            if self.rail_d > 1.0 and t >= self.players.get("P:rail", PlayerScript("", "", 0, False, 0, ())).escort_until:
                 self.rail_d = 1.0
+                self.guards_off.append(t)
+                # word that the trains ride bare reaches the camps that watch the line, late
+                for fid in ("G1", "F2"):
+                    self.news.append((t + self.rng.exponential(6.0), fid, "guards_off", "RAIL", 1.0))
         # news arrives
         keep = []
         for item in self.news:
@@ -628,6 +778,11 @@ class World:
                     if kind == "away":
                         # a passing state, not his strength: the belief of the base is left alone
                         r.away_until = t + self.rng.uniform(3, 10)
+                    elif kind == "guards_off":
+                        self.observe(r, obs, self.life["rumour_sd"])
+                        self.remember(f, about, 1.0, f"word came that the trains ride without guards {self.when(t)}",
+                                      hostile=False)
+                        r.guards_news = t
                     else:
                         self.observe(r, obs, self.life["rumour_sd"])
                     self.occasion(f, "news", about)
@@ -714,6 +869,12 @@ class World:
         f.P, f.P_t = P, t
         f.dead_until = t + min(192.0, 6.0 * 2 ** P)    # EQ-4 (b), Ben 2026-10-21
         self.log(f, "killed", pid, reason=f"{f.voices[0].name} was {how}")
+        # a Killing on the den's record against the killer, which the heir inherits at half; today's
+        # engine files MOWZIE's Killing impulse of 5 (the heir holds 2.5, under Notice)
+        r = f.rel.setdefault(pid, Rel(pid))
+        r.g += f.c.kin_grudge if self.mode == "life" else 5.0
+        r.W = min(2.0, r.W + f.c.kin_pride)
+        self.remember(f, pid, 3.0, f"{self.tname(pid)} killed the Frostmaw before me {self.when(t)}")
 
     def rob(self, f, p):
         """The player takes the Frostmaw's crystal while it sleeps; it may wake."""
@@ -723,7 +884,7 @@ class World:
         wake = 0.15 + 0.6 * v.aggr * (1 - f.fear)
         r = f.rel.setdefault(p.pid, Rel(p.pid))
         if rng.random() < wake:
-            win, la, ld = battle(rng, f.c.home_str / 1.2, p.strength)
+            win = fight_in_person(rng, f.c.home_str / 1.2, p.strength)
             if win:
                 p.stock *= 0.8
                 r.W *= 0.5
@@ -746,8 +907,9 @@ class World:
         rng = self.rng
         d = self.target_defence(x)
         if act == "skirmish":
-            d *= max(self.life["field_share"], min(1.0, 4.0 / max(self.factions[x].pool, 1.0)))
-        win, la, ld = battle(rng, A, d)
+            g0 = self.factions[x]
+            d = g0.home() * g0.c.home_str * g0.field_share(self.life["field_share"])
+        win, la, ld = battle(A, d, "square" if x in self.players else "linear")
         dead = round(size * la, 1)
         e = self.log(f, act, x, reason=reason, speaker=speaker, win=win, dead=dead, size=size,
                      A=round(A, 1), d=round(d, 1))
@@ -755,11 +917,18 @@ class World:
         f.busy_until = t + 2
         if f.c.name == "frostmaw":
             e["dead"] = 0
-            if not win and rng.random() < 0.5 and x in self.players:
+            if not win:                        # a lost fight destroys the party: the Frostmaw dies
                 self.kill_frostmaw(f, x, f"killed attacking {self.tname(x)}")
                 e["dead"] = 1
         else:
             f.pool = max(0.0, f.pool - dead)
+            back = size - dead
+            if back > 0:
+                # the model fights the day it decides; the survivors (and a chief who rode with them)
+                # are on the road home for 1 to 3 days (MOWZIE §4.16: about 1 km at 480 blocks a day)
+                f.out.append((t + rng.uniform(1, 3), back, chief_leads and win))
+                f.away += back
+                f.chief_out = f.chief_out or (chief_leads and win)
         f.fear = min(1.0, f.fear + dead / max(f.c.pool_cap, 1) * 2 + (0.2 if not win else 0))
         r = f.rel.get(x)
         if r is not None:
@@ -778,23 +947,26 @@ class World:
         else:
             if r is not None:
                 r.cowed_until = t + f.c.cowed
+                away = x in self.players and t < self.players[x].away_until
+                r.floor = max(self.floor_now(f, r), A * (2.0 if away else 1.0))
+                r.floor_t = t
                 if self.mode == "life":
                     r.W = min(2.0, 0.6 * r.W + 0.2)     # honour answered, but a defeat stings
                     nd = f"{dead:.0f}"                  # as the log line shows it (0.5 shows as 0)
                     what = (f"we lost {nd} at {self.tname(x)}" if nd != "0"
                             else f"{self.tname(x)} drove us off")
                     self.remember(f, x, 1.0 + dead / 5, f"{what} {self.when(t)}")
-        # chief at risk when he leads
-        if chief_leads and f.c.council is not None:
-            if rng.random() < (0.3 if not win else 0.03):
+        # a chief who leads falls with a party that is destroyed, and now and then in a win (he is
+        # guarded: a tenth of the share his party lost)
+        if chief_leads and f.c.council and f.has_chief(t):
+            if not win or rng.random() < 0.1 * la:
                 killer = x if x in self.players or x in self.factions else None
-                if f.c.council:
-                    self.succeed(f, killer, f"fell leading the attack on {self.tname(x)}")
+                self.succeed(f, killer, f"fell leading the attack on {self.tname(x)}")
         # the target side
         if x in self.factions:
             g = self.factions[x]
-            kd = g.home() * ld * (max(self.life["field_share"], min(1.0, 4.0 / max(g.pool, 1.0)))
-                                  if act == "skirmish" else 1.0)
+            met = g.field_share(self.life["field_share"]) if act == "skirmish" else g.c.guard_share
+            kd = g.home() * met * ld        # of those who met the attack
             g.pool = max(0.0, g.pool - kd)
             if win:
                 g.stores -= loot
@@ -806,7 +978,7 @@ class World:
             g.last_fight = t
             self.remember(g, f.id, 1.5 + kd / 5, f"{f.name} {'fell on our hunters' if small else 'raided us'}"
                           f" {self.when(t)}")
-            self.occasion(g, "provoked", f.id, delay=1 + self.rng.exponential(3))
+            self.occasion(g, "provoked", f.id)
             self.spread_news(x, "weak", g.defence(), exclude=f.id)
         elif x in self.villages:
             if win:
@@ -829,10 +1001,14 @@ class World:
                 p.robbed = getattr(p, "robbed", [])
                 p.robbed = [s for s in p.robbed if s > t - 30] + [t]
                 if len(p.robbed) >= 3 and t >= p.escort_until:
-                    p.escort_until = t + 96        # he puts guards on the trains for a year
+                    # he puts guards on the trains, for as long as he feels he must (48 to 144 days)
+                    p.escort_until = t + self.rng.uniform(48, 144)
                     self.rail_d = 20.0
                     self.log(f, "guards", "RAIL", reason="robbed three times in a month, the railway puts "
-                             "guards on its trains for a year")
+                             "guards on its trains")
+        if r is not None:
+            self.look(r, x)
+        self.touches += 1 + (x in self.factions)
         return e
 
     def demand(self, f, x, T, X, speaker="", reason=""):
@@ -841,7 +1017,7 @@ class World:
         r = f.rel[x]
         pays = False
         killed = False
-        top = X * (1 + self.life["raid_damage"]) if self.mode == "life" else X
+        top = X        # a payer pays when the demand is below what the raid would truly take
         if x in self.villages:
             v = self.villages[x]
             pays = T <= top + 1e-9 and v["stock"] >= T
@@ -857,15 +1033,23 @@ class World:
         e = self.log(f, "demand", x, reason=reason, speaker=speaker, T=round(T, 1), paid=pays, envoy_killed=killed)
         if self.mode == "life" and not killed:
             self.observe(r, self.target_defence(x), 0.3)    # the envoy party walked to the base and saw it
+            self.look(r, x)
         if pays:
             f.stores += T
-            r.g *= 1 - max(f.c.tribute_relief, 0.3)
-            r.W *= 0.3
             r.ta += 1
-            r.next_ok = t + f.c.respite
-            r.paid_until = t + self.life["tribute_respite"] * (0.5 + self.rng.random())
-            r.truce_until = r.paid_until if self.mode == "life" else t + 24
-            r.truce_by = f.chief().name
+            if self.mode == "ladder":
+                # settle (engine.rs 1897-1916): relief, back to Notice, held there for the respite
+                r.g *= 1 - f.c.tribute_relief
+                r.step = 1
+                r.next_ok = t + f.c.respite
+            else:
+                r.g *= 1 - max(f.c.tribute_relief, 0.3)
+                r.W *= 0.3
+                r.next_ok = t + f.c.respite
+                r.paid_until = t + self.life["tribute_respite"] * (0.5 + self.rng.random())
+                r.truce_until = r.paid_until if self.mode == "life" else t + 24
+                r.truce_by = f.chief().uid
+                r.truce_name = f.chief().name
             self.remember(f, x, 0.5, f"{self.tname(x)} paid {T:.0f} {self.when(t)}", hostile=False)
         else:
             r.tb += 1
@@ -914,42 +1098,47 @@ class World:
             self.log(f, "warn", x, reason=why)
         elif rung == 2:
             if self.can_pay(x) and c.tribute_per_g > 0:
-                T = math.ceil(c.tribute_per_g * r.g)
+                # escalate (engine.rs 1680-1683): tribute_per_grievance x g, bent by the aggression trait
+                T = max(1, math.ceil(c.tribute_per_g * r.g * f.bend))
                 X = self.expected_loss(f, x, 4)
                 self.demand(f, x, T, X, reason=why)
-                if r.ta > 1 and r.pending is None and r.refused_at < self.t:
-                    r.g *= 1 - c.tribute_relief
             else:
                 self.log(f, "warn", x, reason=why)
         elif rung == 3:
-            size, A, carry = c.party[3]
+            size = c.party[3][0]
             if size > 0 and f.home() >= 1 or c.name == "umvuthana":
                 self.scout(f, x, why)
         else:
-            size, A, carry = c.party[rung]
-            if c.name == "frostmaw" and x == "RAIL":
-                self.send(f, x, 1, A, carry, "ambush", why)
+            size = c.party[rung][0]
+            if size <= 0 or f.home() < size / 2:      # engine.rs 2236-2238: at least half the make-up
                 return
-            if f.home() < size / 2:
-                return
-            n = min(f.home(), size)
-            self.send(f, x, n, A * n / size, carry, "raid" if rung == 4 else "invasion", why)
+            n, A, carry = f.muster(rung)
+            chief = rung == 5 and c.invasion_pride > 0 and f.has_chief(self.t)
+            if chief:
+                A += c.chief_str                       # MOWZIE §4.5: the riding Umvuthi's 5.0
+            act = "ambush" if x == "RAIL" else ("raid" if rung == 4 else "invasion")
+            self.send(f, x, n, A, carry, act, why, chief_leads=chief)
 
     def scout(self, f, x, why, speaker=""):
         size, A, carry = f.c.party[3]
         r = f.rel[x]
         if size == 0:          # a raptor pack or the Frostmaw's look: draws on no pool
             self.observe(r, self.target_defence(x), 0.25)
+            self.look(r, x)
             self.log(f, "scout", x, reason=why, speaker=speaker, dead=0)
             return
         d = self.target_defence(x)
-        win, la, ld = battle(self.rng, A, d)
-        dead = round(size * la * 0.5, 1) if d > A else 0.0
+        seen = d
+        if x == "RAIL" and d > 1.0 and self.rng.random() < 0.5:
+            seen = 1.0                     # the guards rode in a closed car: the scouts saw a bare train
+        # scouts watch from cover; a defence stronger than them finds them and kills half as they run
+        dead = round(size * 0.5, 1) if seen > A else 0.0
         f.pool = max(0.0, f.pool - dead)
         if x in self.players and dead:
             self.player_loss(f, dead)
             r.g += f.c.kill_w * dead
-        self.observe(r, d, 0.25)
+        self.observe(r, seen, 0.25)
+        self.look(r, x)
         self.log(f, "scout", x, reason=why, speaker=speaker, dead=dead)
 
     def today_plunder(self, f, gate=False):
@@ -962,11 +1151,10 @@ class World:
         x = next((x for x in f.rel if self.hated(f, x)), None)
         if x is None or self.t < f.busy_until:
             return
-        size, A0, carry = f.c.party[8]
+        size = f.c.party[8][0]
         if size > 0 and f.home() < size / 2:
             return
-        n = min(f.home(), size) if size > 0 else 0
-        A = A0 * n / size if size > 0 else A0
+        n, A, carry = f.muster(8)
         if gate:
             d = self.target_defence(x)
             pw = A * A / (A * A + d * d)
@@ -984,11 +1172,15 @@ class World:
         return False
 
     def expected_loss(self, f, x, rung):
-        size, A, carry = f.c.party[rung]
-        if rung == 5 and f.c.invasion_pride > 0:
+        """What the rung's party would truly take from x now (the engine's fight is certain): the
+        survivors' carry if it wins, nothing if it loses. A scripted payer pays up to this."""
+        n, A, carry = f.muster(rung)
+        if f.c.name == "frostmaw":
+            n, A, carry = 1, f.c.party[rung][1], f.c.party[rung][2]
+        if rung == 5 and f.c.invasion_pride > 0 and f.has_chief(self.t):
             A += f.c.chief_str
-        d = self.target_defence(x)
-        return A * A / (A * A + d * d) * min(carry, self.target_stock(x))
+        win, la, _ = battle(A, self.target_defence(x), "square" if x in self.players else "linear")
+        return min(carry * (1 - la), self.target_stock(x)) if win else 0.0
 
     # ------------------------------------------------------------------------------- gate
     def gate_day(self, f):
@@ -998,7 +1190,10 @@ class World:
             return
         gp = GATE
         for x, r in f.rel.items():
-            if not (x in self.players or x == "RAIL"):
+            camp = x in self.factions
+            if not (x in self.players or x == "RAIL" or camp):
+                continue
+            if camp and (self.factions[x].dead or not self.hated(f, x)):
                 continue
             # belief decays to the prior with a 96-day half-life (EQUILIBRIUM 2.5 item 1)
             r.mu = math.log(15.0) + (r.mu - math.log(15.0)) * 2 ** (-1 / gp["belief_half"])
@@ -1012,32 +1207,31 @@ class World:
                 r.refused_at = t
                 size = c.party[rung][0]
                 if f.home() >= size / 2:
-                    n = min(f.home(), size)
-                    self.send(f, x, n, c.party[rung][1] * n / size, c.party[rung][2],
-                              "raid" if rung == 4 else "invasion", "the demand was refused")
+                    n, A, carry = self.gate_party(f, rung)
+                    self.send(f, x, n, A, carry, "raid" if rung == 4 else "invasion", "the demand was refused",
+                              chief_leads=rung == 5 and c.invasion_pride > 0 and f.has_chief(t))
                     r.next_ok = t + c.dwell[rung]
                 continue
-            belief = math.exp(r.mu)
+            belief = math.exp(r.mu) if not camp else max(self.target_defence(x), 0.1)   # item 5: the true pool
             g = r.g
             rev = gp["revenge_max"] * g / (g + gp["revenge_half"])
             best, best_ev = None, 0.0
             for rung in (4, 5, 6):
-                if g < c.thr[rung] and not (c.name == "frostmaw" and x == "RAIL"):
+                if g < c.thr[rung]:
                     continue
-                size, A0, carry = c.party[rung]
+                size = c.party[rung][0]
                 if size == 0 or f.home() < size / 2:
                     continue
-                n = min(f.home(), size)
-                A = A0 * n / size
+                n, A, carry = self.gate_party(f, rung)
+                if A <= 0:
+                    continue
                 pw = A * A / (A * A + belief * belief)
                 lw, ll = lw_ll(A, belief)
                 ev = pw * min(carry, self.target_stock(x)) - gp["warrior_value"] * n * (pw * lw + (1 - pw) * ll) + rev
                 if ev > best_ev:
                     best, best_ev = rung, ev
             if best is not None:
-                size, A0, carry = c.party[best]
-                n = min(f.home(), size)
-                A = A0 * n / size
+                n, A, carry = self.gate_party(f, best)
                 pw = A * A / (A * A + belief * belief)
                 X = pw * min(carry, self.target_stock(x))
                 T = max(1, math.ceil(0.5 * (best_ev + max(X, best_ev))))
@@ -1047,21 +1241,42 @@ class World:
                         r.gate_demand = (t + 3, T, best)
                     continue
                 act = "ambush" if x == "RAIL" else ("raid" if best == 4 else "invasion")
-                self.send(f, x, n, A, carry, act, "the attack was worth sending (the gate)")
+                self.send(f, x, n, A, carry, act, "the attack was worth sending (the gate)",
+                          chief_leads=best == 5 and c.invasion_pride > 0 and f.has_chief(t))
                 r.next_ok = t + c.dwell[best]
                 continue
-            if g >= c.thr[3] and t - r.last_probe >= gp["probe_days"] and (f.home() >= 1 or c.party[3][0] == 0):
+            if (not camp and g >= c.thr[3] and t - r.last_probe >= gp["probe_days"]
+                    and (f.home() >= 1 or c.party[3][0] == 0)):
                 r.last_probe = t
                 self.scout(f, x, "the 48-day probe (the gate)")
                 r.next_ok = t + c.dwell[3]
         self.today_plunder(f, gate=True)
 
+    def floor_now(self, f, r):
+        """What a defeat taught: the target beat a party this strong. It fades as the memory does."""
+        return r.floor * 2 ** (-(self.t - r.floor_t) / (4 * f.c.pride_half))
+
+    def gate_party(self, f, rung):
+        n, A, carry = f.muster(rung)
+        if rung == 5 and f.c.invasion_pride > 0 and f.has_chief(self.t):
+            A += f.c.chief_str
+        return n, A, carry
+
     # ------------------------------------------------------------------------------- life
-    def occasion(self, f, kind, about, delay=0.0):
-        """Something the council will sit on: today, or after the war party has gathered (delay days)."""
+    def occasion(self, f, kind, about, delay=None):
+        """Something the council will sit on: today, or after it has gathered (delay days). With no delay
+        given, an insult or a refusal is sat on after a wait drawn from the chief's temper: a hothead
+        calls the council within a day or two, a cool one lets it rest a week or more."""
         if self.mode != "life" or f.dead:
             return
-        f.pending = getattr(f, "pending", [])
+        if delay is None:
+            aggr = f.chief().aggr
+            if kind == "refused":
+                delay = 2 + self.rng.exponential(3 + 9 * (1 - aggr))
+            elif kind == "provoked":
+                delay = 1 + self.rng.exponential(2 + 4 * (1 - aggr))
+            else:
+                delay = 0.0
         f.pending.append((self.t + delay, kind, about))
 
     def life_day(self, f):
@@ -1069,11 +1284,15 @@ class World:
         if f.dead:
             f.pending = []
             return
-        occ = [o for o in getattr(f, "pending", []) if o[0] <= t]
-        f.pending = [o for o in getattr(f, "pending", []) if o[0] > t]
+        occ = [o for o in f.pending if o[0] <= t]
+        f.pending = [o for o in f.pending if o[0] > t]
         woke = False
+        aggr = f.chief().aggr
         for _, kind, about in occ:
-            p_attend = {"provoked": 1.0, "refused": 1.0, "news": 0.7, "caravan": self.life["caravan_attend"], "train": 1.0}[kind]
+            # a hothead always calls the council over an insult; a cool chief may let it pass (the restless
+            # clock can still bring it back)
+            p_attend = {"provoked": 0.5 + 0.5 * aggr, "refused": 0.3 + 0.6 * aggr, "news": 0.7,
+                        "caravan": self.life["caravan_attend"], "train": 1.0}[kind]
             if self.rng.random() < p_attend:
                 self.decide(f, kind, about)
                 woke = True
@@ -1115,6 +1334,8 @@ class World:
         if t < f.busy_until:
             return
         self.sittings += 1
+        f.sittings += 1
+        self.touches += 1
         self.matters += len(f.rel)
         v, bold, aggr, soc = self.speaker(f)
         h = f.hunger()
@@ -1139,16 +1360,19 @@ class World:
             war_ok = not (x == "RAIL" and kind != "train") and not (x == "CARAVAN" and kind != "caravan")
             best = None
             Dhat = math.exp(r.mu + math.sqrt(r.s2) * rng.normal() - L["bold_shift"] * (bold - 0.5))
+            fl = self.floor_now(f, r) if r.floor > 0 else 0.0
             if t < r.away_until:
                 Dhat *= 0.5                                  # the owner is away: only his walls are home
-            stock = self.target_stock(x)
+                fl *= 0.5
+            Dhat = max(Dhat, fl)                             # it beat a party this strong once
+            stock = self.believed_stock(x, r)
             g = r.g
             rev = c.rev_max * (0.5 + aggr) * g / (g + 100)
             pride = c.pride_w * (0.5 + aggr) * min(r.W, 1.5)    # scaled per act by the hope of answering it
             glory = c.glory_w * R * heir * (0.5 + bold)
             penalty = 0.0
             if t < r.truce_until:              # an oath binds the chief who swore it; an heir less
-                penalty = c.oath * (1.5 - aggr) * (L["sworn_mult"] if f.chief().name == r.truce_by else 1.0)
+                penalty = c.oath * (1.5 - aggr) * (L["sworn_mult"] if f.chief().uid == r.truce_by else 1.0)
             if x in self.factions and self.factions[x].c.name == c.name:
                 penalty += c.kin_cost
             if x in self.players and r.ta > 1.5:
@@ -1158,39 +1382,45 @@ class World:
                 penalty += L["peace_cost"] * (1 - min(1.0, g / 30)) * (1 - min(1.0, r.W))
             preempt = 0.0
             if x in self.factions and c.preempt_w > 0:
-                ratio = self.factions[x].pool / max(f.pool, 1.0)
+                # what it believes of the neighbour's numbers, against its own
+                tc = self.factions[x].c
+                ratio = math.exp(r.mu) / (tc.home_str * tc.guard_share) / max(f.pool, 1.0)
                 preempt = c.preempt_w * min(1.0, max(0.0, ratio - 1.2))
             threat = None          # the war act an envoy can name, even one pride has not yet unlocked
             if war_ok:
                 sizes = (8, 4, 5) if c.name != "frostmaw" else (4,)
+                law = "square" if x in self.players else "linear"
                 for rung in sizes:
-                    size, A0, carry = c.party[rung]
                     if c.name == "frostmaw":
                         if x != "RAIL" and x not in self.players:
                             continue
-                        n, A = 1, A0
+                        n, A, carry = 1, c.party[rung][1], c.party[rung][2]
                     else:
+                        size = c.party[rung][0]
                         if size == 0 or f.home() < max(1.0, size / 2):
                             continue
-                        n = min(f.home(), size)
-                        A = A0 * n / size
+                        n, A, carry = f.muster(rung)
+                        if n <= 0 or A <= 0:
+                            continue
                     chief_leads = False
                     gated = False
                     if rung == 5 and c.invasion_pride > 0:
-                        gated = r.W < c.invasion_pride     # the Umvuthi leads in person only on wounded pride
-                        A += c.chief_str
+                        if not f.has_chief(t):
+                            continue                       # no Umvuthi, no invasion: it leads in person
+                        gated = r.W < c.invasion_pride     # and only on wounded pride
+                        A += c.chief_str                   # riding with it, its 5.0 counts (12.6 in all)
                         chief_leads = True
-                    pw = A * A / (A * A + Dhat * Dhat)
-                    lw, ll = lw_ll(A, Dhat)
-                    lost = n * (pw * lw + (1 - pw) * ll)
-                    take = min(carry, stock)
+                    # the fight is certain; the council's count of the enemy is not
+                    pw, lw = believed(A, Dhat, law, L["battle_doubt"])
+                    lost = n * (pw * lw + (1 - pw))        # a party that loses is destroyed
+                    take = min(carry * (1 - lw), stock)    # what the survivors carry home
                     gain = pw * value(take)
                     need = pw * min(take, room) * c.greed * h      # the part of the gain that is hunger
                     if x in ("RAIL", "CARAVAN"):
                         gain *= c.ambush_w
                         need *= c.ambush_w
                     if c.name == "frostmaw":
-                        cost = (1 - pw) * 0.5 * L["frostmaw_life"] * fearm + c.effort
+                        cost = (1 - pw) * L["frostmaw_life"] * fearm + c.effort      # a lost fight kills it
                     else:
                         cost = c.warrior_value * lost * fearm + L["effort_member"] * n + c.effort
                     hope = 0.25 + 0.75 * pw                        # a hopeless attack answers little
@@ -1201,22 +1431,20 @@ class World:
                         act = "raid"
                     why = {"hunger": need, "loot": gain - need, "revenge": rev,
                            "pride": pride * hope, "glory": glory, "preempt": preempt}
-                    opt = (u, act, x, (n, A, carry, chief_leads, why, pw))
+                    opt = (u, act, x, (n, A, carry, chief_leads, why, pw, take))
                     if threat is None or u > threat[0]:
                         threat = opt
                     if not gated and (best is None or u > best[0]):
                         best = opt
                 if x in self.factions and c.name != "frostmaw" and c.party[8][0] > 0 and f.home() >= 4:
-                    size, A0, carry = c.party[8]
-                    n = min(f.home(), size)
-                    A = A0 * n / size
+                    n, A, carry = f.muster(8)
                     tg = self.factions[x]
-                    share = max(L["field_share"], min(1.0, 4.0 / max(tg.pool, 1.0)))
-                    Df = Dhat * share
-                    pw = A * A / (A * A + Df * Df)
-                    lw, ll = lw_ll(A, Df)
-                    lost = n * (pw * lw + (1 - pw) * ll)
-                    take = min(carry * 0.25, stock)            # a few beasts and what the hunters carried
+                    pool_hat = Dhat / (tg.c.home_str * tg.c.guard_share)   # the numbers it believes it has
+                    share = max(L["field_share"], min(1.0, 4.0 / max(pool_hat, 1.0)))
+                    Df = pool_hat * tg.c.home_str * share
+                    pw, lw = believed(A, Df, "linear", L["battle_doubt"])
+                    lost = n * (pw * lw + (1 - pw))
+                    take = min(carry * 0.25 * (1 - lw), stock)  # a few beasts and what the hunters carried
                     gain = pw * value(take)
                     need = pw * min(take, room) * c.greed * h
                     cost = c.warrior_value * lost * fearm + L["effort_member"] * n + c.effort
@@ -1225,20 +1453,19 @@ class World:
                     why = {"hunger": need, "loot": gain - need, "revenge": rev,
                            "pride": pride * hope, "glory": glory, "preempt": preempt}
                     if best is None or u > best[0]:
-                        best = (u, "skirmish", x, (n, A, carry * 0.25, False, why, pw))
+                        best = (u, "skirmish", x, (n, A, carry * 0.25, False, why, pw, take))
             # demand: an envoy, where the threat is credible and no tribute is running
             if (threat is not None and threat[1] != "ambush" and self.can_pay(x) and t >= r.paid_until
                     and t - r.refused_at > 12 and c.demand_bias > -50):
                 war_u = threat[0]
-                n, A, carry, _, _, pw = threat[3]
+                n, A, carry, _, _, pw, take = threat[3]
                 if pw > 0.25:
-                    X = pw * min(carry, stock)                      # what the camp believes x stands to lose
+                    X = pw * take                                   # what the camp believes x stands to lose
                     material = war_u - (rev + threat[3][4]["pride"] + glory + preempt - penalty)
                     T_min = max(1.0, material / max(vloot, 1e-6))   # the war's worth to the camp, in items
-                    Xd = X * (1 + L["raid_damage"])
-                    if T_min < Xd:
+                    if T_min < X:
                         k = 0.25 + 0.4 * aggr + 0.15 * h            # an aggressive speaker asks nearer the top
-                        T = T_min + k * (Xd - T_min)
+                        T = T_min + k * (X - T_min)
                         trust = r.ta / (r.ta + r.tb)
                         u = trust * value(T) * (1 + c.demand_bias / 10) + (1 - trust) * 0.9 * max(0.0, war_u) \
                             + 0.3 * pride - 0.5 * c.effort - 3 * L["effort_member"]
@@ -1286,7 +1513,7 @@ class World:
         r = f.rel[x]
         tn = self.tname(x)
         if act in ("raid", "invasion", "band", "ambush", "skirmish"):
-            n, A, carry, chief_leads, why, pw = info
+            n, A, carry, chief_leads, why, pw = info[:6]
             pos = {k: w for k, w in why.items() if w > 0}
             tot = sum(pos.values()) or 1.0
             drivers = sorted((k for k, w in pos.items() if w >= self.life["driver_share"] * tot),
@@ -1302,9 +1529,13 @@ class World:
                 if second not in reason:
                     reason += "; and " + second
             if self.t < r.truce_until:
-                ch = f.chief().name
-                reason += (f"; {ch} broke his own truce" if ch == r.truce_by
-                           else f"; {ch} had not sworn {r.truce_by}'s truce")
+                ch = f.chief()
+                if ch.uid == r.truce_by:
+                    reason += f"; {ch.name} broke his own truce"
+                elif ch.name == r.truce_name:
+                    reason += f"; this {ch.name} had not sworn the last one's truce"
+                else:
+                    reason += f"; {ch.name} had not sworn {r.truce_name}'s truce"
             e = self.send(f, x, n, A, carry, act, reason, speaker=f"{v.name} ({v.role})",
                           chief_leads=chief_leads or (act == "invasion" and c.name == "raider"))
             e["motive"] = top
@@ -1343,14 +1574,17 @@ class World:
             if accept:
                 dur = self.rng.exponential(192)
                 r.truce_until = t + dur
-                r.truce_by = f.chief().name
+                r.truce_by = f.chief().uid
+                r.truce_name = f.chief().name
                 r.g *= 0.3
                 r.W *= 0.3
                 if rr is not None:
                     rr.truce_until = t + dur
-                    rr.truce_by = g.chief().name
+                    rr.truce_by = g.chief().uid
+                    rr.truce_name = g.chief().name
                     rr.g *= 0.3
                     rr.W *= 0.3
+            self.touches += 1
             self.log(f, "truce", x, reason=f"{v.name} offered {tn} a truce", accepted=accept,
                      speaker=f"{v.name} ({v.role})", occasion=kind)
         elif act == "hunt":
@@ -1365,7 +1599,8 @@ class World:
         tn = self.tname(x)
         hostile = [m for m in r.memories if m[3]]
         mem = hostile[0][2] if hostile else None
-        news = f"word came that {tn} was away; " if x in self.players else f"word came that {tn} was weak; "
+        news = (f"word came that {tn} was away; " if x in self.players else
+                "word came that the trains ride without guards; " if x == "RAIL" else f"word came that {tn} was weak; ")
         occ = {"provoked": "", "refused": "", "news": news,
                "caravan": "a caravan came by; ", "train": "a train came through; ", "restless": ""}[kind]
         if top == "revenge":
@@ -1417,6 +1652,7 @@ LIFE_DEFAULTS = {
     "loot_base": 0.2,           # value of an item of loot to a fed camp
     "bold_shift": 1.0,          # how far boldness lowers the believed defence (log units at bold 1)
     "belief_drift": 1.0 / 384,  # belief variance regained a day
+    "wall_drift": 0.25,         # the share of it for a player's base, whose walls do not fall down
     "rumour_sd": 0.5,
     "speaker_weight": 0.6,
     "tau_mult": 1.0,
@@ -1429,7 +1665,7 @@ LIFE_DEFAULTS = {
     "tribute_respite": 48.0,    # days a paid tribute buys, on average
     "caravan_attend": 0.03,     # share of passing caravans a camp sits down to consider
     "clash_rate": 1.0,          # border clashes a year between two hostile neighbour camps (fed)
-    "raid_damage": 0.5,         # what a lost raid costs the target beyond the loot, as a share of it
+    "battle_doubt": 0.3,        # log sd of a council's count of the enemy when it weighs a fight
     "field_share": 0.15,        # share of a camp's strength out in the field, where a skirmish finds it
     "peace_cost": 8.0,          # falling on a camp with no quarrel and no old hate: making an enemy
     "driver_share": 0.25,       # a motive is named when it is at least this share of the push

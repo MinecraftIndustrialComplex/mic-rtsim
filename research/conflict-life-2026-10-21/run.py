@@ -5,7 +5,7 @@ results/stories.md and results/summary.md.
     nice -n 10 python3 run.py --jobs 4            # everything, about 5 minutes on 4 jobs
     nice -n 10 python3 run.py --quick             # 8 seeds, 20 years
 
-Metrics (CONFLICT-LIFE.md section 3):
+Metrics (CONFLICT-LIFE.md section 4):
   fights per world-year     war parties that fight: raids, invasions, bands, ambushes, plunders,
                             skirmishes
   losing raids              share of those fights the attacker lost, and lost fights per world-year
@@ -23,7 +23,16 @@ Metrics (CONFLICT-LIFE.md section 3):
   culture spread            the same camp in the same world on different seeds: Jensen-Shannon
                             divergence of its act mix, and the spread of its fights a year
   story overlap             two seeds of the same world: share of the first ten years' acts that
-                            match (same faction, act and target within 3 days)
+                            match (same faction, act and target within 3 days), and the same less
+                            the share that matches when one seed's story is shifted 48 days (chance)
+  excess dispersion         per faction, sqrt(max(0, var - mean)) / mean of its fights a year: 0 for a
+                            Poisson clock, above 0 for years of war and years of peace
+  refusal lag               days from a refused envoy to the camp's next fight on that target, and the
+                            share of those lags within a day of the commonest one (what a watcher who
+                            learned "they come N days after you refuse" would call right)
+  guards lag                days from the railway taking its guards off to the next train robbed
+  loot share                what each player lost a year (loot and tribute) as a share of his income
+                            (480 a year)
 """
 from __future__ import annotations
 
@@ -154,6 +163,35 @@ def world_stats(w):
     drivers = collections.Counter(d for e in fights for d in e.get("drivers", ["rule"]))
     loot_only = sum(1 for e in fights if e.get("drivers") == ["loot"])
     occasions = collections.Counter(e.get("occasion", "clock") for e in fights)
+    # excess dispersion of each faction's fights a year
+    disp = []
+    for f in w.factions:
+        ys = np.zeros(years)
+        for e in fights:
+            if e["f"] == f:
+                ys[min(years - 1, e["t"] // YEAR)] += 1
+        if ys.mean() >= 0.5:
+            disp.append(float(math.sqrt(max(0.0, ys.var() - ys.mean())) / ys.mean()))
+    # refusal to fight
+    refusal_lags = []
+    refusals = 0
+    for e in ev:
+        if e["act"] == "demand" and not e.get("paid"):
+            refusals += 1
+            nxt = next((g["t"] - e["t"] for g in fights if g["f"] == e["f"] and g["tgt"] == e["tgt"]
+                        and e["t"] <= g["t"] <= e["t"] + YEAR), None)
+            if nxt is not None:
+                refusal_lags.append(int(nxt))
+    # guards off to the next train robbed
+    guards_lags = []
+    rail_fights = sorted(e["t"] for e in fights if e["tgt"] == "RAIL")
+    for t0 in getattr(w, "guards_off", []):
+        nxt = next((t - t0 for t in rail_fights if t >= t0), None)
+        if nxt is not None:
+            guards_lags.append(int(nxt))
+    sit_by_c = collections.defaultdict(list)
+    for f in w.factions.values():
+        sit_by_c[f.c.name].append(f.sittings / years)
     out = {
         "fights_per_year": per_year.tolist(),
         "camp_fights_per_year": cc.tolist(),
@@ -189,6 +227,13 @@ def world_stats(w):
         "sittings_per_faction_year": getattr(w, "sittings", 0) / years / max(1, len(w.factions)),
         "matters_per_sitting": getattr(w, "matters", 0) / max(1, getattr(w, "sittings", 0)),
         "acts_per_faction_year": len([e for e in ev if e["act"] in ACTS]) / years / max(1, len(w.factions)),
+        "loot_by_player": {p: sum(e.get("loot", 0) for e in fights if e["tgt"] == p) / years for p in w.players},
+        "dispersion": disp,
+        "refusal_lags": refusal_lags,
+        "refusals": refusals,
+        "guards_lags": guards_lags,
+        "sittings_by_culture": {k: float(np.mean(v)) for k, v in sit_by_c.items()},
+        "touches_per_faction_day": getattr(w, "touches", 0) / sc.days / max(1, len(w.factions)),
     }
     if sc.duel:
         p = w.players["P:Ben"]
@@ -342,6 +387,20 @@ def summarize(rows):
             if np.mean(fr) > 0.2:
                 cvf.append(float(np.std(fr) / np.mean(fr)))
         ov = [overlap(rs[i]["story"], rs[i + 1]["story"]) for i in range(len(rs) - 1)]
+        ov_chance = [overlap(rs[i]["story"], [(t + 48, f, a, x) for t, f, a, x in rs[i + 1]["story"]])
+                     for i in range(len(rs) - 1)]
+        lags = [x for r in rs for x in r["refusal_lags"]]
+        mode_lag, mode_share = float("nan"), float("nan")
+        if lags:
+            cnt = collections.Counter(lags)
+            mode_lag = max(cnt, key=lambda k: (cnt[k], -k))
+            mode_share = sum(1 for x in lags if abs(x - mode_lag) <= 1) / len(lags)
+        glags = [x for r in rs for x in r["guards_lags"]]
+        disp = [x for r in rs for x in r["dispersion"]]
+        sit_c = collections.defaultdict(list)
+        for r in rs:
+            for k, v in r["sittings_by_culture"].items():
+                sit_c[k].append(v)
         cat = collections.Counter()
         cat_lost = collections.Counter()
         mot = collections.Counter()
@@ -386,6 +445,20 @@ def summarize(rows):
             "culture_js": float(np.mean(jsd)) if jsd else float("nan"),
             "culture_cv_fights": float(np.mean(cvf)) if cvf else float("nan"),
             "story_overlap": float(np.mean(ov)) if ov else float("nan"),
+            "story_overlap_chance": float(np.mean(ov_chance)) if ov_chance else float("nan"),
+            "dispersion": {"median": pct(disp, 50), "p10": pct(disp, 10), "p90": pct(disp, 90), "n": len(disp)},
+            "refusal": {"refusals_per_year": sum(r["refusals"] for r in rs) / (len(rs) * years),
+                        "fought_within_year": len(lags) / max(1, sum(r["refusals"] for r in rs)),
+                        "lag_median": pct(lags, 50), "lag_p10": pct(lags, 10), "lag_p90": pct(lags, 90),
+                        "mode": mode_lag, "mode_share": mode_share,
+                        "within_1_day": float(np.mean([x <= 1 for x in lags])) if lags else float("nan")},
+            "guards_lag": {"n": len(glags), "median": pct(glags, 50), "p10": pct(glags, 10), "p90": pct(glags, 90),
+                           "cv": float(np.std(glags) / np.mean(glags)) if glags and np.mean(glags) > 0 else float("nan")},
+            "loot_by_player": {p: float(np.mean([r["loot_by_player"][p] for r in rs])) for p in rs[0]["by_player"]},
+            "income_share_by_player": {p: float(np.mean([(r["loot_by_player"][p] + r["tribute_by_player"][p]) / 480.0
+                                                         for r in rs])) for p in rs[0]["by_player"]},
+            "sittings_by_culture": {k: float(np.mean(v)) for k, v in sit_c.items()},
+            "touches_per_faction_day": float(np.mean([r["touches_per_faction_day"] for r in rs])),
             "motives": {k: v / max(1, fights) for k, v in mot.most_common()},
             "occasions": {k: v / max(1, fights) for k, v in occ.most_common()},
         }
