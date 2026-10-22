@@ -284,7 +284,7 @@ final class SurveyJob {
     }
 
     private void readBlockEntities(Industry ind, LevelChunk chunk) {
-        Map<BlockPos, Boolean> cache = new HashMap<>();
+        it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap cache = Districts.kindCache();
         for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
             if (be.isRemoved())
                 continue;

@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -99,6 +100,9 @@ public final class Districts {
     long rescans;
     long rescanNanos;
     long lastRescanNanos;
+    /** Ticks the last detection took, and the longest single tick of detection work since the module started. */
+    int lastRescanSlices;
+    long maxSliceNanos;
     long declared;
 
     Districts(Industry ind) {
@@ -122,6 +126,21 @@ public final class Districts {
         return lastRescanNanos;
     }
 
+    /** The ticks the last detection was spread over. */
+    public int lastRescanSlices() {
+        return lastRescanSlices;
+    }
+
+    /** The longest single tick of detection work (a slice, or the commit with it) since the module started. */
+    public long maxSliceNanos() {
+        return maxSliceNanos;
+    }
+
+    /** Whether a detection is under way or waiting to start (GameTests). */
+    public boolean rescanning() {
+        return job != null || !passes.isEmpty();
+    }
+
     public District at(ResourceKey<Level> dim, long chunk) {
         Long2ObjectOpenHashMap<District> m = byChunk.get(dim);
         return m == null ? null : m.get(chunk);
@@ -142,11 +161,14 @@ public final class Districts {
         dirty.computeIfAbsent(dim, k -> new LongOpenHashSet()).add(chunk);
     }
 
-    /** Detection now, whatever the interval (commands and GameTests). */
+    /** Detection now, whatever the interval, in this tick (commands and GameTests). */
     public void rescanNow(ServerLevel level) {
-        dirty.computeIfAbsent(level.dimension(), k -> new LongOpenHashSet());
-        rescan(level, ind.gameTime(), true);
-        dirty.remove(level.dimension());
+        ResourceKey<Level> dim = level.dimension();
+        requeueRescans(dim);
+        LongOpenHashSet taken = dirty.remove(dim);
+        Rescan r = new Rescan(level, true, taken == null ? new LongOpenHashSet() : taken);
+        while (!r.step(Integer.MAX_VALUE))
+            ;
         lastRescan = ind.gameTime();
     }
 
@@ -252,7 +274,7 @@ public final class Districts {
             return;
         BlockEntity be = chunk.getBlockEntities().get(pos);
         District d = at(level.dimension(), chunk.getPos().toLong());
-        if (be != null && (seed(level, be, new HashMap<>()) || mayBecomeSeed(be))) {
+        if (be != null && (seed(level, be) || mayBecomeSeed(be))) {
             IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
             chunk.setData(IndustryAttachments.SEEDS.get(), s.plus(pos.asLong()));
             chunk.setUnsaved(true);
@@ -262,7 +284,7 @@ public final class Districts {
             edit(d, IndRecords.Edit.PLACED, player, pos);
             if (be != null)
                 markDirty(level.dimension(), chunk.getPos().toLong());
-        } else if (be != null && industrial(level, be, new HashMap<>())) {
+        } else if (be != null && industrial(level, be, kindCache())) {
             // Industrial but no seed, outside any district: a station (whose track graph forms a moment after it
             // is placed) beside one joins it at the next detection (DS-10); it starts none.
             markDirty(level.dimension(), chunk.getPos().toLong());
@@ -300,7 +322,7 @@ public final class Districts {
     /** Adopts every machine in the chunks around {@code centre} as a seed (worlds made before the mod). */
     public int adopt(ServerLevel level, ChunkPos centre, int radius) {
         int n = 0;
-        Map<BlockPos, Boolean> cache = new HashMap<>();
+        Long2ByteOpenHashMap cache = kindCache();
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
                 LevelChunk chunk = level.getChunkSource().getChunkNow(centre.x + dx, centre.z + dz);
@@ -328,15 +350,26 @@ public final class Districts {
 
     void tick(long now, long ticks) {
         int interval = IndustryConfig.get(IndustryConfig.RESCAN_INTERVAL);
-        if (!dirty.isEmpty() && now - lastRescan >= interval) {
-            for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : new ArrayList<>(dirty.entrySet())) {
-                ServerLevel level = ind.level(e.getKey());
-                if (level != null)
-                    rescan(level, now, fullDims.contains(e.getKey()));
-            }
+        if (job == null && passes.isEmpty() && !dirty.isEmpty() && now - lastRescan >= interval) {
+            // A pass: what is dirty now, a dimension at a time. Edits from here on wait for the next pass.
+            for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : new ArrayList<>(dirty.entrySet()))
+                if (ind.level(e.getKey()) != null)
+                    passes.add(new Pass(e.getKey(), e.getValue(), fullDims.contains(e.getKey())));
             dirty.clear();
             fullDims.clear();
-            lastRescan = now;
+            if (passes.isEmpty())
+                lastRescan = now;
+        }
+        if (job == null && !passes.isEmpty()) {
+            Pass p = passes.poll();
+            ServerLevel level = ind.level(p.dim);
+            if (level != null)
+                job = new Rescan(level, p.full, p.dirtyHere);
+        }
+        if (job != null && job.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK))) {
+            job = null;
+            if (passes.isEmpty())
+                lastRescan = now;
         }
         if (now - lastPeriodic >= IndustryConfig.get(IndustryConfig.PERIODIC_RESCAN)) {
             lastPeriodic = now;
@@ -540,14 +573,15 @@ public final class Districts {
     private record Candidate(BlockPos pos, int kind) {}
 
     private final class Scan {
-        final Map<Long, List<Candidate>> inventories = new HashMap<>();
+        /** Each scanned chunk's boundary inventories, described when the chunk was looked at (a chunk may unload before the commit). */
+        final Map<Long, List<District.Inventory>> inventories = new HashMap<>();
         final Map<Long, List<IndustryPlugin.StationInfo>> stations = new HashMap<>();
         final LongOpenHashSet creative = new LongOpenHashSet();
         final Map<Long, List<BlockPos>> watch = new HashMap<>();
         final List<Touch> touches = new ArrayList<>();
         final List<long[]> links = new ArrayList<>();
-        final Map<BlockPos, Boolean> industrialCache = new HashMap<>();
-        final Map<BlockPos, Boolean> seedCache = new HashMap<>();
+        /** What the detection learned of each block entity, by position: {@link #K_INDUSTRIAL} and {@link #K_SEED}. */
+        final Long2ByteOpenHashMap kinds = kindCache();
         /** Live seeds of each loaded chunk the detection looked at (every candidate and every reached chunk). */
         final Long2IntOpenHashMap seedCounts = new Long2IntOpenHashMap();
         /** Chunks looked at for a station, and the ones that hold one. */
@@ -555,78 +589,201 @@ public final class Districts {
         final LongOpenHashSet stationChunks = new LongOpenHashSet();
     }
 
-    /**
-     * One detection in a dimension. {@code full}: every district of the dimension (commands, the
-     * periodic pass); otherwise only the districts an edit can change: those owning a dirty chunk or a
-     * chunk next to one, grown until nothing the walk reaches belongs to a district outside the set.
-     */
-    private void rescan(ServerLevel level, long now, boolean full) {
-        long t0 = System.nanoTime();
-        ResourceKey<Level> dim = level.dimension();
-        Long2ObjectOpenHashMap<District> index = byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
-        LongOpenHashSet excluded = data.excluded(dim);
-        Long2LongOpenHashMap pins = data.pins(dim);
-        LongOpenHashSet dirtyHere = dirty.getOrDefault(dim, new LongOpenHashSet());
+    /** One dimension's share of a detection pass: the dirty chunks taken when the pass began. */
+    private record Pass(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full) {}
 
-        Set<Long> affected = new HashSet<>();
-        if (full) {
-            for (District d : data.districts.values())
-                if (d.dim == dim)
-                    affected.add(d.id);
-            affected.addAll(pins.values());
-        } else {
+    /** A detection under way (at most one at a time), and the dimensions waiting behind it. */
+    private Rescan job;
+    private final java.util.ArrayDeque<Pass> passes = new java.util.ArrayDeque<>();
+
+    /** Puts the detection under way for {@code dim}, and its queued passes, back where edits wait. */
+    private void requeueRescans(ResourceKey<Level> dim) {
+        if (job != null && job.dim == dim) {
+            requeue(job.dim, job.dirtyHere, job.full);
+            job = null;
+        }
+        for (java.util.Iterator<Pass> it = passes.iterator(); it.hasNext(); ) {
+            Pass p = it.next();
+            if (p.dim == dim) {
+                requeue(p.dim, p.dirtyHere, p.full);
+                it.remove();
+            }
+        }
+    }
+
+    private void requeue(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full) {
+        dirty.computeIfAbsent(dim, k -> new LongOpenHashSet()).addAll(dirtyHere);
+        if (full)
+            fullDims.add(dim);
+    }
+
+    /** Forgets the detection under way for {@code dim}, and its queued passes, edits and all (test helpers that wipe the dimension). */
+    private void dropRescans(ResourceKey<Level> dim) {
+        if (job != null && job.dim == dim)
+            job = null;
+        passes.removeIf(p -> p.dim == dim);
+    }
+
+    /**
+     * One detection in a dimension, done over several ticks. {@code full}: every district of the dimension
+     * (commands, the periodic pass); otherwise only the districts an edit can change: those owning a dirty
+     * chunk or a chunk next to one, grown until nothing the walk reaches belongs to a district outside the set.
+     *
+     * <p>Looking at the block entities of the chunks is the cost, so it is spread: {@link #step} looks at chunks
+     * until the tick's block entity budget is spent. Nothing a reader can see changes meanwhile: the district
+     * set, the index and the engine's records change in {@link #commit}, in one tick, from what the walk
+     * recorded. A chunk is looked at whole and what it holds is recorded then (its seeds, inventories, stations,
+     * links), so a chunk that unloads after it was looked at still counts as it was, and one that unloads before
+     * it is looked at is an unloaded member (it keeps what its district knew). Edits that arrive meanwhile are in
+     * {@link #dirty}, not in this detection's snapshot, and make the next one.
+     */
+    private final class Rescan {
+        final ServerLevel level;
+        final ResourceKey<Level> dim;
+        final boolean full;
+        /** The dirty chunks this detection took; kept so an abort can hand them back. */
+        final LongOpenHashSet dirtyHere;
+        final Long2ObjectOpenHashMap<District> index;
+        final LongOpenHashSet excluded;
+        final Long2LongOpenHashMap pins;
+        final Set<Long> affected = new HashSet<>();
+        final Scan scan = new Scan();
+        final LongOpenHashSet visited = new LongOpenHashSet();
+        final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+        /** Chunks asked about as roots (once each), in order, and how far the asking has got. */
+        final LongOpenHashSet scheduled = new LongOpenHashSet();
+        final LongArrayList pending = new LongArrayList();
+        int cursor;
+        /** Candidate chunks that were loaded when they were looked at. */
+        final LongOpenHashSet loadedAtTest = new LongOpenHashSet();
+        long nanos;
+        int slices;
+        long maxSlice;
+
+        Rescan(ServerLevel level, boolean full, LongOpenHashSet dirtyHere) {
+            this.level = level;
+            this.dim = level.dimension();
+            this.full = full;
+            this.dirtyHere = dirtyHere;
+            this.index = byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
+            this.excluded = data.excluded(dim);
+            this.pins = data.pins(dim);
+            if (full) {
+                for (District d : data.districts.values())
+                    if (d.dim == dim)
+                        affected.add(d.id);
+                affected.addAll(pins.values());
+            } else {
+                for (long c : dirtyHere)
+                    for (int dx = -1; dx <= 1; dx++)
+                        for (int dz = -1; dz <= 1; dz++) {
+                            District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
+                            if (o != null)
+                                affected.add(o.id);
+                        }
+            }
             for (long c : dirtyHere)
-                for (int dx = -1; dx <= 1; dx++)
-                    for (int dz = -1; dz <= 1; dz++) {
-                        District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
-                        if (o != null)
-                            affected.add(o.id);
-                    }
+                schedule(c);
+            scheduleDistricts(affected);
         }
 
-        Scan scan;
-        LongOpenHashSet visited;
-        while (true) {
-            LongOpenHashSet candidates = new LongOpenHashSet(dirtyHere);
-            for (long id : affected) {
+        private void schedule(long c) {
+            if (scheduled.add(c))
+                pending.add(c);
+        }
+
+        /** The chunks of these districts, and the chunks pinned to them, are candidates. */
+        private void scheduleDistricts(Set<Long> ids) {
+            for (long id : ids) {
                 District d = data.districts.get(id);
                 if (d != null)
-                    candidates.addAll(d.chunks);
+                    for (long c : d.chunks)
+                        schedule(c);
             }
             for (Long2LongOpenHashMap.Entry e : pins.long2LongEntrySet())
-                if (affected.contains(e.getLongValue()) || dirtyHere.contains(e.getLongKey()))
-                    candidates.add(e.getLongKey());
+                if (ids.contains(e.getLongValue()))
+                    schedule(e.getLongKey());
+        }
 
-            scan = new Scan();
-            visited = new LongOpenHashSet();
-            LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
-            for (long c : candidates) {
-                if (excluded.contains(c))
-                    continue;
-                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
-                if (chunk == null)
-                    continue;
-                if (seedsIn(level, chunk, scan) > 0 || pins.containsKey(c) || holdsStation(chunk, scan)
-                        || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan))) {
-                    if (visited.add(c))
-                        queue.enqueue(c);
+        /**
+         * Looks at chunks until about {@code budget} block entities are spent (at least one chunk, whatever the
+         * budget), or commits when everything is looked at. True when the detection is done.
+         */
+        boolean step(int budget) {
+            long t0 = System.nanoTime();
+            long spent = 0;
+            boolean progressed = false, done = false;
+            while (true) {
+                if (progressed && spent >= budget)
+                    break;
+                if (cursor < pending.size()) {
+                    spent += root(pending.getLong(cursor++));
+                } else if (!queue.isEmpty()) {
+                    spent += walk(queue.dequeueLong());
+                } else {
+                    Set<Long> more = full ? Set.of() : grown();
+                    if (!more.isEmpty()) {
+                        affected.addAll(more);
+                        scheduleDistricts(more);
+                        continue;
+                    }
+                    commit();
+                    done = true;
+                    break;
                 }
+                progressed = true;
             }
-            final LongOpenHashSet seen = visited;
-            final Scan sc = scan;
-            while (!queue.isEmpty()) {
-                long c = queue.dequeueLong();
-                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
-                if (chunk == null)
-                    continue;
-                scanChunk(level, chunk, sc, excluded, (n) -> {
-                    if (!excluded.contains(n) && seen.add(n))
-                        queue.enqueue(n);
-                });
+            long dt = System.nanoTime() - t0;
+            nanos += dt;
+            slices++;
+            maxSlice = Math.max(maxSlice, dt);
+            if (done) {
+                rescans++;
+                rescanNanos += nanos;
+                lastRescanNanos = nanos;
+                lastRescanSlices = slices;
             }
-            if (full)
-                break;
-            // Grow: a district next to (or pinned at) a chunk the walk reached may merge with it.
+            maxSliceNanos = Math.max(maxSliceNanos, dt);
+            return done;
+        }
+
+        /** Whether candidate chunk {@code c} starts the walk; enqueues it when it does. Returns the block entities spent. */
+        private int root(long c) {
+            if (excluded.contains(c))
+                return 1;
+            LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+            if (chunk == null)
+                return 1;
+            loadedAtTest.add(c);
+            int cost = 1;
+            boolean root = seedsIn(level, chunk, scan) > 0 || pins.containsKey(c);
+            if (!root) {
+                cost += chunk.getBlockEntities().size();
+                root = holdsStation(chunk, scan) || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan));
+            }
+            if (root && visited.add(c))
+                queue.enqueue(c);
+            return cost;
+        }
+
+        /** Looks at one reached chunk. Returns the block entities spent. */
+        private int walk(long c) {
+            LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+            if (chunk == null) {
+                // Unloaded since it was reached: an unloaded member, as if the detection had come a moment earlier.
+                visited.remove(c);
+                loadedAtTest.remove(c);
+                return 1;
+            }
+            seedsIn(level, chunk, scan);
+            return 1 + scanChunk(level, chunk, scan, excluded, (n) -> {
+                if (!excluded.contains(n) && visited.add(n))
+                    queue.enqueue(n);
+            });
+        }
+
+        /** Grow: a district next to (or pinned at) a chunk the walk reached may merge with it. */
+        private Set<Long> grown() {
             Set<Long> more = new HashSet<>();
             for (long c : visited) {
                 for (int dx = -1; dx <= 1; dx++)
@@ -638,232 +795,241 @@ public final class Districts {
                 if (pins.containsKey(c) && !affected.contains(pins.get(c)))
                     more.add(pins.get(c));
             }
-            if (more.isEmpty())
-                break;
-            affected.addAll(more);
+            return more;
         }
 
-        // Members: the reached loaded chunks, the unloaded chunks of the districts in question, their
-        // pinned chunks; never an excluded one.
-        LongOpenHashSet members = new LongOpenHashSet(visited);
-        for (long id : affected) {
-            District d = data.districts.get(id);
-            if (d != null)
-                for (long c : d.chunks)
-                    if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) == null)
-                        members.add(c);
-        }
-        for (Long2LongOpenHashMap.Entry e : pins.long2LongEntrySet())
-            if (affected.contains(e.getLongValue()))
-                members.add(e.getLongKey());
-        members.removeAll(excluded);
+        /** The district set, the index and the records, from what the walk recorded: one tick, no block entity visited. */
+        private void commit() {
+            long now = ind.gameTime();
+            // Members: the reached loaded chunks, the chunks of the districts in question that were not loaded
+            // when they were looked at, their pinned chunks; never an excluded one.
+            LongOpenHashSet members = new LongOpenHashSet(visited);
+            for (long id : affected) {
+                District d = data.districts.get(id);
+                if (d != null)
+                    for (long c : d.chunks)
+                        if (!loadedAtTest.contains(c))
+                            members.add(c);
+            }
+            for (Long2LongOpenHashMap.Entry e : pins.long2LongEntrySet())
+                if (affected.contains(e.getLongValue()))
+                    members.add(e.getLongKey());
+            members.removeAll(excluded);
 
-        // Components: unpinned members by 8-neighbour adjacency, plugin links and merge links; pinned
-        // chunks by their pin.
-        Long2LongOpenHashMap parent = new Long2LongOpenHashMap();
-        parent.defaultReturnValue(Long.MIN_VALUE);
-        for (long c : members)
-            parent.put(c, c);
-        for (long c : members) {
-            if (pins.containsKey(c))
-                continue;
-            int x = ChunkPos.getX(c), z = ChunkPos.getZ(c);
-            for (int dx = -1; dx <= 1; dx++)
-                for (int dz = -1; dz <= 1; dz++) {
-                    long n = ChunkPos.asLong(x + dx, z + dz);
-                    if ((dx != 0 || dz != 0) && members.contains(n) && !pins.containsKey(n))
-                        union(parent, c, n);
+            // Components: unpinned members by 8-neighbour adjacency, plugin links and merge links; pinned
+            // chunks by their pin.
+            Long2LongOpenHashMap parent = new Long2LongOpenHashMap();
+            parent.defaultReturnValue(Long.MIN_VALUE);
+            for (long c : members)
+                parent.put(c, c);
+            for (long c : members) {
+                if (pins.containsKey(c))
+                    continue;
+                int x = ChunkPos.getX(c), z = ChunkPos.getZ(c);
+                for (int dx = -1; dx <= 1; dx++)
+                    for (int dz = -1; dz <= 1; dz++) {
+                        long n = ChunkPos.asLong(x + dx, z + dz);
+                        if ((dx != 0 || dz != 0) && members.contains(n) && !pins.containsKey(n))
+                            union(parent, c, n);
+                    }
+            }
+            for (long[] l : scan.links)
+                if (members.contains(l[0]) && members.contains(l[1]) && !pins.containsKey(l[0]) && !pins.containsKey(l[1]))
+                    union(parent, l[0], l[1]);
+            for (long[] l : data.mergeLinks(dim))
+                if (members.contains(l[0]) && members.contains(l[1]) && !pins.containsKey(l[0]) && !pins.containsKey(l[1]))
+                    union(parent, l[0], l[1]);
+            Map<Long, LongArrayList> groups = new HashMap<>();
+            Map<Long, LongArrayList> pinned = new HashMap<>();
+            for (long c : members) {
+                if (pins.containsKey(c))
+                    pinned.computeIfAbsent(pins.get(c), k -> new LongArrayList()).add(c);
+                else
+                    groups.computeIfAbsent(find(parent, c), k -> new LongArrayList()).add(c);
+            }
+
+            // Seeds (DS-10): a district holds at least one machine a player placed. A loaded chunk counts what it
+            // held when it was looked at, an unloaded one what its district recorded; a group with none is not a
+            // district (its old district, if any, has no successor and is removed below). A pinned group is the operator's.
+            Long2IntOpenHashMap counts = new Long2IntOpenHashMap();
+            for (long c : members) {
+                if (visited.contains(c))
+                    counts.put(c, scan.seedCounts.get(c));
+                else {
+                    District old = index.get(c);
+                    if (old != null)
+                        counts.put(c, old.seedCounts.get(c));
                 }
-        }
-        for (long[] l : scan.links)
-            if (members.contains(l[0]) && members.contains(l[1]) && !pins.containsKey(l[0]) && !pins.containsKey(l[1]))
-                union(parent, l[0], l[1]);
-        for (long[] l : data.mergeLinks(dim))
-            if (members.contains(l[0]) && members.contains(l[1]) && !pins.containsKey(l[0]) && !pins.containsKey(l[1]))
-                union(parent, l[0], l[1]);
-        Map<Long, LongArrayList> groups = new HashMap<>();
-        Map<Long, LongArrayList> pinned = new HashMap<>();
-        for (long c : members) {
-            if (pins.containsKey(c))
-                pinned.computeIfAbsent(pins.get(c), k -> new LongArrayList()).add(c);
-            else
-                groups.computeIfAbsent(find(parent, c), k -> new LongArrayList()).add(c);
-        }
-
-        // Seeds (DS-10): a district holds at least one machine a player placed. A loaded chunk counts what it
-        // holds now, an unloaded one what its district recorded; a group with none is not a district (its
-        // old district, if any, has no successor and is removed below). A pinned group is the operator's.
-        Long2IntOpenHashMap counts = new Long2IntOpenHashMap();
-        for (long c : members) {
-            if (visited.contains(c))
-                counts.put(c, seedsIn(level, c, scan));
-            else {
-                District old = index.get(c);
-                if (old != null)
-                    counts.put(c, old.seedCounts.get(c));
             }
-        }
-        groups.values().removeIf(g -> {
-            for (long c : g)
-                if (counts.get(c) > 0)
-                    return false;
-            return true;
-        });
+            groups.values().removeIf(g -> {
+                for (long c : g)
+                    if (counts.get(c) > 0)
+                        return false;
+                return true;
+            });
 
-        // Ids: a pinned group keeps its pin; an automatic one the old district it overlaps most (each
-        // old id once, the biggest group first); the rest get new ids (never reused, F3).
-        Map<Long, LongArrayList> assigned = new HashMap<>(pinned);
-        List<LongArrayList> autos = new ArrayList<>(groups.values());
-        autos.sort(Comparator.comparingInt((LongArrayList g) -> -g.size()).thenComparingLong(g -> minChunk(g)));
-        Set<Long> taken = new HashSet<>(pinned.keySet());
-        Set<Long> pinnedIds = new HashSet<>(pins.values());
-        for (LongArrayList g : autos) {
-            Map<Long, Integer> overlap = new HashMap<>();
-            for (long c : g) {
-                District old = index.get(c);
-                if (old != null && !taken.contains(old.id) && !pinnedIds.contains(old.id))
-                    overlap.merge(old.id, 1, Integer::sum);
-            }
-            long id = -1;
-            int best = 0;
-            for (Map.Entry<Long, Integer> e : overlap.entrySet())
-                if (e.getValue() > best || (e.getValue() == best && e.getKey() < id)) {
-                    best = e.getValue();
-                    id = e.getKey();
+            // Ids: a pinned group keeps its pin; an automatic one the old district it overlaps most (each
+            // old id once, the biggest group first); the rest get new ids (never reused, F3).
+            Map<Long, LongArrayList> assigned = new HashMap<>(pinned);
+            List<LongArrayList> autos = new ArrayList<>(groups.values());
+            autos.sort(Comparator.comparingInt((LongArrayList g) -> -g.size()).thenComparingLong(g -> minChunk(g)));
+            Set<Long> taken = new HashSet<>(pinned.keySet());
+            Set<Long> pinnedIds = new HashSet<>(pins.values());
+            for (LongArrayList g : autos) {
+                Map<Long, Integer> overlap = new HashMap<>();
+                for (long c : g) {
+                    District old = index.get(c);
+                    if (old != null && !taken.contains(old.id) && !pinnedIds.contains(old.id))
+                        overlap.merge(old.id, 1, Integer::sum);
                 }
-            if (id < 0)
-                id = data.allocateId();
-            taken.add(id);
-            assigned.put(id, g);
-        }
-
-        // Build the new districts: chunks, inventories, stations, name, crossings.
-        Long2LongOpenHashMap owner = new Long2LongOpenHashMap();
-        owner.defaultReturnValue(-1);
-        for (Map.Entry<Long, LongArrayList> e : assigned.entrySet())
-            for (long c : e.getValue())
-                owner.put(c, (long) e.getKey());
-        Map<Long, Integer> crossing = new HashMap<>();
-        for (Touch t : scan.touches) {
-            long oa = owner.get(t.a), ob = owner.get(t.b);
-            if (oa == ob)
-                continue;
-            int code = crossingCode(level, t.pa, t.pb);
-            if (code == 0)
-                continue;
-            if (oa >= 0)
-                crossing.merge(oa, code, Math::min);
-            if (ob >= 0)
-                crossing.merge(ob, code, Math::min);
-        }
-
-        Set<Long> survivors = new HashSet<>();
-        for (Map.Entry<Long, LongArrayList> e : assigned.entrySet()) {
-            long id = e.getKey();
-            survivors.add(id);
-            District d = data.districts.get(id);
-            boolean fresh = d == null;
-            if (fresh) {
-                d = new District(id, dim);
-                data.districts.put(id, d);
+                long id = -1;
+                int best = 0;
+                for (Map.Entry<Long, Integer> e : overlap.entrySet())
+                    if (e.getValue() > best || (e.getValue() == best && e.getKey() < id)) {
+                        best = e.getValue();
+                        id = e.getKey();
+                    }
+                if (id < 0)
+                    id = data.allocateId();
+                taken.add(id);
+                assigned.put(id, g);
             }
-            LongOpenHashSet chunks = new LongOpenHashSet(e.getValue());
-            List<District.Inventory> invs = new ArrayList<>();
-            List<District.Station> stations = new ArrayList<>();
-            Set<BlockPos> seen = new HashSet<>();
-            boolean creative = false;
-            List<BlockPos> watch = new ArrayList<>();
-            for (long c : chunks) {
-                boolean isLoaded = visited.contains(c);
-                if (isLoaded) {
-                    for (Candidate cand : scan.inventories.getOrDefault(c, List.of())) {
-                        if (seen.add(cand.pos)) {
-                            District.Inventory inv = describe(level, cand);
-                            if (inv != null)
-                                invs.add(inv);
-                        } else if (cand.kind != 0) {
-                            // Tagged storage that is also a packager's target or a postbox: one inventory, both kinds.
-                            for (int i = 0; i < invs.size(); i++)
-                                if (invs.get(i).pos().equals(cand.pos))
-                                    invs.set(i, new District.Inventory(0, cand.pos, invs.get(i).kind() | cand.kind, invs.get(i).itemSlots(),
-                                            invs.get(i).fluidCapacity(), invs.get(i).energyCapacity()));
+
+            // Build the new districts: chunks, inventories, stations, name, crossings.
+            Long2LongOpenHashMap owner = new Long2LongOpenHashMap();
+            owner.defaultReturnValue(-1);
+            for (Map.Entry<Long, LongArrayList> e : assigned.entrySet())
+                for (long c : e.getValue())
+                    owner.put(c, (long) e.getKey());
+            Map<Long, Integer> crossing = new HashMap<>();
+            for (Touch t : scan.touches) {
+                long oa = owner.get(t.a), ob = owner.get(t.b);
+                if (oa == ob)
+                    continue;
+                int code = crossingCode(level, t.pa, t.pb);
+                if (code == 0)
+                    continue;
+                if (oa >= 0)
+                    crossing.merge(oa, code, Math::min);
+                if (ob >= 0)
+                    crossing.merge(ob, code, Math::min);
+            }
+
+            Set<Long> survivors = new HashSet<>();
+            for (Map.Entry<Long, LongArrayList> e : assigned.entrySet()) {
+                long id = e.getKey();
+                survivors.add(id);
+                District d = data.districts.get(id);
+                boolean fresh = d == null;
+                if (fresh) {
+                    d = new District(id, dim);
+                    data.districts.put(id, d);
+                }
+                LongOpenHashSet chunks = new LongOpenHashSet(e.getValue());
+                List<District.Inventory> invs = new ArrayList<>();
+                List<District.Station> stations = new ArrayList<>();
+                Set<BlockPos> seen = new HashSet<>();
+                boolean creative = false;
+                List<BlockPos> watch = new ArrayList<>();
+                for (long c : chunks) {
+                    if (visited.contains(c)) {
+                        for (District.Inventory inv : scan.inventories.getOrDefault(c, List.of()))
+                            addInventory(invs, seen, inv.pos(), inv.kind(), inv);
+                        for (IndustryPlugin.StationInfo s : scan.stations.getOrDefault(c, List.of()))
+                            stations.add(new District.Station(s.id(), s.pos(), s.name()));
+                        creative |= scan.creative.contains(c);
+                        watch.addAll(scan.watch.getOrDefault(c, List.of()));
+                    } else {
+                        // Unloaded: keep what the old districts knew of this chunk.
+                        District old = index.get(c);
+                        if (old != null) {
+                            for (District.Inventory inv : old.inventories)
+                                if (inv.chunk() == c && seen.add(inv.pos()))
+                                    invs.add(inv);
+                            for (District.Station s : old.stations)
+                                if (ChunkPos.asLong(s.pos().getX() >> 4, s.pos().getZ() >> 4) == c)
+                                    stations.add(s);
+                            for (BlockPos w : old.watch)
+                                if (ChunkPos.asLong(w.getX() >> 4, w.getZ() >> 4) == c)
+                                    watch.add(w);
+                            creative |= old.creative;
                         }
                     }
-                    for (IndustryPlugin.StationInfo s : scan.stations.getOrDefault(c, List.of()))
-                        stations.add(new District.Station(s.id(), s.pos(), s.name()));
-                    creative |= scan.creative.contains(c);
-                    watch.addAll(scan.watch.getOrDefault(c, List.of()));
-                } else {
-                    // Unloaded: keep what the old districts knew of this chunk.
-                    District old = index.get(c);
-                    if (old != null) {
-                        for (District.Inventory inv : old.inventories)
-                            if (inv.chunk() == c && seen.add(inv.pos()))
-                                invs.add(inv);
-                        for (District.Station s : old.stations)
-                            if (ChunkPos.asLong(s.pos().getX() >> 4, s.pos().getZ() >> 4) == c)
-                                stations.add(s);
-                        for (BlockPos w : old.watch)
-                            if (ChunkPos.asLong(w.getX() >> 4, w.getZ() >> 4) == c)
-                                watch.add(w);
-                        creative |= old.creative;
-                    }
+                }
+                invs.sort(Comparator.comparingLong(i -> i.pos().asLong()));
+                for (int i = 0; i < invs.size(); i++)
+                    invs.set(i, invs.get(i).withIndex(i));
+                stations.sort(Comparator.comparingLong(s -> s.pos().asLong()));
+                String stationName = stations.isEmpty() ? null : stations.get(0).name();
+                int notLearnable = crossing.getOrDefault(id, 0);
+                boolean changed = fresh || !d.chunks.equals(chunks) || !d.inventories.equals(invs) || !d.stations.equals(stations)
+                        || !java.util.Objects.equals(d.stationName, stationName) || d.notLearnable != notLearnable;
+                d.chunks.clear();
+                d.chunks.addAll(chunks);
+                d.seedCounts.clear();
+                for (long c : chunks)
+                    if (counts.get(c) > 0)
+                        d.seedCounts.put(c, counts.get(c));
+                d.inventories = invs;
+                d.stations = stations;
+                d.stationName = stationName;
+                d.notLearnable = notLearnable;
+                d.creative = creative;
+                d.watch = watch;
+                d.recomputeBounds();
+                if (changed) {
+                    d.revision++;
+                    declare(d, now);
+                    d.loadDirty = true;
+                    LongOpenHashSet ls = new LongOpenHashSet();
+                    for (long c : chunks)
+                        if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) != null)
+                            ls.add(c);
+                    LongOpenHashSet before = loaded.put(id, ls);
+                    reportLoaded(level, d, ls, before, now);
+                    ind.sampler.revisionChanged(d);
                 }
             }
-            invs.sort(Comparator.comparingLong(i -> i.pos().asLong()));
-            for (int i = 0; i < invs.size(); i++)
-                invs.set(i, invs.get(i).withIndex(i));
-            stations.sort(Comparator.comparingLong(s -> s.pos().asLong()));
-            String stationName = stations.isEmpty() ? null : stations.get(0).name();
-            int notLearnable = crossing.getOrDefault(id, 0);
-            boolean changed = fresh || !d.chunks.equals(chunks) || !d.inventories.equals(invs) || !d.stations.equals(stations)
-                    || !java.util.Objects.equals(d.stationName, stationName) || d.notLearnable != notLearnable;
-            d.chunks.clear();
-            d.chunks.addAll(chunks);
-            d.seedCounts.clear();
-            for (long c : chunks)
-                if (counts.get(c) > 0)
-                    d.seedCounts.put(c, counts.get(c));
-            d.inventories = invs;
-            d.stations = stations;
-            d.stationName = stationName;
-            d.notLearnable = notLearnable;
-            d.creative = creative;
-            d.watch = watch;
-            d.recomputeBounds();
-            if (changed) {
-                d.revision++;
-                declare(d, now);
-                d.loadDirty = true;
-                LongOpenHashSet ls = new LongOpenHashSet();
-                for (long c : chunks)
-                    if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) != null)
-                        ls.add(c);
-                LongOpenHashSet before = loaded.put(id, ls);
-                reportLoaded(level, d, ls, before, now);
-                ind.sampler.revisionChanged(d);
+            // Removed: districts in question with no successor.
+            for (District old : new ArrayList<>(data.districts.values())) {
+                if (old.dim != dim || survivors.contains(old.id) || !affected.contains(old.id))
+                    continue;
+                data.districts.remove(old.id);
+                loaded.remove(old.id);
+                ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT_REMOVED, IndRecords.DistrictRemoved.SIZE, 0);
+                r.putLong(IndRecords.DistrictRemoved.DISTRICT, old.id);
+                ind.commit(r);
+                ind.sampler.revisionChanged(old);
+            }
+            index.clear();
+            for (District d : data.districts.values())
+                if (d.dim == dim)
+                    for (long c : d.chunks)
+                        index.put(c, d);
+            data.setDirty();
+        }
+    }
+
+    /**
+     * Adds an inventory to a district's list once: a second sighting of the same position (a packager's target
+     * that is also tagged storage, a postbox) only adds its kind bits to the one already there.
+     */
+    private static void addInventory(List<District.Inventory> invs, Set<BlockPos> seen, BlockPos pos, int kind, District.Inventory inv) {
+        if (seen.add(pos)) {
+            if (inv != null)
+                invs.add(inv);
+            return;
+        }
+        if (kind == 0)
+            return;
+        for (int i = 0; i < invs.size(); i++) {
+            District.Inventory old = invs.get(i);
+            if (old.pos().equals(pos)) {
+                if ((old.kind() | kind) != old.kind())
+                    invs.set(i, new District.Inventory(0, pos, old.kind() | kind, old.itemSlots(), old.fluidCapacity(), old.energyCapacity()));
+                return;
             }
         }
-        // Removed: districts in question with no successor.
-        for (District old : new ArrayList<>(data.districts.values())) {
-            if (old.dim != dim || survivors.contains(old.id) || !affected.contains(old.id))
-                continue;
-            data.districts.remove(old.id);
-            loaded.remove(old.id);
-            ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT_REMOVED, IndRecords.DistrictRemoved.SIZE, 0);
-            r.putLong(IndRecords.DistrictRemoved.DISTRICT, old.id);
-            ind.commit(r);
-            ind.sampler.revisionChanged(old);
-        }
-        index.clear();
-        for (District d : data.districts.values())
-            if (d.dim == dim)
-                for (long c : d.chunks)
-                    index.put(c, d);
-        data.setDirty();
-        rescans++;
-        lastRescanNanos = System.nanoTime() - t0;
-        rescanNanos += lastRescanNanos;
     }
 
     private static long minChunk(LongArrayList g) {
@@ -917,7 +1083,7 @@ public final class Districts {
                 BlockEntity be = chunk.getBlockEntities().get(BlockPos.of(p));
                 if (be == null || be.isRemoved()) {
                     kept = kept.minus(p);
-                } else if (seed(level, be, scan.seedCache)) {
+                } else if (seed(level, be, scan.kinds)) {
                     n++;
                 } else if (!mayBecomeSeed(be)) {
                     kept = kept.minus(p);
@@ -968,7 +1134,7 @@ public final class Districts {
             int lx = p.getX() & 15, lz = p.getZ() & 15;
             if (lx != 0 && lx != 15 && lz != 0 && lz != 15)
                 continue;
-            if (!industrial(level, be, scan.industrialCache))
+            if (!industrial(level, be, scan.kinds))
                 continue;
             for (Direction d : Direction.Plane.HORIZONTAL) {
                 BlockPos n = p.relative(d);
@@ -982,8 +1148,10 @@ public final class Districts {
         return false;
     }
 
-    private void scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
+    /** Looks at every block entity of a loaded chunk and records what it holds in {@code scan}. Returns the block entities looked at. */
+    private int scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
         long c = chunk.getPos().toLong();
+        List<Candidate> candidates = new ArrayList<>();
         IndustryPlugin.ScanNotes notes = new IndustryPlugin.ScanNotes() {
             @Override
             public void creative() {
@@ -995,13 +1163,14 @@ public final class Districts {
                 scan.watch.computeIfAbsent(c, k -> new ArrayList<>()).add(pos);
             }
         };
-        for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
+        List<BlockEntity> blockEntities = new ArrayList<>(chunk.getBlockEntities().values());
+        for (BlockEntity be : blockEntities) {
             if (be.isRemoved())
                 continue;
             BlockPos p = be.getBlockPos();
             for (IndustryPlugin plugin : IndustryApi.PLUGINS)
                 plugin.scanned(be, notes);
-            boolean isIndustrial = industrial(level, be, scan.industrialCache);
+            boolean isIndustrial = industrial(level, be, scan.kinds);
             if (!isIndustrial)
                 continue;
             BlockState state = be.getBlockState();
@@ -1009,13 +1178,13 @@ public final class Districts {
             if (state.is(STOCK_TAG)) {
                 BlockPos canon = canonicalInventory(level, p);
                 if (canon != null)
-                    scan.inventories.computeIfAbsent(c, k -> new ArrayList<>()).add(new Candidate(canon, 0));
+                    candidates.add(new Candidate(canon, 0));
             }
             for (IndustryPlugin plugin : IndustryApi.PLUGINS)
                 plugin.inventories(be, (pos, kind) -> {
                     BlockPos canon = canonicalInventory(level, pos);
                     if (canon != null)
-                        scan.inventories.computeIfAbsent(c, k -> new ArrayList<>()).add(new Candidate(canon, kind));
+                        candidates.add(new Candidate(canon, kind));
                 });
             for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
                 IndustryPlugin.StationInfo s = plugin.station(be);
@@ -1034,7 +1203,7 @@ public final class Districts {
                     if (nchunk == null)
                         continue;
                     BlockEntity nbe = nchunk.getBlockEntities().get(n);
-                    if (nbe == null || !industrial(level, nbe, scan.industrialCache))
+                    if (nbe == null || !industrial(level, nbe, scan.kinds))
                         continue;
                     // Two stores side by side carry no work from one chunk to the other (a chest wall along a
                     // border does not annex the next chunk); a machine, belt or hopper next to one does.
@@ -1054,7 +1223,7 @@ public final class Districts {
                     if (tchunk == null)
                         return;
                     BlockEntity tbe = tchunk.getBlockEntities().get(target);
-                    if (tbe == null || !industrial(level, tbe, scan.industrialCache))
+                    if (tbe == null || !industrial(level, tbe, scan.kinds))
                         return;
                     scan.links.add(new long[] {c, tc});
                     scan.touches.add(new Touch(c, tc, p, target.immutable()));
@@ -1063,10 +1232,34 @@ public final class Districts {
                 });
             }
         }
+        // Describe the chunk's boundary inventories now, while their chunks are loaded (the commit may come ticks later).
+        if (!candidates.isEmpty()) {
+            List<District.Inventory> out = new ArrayList<>();
+            Set<BlockPos> seen = new HashSet<>();
+            for (Candidate cand : candidates) {
+                if (seen.contains(cand.pos)) {
+                    addInventory(out, seen, cand.pos, cand.kind, null);
+                    continue;
+                }
+                District.Inventory inv = describe(level, cand);
+                seen.add(cand.pos);
+                if (inv != null)
+                    out.add(inv);
+            }
+            if (!out.isEmpty())
+                scan.inventories.put(c, out);
+        }
+        return blockEntities.size() + candidates.size();
+    }
+
+    /** A block entity of a loaded chunk, or null: never loads a chunk. */
+    private static BlockEntity loadedBlockEntity(ServerLevel level, BlockPos pos) {
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        return chunk == null ? null : chunk.getBlockEntities().get(pos);
     }
 
     private int crossingCode(ServerLevel level, BlockPos a, BlockPos b) {
-        BlockEntity ba = level.getBlockEntity(a), bb = level.getBlockEntity(b);
+        BlockEntity ba = loadedBlockEntity(level, a), bb = loadedBlockEntity(level, b);
         if (ba == null || bb == null)
             return 0;
         int best = 0;
@@ -1083,23 +1276,62 @@ public final class Districts {
      * be boundary stock): a machine, a plugin recognises it, or it has an item, fluid or energy capability.
      * Industrial is wider than a seed: a chest, a furnace and a shaft are industrial and seed nothing.
      */
-    boolean industrial(ServerLevel level, BlockEntity be, Map<BlockPos, Boolean> cache) {
-        BlockPos p = be.getBlockPos();
-        Boolean known = cache.get(p);
-        if (known != null)
+    boolean industrial(ServerLevel level, BlockEntity be, Long2ByteOpenHashMap cache) {
+        return (classify(level, be, cache) & K_INDUSTRIAL) != 0;
+    }
+
+    /** A cache for {@link #classify}: block entities by {@code long} position, -1 for "not asked yet". */
+    static Long2ByteOpenHashMap kindCache() {
+        Long2ByteOpenHashMap m = new Long2ByteOpenHashMap();
+        m.defaultReturnValue((byte) -1);
+        return m;
+    }
+
+    private static final int K_INDUSTRIAL = 1, K_SEED = 2;
+
+    private static int classify(ServerLevel level, BlockEntity be, Long2ByteOpenHashMap cache) {
+        long key = be.getBlockPos().asLong();
+        byte known = cache.get(key);
+        if (known >= 0)
             return known;
-        boolean result = false;
-        for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
-            if (plugin.isIndustrial(be)) {
-                result = true;
+        int kinds = classify(level, be);
+        cache.put(key, (byte) kinds);
+        return kinds;
+    }
+
+    /**
+     * Industrial and seed together, so the capability probe (up to 15 queries, the dearest part of a detection)
+     * runs at most once per block entity and not at all when a plugin or a tag has already said.
+     */
+    private static int classify(ServerLevel level, BlockEntity be) {
+        boolean plugin = false;
+        for (IndustryPlugin p : IndustryApi.PLUGINS) {
+            if (p.isIndustrial(be)) {
+                plugin = true;
                 break;
             }
         }
-        if (!result)
-            result = hasCapability(level, be) || seed(level, be, new HashMap<>());
-        cache.put(p.immutable(), result);
-        return result;
+        Boolean verdict = seedVerdict(be);
+        int capability = -1;
+        boolean seed;
+        if (verdict != null) {
+            seed = verdict;
+        } else if (!ticksOnServer(level, be)) {
+            seed = false;
+        } else {
+            capability = hasCapability(level, be) ? 1 : 0;
+            seed = capability == 1;
+        }
+        boolean industrial = plugin || seed;
+        if (!industrial) {
+            if (capability < 0)
+                capability = hasCapability(level, be) ? 1 : 0;
+            industrial = capability == 1;
+        }
+        return (industrial ? K_INDUSTRIAL : 0) | (seed ? K_SEED : 0);
     }
+
+    private static final Direction[] DIRECTIONS = Direction.values();
 
     private static boolean hasCapability(ServerLevel level, BlockEntity be) {
         BlockPos p = be.getBlockPos();
@@ -1108,7 +1340,7 @@ public final class Districts {
                 || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, null) != null
                 || level.getCapability(Capabilities.EnergyStorage.BLOCK, p, s, be, null) != null)
             return true;
-        for (Direction d : Direction.values())
+        for (Direction d : DIRECTIONS)
             if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, d) != null
                     || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, d) != null)
                 return true;
@@ -1140,33 +1372,36 @@ public final class Districts {
         return false;
     }
 
-    public boolean seed(ServerLevel level, BlockEntity be, Map<BlockPos, Boolean> cache) {
-        BlockPos p = be.getBlockPos();
-        Boolean known = cache.get(p);
-        if (known != null)
-            return known;
-        boolean result = isSeed(level, be);
-        cache.put(p.immutable(), result);
-        return result;
+    /** Whether {@code be} is a seed (not cached). */
+    public boolean seed(ServerLevel level, BlockEntity be) {
+        return (classify(level, be) & K_SEED) != 0;
     }
 
-    private static boolean isSeed(ServerLevel level, BlockEntity be) {
+    boolean seed(ServerLevel level, BlockEntity be, Long2ByteOpenHashMap cache) {
+        return (classify(level, be, cache) & K_SEED) != 0;
+    }
+
+    /**
+     * What the rules say of a seed before the generic capability test: false for the {@code minecraft} namespace,
+     * storage and furnaces, true for the seed tag, else the first plugin with an opinion. Null: nobody has one.
+     */
+    private static Boolean seedVerdict(BlockEntity be) {
         BlockState s = be.getBlockState();
         if ("minecraft".equals(BuiltInRegistries.BLOCK.getKey(s.getBlock()).getNamespace()))
-            return false;
+            return Boolean.FALSE;
         if (isStorage(s))
-            return false;
+            return Boolean.FALSE;
         // A furnace, smoker or blast furnace of any mod: a utility block every build has, never a factory (DS-10).
         if (be instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity)
-            return false;
+            return Boolean.FALSE;
         if (s.is(SEED_TAG))
-            return true;
+            return Boolean.TRUE;
         for (IndustryPlugin plugin : IndustryApi.PLUGINS) {
             Boolean v = plugin.seed(be);
             if (v != null)
                 return v;
         }
-        return ticksOnServer(level, be) && hasCapability(level, be);
+        return null;
     }
 
     /**
@@ -1246,6 +1481,7 @@ public final class Districts {
      */
     public void forgetArea(ServerLevel level, int minCx, int minCz, int maxCx, int maxCz) {
         ResourceKey<Level> dim = level.dimension();
+        requeueRescans(dim); // a detection under way would commit districts this wipes
         for (District d : new ArrayList<>(data.districts.values())) {
             if (d.dim != dim)
                 continue;
@@ -1284,7 +1520,9 @@ public final class Districts {
             if (d.dim == dim)
                 for (long c : d.chunks)
                     index.put(c, d);
-        dirty.remove(dim);
+        LongOpenHashSet pendingHere = dirty.get(dim);
+        if (pendingHere != null)
+            pendingHere.removeIf(c -> ChunkPos.getX(c) >= minCx && ChunkPos.getX(c) <= maxCx && ChunkPos.getZ(c) >= minCz && ChunkPos.getZ(c) <= maxCz);
         data.setDirty();
     }
 
@@ -1295,6 +1533,7 @@ public final class Districts {
      */
     public void forgetAllForTest(ServerLevel level) {
         ResourceKey<Level> dim = level.dimension();
+        dropRescans(dim);
         for (District d : new ArrayList<>(data.districts.values())) {
             if (d.dim != dim)
                 continue;
@@ -1323,6 +1562,7 @@ public final class Districts {
 
     /** GameTests: a district of one chunk, made directly (no seed, no scan), declared. */
     public District createForTest(ServerLevel level, long chunk) {
+        requeueRescans(level.dimension());
         District d = new District(data.allocateId(), level.dimension());
         d.chunks.add(chunk);
         d.recomputeBounds();
@@ -1361,6 +1601,7 @@ public final class Districts {
 
     /** GameTests: adds a chunk to a district as if detection had kept it (an unloaded member chunk). */
     public void addChunkForTest(District d, long chunk) {
+        requeueRescans(d.dim);
         d.chunks.add(chunk);
         d.recomputeBounds();
         byChunk.computeIfAbsent(d.dim, k -> new Long2ObjectOpenHashMap<>()).put(chunk, d);

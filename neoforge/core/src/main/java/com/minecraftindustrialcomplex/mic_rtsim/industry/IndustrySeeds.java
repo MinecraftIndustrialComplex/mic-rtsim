@@ -31,7 +31,7 @@ public final class IndustrySeeds {
         BlockPos pos = be.getBlockPos();
         if (pos.getX() >> 4 != chunk.getPos().x || pos.getZ() >> 4 != chunk.getPos().z || chunk.getBlockEntities().get(pos) != be)
             return false;
-        if (!ind.districts().seed(level, be, new HashMap<>()))
+        if (!ind.districts().seed(level, be))
             return true;
         IndustryAttachments.Seeds s = chunk.getData(IndustryAttachments.SEEDS.get());
         if (s.contains(pos.asLong()))
