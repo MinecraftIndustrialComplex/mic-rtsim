@@ -683,9 +683,10 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u8(10);
             w.u64(ship.to_bits());
         }
-        Ev::Refit { ship } => {
+        Ev::Refit { ship, plan } => {
             w.u8(11);
             w.u64(ship.to_bits());
+            w.u32(plan);
         }
     }
 }
@@ -741,7 +742,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             plan: r.u32()?,
         },
         10 => Ev::Respawn { ship: handle(r)? },
-        11 => Ev::Refit { ship: handle(r)? },
+        11 => Ev::Refit {
+            ship: handle(r)?,
+            plan: r.u32()?,
+        },
         t => return bad(format!("event tag {t}")),
     })
 }
