@@ -16,6 +16,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarPayloads;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarSource;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarState;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarView;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarWire;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -38,8 +39,9 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * The far feed end to end on the server (docs/choices-dh-feed.md; research/distant-horizons-2026-10-21.md §5,
  * §6.3): a subscriber, the engine's FAR_LEG records as the session keeps them, a body source, the filter and
  * the bytes that go out. The hand-over is the point: a dragon flies a leg, is embodied (the body's samples and
- * its entity id replace the leg on the same handle, with no new INTRO), and goes back to a leg (entity id -1,
- * still the same handle), then is GONE. Every sweep is called by the test in one tick, so the server's own
+ * its entity id replace the leg on the same handle, with no new INTRO), is held through the gap between its body's
+ * capture and the engine's next leg, goes back to a leg (entity id -1, still the same handle), then is GONE once
+ * the view's grace has run out. Every sweep is called by the test in one tick, so the server's own
  * once-a-second sweep cannot run between them; its own batch, since the sink and the player lookup are
  * server-wide.
  */
@@ -214,21 +216,41 @@ public final class FarFeedGameTests {
             List<FarWire.Rec> r4 = of(sweep(helper, sent), handle);
             check("a still body sends nothing: " + r4, r4.isEmpty());
 
-            // 5. The body goes back to the engine: its leg again, entity id -1, the same handle
+            // 5. The body is captured before the engine's next leg lands: in neither source, it is held, not GONE
             src.item = null;
+            List<FarWire.Rec> gap = of(sweep(helper, sent), handle);
+            check("a dragon between its body and its next leg is held: " + gap, gap.isEmpty());
+
+            // 6. The engine's leg lands: its leg again, entity id -1, the same handle
             leg(session, dim, agent, FarState.FLY, py + 40, px + 4, pz + 2, px + 200, pz + 2, now, now + 400, 0);
             List<FarWire.Rec> r5 = of(sweep(helper, sent), handle);
-            check("without its body it flies the engine's leg on the same handle: " + r5,
+            check("without its body it flies the engine's leg on the same handle, with no entity: " + r5,
                     has(r5, FarWire.Leg.class) && !has(r5, FarWire.Intro.class) && !has(r5, FarWire.Gone.class)
                             && r5.stream().anyMatch(r -> r instanceof FarWire.Real e && e.entity() == -1));
 
-            // 6. The engine forgets it: GONE
+            // 7. The client subscribes again (its wants changed, or a message did not decode): everything again,
+            // from a RESET
+            FarFeed.subscribe(watcher, new FarPayloads.Subscribe(FarPayloads.SUB_VERSION, 512, 2, 64,
+                    FarKind.DRAGON.bit()));
+            FarWire.Message again = sweep(helper, sent);
+            check("a new subscription starts the view over", again != null && (again.flags() & FarWire.RESET) != 0);
+            handle = -1;
+            for (FarWire.Rec r : again.recs())
+                if (r instanceof FarWire.Intro i && i.id() == agent)
+                    handle = i.handle();
+            check("and introduces the dragon again", handle >= 0 && has(of(again, handle), FarWire.Leg.class));
+
+            // 8. The engine forgets it: held for the grace, then GONE
             leg(session, dim, agent, FarState.GONE, 0, 0, 0, 0, 0, 0, 0, 0);
-            List<FarWire.Rec> r6 = of(sweep(helper, sent), handle);
-            check("a dragon the engine forgot is gone: " + r6, r6.size() == 1 && r6.get(0) instanceof FarWire.Gone);
+            for (int i = 0; i < FarView.GRACE_SWEEPS; i++) {
+                List<FarWire.Rec> held = of(sweep(helper, sent), handle);
+                check("held for " + FarView.GRACE_SWEEPS + " sweeps: " + held, held.isEmpty());
+            }
+            List<FarWire.Rec> r8 = of(sweep(helper, sent), handle);
+            check("a dragon the engine forgot is gone: " + r8, r8.size() == 1 && r8.get(0) instanceof FarWire.Gone);
             record("far feed hand-over", "handle", handle);
 
-            // 7. Withdrawn, the watcher is sent nothing
+            // 9. Withdrawn, the watcher is sent nothing
             FarFeed.subscribe(watcher, new FarPayloads.Subscribe(FarPayloads.SUB_VERSION, 0, 0, 0, 0));
             check("a withdrawn subscriber is sent nothing", sweep(helper, sent) == null);
             helper.succeed();

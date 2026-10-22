@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
@@ -128,5 +129,29 @@ class FarFeedReceiverTest {
         // A wobble under two ticks does not time it again
         receiver.clock(FarClock.ticks() - (g0 + 81));
         assertEquals(1, receiver.retimes);
+    }
+
+    @Test
+    void aHuntingDragonSpiralsOntoItsCircleTheWayItWasFlying() {
+        long g0 = 5_000;
+        // North (+z) for 50 ticks to x 90, z 0; then a hunt around x 100, z 0, radius 30
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566),
+                new FarWire.Leg(0, FarState.FLY.wire, 100, 90, -50, 90, 0, g0, g0 + 50, 0));
+        advance(50);
+        double now = FarClock.ticks();
+        double[] was = new double[6];
+        mover().segmentAt(now, was);
+        send(0, g0 + 50, new FarWire.Leg(0, FarState.HUNT.wire, 100, 100, 0, 100, 0, g0 + 50, g0 + 2000, 30));
+        FarMover hunt = mover();
+        assertEquals(FarState.HUNT, hunt.state());
+        double[] s = new double[6];
+        hunt.segmentAt(now, s);
+        assertEquals((was[0] + was[3]) / 2.0, (s[0] + s[3]) / 2.0, 1e-6, "no jump in x");
+        assertEquals((was[2] + was[5]) / 2.0, (s[2] + s[5]) / 2.0, 1e-6, "no jump in z");
+        hunt.segmentAt(now + 1, s);
+        assertTrue((s[2] + s[5]) / 2.0 > (was[2] + was[5]) / 2.0, "it turns on north, as it was flying");
+        hunt.segmentAt(now + FarFeedReceiver.JOIN_TICKS, s);
+        double dx = (s[0] + s[3]) / 2.0 - 100.5, dz = (s[2] + s[5]) / 2.0 - 0.5;
+        assertEquals(30.0, Math.sqrt(dx * dx + dz * dz), 1e-6, "on the circle once joined");
     }
 }

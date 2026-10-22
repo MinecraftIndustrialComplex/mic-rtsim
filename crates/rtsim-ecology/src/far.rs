@@ -103,6 +103,8 @@ pub(crate) struct FarFeed {
     pub(crate) dirty: BTreeSet<DragonId>,
     /// Session-start passes a page that would not load cut short.
     pub(crate) pass_failed: u64,
+    /// Changed dragons skipped because their page would not load.
+    pub(crate) read_failed: u64,
 }
 
 impl FarFeed {
@@ -211,6 +213,11 @@ impl Dragons {
         self.far.pass_failed
     }
 
+    /// Changed dragons [`Dragons::take_far`] skipped because their page would not load.
+    pub fn far_read_failed(&self) -> u64 {
+        self.far.read_failed
+    }
+
     /// Dragons marked since the last [`Dragons::take_far`].
     pub fn far_pending(&self) -> usize {
         self.far.dirty.len()
@@ -239,9 +246,11 @@ impl Dragons {
             return out;
         }
         for d in std::mem::take(&mut self.far.dirty) {
-            match self.dragons.get(d) {
-                Some(x) => out.push(leg_of(d, x, &self.tun, &self.topo, &self.lairs, at)),
-                None => out.push(gone(d, at)),
+            match self.dragons.try_get(d) {
+                Ok(Some(x)) => out.push(leg_of(d, x, &self.tun, &self.topo, &self.lairs, at)),
+                Ok(None) => out.push(gone(d, at)),
+                // As in the pass above: Java draws its last leg until the dragon next changes
+                Err(_) => self.far.read_failed += 1,
             }
         }
         out

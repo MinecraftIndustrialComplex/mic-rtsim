@@ -68,4 +68,19 @@ class FarLegsTest {
         legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, 77, NAMES);
         assertEquals(0, legs.size());
     }
+
+    @Test
+    void ecologySwitchedOffForgetsEveryLegAndDropsLateOnes() {
+        // The engine drops its queue, GONE records included, and resends every dragon when ecology is back on
+        FarLegs legs = new FarLegs();
+        ByteBuffer b = record(RUST);
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.FLY.wire, NAMES);
+        legs.setEnabled(false);
+        assertEquals(0, legs.size());
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.FLY.wire, NAMES);
+        assertEquals(0, legs.size(), "a record still on its way when ecology went off");
+        legs.setEnabled(true);
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.FLY.wire, NAMES);
+        assertEquals(1, legs.size());
+    }
 }

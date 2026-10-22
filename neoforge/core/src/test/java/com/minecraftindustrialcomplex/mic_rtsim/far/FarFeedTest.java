@@ -106,11 +106,35 @@ class FarFeedTest {
         assertEquals(2, hand.size(), hand.toString());
         assertInstanceOf(FarWire.Sample.class, hand.get(0));
         assertEquals(new FarWire.Real(1, 4242), hand.get(1));
-        // The carriage leaves: GONE first, and a newcomer reuses its handle
-        List<FarWire.Rec> swap = v.step(List.of(body, carriage(200, 0, 0)));
-        assertEquals(new FarWire.Gone(0), swap.get(0));
-        assertEquals(0, ((FarWire.Intro) swap.get(1)).handle());
-        assertEquals(2, v.size());
+        // The carriage leaves: held for the grace (a newcomer takes a new handle), then GONE first, and the next
+        // newcomer reuses its handle
+        FarItem c200 = carriage(200, 0, 0);
+        List<FarWire.Rec> swap = v.step(List.of(body, c200));
+        assertTrue(swap.stream().noneMatch(r -> r instanceof FarWire.Gone), swap.toString());
+        assertEquals(2, ((FarWire.Intro) swap.get(0)).handle());
+        for (int i = 1; i < FarView.GRACE_SWEEPS; i++)
+            assertTrue(v.step(List.of(body, c200)).isEmpty(), "held");
+        assertEquals(3, v.size());
+        List<FarWire.Rec> gone = v.step(List.of(body, c200, carriage(300, 9, 0)));
+        assertEquals(new FarWire.Gone(0), gone.get(0));
+        assertEquals(0, ((FarWire.Intro) gone.get(1)).handle());
+        assertEquals(3, v.size());
+    }
+
+    @Test
+    void aDragonMissingForASweepComesBackOnItsHandle() {
+        // A captured body is in neither source until the engine's leg lands (the hand-over's gap)
+        FarView v = new FarView();
+        FarItem body = new FarItem(1, FarKind.DRAGON, 1, 2, 4, 0x4060C0, FarState.FLY,
+                new double[]{1001, 180, 0, 1000, 180, 0}, null, 4242, 10);
+        assertEquals(3, v.step(List.of(body)).size()); // intro, sample, entity
+        assertTrue(v.step(List.of()).isEmpty(), "held, not GONE");
+        List<FarWire.Rec> back = v.step(List.of(dragon(1, 1000, 0, 1400, 0, 0, 1000)));
+        assertTrue(back.stream().noneMatch(r -> r instanceof FarWire.Intro || r instanceof FarWire.Gone),
+                back.toString());
+        assertTrue(back.stream().allMatch(r -> r.handle() == 0), back.toString());
+        assertTrue(back.stream().anyMatch(r -> r instanceof FarWire.Leg), back.toString());
+        assertTrue(back.contains(new FarWire.Real(0, -1)), back.toString());
     }
 
     @Test

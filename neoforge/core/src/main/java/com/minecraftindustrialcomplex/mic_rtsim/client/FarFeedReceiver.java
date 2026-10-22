@@ -29,6 +29,8 @@ final class FarFeedReceiver {
     static final double SAMPLE_TICKS = 20.0;
     /** A hunting dragon's circling speed, blocks a tick (10 m/s). PLACEHOLDER. */
     static final double HUNT_SPEED = 0.5;
+    /** A dragon that starts hunting off its circle spirals onto it over this many ticks. PLACEHOLDER. */
+    static final double JOIN_TICKS = 40.0;
     /** The offset may wander this far, in ticks, before the legs are timed again. */
     static final double RETIME_TICKS = 2.0;
 
@@ -213,12 +215,24 @@ final class FarFeedReceiver {
             }
             case HUNT -> {
                 double r = Math.max(1.0, l.radius());
-                // Join the circle where the dragon is, and turn the way it was heading
-                double phase0 = before != null
-                        ? Math.atan2((before[2] + before[5]) / 2.0 - z0, (before[0] + before[3]) / 2.0 - x0)
-                        : (o.id & 0xFFFF) / 65536.0 * 2.0 * Math.PI;
-                double omega = ((o.id >>> 16) & 1) == 0 ? HUNT_SPEED / r : -HUNT_SPEED / r;
-                o.circle = new FarCircle(x0, y, z0, r, omega, phase0, now);
+                // Spiral onto the circle from where the dragon was drawn, turning the way it was heading; a dragon
+                // never drawn starts on it, at an angle and a direction of its own
+                double phase0 = (o.id & 0xFFFF) / 65536.0 * 2.0 * Math.PI, from = r;
+                boolean ccw = ((o.id >>> 16) & 1) == 0;
+                if (before != null) {
+                    double dx = (before[0] + before[3]) / 2.0 - x0, dz = (before[2] + before[5]) / 2.0 - z0;
+                    from = Math.sqrt(dx * dx + dz * dz);
+                    if (from > 1e-6)
+                        phase0 = Math.atan2(dz, dx);
+                    // The heading against the turning-with-the-angle tangent (-sin, cos)
+                    double turn = (before[0] - before[3]) * -Math.sin(phase0)
+                            + (before[2] - before[5]) * Math.cos(phase0);
+                    if (Math.abs(turn) > 1e-3)
+                        ccw = turn > 0;
+                }
+                double omega = ccw ? HUNT_SPEED / r : -HUNT_SPEED / r;
+                o.circle = new FarCircle(x0, y, z0, r, omega, phase0, now, from,
+                        Math.abs(from - r) < 0.5 ? 0.0 : JOIN_TICKS);
                 double[] s = new double[6];
                 o.circle.segmentAt(now, s);
                 o.prev = o.cur = s;

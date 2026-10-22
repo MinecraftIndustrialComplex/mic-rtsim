@@ -51,9 +51,21 @@ public final class FarLegs implements FarSource {
 
     private final Map<Long, Rec> legs = new HashMap<>();
     private long accepted, gone, malformed;
+    private boolean enabled = true;
 
     public static boolean isFarCommand(int kind) {
         return kind >= 0x8C00 && kind <= 0x8CFF;
+    }
+
+    /**
+     * The ecology module switched (the session's {@code onModulesChanged}, server thread). Off forgets every leg
+     * and drops any record still on its way: the engine clears its own queue, GONE records included, and resends
+     * every dragon when the module is back on, so a leg kept now would be a ghost then.
+     */
+    public void setEnabled(boolean on) {
+        enabled = on;
+        if (!on)
+            legs.clear();
     }
 
     /** A FAR_LEG from the engine (the dispatcher's sequence check has passed). */
@@ -62,6 +74,8 @@ public final class FarLegs implements FarSource {
             malformed++;
             return true;
         }
+        if (!enabled)
+            return true;
         long agent = b.getLong(at + AGENT);
         FarState state = FarState.ofWire(aux);
         if (state == null || state == FarState.MOVING) {
