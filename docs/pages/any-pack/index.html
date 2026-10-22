@@ -114,11 +114,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">rtsim already runs non-Create factories, because it never models machines</h1>
   <p class="dek" data-ss-id="dek">How far rtsim's factory sim is from working on any pack, with any tech mods, from a few mods in single player up to a 500-mod SMP. From the generalization note on main (5578751); mod facts were checked against each mod's 1.21.1 source.</p>
-  <p class="lead" data-ss-id="lead">rtsim measures the stock at a factory's edge, learns the net rate of each good and replays those rates while the chunks are unloaded. Any block entity with a NeoForge item, fluid or energy capability counts, so a Mekanism, Immersive Engineering, Modern Industrialization or GregTech factory with no Create is grouped, learned and replayed today, with no plugin. What breaks on a non-Create pack is generic plumbing: four small fixes, about one agent-week. The real per-mod work is storage networks and wireless links such as AE2 and Refined Storage. The number of mods costs nothing per tick; the size of the world does.</p>
+  <p class="lead" data-ss-id="lead">rtsim measures the stock at a factory's edge, learns the net rate of each good and replays those rates while the chunks are unloaded. Any block entity with a NeoForge item, fluid or energy capability counts, so a Mekanism, Immersive Engineering, Modern Industrialization or GregTech factory with no Create is grouped, learned and replayed today, with no plugin. What breaks on a non-Create pack is generic plumbing: four small fixes, each under about 500 lines. The real per-mod work is storage networks and wireless links such as AE2 and Refined Storage. The number of mods costs nothing per tick; the size of the world does.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-plugins"><div class="n">0</div><div class="t">plugins needed for Mekanism, IE, MI or GregTech machines</div></div>
     <div class="tile" data-ss-id="kpi-fixes"><div class="n">4</div><div class="t">small generic fixes before a non-Create pack works</div></div>
-    <div class="tile" data-ss-id="kpi-week"><div class="n">~1 <small>week</small></div><div class="t">of agent work for those four (slices G0 to G3)</div></div>
+    <div class="tile" data-ss-id="kpi-week"><div class="n">S</div><div class="t">size of each of those four (slices G0 to G3): under about 500 lines</div></div>
     <div class="tile" data-ss-id="kpi-cap"><div class="n">48</div><div class="t">goods per factory before learning loses its structure</div></div>
     <div class="tile" data-ss-id="kpi-decisions"><div class="n">4</div><div class="t">decisions for you, at the end</div></div>
   </div>
@@ -155,7 +155,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </tbody>
   </table>
   </div>
-  <p class="cap" data-ss-id="gaps-cap">S is up to about 500 lines or one agent-day; M is 500 to 3,000 lines, a few days to two weeks; L is more, or a change to saved formats.</p>
+  <p class="cap" data-ss-id="gaps-cap">S is up to about 500 lines; M is 500 to 3,000 lines; L is more, or a change to saved formats.</p>
   <p data-ss-id="gaps-scale">Mod count is free because rtsim never walks registries, recipes or tags per tick, and its goods list grows only with goods actually seen in storage. Exact per-machine replay for other mods is optional and comes last: Mekanism and Modern Industrialization are S to M each, GregTech is L. Thermal is out of reach: it has no 1.21.1 release.</p>
 </section>
 
@@ -219,7 +219,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <h3 data-ss-id="d-goal-h">1. Is "any pack" a goal?</h3>
     <p class="rec" data-ss-id="d-goal-rec">Recommended: a by-product. Build only the slices that also serve MIC or the Create addon (G0, G1, G2, G4, G6, G7, G8, G10), and leave the per-mod plugins until a non-MIC release is on the table.</p>
     <ul data-ss-id="d-goal-alts">
-      <li>An active goal: also build G3, G5 and G9 now, about four more agent-weeks.</li>
+      <li>An active goal: also build G3, G5 and G9 now: the pipe tag (S), the storage-network plugins (M each, EnderStorage S) and the wire and deposit plugins (S each).</li>
       <li>No: keep rtsim MIC-only and skip G0 and G3.</li>
     </ul>
   </div>
