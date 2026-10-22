@@ -176,7 +176,7 @@ public final class IndustryKit {
         if (industry == null)
             return;
         net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(abs);
-        if (be != null && industry.districts().seed(level, be, new java.util.HashMap<>()))
+        if (be != null && industry.districts().seed(level, be))
             return;
         if (level.getChunkAt(abs).getData(com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments.SEEDS.get()).positions().length > 0)
             return;
