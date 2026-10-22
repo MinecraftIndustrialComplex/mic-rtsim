@@ -26,11 +26,11 @@ use rtsim_industry::cmd::{
 };
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use rtsim_industry::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
-    DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
-    FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
-    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, SweepEnd,
-    Timed, TrainCall, TrainDeparture,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
+    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
+    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
+    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -400,20 +400,24 @@ fn code_tables(out: &mut String) {
     table(out, "port_kind", &rows);
 
     // IND_TRAIN_ARRIVED flags, when the cargo was read (choice SG30): bits 1 and 2.
-    let rows: Vec<_> = [CargoFrom::Arrival, CargoFrom::Approach, CargoFrom::Departure]
-        .into_iter()
-        .map(|cargo_from| {
-            let b = obs_bytes(Obs::TrainArrived(TrainCall {
-                train: TrainId(1),
-                station: StationId(2),
-                district: d,
-                simulated: false,
-                cargo_from,
-                carriages: Vec::new(),
-            }));
-            (format!("{cargo_from:?}"), u32_at(&b, 48))
-        })
-        .collect();
+    let rows: Vec<_> = [
+        CargoFrom::Arrival,
+        CargoFrom::Approach,
+        CargoFrom::Departure,
+    ]
+    .into_iter()
+    .map(|cargo_from| {
+        let b = obs_bytes(Obs::TrainArrived(TrainCall {
+            train: TrainId(1),
+            station: StationId(2),
+            district: d,
+            simulated: false,
+            cargo_from,
+            carriages: Vec::new(),
+        }));
+        (format!("{cargo_from:?}"), u32_at(&b, 48))
+    })
+    .collect();
     table(out, "cargo_from", &rows);
 
     // IND_PACKAGE direction, at 36.

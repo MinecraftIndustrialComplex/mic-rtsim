@@ -22,11 +22,11 @@ use crate::cmd::{
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::obs::{
-    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
-    DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
-    FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
-    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, SweepEnd,
-    Timed, TrainCall, TrainDeparture,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions,
+    DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
+    EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
+    PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
 };
 use crate::threat::ThreatClass;
 
