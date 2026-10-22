@@ -88,6 +88,10 @@ public final class DragonGameTests {
         long agent = DragonKit.newAgent();
         Runnable unforce = DragonKit.forceAround(helper, 3);
         Vec3 c = DragonKit.centre(helper);
+        // Morning: a fire dragon lands to sleep at night (Ice and Fire wakes it by Level.isDay), and a GameTest
+        // server's daylight cycle runs, so without this the suite's length before this test decides the hour.
+        long dayWas = helper.getLevel().getDayTime();
+        helper.getLevel().setDayTime(1000);
         // A live attack target wins over steering (Ice and Fire flies at it): an earlier test's mob near the
         // arena (a natural dragon is left alone, OG-1) would pull the dragon away, so none is left.
         List<String> strays = new ArrayList<>();
@@ -130,23 +134,24 @@ public final class DragonGameTests {
                     start[0] = flat(d, first);
                     record(test, "materialized", "age " + d.getAgeInTicks() + ", hunger " + d.getHunger() + ", " + d.getVariant()
                             + ", health " + d.getHealth() + "/" + d.getMaxHealth() + ", " + start[0] + " blocks from its target; strays removed "
-                            + strays);
+                            + strays + "; day time was " + dayWas + ", set to 1000; " + motion(helper, d));
                 })
                 .thenWaitUntil(() -> {
                     DragonBaseEntity d = body(agent);
                     check("it flies toward its target (" + flat(d, first) + " of " + start[0] + " blocks left, at " + d.blockPosition().toShortString()
-                            + ", flight target " + IafDragons.flightTarget(d) + ", attack target " + d.getTarget() + ")", flat(d, first) < start[0] - 8);
+                            + ", flight target " + IafDragons.flightTarget(d) + ", attack target " + d.getTarget() + ", " + motion(helper, d) + ")",
+                            flat(d, first) < start[0] - 8);
                 })
                 .thenExecute(() -> {
-                    record(test, "first target", "closed from " + start[0] + " to " + flat(body(agent), first) + " blocks");
+                    record(test, "first target", "closed from " + start[0] + " to " + flat(body(agent), first) + " blocks; " + motion(helper, body(agent)));
                     DragonKit.steer(agent, 1, 0, second);
                 })
                 .thenWaitUntil(() -> check("DRAGON_STEER set its flight target", IafDragons.flightTarget(body(agent)).distanceTo(second) < 0.01))
                 .thenExecute(() -> start[0] = flat(body(agent), second))
                 .thenWaitUntil(() -> {
                     DragonBaseEntity d = body(agent);
-                    check("it turns to the new target (" + flat(d, second) + " of " + start[0] + ")", flat(d, second) < start[0] - 4
-                            || flat(d, second) <= 6.5);
+                    check("it turns to the new target (" + flat(d, second) + " of " + start[0] + ", " + motion(helper, d) + ")",
+                            flat(d, second) < start[0] - 4 || flat(d, second) <= 6.5);
                 })
                 .thenWaitUntil(() -> check("DRAGON_STATE while embodied", !DragonKit.received(DragonRecords.DRAGON_STATE, DragonRecords.State.AGENT, agent).isEmpty()))
                 .thenExecute(() -> {
@@ -175,6 +180,13 @@ public final class DragonGameTests {
                     unforce.run();
                 })
                 .thenSucceed();
+    }
+
+    /** What a stalled flight needs to be told apart: the test's tick, flying, entity ticking, AI, speed. */
+    private static String motion(GameTestHelper helper, DragonBaseEntity d) {
+        return "test tick " + helper.getTick() + ", day time " + helper.getLevel().getDayTime() + ", flying " + d.isFlying() + ", entity ticking "
+                + helper.getLevel().isPositionEntityTicking(d.blockPosition()) + ", no AI " + d.isNoAi() + ", motion "
+                + d.getDeltaMovement();
     }
 
     /**

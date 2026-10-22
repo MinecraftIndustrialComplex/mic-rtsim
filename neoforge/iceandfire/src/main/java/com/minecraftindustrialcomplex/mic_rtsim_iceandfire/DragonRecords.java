@@ -25,6 +25,10 @@ public final class DragonRecords {
     public static final int OIL_CHUNKS = 0x0509;
     public static final int DRAGON_BREATHS = 0x050A;
     public static final int OIL_CONFIG = 0x050B;
+    public static final int NEST_FOUND = 0x050C;
+    public static final int NEST_CENSUS = 0x050D;
+    public static final int NEST_LOSS = 0x050E;
+    public static final int NEST_HEART = 0x050F;
 
     public static final int DRAGON_MATERIALIZE = 0x8500;
     public static final int DRAGON_STEER = 0x8501;
@@ -33,7 +37,10 @@ public final class DragonRecords {
     public static final int DRAGON_DISCARD = 0x8504;
     public static final int PLACE_LAIR = 0x8505;
     public static final int OIL_SURVEY = 0x8506;
-    // 0x8507 is reserved for the underground half (OILGATE.md §4.6, OG-9b). Nothing sends it yet.
+    // The underground half (OILGATE.md §4.6, OG-9e): a Death Worm nest under an oil field.
+    public static final int PLACE_NEST = 0x8507;
+    public static final int NEST_RENEW = 0x8508;
+    public static final int NEST_SORTIE = 0x8509;
 
     public static boolean isDragonCommand(int kind) {
         return kind >= 0x8500 && kind <= 0x85FF;
@@ -154,6 +161,36 @@ public final class DragonRecords {
     public static final class OilConfig {
         public static final int SIZE = 24;
         public static final int FLAG_FIELD_FLIGHTS = 1, FLAG_PLACE_LAIRS = 2;
+        /** Oil chunks found nests (OG-9e): the engine sends PLACE_NEST, re-sent after each OIL_CONFIG. */
+        public static final int FLAG_PLACE_NESTS = 4;
+    }
+
+    /**
+     * NEST_FOUND (aux: 1 placed, 2 failed): a PLACE_NEST answered (OG-9e). A failed one carries zeros for
+     * the heart and the engine gives up the cell. An already placed nest answers again with its heart.
+     */
+    public static final class NestFound {
+        public static final int NEST = 24, DIM = 32, HEART_X = 36, HEART_Y = 40, HEART_Z = 44, SIZE = 48;
+        public static final int PLACED = 1, FAILED = 2;
+    }
+
+    /** NEST_CENSUS (aux = flags): a nest's worms, live (loaded or not) plus still owed. */
+    public static final class NestCensus {
+        public static final int NEST = 24, WORMS = 32, RESERVED = 36, SIZE = 40;
+        /** The heart is no longer a spawner: the engine counts it as broken. */
+        public static final int FLAG_HEART_MISSING = 1;
+    }
+
+    /** NEST_LOSS (aux = cause): nest worms died. The boss rule: any death not credited to a wild mob is a player's. */
+    public static final class NestLoss {
+        public static final int NEST = 24, COUNT = 32, RESERVED = 36, PLAYER_MOST = 40, PLAYER_LEAST = 48, SIZE = 56;
+        public static final int CAUSE_PLAYER = 0, CAUSE_AGE = 1, CAUSE_STARVED = 2, CAUSE_FACTION = 3,
+                CAUSE_PREDATOR = 4, CAUSE_OTHER = 5;
+    }
+
+    /** NEST_HEART (aux 0): the spawner heart was broken (by the player, zeros for none). */
+    public static final class NestHeart {
+        public static final int NEST = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIZE = 48;
     }
 
     // ---- commands -------------------------------------------------------------------------------
@@ -205,6 +242,27 @@ public final class DragonRecords {
         public static final int DIM = 16, X = 20, Z = 24, RADIUS = 28, SIZE = 32;
     }
 
+    /**
+     * PLACE_NEST (aux 0): a nest whose chamber floor lies {@code depth} blocks (20 to 60) below the surface
+     * heightmap in chunk (cx, cz), carved when that chunk is loaded (OG-9e). Idempotent.
+     */
+    public static final class PlaceNest {
+        public static final int NEST = 16, DIM = 24, CX = 28, CZ = 32, DEPTH = 36, SIZE = 40;
+    }
+
+    /** NEST_RENEW (aux = count): the nest owes {@code count} more worms of size {@code stage} (1 to 3). */
+    public static final class NestRenew {
+        public static final int NEST = 16, DIM = 24, STAGE = 28, RESERVED = 32, SIZE = 40;
+    }
+
+    /**
+     * NEST_SORTIE (aux = count): up to {@code count} loaded worms burrow to column (x, z) and fight there for
+     * {@code timeout} ticks, stopping under an armoured floor.
+     */
+    public static final class NestSortie {
+        public static final int NEST = 16, DIM = 24, X = 28, Z = 32, TIMEOUT_TICKS = 36, SIZE = 40;
+    }
+
     /** The smallest valid size of each command kind; a shorter record is skipped as malformed. */
     public static int minSize(int kind) {
         return switch (kind) {
@@ -215,6 +273,9 @@ public final class DragonRecords {
             case DRAGON_DISCARD -> Discard.SIZE;
             case PLACE_LAIR -> PlaceLair.SIZE;
             case OIL_SURVEY -> OilSurvey.SIZE;
+            case PLACE_NEST -> PlaceNest.SIZE;
+            case NEST_RENEW -> NestRenew.SIZE;
+            case NEST_SORTIE -> NestSortie.SIZE;
             default -> 16;
         };
     }

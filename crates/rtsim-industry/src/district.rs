@@ -300,6 +300,9 @@ pub struct District {
     pub links: BTreeMap<LinkKey, i64>,
     pub sweep: Option<SweepBuf>,
     pub deposits: VecMap<Good, DepositSample>,
+    /// The latest stock sweep merged (its SWEEP_END's number; 0 before the first). A deposit sample of
+    /// that sweep is current: its well was found drilling then (OG-9e's nests wake on it, OGC71).
+    pub last_sweep: u32,
     pub sim: Option<SimSpan>,
     pub epoch: u32,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
@@ -350,8 +353,9 @@ pub const EDITORS_KEPT: usize = 8;
 
 /// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
 /// district page had no magic and no editors; "IDS3" adds the stations' ports and per-call
-/// amounts, choices SG32 and SG34). No older page opens.
-pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS3");
+/// amounts, choices SG32 and SG34; "IDS4", OG-9e: the latest sweep merged, and a fifth threat
+/// class in the defence record). No older page opens.
+pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS4");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -382,6 +386,7 @@ impl District {
             links: BTreeMap::new(),
             sweep: None,
             deposits: VecMap::new(),
+            last_sweep: 0,
             sim: None,
             epoch: 0,
             pending: BTreeMap::new(),
@@ -925,6 +930,7 @@ mod persist_impls {
             self.links.put(w);
             self.sweep.put(w);
             self.deposits.put(w);
+            self.last_sweep.put(w);
             self.sim.put(w);
             self.epoch.put(w);
             self.pending.put(w);
@@ -976,6 +982,7 @@ mod persist_impls {
                 links: Persist::get(r)?,
                 sweep: Persist::get(r)?,
                 deposits: Persist::get(r)?,
+                last_sweep: Persist::get(r)?,
                 sim: Persist::get(r)?,
                 epoch: Persist::get(r)?,
                 pending: Persist::get(r)?,

@@ -156,7 +156,8 @@ pub struct ThreatTunables {
     /// The most blocks one attack may destroy (I23). TUNABLE, PLACEHOLDER 8.
     pub destroy_cap_blocks: u32,
     /// Blocks one surviving attacker destroys (I23). TUNABLE, PLACEHOLDER: ground melee 0 (most
-    /// mobs break nothing, vanilla), ranged 0, flying 1, siege 1 (creepers, raiders, dragons).
+    /// mobs break nothing, vanilla), ranged 0, flying 1, siege 1 (creepers, raiders, dragons),
+    /// burrowing 1 (an oil nest's worm, OG-9e).
     pub blocks_per_attacker: PerClass<u32>,
     /// After an attack of a class, a district is safe from that class this long (I25). TUNABLE,
     /// PLACEHOLDER 24,000 ticks (a day) for every class.
@@ -177,10 +178,10 @@ impl Default for ThreatTunables {
             night_ticks_per_day: 10_000,
             untested_weight: 0.5,
             comparable_strength_factor: 2.0,
-            carry_per_attacker: [0, 0, 0, 64],
+            carry_per_attacker: [0, 0, 0, 64, 0],
             theft_cap_ppm: 100_000,
             destroy_cap_blocks: 8,
-            blocks_per_attacker: [0, 0, 1, 1],
+            blocks_per_attacker: [0, 0, 1, 1, 1],
             cooldown_ticks: [24_000; ThreatClass::COUNT],
             defender_effectiveness: 1.0,
             attacker_effectiveness: 1.0,

@@ -283,6 +283,26 @@ final class SurveyJob {
         return head.getCollisionShape(level, p).isEmpty();
     }
 
+    /**
+     * Blocks of cover over a machine that make it underground (FLAG_SUBTERRANEAN, OILGATE.md §4.6, OG-9e):
+     * deeper than a flyer's roof reach, so a cellar or a mine, not a shed.
+     */
+    static final int SUBTERRANEAN_COVER = 5;
+    /** How far under a block the armoured floor may lie (FLAG_ARMOURED). */
+    static final int ARMOUR_DEPTH = 4;
+
+    private static boolean armoured(LevelChunk chunk, BlockPos pos) {
+        BlockPos.MutableBlockPos p = pos.mutable();
+        for (int i = 0; i < ARMOUR_DEPTH; i++) {
+            p.move(0, -1, 0);
+            if (p.getY() < chunk.getMinBuildHeight())
+                return false;
+            if (chunk.getBlockState(p).is(ThreatClasses.ARMOURED_FLOOR))
+                return true;
+        }
+        return false;
+    }
+
     private void readBlockEntities(Industry ind, LevelChunk chunk) {
         it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap cache = Districts.kindCache();
         for (BlockEntity be : new ArrayList<>(chunk.getBlockEntities().values())) {
@@ -315,6 +335,10 @@ final class SurveyJob {
             boolean isRoofed = top > pos.getY();
             District.Inventory inv = district.inventoryAt(pos);
             int flags = isRoofed ? 0 : IndRecords.SurveyBlocks.FLAG_ROOFLESS;
+            if (isRoofed && top - pos.getY() >= SUBTERRANEAN_COVER)
+                flags |= IndRecords.SurveyBlocks.FLAG_SUBTERRANEAN;
+            if (armoured(chunk, pos) || be.getBlockState().is(ThreatClasses.BURROW_SPARED))
+                flags |= IndRecords.SurveyBlocks.FLAG_ARMOURED;
             if (inv != null) {
                 inventoryBlocks.add(new Exposed(pos, be.getBlockState(), flags | IndRecords.SurveyBlocks.FLAG_INVENTORY, inv.index()));
             } else {

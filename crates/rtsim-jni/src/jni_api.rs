@@ -491,6 +491,32 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native boolean nDragonsNest(long handle, long nest, long[] out)`: one oil nest by its
+/// id (`Engine::dragons_nest`, `NEST_INFO` values); false for a nest the engine does not keep.
+/// Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nDragonsNest<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+    nest: jlong,
+    out: JLongArray<'l>,
+) -> jboolean {
+    env.with_env(|env| -> Result<jboolean, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let Some(info) = e.dragons_nest(nest as u64) else {
+            return Ok(false);
+        };
+        let n = out.len(env)?.min(info.len());
+        out.set_region(env, 0, &info[..n])?;
+        Ok(true)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassReport(long handle, long district)`: the district's glass report
 /// (`Engine::glass_report`, the layout of `rtsim_industry::glass::report::Report::to_f64s`); null
 /// while it has no complete compile. Between steps; tests and operators.
