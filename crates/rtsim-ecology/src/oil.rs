@@ -874,7 +874,7 @@ impl Dragons {
     }
 
     /// Arriving at an oil chunk: it senses the districts around (OG-8); not full, it raids the
-    /// one holding the most fuel (OG-5; watched, it materializes there instead); then it rests
+    /// one holding the most fuel (OG-5; watched, it also materializes there, OGC56); then it rests
     /// on the field to fill up, unless the tanks filled it. A visitor always rests a while.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refuel_arrive(
@@ -898,36 +898,39 @@ impl Dragons {
                 .filter(|(_, s, _)| s.fuel_mb >= signal)
                 .max_by(|a, b| a.1.fuel_mb.cmp(&b.1.fuel_mb).then(b.0.id.0.cmp(&a.0.id.0)))
                 .map(|(s, _, fresh)| (*s, *fresh));
-            if let Some((site, fresh)) = tank {
-                let cruise = self.tun.species(self.dragons[d].species).cruise_y;
-                // A watched district's tanks draw it once a day (the day it is first sensed):
-                // driven off, it rests on the field instead of coming back at once.
-                if site.watched {
-                    if fresh && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius) {
-                        self.note(
-                            at,
-                            "refuel",
-                            Some(d),
-                            format!(
-                                "dry: flies at the tanks of district {} (watched)",
-                                site.id.0
-                            ),
-                        );
-                        self.materialize(w, d, p, true, false, Some((site.pos, cruise)), at);
-                        return;
-                    }
-                } else {
-                    let r = self.raid_sites(infra, d, vec![site], at);
-                    self.feed(d, at, r.food, &[]);
-                    if r.any {
-                        let quarry = Quarry {
-                            kind: PreyKind::Grudge,
-                            name: format!("district {} (tanks)", site.id.0),
-                            pos: Some(site.pos),
-                            id: u128::from(site.id.0),
-                        };
-                        self.record_hunt(at, d, quarry, r.food, r.taken);
-                    }
+            // A watched district's tanks draw it once a day (the day it is first sensed): driven
+            // off, it rests on the field instead of coming back at once. Watched, the raid also
+            // resolves as an unwatched one does, at once (P28 as Ben decided it, OGC56), and the
+            // dragon comes in person.
+            if let Some((site, fresh)) = tank
+                && (!site.watched || fresh)
+            {
+                let r = self.raid_sites(infra, d, vec![site], at);
+                self.feed(d, at, r.food, &[]);
+                if r.any {
+                    let quarry = Quarry {
+                        kind: PreyKind::Grudge,
+                        name: format!("district {} (tanks)", site.id.0),
+                        pos: Some(site.pos),
+                        id: u128::from(site.id.0),
+                    };
+                    self.record_hunt(at, d, quarry, r.food, r.taken);
+                }
+                if site.watched
+                    && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius)
+                {
+                    let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+                    self.note(
+                        at,
+                        "refuel",
+                        Some(d),
+                        format!(
+                            "dry: flies at the tanks of district {} (watched)",
+                            site.id.0
+                        ),
+                    );
+                    self.materialize(w, d, p, true, false, Some((site.pos, cruise)), at);
+                    return;
                 }
             }
         }
@@ -1131,7 +1134,7 @@ impl Dragons {
     }
 
     /// A grudge raid on a district (OG-8, `Target::District`): through the threat interface as
-    /// a home's districts are; watched, a real fight at the district.
+    /// a home's districts are; watched, that and a real fight at the district (OGC56).
     pub(crate) fn raid_district(
         &mut self,
         w: &mut World,
@@ -1156,13 +1159,7 @@ impl Dragons {
             .filter(|s| s.id == DistrictId(district))
             .collect();
         let r = self.raid_sites(infra, d, sites, at);
-        if let Some(site) = r.watched {
-            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
-            if let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius) {
-                self.materialize(w, d, p, true, true, Some((site.pos, cruise)), at);
-                return;
-            }
-        }
+        let watched = r.watched;
         self.feed(d, at, r.food, &[]);
         let quarry = Quarry {
             kind: PreyKind::Grudge,
@@ -1170,6 +1167,17 @@ impl Dragons {
             pos: Some(Pos::new(frame, x, z)),
             id: u128::from(district),
         };
+        // Watched, it was raided too (P28, OGC56) and the dragon comes in person.
+        if let Some(site) = watched
+            && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius)
+        {
+            if r.any {
+                self.record_hunt(at, d, quarry, r.food, r.taken);
+            }
+            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+            self.materialize(w, d, p, true, true, Some((site.pos, cruise)), at);
+            return;
+        }
         self.record_hunt(at, d, quarry, r.food, r.taken);
         if !r.any {
             let x = self.dragons.get_mut(d).expect("live");

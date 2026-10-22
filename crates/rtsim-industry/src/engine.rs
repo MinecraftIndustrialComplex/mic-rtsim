@@ -3080,7 +3080,7 @@ impl Engine {
             loads: None,
             at,
         };
-        self.attack_district(&t, &[], 0);
+        self.attack_district(&t, &[], 0, false);
         // The next one, for this class only (the stamp is shared, so reschedule all classes).
         self.schedule_pressure(d, at + 1);
     }
@@ -3118,16 +3118,28 @@ impl Engine {
     /// surviving share), from the district's boundary stock. What they take is theft like any
     /// other: it leaves the stock and enters `books.stolen` and the attack's report.
     pub fn threat_drinking(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+        self.threat_with(t, fuels, room, false);
+    }
+
+    /// An attack whose attackers the players also meet in person (P28 as Ben decided it, "bounded
+    /// damage too"; choices-oilgate.md OGC56): a watched district resolves abstractly as an
+    /// unwatched one does, blocks and theft under the same caps and cooldown, while the real
+    /// fight goes on. Otherwise [`Engine::threat_drinking`].
+    pub fn threat_in_sight(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+        self.threat_with(t, fuels, room, true);
+    }
+
+    fn threat_with(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let at = t.at.max(self.now);
         self.advance_to(at);
         let t = Threat { at, ..*t };
         match t.target {
-            ThreatTarget::District(_) => self.attack_district(&t, fuels, room),
+            ThreatTarget::District(_) => self.attack_district(&t, fuels, room, in_sight),
             ThreatTarget::Train(train) => self.attack_train(&t, train),
         }
     }
 
-    fn attack_district(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+    fn attack_district(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let ThreatTarget::District(d) = t.target else {
             return;
         };
@@ -3149,8 +3161,10 @@ impl Engine {
             skipped: None,
         };
         // Watched fights are real (§13.1). Unwatched ones resolve abstractly, whether or not the
-        // chunks are loaded (C18).
-        if dist.watched {
+        // chunks are loaded (C18); so does a watched one whose attackers come in person too
+        // (`in_sight`, OGC56).
+        let watched = dist.watched;
+        if watched && !in_sight {
             report.skipped = Some("watched");
         } else if at < dist.defence.cooldown_until[t.class.index()] {
             report.skipped = Some("cooldown");
@@ -3306,10 +3320,15 @@ impl Engine {
             }
         }
         let what = format!(
-            "{:?} {:?} x{}: survived {:.2}{}{}, stole {}, destroyed {}{}",
+            "{:?} {:?} x{}{}: survived {:.2}{}{}, stole {}, destroyed {}{}",
             t.source,
             t.class,
             t.count,
+            if watched {
+                " (watched, a real fight too)"
+            } else {
+                ""
+            },
             outcome.survived,
             if outcome.untested {
                 " (untested defences)"
