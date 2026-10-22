@@ -22,11 +22,15 @@ he skipped 4, so it is taken as recommended. OGB-2 and OGB-5 are built (OGC44, O
 attack, `roof_pass = (machineBlocks - roofedMachines) / machineBlocks` from the district's latest
 IND_SURVEY; 1 for a ground attack, for a district never surveyed and for one with no machines.
 "Roofed" is the survey's existing rule (the block above the machine cannot see the sky), so a glass
-roof is no roof.
+roof is no roof. OGB-7 (Ben, 2026-10-21) changed this: `roofedMachines` now counts only the machines
+whose cover lies beyond `roofReachBlocks` (OGC65), so a machine under a roof a flyer reaches counts as
+open.
 
 **OGC2. A roof stops a flyer's block damage, not its theft or its fight.** A flyer's destroyed
 blocks are `floor(n * roof_pass)` and drawn only from blocks the survey flagged roofless. Theft and
 the Lanchester fight do not see the roof: a dragon lands in the yard and takes what is in the tanks.
+OGB-7 changed this: a roof within reach is itself one of the roofless blocks a flyer draws (OGC64), and
+once it is broken the next survey finds the machine under it open.
 
 ## Knowledge (OG-8)
 
@@ -360,6 +364,55 @@ is seen at once. The plugin's `seed()` answers true for the hole; a pack can sti
 does. Not widened: no other block seeds without a player (the wider forms would amend DS-10 and are
 Ben's). GameTest `aPumpjackHoleSeedsWithNoPlayer` (dieselgenerators, on the stub): a hole set down
 with `level.setBlock` and no player is in its chunk's seeds, and a district forms around it.
+
+**OGC61. A partly loaded district is surveyed where it is loaded (F5).** A whole survey still needs
+every district chunk loaded: the walk and the perimeter cut need the whole area, and only a whole
+survey sends IND_SURVEY (the defence vector stays the last whole survey's). A district with some
+chunks loaded gets a partial survey: the block entities of its loaded chunks only (the machines, the
+roofs in reach and the boundary inventories), sent as IND_SURVEY_BLOCKS flagged partial, with no
+IND_SURVEY. It is due after the district's revision changes, when a loaded chunk not yet surveyed at
+this revision appears (looked at only when the district's loaded count changes, not every tick), when
+something asks for a survey, and once a survey period, as a whole one is. A result read while the
+district changed is dropped. `Threats.partialSurveys()` counts them. GameTest
+`aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded` (core, either engine).
+
+**OGC62. The engine keeps each chunk's rows until that chunk is surveyed again (F5).** Every chunk a
+survey reads gets part 0 of IND_SURVEY_BLOCKS, empty when it has no rows; part 0 replaces that chunk's
+rows and its later parts add to them. A partial survey's part 0 keeps the chunk's wall faces, which
+belong to the last whole survey's cut. The engine drops rows outside the district's chunks at each
+IND_SURVEY and each part (it keeps them all while it knows no chunks); an IND_SURVEY at a new revision
+no longer clears every row. A raid on a partly loaded district draws on every chunk's last rows. The
+fake Java's announce sends a part 0 for every district chunk. Unit test
+`a_partial_survey_keeps_the_other_chunks_rows` (threat.rs).
+
+**OGC63. IND_SURVEY_BLOCKS is 56 + 24n, one chunk a record.** 24 u64 district, 32 u32 revision,
+36 u32 part (within the chunk), 40 i32 chunkX, 44 i32 chunkZ, 48 u32 flags (1 partial), 52 u32
+reserved, 56 n × Block24; Block24's flags gain 16 roof. No compatibility work (unreleased): delete
+GameTest worlds after this lands.
+
+**OGC64. A roof in reach is a block a flyer breaks (F4, OGB-7).** For a machine without sky access the
+survey finds its column's top block that keeps the sky out: the block under the column's lowest sky
+light source, the light engine's own count, which changes with the block in the same tick. When that
+block lies within `roofReachBlocks` (ThreatConfig, 8, PLACEHOLDER as OGB-7 says) above the machine, it
+is listed with flags roofless and roof. The rows go machines, then roofs, then boundary inventories,
+each block once (a roof that is itself a machine or an inventory is not listed twice, and two machines
+under one column's roof list it once). "Roofed" keeps its meaning (the block above the machine has no
+sky access, so a glass roof is no roof); it is now read from the same sky light sources rather than
+the light engine's brightness, so a survey need not wait for lighting. Only the top block is listed:
+a roof two blocks thick within reach takes two raids (the second survey lists the lower block).
+Unit test `a_flyer_takes_a_roof_in_reach_before_the_machine_under_it` (threat.rs); GameTests
+`theDefenceSurveyMeasuresWallsRoofsAndDark` (core, either engine: a stone three up is a roof row,
+cover ten up shields) and `aRoofShieldsAMachineFromAFlyerNotFromASiege` (core, native: a dragon breaks
+a shed's roof and leaves the machines under it and under deep cover; the next survey finds the shed's
+machine open; a siege still breaks the deep-covered one). That GameTest used vanilla furnaces, which no
+longer seed a district (DS-10), so it now uses the test machine.
+
+**OGC65. `roofedMachines` counts shielded machines only.** IND_SURVEY's `roofedMachines` (and
+`lastSurvey`'s index 4) counts the machines whose cover is beyond reach. A machine under a roof in reach
+counts as open in OGC1's roof pass: a shed does not cut a flyer's blocks, it only keeps the machine off
+the list until its roof goes. `lastSurvey` index 20 counts the roofs in reach (diagnostics; no new
+IND_SURVEY field).
+
 
 ## For Ben (answered 2026-10-21)
 

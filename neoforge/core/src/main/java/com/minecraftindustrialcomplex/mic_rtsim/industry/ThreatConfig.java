@@ -27,6 +27,7 @@ public final class ThreatConfig {
     public static final String SURVEY_MAX_BLOCKS = "surveyMaxBlocks";
     public static final String SURVEY_MARGIN = "surveyMarginColumns";
     public static final String SURVEY_MAX_COLUMNS = "surveyMaxColumns";
+    public static final String ROOF_REACH = "roofReachBlocks";
     public static final String FIGHT_GAP = "fightGapTicks";
 
     private static final Map<String, Object[]> DEFS = new LinkedHashMap<>();
@@ -43,6 +44,8 @@ public final class ThreatConfig {
         def(SURVEY_MAX_BLOCKS, 2048, 0, 1_000_000, "Exposed blocks a survey lists at most (IND_SURVEY_BLOCKS).");
         def(SURVEY_MARGIN, 8, 1, 256, "Columns around the machines the perimeter cut is computed over.");
         def(SURVEY_MAX_COLUMNS, 40_000, 64, 4_000_000, "Columns at most in the perimeter cut's graph; a larger area is surveyed without it.");
+        // OGB-7 (PLACEHOLDER 8): a roof this close above a machine is a block a flyer can break.
+        def(ROOF_REACH, 8, 0, 384, "Blocks above a roofed machine within which its roof is a block a flyer can break (OGB-7); deeper cover shields it.");
         def(FIGHT_GAP, 200, 1, 72_000, "Ticks without an engagement that end a real fight (IND_FIGHT).");
     }
 
