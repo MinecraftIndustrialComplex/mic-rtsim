@@ -124,7 +124,8 @@ public final class DistrictDiagnostics {
         long[] survey = ind.threats.lastSurvey(d.id);
         if (survey != null)
             out.add(Component.literal("  last defence survey: perimeter " + survey[0] + " columns, " + survey[1] + " gaps, " + survey[2]
-                    + " dark spawnable blocks, " + survey[3] + " machines, " + survey[4] + " roofed"));
+                    + " dark spawnable blocks, " + survey[3] + " machines, " + survey[4] + " roofed, " + survey[20]
+                    + " under a roof a flyer reaches"));
         for (String w : warnings(d.id))
             out.add(Component.literal("  warning: " + w));
         Reconcile r = reconciles.get(d.id);
