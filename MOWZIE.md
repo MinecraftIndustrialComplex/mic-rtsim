@@ -101,8 +101,8 @@ warriors walking in from its edge.
 | Factions, grievance, the ladder, envoys, raids, routs, heirs | rtsim-conflict (`crates/rtsim-conflict`) | mic_rtsim |
 | Where trains really run | Create simulates every train wherever it is, loaded or not (`GlobalRailwayManager.tick`, `trains` map, lines 59 and 210); a train's position is `Carriage.getLeadingPoint().getPosition(graph)` (`Carriage.java:385`, `TravellingPoint.java:302`), its dimension the leading point's node location (`TrackNodeLocation.dimension`, `:41`) | create |
 | Whose train it is | `Train.owner`, a UUID (`Train.java:162`); who sets it in the hash-matched jar is UNVERIFIED (MZ-13) | create |
-| Cargo lost from a train | I24: `attack_train` (`crates/rtsim-industry/src/engine.rs:2914`), which finds the train's current booked leg by its id (`LegIndex::leg_of`, `threat.rs:689`), and `IND_CARRIAGE_DELTA` on `Carriage.storage` | mic_rtsim_create |
-| Train arrivals and lines | industry line edges from Create train arrivals (`TrainWatch.java`; `crates/rtsim-industry/src/engine.rs:109-119`, `2076-2087`) | mic_rtsim_create |
+| Cargo lost from a train | I24: `attack_train` (`crates/rtsim-industry/src/engine.rs:2962`), which finds the train's current booked leg by its id (`LegIndex::leg_of`, `threat.rs:722`), and `IND_CARRIAGE_DELTA` on `Carriage.storage` | mic_rtsim_create |
+| Train arrivals and lines | industry line edges from Create train arrivals (`TrainWatch.java`; `crates/rtsim-industry/src/engine.rs:109-119`, `2100-2111`) | mic_rtsim_create |
 | Defending a station or base | the I21 survey: walls 2 blocks or more, fences and walls; Create Radars fire control with Create Big Cannons (Radars class every `Enemy` as hostile, `TrackCategory`: the Frostmaw, every Umvuthana, envoys included, and the Umvuthi); Create saws, drills, crushing wheels; iron golems, which attack every Mowzie body in this plan (`INDUSTRY.md:574-585`) | create, createbigcannons, create radars, minecraft |
 | Weapons that hurt a Frostmaw | melee, fire, TaCZ guns (`EntityKineticBullet` extends `Projectile`, not `AbstractArrow`), Create Big Cannons shells (also `Projectile`, with no attacker entity); a thrown trident is an `AbstractArrow` (`ThrownTrident`), so it bounces off like an arrow | tacz, createbigcannons, minecraft |
 | Stealing the crystal | vanilla invisibility (`minecraft:potion` of invisibility) | minecraft |
@@ -112,7 +112,7 @@ warriors walking in from its edge.
 | Keeping turret shells and stray blows off an envoy | NeoForge `LivingIncomingDamageEvent` (cancelable; not yet used in the core) and `DamageSource.getEntity()`, the attacker or a projectile's owner | neoforge, minecraft |
 | Knowing a camp's bodies are in before counting them | `ServerLevel.areEntitiesLoaded(long)` (`ServerLevel.java:1702`): entities load after their chunk, asynchronously (`PersistentEntitySectionManager.java:215-222`, `243-250`) | minecraft |
 | Camps found when they load | the lair finder pattern: a structure start seen on `ChunkEvent.Load` (`neoforge/iceandfire/.../Lairs.java:44-60`, `114-125`) | mic_rtsim_iceandfire (pattern) |
-| Tribute put in a real chest | `TRANSFER_TO_CONTAINER` 0x8005 (`docs/boundary.md:286`), as the dragons' `LAIR_CHEST` uses it (`docs/boundary.md:850`, `880-908`) | mic_rtsim |
+| Tribute put in a real chest | `TRANSFER_TO_CONTAINER` 0x8005 (`docs/boundary.md:286`), as the dragons' `LAIR_CHEST` uses it (`docs/boundary.md:850`, `892-923`) | mic_rtsim |
 | A rail fixture for tests | `RailFixtureGameTests` (branch `test/create-rail-fixture`, not merged): real Create 6.0.10 track with a 90 degree curve and an S-bend, two stations, a signal and an assembled two-carriage train on a schedule | mic_rtsim_create |
 
 ## 2. Custom-roll ledger
@@ -173,7 +173,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    while a member is away with its body there and its party not watched ends that party through `home`
    (`engine.rs:3170`: survivors to the pool, loot stocked). `recall` (`engine.rs:3146-3167`) is not the
    tool: it only despawns a party's bodies in the world, and an unwatched party has none, so the
-   BAND_RECALL reasons stay 1 to 6 (`docs/boundary.md:1402`); the one command is AMBUSH_SPOT's removed
+   BAND_RECALL reasons stay 1 to 6 (`docs/boundary.md:1460`); the one command is AMBUSH_SPOT's removed
    flag if the party was lurking (ledger 8). `home` runs today only from the party's own last event
    (`engine.rs:2425`), so the census also cancels that event (the generational handles already make the
    party's other pending events stale). About 300.
@@ -215,7 +215,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     plugin has played it, and resent at each session start), TRAIN_ROBBED (the train the robbed-train
     roar plays for), and the world's difficulty (no war party leaves on Peaceful). An envoy party
     wiped out with no player among its killers withdraws its demand: a new DEMAND_SETTLED outcome 5
-    (today 1 to 4, `docs/boundary.md:1403`) with no relief, no refusal and no climb, the feud staying
+    (today 1 to 4, `docs/boundary.md:1461`) with no relief, no refusal and no climb, the feud staying
     on Envoy (today the demand would run to its deadline and expire as if refused,
     `demand_due`, `engine.rs:1809-1821`). About 260 with the decoding.
 15. **Two cultures as data:** `data/cultures/frostmaw.json` and `umvuthana.json`, added to `builtin()`
@@ -243,14 +243,14 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     for a robbed Frostmaw (a mixin at the steal, §4.7); the swipe at passing carriages; the envoy
     party's targeting and damage (§4.5); a mixin on `EntityUmvuthi.rememberTrade` and an event on
     minion trades; the notice sounds. About 1,100 to 1,300, by analogy with the Ice and Fire plugin
-    (`DragonBridge.java` 1,029, `Lairs.java` 409).
+    (`DragonBridge.java` 1,267, `Lairs.java` 419).
 19. **A strength hook for observed fights:** `IND_FIGHT` counts one per attacker today
     (`core/industry/Threats.java:384-385`); plugins supply a per-entity strength (§4.13). About 40.
 20. **One core exclusion tag**, `mic_rtsim:threat/ignored`, checked first in `ThreatClasses.hostile`
     (`core/industry/ThreatClasses.java:36-39`), with `mowziesmobs:foliaath` as an optional entry
     (§4.15). About 10 lines and one JSON file.
 21. **GameTests and a kit** (`MowzieGameTests`, `MowzieKit`), about 1,000 and 300, by analogy with
-    `DragonGameTests.java` (688) and `DragonKit` (329); the rider and swipe tests build on the rail
+    `DragonGameTests.java` (701) and `DragonKit` (329); the rider and swipe tests build on the rail
     fixture; and **`rtsim-cli sim mowzie`**, about 550, by analogy with `sim/conflict.rs` (423).
 
 No new blocks, items or entities.
@@ -275,7 +275,7 @@ No new blocks, items or entities.
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
 | 0x880A | BAND_DEPART | engine to Java | agent, epoch, faction, an order id, units by kind: a war party's muster is over and it sets out (§4.9) |
 
-FACTION_FOUND's reserved word (`docs/boundary.md:1363`) carries the census at discovery: the count
+FACTION_FOUND's reserved word (`docs/boundary.md:1421`) carries the census at discovery: the count
 of home bodies, chief present, crystal held.
 
 ## 3. What happens today
@@ -405,7 +405,7 @@ that has come home as healed.
 
 **Its pool is one.** `pool_cap` 1 (the den holds one Frostmaw, `frostmaw_spawn.nbt`). Its Raid and
 Invasion parties are the chief alone: one `frostmaw` unit, flagged as the chief (`BAND_MATERIALIZE`
-member stacks carry a chief flag, `docs/boundary.md:1400`). Its Envoy, Scouts and Siege parties are
+member stacks carry a chief flag, `docs/boundary.md:1458`). Its Envoy, Scouts and Siege parties are
 empty (ledger 2): a beast makes no demands, sends no scouts and breaks no walls.
 
 **What angers it** (decided, MZ-2): Rail (§4.3), with killing and building inside its range from
@@ -568,7 +568,7 @@ for any reason (ledger 8).
 **Unwatched.** While its party waits out its patience, the sampler reports each train whose sampled
 segment passes within the reach of the track point (TRAIN_PASSED). Each pass rolls `ambush_milli` (500
 in 1,000). A hit is an I24 attack on that train, found by its id (`attack_train`, which takes the
-train's current booked leg, `threat.rs:689`): source `Boss`, its class, strength 41.7 (§4.13). The
+train's current booked leg, `threat.rs:722`): source `Boss`, its class, strength 41.7 (§4.13). The
 industry engine paces it: one attack per train per class per day (`cooldown_ticks` 24,000,
 `crates/rtsim-industry/src/tunables.rs:184`). The cargo lost is at most the Frostmaw's carry,
 PLACEHOLDER 64 (industry's own siege carry, `tunables.rs:180`), and at most 10% of the leg's cargo
@@ -864,7 +864,7 @@ warriors. So:
   two steps further out (`ChunkLevel.java:10-12`). So a camp's entities load when a player's chunk
   comes within the view distance plus 2 chunks of the camp's chunks: at the default 10, about 192 to
   208 blocks on an axis and 271 to 294 on a diagonal. FACTION_FOUND's census waits the same way.
-  Reason, over counting `EntityJoinLevelEvent`s as `HabitatEvents.java:25` and `DragonBridge.java:930`
+  Reason, over counting `EntityJoinLevelEvent`s as `HabitatEvents.java:25` and `DragonBridge.java:1167`
   do: a count has to know the last body is in, and join events alone cannot say when that is.
 - **The census** (HOME_CENSUS; ledger 7), in three steps:
   1. **The dead left behind.** HOME_SPAWN removes one vanilla body of the kind for each member booked
@@ -1207,7 +1207,7 @@ held, 7 warriors), with no grudges.
 ## 7. Tests before it ships
 
 **GameTests** (`neoforge/mowziesmobs/.../gametest/MowzieGameTests.java`; names in the dragons' style,
-`DragonGameTests.java`, 688 lines). A real structure start cannot be placed in a GameTest (`/place`
+`DragonGameTests.java`, 701 lines). A real structure start cannot be placed in a GameTest (`/place`
 registers no start, `docs/overnight-choices-iceandfire.md:140-143`), so tests declare their camps. The
 rail tests build on `RailFixtureGameTests` (branch `test/create-rail-fixture`); whether its train runs
 its schedule under GameTest's unthrottled ticks is UNVERIFIED (no GameTest has run an assembled train on
