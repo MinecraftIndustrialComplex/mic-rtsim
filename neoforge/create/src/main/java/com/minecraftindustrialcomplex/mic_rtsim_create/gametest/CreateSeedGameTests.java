@@ -425,7 +425,7 @@ public final class CreateSeedGameTests {
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, bearing);
                     check("the bearing's district (seeds " + seedsAt(helper, bearing) + ", seed() "
-                            + ind().districts().seed(helper.getLevel(), be[0], new java.util.HashMap<>()) + ", running " + be[0].isRunning()
+                            + ind().districts().seed(helper.getLevel(), be[0]) + ", running " + be[0].isRunning()
                             + ", moved " + be[0].getMovedContraption() + ", removed " + be[0].isRemoved() + ")", d != null);
                     check("one seed, the bearing's: " + d.seeds(), d.seeds() == 1);
                 })
