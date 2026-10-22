@@ -307,8 +307,8 @@ pub struct Engine {
     /// Keep [`Engine::log`]: off by default (formatting lines costs every breakpoint); the fake
     /// world and the CLI turn it on.
     pub log_enabled: bool,
-    /// The glass box (GLASSBOX.md, G1 read only): compiled graphs, solves and checksums. Not
-    /// paged in G1: Java resends the last compile periodically (choice GB4).
+    /// The glass box (GLASSBOX.md): compiled graphs, solves, checksums and glass replays. Paged,
+    /// one page per district (`glass::page`, G2-9); its counters go in the globals.
     pub glass: crate::glass::Glass,
     /// Every frame's topology (docs/choices-topology.md TP16): districts are local, so only a
     /// train leg's booking reads it, going the short way across a seam. Not saved.
@@ -4111,7 +4111,8 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLOBAL_TABLE, Persist, from_bytes, persist_struct, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, Persist, from_bytes,
+        persist_struct, to_bytes,
     };
 
     persist_struct!(LineEdge {
@@ -4209,6 +4210,8 @@ mod persist_impls {
         e.stats.put(w);
         e.books.put(w);
         e.log_enabled.put(w);
+        e.glass.records.put(w);
+        e.glass.stats.put(w);
     }
 
     fn key48(id: u64, what: &str) -> u64 {
@@ -4221,10 +4224,12 @@ mod persist_impls {
 
     impl Engine {
         /// Every page of the engine's state (A16): globals, one per district, one per replay
-        /// cluster with its booked wake. Call between steps; the host puts them in its save batch.
-        /// District ids must fit 48 bits (F36).
+        /// cluster with its booked wake, one per district's glass state (G2-9). Call between
+        /// steps; the host puts them in its save batch. District ids must fit 48 bits (F36).
         pub fn snapshot(&self) -> Vec<(PageKey, Vec<u8>)> {
-            let mut out = Vec::with_capacity(1 + self.districts.len() + self.clusters.len());
+            let mut out = Vec::with_capacity(
+                1 + self.districts.len() + self.clusters.len() + self.glass.districts.len(),
+            );
             let mut w = Writer::new();
             globals(self, &mut w);
             out.push((PageKey::new(GLOBAL_TABLE, 0), w.into_bytes()));
@@ -4244,6 +4249,12 @@ mod persist_impls {
                     w.into_bytes(),
                 ));
             }
+            for (id, dg) in &self.glass.districts {
+                out.push((
+                    PageKey::new(GLASS_TABLE, key48(id.0, "district")),
+                    crate::glass::page::district_page(dg),
+                ));
+            }
             out
         }
 
@@ -4255,6 +4266,7 @@ mod persist_impls {
             let mut global = None;
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
+            let mut glass = BTreeMap::new();
             for (k, bytes) in pages {
                 match k.table() {
                     GLOBAL_TABLE => global = Some(bytes),
@@ -4269,6 +4281,10 @@ mod persist_impls {
                         let wake = Option::<Tick>::get(&mut r)?;
                         r.finish()?;
                         clusters.push((k.id(), model, anchor, wake));
+                    }
+                    GLASS_TABLE => {
+                        let dg = crate::glass::page::read_district_page(&bytes)?;
+                        glass.insert(DistrictId(k.id()), dg);
                     }
                     _ => {}
                 }
@@ -4301,7 +4317,10 @@ mod persist_impls {
             e.stats = Persist::get(&mut r)?;
             e.books = Persist::get(&mut r)?;
             e.log_enabled = Persist::get(&mut r)?;
+            e.glass.records = Persist::get(&mut r)?;
+            e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
+            e.glass.districts = glass;
             e.districts = districts;
             e.clusters = LazyTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);
@@ -4312,15 +4331,22 @@ mod persist_impls {
                     e.cluster_of.insert(m, h);
                 }
             }
-            // A glass replay's regime state is not paged (choice G2-9): its district goes on by
-            // the black box (or freezes) from the next step, its stores' changes carried.
-            let glass: Vec<DistrictId> = e
+            // A glass span whose replay came without its glass page (rtsim-view's inspect restores
+            // one district alone) goes on by the black box (or freezes) from the next step, its
+            // stores' changes carried. With its page it goes on exactly (G2-9).
+            let unreplayed: Vec<DistrictId> = e
                 .districts
                 .values()
                 .filter(|d| d.sim.as_ref().is_some_and(|s| s.glass))
+                .filter(|d| {
+                    e.glass
+                        .districts
+                        .get(&d.id)
+                        .is_none_or(|g| g.replay.is_none() || g.compiled.is_none())
+                })
                 .map(|d| d.id)
                 .collect();
-            e.dirty.extend(glass);
+            e.dirty.extend(unreplayed);
             Ok(e)
         }
     }
