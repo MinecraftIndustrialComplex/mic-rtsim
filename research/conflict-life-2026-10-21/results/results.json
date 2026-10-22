@@ -1,0 +1,1954 @@
+{
+ "seeds": 8,
+ "years": 20,
+ "seconds": 10.4,
+ "summary": {
+  "alone/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 11.6375,
+    "p5": 9.0,
+    "median": 11.0,
+    "p95": 15.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.17078410311493017,
+   "lost_per_year": 1.9875,
+   "by_target": {
+    "village": 11.6375
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    115.375,
+    117.375
+   ],
+   "interval_cv": {
+    "median": 0.7275404864024619,
+    "p10": 0.645411317642792,
+    "p90": 0.9063101319343052,
+    "n": 16
+   },
+   "to_the_day": 0.13387978142076504,
+   "culture_js": 0.0,
+   "culture_cv_fights": 0.048745013260080114,
+   "story_overlap": 0.42242985201691513,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "alone/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 29.19375,
+    "p5": 22.95,
+    "median": 29.0,
+    "p95": 36.04999999999998,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 9.94375,
+    "p95": 14.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.464354527938343,
+   "lost_per_year": 13.55625,
+   "by_target": {
+    "camp": 9.94375,
+    "village": 19.25
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    289.875,
+    294.0
+   ],
+   "interval_cv": {
+    "median": 0.8098540032658685,
+    "p10": 0.7418986152790655,
+    "p90": 0.9420172802419106,
+    "n": 24
+   },
+   "to_the_day": 0.17672507030067056,
+   "culture_js": 0.0,
+   "culture_cv_fights": 0.05292834759968198,
+   "story_overlap": 0.49751940993573335,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "alone/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 13.8375,
+    "p5": 9.0,
+    "median": 14.0,
+    "p95": 19.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.975,
+    "p95": 3.0,
+    "zero_years": 0.39375
+   },
+   "lost_share": 0.10885275519421861,
+   "lost_per_year": 1.50625,
+   "by_target": {
+    "village": 3.7875,
+    "train_or_caravan": 9.075,
+    "camp": 0.975
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    142.875,
+    133.875
+   ],
+   "interval_cv": {
+    "median": 0.7811641694956195,
+    "p10": 0.550930975316074,
+    "p90": 0.9937337336831447,
+    "n": 40
+   },
+   "to_the_day": 0.02630754776072659,
+   "culture_js": 0.024995308643295307,
+   "culture_cv_fights": 0.15001604367832452,
+   "story_overlap": 0.09314445385494785,
+   "motives": {
+    "loot": 0.8428184281842819,
+    "pride": 0.08310749774164408,
+    "glory": 0.044715447154471545,
+    "hunger": 0.02935862691960253
+   },
+   "occasions": {
+    "caravan": 0.6558265582655827,
+    "restless": 0.27100271002710025,
+    "refused": 0.06865401987353206,
+    "news": 0.004516711833785004
+   }
+  },
+  "duel_adaptive/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.0,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": NaN,
+   "lost_per_year": 0.0,
+   "by_target": {},
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 1.0,
+   "decades_mean": [
+    0.0,
+    0.0
+   ],
+   "interval_cv": {
+    "median": NaN,
+    "p10": NaN,
+    "p90": NaN,
+    "n": 0
+   },
+   "to_the_day": 0.3431232091690544,
+   "culture_js": 2.3303192473860923e-05,
+   "culture_cv_fights": NaN,
+   "story_overlap": 0.3891791079756638,
+   "motives": {},
+   "occasions": {},
+   "duel": {
+    "war_first5": 0.0,
+    "war_last10": 0.0,
+    "killed_last10": 0.0,
+    "tribute_last10": 194.4,
+    "d_year10": 12.0,
+    "d_last": 12.0
+   }
+  },
+  "duel_adaptive/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.0,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": NaN,
+   "lost_per_year": 0.0,
+   "by_target": {},
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 1.0,
+   "decades_mean": [
+    0.0,
+    0.0
+   ],
+   "interval_cv": {
+    "median": NaN,
+    "p10": NaN,
+    "p90": NaN,
+    "n": 0
+   },
+   "to_the_day": 0.9963273871983211,
+   "culture_js": 2.82771448057786e-09,
+   "culture_cv_fights": NaN,
+   "story_overlap": 0.9985100407595189,
+   "motives": {},
+   "occasions": {},
+   "duel": {
+    "war_first5": 0.0,
+    "war_last10": 0.0,
+    "killed_last10": 0.0,
+    "tribute_last10": 405.75,
+    "d_year10": 12.0,
+    "d_last": 12.0
+   }
+  },
+  "duel_adaptive/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 1.15625,
+    "p5": 0.0,
+    "median": 1.0,
+    "p95": 2.0,
+    "zero_years": 0.18125
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.372972972972973,
+   "lost_per_year": 0.43125,
+   "by_target": {
+    "player": 1.15625
+   },
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    13.25,
+    9.875
+   ],
+   "interval_cv": {
+    "median": 0.4643526343148981,
+    "p10": 0.43291686926029166,
+    "p90": 0.5888682288453706,
+    "n": 8
+   },
+   "to_the_day": 0.07610619469026549,
+   "culture_js": 0.010273477486448867,
+   "culture_cv_fights": 0.06985323234227071,
+   "story_overlap": 0.25759873739968886,
+   "motives": {
+    "loot": 1.0
+   },
+   "occasions": {
+    "restless": 0.9945945945945946,
+    "refused": 0.005405405405405406
+   },
+   "duel": {
+    "war_first5": 1.5,
+    "war_last10": 0.9875,
+    "killed_last10": 11.91125,
+    "tribute_last10": 0.0,
+    "d_year10": 31.0,
+    "d_last": 29.875
+   }
+  },
+  "duel_fortress/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.0,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": NaN,
+   "lost_per_year": 0.0,
+   "by_target": {},
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 1.0,
+   "decades_mean": [
+    0.0,
+    0.0
+   ],
+   "interval_cv": {
+    "median": NaN,
+    "p10": NaN,
+    "p90": NaN,
+    "n": 0
+   },
+   "to_the_day": 1.0,
+   "culture_js": 0.0,
+   "culture_cv_fights": NaN,
+   "story_overlap": 1.0,
+   "motives": {},
+   "occasions": {},
+   "duel": {
+    "war_first5": 0.0,
+    "war_last10": 0.0,
+    "killed_last10": 0.0,
+    "tribute_last10": 0.0,
+    "d_year10": 80.0,
+    "d_last": 80.0
+   }
+  },
+  "duel_fortress/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 7.70625,
+    "p5": 4.0,
+    "median": 9.0,
+    "p95": 10.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.981346309813463,
+   "lost_per_year": 7.5625,
+   "by_target": {
+    "player": 7.70625
+   },
+   "extinct": 0.875,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    64.875,
+    89.25
+   ],
+   "interval_cv": {
+    "median": 0.3673374719479703,
+    "p10": 0.2047063576902837,
+    "p90": 0.4533309188739744,
+    "n": 8
+   },
+   "to_the_day": 0.9226430298146656,
+   "culture_js": 0.1712214165116113,
+   "culture_cv_fights": 0.19731711729348977,
+   "story_overlap": 0.3349858518629982,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   },
+   "duel": {
+    "war_first5": 6.025,
+    "war_last10": 8.925,
+    "killed_last10": 65.19375,
+    "tribute_last10": 0.0,
+    "d_year10": 80.0,
+    "d_last": 80.0
+   }
+  },
+  "duel_fortress/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.21875,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 1.0,
+    "zero_years": 0.78125
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.9714285714285714,
+   "lost_per_year": 0.2125,
+   "by_target": {
+    "player": 0.21875
+   },
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.375,
+   "decades_mean": [
+    3.125,
+    1.25
+   ],
+   "interval_cv": {
+    "median": 0.3605215731680835,
+    "p10": 0.30282025144651087,
+    "p90": 0.4683966072174127,
+    "n": 5
+   },
+   "to_the_day": 0.1067457375833951,
+   "culture_js": 0.00823531942578644,
+   "culture_cv_fights": 0.3416645926600399,
+   "story_overlap": 0.3435136797420186,
+   "motives": {
+    "loot": 1.0
+   },
+   "occasions": {
+    "restless": 1.0
+   },
+   "duel": {
+    "war_first5": 0.35,
+    "war_last10": 0.125,
+    "killed_last10": 3.25,
+    "tribute_last10": 0.0,
+    "d_year10": 80.0,
+    "d_last": 80.0
+   }
+  },
+  "duel_stubborn/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 12.4625,
+    "p5": 10.95,
+    "median": 12.0,
+    "p95": 14.049999999999983,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.2226680040120361,
+   "lost_per_year": 2.775,
+   "by_target": {
+    "player": 12.4625
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    121.0,
+    128.25
+   ],
+   "interval_cv": {
+    "median": 0.3436667829838249,
+    "p10": 0.3303314610667108,
+    "p90": 0.35356747979259256,
+    "n": 8
+   },
+   "to_the_day": 0.1062364031907179,
+   "culture_js": 5.732148412823272e-05,
+   "culture_cv_fights": 0.01232518127125827,
+   "story_overlap": 0.6138340059072593,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   },
+   "duel": {
+    "war_first5": 11.85,
+    "war_last10": 12.825,
+    "killed_last10": 37.17999999999999,
+    "tribute_last10": 0.0,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "duel_stubborn/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 21.2125,
+    "p5": 19.0,
+    "median": 21.0,
+    "p95": 23.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.22687094873305833,
+   "lost_per_year": 4.8125,
+   "by_target": {
+    "player": 21.2125
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    210.75,
+    213.5
+   ],
+   "interval_cv": {
+    "median": 0.2314753786656834,
+    "p10": 0.20503815498753544,
+    "p90": 0.25687087801552216,
+    "n": 8
+   },
+   "to_the_day": 0.6419753086419753,
+   "culture_js": 2.4442328236616933e-07,
+   "culture_cv_fights": 0.009261186591338672,
+   "story_overlap": 0.9485242365731086,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   },
+   "duel": {
+    "war_first5": 20.725,
+    "war_last10": 21.35,
+    "killed_last10": 61.37249999999998,
+    "tribute_last10": 0.0,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "duel_stubborn/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 4.1125,
+    "p5": 3.0,
+    "median": 4.0,
+    "p95": 6.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.041033434650455926,
+   "lost_per_year": 0.16875,
+   "by_target": {
+    "player": 4.1125
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    41.625,
+    40.625
+   ],
+   "interval_cv": {
+    "median": 0.4700687029350998,
+    "p10": 0.445731368542714,
+    "p90": 0.5753616199887808,
+    "n": 8
+   },
+   "to_the_day": 0.04816955684007707,
+   "culture_js": 0.012577002453940866,
+   "culture_cv_fights": 0.02769128747460272,
+   "story_overlap": 0.21077731575394018,
+   "motives": {
+    "loot": 1.0
+   },
+   "occasions": {
+    "restless": 0.9756838905775076,
+    "refused": 0.0243161094224924
+   },
+   "duel": {
+    "war_first5": 4.325,
+    "war_last10": 4.0625,
+    "killed_last10": 3.6975000000000002,
+    "tribute_last10": 0.0,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "duel_weak/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.0,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": NaN,
+   "lost_per_year": 0.0,
+   "by_target": {},
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 1.0,
+   "decades_mean": [
+    0.0,
+    0.0
+   ],
+   "interval_cv": {
+    "median": NaN,
+    "p10": NaN,
+    "p90": NaN,
+    "n": 0
+   },
+   "to_the_day": 0.33954154727793695,
+   "culture_js": 1.0963119209403259e-05,
+   "culture_cv_fights": NaN,
+   "story_overlap": 0.44928794315115284,
+   "motives": {},
+   "occasions": {},
+   "duel": {
+    "war_first5": 0.0,
+    "war_last10": 0.0,
+    "killed_last10": 0.0,
+    "tribute_last10": 361.15,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "duel_weak/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 0.0,
+    "p5": 0.0,
+    "median": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": NaN,
+   "lost_per_year": 0.0,
+   "by_target": {},
+   "extinct": 0.0,
+   "endless": 0.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 1.0,
+   "decades_mean": [
+    0.0,
+    0.0
+   ],
+   "interval_cv": {
+    "median": NaN,
+    "p10": NaN,
+    "p90": NaN,
+    "n": 0
+   },
+   "to_the_day": 0.9963273871983211,
+   "culture_js": 2.82771448057786e-09,
+   "culture_cv_fights": NaN,
+   "story_overlap": 0.9985100407595189,
+   "motives": {},
+   "occasions": {},
+   "duel": {
+    "war_first5": 0.0,
+    "war_last10": 0.0,
+    "killed_last10": 0.0,
+    "tribute_last10": 405.75,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "duel_weak/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 3.75,
+    "p5": 2.0,
+    "median": 4.0,
+    "p95": 5.049999999999983,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.041666666666666664,
+   "lost_per_year": 0.15625,
+   "by_target": {
+    "player": 3.75
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    38.75,
+    36.25
+   ],
+   "interval_cv": {
+    "median": 0.4738437516471484,
+    "p10": 0.44115905619719825,
+    "p90": 0.5535574890329623,
+    "n": 8
+   },
+   "to_the_day": 0.05472636815920398,
+   "culture_js": 0.012885620314592098,
+   "culture_cv_fights": 0.05537749241945384,
+   "story_overlap": 0.1920076745349192,
+   "motives": {
+    "loot": 1.0
+   },
+   "occasions": {
+    "restless": 1.0
+   },
+   "duel": {
+    "war_first5": 4.15,
+    "war_last10": 3.625,
+    "killed_last10": 4.08625,
+    "tribute_last10": 13.9125,
+    "d_year10": 6.0,
+    "d_last": 6.0
+   }
+  },
+  "farmer/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 11.58125,
+    "p5": 8.95,
+    "median": 12.0,
+    "p95": 15.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.18078791149487317,
+   "lost_per_year": 2.09375,
+   "by_target": {
+    "village": 11.475,
+    "player": 0.10625
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    117.75,
+    113.875
+   ],
+   "interval_cv": {
+    "median": 0.7564144397428967,
+    "p10": 0.6417158147185127,
+    "p90": 0.9136865306252162,
+    "n": 16
+   },
+   "to_the_day": 0.12467666839110192,
+   "culture_js": 0.0024479696641953185,
+   "culture_cv_fights": 0.09994618521319572,
+   "story_overlap": 0.43453446536980883,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "farmer/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 29.69375,
+    "p5": 22.0,
+    "median": 30.0,
+    "p95": 38.04999999999998,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 9.71875,
+    "p95": 15.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.4439065459903178,
+   "lost_per_year": 13.18125,
+   "by_target": {
+    "camp": 9.71875,
+    "village": 19.84375,
+    "player": 0.13125
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    292.75,
+    301.125
+   ],
+   "interval_cv": {
+    "median": 0.8324897171004886,
+    "p10": 0.7406424413312105,
+    "p90": 0.9420998488627063,
+    "n": 25
+   },
+   "to_the_day": 0.1655283246283648,
+   "culture_js": 0.006088849071909602,
+   "culture_cv_fights": 0.058476701028265625,
+   "story_overlap": 0.47331992695578773,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "farmer/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 15.475,
+    "p5": 10.0,
+    "median": 15.0,
+    "p95": 21.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 1.0875,
+    "p95": 5.0,
+    "zero_years": 0.4625
+   },
+   "lost_share": 0.1332794830371567,
+   "lost_per_year": 2.0625,
+   "by_target": {
+    "village": 3.7375,
+    "train_or_caravan": 9.025,
+    "player": 1.625,
+    "camp": 1.0875
+   },
+   "extinct": 0.125,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    159.75,
+    149.75
+   ],
+   "interval_cv": {
+    "median": 0.86432185129534,
+    "p10": 0.7005080007656328,
+    "p90": 1.1692773092573157,
+    "n": 48
+   },
+   "to_the_day": 0.024192400740002847,
+   "culture_js": 0.017251690255780362,
+   "culture_cv_fights": 0.1987462565901504,
+   "story_overlap": 0.08665434094566594,
+   "motives": {
+    "loot": 0.7605008077544426,
+    "pride": 0.16155088852988692,
+    "hunger": 0.046445880452342485,
+    "glory": 0.03150242326332795
+   },
+   "occasions": {
+    "caravan": 0.5831987075928917,
+    "restless": 0.2903877221324717,
+    "provoked": 0.06340872374798061,
+    "refused": 0.05452342487883683,
+    "news": 0.008481421647819063
+   }
+  },
+  "fortress/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 11.7125,
+    "p5": 9.0,
+    "median": 11.0,
+    "p95": 15.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.16969050160085378,
+   "lost_per_year": 1.9875,
+   "by_target": {
+    "village": 11.7125
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    118.0,
+    116.25
+   ],
+   "interval_cv": {
+    "median": 0.744732811367478,
+    "p10": 0.6451416809086816,
+    "p90": 0.8993971342896283,
+    "n": 16
+   },
+   "to_the_day": 0.2646784715750233,
+   "culture_js": 0.0,
+   "culture_cv_fights": 0.08839314816488246,
+   "story_overlap": 0.5356464698903489,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "fortress/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 30.175,
+    "p5": 24.0,
+    "median": 30.0,
+    "p95": 36.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 7.34375,
+    "p95": 11.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.44697597348798673,
+   "lost_per_year": 13.4875,
+   "by_target": {
+    "camp": 7.34375,
+    "village": 19.74375,
+    "player": 3.0875
+   },
+   "extinct": 0.125,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    304.125,
+    299.375
+   ],
+   "interval_cv": {
+    "median": 0.7574937068997502,
+    "p10": 0.500113033734767,
+    "p90": 0.8765969591562095,
+    "n": 24
+   },
+   "to_the_day": 0.15299750208159868,
+   "culture_js": 0.0007734092224093103,
+   "culture_cv_fights": 0.044337844371311774,
+   "story_overlap": 0.4890160731787336,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "fortress/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 14.275,
+    "p5": 9.0,
+    "median": 14.0,
+    "p95": 21.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.9875,
+    "p95": 3.0,
+    "zero_years": 0.45
+   },
+   "lost_share": 0.11646234676007006,
+   "lost_per_year": 1.6625,
+   "by_target": {
+    "village": 3.68125,
+    "train_or_caravan": 9.1625,
+    "camp": 0.9875,
+    "player": 0.44375
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    145.75,
+    139.75
+   ],
+   "interval_cv": {
+    "median": 0.7656912338614896,
+    "p10": 0.6278434984443719,
+    "p90": 0.965267805783478,
+    "n": 40
+   },
+   "to_the_day": 0.02431865828092243,
+   "culture_js": 0.019427901597898124,
+   "culture_cv_fights": 0.16599831992369957,
+   "story_overlap": 0.09812705576479444,
+   "motives": {
+    "loot": 0.8629597197898424,
+    "pride": 0.07224168126094571,
+    "hunger": 0.037215411558669004,
+    "glory": 0.027583187390542906
+   },
+   "occasions": {
+    "caravan": 0.6418563922942206,
+    "restless": 0.2946584938704028,
+    "refused": 0.05560420315236427,
+    "news": 0.005253940455341506,
+    "provoked": 0.002626970227670753
+   }
+  },
+  "multi/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 16.66875,
+    "p5": 12.0,
+    "median": 17.0,
+    "p95": 21.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.3573303337082865,
+   "lost_per_year": 5.95625,
+   "by_target": {
+    "village": 11.75,
+    "player": 4.91875
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    163.375,
+    170.0
+   ],
+   "interval_cv": {
+    "median": 0.7032474252246816,
+    "p10": 0.35254430096785566,
+    "p90": 0.9607244624375184,
+    "n": 24
+   },
+   "to_the_day": 0.09041796986067671,
+   "culture_js": 0.004374504411692752,
+   "culture_cv_fights": 0.0708850644663119,
+   "story_overlap": 0.30900057834770644,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "multi/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 33.73125,
+    "p5": 27.0,
+    "median": 34.0,
+    "p95": 39.04999999999998,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 7.5125,
+    "p95": 12.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.556420233463035,
+   "lost_per_year": 18.76875,
+   "by_target": {
+    "camp": 7.5125,
+    "village": 17.15625,
+    "player": 9.0625
+   },
+   "extinct": 0.125,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    337.0,
+    337.625
+   ],
+   "interval_cv": {
+    "median": 0.6442893905174394,
+    "p10": 0.5063462525486235,
+    "p90": 0.7966293137327061,
+    "n": 24
+   },
+   "to_the_day": 0.1621393622405939,
+   "culture_js": 0.00393992401715326,
+   "culture_cv_fights": 0.036047078420995415,
+   "story_overlap": 0.4083230001497811,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "multi/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 16.0625,
+    "p5": 11.0,
+    "median": 16.0,
+    "p95": 22.049999999999983,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.6625,
+    "p95": 2.0,
+    "zero_years": 0.53125
+   },
+   "lost_share": 0.10155642023346304,
+   "lost_per_year": 1.63125,
+   "by_target": {
+    "village": 3.29375,
+    "train_or_caravan": 8.06875,
+    "player": 4.0375,
+    "camp": 0.6625
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    164.25,
+    157.0
+   ],
+   "interval_cv": {
+    "median": 0.7753502768564446,
+    "p10": 0.6146367665384578,
+    "p90": 1.0614005407568659,
+    "n": 40
+   },
+   "to_the_day": 0.020287868403015764,
+   "culture_js": 0.019291090726317416,
+   "culture_cv_fights": 0.1667581727662347,
+   "story_overlap": 0.09591841682884561,
+   "motives": {
+    "loot": 0.8747081712062257,
+    "pride": 0.08949416342412451,
+    "glory": 0.021400778210116732,
+    "hunger": 0.014396887159533073
+   },
+   "occasions": {
+    "caravan": 0.5023346303501945,
+    "restless": 0.3665369649805447,
+    "refused": 0.06459143968871596,
+    "provoked": 0.042801556420233464,
+    "news": 0.023735408560311283
+   }
+  },
+  "multi_nospill/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 16.66875,
+    "p5": 12.0,
+    "median": 17.0,
+    "p95": 21.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.3573303337082865,
+   "lost_per_year": 5.95625,
+   "by_target": {
+    "village": 11.75,
+    "player": 4.91875
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    163.375,
+    170.0
+   ],
+   "interval_cv": {
+    "median": 0.7032474252246816,
+    "p10": 0.35254430096785566,
+    "p90": 0.9607244624375184,
+    "n": 24
+   },
+   "to_the_day": 0.09041796986067671,
+   "culture_js": 0.004374504411692752,
+   "culture_cv_fights": 0.0708850644663119,
+   "story_overlap": 0.30900057834770644,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "multi_nospill/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 33.73125,
+    "p5": 27.0,
+    "median": 34.0,
+    "p95": 39.04999999999998,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 7.5125,
+    "p95": 12.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.556420233463035,
+   "lost_per_year": 18.76875,
+   "by_target": {
+    "camp": 7.5125,
+    "village": 17.15625,
+    "player": 9.0625
+   },
+   "extinct": 0.125,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    337.0,
+    337.625
+   ],
+   "interval_cv": {
+    "median": 0.6442893905174394,
+    "p10": 0.5063462525486235,
+    "p90": 0.7966293137327061,
+    "n": 24
+   },
+   "to_the_day": 0.1621393622405939,
+   "culture_js": 0.00393992401715326,
+   "culture_cv_fights": 0.036047078420995415,
+   "story_overlap": 0.4083230001497811,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "multi_nospill/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 16.5,
+    "p5": 11.0,
+    "median": 17.0,
+    "p95": 22.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.86875,
+    "p95": 2.049999999999983,
+    "zero_years": 0.45625
+   },
+   "lost_share": 0.11553030303030302,
+   "lost_per_year": 1.90625,
+   "by_target": {
+    "village": 3.175,
+    "train_or_caravan": 8.29375,
+    "player": 4.1625,
+    "camp": 0.86875
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    167.0,
+    163.0
+   ],
+   "interval_cv": {
+    "median": 0.7842212806801574,
+    "p10": 0.6373328584976141,
+    "p90": 1.1058773398458894,
+    "n": 40
+   },
+   "to_the_day": 0.024287222808870117,
+   "culture_js": 0.02222597807030638,
+   "culture_cv_fights": 0.17283204586986495,
+   "story_overlap": 0.10483877535963144,
+   "motives": {
+    "loot": 0.8628787878787879,
+    "pride": 0.07121212121212121,
+    "hunger": 0.053409090909090906,
+    "glory": 0.0125
+   },
+   "occasions": {
+    "caravan": 0.5026515151515152,
+    "restless": 0.41704545454545455,
+    "refused": 0.04772727272727273,
+    "news": 0.020454545454545454,
+    "provoked": 0.012121212121212121
+   }
+  },
+  "railway/gate": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 33.55,
+    "p5": 30.0,
+    "median": 34.0,
+    "p95": 37.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 0.0,
+    "p95": 0.0,
+    "zero_years": 1.0
+   },
+   "lost_share": 0.18219076005961252,
+   "lost_per_year": 6.1125,
+   "by_target": {
+    "train_or_caravan": 22.00625,
+    "village": 11.54375
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 1.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    338.875,
+    332.125
+   ],
+   "interval_cv": {
+    "median": 0.6719615378549508,
+    "p10": 0.17540262055361142,
+    "p90": 0.8190819936817809,
+    "n": 24
+   },
+   "to_the_day": 0.5084586466165414,
+   "culture_js": 0.0,
+   "culture_cv_fights": 0.05383756562322747,
+   "story_overlap": 0.7830336505926689,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "railway/ladder": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 30.075,
+    "p5": 22.0,
+    "median": 29.0,
+    "p95": 38.04999999999998,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 10.06875,
+    "p95": 15.0,
+    "zero_years": 0.0
+   },
+   "lost_share": 0.4451371571072319,
+   "lost_per_year": 13.3875,
+   "by_target": {
+    "camp": 10.06875,
+    "village": 20.00625
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    298.625,
+    302.875
+   ],
+   "interval_cv": {
+    "median": 0.8318456112030337,
+    "p10": 0.7499013154532216,
+    "p90": 0.9152872210259279,
+    "n": 24
+   },
+   "to_the_day": 0.1809623430962343,
+   "culture_js": 1.8617098781349692e-05,
+   "culture_cv_fights": 0.07008837610134157,
+   "story_overlap": 0.5053793882562531,
+   "motives": {
+    "rule": 1.0
+   },
+   "occasions": {
+    "clock": 1.0
+   }
+  },
+  "railway/life": {
+   "worlds": 8,
+   "years": 20.0,
+   "fights_per_year": {
+    "mean": 16.65625,
+    "p5": 11.0,
+    "median": 16.0,
+    "p95": 23.0,
+    "zero_years": 0.0
+   },
+   "camp_fights_per_year": {
+    "mean": 1.0875,
+    "p95": 3.049999999999983,
+    "zero_years": 0.4
+   },
+   "lost_share": 0.1395872420262664,
+   "lost_per_year": 2.325,
+   "by_target": {
+    "village": 3.74375,
+    "train_or_caravan": 11.50625,
+    "player": 0.31875,
+    "camp": 1.0875
+   },
+   "extinct": 0.0,
+   "endless": 1.0,
+   "surge": 0.0,
+   "peace_decade_camp": 0.0,
+   "peace_decade_all": 0.0,
+   "decades_mean": [
+    168.75,
+    164.375
+   ],
+   "interval_cv": {
+    "median": 0.8460185673408408,
+    "p10": 0.6784313686679536,
+    "p90": 0.9981187551120265,
+    "n": 40
+   },
+   "to_the_day": 0.04068747807786741,
+   "culture_js": 0.02460912245707862,
+   "culture_cv_fights": 0.16210289896788307,
+   "story_overlap": 0.13379986690606324,
+   "motives": {
+    "loot": 0.8686679174484052,
+    "pride": 0.06228893058161351,
+    "hunger": 0.03977485928705441,
+    "glory": 0.02926829268292683
+   },
+   "occasions": {
+    "caravan": 0.48405253283302063,
+    "restless": 0.25666041275797374,
+    "train": 0.20675422138836774,
+    "refused": 0.04878048780487805,
+    "news": 0.002626641651031895,
+    "provoked": 0.001125703564727955
+   }
+  }
+ },
+ "long": [
+  {
+   "seed": 7000,
+   "fights_by_century": [
+    13.49,
+    13.35
+   ],
+   "camp_by_century": [
+    0.83,
+    1.0
+   ],
+   "pools_end": {
+    "G1": 59.0,
+    "G2": 56.7828856,
+    "B1": 40,
+    "R1": 50,
+    "U1": 7,
+    "F1": 1,
+    "F2": 1
+   },
+   "extinct_days": {
+    "U1": 160
+   }
+  },
+  {
+   "seed": 7001,
+   "fights_by_century": [
+    13.18,
+    13.16
+   ],
+   "camp_by_century": [
+    0.9,
+    0.95
+   ],
+   "pools_end": {
+    "G1": 60,
+    "G2": 60,
+    "B1": 40,
+    "R1": 50,
+    "U1": 7,
+    "F1": 1,
+    "F2": 1
+   },
+   "extinct_days": {
+    "U1": 194
+   }
+  },
+  {
+   "seed": 7002,
+   "fights_by_century": [
+    13.25,
+    13.69
+   ],
+   "camp_by_century": [
+    1.28,
+    1.1
+   ],
+   "pools_end": {
+    "G1": 60,
+    "G2": 60,
+    "B1": 40,
+    "R1": 50,
+    "U1": 7,
+    "F1": 1,
+    "F2": 1
+   },
+   "extinct_days": {
+    "U1": 251
+   }
+  },
+  {
+   "seed": 7003,
+   "fights_by_century": [
+    13.95,
+    13.96
+   ],
+   "camp_by_century": [
+    1.0,
+    1.18
+   ],
+   "pools_end": {
+    "G1": 60,
+    "G2": 60,
+    "B1": 40,
+    "R1": 50,
+    "U1": 7,
+    "F1": 1,
+    "F2": 1
+   },
+   "extinct_days": {
+    "U1": 258
+   }
+  }
+ ],
+ "life_params": {
+  "loot_base": 0.3,
+  "bold_shift": 1.0,
+  "belief_drift": 0.0026041666666666665,
+  "rumour_sd": 0.5,
+  "speaker_weight": 0.6,
+  "tau_mult": 1.0,
+  "notice_train": 0.05,
+  "frostmaw_life": 60.0,
+  "hate_sigma_faction": 1.0,
+  "hate_sigma_village": 0.5,
+  "surplus": 0.1,
+  "effort_member": 0.3,
+  "tribute_respite": 48.0
+ },
+ "cultures": {
+  "goblin": {
+   "name": "goblin",
+   "pool_cap": 60,
+   "recruits": 2.0,
+   "thr": [
+    0,
+    10,
+    30,
+    50,
+    70,
+    140,
+    260
+   ],
+   "dwell": [
+    0,
+    0.5,
+    0.5,
+    1,
+    4,
+    6,
+    8
+   ],
+   "g_half": 6,
+   "hyst": 0.6,
+   "kill_w": 8,
+   "tribute_per_g": 0.5,
+   "tribute_relief": 0.7,
+   "respite": 6,
+   "cowed": 6,
+   "chief_days": 120,
+   "home_str": 1.395,
+   "eat": 0.1,
+   "plunder_mean": 12,
+   "council": true,
+   "bold": 0.55,
+   "aggr": 0.6,
+   "soc": 0.35,
+   "spread": 0.2,
+   "tau": 4.0,
+   "greed": 1.6,
+   "warrior_value": 3.0,
+   "rev_max": 10.0,
+   "pride_w": 12.0,
+   "pride_half": 12,
+   "refusal_pride": 0.5,
+   "insult_pride": 0.8,
+   "fear_w": 2.5,
+   "fear_half": 40,
+   "glory_w": 5,
+   "restless_days": 96,
+   "wake_days": 12,
+   "effort": 2,
+   "demand_bias": 0,
+   "scout_w": 3.0,
+   "warn_w": 4.0,
+   "oath": 20.0,
+   "hunts": false,
+   "invasion_pride": 0.0,
+   "chief_str": 0.0,
+   "ambush_w": 1.4,
+   "kin_cost": 25.0,
+   "preempt_w": 0.0
+  },
+  "bandit": {
+   "name": "bandit",
+   "pool_cap": 40,
+   "recruits": 1.5,
+   "thr": [
+    0,
+    8,
+    20,
+    35,
+    50,
+    110,
+    220
+   ],
+   "dwell": [
+    0,
+    0.5,
+    0.5,
+    0.5,
+    3,
+    5,
+    8
+   ],
+   "g_half": 10,
+   "hyst": 0.6,
+   "kill_w": 10,
+   "tribute_per_g": 1.0,
+   "tribute_relief": 0.8,
+   "respite": 5,
+   "cowed": 4,
+   "chief_days": 90,
+   "home_str": 1.6500000000000001,
+   "eat": 0.1,
+   "plunder_mean": 6,
+   "council": true,
+   "bold": 0.45,
+   "aggr": 0.45,
+   "soc": 0.6,
+   "spread": 0.15,
+   "tau": 2.0,
+   "greed": 1.2,
+   "warrior_value": 3.0,
+   "rev_max": 10.0,
+   "pride_w": 12.0,
+   "pride_half": 24,
+   "refusal_pride": 0.5,
+   "insult_pride": 0.8,
+   "fear_w": 1.5,
+   "fear_half": 30,
+   "glory_w": 3,
+   "restless_days": 150,
+   "wake_days": 14,
+   "effort": 4,
+   "demand_bias": 6,
+   "scout_w": 3.0,
+   "warn_w": 4.0,
+   "oath": 20.0,
+   "hunts": false,
+   "invasion_pride": 0.0,
+   "chief_str": 0.0,
+   "ambush_w": 1.6,
+   "kin_cost": 25.0,
+   "preempt_w": 0.0
+  },
+  "raider": {
+   "name": "raider",
+   "pool_cap": 50,
+   "recruits": 2.0,
+   "thr": [
+    0,
+    6,
+    18,
+    30,
+    45,
+    100,
+    200
+   ],
+   "dwell": [
+    0,
+    0.5,
+    0.5,
+    0.5,
+    3,
+    4,
+    6
+   ],
+   "g_half": 15,
+   "hyst": 0.7,
+   "kill_w": 12,
+   "tribute_per_g": 1.5,
+   "tribute_relief": 0.6,
+   "respite": 4,
+   "cowed": 3,
+   "chief_days": 150,
+   "home_str": 2.0250000000000004,
+   "eat": 0.1,
+   "plunder_mean": 8,
+   "council": true,
+   "bold": 0.6,
+   "aggr": 0.6,
+   "soc": 0.35,
+   "spread": 0.15,
+   "tau": 2.5,
+   "greed": 0.9,
+   "warrior_value": 3.0,
+   "rev_max": 10.0,
+   "pride_w": 20,
+   "pride_half": 96,
+   "refusal_pride": 0.8,
+   "insult_pride": 1.0,
+   "fear_w": 1.0,
+   "fear_half": 24,
+   "glory_w": 7,
+   "restless_days": 120,
+   "wake_days": 20,
+   "effort": 4,
+   "demand_bias": 2,
+   "scout_w": 3.0,
+   "warn_w": 4.0,
+   "oath": 10,
+   "hunts": false,
+   "invasion_pride": 0.0,
+   "chief_str": 0.0,
+   "ambush_w": 1.0,
+   "kin_cost": 25.0,
+   "preempt_w": 10
+  },
+  "umvuthana": {
+   "name": "umvuthana",
+   "pool_cap": 7,
+   "recruits": 0.42424242424242425,
+   "thr": [
+    0,
+    10,
+    30,
+    50,
+    70,
+    140,
+    260
+   ],
+   "dwell": [
+    0,
+    0.5,
+    0.5,
+    1,
+    4,
+    6,
+    8
+   ],
+   "g_half": 6,
+   "hyst": 0.6,
+   "kill_w": 8,
+   "tribute_per_g": 0.5,
+   "tribute_relief": 0.7,
+   "respite": 6,
+   "cowed": 6,
+   "chief_days": 1000000000.0,
+   "home_str": 1.4000000000000001,
+   "eat": 0.3,
+   "plunder_mean": 12,
+   "council": true,
+   "bold": 0.5,
+   "aggr": 0.45,
+   "soc": 0.65,
+   "spread": 0.15,
+   "tau": 2.5,
+   "greed": 1.2,
+   "warrior_value": 3.0,
+   "rev_max": 10.0,
+   "pride_w": 18,
+   "pride_half": 48,
+   "refusal_pride": 0.9,
+   "insult_pride": 1.2,
+   "fear_w": 1.5,
+   "fear_half": 32,
+   "glory_w": 3,
+   "restless_days": 200,
+   "wake_days": 16,
+   "effort": 6,
+   "demand_bias": 10,
+   "scout_w": 3.0,
+   "warn_w": 4.0,
+   "oath": 20.0,
+   "hunts": true,
+   "invasion_pride": 0.8,
+   "chief_str": 5.0,
+   "ambush_w": 1.0,
+   "kin_cost": 25.0,
+   "preempt_w": 0.0
+  },
+  "frostmaw": {
+   "name": "frostmaw",
+   "pool_cap": 1,
+   "recruits": 0.0,
+   "thr": [
+    0,
+    10,
+    30,
+    50,
+    70,
+    140,
+    260
+   ],
+   "dwell": [
+    0,
+    0.5,
+    0.5,
+    1,
+    4,
+    6,
+    8
+   ],
+   "g_half": 6,
+   "hyst": 0.6,
+   "kill_w": 8,
+   "tribute_per_g": 0.0,
+   "tribute_relief": 0.0,
+   "respite": 6,
+   "cowed": 6,
+   "chief_days": 1000000000.0,
+   "home_str": 50.04,
+   "eat": 0.5,
+   "plunder_mean": 1000000000.0,
+   "council": false,
+   "bold": 0.5,
+   "aggr": 0.5,
+   "soc": 0.1,
+   "spread": 0.25,
+   "tau": 3.0,
+   "greed": 1.0,
+   "warrior_value": 3.0,
+   "rev_max": 10.0,
+   "pride_w": 25,
+   "pride_half": 96,
+   "refusal_pride": 0.5,
+   "insult_pride": 1.5,
+   "fear_w": 1.0,
+   "fear_half": 16,
+   "glory_w": 0,
+   "restless_days": 1000000000.0,
+   "wake_days": 30,
+   "effort": 14,
+   "demand_bias": -99,
+   "scout_w": 0,
+   "warn_w": 8,
+   "oath": 20.0,
+   "hunts": false,
+   "invasion_pride": 0.0,
+   "chief_str": 0.0,
+   "ambush_w": 1.0,
+   "kin_cost": 25.0,
+   "preempt_w": 0.0
+  }
+ }
+}
