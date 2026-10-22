@@ -35,9 +35,11 @@ usage:
       Slot commits against dyadic counts at read cadences from 1 to 1,024 days (DECISIONS O5).
   rtsim-cli bench o5-one --spec JSON
       Runs one cadence point (used by bench o5).
-  rtsim-cli bench industry [--quick] [--check] [--out DIR | --no-write]
-      The industry engine's cost sweeps (quiet and busy district counts, elapsed time) against
-      their declared slopes; JSON to DIR (default bench/results). --check exits 1 on a breach.
+  rtsim-cli bench industry [--quick] [--check] [--only PREFIX] [--out DIR | --no-write]
+      The industry engine's cost sweeps (quiet and busy district counts, elapsed time, the glass
+      box's compile and replay) against their declared slopes; JSON to DIR (default
+      bench/results). --only runs the sweeps whose names start with PREFIX (e.g. glass_).
+      --check exits 1 on a breach.
   rtsim-cli bench restore [--markets N] [--days D] [--repeats R] [--out DIR | --no-write]
       The phase 1 world's snapshot against its whole input log: a grid of N villages (default
       1,024) joined one by one and run D days (default 100), then save, restore (in memory and
@@ -159,6 +161,7 @@ fn main() -> ExitCode {
                 quick: false,
                 check: false,
                 out: Some(PathBuf::from("bench/results")),
+                only: None,
             };
             let mut it = rest.iter();
             while let Some(&a) = it.next() {
@@ -169,6 +172,10 @@ fn main() -> ExitCode {
                     "--out" => match it.next() {
                         Some(d) => opts.out = Some(PathBuf::from(d)),
                         None => return usage("--out needs a folder"),
+                    },
+                    "--only" => match it.next() {
+                        Some(p) => opts.only = Some((*p).to_string()),
+                        None => return usage("--only needs a sweep name or prefix"),
                     },
                     other => return usage(&format!("unknown option {other}")),
                 }

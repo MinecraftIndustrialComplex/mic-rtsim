@@ -1,6 +1,6 @@
 # Glass box: compiled Create factories
 
-**Status:** design of 2026-10-20. G1 (compile and solve, a read-only check against measurement) is on main; see docs/choices-glassbox-g1.md. G2 (the glass box drives the replay) is on feat/glassbox-g2, not yet on main.
+**Status:** design of 2026-10-20. G1 (compile and solve, a read-only check against measurement) and G2 (the glass box drives the replay) are on main; see docs/choices-glassbox-g1.md and docs/choices-glassbox-g2.md.
 
 **Decided, and binding here:**
 - **C28:** distant factories are a compiled glass box. The real Create graph is compiled into a rate
@@ -313,6 +313,9 @@ funnel's single item), so the compiler carries each edge's entry size (§2.3) in
 | `glass.checksumZ` | standard errors allowed between model and measurement (§5.3) | 3, PLACEHOLDER |
 | `glass.checksumWindowMin` | shortest window that can confirm a compiled model | 6,000 ticks, PLACEHOLDER |
 | `glass.solveRoundsMax` | coupling rounds before the solve falls back to its lower bound (§3.2) | `2 × multi-input machines + 2`, PLACEHOLDER |
+| `glass.solveWorkMax` | work units one solve's rounds may do, a count and not a clock, over-fed loops' probes included; past it the solve stops as at `solveRoundsMax` (§3.2) | 200,000 (4 to 12 ms on the laptop), PLACEHOLDER |
+| `glass.lpWorkMax` | LP work units one solve's upper bounds may use: per LP 50,000 plus its variables squared; a good that does not fit keeps the linear bound (§3.5) | 20,000,000 (10 to 20 ms on the laptop), PLACEHOLDER |
+| `glass.buildSolvesMax` | fresh solves one replay regime change may run past the regime cache before the district falls back as unsettled (§4) | 16, PLACEHOLDER |
 | `glass.breakpointsPerEventMax` | breakpoints allowed between two events before a district is marked oscillating (§4.5) | 64, PLACEHOLDER |
 | `glass.compileSliceMicros` | server-thread time per tick for extraction | 250 µs, PLACEHOLDER (inside the 1 ms bridge budget) |
 | `glass.mismatchStrikes` | consecutive failed windows before a node kind is demoted to measured (§5.3) | 3, PLACEHOLDER |
@@ -354,12 +357,23 @@ used only as an upper bound (§3.5).
    branch's acceptance (water-filling for fair rules, in order for priority rules).
 4. **Couple multi-input machines.** A mixer short of zinc consumes copper only at the zinc-limited
    rate; the surplus copper backs up. Set that input edge's acceptance to the consumed rate and repeat
-   2 and 3. Acceptances only fall, so the rounds are monotone. Stop when no acceptance changes, or after
-   `glass.solveRoundsMax` rounds; in the latter case use the lower bound L of §3.5 and log it.
+   2 and 3. Acceptances only fall, so the rounds are monotone. Stop when no acceptance changes, after
+   `glass.solveRoundsMax` rounds, or when the next round's work does not fit in what is left of
+   `glass.solveWorkMax`; in the latter cases use the lower bound L of §3.5 and log it. An unconverged
+   solve's last round is not a lower bound (an over-fed loop's flows sit above its fixed point until it
+   settles), so every part of the graph still moving in the last round (joined through its recipes,
+   cycles and kinetic domains) is bounded with L = 0; the parts that settled keep their flows. The
+   replay still needs a converged solve (§4).
 5. **Kinetic gate.** Machines in an overstressed or stopped domain have capacity 0 (§3.6).
 
 **Cost:** O(rounds × (nodes + edges)) rational operations per solve. Typical factories converge in two
-or three rounds (ESTIMATE; the G1 corpus measures it, §11.3).
+or three rounds (ESTIMATE; the G1 corpus measures it, §11.3). An over-fed belt loop takes thousands
+(one at a feed of 9 a tick settles in 8,614), and the LiveSrv rehearsal's main base (1,258 nodes) ran
+every sampled solve to its 278-round cap in 2.4 to 5.4 s inside the engine's step. Since G2 the solve
+is bounded by work counts (`glass.solveWorkMax`, `glass.lpWorkMax`), deterministic so a journal replay
+stops where the live run did: a 1,104-node base of 138 such loops solves in 15 to 41 ms against 80 to
+203 ms on the cap alone, a 3,200-node one in 26 to 36 ms against 0.66 to 1.6 s. What stays outside the
+counts (set-up, reachability, classes, the linear bound) is linear in the graph's slots.
 
 ### 3.3 Routing rules
 
@@ -378,7 +392,7 @@ or three rounds (ESTIMATE; the G1 corpus measures it, §11.3).
 | Arm ROUND_ROBIN | starts after the last used index, skips refusing ones | equal shares, water-filling | exact in rate |
 | Arm FORCED_ROUND_ROBIN | only the next index | equal shares limited by the slowest | exact in rate |
 | Pipe branches | even split with remainder, refusing outputs drop out (`FluidNetwork.tick`) | water-filling | exact |
-| Belt side insertion | only into gaps; items already on the belt pass first (`canInsertAtFromSide`) | main line first, side inputs share the rest | bounded |
+| Belt side insertion | waits only for its own side's last insertion; items carried along the belt never block it (`canInsertAtFromSide`, `isBlocking`) | side inputs first, the main line takes the rest (GB72) | exact in rate; bounded when the segment is full |
 | Belt funnel on the side | takes what matches its filter and fits; the rest passes | filter split, acceptance-limited | exact |
 | Saw with several recipes | rotates `recipeIndex` at each start | equal shares among matching recipes, unless filtered | exact in rate |
 | Package routing | address match | deterministic | exact |
@@ -386,14 +400,57 @@ or three rounds (ESTIMATE; the G1 corpus measures it, §11.3).
 
 "Exact in rate" means the long-run rate is exact; the order of individual stacks is not modelled.
 
+**Changed by Ben (GB72, 2026-10-21):** belt side insertion is modelled as Create has
+it. `BeltInventory.canInsertAtFromSide` refuses an insertion only while an earlier insertion at the same
+segment from the same side is within reach (`isBlocking`: inserted at 0.4375 along the segment, it blocks
+until it has moved more than 1.0625 blocks); the items carried along the belt are never checked, so a
+side feed merges into through traffic instead of waiting for gaps. A belt's end handing to the next belt,
+a funnel or chute onto a belt, and a belt's corner into the next belt of a loop are all side insertions;
+only the belt's own links from segment to segment are its through traffic (edge flag THROUGH). As math,
+at a belt segment with capacity c (entries per tick), side inputs s_1..s_k and through traffic t:
+
+```
+inserted_i = s_i x min(1, c / sum(s))         (one proportional group, first)
+through    = min(t, c - sum(inserted))        (the rest of the segment)
+```
+
+Below capacity both are exact. When the segment is full, which gaps each side wins is sub-tick timing,
+so the merge is bounded (shared capacity) once more than one input flows. U is unchanged: it is
+routing-free and contains both orders. The rejected design is the row's old text, "only into gaps;
+items already on the belt pass first (`canInsertAtFromSide`)" with the model "main line first, side
+inputs share the rest", class bounded; the solver keeps it behind `solve::BELT_INSERTIONS_FIRST` (false
+gives it back).
+
 ### 3.4 Cycles
 
 - **Sequenced assembly loops** are unrolled from the recipe: each machine in the loop carries `loops ×`
-  the item rate.
+  the item rate. A loop fed faster than its machines finish products stalls (below, GB72).
 - **Return loops** (overflow sent back upstream) carry nothing in steady state when downstream has spare
   capacity, which the solve checks; otherwise the downstream bottleneck sets the throughput.
 - **Any other SCC** is one node solved as a small LP. That optimum is only an upper bound, so its replay
   rate is `min(LP bound, measured)` and it waits for a measurement before replaying (§3.5).
+
+**Changed by Ben (GB72, 2026-10-21):** an over-fed sequenced-assembly loop is stalled,
+not settled at capacity. Let mu be the host's rate of finished products (one per cycle, the cycle being
+the slowest machine's work per product) and f the rate at which the product's base good comes onto the
+loop from outside. A side insertion never waits for the items going round (§3.3), so while f > mu the
+loop's population grows by at least f - mu per tick until every belt slot is full. Then nothing moves:
+`BeltInventory.handleBeltProcessingAndCheckIfRemoved` returns before processing an item with no room to
+move, so a stuck item is never worked on again, and an exit funnel takes only items that cross it. The
+jam is absorbing, so the end state does not depend on tick order. Corpus 6 measured it with the feeder at
+64 RPM (a sheet per 9 ticks against a product per 30): every one of the 28 loop segments full within the
+1,000-tick warm-up and nothing out over 7,200 ticks; `precision_overfed` is that factory. The solve: once
+L has converged, each saturated SEQUENCED host on a cycle whose loop (the goods edges' strongly connected
+component around it) holds no store gets its feed measured by a probe solve with the loop as a sink. If
+f > mu for any of its base goods, L is 0 on every goods edge into the loop and the fixed point is solved
+again. f = mu runs. U keeps the capacity (the LP passes goods through the loop's recipe-less
+deployers, as L does), and the goods stay bounded (cycle), so the checksum window `[0, U]` holds either
+outcome. Not verified: once the jam reaches the feed point, the feed shares slots
+with the queue (about one per two queue advances), so its rate falls to about half the head machine's
+pass rate s; with mu = s / P (P passes per product at the head machine) the jam needs P > 2, and a loop of
+one or two passes may settle at capacity instead. The rejected design is the old reading, which the
+solver keeps behind `solve::OVERFED_LOOPS_STALL` (false gives it back): the loop settles at its machines'
+capacity, the feed held back to mu.
 
 ### 3.5 Bounds, and never more than reality
 
