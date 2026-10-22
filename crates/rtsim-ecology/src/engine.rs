@@ -813,32 +813,45 @@ impl Dragons {
     }
 
     /// The share of its need a newcomer would catch at lair `l` (the arrival gate, §2.4.1 and
-    /// §3.4): `W / (W + half)` over the herds and villages in the territory of a dragon of the
-    /// newcomer's age. With no herds lent (an engine run without them) the gate is open: 1.
-    pub(crate) fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
+    /// §3.4): `W / (W + half)` over the lair's hunting ground, the nine regions around it (the
+    /// model's 3 x 3, §1's "the herds in the nine regions around the lair"). W is `gate_village`
+    /// with a village there (`gate_wild` without) plus `(N - R)^2 / K` for each herd there. With
+    /// no herds lent (an engine run without them) the gate is open: 1.
+    pub fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
         let Some(hd) = &self.wild else {
             return 1.0;
         };
         let lair = &self.lairs[l as usize];
-        let sp = self.tun.species(lair.species);
-        let stage = sp.stage(self.tun.respawn_age_days * TICKS_PER_DAY);
-        let range = i64::from(sp.territory[stage.index()]);
+        let rb = rtsim_travel::legs::REGION_BLOCKS;
         let (lx, lz) = (i64::from(lair.pos.x), i64::from(lair.pos.z));
+        let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(lx, lz);
         let t = self.topo(lair.pos.frame);
+        // In the nine regions: the point brought to the lair's side of any seam lies in a region
+        // within one of the lair's.
+        let ground = |p: (i64, i64)| {
+            let p = if t.is_flat() { p } else { t.toward((lx, lz), p) };
+            let (px, pz) = rtsim_travel::legs::LegIndex::region_of(p.0, p.1);
+            (px - rx).abs() <= 1 && (pz - rz).abs() <= 1
+        };
+        // Every point of the nine regions is within this of the lair.
+        let reach = 2 * rb * 1415 / 1000;
         let village = self
             .index
-            .villages_near(t, lair.pos.frame, lx, lz, range)
+            .villages_near(t, lair.pos.frame, lx, lz, reach)
             .into_iter()
             .any(|n| {
                 let p = w.nodes[n as usize].pos;
-                flight::dist(t, (lx, lz), (i64::from(p.x), i64::from(p.z))) <= range as f64
+                ground((i64::from(p.x), i64::from(p.z)))
             });
         let mut weight = if village {
             self.tun.gate_village
         } else {
             self.tun.gate_wild
         };
-        for o in hd.prey_near(lair.pos.frame, lx, lz, range, at, 0) {
+        for o in hd.prey_near(lair.pos.frame, lx, lz, reach, at, 0) {
+            if !ground((i64::from(o.pos.0), i64::from(o.pos.1))) {
+                continue;
+            }
             let k = hd.herd(o.herd).map_or(1, |h| h.k.max(1));
             let n = o.available as f64;
             weight += n * n / k as f64;
@@ -1792,6 +1805,21 @@ impl Dragons {
         self.lairs[l as usize].vacant_since = None;
         self.track_lair(l);
         self.fly(w, d, Purpose::Claim(l), at);
+    }
+
+    /// Kills `d` at `at` as a body's death would, for a scripted player (the tests' farmer and
+    /// roamer, EQUILIBRIUM.md §3.6) and tests: `player` names the player whose loss it is (its
+    /// lair's pressure rises, §2.2), None a death no player caused. Ignored for an embodied
+    /// dragon, whose death the plugin reports.
+    pub fn slay(&mut self, w: &mut World, d: DragonId, player: Option<ActorId>, at: Tick) {
+        if self.dragons.get(d).is_none_or(Dragon::is_embodied) {
+            return;
+        }
+        if player.is_some() {
+            self.press(d, at);
+        }
+        let here = self.dragons[d].position(&self.topo, &self.lairs, at);
+        self.kill(w, d, player, here, at);
     }
 
     /// `d` no longer flies to claim a roost (it died on the way, or was sent elsewhere): a roost
