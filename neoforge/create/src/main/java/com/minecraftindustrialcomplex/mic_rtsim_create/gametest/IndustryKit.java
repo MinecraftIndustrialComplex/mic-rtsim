@@ -143,9 +143,10 @@ public final class IndustryKit {
             for (int cz = minCz - 1; cz <= maxCz + 1; cz++) {
                 if (level.getChunkSource().getChunkNow(cx, cz) == null)
                     continue;
-                // A station an earlier test left is an anchor (DS-10): it would join this test's district.
+                // Machines, stations and shafts an earlier test left on the same ground (the yard template does not
+                // clear them): they would join this test's districts as members, and a station is an anchor (DS-10).
                 for (net.minecraft.world.level.block.entity.BlockEntity be : new java.util.ArrayList<>(level.getChunk(cx, cz).getBlockEntities().values()))
-                    if (be instanceof com.simibubi.create.content.trains.station.StationBlockEntity)
+                    if (be.getBlockPos().getY() >= y0 - 1 && be.getBlockPos().getY() < y0 + 16)
                         level.removeBlock(be.getBlockPos(), false);
                 for (int x = 0; x < 16; x++)
                     for (int z = 0; z < 16; z++)
