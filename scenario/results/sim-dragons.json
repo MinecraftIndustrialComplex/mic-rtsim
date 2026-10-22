@@ -2,7 +2,7 @@
   "seed": 7,
   "days": 48,
   "starts_in": "Autumn",
-  "wall_ms": 109.25463500000001,
+  "wall_ms": 551.356491,
   "checks": [
     {
       "name": "conservation with predation",
@@ -17,7 +17,7 @@
     {
       "name": "a wound becomes a grudge",
       "ok": true,
-      "detail": "Cinderjaw is wounded on the road and remembers it"
+      "detail": "Cinderjaw is wounded where it hunts and remembers it"
     },
     {
       "name": "a grudge raid on the unwatched farm",
@@ -37,12 +37,12 @@
     {
       "name": "threats get bored",
       "ok": true,
-      "detail": "9 bored departure(s)"
+      "detail": "8 bored departure(s)"
     },
     {
       "name": "winter shifts the prey",
       "ok": true,
-      "detail": "villages' share of hunts: autumn 62%, winter 100%"
+      "detail": "villages' share of hunts: autumn 65%, winter 100%"
     }
   ],
   "seasons": [
@@ -50,48 +50,40 @@
       "season": "Autumn",
       "hunts": {
         "grudge": 2,
+        "herd": 0,
         "road": 8,
         "train": 0,
-        "village": 13
+        "village": 15
       },
       "fullness": {
-        "grudge": 66,
-        "road": 279,
+        "grudge": 84,
+        "herd": 0,
+        "road": 206,
         "train": 0,
-        "village": 485
+        "village": 546
       },
-      "village_share": 0.6190476190476191
+      "village_share": 0.6521739130434783
     },
     {
       "season": "Winter",
       "hunts": {
         "grudge": 0,
+        "herd": 0,
         "road": 0,
         "train": 0,
-        "village": 26
+        "village": 27
       },
       "fullness": {
         "grudge": 0,
+        "herd": 0,
         "road": 0,
         "train": 0,
-        "village": 986
+        "village": 1035
       },
       "village_share": 1.0
     }
   ],
   "dragons": [
-    {
-      "name": "Old Scorch Roost newcomer",
-      "species": "fire",
-      "alive": true,
-      "age_days": 58.016666666666666,
-      "stage": 3,
-      "lair": "Old Scorch Roost",
-      "fullness": 70,
-      "health": 243.0,
-      "feeling_for_player": 0,
-      "holds_grudge": false
-    },
     {
       "name": "Emberling",
       "species": "fire",
@@ -99,9 +91,9 @@
       "age_days": 80.01666666666667,
       "stage": 4,
       "lair": "Ashpeak Roost",
-      "fullness": 70,
+      "fullness": 72,
       "health": 327.0,
-      "feeling_for_player": -120,
+      "feeling_for_player": -122,
       "holds_grudge": true
     },
     {
@@ -123,7 +115,7 @@
       "age_days": 138.01666666666668,
       "stage": 5,
       "lair": "Stormcrag Cave",
-      "fullness": 79,
+      "fullness": 90,
       "health": 500.0,
       "feeling_for_player": 0,
       "holds_grudge": false
@@ -135,8 +127,20 @@
       "age_days": 128.01666666666668,
       "stage": 5,
       "lair": "Cinder Hollow",
-      "fullness": 71,
+      "fullness": 74,
       "health": 500.0,
+      "feeling_for_player": 0,
+      "holds_grudge": false
+    },
+    {
+      "name": "Old Scorch Roost newcomer",
+      "species": "fire",
+      "alive": true,
+      "age_days": 58.016666666666666,
+      "stage": 3,
+      "lair": "Old Scorch Roost",
+      "fullness": 71,
+      "health": 243.0,
       "feeling_for_player": 0,
       "holds_grudge": false
     }
@@ -150,8 +154,8 @@
         "Emberling"
       ],
       "hoard": {
-        "emerald": 3158,
-        "minecraft:gold_ingot": 6
+        "emerald": 3517,
+        "minecraft:gold_ingot": 7
       }
     },
     {
@@ -171,7 +175,7 @@
         "Stormtalon"
       ],
       "hoard": {
-        "emerald": 1053
+        "emerald": 1899
       }
     },
     {
@@ -190,9 +194,7 @@
       "occupants": [
         "Old Scorch Roost newcomer"
       ],
-      "hoard": {
-        "emerald": 851
-      }
+      "hoard": {}
     }
   ],
   "villages": [
@@ -200,33 +202,33 @@
       "name": "Brindle",
       "feeling_for_player": 0,
       "cattle_stock_start": 15.75,
-      "cattle_stock_end": 15.75,
+      "cattle_stock_end": 12.003,
       "cattle_price_start": 0.349537,
-      "cattle_price_end": 0.349537
+      "cattle_price_end": 0.411904
     },
     {
       "name": "Oakford",
       "feeling_for_player": 0,
       "cattle_stock_start": 52.416,
-      "cattle_stock_end": 52.416,
+      "cattle_stock_end": 49.154,
       "cattle_price_start": 0.333333,
-      "cattle_price_end": 0.333333
+      "cattle_price_end": 0.348891
     },
     {
       "name": "Highmoor",
       "feeling_for_player": 0,
       "cattle_stock_start": 9.6,
-      "cattle_stock_end": 6.699,
+      "cattle_stock_end": 7.103,
       "cattle_price_start": 0.354167,
-      "cattle_price_end": 0.434435
+      "cattle_price_end": 0.423257
     },
     {
       "name": "Ashby",
       "feeling_for_player": 0,
       "cattle_stock_start": 11.718,
-      "cattle_stock_end": 8.955,
+      "cattle_stock_end": 10.618,
       "cattle_price_start": 0.349537,
-      "cattle_price_end": 0.41135
+      "cattle_price_end": 0.374145
     },
     {
       "name": "Fernwick",
@@ -240,9 +242,9 @@
       "name": "Coldwell",
       "feeling_for_player": 0,
       "cattle_stock_start": 7.688,
-      "cattle_stock_end": 7.688,
+      "cattle_stock_end": 5.164,
       "cattle_price_start": 0.356481,
-      "cattle_price_end": 0.356481
+      "cattle_price_end": 0.444256
     },
     {
       "name": "Marrowdale",
@@ -256,14 +258,14 @@
       "name": "Thornbury",
       "feeling_for_player": 0,
       "cattle_stock_start": 9.6,
-      "cattle_stock_end": 9.6,
+      "cattle_stock_end": 8.479,
       "cattle_price_start": 0.354167,
-      "cattle_price_end": 0.354167
+      "cattle_price_end": 0.385184
     }
   ],
   "farm_attacks": [
     {
-      "at": 103119,
+      "at": 160654,
       "source": "Dragon",
       "class": "Flying",
       "count": 4,
@@ -275,29 +277,30 @@
         "lanchester": 1.0,
         "floor": null,
         "untested": true,
-        "ammo_used": 0
+        "ammo_used": 0,
+        "roof_pass": 1.0
       },
       "survivors": 4,
       "stolen": [
         [
           1,
-          102
+          95
         ],
         [
           2,
-          22
+          28
         ],
         [
           3,
-          4
+          5
         ]
       ],
       "destroyed": 4,
-      "machine_lost": false,
+      "machine_lost": true,
       "skipped": null
     },
     {
-      "at": 453308,
+      "at": 468129,
       "source": "Dragon",
       "class": "Flying",
       "count": 2,
@@ -309,17 +312,18 @@
         "lanchester": 1.0,
         "floor": null,
         "untested": true,
-        "ammo_used": 0
+        "ammo_used": 0,
+        "roof_pass": 1.0
       },
       "survivors": 2,
       "stolen": [
         [
           1,
-          51
+          48
         ],
         [
           2,
-          11
+          14
         ],
         [
           3,
@@ -331,53 +335,51 @@
       "skipped": null
     }
   ],
-  "farm_destroyed_blocks_applied": 4,
+  "farm_destroyed_blocks_applied": 5,
   "ledger": {
     "burnt": {
-      "leather": 1895,
-      "minecraft:wheat": 153,
-      "wheat": 4651,
-      "wool": 2615
+      "leather": 1322,
+      "minecraft:wheat": 143,
+      "wool": 1674
     },
     "eaten": {
-      "cattle": 80331,
-      "minecraft:beef": 33,
-      "sheep": 61680
+      "cattle": 92538,
+      "minecraft:beef": 42,
+      "sheep": 51658
     },
     "hoarded": {
-      "emerald": 5062,
-      "minecraft:gold_ingot": 6
+      "emerald": 5416,
+      "minecraft:gold_ingot": 7
     },
     "robbed": {},
     "taken": {
-      "cattle": 80331,
-      "emerald": 5062,
-      "leather": 1895,
-      "minecraft:beef": 33,
-      "minecraft:gold_ingot": 6,
-      "minecraft:wheat": 153,
-      "sheep": 61680,
-      "wheat": 4651,
-      "wool": 2615
+      "cattle": 92538,
+      "emerald": 5416,
+      "leather": 1322,
+      "minecraft:beef": 42,
+      "minecraft:gold_ingot": 7,
+      "minecraft:wheat": 143,
+      "sheep": 51658,
+      "wool": 1674
     }
   },
   "stats": {
-    "events": 487,
-    "stale": 29,
-    "legs": 222,
-    "decisions": 103,
-    "hunts": 74,
-    "fruitless": 44,
-    "crossings": 64,
-    "caravans_attacked": 13,
-    "village_raids": 39,
+    "events": 562,
+    "stale": 33,
+    "legs": 237,
+    "decisions": 109,
+    "hunts": 80,
+    "fruitless": 49,
+    "crossings": 105,
+    "caravans_attacked": 10,
+    "village_raids": 42,
     "district_raids": 2,
     "train_raids": 0,
-    "seen": 13,
+    "seen": 12,
     "seen_stale": 1,
-    "materialized": 13,
-    "departures": 10,
-    "bored": 9,
+    "materialized": 12,
+    "departures": 9,
+    "bored": 8,
     "hurt": 1,
     "deaths_violent": 1,
     "deaths_age": 0,
@@ -387,7 +389,26 @@
     "migrations": 0,
     "adopted": 0,
     "discarded": 0,
-    "hoards_robbed": 1
+    "hoards_robbed": 1,
+    "herd_hunts": 0,
+    "seen_across_stop": 0,
+    "oil_chunks": 0,
+    "fields": 0,
+    "field_rolls": 0,
+    "field_draws": 0,
+    "refuels": 0,
+    "oil_raids": 0,
+    "oil_drunk_mb": 0,
+    "breaths": 0,
+    "dry_raids": 0,
+    "encroachments": 0,
+    "district_target_raids": 0,
+    "lairs_placed": 0,
+    "visitors_left": 0,
+    "surveys": 0,
+    "tributes": 0,
+    "tribute_lapses": 0,
+    "tribute_stacks": 0
   },
   "hunts": [
     {
@@ -429,51 +450,40 @@
       ]
     },
     {
-      "tick": 37175,
-      "day": 1.5489583333333334,
+      "tick": 33781,
+      "day": 1.4075416666666667,
       "season": "Autumn",
       "dragon": "Cinderjaw",
-      "kind": "Road",
-      "target": "road 2-4",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 45287,
-      "day": 1.8869583333333333,
-      "season": "Autumn",
-      "dragon": "Cinderjaw",
-      "kind": "Road",
-      "target": "road 1-7",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 53224,
-      "day": 2.2176666666666667,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 1-7",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 59225,
-      "day": 2.4677083333333334,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 1-7",
-      "food": 33,
+      "kind": "Village",
+      "target": "village 2",
+      "food": 38,
       "taken": [
         [
           "cattle",
-          1894
+          2620
         ],
         [
           "sheep",
-          831
+          372
+        ]
+      ]
+    },
+    {
+      "tick": 48743,
+      "day": 2.0309583333333334,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Village",
+      "target": "village 7",
+      "food": 41,
+      "taken": [
+        [
+          "cattle",
+          2620
+        ],
+        [
+          "sheep",
+          584
         ]
       ]
     },
@@ -488,16 +498,6 @@
       "taken": []
     },
     {
-      "tick": 67891,
-      "day": 2.8287916666666666,
-      "season": "Autumn",
-      "dragon": "Cinderjaw",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
       "tick": 73612,
       "day": 3.0671666666666666,
       "season": "Autumn",
@@ -508,41 +508,18 @@
       "taken": []
     },
     {
-      "tick": 73892,
-      "day": 3.0788333333333333,
+      "tick": 94141,
+      "day": 3.9225416666666666,
       "season": "Autumn",
-      "dragon": "Cinderjaw",
+      "dragon": "Emberling",
       "kind": "Road",
-      "target": "road 4-5",
+      "target": "road 2-4",
       "food": 0,
       "taken": []
     },
     {
-      "tick": 103119,
-      "day": 4.296625,
-      "season": "Autumn",
-      "dragon": "Cinderjaw",
-      "kind": "Grudge",
-      "target": "the home of player 4294967315",
-      "food": 44,
-      "taken": [
-        [
-          "minecraft:wheat",
-          102
-        ],
-        [
-          "minecraft:beef",
-          22
-        ],
-        [
-          "minecraft:gold_ingot",
-          4
-        ]
-      ]
-    },
-    {
-      "tick": 114353,
-      "day": 4.764708333333333,
+      "tick": 100578,
+      "day": 4.19075,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
@@ -561,7 +538,7 @@
       "taken": [
         [
           "cattle",
-          103
+          137
         ],
         [
           "sheep",
@@ -570,12 +547,22 @@
       ]
     },
     {
-      "tick": 120354,
-      "day": 5.01475,
+      "tick": 121286,
+      "day": 5.053583333333333,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
       "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 128849,
+      "day": 5.368708333333333,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 2-3",
       "food": 0,
       "taken": []
     },
@@ -599,170 +586,31 @@
       ]
     },
     {
-      "tick": 141062,
-      "day": 5.877583333333333,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 43,
-      "taken": [
-        [
-          "sheep",
-          2323
-        ],
-        [
-          "emerald",
-          510
-        ],
-        [
-          "cattle",
-          1262
-        ],
-        [
-          "leather",
-          485
-        ],
-        [
-          "emerald",
-          154
-        ]
-      ]
-    },
-    {
-      "tick": 153926,
-      "day": 6.413583333333333,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 159927,
-      "day": 6.663625,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 173473,
-      "day": 7.228041666666667,
+      "tick": 160654,
+      "day": 6.6939166666666665,
       "season": "Autumn",
       "dragon": "Cinderjaw",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 179474,
-      "day": 7.478083333333333,
-      "season": "Autumn",
-      "dragon": "Cinderjaw",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 181329,
-      "day": 7.555375,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 187330,
-      "day": 7.805416666666667,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 19,
+      "kind": "Grudge",
+      "target": "the home of player 4294967315",
+      "food": 56,
       "taken": [
         [
-          "sheep",
-          1600
+          "minecraft:wheat",
+          95
         ],
         [
-          "wool",
-          485
+          "minecraft:beef",
+          28
         ],
         [
-          "emerald",
-          287
+          "minecraft:gold_ingot",
+          5
         ]
       ]
     },
     {
-      "tick": 209073,
-      "day": 8.711375,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Village",
-      "target": "village 7",
-      "food": 41,
-      "taken": [
-        [
-          "cattle",
-          2620
-        ],
-        [
-          "sheep",
-          584
-        ]
-      ]
-    },
-    {
-      "tick": 214032,
-      "day": 8.918,
-      "season": "Autumn",
-      "dragon": "Ashclaw",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 31,
-      "taken": [
-        [
-          "cattle",
-          71
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 221196,
-      "day": 9.2165,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 2-4",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 227633,
-      "day": 9.484708333333334,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 249340,
-      "day": 10.389166666666666,
+      "tick": 170988,
+      "day": 7.1245,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
@@ -771,14 +619,131 @@
       "taken": []
     },
     {
-      "tick": 256903,
-      "day": 10.704291666666666,
+      "tick": 176444,
+      "day": 7.351833333333333,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 37,
+      "taken": [
+        [
+          "sheep",
+          1247
+        ],
+        [
+          "wool",
+          705
+        ],
+        [
+          "emerald",
+          741
+        ],
+        [
+          "cattle",
+          1814
+        ],
+        [
+          "leather",
+          441
+        ],
+        [
+          "emerald",
+          303
+        ]
+      ]
+    },
+    {
+      "tick": 182335,
+      "day": 7.597291666666667,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
       "target": "road 4-5",
       "food": 0,
       "taken": []
+    },
+    {
+      "tick": 203043,
+      "day": 8.460125,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 209044,
+      "day": 8.710166666666666,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 214032,
+      "day": 8.918,
+      "season": "Autumn",
+      "dragon": "Ashclaw",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 33,
+      "taken": [
+        [
+          "cattle",
+          165
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 230751,
+      "day": 9.614625,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 2-3",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 236752,
+      "day": 9.864666666666666,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 2-3",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 259458,
+      "day": 10.81075,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 2-3",
+      "food": 19,
+      "taken": [
+        [
+          "sheep",
+          1646
+        ],
+        [
+          "wool",
+          352
+        ],
+        [
+          "emerald",
+          1820
+        ]
+      ]
     },
     {
       "tick": 261876,
@@ -800,132 +765,8 @@
       ]
     },
     {
-      "tick": 296570,
-      "day": 12.357083333333334,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 302571,
-      "day": 12.607125,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 308950,
-      "day": 12.872916666666667,
-      "season": "Autumn",
-      "dragon": "Ashclaw",
-      "kind": "Village",
-      "target": "village 2",
-      "food": 39,
-      "taken": [
-        [
-          "cattle",
-          2620
-        ],
-        [
-          "sheep",
-          442
-        ]
-      ]
-    },
-    {
-      "tick": 323279,
-      "day": 13.469958333333333,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 329280,
-      "day": 13.72,
-      "season": "Autumn",
-      "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 49,
-      "taken": [
-        [
-          "sheep",
-          1747
-        ],
-        [
-          "wool",
-          485
-        ],
-        [
-          "emerald",
-          1072
-        ],
-        [
-          "cattle",
-          2293
-        ],
-        [
-          "leather",
-          705
-        ],
-        [
-          "emerald",
-          340
-        ]
-      ]
-    },
-    {
-      "tick": 336774,
-      "day": 14.03225,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 342775,
-      "day": 14.282291666666667,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 364177,
-      "day": 15.174041666666668,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 370178,
-      "day": 15.424083333333334,
-      "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Road",
-      "target": "road 4-5",
-      "food": 0,
-      "taken": []
-    },
-    {
-      "tick": 376414,
-      "day": 15.683916666666667,
+      "tick": 266785,
+      "day": 11.116041666666666,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
@@ -934,27 +775,145 @@
       "taken": []
     },
     {
-      "tick": 382851,
-      "day": 15.952125,
+      "tick": 287314,
+      "day": 11.971416666666666,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
       "target": "road 4-5",
-      "food": 32,
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 289145,
+      "day": 12.047708333333333,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 293315,
+      "day": 12.221458333333333,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 295146,
+      "day": 12.29775,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 313376,
+      "day": 13.057333333333334,
+      "season": "Autumn",
+      "dragon": "Ashclaw",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 34,
       "taken": [
         [
           "cattle",
-          2482
+          260
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 314023,
+      "day": 13.084291666666667,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 316548,
+      "day": 13.1895,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 319966,
+      "day": 13.331916666666666,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Village",
+      "target": "village 7",
+      "food": 46,
+      "taken": [
+        [
+          "cattle",
+          2620
+        ],
+        [
+          "sheep",
+          1045
+        ]
+      ]
+    },
+    {
+      "tick": 320024,
+      "day": 13.334333333333333,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 25,
+      "taken": [
+        [
+          "cattle",
+          1999
         ],
         [
           "leather",
-          705
+          617
         ],
         [
           "emerald",
-          126
+          377
         ]
       ]
+    },
+    {
+      "tick": 359512,
+      "day": 14.979666666666667,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 2-4",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 365949,
+      "day": 15.247875,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
     },
     {
       "tick": 385168,
@@ -976,37 +935,38 @@
       ]
     },
     {
-      "tick": 391580,
-      "day": 16.315833333333334,
+      "tick": 386657,
+      "day": 16.110708333333335,
       "season": "Autumn",
-      "dragon": "Stormtalon",
+      "dragon": "Emberling",
       "kind": "Road",
       "target": "road 4-5",
       "food": 0,
       "taken": []
     },
     {
-      "tick": 394998,
-      "day": 16.45825,
+      "tick": 392658,
+      "day": 16.36075,
       "season": "Autumn",
-      "dragon": "Stormtalon",
-      "kind": "Village",
-      "target": "village 7",
-      "food": 45,
-      "taken": [
-        [
-          "cattle",
-          2604
-        ],
-        [
-          "sheep",
-          1027
-        ]
-      ]
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
     },
     {
-      "tick": 426294,
-      "day": 17.76225,
+      "tick": 413366,
+      "day": 17.223583333333334,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 415720,
+      "day": 17.321666666666665,
       "season": "Autumn",
       "dragon": "Ashclaw",
       "kind": "Village",
@@ -1015,7 +975,7 @@
       "taken": [
         [
           "cattle",
-          380
+          330
         ],
         [
           "sheep",
@@ -1024,21 +984,122 @@
       ]
     },
     {
-      "tick": 453308,
-      "day": 18.887833333333333,
+      "tick": 419367,
+      "day": 17.473625,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 15,
+      "taken": [
+        [
+          "cattle",
+          1230
+        ],
+        [
+          "leather",
+          88
+        ],
+        [
+          "emerald",
+          557
+        ]
+      ]
+    },
+    {
+      "tick": 429667,
+      "day": 17.902791666666666,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 20,
+      "taken": [
+        [
+          "sheep",
+          1721
+        ],
+        [
+          "wool",
+          176
+        ],
+        [
+          "emerald",
+          555
+        ]
+      ]
+    },
+    {
+      "tick": 440075,
+      "day": 18.336458333333333,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 446076,
+      "day": 18.5865,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 466784,
+      "day": 19.449333333333332,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 41,
+      "taken": [
+        [
+          "sheep",
+          1663
+        ],
+        [
+          "wool",
+          441
+        ],
+        [
+          "emerald",
+          92
+        ],
+        [
+          "cattle",
+          1755
+        ],
+        [
+          "leather",
+          176
+        ],
+        [
+          "emerald",
+          201
+        ]
+      ]
+    },
+    {
+      "tick": 468129,
+      "day": 19.505375,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Grudge",
       "target": "the home of player 4294967315",
-      "food": 22,
+      "food": 28,
       "taken": [
         [
           "minecraft:wheat",
-          51
+          48
         ],
         [
           "minecraft:beef",
-          11
+          14
         ],
         [
           "minecraft:gold_ingot",
@@ -1047,39 +1108,34 @@
       ]
     },
     {
-      "tick": 475911,
-      "day": 19.829625,
+      "tick": 491368,
+      "day": 20.473666666666666,
       "season": "Autumn",
       "dragon": "Stormtalon",
       "kind": "Road",
-      "target": "road 1-3",
-      "food": 40,
-      "taken": [
-        [
-          "wheat",
-          4651
-        ],
-        [
-          "cattle",
-          658
-        ],
-        [
-          "emerald",
-          264
-        ],
-        [
-          "sheep",
-          2721
-        ],
-        [
-          "wool",
-          470
-        ],
-        [
-          "emerald",
-          502
-        ]
-      ]
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 497369,
+      "day": 20.723708333333335,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 502483,
+      "day": 20.936791666666668,
+      "season": "Autumn",
+      "dragon": "Emberling",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
     },
     {
       "tick": 507169,
@@ -1097,48 +1153,42 @@
       ]
     },
     {
-      "tick": 526662,
-      "day": 21.94425,
+      "tick": 508484,
+      "day": 21.186833333333333,
       "season": "Autumn",
       "dragon": "Emberling",
       "kind": "Road",
       "target": "road 4-5",
-      "food": 30,
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 513620,
+      "day": 21.400833333333335,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Village",
+      "target": "village 7 (watched)",
+      "food": 26,
       "taken": [
         [
-          "sheep",
-          1915
-        ],
-        [
-          "wool",
-          705
-        ],
-        [
-          "emerald",
-          243
-        ],
-        [
           "cattle",
-          646
-        ],
-        [
-          "emerald",
-          310
+          2000
         ]
       ]
     },
     {
-      "tick": 531638,
-      "day": 22.151583333333335,
+      "tick": 521064,
+      "day": 21.711,
       "season": "Autumn",
       "dragon": "Ashclaw",
       "kind": "Village",
       "target": "village 3",
-      "food": 36,
+      "food": 35,
       "taken": [
         [
           "cattle",
-          426
+          348
         ],
         [
           "sheep",
@@ -1147,65 +1197,90 @@
       ]
     },
     {
-      "tick": 555273,
-      "day": 23.136375,
+      "tick": 529192,
+      "day": 22.049666666666667,
       "season": "Autumn",
-      "dragon": "Old Scorch Roost newcomer",
+      "dragon": "Emberling",
       "kind": "Road",
-      "target": "road 2-6",
+      "target": "road 4-5",
       "food": 0,
       "taken": []
     },
     {
-      "tick": 562982,
-      "day": 23.457583333333332,
+      "tick": 536755,
+      "day": 22.364791666666665,
       "season": "Autumn",
-      "dragon": "Old Scorch Roost newcomer",
+      "dragon": "Emberling",
       "kind": "Road",
       "target": "road 2-3",
-      "food": 33,
-      "taken": [
-        [
-          "sheep",
-          2755
-        ],
-        [
-          "wool",
-          470
-        ],
-        [
-          "emerald",
-          851
-        ]
-      ]
-    },
-    {
-      "tick": 593654,
-      "day": 24.735583333333334,
-      "season": "Winter",
-      "dragon": "Stormtalon",
-      "kind": "Village",
-      "target": "village 7",
-      "food": 41,
+      "food": 31,
       "taken": [
         [
           "cattle",
-          2620
+          2403
         ],
         [
-          "sheep",
-          584
+          "emerald",
+          470
         ]
       ]
     },
     {
-      "tick": 614443,
-      "day": 25.601791666666667,
+      "tick": 573380,
+      "day": 23.890833333333333,
+      "season": "Autumn",
+      "dragon": "Stormtalon",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 18,
+      "taken": [
+        [
+          "cattle",
+          1411
+        ],
+        [
+          "emerald",
+          300
+        ]
+      ]
+    },
+    {
+      "tick": 580624,
+      "day": 24.192666666666668,
+      "season": "Winter",
+      "dragon": "Old Scorch Roost newcomer",
+      "kind": "Road",
+      "target": "road 4-5",
+      "food": 0,
+      "taken": []
+    },
+    {
+      "tick": 584911,
+      "day": 24.371291666666668,
+      "season": "Winter",
+      "dragon": "Old Scorch Roost newcomer",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 34,
+      "taken": [
+        [
+          "cattle",
+          234
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 594536,
+      "day": 24.772333333333332,
       "season": "Winter",
       "dragon": "Emberling",
       "kind": "Village",
       "target": "village 2",
-      "food": 38,
+      "food": 37,
       "taken": [
         [
           "cattle",
@@ -1213,7 +1288,7 @@
         ],
         [
           "sheep",
-          410
+          320
         ]
       ]
     },
@@ -1232,51 +1307,13 @@
         ],
         [
           "sheep",
-          1044
+          1045
         ]
       ]
     },
     {
-      "tick": 639982,
-      "day": 26.665916666666668,
-      "season": "Winter",
-      "dragon": "Ashclaw",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 36,
-      "taken": [
-        [
-          "cattle",
-          414
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 657824,
-      "day": 27.409333333333333,
-      "season": "Winter",
-      "dragon": "Old Scorch Roost newcomer",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 36,
-      "taken": [
-        [
-          "cattle",
-          387
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 717397,
-      "day": 29.891541666666665,
+      "tick": 625123,
+      "day": 26.046791666666667,
       "season": "Winter",
       "dragon": "Stormtalon",
       "kind": "Village",
@@ -1285,11 +1322,68 @@
       "taken": [
         [
           "cattle",
+          2594
+        ],
+        [
+          "sheep",
+          667
+        ]
+      ]
+    },
+    {
+      "tick": 627982,
+      "day": 26.165916666666668,
+      "season": "Winter",
+      "dragon": "Ashclaw",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 37,
+      "taken": [
+        [
+          "cattle",
+          2582
+        ],
+        [
+          "sheep",
+          338
+        ]
+      ]
+    },
+    {
+      "tick": 679741,
+      "day": 28.322541666666666,
+      "season": "Winter",
+      "dragon": "Old Scorch Roost newcomer",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 33,
+      "taken": [
+        [
+          "cattle",
+          159
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 725276,
+      "day": 30.219833333333334,
+      "season": "Winter",
+      "dragon": "Emberling",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 38,
+      "taken": [
+        [
+          "cattle",
           2620
         ],
         [
           "sheep",
-          584
+          400
         ]
       ]
     },
@@ -1313,65 +1407,27 @@
       ]
     },
     {
-      "tick": 748183,
-      "day": 31.174291666666665,
-      "season": "Winter",
-      "dragon": "Emberling",
-      "kind": "Village",
-      "target": "village 2",
-      "food": 38,
-      "taken": [
-        [
-          "cattle",
-          2620
-        ],
-        [
-          "sheep",
-          349
-        ]
-      ]
-    },
-    {
-      "tick": 749900,
-      "day": 31.245833333333334,
+      "tick": 740900,
+      "day": 30.870833333333334,
       "season": "Winter",
       "dragon": "Ashclaw",
       "kind": "Village",
       "target": "village 2",
-      "food": 35,
+      "food": 36,
       "taken": [
         [
           "cattle",
-          2492
+          2532
         ],
         [
           "sheep",
-          331
+          401
         ]
       ]
     },
     {
-      "tick": 752654,
-      "day": 31.360583333333334,
-      "season": "Winter",
-      "dragon": "Old Scorch Roost newcomer",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 35,
-      "taken": [
-        [
-          "cattle",
-          331
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 841140,
-      "day": 35.0475,
+      "tick": 748866,
+      "day": 31.20275,
       "season": "Winter",
       "dragon": "Stormtalon",
       "kind": "Village",
@@ -1389,8 +1445,46 @@
       ]
     },
     {
-      "tick": 847484,
-      "day": 35.31183333333333,
+      "tick": 750571,
+      "day": 31.273791666666668,
+      "season": "Winter",
+      "dragon": "Old Scorch Roost newcomer",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 33,
+      "taken": [
+        [
+          "cattle",
+          192
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 844016,
+      "day": 35.16733333333333,
+      "season": "Winter",
+      "dragon": "Emberling",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 40,
+      "taken": [
+        [
+          "cattle",
+          2620
+        ],
+        [
+          "sheep",
+          504
+        ]
+      ]
+    },
+    {
+      "tick": 845401,
+      "day": 35.22504166666667,
       "season": "Winter",
       "dragon": "Old Scorch Roost newcomer",
       "kind": "Village",
@@ -1399,11 +1493,30 @@
       "taken": [
         [
           "cattle",
-          271
+          256
         ],
         [
           "sheep",
           2662
+        ]
+      ]
+    },
+    {
+      "tick": 850818,
+      "day": 35.45075,
+      "season": "Winter",
+      "dragon": "Ashclaw",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 37,
+      "taken": [
+        [
+          "cattle",
+          2506
+        ],
+        [
+          "sheep",
+          486
         ]
       ]
     },
@@ -1427,65 +1540,8 @@
       ]
     },
     {
-      "tick": 856818,
-      "day": 35.70075,
-      "season": "Winter",
-      "dragon": "Ashclaw",
-      "kind": "Village",
-      "target": "village 2",
-      "food": 37,
-      "taken": [
-        [
-          "cattle",
-          2620
-        ],
-        [
-          "sheep",
-          277
-        ]
-      ]
-    },
-    {
-      "tick": 866923,
-      "day": 36.12179166666667,
-      "season": "Winter",
-      "dragon": "Emberling",
-      "kind": "Village",
-      "target": "village 2",
-      "food": 35,
-      "taken": [
-        [
-          "cattle",
-          2520
-        ],
-        [
-          "sheep",
-          275
-        ]
-      ]
-    },
-    {
-      "tick": 949649,
-      "day": 39.56870833333333,
-      "season": "Winter",
-      "dragon": "Old Scorch Roost newcomer",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 34,
-      "taken": [
-        [
-          "cattle",
-          243
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 964883,
-      "day": 40.20345833333333,
+      "tick": 872609,
+      "day": 36.35870833333333,
       "season": "Winter",
       "dragon": "Stormtalon",
       "kind": "Village",
@@ -1503,13 +1559,32 @@
       ]
     },
     {
-      "tick": 969736,
-      "day": 40.40566666666667,
+      "tick": 940231,
+      "day": 39.176291666666664,
+      "season": "Winter",
+      "dragon": "Old Scorch Roost newcomer",
+      "kind": "Village",
+      "target": "village 3",
+      "food": 34,
+      "taken": [
+        [
+          "cattle",
+          295
+        ],
+        [
+          "sheep",
+          2662
+        ]
+      ]
+    },
+    {
+      "tick": 963736,
+      "day": 40.15566666666667,
       "season": "Winter",
       "dragon": "Ashclaw",
       "kind": "Village",
       "target": "village 2",
-      "food": 37,
+      "food": 40,
       "taken": [
         [
           "cattle",
@@ -1517,22 +1592,26 @@
         ],
         [
           "sheep",
-          308
+          504
         ]
       ]
     },
     {
-      "tick": 974403,
-      "day": 40.600125,
+      "tick": 968756,
+      "day": 40.36483333333333,
       "season": "Winter",
       "dragon": "Emberling",
-      "kind": "Road",
-      "target": "road 3-4 (crossing)",
-      "food": 0,
+      "kind": "Village",
+      "target": "village 2",
+      "food": 37,
       "taken": [
         [
-          "emerald",
-          403
+          "cattle",
+          2505
+        ],
+        [
+          "sheep",
+          483
         ]
       ]
     },
@@ -1556,84 +1635,27 @@
       ]
     },
     {
-      "tick": 976663,
-      "day": 40.694291666666665,
-      "season": "Winter",
-      "dragon": "Emberling",
-      "kind": "Village",
-      "target": "village 2",
-      "food": 35,
-      "taken": [
-        [
-          "cattle",
-          2508
-        ],
-        [
-          "sheep",
-          291
-        ]
-      ]
-    },
-    {
-      "tick": 1003814,
-      "day": 41.825583333333334,
+      "tick": 994699,
+      "day": 41.445791666666665,
       "season": "Winter",
       "dragon": "Old Scorch Roost newcomer",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 34,
-      "taken": [
-        [
-          "cattle",
-          279
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 1081080,
-      "day": 45.045,
-      "season": "Winter",
-      "dragon": "Ashclaw",
-      "kind": "Village",
-      "target": "village 3",
-      "food": 35,
-      "taken": [
-        [
-          "cattle",
-          312
-        ],
-        [
-          "sheep",
-          2662
-        ]
-      ]
-    },
-    {
-      "tick": 1086403,
-      "day": 45.26679166666667,
-      "season": "Winter",
-      "dragon": "Emberling",
       "kind": "Village",
       "target": "village 2",
       "food": 37,
       "taken": [
         [
           "cattle",
-          2620
+          2462
         ],
         [
           "sheep",
-          252
+          484
         ]
       ]
     },
     {
-      "tick": 1088626,
-      "day": 45.35941666666667,
+      "tick": 996352,
+      "day": 41.51466666666666,
       "season": "Winter",
       "dragon": "Stormtalon",
       "kind": "Village",
@@ -1647,6 +1669,44 @@
         [
           "sheep",
           584
+        ]
+      ]
+    },
+    {
+      "tick": 1084496,
+      "day": 45.187333333333335,
+      "season": "Winter",
+      "dragon": "Emberling",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 40,
+      "taken": [
+        [
+          "cattle",
+          2620
+        ],
+        [
+          "sheep",
+          504
+        ]
+      ]
+    },
+    {
+      "tick": 1085654,
+      "day": 45.23558333333333,
+      "season": "Winter",
+      "dragon": "Ashclaw",
+      "kind": "Village",
+      "target": "village 2",
+      "food": 37,
+      "taken": [
+        [
+          "cattle",
+          2492
+        ],
+        [
+          "sheep",
+          479
         ]
       ]
     },
@@ -1670,21 +1730,40 @@
       ]
     },
     {
-      "tick": 1105979,
-      "day": 46.082458333333335,
+      "tick": 1106167,
+      "day": 46.090291666666666,
       "season": "Winter",
       "dragon": "Old Scorch Roost newcomer",
       "kind": "Village",
-      "target": "village 3",
-      "food": 35,
+      "target": "village 2",
+      "food": 36,
       "taken": [
         [
           "cattle",
-          312
+          2434
         ],
         [
           "sheep",
-          2662
+          475
+        ]
+      ]
+    },
+    {
+      "tick": 1120095,
+      "day": 46.670625,
+      "season": "Winter",
+      "dragon": "Stormtalon",
+      "kind": "Village",
+      "target": "village 7",
+      "food": 41,
+      "taken": [
+        [
+          "cattle",
+          2620
+        ],
+        [
+          "sheep",
+          584
         ]
       ]
     }
@@ -1702,7 +1781,7 @@
       "day": 0.5,
       "kind": "hunt",
       "dragon": "Ashclaw",
-      "what": "hungry (58), hunts village at village 3 (utility 18.3)"
+      "what": "hungry (58), hunts village at village 3 (utility 18.0)"
     },
     {
       "tick": 15292,
@@ -1723,70 +1802,35 @@
       "day": 1.25,
       "kind": "hunt",
       "dragon": "Cinderjaw",
-      "what": "hungry (60), hunts road at road 2-4 (utility 8.1)"
+      "what": "hungry (60), hunts village at village 2 (utility 2.0)"
     },
     {
-      "tick": 37175,
-      "day": 1.5489583333333334,
+      "tick": 33781,
+      "day": 1.4075416666666667,
       "kind": "prey",
       "dragon": "Cinderjaw",
-      "what": "road at road 2-4: +0 fullness"
-    },
-    {
-      "tick": 37175,
-      "day": 1.5489583333333334,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (58), hunts road at road 1-7 (utility 9.9)"
+      "what": "village at village 2: +38 fullness, took cattle 2620, sheep 372"
     },
     {
       "tick": 45000,
       "day": 1.875,
       "kind": "hunt",
       "dragon": "Stormtalon",
-      "what": "hungry (60), hunts road at road 1-7 (utility 13.1)"
+      "what": "hungry (60), hunts village at village 7 (utility 7.1)"
     },
     {
-      "tick": 45287,
-      "day": 1.8869583333333333,
-      "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "road at road 1-7: +0 fullness"
-    },
-    {
-      "tick": 53224,
-      "day": 2.2176666666666667,
+      "tick": 48743,
+      "day": 2.0309583333333334,
       "kind": "prey",
       "dragon": "Stormtalon",
-      "what": "road at road 1-7: +0 fullness"
-    },
-    {
-      "tick": 53224,
-      "day": 2.2176666666666667,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (58), hunts road at road 1-7 (utility 13.1)"
-    },
-    {
-      "tick": 59225,
-      "day": 2.4677083333333334,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 1-7: +33 fullness, took cattle 1894, sheep 831"
+      "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
       "tick": 60000,
       "day": 2.5,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (60), hunts road at road 2-4 (utility 4.5)"
-    },
-    {
-      "tick": 60537,
-      "day": 2.522375,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (50), hunts road at road 4-5 (utility 10.6)"
+      "what": "hungry (60), hunts road at road 2-4 (utility 3.5)"
     },
     {
       "tick": 67175,
@@ -1800,21 +1844,7 @@
       "day": 2.798958333333333,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (58), hunts road at road 4-5 (utility 13.0)"
-    },
-    {
-      "tick": 67891,
-      "day": 2.8287916666666666,
-      "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 67891,
-      "day": 2.8287916666666666,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (48), hunts road at road 4-5 (utility 13.0)"
+      "what": "hungry (58), hunts road at road 4-5 (utility 11.5)"
     },
     {
       "tick": 73612,
@@ -1824,158 +1854,74 @@
       "what": "road at road 4-5: +0 fullness"
     },
     {
-      "tick": 73892,
-      "day": 3.0788333333333333,
-      "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
       "tick": 86966,
       "day": 3.6235833333333334,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (52), hunts road at road 4-5 (utility 18.5)"
+      "what": "hungry (52), hunts road at road 2-4 (utility 5.4)"
     },
     {
-      "tick": 87246,
-      "day": 3.63525,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (41), hunts road at road 4-5 (utility 18.5)"
-    },
-    {
-      "tick": 87968,
-      "day": 3.6653333333333333,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass)"
-    },
-    {
-      "tick": 88248,
-      "day": 3.677,
-      "kind": "materialize",
-      "dragon": "Cinderjaw",
-      "what": "enters view of player 4294967315: materializes (to harass)"
-    },
-    {
-      "tick": 88648,
-      "day": 3.6936666666666667,
-      "kind": "hurt",
-      "dragon": "Cinderjaw",
-      "what": "wounded by player 4294967315 for 136 (30% of max): sentiment now -55"
-    },
-    {
-      "tick": 89362,
-      "day": 3.7234166666666666,
-      "kind": "depart",
-      "dragon": "Cinderjaw",
-      "what": "leaves (wounded) after 0.05 days in view"
-    },
-    {
-      "tick": 89662,
-      "day": 3.7359166666666668,
-      "kind": "capture",
-      "dragon": "Cinderjaw",
-      "what": "captured (health 318, hunger 41)"
-    },
-    {
-      "tick": 93522,
-      "day": 3.89675,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 93822,
-      "day": 3.90925,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 154, hunger 50)"
-    },
-    {
-      "tick": 101662,
-      "day": 4.235916666666666,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (37), hunts grudge at the home of player 4294967315 (utility 36.1)"
-    },
-    {
-      "tick": 103119,
-      "day": 4.296625,
-      "kind": "raid",
-      "dragon": "Cinderjaw",
-      "what": "raids district 1 (unwatched): survived 1.00, untested defences, 4 blocks destroyed"
-    },
-    {
-      "tick": 103119,
-      "day": 4.296625,
+      "tick": 94141,
+      "day": 3.9225416666666666,
       "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "grudge at the home of player 4294967315: +44 fullness, took minecraft:wheat 102, minecraft:beef 22, minecraft:gold_ingot 4"
+      "dragon": "Emberling",
+      "what": "road at road 2-4: +0 fullness"
     },
     {
-      "tick": 105822,
-      "day": 4.40925,
+      "tick": 94141,
+      "day": 3.9225416666666666,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (46), hunts road at road 4-5 (utility 8.3)"
+      "what": "hungry (49), hunts road at road 4-5 (utility 8.5)"
     },
     {
-      "tick": 106824,
-      "day": 4.451,
-      "kind": "materialize",
+      "tick": 100578,
+      "day": 4.19075,
+      "kind": "prey",
       "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass)"
+      "what": "road at road 4-5: +0 fullness"
     },
     {
-      "tick": 108000,
-      "day": 4.5,
-      "kind": "capture",
+      "tick": 113932,
+      "day": 4.747166666666667,
+      "kind": "hunt",
       "dragon": "Emberling",
-      "what": "captured (health 158, hunger 46)"
+      "what": "hungry (43), hunts road at road 4-5 (utility 9.9)"
     },
     {
       "tick": 114344,
       "day": 4.764333333333333,
       "kind": "hunt",
       "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 15.4)"
-    },
-    {
-      "tick": 114353,
-      "day": 4.764708333333333,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 114353,
-      "day": 4.764708333333333,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (44), hunts road at road 4-5 (utility 8.3)"
+      "what": "hungry (60), hunts village at village 3 (utility 15.6)"
     },
     {
       "tick": 117688,
       "day": 4.903666666666667,
       "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "village at village 3: +32 fullness, took cattle 103, sheep 2662"
+      "what": "village at village 3: +32 fullness, took cattle 137, sheep 2662"
     },
     {
-      "tick": 120354,
-      "day": 5.01475,
+      "tick": 121286,
+      "day": 5.053583333333333,
       "kind": "prey",
       "dragon": "Emberling",
       "what": "road at road 4-5: +0 fullness"
     },
     {
-      "tick": 133708,
-      "day": 5.571166666666667,
+      "tick": 121286,
+      "day": 5.053583333333333,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (38), hunts road at road 4-5 (utility 7.7)"
+      "what": "hungry (40), hunts road at road 2-3 (utility 6.5)"
+    },
+    {
+      "tick": 128849,
+      "day": 5.368708333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 2-3: +0 fullness"
     },
     {
       "tick": 135292,
@@ -1992,235 +1938,221 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 141062,
-      "day": 5.877583333333333,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +43 fullness, took sheep 2323, emerald 510, cattle 1262, leather 485, emerald 154"
-    },
-    {
-      "tick": 146225,
-      "day": 6.092708333333333,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (60), hunts road at road 4-5 (utility 8.3)"
-    },
-    {
-      "tick": 153926,
-      "day": 6.413583333333333,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 153926,
-      "day": 6.413583333333333,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (58), hunts road at road 4-5 (utility 13.6)"
-    },
-    {
-      "tick": 159927,
-      "day": 6.663625,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 166119,
-      "day": 6.921625,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (60), hunts road at road 4-5 (utility 13.0)"
-    },
-    {
-      "tick": 173473,
-      "day": 7.228041666666667,
-      "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 173473,
-      "day": 7.228041666666667,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (58), hunts road at road 4-5 (utility 13.0)"
-    },
-    {
-      "tick": 173628,
-      "day": 7.2345,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (51), hunts road at road 4-5 (utility 13.6)"
-    },
-    {
-      "tick": 179474,
-      "day": 7.478083333333333,
-      "kind": "prey",
-      "dragon": "Cinderjaw",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 181329,
-      "day": 7.555375,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 181329,
-      "day": 7.555375,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (49), hunts road at road 4-5 (utility 13.6)"
-    },
-    {
-      "tick": 187330,
-      "day": 7.805416666666667,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +19 fullness, took sheep 1600, wool 485, emerald 287"
-    },
-    {
-      "tick": 192828,
-      "day": 8.0345,
-      "kind": "hunt",
-      "dragon": "Cinderjaw",
-      "what": "hungry (52), hunts grudge at the home of player 4294967315 (utility 33.4)"
-    },
-    {
-      "tick": 193933,
-      "day": 8.080541666666667,
-      "kind": "materialize",
-      "dragon": "Cinderjaw",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
-      "tick": 194733,
-      "day": 8.113875,
-      "kind": "death",
-      "dragon": "Cinderjaw",
-      "what": "killed by player 4294967315: 1 kin and its lair remember; the settlements it preyed on think better of the slayer ()"
-    },
-    {
-      "tick": 194733,
-      "day": 8.113875,
-      "kind": "heir",
-      "dragon": "Cinderjaw",
-      "what": "its grudges pass to Emberling"
-    },
-    {
-      "tick": 195062,
-      "day": 8.127583333333334,
+      "tick": 143202,
+      "day": 5.96675,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 55.8)"
+      "what": "hungry (33), hunts road at road 4-5 (utility 9.8)"
     },
     {
-      "tick": 196167,
-      "day": 8.173625,
+      "tick": 144781,
+      "day": 6.032541666666667,
+      "kind": "hunt",
+      "dragon": "Cinderjaw",
+      "what": "hungry (60), hunts road at road 4-5 (utility 9.8)"
+    },
+    {
+      "tick": 144781,
+      "day": 6.032541666666667,
       "kind": "materialize",
       "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+      "what": "enters view of player 4294967315: materializes (to harass)"
     },
     {
-      "tick": 201721,
-      "day": 8.405041666666667,
+      "tick": 145783,
+      "day": 6.074291666666666,
+      "kind": "materialize",
+      "dragon": "Cinderjaw",
+      "what": "enters view of player 4294967315: materializes (to harass)"
+    },
+    {
+      "tick": 146183,
+      "day": 6.090958333333333,
+      "kind": "hurt",
+      "dragon": "Cinderjaw",
+      "what": "wounded by player 4294967315 for 140 (30% of max): sentiment now -55"
+    },
+    {
+      "tick": 146897,
+      "day": 6.120708333333333,
+      "kind": "depart",
+      "dragon": "Cinderjaw",
+      "what": "leaves (wounded) after 0.05 days in view"
+    },
+    {
+      "tick": 147197,
+      "day": 6.133208333333333,
+      "kind": "capture",
+      "dragon": "Cinderjaw",
+      "what": "captured (health 326, hunger 60)"
+    },
+    {
+      "tick": 150335,
+      "day": 6.263958333333333,
       "kind": "depart",
       "dragon": "Emberling",
       "what": "leaves (bored) after 0.23 days in view"
     },
     {
-      "tick": 202021,
-      "day": 8.417541666666667,
+      "tick": 150635,
+      "day": 6.276458333333333,
       "kind": "capture",
       "dragon": "Emberling",
-      "what": "captured (health 174, hunger 59)"
+      "what": "captured (health 166, hunger 31)"
     },
     {
-      "tick": 205330,
-      "day": 8.555416666666666,
+      "tick": 159197,
+      "day": 6.633208333333333,
+      "kind": "hunt",
+      "dragon": "Cinderjaw",
+      "what": "hungry (56), hunts grudge at the home of player 4294967315 (utility 34.2)"
+    },
+    {
+      "tick": 160654,
+      "day": 6.6939166666666665,
+      "kind": "raid",
+      "dragon": "Cinderjaw",
+      "what": "raids district 1 (unwatched): survived 1.00, untested defences, 4 blocks destroyed"
+    },
+    {
+      "tick": 160654,
+      "day": 6.6939166666666665,
+      "kind": "prey",
+      "dragon": "Cinderjaw",
+      "what": "grudge at the home of player 4294967315: +56 fullness, took minecraft:wheat 95, minecraft:beef 28, minecraft:gold_ingot 5"
+    },
+    {
+      "tick": 162635,
+      "day": 6.776458333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (27), hunts road at road 2-3 (utility 8.0)"
+    },
+    {
+      "tick": 168743,
+      "day": 7.030958333333333,
       "kind": "hunt",
       "dragon": "Stormtalon",
-      "what": "hungry (60), hunts village at village 7 (utility 7.1)"
+      "what": "hungry (60), hunts road at road 4-5 (utility 9.6)"
     },
     {
-      "tick": 209073,
-      "day": 8.711375,
+      "tick": 170988,
+      "day": 7.1245,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 2-3: +0 fullness"
+    },
+    {
+      "tick": 170988,
+      "day": 7.1245,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (25), hunts road at road 4-5 (utility 12.0)"
+    },
+    {
+      "tick": 172199,
+      "day": 7.1749583333333335,
+      "kind": "materialize",
+      "dragon": "Emberling",
+      "what": "enters view of player 4294967315: materializes (to harass)"
+    },
+    {
+      "tick": 175981,
+      "day": 7.332541666666667,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 170, hunger 23)"
+    },
+    {
+      "tick": 176444,
+      "day": 7.351833333333333,
       "kind": "prey",
       "dragon": "Stormtalon",
-      "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
+      "what": "road at road 4-5: +37 fullness, took sheep 1247, wool 705, emerald 741, cattle 1814, leather 441, emerald 303"
+    },
+    {
+      "tick": 182335,
+      "day": 7.597291666666667,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 195689,
+      "day": 8.153708333333332,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (17), hunts road at road 4-5 (utility 8.3)"
+    },
+    {
+      "tick": 203043,
+      "day": 8.460125,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 203043,
+      "day": 8.460125,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (14), hunts road at road 4-5 (utility 11.3)"
+    },
+    {
+      "tick": 209044,
+      "day": 8.710166666666666,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
     },
     {
       "tick": 210688,
       "day": 8.778666666666666,
       "kind": "hunt",
       "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 15.1)"
-    },
-    {
-      "tick": 214021,
-      "day": 8.917541666666667,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts road at road 2-4 (utility 4.2)"
+      "what": "hungry (60), hunts village at village 3 (utility 15.8)"
     },
     {
       "tick": 214032,
       "day": 8.918,
       "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "village at village 3: +31 fullness, took cattle 71, sheep 2662"
+      "what": "village at village 3: +33 fullness, took cattle 165, sheep 2662"
     },
     {
-      "tick": 221196,
-      "day": 9.2165,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 2-4: +0 fullness"
-    },
-    {
-      "tick": 221196,
-      "day": 9.2165,
+      "tick": 222398,
+      "day": 9.266583333333333,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (53), hunts road at road 4-5 (utility 5.9)"
+      "what": "hungry (8), hunts road at road 2-3 (utility 7.6)"
     },
     {
-      "tick": 227633,
-      "day": 9.484708333333334,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 240987,
-      "day": 10.041125,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (47), hunts road at road 2-3 (utility 9.2)"
-    },
-    {
-      "tick": 249340,
-      "day": 10.389166666666666,
+      "tick": 230751,
+      "day": 9.614625,
       "kind": "prey",
       "dragon": "Emberling",
       "what": "road at road 2-3: +0 fullness"
     },
     {
-      "tick": 249340,
-      "day": 10.389166666666666,
+      "tick": 230751,
+      "day": 9.614625,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (44), hunts road at road 4-5 (utility 15.7)"
+      "what": "hungry (5), hunts road at road 2-3 (utility 7.6)"
     },
     {
-      "tick": 256903,
-      "day": 10.704291666666666,
+      "tick": 236752,
+      "day": 9.864666666666666,
       "kind": "prey",
       "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
+      "what": "road at road 2-3: +0 fullness"
+    },
+    {
+      "tick": 251105,
+      "day": 10.462708333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (0), hunts road at road 2-3 (utility 8.0)"
     },
     {
       "tick": 258584,
@@ -2230,6 +2162,20 @@
       "what": "hungry (60), hunts village at village 7 (utility 16.4)"
     },
     {
+      "tick": 259458,
+      "day": 10.81075,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 2-3: +19 fullness, took sheep 1646, wool 352, emerald 1820"
+    },
+    {
+      "tick": 259458,
+      "day": 10.81075,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (19), hunts road at road 2-4 (utility 3.7)"
+    },
+    {
       "tick": 261876,
       "day": 10.9115,
       "kind": "prey",
@@ -2237,207 +2183,228 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 270257,
-      "day": 11.260708333333334,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (37), hunts grudge at the home of player 4294967315 (utility 58.1)"
-    },
-    {
-      "tick": 271362,
-      "day": 11.30675,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
-      "tick": 276916,
-      "day": 11.538166666666667,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 277216,
-      "day": 11.550666666666666,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 185, hunger 35)"
-    },
-    {
-      "tick": 289216,
-      "day": 12.050666666666666,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (31), hunts road at road 4-5 (utility 12.7)"
-    },
-    {
-      "tick": 296570,
-      "day": 12.357083333333334,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 296570,
-      "day": 12.357083333333334,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (29), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
-      "tick": 302571,
-      "day": 12.607125,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 304032,
-      "day": 12.668,
-      "kind": "hunt",
-      "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 2 (utility 15.8)"
-    },
-    {
-      "tick": 308950,
-      "day": 12.872916666666667,
-      "kind": "prey",
-      "dragon": "Ashclaw",
-      "what": "village at village 2: +39 fullness, took cattle 2620, sheep 442"
-    },
-    {
-      "tick": 315925,
-      "day": 13.163541666666667,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (23), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
-      "tick": 323279,
-      "day": 13.469958333333333,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 323279,
-      "day": 13.469958333333333,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (20), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
-      "tick": 329073,
-      "day": 13.711375,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (60), hunts road at road 4-5 (utility 15.0)"
-    },
-    {
-      "tick": 329280,
-      "day": 13.72,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +49 fullness, took sheep 1747, wool 485, emerald 1072, cattle 2293, leather 705, emerald 340"
-    },
-    {
-      "tick": 336774,
-      "day": 14.03225,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 336774,
-      "day": 14.03225,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (58), hunts road at road 4-5 (utility 15.0)"
-    },
-    {
-      "tick": 342775,
-      "day": 14.282291666666667,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 350280,
-      "day": 14.595,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 55.8)"
-    },
-    {
-      "tick": 351385,
-      "day": 14.641041666666666,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
-      "tick": 356476,
-      "day": 14.853166666666667,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (51), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
-      "tick": 356939,
-      "day": 14.872458333333332,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 357239,
-      "day": 14.884958333333334,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 197, hunger 59)"
-    },
-    {
-      "tick": 364177,
-      "day": 15.174041666666668,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 364177,
-      "day": 15.174041666666668,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (49), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
-      "tick": 369239,
-      "day": 15.384958333333334,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts road at road 2-4 (utility 2.7)"
-    },
-    {
-      "tick": 370178,
-      "day": 15.424083333333334,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 4-5: +0 fullness"
-    },
-    {
-      "tick": 376414,
-      "day": 15.683916666666667,
+      "tick": 266785,
+      "day": 11.116041666666666,
       "kind": "prey",
       "dragon": "Emberling",
       "what": "road at road 2-4: +0 fullness"
     },
     {
-      "tick": 376414,
-      "day": 15.683916666666667,
+      "tick": 279960,
+      "day": 11.665,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (53), hunts road at road 4-5 (utility 13.6)"
+      "what": "hungry (13), hunts road at road 4-5 (utility 12.3)"
+    },
+    {
+      "tick": 280654,
+      "day": 11.693916666666667,
+      "kind": "hunt",
+      "dragon": "Cinderjaw",
+      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 33.2)"
+    },
+    {
+      "tick": 281444,
+      "day": 11.726833333333333,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (60), hunts road at road 4-5 (utility 12.7)"
+    },
+    {
+      "tick": 281759,
+      "day": 11.739958333333334,
+      "kind": "materialize",
+      "dragon": "Cinderjaw",
+      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+    },
+    {
+      "tick": 282559,
+      "day": 11.773291666666667,
+      "kind": "death",
+      "dragon": "Cinderjaw",
+      "what": "killed by player 4294967315: 1 kin and its lair remember; the settlements it preyed on think better of the slayer (village 2 +25)"
+    },
+    {
+      "tick": 282559,
+      "day": 11.773291666666667,
+      "kind": "heir",
+      "dragon": "Cinderjaw",
+      "what": "its grudges pass to Emberling"
+    },
+    {
+      "tick": 287314,
+      "day": 11.971416666666666,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 287314,
+      "day": 11.971416666666666,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (10), hunts road at road 4-5 (utility 12.4)"
+    },
+    {
+      "tick": 289145,
+      "day": 12.047708333333333,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 289145,
+      "day": 12.047708333333333,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (58), hunts road at road 4-5 (utility 12.9)"
+    },
+    {
+      "tick": 293315,
+      "day": 12.221458333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 295146,
+      "day": 12.29775,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 306669,
+      "day": 12.777875,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (4), hunts road at road 4-5 (utility 11.5)"
+    },
+    {
+      "tick": 308847,
+      "day": 12.868625,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (51), hunts road at road 4-5 (utility 12.2)"
+    },
+    {
+      "tick": 310032,
+      "day": 12.918,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 3 (utility 16.5)"
+    },
+    {
+      "tick": 313376,
+      "day": 13.057333333333334,
+      "kind": "prey",
+      "dragon": "Ashclaw",
+      "what": "village at village 3: +34 fullness, took cattle 260, sheep 2662"
+    },
+    {
+      "tick": 314023,
+      "day": 13.084291666666667,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 314023,
+      "day": 13.084291666666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (1), hunts road at road 4-5 (utility 8.9)"
+    },
+    {
+      "tick": 316548,
+      "day": 13.1895,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 316548,
+      "day": 13.1895,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (49), hunts village at village 7 (utility 11.1)"
+    },
+    {
+      "tick": 319966,
+      "day": 13.331916666666666,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "village at village 7: +46 fullness, took cattle 2620, sheep 1045"
+    },
+    {
+      "tick": 320024,
+      "day": 13.334333333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +25 fullness, took cattle 1999, leather 617, emerald 377"
+    },
+    {
+      "tick": 333378,
+      "day": 13.89075,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (21), hunts grudge at the home of player 4294967315 (utility 59.2)"
+    },
+    {
+      "tick": 334483,
+      "day": 13.936791666666666,
+      "kind": "materialize",
+      "dragon": "Emberling",
+      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+    },
+    {
+      "tick": 340037,
+      "day": 14.168208333333334,
+      "kind": "depart",
+      "dragon": "Emberling",
+      "what": "leaves (bored) after 0.23 days in view"
+    },
+    {
+      "tick": 340337,
+      "day": 14.180708333333333,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 193, hunger 20)"
+    },
+    {
+      "tick": 352337,
+      "day": 14.680708333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (16), hunts road at road 2-4 (utility 4.7)"
+    },
+    {
+      "tick": 359512,
+      "day": 14.979666666666667,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 2-4: +0 fullness"
+    },
+    {
+      "tick": 359512,
+      "day": 14.979666666666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (14), hunts road at road 4-5 (utility 7.2)"
+    },
+    {
+      "tick": 365949,
+      "day": 15.247875,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 379303,
+      "day": 15.804291666666666,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (8), hunts road at road 4-5 (utility 6.8)"
     },
     {
       "tick": 381876,
@@ -2447,20 +2414,6 @@
       "what": "hungry (60), hunts village at village 7 (utility 16.4)"
     },
     {
-      "tick": 382851,
-      "day": 15.952125,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +32 fullness, took cattle 2482, leather 705, emerald 126"
-    },
-    {
-      "tick": 383879,
-      "day": 15.994958333333333,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (42), hunts road at road 4-5 (utility 14.3)"
-    },
-    {
       "tick": 385168,
       "day": 16.048666666666666,
       "kind": "prey",
@@ -2468,74 +2421,144 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 391580,
-      "day": 16.315833333333334,
+      "tick": 386657,
+      "day": 16.110708333333335,
       "kind": "prey",
-      "dragon": "Stormtalon",
+      "dragon": "Emberling",
       "what": "road at road 4-5: +0 fullness"
     },
     {
-      "tick": 391580,
-      "day": 16.315833333333334,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (40), hunts village at village 7 (utility 10.4)"
-    },
-    {
-      "tick": 394998,
-      "day": 16.45825,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "village at village 7: +45 fullness, took cattle 2604, sheep 1027"
-    },
-    {
-      "tick": 422950,
-      "day": 17.622916666666665,
-      "kind": "hunt",
-      "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 17.4)"
-    },
-    {
-      "tick": 426294,
-      "day": 17.76225,
-      "kind": "prey",
-      "dragon": "Ashclaw",
-      "what": "village at village 3: +35 fullness, took cattle 380, sheep 2662"
-    },
-    {
-      "tick": 451851,
-      "day": 18.827125,
+      "tick": 386657,
+      "day": 16.110708333333335,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 55.3)"
+      "what": "hungry (5), hunts road at road 4-5 (utility 6.8)"
     },
     {
-      "tick": 453308,
-      "day": 18.887833333333333,
+      "tick": 392658,
+      "day": 16.36075,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 406012,
+      "day": 16.917166666666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (0), hunts road at road 4-5 (utility 14.2)"
+    },
+    {
+      "tick": 412376,
+      "day": 17.182333333333332,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 3 (utility 17.1)"
+    },
+    {
+      "tick": 413366,
+      "day": 17.223583333333334,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 413366,
+      "day": 17.223583333333334,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (0), hunts road at road 4-5 (utility 16.3)"
+    },
+    {
+      "tick": 415720,
+      "day": 17.321666666666665,
+      "kind": "prey",
+      "dragon": "Ashclaw",
+      "what": "village at village 3: +35 fullness, took cattle 330, sheep 2662"
+    },
+    {
+      "tick": 419367,
+      "day": 17.473625,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +15 fullness, took cattle 1230, leather 88, emerald 557"
+    },
+    {
+      "tick": 421966,
+      "day": 17.581916666666668,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (60), hunts road at road 4-5 (utility 17.6)"
+    },
+    {
+      "tick": 429667,
+      "day": 17.902791666666666,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +20 fullness, took sheep 1721, wool 176, emerald 555"
+    },
+    {
+      "tick": 432721,
+      "day": 18.030041666666666,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (11), hunts road at road 4-5 (utility 11.1)"
+    },
+    {
+      "tick": 440075,
+      "day": 18.336458333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 440075,
+      "day": 18.336458333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (9), hunts road at road 4-5 (utility 10.9)"
+    },
+    {
+      "tick": 446076,
+      "day": 18.5865,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 459430,
+      "day": 19.142916666666668,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (2), hunts road at road 4-5 (utility 8.5)"
+    },
+    {
+      "tick": 466784,
+      "day": 19.449333333333332,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +41 fullness, took sheep 1663, wool 441, emerald 92, cattle 1755, leather 176, emerald 201"
+    },
+    {
+      "tick": 466784,
+      "day": 19.449333333333332,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (41), hunts grudge at the home of player 4294967315 (utility 57.2)"
+    },
+    {
+      "tick": 468129,
+      "day": 19.505375,
       "kind": "raid",
       "dragon": "Emberling",
       "what": "raids district 1 (unwatched): survived 1.00, untested defences, 2 blocks destroyed"
     },
     {
-      "tick": 453308,
-      "day": 18.887833333333333,
+      "tick": 468129,
+      "day": 19.505375,
       "kind": "prey",
       "dragon": "Emberling",
-      "what": "grudge at the home of player 4294967315: +22 fullness, took minecraft:wheat 51, minecraft:beef 11, minecraft:gold_ingot 2"
-    },
-    {
-      "tick": 466998,
-      "day": 19.45825,
-      "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (60), hunts road at road 1-3 (utility 7.8)"
-    },
-    {
-      "tick": 475911,
-      "day": 19.829625,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "road at road 1-3: +40 fullness, took wheat 4651, cattle 658, emerald 264, sheep 2721, wool 470, emerald 502"
+      "what": "grudge at the home of player 4294967315: +28 fullness, took minecraft:wheat 48, minecraft:beef 14, minecraft:gold_ingot 2"
     },
     {
       "tick": 480000,
@@ -2545,11 +2568,60 @@
       "what": "Old Scorch Roost stood empty: a young dragon flies in to claim it"
     },
     {
+      "tick": 483667,
+      "day": 20.152791666666666,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (60), hunts road at road 4-5 (utility 8.7)"
+    },
+    {
       "tick": 486000,
       "day": 20.25,
       "kind": "claim",
       "dragon": "Old Scorch Roost newcomer",
       "what": "claims Old Scorch Roost"
+    },
+    {
+      "tick": 491368,
+      "day": 20.473666666666666,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 491368,
+      "day": 20.473666666666666,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (58), hunts road at road 4-5 (utility 8.7)"
+    },
+    {
+      "tick": 495129,
+      "day": 20.630375,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (60), hunts road at road 4-5 (utility 8.6)"
+    },
+    {
+      "tick": 497369,
+      "day": 20.723708333333335,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 502483,
+      "day": 20.936791666666668,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 502483,
+      "day": 20.936791666666668,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (58), hunts road at road 4-5 (utility 8.6)"
     },
     {
       "tick": 505168,
@@ -2573,6 +2645,20 @@
       "what": "village at village 7 (watched): +26 fullness, took cattle 2000"
     },
     {
+      "tick": 508484,
+      "day": 21.186833333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 511070,
+      "day": 21.294583333333332,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (51), hunts village at village 7 (utility 10.6)"
+    },
+    {
       "tick": 512459,
       "day": 21.352458333333335,
       "kind": "depart",
@@ -2587,60 +2673,95 @@
       "what": "captured (health 500, hunger 84)"
     },
     {
-      "tick": 519308,
-      "day": 21.637833333333333,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (60), hunts road at road 4-5 (utility 8.7)"
+      "tick": 513020,
+      "day": 21.375833333333333,
+      "kind": "materialize",
+      "dragon": "Stormtalon",
+      "what": "enters view of player 4294967315: materializes (to harass)"
     },
     {
-      "tick": 526662,
-      "day": 21.94425,
+      "tick": 513620,
+      "day": 21.400833333333335,
       "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 4-5: +30 fullness, took sheep 1915, wool 705, emerald 243, cattle 646, emerald 310"
+      "dragon": "Stormtalon",
+      "what": "village at village 7 (watched): +26 fullness, took cattle 2000"
     },
     {
-      "tick": 528294,
-      "day": 22.01225,
+      "tick": 517720,
+      "day": 21.571666666666665,
       "kind": "hunt",
       "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 17.9)"
+      "what": "hungry (60), hunts village at village 3 (utility 17.3)"
     },
     {
-      "tick": 531638,
-      "day": 22.151583333333335,
+      "tick": 520379,
+      "day": 21.682458333333333,
+      "kind": "depart",
+      "dragon": "Stormtalon",
+      "what": "leaves (bored) after 0.31 days in view"
+    },
+    {
+      "tick": 520679,
+      "day": 21.694958333333332,
+      "kind": "capture",
+      "dragon": "Stormtalon",
+      "what": "captured (health 446, hunger 75)"
+    },
+    {
+      "tick": 521064,
+      "day": 21.711,
       "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "village at village 3: +36 fullness, took cattle 426, sheep 2662"
+      "what": "village at village 3: +35 fullness, took cattle 348, sheep 2662"
     },
     {
-      "tick": 546000,
-      "day": 22.75,
+      "tick": 521838,
+      "day": 21.74325,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (52), hunts road at road 4-5 (utility 8.6)"
+    },
+    {
+      "tick": 529192,
+      "day": 22.049666666666667,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 529192,
+      "day": 22.049666666666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (49), hunts road at road 2-3 (utility 6.5)"
+    },
+    {
+      "tick": 536755,
+      "day": 22.364791666666665,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "road at road 2-3: +31 fullness, took cattle 2403, emerald 470"
+    },
+    {
+      "tick": 565679,
+      "day": 23.569958333333332,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (60), hunts road at road 4-5 (utility 10.9)"
+    },
+    {
+      "tick": 570000,
+      "day": 23.75,
       "kind": "hunt",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (28), hunts road at road 2-6 (utility 2.3)"
+      "what": "hungry (20), hunts road at road 4-5 (utility 4.1)"
     },
     {
-      "tick": 555273,
-      "day": 23.136375,
+      "tick": 573380,
+      "day": 23.890833333333333,
       "kind": "prey",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "road at road 2-6: +0 fullness"
-    },
-    {
-      "tick": 555273,
-      "day": 23.136375,
-      "kind": "hunt",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (25), hunts road at road 2-3 (utility 2.8)"
-    },
-    {
-      "tick": 562982,
-      "day": 23.457583333333332,
-      "kind": "prey",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "road at road 2-3: +33 fullness, took sheep 2755, wool 470, emerald 851"
+      "dragon": "Stormtalon",
+      "what": "road at road 4-5: +18 fullness, took cattle 1411, emerald 300"
     },
     {
       "tick": 576000,
@@ -2650,6 +2771,27 @@
       "what": "enters view of player 4294967315: materializes (at home)"
     },
     {
+      "tick": 580624,
+      "day": 24.192666666666668,
+      "kind": "prey",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "road at road 4-5: +0 fullness"
+    },
+    {
+      "tick": 580624,
+      "day": 24.192666666666668,
+      "kind": "hunt",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "hungry (17), hunts village at village 3 (utility 43.1)"
+    },
+    {
+      "tick": 584911,
+      "day": 24.371291666666668,
+      "kind": "prey",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "village at village 3: +34 fullness, took cattle 234, sheep 2662"
+    },
+    {
       "tick": 588000,
       "day": 24.5,
       "kind": "robbed",
@@ -2657,18 +2799,18 @@
       "what": "player 4294967315 robs the hoard of Rimefang Roost (30 items); its dragons' feelings: Frostmaw -50"
     },
     {
-      "tick": 589911,
-      "day": 24.579625,
+      "tick": 590755,
+      "day": 24.614791666666665,
       "kind": "hunt",
-      "dragon": "Stormtalon",
-      "what": "hungry (60), hunts village at village 7 (utility 55.1)"
+      "dragon": "Emberling",
+      "what": "hungry (60), hunts village at village 2 (utility 50.1)"
     },
     {
-      "tick": 593654,
-      "day": 24.735583333333334,
+      "tick": 594536,
+      "day": 24.772333333333332,
       "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
+      "dragon": "Emberling",
+      "what": "village at village 2: +37 fullness, took cattle 2620, sheep 320"
     },
     {
       "tick": 600000,
@@ -2678,81 +2820,102 @@
       "what": "captured (health 500, hunger 56)"
     },
     {
-      "tick": 610662,
-      "day": 25.44425,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (60), hunts village at village 2 (utility 52.7)"
-    },
-    {
       "tick": 612000,
       "day": 25.5,
       "kind": "hunt",
       "dragon": "Frostmaw",
-      "what": "hungry (52), hunts village at village 7 (utility 76.2)"
-    },
-    {
-      "tick": 614443,
-      "day": 25.601791666666667,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "village at village 2: +38 fullness, took cattle 2620, sheep 410"
+      "what": "hungry (52), hunts village at village 7 (utility 76.4)"
     },
     {
       "tick": 615292,
       "day": 25.637166666666666,
       "kind": "prey",
       "dragon": "Frostmaw",
-      "what": "village at village 7: +46 fullness, took cattle 2620, sheep 1044"
+      "what": "village at village 7: +46 fullness, took cattle 2620, sheep 1045"
     },
     {
-      "tick": 636638,
-      "day": 26.526583333333335,
-      "kind": "hunt",
-      "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 62.7)"
-    },
-    {
-      "tick": 639982,
-      "day": 26.665916666666668,
-      "kind": "prey",
-      "dragon": "Ashclaw",
-      "what": "village at village 3: +36 fullness, took cattle 414, sheep 2662"
-    },
-    {
-      "tick": 651659,
-      "day": 27.152458333333332,
-      "kind": "hunt",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (27), hunts village at village 3 (utility 46.1)"
-    },
-    {
-      "tick": 657824,
-      "day": 27.409333333333333,
-      "kind": "prey",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +36 fullness, took cattle 387, sheep 2662"
-    },
-    {
-      "tick": 713654,
-      "day": 29.735583333333334,
+      "tick": 621380,
+      "day": 25.890833333333333,
       "kind": "hunt",
       "dragon": "Stormtalon",
       "what": "hungry (60), hunts village at village 7 (utility 55.1)"
     },
     {
-      "tick": 717397,
-      "day": 29.891541666666665,
-      "kind": "prey",
-      "dragon": "Stormtalon",
-      "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
+      "tick": 623064,
+      "day": 25.961,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 2 (utility 59.6)"
     },
     {
-      "tick": 725443,
-      "day": 30.226791666666667,
+      "tick": 625123,
+      "day": 26.046791666666667,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "village at village 7: +41 fullness, took cattle 2594, sheep 667"
+    },
+    {
+      "tick": 627982,
+      "day": 26.165916666666668,
+      "kind": "prey",
+      "dragon": "Ashclaw",
+      "what": "village at village 2: +37 fullness, took cattle 2582, sheep 338"
+    },
+    {
+      "tick": 673576,
+      "day": 28.065666666666665,
+      "kind": "hunt",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "hungry (21), hunts village at village 3 (utility 40.6)"
+    },
+    {
+      "tick": 679741,
+      "day": 28.322541666666666,
+      "kind": "prey",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "village at village 3: +33 fullness, took cattle 159, sheep 2662"
+    },
+    {
+      "tick": 702536,
+      "day": 29.272333333333332,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 54.4)"
+      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 55.3)"
+    },
+    {
+      "tick": 703641,
+      "day": 29.318375,
+      "kind": "materialize",
+      "dragon": "Emberling",
+      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+    },
+    {
+      "tick": 709195,
+      "day": 29.549791666666668,
+      "kind": "depart",
+      "dragon": "Emberling",
+      "what": "leaves (bored) after 0.23 days in view"
+    },
+    {
+      "tick": 709495,
+      "day": 29.562291666666667,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 254, hunger 59)"
+    },
+    {
+      "tick": 721495,
+      "day": 30.062291666666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (55), hunts village at village 2 (utility 51.8)"
+    },
+    {
+      "tick": 725276,
+      "day": 30.219833333333334,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "village at village 2: +38 fullness, took cattle 2620, sheep 400"
     },
     {
       "tick": 726292,
@@ -2762,13 +2925,6 @@
       "what": "hungry (60), hunts village at village 7 (utility 64.4)"
     },
     {
-      "tick": 726548,
-      "day": 30.272833333333335,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
       "tick": 729584,
       "day": 30.399333333333335,
       "kind": "prey",
@@ -2776,102 +2932,109 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 732102,
-      "day": 30.50425,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 732402,
-      "day": 30.51675,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 258, hunger 59)"
-    },
-    {
-      "tick": 744402,
-      "day": 31.01675,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts village at village 2 (utility 50.9)"
-    },
-    {
-      "tick": 744982,
-      "day": 31.040916666666668,
+      "tick": 735982,
+      "day": 30.665916666666668,
       "kind": "hunt",
       "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 2 (utility 61.2)"
+      "what": "hungry (60), hunts village at village 2 (utility 59.6)"
     },
     {
-      "tick": 746489,
-      "day": 31.103708333333334,
-      "kind": "hunt",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (32), hunts village at village 3 (utility 44.9)"
-    },
-    {
-      "tick": 748183,
-      "day": 31.174291666666665,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "village at village 2: +38 fullness, took cattle 2620, sheep 349"
-    },
-    {
-      "tick": 749900,
-      "day": 31.245833333333334,
+      "tick": 740900,
+      "day": 30.870833333333334,
       "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "village at village 2: +35 fullness, took cattle 2492, sheep 331"
+      "what": "village at village 2: +36 fullness, took cattle 2532, sheep 401"
     },
     {
-      "tick": 752654,
-      "day": 31.360583333333334,
-      "kind": "prey",
+      "tick": 744406,
+      "day": 31.016916666666667,
+      "kind": "hunt",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +35 fullness, took cattle 331, sheep 2662"
+      "what": "hungry (31), hunts village at village 3 (utility 41.4)"
     },
     {
-      "tick": 837397,
-      "day": 34.89154166666667,
+      "tick": 745123,
+      "day": 31.046791666666667,
       "kind": "hunt",
       "dragon": "Stormtalon",
       "what": "hungry (60), hunts village at village 7 (utility 55.1)"
     },
     {
-      "tick": 841140,
-      "day": 35.0475,
+      "tick": 748866,
+      "day": 31.20275,
       "kind": "prey",
       "dragon": "Stormtalon",
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 841319,
-      "day": 35.05495833333333,
-      "kind": "hunt",
+      "tick": 750571,
+      "day": 31.273791666666668,
+      "kind": "prey",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (36), hunts village at village 3 (utility 43.5)"
+      "what": "village at village 3: +33 fullness, took cattle 192, sheep 2662"
     },
     {
-      "tick": 844183,
-      "day": 35.17429166666667,
+      "tick": 821276,
+      "day": 34.219833333333334,
       "kind": "hunt",
       "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 53.6)"
+      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 54.9)"
     },
     {
-      "tick": 845288,
-      "day": 35.220333333333336,
+      "tick": 822381,
+      "day": 34.265875,
       "kind": "materialize",
       "dragon": "Emberling",
       "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
     },
     {
-      "tick": 847484,
-      "day": 35.31183333333333,
+      "tick": 827935,
+      "day": 34.49729166666667,
+      "kind": "depart",
+      "dragon": "Emberling",
+      "what": "leaves (bored) after 0.23 days in view"
+    },
+    {
+      "tick": 828235,
+      "day": 34.509791666666665,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 273, hunger 59)"
+    },
+    {
+      "tick": 839236,
+      "day": 34.96816666666667,
+      "kind": "hunt",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "hungry (33), hunts village at village 3 (utility 43.0)"
+    },
+    {
+      "tick": 840235,
+      "day": 35.009791666666665,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (55), hunts village at village 2 (utility 54.2)"
+    },
+    {
+      "tick": 844016,
+      "day": 35.16733333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "village at village 2: +40 fullness, took cattle 2620, sheep 504"
+    },
+    {
+      "tick": 845401,
+      "day": 35.22504166666667,
       "kind": "prey",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +34 fullness, took cattle 271, sheep 2662"
+      "what": "village at village 3: +34 fullness, took cattle 256, sheep 2662"
+    },
+    {
+      "tick": 845900,
+      "day": 35.24583333333333,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 2 (utility 60.8)"
     },
     {
       "tick": 849584,
@@ -2881,25 +3044,11 @@
       "what": "hungry (60), hunts village at village 7 (utility 64.4)"
     },
     {
-      "tick": 850842,
-      "day": 35.45175,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 851142,
-      "day": 35.46425,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 277, hunger 59)"
-    },
-    {
-      "tick": 851900,
-      "day": 35.49583333333333,
-      "kind": "hunt",
+      "tick": 850818,
+      "day": 35.45075,
+      "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 2 (utility 59.4)"
+      "what": "village at village 2: +37 fullness, took cattle 2506, sheep 486"
     },
     {
       "tick": 852876,
@@ -2909,95 +3058,88 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 856818,
-      "day": 35.70075,
-      "kind": "prey",
-      "dragon": "Ashclaw",
-      "what": "village at village 2: +37 fullness, took cattle 2620, sheep 277"
-    },
-    {
-      "tick": 863142,
-      "day": 35.96425,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts village at village 2 (utility 46.6)"
-    },
-    {
-      "tick": 866923,
-      "day": 36.12179166666667,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "village at village 2: +35 fullness, took cattle 2520, sheep 275"
-    },
-    {
-      "tick": 943484,
-      "day": 39.31183333333333,
-      "kind": "hunt",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (36), hunts village at village 3 (utility 42.6)"
-    },
-    {
-      "tick": 949649,
-      "day": 39.56870833333333,
-      "kind": "prey",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +34 fullness, took cattle 243, sheep 2662"
-    },
-    {
-      "tick": 953923,
-      "day": 39.74679166666667,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 53.6)"
-    },
-    {
-      "tick": 955028,
-      "day": 39.792833333333334,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
-      "tick": 960582,
-      "day": 40.02425,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 960882,
-      "day": 40.03675,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 293, hunger 59)"
-    },
-    {
-      "tick": 961140,
-      "day": 40.0475,
+      "tick": 868866,
+      "day": 36.20275,
       "kind": "hunt",
       "dragon": "Stormtalon",
       "what": "hungry (60), hunts village at village 7 (utility 55.1)"
     },
     {
-      "tick": 964818,
-      "day": 40.20075,
-      "kind": "hunt",
-      "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 2 (utility 60.2)"
-    },
-    {
-      "tick": 964883,
-      "day": 40.20345833333333,
+      "tick": 872609,
+      "day": 36.35870833333333,
       "kind": "prey",
       "dragon": "Stormtalon",
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 969736,
-      "day": 40.40566666666667,
+      "tick": 934066,
+      "day": 38.91941666666666,
+      "kind": "hunt",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "hungry (36), hunts village at village 3 (utility 43.9)"
+    },
+    {
+      "tick": 940231,
+      "day": 39.176291666666664,
+      "kind": "prey",
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "village at village 3: +34 fullness, took cattle 295, sheep 2662"
+    },
+    {
+      "tick": 946016,
+      "day": 39.41733333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 54.9)"
+    },
+    {
+      "tick": 947121,
+      "day": 39.463375,
+      "kind": "materialize",
+      "dragon": "Emberling",
+      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+    },
+    {
+      "tick": 952675,
+      "day": 39.69479166666667,
+      "kind": "depart",
+      "dragon": "Emberling",
+      "what": "leaves (bored) after 0.23 days in view"
+    },
+    {
+      "tick": 952975,
+      "day": 39.70729166666667,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 293, hunger 59)"
+    },
+    {
+      "tick": 958818,
+      "day": 39.95075,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 2 (utility 64.2)"
+    },
+    {
+      "tick": 963736,
+      "day": 40.15566666666667,
       "kind": "prey",
       "dragon": "Ashclaw",
-      "what": "village at village 2: +37 fullness, took cattle 2620, sheep 308"
+      "what": "village at village 2: +40 fullness, took cattle 2620, sheep 504"
+    },
+    {
+      "tick": 964975,
+      "day": 40.20729166666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (55), hunts village at village 2 (utility 50.6)"
+    },
+    {
+      "tick": 968756,
+      "day": 40.36483333333333,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "village at village 2: +37 fullness, took cattle 2505, sheep 483"
     },
     {
       "tick": 972876,
@@ -3007,20 +3149,6 @@
       "what": "hungry (60), hunts village at village 7 (utility 64.4)"
     },
     {
-      "tick": 972882,
-      "day": 40.53675,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts village at village 2 (utility 46.7)"
-    },
-    {
-      "tick": 974403,
-      "day": 40.600125,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "road at road 3-4 (crossing): +0 fullness, took emerald 403"
-    },
-    {
       "tick": 976168,
       "day": 40.67366666666667,
       "kind": "prey",
@@ -3028,95 +3156,88 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 976663,
-      "day": 40.694291666666665,
-      "kind": "prey",
-      "dragon": "Emberling",
-      "what": "village at village 2: +35 fullness, took cattle 2508, sheep 291"
-    },
-    {
-      "tick": 997649,
-      "day": 41.56870833333333,
+      "tick": 988231,
+      "day": 41.176291666666664,
       "kind": "hunt",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (52), hunts village at village 3 (utility 43.3)"
+      "what": "hungry (52), hunts village at village 2 (utility 46.3)"
     },
     {
-      "tick": 1003814,
-      "day": 41.825583333333334,
-      "kind": "prey",
-      "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +34 fullness, took cattle 279, sheep 2662"
-    },
-    {
-      "tick": 1063663,
-      "day": 44.319291666666665,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 53.6)"
-    },
-    {
-      "tick": 1064768,
-      "day": 44.36533333333333,
-      "kind": "materialize",
-      "dragon": "Emberling",
-      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
-    },
-    {
-      "tick": 1070322,
-      "day": 44.59675,
-      "kind": "depart",
-      "dragon": "Emberling",
-      "what": "leaves (bored) after 0.23 days in view"
-    },
-    {
-      "tick": 1070622,
-      "day": 44.60925,
-      "kind": "capture",
-      "dragon": "Emberling",
-      "what": "captured (health 312, hunger 59)"
-    },
-    {
-      "tick": 1077736,
-      "day": 44.90566666666667,
-      "kind": "hunt",
-      "dragon": "Ashclaw",
-      "what": "hungry (60), hunts village at village 3 (utility 59.9)"
-    },
-    {
-      "tick": 1081080,
-      "day": 45.045,
-      "kind": "prey",
-      "dragon": "Ashclaw",
-      "what": "village at village 3: +35 fullness, took cattle 312, sheep 2662"
-    },
-    {
-      "tick": 1082622,
-      "day": 45.10925,
-      "kind": "hunt",
-      "dragon": "Emberling",
-      "what": "hungry (55), hunts village at village 2 (utility 48.8)"
-    },
-    {
-      "tick": 1084883,
-      "day": 45.20345833333333,
+      "tick": 992609,
+      "day": 41.35870833333333,
       "kind": "hunt",
       "dragon": "Stormtalon",
       "what": "hungry (60), hunts village at village 7 (utility 55.1)"
     },
     {
-      "tick": 1086403,
-      "day": 45.26679166666667,
+      "tick": 994699,
+      "day": 41.445791666666665,
       "kind": "prey",
-      "dragon": "Emberling",
-      "what": "village at village 2: +37 fullness, took cattle 2620, sheep 252"
+      "dragon": "Old Scorch Roost newcomer",
+      "what": "village at village 2: +37 fullness, took cattle 2462, sheep 484"
     },
     {
-      "tick": 1088626,
-      "day": 45.35941666666667,
+      "tick": 996352,
+      "day": 41.51466666666666,
       "kind": "prey",
       "dragon": "Stormtalon",
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
+    },
+    {
+      "tick": 1061756,
+      "day": 44.23983333333333,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (60), hunts grudge at the home of player 4294967315 (utility 54.9)"
+    },
+    {
+      "tick": 1062861,
+      "day": 44.285875,
+      "kind": "materialize",
+      "dragon": "Emberling",
+      "what": "enters view of player 4294967315: materializes (to harass, hostile: a grudge)"
+    },
+    {
+      "tick": 1068415,
+      "day": 44.517291666666665,
+      "kind": "depart",
+      "dragon": "Emberling",
+      "what": "leaves (bored) after 0.23 days in view"
+    },
+    {
+      "tick": 1068715,
+      "day": 44.52979166666667,
+      "kind": "capture",
+      "dragon": "Emberling",
+      "what": "captured (health 312, hunger 59)"
+    },
+    {
+      "tick": 1080715,
+      "day": 45.02979166666667,
+      "kind": "hunt",
+      "dragon": "Emberling",
+      "what": "hungry (55), hunts village at village 2 (utility 52.1)"
+    },
+    {
+      "tick": 1080736,
+      "day": 45.03066666666667,
+      "kind": "hunt",
+      "dragon": "Ashclaw",
+      "what": "hungry (60), hunts village at village 2 (utility 62.3)"
+    },
+    {
+      "tick": 1084496,
+      "day": 45.187333333333335,
+      "kind": "prey",
+      "dragon": "Emberling",
+      "what": "village at village 2: +40 fullness, took cattle 2620, sheep 504"
+    },
+    {
+      "tick": 1085654,
+      "day": 45.23558333333333,
+      "kind": "prey",
+      "dragon": "Ashclaw",
+      "what": "village at village 2: +37 fullness, took cattle 2492, sheep 479"
     },
     {
       "tick": 1096168,
@@ -3133,115 +3254,121 @@
       "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     },
     {
-      "tick": 1099814,
-      "day": 45.825583333333334,
+      "tick": 1099699,
+      "day": 45.820791666666665,
       "kind": "hunt",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "hungry (52), hunts village at village 3 (utility 44.1)"
+      "what": "hungry (52), hunts village at village 2 (utility 45.5)"
     },
     {
-      "tick": 1105979,
-      "day": 46.082458333333335,
+      "tick": 1106167,
+      "day": 46.090291666666666,
       "kind": "prey",
       "dragon": "Old Scorch Roost newcomer",
-      "what": "village at village 3: +35 fullness, took cattle 312, sheep 2662"
+      "what": "village at village 2: +36 fullness, took cattle 2434, sheep 475"
+    },
+    {
+      "tick": 1116352,
+      "day": 46.51466666666666,
+      "kind": "hunt",
+      "dragon": "Stormtalon",
+      "what": "hungry (60), hunts village at village 7 (utility 55.1)"
+    },
+    {
+      "tick": 1120095,
+      "day": 46.670625,
+      "kind": "prey",
+      "dragon": "Stormtalon",
+      "what": "village at village 7: +41 fullness, took cattle 2620, sheep 584"
     }
   ],
   "commands": [
     [
-      87968,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 1, flags: 3, species: Fire, dimension: 0, age_ticks: 855968, pos: (623.0, 180.0, 771.0), hunger: 51, gender: Male, variant: 2, health: 154.0, home: (1000, 110, 1100), target: (490.0, 180.0, 655.0), target_player: (0, 0) })"
+      144782,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 1, flags: 3, species: Fire, dimension: 0, age_ticks: 912781, pos: (490.0, 180.0, 655.0), hunger: 32, gender: Male, variant: 2, health: 166.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (0, 0), oil: 0 })"
     ],
     [
-      88248,
-      "Materialize(Materialize { agent: 4899916398874066944, epoch: 1, flags: 3, species: Fire, dimension: 0, age_ticks: 2728248, pos: (623.0, 180.0, 771.0), hunger: 41, gender: Female, variant: 1, health: 454.0, home: (1000, 110, 1100), target: (490.0, 180.0, 655.0), target_player: (0, 0) })"
+      145783,
+      "Materialize(Materialize { agent: 4899916398874066944, epoch: 1, flags: 3, species: Fire, dimension: 0, age_ticks: 2785783, pos: (623.0, 180.0, 771.0), hunger: 60, gender: Female, variant: 1, health: 465.0, home: (1000, 110, 1100), target: (490.0, 180.0, 655.0), target_player: (0, 0), oil: 0 })"
     ],
     [
-      89362,
+      146897,
       "Depart(Depart { agent: 4899916398874066944, epoch: 1, reason: 3, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
     ],
     [
-      93522,
+      150335,
       "Depart(Depart { agent: 4899916398874066945, epoch: 1, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
     ],
     [
-      106824,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 2, flags: 3, species: Fire, dimension: 0, age_ticks: 874824, pos: (623.0, 180.0, 771.0), hunger: 46, gender: Male, variant: 2, health: 158.0, home: (1000, 110, 1100), target: (490.0, 180.0, 655.0), target_player: (0, 0) })"
+      172199,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 2, flags: 3, species: Fire, dimension: 0, age_ticks: 940199, pos: (561.0, 180.0, 493.0), hunger: 24, gender: Male, variant: 2, health: 170.0, home: (1000, 110, 1100), target: (490.0, 180.0, 655.0), target_player: (0, 0), oil: 0 })"
     ],
     [
-      193933,
-      "Materialize(Materialize { agent: 4899916398874066944, epoch: 2, flags: 11, species: Fire, dimension: 0, age_ticks: 2833933, pos: (470.0, 180.0, 1251.0), hunger: 51, gender: Female, variant: 1, health: 473.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
+      281759,
+      "Materialize(Materialize { agent: 4899916398874066944, epoch: 2, flags: 11, species: Fire, dimension: 0, age_ticks: 2921759, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Female, variant: 1, health: 485.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
     ],
     [
-      196167,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 3, flags: 11, species: Fire, dimension: 0, age_ticks: 964167, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 174.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
+      334483,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 3, flags: 11, species: Fire, dimension: 0, age_ticks: 1102483, pos: (470.0, 180.0, 1251.0), hunger: 21, gender: Male, variant: 2, health: 193.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
     ],
     [
-      201721,
+      340037,
       "Depart(Depart { agent: 4899916398874066945, epoch: 3, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
     ],
     [
-      271362,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 4, flags: 11, species: Fire, dimension: 0, age_ticks: 1039362, pos: (470.0, 180.0, 1251.0), hunger: 36, gender: Male, variant: 2, health: 185.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
-    ],
-    [
-      276916,
-      "Depart(Depart { agent: 4899916398874066945, epoch: 4, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
-    ],
-    [
-      351385,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 5, flags: 11, species: Fire, dimension: 0, age_ticks: 1119385, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 197.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
-    ],
-    [
-      356939,
-      "Depart(Depart { agent: 4899916398874066945, epoch: 5, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
-    ],
-    [
       506569,
-      "Materialize(Materialize { agent: 4899916398874066946, epoch: 1, flags: 3, species: Ice, dimension: 0, age_ticks: 3026569, pos: (-578.0, 180.0, -875.0), hunger: 60, gender: Male, variant: 2, health: 500.0, home: (-500, 120, -1500), target: (-600.0, 180.0, -700.0), target_player: (0, 0) })"
+      "Materialize(Materialize { agent: 4899916398874066946, epoch: 1, flags: 3, species: Ice, dimension: 0, age_ticks: 3026569, pos: (-578.0, 180.0, -875.0), hunger: 60, gender: Male, variant: 2, health: 500.0, home: (-500, 120, -1500), target: (-600.0, 180.0, -700.0), target_player: (0, 0), oil: 0 })"
     ],
     [
       512459,
       "Depart(Depart { agent: 4899916398874066946, epoch: 1, reason: 1, timeout_ticks: 2400, target: (-500.0, 180.0, -1500.0) })"
     ],
     [
+      513020,
+      "Materialize(Materialize { agent: 4899916398874066947, epoch: 1, flags: 3, species: Lightning, dimension: 0, age_ticks: 2673020, pos: (-718.0, 180.0, -569.0), hunger: 51, gender: Female, variant: 3, health: 446.0, home: (-1500, 40, 300), target: (-600.0, 180.0, -700.0), target_player: (0, 0), oil: 0 })"
+    ],
+    [
+      520379,
+      "Depart(Depart { agent: 4899916398874066947, epoch: 1, reason: 1, timeout_ticks: 2400, target: (-1500.0, 180.0, 300.0) })"
+    ],
+    [
       576001,
-      "Materialize(Materialize { agent: 4899916398874066946, epoch: 2, flags: 7, species: Ice, dimension: 0, age_ticks: 3096000, pos: (-500.0, 120.0, -1500.0), hunger: 63, gender: Male, variant: 2, health: 500.0, home: (-500, 120, -1500), target: (-500.0, 180.0, -1500.0), target_player: (0, 0) })"
+      "Materialize(Materialize { agent: 4899916398874066946, epoch: 2, flags: 7, species: Ice, dimension: 0, age_ticks: 3096000, pos: (-500.0, 120.0, -1500.0), hunger: 63, gender: Male, variant: 2, health: 500.0, home: (-500, 120, -1500), target: (-500.0, 180.0, -1500.0), target_player: (0, 0), oil: 0 })"
     ],
     [
-      726548,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 6, flags: 11, species: Fire, dimension: 0, age_ticks: 1494548, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 258.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
+      703641,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 4, flags: 11, species: Fire, dimension: 0, age_ticks: 1471641, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 254.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
     ],
     [
-      732102,
+      709195,
+      "Depart(Depart { agent: 4899916398874066945, epoch: 4, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
+    ],
+    [
+      822381,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 5, flags: 11, species: Fire, dimension: 0, age_ticks: 1590381, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 273.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
+    ],
+    [
+      827935,
+      "Depart(Depart { agent: 4899916398874066945, epoch: 5, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
+    ],
+    [
+      947121,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 6, flags: 11, species: Fire, dimension: 0, age_ticks: 1715121, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 293.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
+    ],
+    [
+      952675,
       "Depart(Depart { agent: 4899916398874066945, epoch: 6, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
     ],
     [
-      845288,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 7, flags: 11, species: Fire, dimension: 0, age_ticks: 1613288, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 277.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
+      1062861,
+      "Materialize(Materialize { agent: 4899916398874066945, epoch: 7, flags: 11, species: Fire, dimension: 0, age_ticks: 1830861, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 312.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738), oil: 0 })"
     ],
     [
-      850842,
+      1068415,
       "Depart(Depart { agent: 4899916398874066945, epoch: 7, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
-    ],
-    [
-      955028,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 8, flags: 11, species: Fire, dimension: 0, age_ticks: 1723028, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 293.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
-    ],
-    [
-      960582,
-      "Depart(Depart { agent: 4899916398874066945, epoch: 8, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
-    ],
-    [
-      1064768,
-      "Materialize(Materialize { agent: 4899916398874066945, epoch: 9, flags: 11, species: Fire, dimension: 0, age_ticks: 1832768, pos: (470.0, 180.0, 1251.0), hunger: 60, gender: Male, variant: 2, health: 312.0, home: (1000, 110, 1100), target: (300.0, 180.0, 1300.0), target_player: (4369, 8738) })"
-    ],
-    [
-      1070322,
-      "Depart(Depart { agent: 4899916398874066945, epoch: 9, reason: 1, timeout_ticks: 2400, target: (1000.0, 180.0, 1100.0) })"
     ]
   ],
-  "wire_bytes": 4320,
+  "wire_bytes": 4064,
   "tunables": {
     "species": [
       {
@@ -3287,7 +3414,8 @@
           4.0
         ],
         "breed_days": 60,
-        "disperse_days": 50
+        "disperse_days": 50,
+        "uses_oil": true
       },
       {
         "stage_days": [
@@ -3332,7 +3460,8 @@
           4.0
         ],
         "breed_days": 60,
-        "disperse_days": 50
+        "disperse_days": 50,
+        "uses_oil": false
       },
       {
         "stage_days": [
@@ -3377,7 +3506,8 @@
           4.0
         ],
         "breed_days": 60,
-        "disperse_days": 50
+        "disperse_days": 50,
+        "uses_oil": false
       }
     ],
     "calendar": {
@@ -3504,29 +3634,35 @@
         100,
         80,
         100,
-        100
+        100,
+        110
       ],
       [
         140,
         50,
         100,
-        100
+        100,
+        130
       ],
       [
         130,
         60,
         100,
-        100
+        100,
+        110
       ],
       [
         50,
         180,
         100,
-        100
+        100,
+        70
       ]
     ],
     "distance_cost_per_kblock": 4,
     "village_risk": 15,
+    "golem_risk": 5,
+    "tribute_share_milli": 250,
     "grudge_below": -40,
     "grudge_weight": 60,
     "grudge_cooldown_ticks": 72000,
@@ -3542,6 +3678,73 @@
     "lair_feelings": 4,
     "home_half_life_ticks": 72000,
     "home_regions": 8,
-    "victims_kept": 4
+    "victims_kept": 4,
+    "herd_risk": 2,
+    "adopt_natural_dragons": false,
+    "oil": {
+      "capacity": 600,
+      "tick_rate": 3000,
+      "refuel_below": 240,
+      "refuel_reach": 3000,
+      "refuel_dwell_ticks": 1000,
+      "dry_strength_milli": 500,
+      "mb_per_point": 1000,
+      "near_blocks": 100,
+      "flight_chance_milli": 100,
+      "flight_min_y": 15,
+      "flight_cap_frame": 200,
+      "flight_cap_field": 8,
+      "flight_age_days_max": 80,
+      "lair_reach": 1500,
+      "sense_reach": 400,
+      "grudge_window_days": 10,
+      "fuel_signal_mb": 1000,
+      "survey_radius": 1024,
+      "presence_fresh_ticks": 200,
+      "flags": 3,
+      "fuels": [
+        "destroy:crude_oil",
+        "createdieselgenerators:oil",
+        "createdieselgenerators:crude_oil",
+        "createdieselgenerators:diesel",
+        "createdieselgenerators:gasoline"
+      ]
+    }
+  },
+  "archive": {
+    "rows_per_day": 9.5,
+    "full_days": 441505.6842105263,
+    "days": 48.0,
+    "rows": 456,
+    "by_severity_per_day": [
+      1.0833333333333333,
+      3.0416666666666665,
+      5.270833333333333,
+      0.10416666666666667
+    ],
+    "legs_per_day": 5.354166666666667,
+    "payload_bytes_per_day": 19.395833333333332,
+    "dropped": 0,
+    "by_kind": {
+      "dragons.arrive": 1,
+      "dragons.claim": 1,
+      "dragons.death": 1,
+      "dragons.depart": 9,
+      "dragons.flight": 237,
+      "dragons.hunt": 84,
+      "dragons.raid": 2,
+      "industry.attack": 2,
+      "industry.damaged": 2,
+      "industry.learned": 3,
+      "industry.reconcile": 2,
+      "knowledge.assault": 41,
+      "knowledge.killing": 1,
+      "knowledge.rescue": 1,
+      "knowledge.robbery": 1,
+      "trade.shift": 18,
+      "travel.arrived": 20,
+      "travel.caravan": 10,
+      "travel.caravan_leg": 20
+    }
   }
 }
