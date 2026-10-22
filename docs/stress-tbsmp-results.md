@@ -32,6 +32,10 @@ player names; only counts are given).
 6. **What broke was the pack's, not rtsim's:** five Create addons call members Create 6.0.7+ removed
    (one crashed the server), Moonlight broke on the newer NeoForge, and two mods bind fixed ports so a
    second server on the machine fails (one of them then hangs the JVM at stop).
+7. **DS-10 (only machines seed) works here, with one regression:** adopted seeds fall from 17,789 to
+   4,555 and the storage-only district is gone, but the day_b district shrinks from 84 to 69 chunks
+   and loses its train station, so rtsim stops seeing that train (section 7, open question 2).
+   Alone on the machine, the rtsim server stopped clean in 6 s.
 
 ## 2. The pack
 
@@ -118,7 +122,19 @@ The harness of `docs/stress-worlds-results.md` section 2 (`tools/stress-worlds/s
 
 A/A control (`tbsmp-aa`, both arms off, the same scene and slots):
 
-AA_TABLE
+| Window | A-off mean | p95 | max | B-off mean | p95 | max | B - A | TPS A / B |
+|---|---|---|---|---|---|---|---|---|
+| idle | 25.56 | 35.71 | 131.25 | 27.96 | 30.03 | 153.52 | +2.40 | 20.0 / 20.0 |
+| busy | 59.88 | 86.87 | 113.72 | 60.15 | 89.68 | 115.22 | +0.27 | 17.0 / 17.1 |
+| unloaded | 14.43 | 21.41 | 21.41 | 10.49 | 16.86 | 16.86 | -3.94 | 20.0 / 19.6 |
+| reloaded | 133.24 | 196.73 | 200.63 | 139.11 | 205.91 | 207.49 | +5.88 | 9.6 / 8.8 |
+
+This A/A ran while other agents' builds and GameTests loaded the laptop: a load of about 46 in idle,
+18 in busy and unloaded and 34 in reloaded, against about 9 for the A/B. Boot took 400 s, the busy
+window ran at 17 TPS and the reloaded one at 9. So it bounds the noise between two identical servers
+under load (up to 6 MSPT on a window mean), not the noise at the A/B's load.
+
+AA2_TABLE
 
 ## 5. rtsim on TBSMP
 
@@ -139,11 +155,14 @@ AA_TABLE
 - Detection: 7 runs, 237 ms in all.
 - Inventory sweeps: 576 sweeps read 109,632 inventories and 77.7 million slots in 3.92 s, about
   0.3 ms per tick. The slowest single inventory read took 35 ms (most likely a large Create vault).
-- Glass box compiles: the day_b district, 1,787 nodes, 366 ms; the larger overworld district, 1,209
-  nodes, 26 ms; the other, 890 nodes, 2 ms. The day_b district never went live: 2 of its 84 chunks
-  sit outside the forceloaded area, so it stays partly loaded. No verdict was reached in the 6,000
-  ticks of the scene; each district has its residual black-box node (GLASSBOX.md section 5.1), here
-  feeding cobblestone, emeralds, bone meal and the like from machines rtsim does not model.
+- Glass box compiles (last compile of each district): the day_b district, 1,787 nodes, 366 ms;
+  the larger overworld districts, 1,209 nodes in 26 ms and 890 nodes in 2 ms; entropy, 273 nodes in
+  0.5 ms. The two small overworld districts (56 nodes and 1 node) finished their 6,000-tick window
+  with a pass. The three larger ones recompiled after the reload and were 100 to 300 ticks into a
+  new window at the end. The day_b district never went live: 2 of its 84 chunks were not ticking
+  (outside the forceloaded area), so it stayed partly loaded. Each district has its residual
+  black-box node (GLASSBOX.md section 5.1), here feeding emeralds and bone meal from machines rtsim
+  does not model (Easy Villagers' traders and farms among them).
 
 ### 5.3 Trains and stations
 
@@ -194,7 +213,33 @@ and has a capability. Run as one arm on a build of this branch with DS-10 merged
 Sophisticated Storage's controller, storage link, I/O, input, output and decoration table added to
 `district_not_seed`:
 
-DS10_RESULT
+| | A/B on arm (main's rule) | DS-10 arm |
+|---|---|---|
+| Seeds adopted (four areas) | 5,305 / 4,532 / 6,323 / 1,629 = 17,789 | 802 / 1,268 / 1,738 / 747 = 4,555 |
+| Districts | 6 | 5 (the 1-chunk, 1-inventory overworld district is gone) |
+| Overworld districts, chunks and inventories | 22 + 6 + 32 + 1 chunks, 471 inventories | 20 + 6 + 31 chunks, 451 inventories |
+| day_b district | 84 chunks, 635 inventories, 1 station | 69 chunks, 442 inventories, 0 stations |
+| entropy district | 29 chunks, 36 inventories | 27 chunks, 36 inventories |
+| Train arrivals at district stations | 12 (2 simulated), 1 train seen | 0, no train seen |
+| Detections | 7, 237 ms | 7, 136 ms |
+| Inventory sweeps | 576, 109,632 inventories, 3.92 s | 465, 86,014 inventories, 3.21 s |
+| day_b glass box | 1,787 nodes, 366 ms | 1,593 nodes, 270 ms |
+| Stop | crashed at stop (CoD mod port, second server) | clean, 6 s, exit 0 |
+
+The run was alone on the machine (load about 6 to 10), so its MSPT is not paired: busy 50.8,
+unloaded 5.3, reloaded 42.7 (TPS 18.8, 20, 20). Boot 36 s wall.
+
+- Storage no longer seeds: the one district that held only an inventory dissolved, and the
+  overworld districts lost 4 chunks (that one among them) and 20 inventories. Sophisticated
+  Storage's chests and barrels (district stock) and its proxies (`district_not_seed`, added for this
+  run) start no district. Lootr's chests are stock. The per-block breakdown of the seeds is not in
+  the report, so this is read from the district shapes, not counted block by block.
+- **The regression:** the day_b district's station chunk holds no machine, so under DS-10 it is not a
+  member, the district loses its station, and rtsim no longer sees the scheduled train that called
+  there 12 times in the A/B. Any station built in its own chunk beside a factory will do the same.
+  See open question 2.
+- Sophisticated Storage 1.5's wooden storage connectors (`*_storage_connector`) belong in the same tag;
+  none are in this world.
 
 ## 8. What broke, and the fixes
 
@@ -203,7 +248,7 @@ DS10_RESULT
 | Server crash on the first fan with a freezing recipe | Garnished 2.1.6.1 calls the 3-argument `applyRecipeOn` | Garnished 2.1.6.7, and the link check over every jar (section 2.2) |
 | Moonlight 2.18.13 cannot run on NeoForge 21.1.249 | its POI mixin targets `PoiStateSet`, which NeoForge 21.1.215+ changed | Moonlight 2.29.33 |
 | `BindException` in the second server of a pair | Prometheus Exporter binds 0.0.0.0:19565 | 613c319: sw.py gives each slot its own loopback port (26400 + slot) |
-| Second server crashes at stop, then never exits | CoD mod's API server binds 0.0.0.0:15017 hard-coded; the second server cannot bind it, and its stopping handler then throws a NullPointerException. After any crash, non-daemon threads (LuckPerms scheduler, spark, Netty) keep the JVM alive | 8501edf: sw.py records the crash and ends the server a minute later. It hits whichever arm starts second, so it is symmetric in the A/A |
+| Second server crashes at stop, then never exits | CoD mod's API server binds 0.0.0.0:15017 hard-coded; the server that reaches it second cannot bind it, and its stopping handler then throws a NullPointerException. After any crash, non-daemon threads (LuckPerms scheduler, spark, Netty) keep the JVM alive | 8501edf: sw.py records the crash and ends the server a minute later. It hit B-on in the A/B and A-off in the A/A (B booted first under load); it costs nothing before the stop |
 | Link checker missed calls into classes whose super is `java.lang.Object` | treated as unknown | `Object`, `Enum` and `Record` are known roots |
 
 ## 9. Viewer
@@ -228,12 +273,16 @@ loopback only.
 1. **Slice and Dice's slicer:** (a) leave it to the residual black box (5 in the adopt areas, 36 in
    the world); (b) a small fingerprint that models it as Create's deployer applying a cutting recipe;
    (c) a plugin. Recommend (a) until a pack MIC ships carries it.
-2. **Carry On range on main:** main's plugin requires Carry On [2.2.6,); TBSMP runs 2.2.2.11, and the
+2. **DS-10 drops stations from districts (for DS-10's owner, before it lands):** (a) a chunk holding
+   a Create station joins an adjacent district but never seeds one, so a lone station on a line
+   stays out; (b) Create's station is a seed (`district_seed` from the Create plugin), which makes
+   every lone station a district; (c) leave it to operators (`merge`, pins). Recommend (a).
+3. **Carry On range on main:** main's plugin requires Carry On [2.2.6,); TBSMP runs 2.2.2.11, and the
    plugin built with `-Pcarryon_version_range=[2.2.2,)` loaded and ran on it with no error. Recommend
    relaxing main to [2.2.2,) (one property, `neoforge/gradle.properties`).
-3. **Egg Production:** recommend keeping it out of the test instance (no build exists; the loss is 47
+4. **Egg Production:** recommend keeping it out of the test instance (no build exists; the loss is 47
    blocks).
-4. **CoD mod's fixed port 15017:** recommend no remap; pairs are symmetric and single runs bind it.
-5. **DS-10 tags for Sophisticated Storage:** recommend adding the controller, storage link, I/O,
+5. **CoD mod's fixed port 15017:** recommend no remap; pairs are symmetric and single runs bind it.
+6. **DS-10 tags for Sophisticated Storage:** recommend adding the controller, storage link, I/O,
    input, output and decoration table (and Sophisticated Storage 1.5's wooden storage connectors,
    none in this world) to `district_not_seed` with `required: false` when DS-10 lands.
