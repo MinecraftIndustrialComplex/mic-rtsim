@@ -211,7 +211,7 @@ public final class CreateSeedGameTests {
                     set(helper, press, block("create:mechanical_press").defaultBlockState());
                     for (int x = press.getX() + 1; x < wheel.getX(); x++)
                         set(helper, new BlockPos(x, press.getY(), press.getZ()), shaft);
-                    set(helper, wheel, block("create:water_wheel").defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_AXIS, Direction.Axis.X));
+                    set(helper, wheel, block("create:water_wheel").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST));
                     playerPlacedBare(helper, wheel);
                     playerPlacedBare(helper, press);
                 })
@@ -264,7 +264,7 @@ public final class CreateSeedGameTests {
                     check("two districts, not one", a != b);
                     check("each holds its chain end", districtAt(helper, chainA) == a && districtAt(helper, chainB) == b);
                     check("the chunk between is in neither", districtAt(helper, between) == null);
-                    check("one chunk each: " + a.chunks.size() + ", " + b.chunks.size(), a.chunks.size() == 1 && b.chunks.size() == 1);
+                    check("one chunk each: " + a.chunks + ", " + b.chunks + " (presses " + chunk(pressA) + ", " + chunk(pressB) + ")", a.chunks.size() == 1 && b.chunks.size() == 1);
                 })
                 .thenSucceed();
     }
