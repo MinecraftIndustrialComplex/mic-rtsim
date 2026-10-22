@@ -137,6 +137,7 @@ public final class FarTrainBench {
             MicRtsimCreate.LOGGER.info("far bench: {} band trains on a ring of radius {} around spawn", BAND_TRAINS,
                     BAND_RADIUS);
             BAND.add(band);
+            saveOff(event);
         }
         if (TRAINS == 0)
             return;
@@ -159,6 +160,17 @@ public final class FarTrainBench {
         }
         MicRtsimCreate.LOGGER.info("far bench: {} trains of {} carriages on rings of radius {} around ({}, {})",
                 TRAINS, CARRIAGES, java.util.Arrays.toString(RADII), CENTRE_X, CENTRE_Z);
+        saveOff(event);
+    }
+
+    /**
+     * {@code /save-off} for the bench's run: a synthetic carriage has no contraption, so Create cannot write it,
+     * and vanilla's autosave (every 6,000 ticks) crashed a longer run. The save at the stop still runs (vanilla
+     * clears the flag first), after {@link #stopping} took the trains out.
+     */
+    private static void saveOff(ServerStartedEvent event) {
+        for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels())
+            level.noSave = true;
     }
 
     private static Train train(Ring ring, int index, double head) {
