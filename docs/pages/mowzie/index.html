@@ -218,7 +218,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that wants your gold: the plan is ready, and 7 decisions are yours</h1>
-  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (cb9f3b9). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources, and a fourth check. The third found every earlier problem fixed and one blocker, since fixed. The fourth check found four small gaps in the spec of the new census path, none needing a redesign; they are being fixed. Nothing is built.</p>
+  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (e4b7a3a). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources, then three further checks. The third review found every earlier problem fixed and one blocker, since fixed. The fourth and fifth checks found small gaps in how a camp counts its bodies, now fixed. The sixth found that nothing told the game a war party had left home or come back; two new records fix that, and the fix has landed. A seventh check is running. Nothing is built.</p>
   <p class="lead" data-ss-id="lead">Two Mowzie's bosses become rtsim factions. A Frostmaw in the snow comes to hate a railway through its range: the more trains, the angrier it gets, until it waits beside your track, robs passing trains and freezes riders off their seats. An Umvuthana grove in the savanna becomes a tribe that sends an envoy for gold, then raptor hunters and a war band. Both come back after you kill them, both are left as Mowzie's made them if rtsim is removed, and a faction with nothing happening costs nothing.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-factions"><div class="n">2</div><div class="t">factions: Frostmaw dens in the snow, Umvuthana groves in the savanna</div></div>
@@ -345,7 +345,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <p data-ss-id="tribe-intro">Tomas builds a cattle ranch 150 blocks from a grove of 7 masked warriors, ruled by the Umvuthi, a sun-priest boss.</p>
   <ol class="tl" data-ss-id="tomas-tl">
     <li><span class="d">The insult</span><span>He kills 4 warriors who chase him. That evening a gong sounds in the distance.</span></li>
-    <li><span class="d">2 days later</span><span>An envoy and two guards walk into his ranch, past his iron golem, and ask for 136 gold nuggets (about 15 ingots) within 3 days.</span></li>
+    <li><span class="d">0.8 days later</span><span>An envoy and two guards walk into his ranch, past his iron golem, and ask for 136 gold nuggets (about 15 ingots) within 3 days.</span></li>
     <li><span class="d">Pay</span><span>He right-clicks the envoy with the gold: 70% of the grudge goes and the tribe cannot climb for 6 days. His nuggets turn up in the grove's chests.</span></li>
     <li><span class="d">Refuse</span><span>Raptor-masked hunters come for his cattle and the villages' herds; at 70, a war band of 3 warriors and a raptor pack. Watched, it arrives in waves; while he is away, a fence all the way round stops it.</span></li>
     <li><span class="d">Peace</span><span>He wears an Umvuthana mask and the tribe leaves him alone, as Mowzie's does today. Trading with the grove while masked softens the grudge.</span></li>
@@ -518,7 +518,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <p data-ss-id="ur-intro">UR-1 says rtsim can be removed at any time. Puppets, the bodies rtsim owns, are never saved by vanilla, so the plan keeps bodies vanilla wherever it can:</p>
   <ul data-ss-id="ur-list">
     <li>At home, bodies stay Mowzie's own entities, saved and untagged, with their health, crystal and masks.</li>
-    <li>A body becomes a puppet only while it is away, and turns back into a saved vanilla body when it gets home.</li>
+    <li>A body becomes a puppet only while it is away. A war party's bodies leave a loaded camp when it sets out, and come back as saved vanilla bodies when it gets home: at once if the camp is loaded, else at its next load.</li>
     <li>The census waits until every chunk of the camp has its entities loaded. Counting sooner would see an empty den, book its Frostmaw dead, and 6 days later spawn a second one with a second crystal.</li>
     <li>Only a dead member's body is removed. A den that loads while its Frostmaw is out keeps the body and brings the Frostmaw home, unless a player is nearer to it than to the den.</li>
     <li>A reset rebuilds each faction from its census: a robbed den stays robbed.</li>
@@ -530,7 +530,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </div>
     <div class="box" data-ss-id="ur-case-watched">
       <h3>Removed on day 10, Iva watching it</h3>
-      <p>Its den loaded while she watched it by the line, so its body became the puppet, and the den is left empty. This is the loss UR-1 accepts: members away from a loaded camp, and the grudges.</p>
+      <p>Its den loaded while she watched it by the line, so its body became the puppet, and the den is left empty. This is the loss UR-1 accepts: members away whose bodies left a loaded camp, and the grudges.</p>
     </div>
   </div>
   <p data-ss-id="ur-reinstall">Reinstalled on day 30, both factions rebuild from their censuses (crystal held, 7 warriors) with no grudges. No module's uninstall has been tested with puppets out yet; GameTest 4 covers this plan's.</p>
@@ -546,24 +546,24 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
   <p data-ss-id="cost-rest">With nothing happening, only the sampler's walk runs, once a second. A camp chunk loading costs one structure check; the envoy guard costs one lookup per damage event, usually against an empty set.</p>
 
-  <h3 data-ss-id="ledger-h">What gets built, about 6,100 lines</h3>
+  <h3 data-ss-id="ledger-h">What gets built, about 6,250 lines</h3>
   <div class="bars" data-ss-id="ledger-bars">
     <div class="bar"><span class="lbl">GameTests and test kit <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 1300 / 1300)"></span><span class="v">1,300</span></span></div>
     <div class="bar"><span class="lbl">The Mowzie plugin <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 1200 / 1300)"></span><span class="v">1,100 to 1,300</span></span></div>
+    <div class="bar"><span class="lbl">13 smaller engine changes <small>Rust and JSON</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 1200 / 1300)"></span><span class="v">1,200</span></span></div>
     <div class="bar"><span class="lbl">ConflictBridge in the core <small>Java, MZ-1</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 1100 / 1300)"></span><span class="v">1,100</span></span></div>
-    <div class="bar"><span class="lbl">13 smaller engine changes <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 890 / 1300)"></span><span class="v">890</span></span></div>
     <div class="bar"><span class="lbl"><code>sim mowzie</code> runs <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 550 / 1300)"></span><span class="v">550</span></span></div>
     <div class="bar"><span class="lbl">Train sampler <small>Java, Create plugin</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 300 / 1300)"></span><span class="v">300</span></span></div>
     <div class="bar"><span class="lbl">Rail meter <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 280 / 1300)"></span><span class="v">280</span></span></div>
     <div class="bar"><span class="lbl">New engine reports <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 260 / 1300)"></span><span class="v">260</span></span></div>
     <div class="bar"><span class="lbl">Two core hooks <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 50 / 1300)"></span><span class="v">50</span></span></div>
   </div>
-  <p class="cap" data-ss-id="ledger-cap">Estimates by analogy with code that exists, not measured. 12 new boundary records. No new blocks, items or entities.</p>
+  <p class="cap" data-ss-id="ledger-cap">Estimates by analogy with code that exists, not measured. 14 new boundary records, two of them from the sixth check: BAND_DEPART (engine to Java) when a war party sets out, and CAMP_BODIES (Java to engine), the answer to every body order. HOME_SPAWN can now also be sent without a census, when a party comes home. No new blocks, items or entities.</p>
   <p data-ss-id="reuse"><strong>Reused, not rebuilt:</strong> Mowzie's own bosses, dens, groves, sounds, swipe, ice ball and freezing; Create's train simulation, train owner and carriage storage; rtsim's conflict engine (grievance, the ladder, envoys, raids, routs and heirs); the industry's train attack and defence survey; vanilla saving; the Ice and Fire plugin's way of finding camps; and the rail test fixture.</p>
 </section>
 
 <section id="checked" data-ss-id="checked" data-ss-section>
-  <h2 data-ss-id="checked-h">How this was checked: three adversarial reviews and a fourth check against the jars; the fourth found four spec gaps, being fixed</h2>
+  <h2 data-ss-id="checked-h">How this was checked: three adversarial reviews and three further checks against the jars; the sixth check's fixes landed, a seventh check is running</h2>
   <p data-ss-id="checked-intro">Each review read the plan against the decompiled Mowzie's Mobs 1.8.2 and Create 6.0.10 jars and the engine source. The verdicts climbed: "not S tier yet", then "a strong A", then "not S tier yet, but close". The plan won all three of its disputes with the second review, and the third reproduced every walkthrough and table number within 0.2 day.</p>
   <div class="scroll" data-ss-id="checked-wrap">
   <table class="stack" data-ss-id="checked-table">
@@ -587,7 +587,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td><strong>One blocker: a recall brings nobody home.</strong> The plan called a Frostmaw home with a recall when its den loads unwatched, but the engine's recall only removes bodies already in the world, and an unwatched party has none.</td><td data-label="What changed"><strong>Fixed (cb9f3b9); the fourth check confirmed it.</strong> The census now ends the party through the engine's <code>home</code> call, which puts members back in the pool.</td></tr>
       <tr><td><strong>Two notes.</strong> Iva's Invasion on day 18.7 rests on two events 0.1 day apart, and "watched" depended on the server's view distance.</td><td data-label="What changed">The walkthrough states the margin. Watched now means the party's puppets are in the world, or the player nearest the camp is nearer the party than the camp is, so a rider meets the Frostmaw at any view distance. The fourth check accepted both.</td></tr>
       <tr class="group"><th colspan="2">Fourth check, on cb9f3b9</th></tr>
-      <tr><td><strong>Four small gaps in the spec of the new census path.</strong> A Frostmaw could be counted twice after a player takes it. No record carries the take to the Java side. The ambush spot's removed flag is never sent. An Umvuthana envoy with a demand open could be ended as if the demand were refused.</td><td data-label="What changed"><strong>Being fixed now.</strong> None needs a redesign. This page will be updated when the fixes land.</td></tr>
+      <tr><td><strong>Four small gaps in the spec of the new census path.</strong> A Frostmaw could be counted twice after a player takes it. No record carries the take to the Java side. The ambush spot's removed flag is never sent. An Umvuthana envoy with a demand open could be ended as if the demand were refused.</td><td data-label="What changed"><strong>Fixed (710950e), no redesign.</strong> The count subtracts bodies removed and taken; HOME_SPAWN names the bodies to take, with their party; the removed flag goes out whenever a wait by the track ends; only war parties leave bodies behind, so an envoy is never ended by a count.</td></tr>
+      <tr class="group"><th colspan="2">Fifth check, on 710950e</th></tr>
+      <tr><td><strong>The census's player could miss the player who loaded the camp.</strong> A camp's entities load 2 chunks beyond the view distance, but the census looked for a player only within it. Envoys and scouts were also treated as if they came home to a camp body, and a player logging off was taken to end a wait by the track.</td><td data-label="What changed"><strong>Fixed (05542c6).</strong> A player counts as near a camp within the view distance plus 2 chunks, so the one who loads it always counts. Only war parties turn back into camp bodies; envoys and scouts despawn when they end. A logout only despawns the Frostmaw's body; its wait goes on. Walkthrough B's envoy now arrives 0.8 days after the kills, not 2.</td></tr>
+      <tr class="group"><th colspan="2">Sixth check, on 05542c6</th></tr>
+      <tr><td><strong>Nothing told the game a war party had left or come home.</strong> No party reaches its camp in a body, so survivors never got their bodies back, and a later census booked them dead.</td><td data-label="What changed"><strong>Fixed (b1ffbfc, merged at e4b7a3a).</strong> Two new records: BAND_DEPART has the plugin take the bodies when a party sets out, and HOME_SPAWN, now also sent without a census, brings the survivors back. The plugin answers each with CAMP_BODIES, and the engine books what was done. Walkthrough B and GameTest 22 cover it.</td></tr>
+      <tr class="group"><th colspan="2">Seventh check, on e4b7a3a</th></tr>
+      <tr><td><strong>Running now.</strong></td><td data-label="What changed">This page will show its result when it lands.</td></tr>
     </tbody>
   </table>
   </div>
@@ -595,7 +601,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="decided" data-ss-id="decided" data-ss-section>
-  <h2 data-ss-id="decided-h">Decided without asking: 4 plan choices and 11 of the author's, each can be undone</h2>
+  <h2 data-ss-id="decided-h">Decided without asking: 4 plan choices and 12 of the author's, each can be undone</h2>
   <div class="scroll" data-ss-id="decided-wrap">
   <table class="stack" data-ss-id="decided-table">
     <thead><tr><th>Choice</th><th>Why</th></tr></thead>
@@ -606,8 +612,9 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td><strong>MZ-12:</strong> real track, by sampling trains once a second</td><td data-label="Why">You rejected straight lines between stations.</td></tr>
       <tr><td>One rail meter per den and player, with a daily resync</td><td data-label="Why">A meter per line hid a trunk of light routes.</td></tr>
       <tr><td>Census only once a camp's entities are loaded</td><td data-label="Why">Stops the crystal dupe.</td></tr>
-      <tr><td>Only a dead member's body is removed</td><td data-label="Why">No living boss vanishes unseen.</td></tr>
-      <tr><td>"Watched" means the party's puppets are in the world, or the player nearest the camp is nearer the party than the camp is</td><td data-label="Why">A rider on the line meets the Frostmaw at any view distance.</td></tr>
+      <tr><td>Only a dead member's body is removed, and only war parties leave bodies behind; envoys and scouts are fresh bodies</td><td data-label="Why">No living boss vanishes unseen, and a count never ends an envoy with a demand open.</td></tr>
+      <tr><td>"Watched" means the party's puppets are in the world, or the nearest player within the camp's loading range (the view distance plus 2 chunks, so always the one who loaded it) is nearer the party than the camp is</td><td data-label="Why">A rider on straight track meets the Frostmaw at any view distance, and no member is in two places.</td></tr>
+      <tr><td>The record shape for departures and homecomings: BAND_DEPART when a war party sets out, an unprompted HOME_SPAWN when it comes home, and CAMP_BODIES answering each with what the plugin did; the engine books the answer, not the order</td><td data-label="Why">Nothing signalled a party leaving or coming back. Booking the answer keeps a camp that unloads mid-order right, and the plugin keeps no state of its own. Both kinds are internal to mic-rtsim and unreleased.</td></tr>
       <tr><td>The envoy party is protected while a demand is open</td><td data-label="Why">Golems and turrets would start wars you never chose.</td></tr>
       <tr><td>A kill at the camp steps down only the killer's feud</td><td data-label="Why">A stranger's kill should not clear your grudge.</td></tr>
       <tr><td>A robbed Frostmaw is kept, from the moment of the steal</td><td data-label="Why">Otherwise steal and leave farms a crystal every 6 days.</td></tr>
@@ -697,8 +704,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
-    <li>MOWZIE.md on mic-rtsim main at cb9f3b9 (merged at 24213d4, blocker fixed at cb9f3b9), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, UR-1, renewal, strength), walkthroughs A to E, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
-    <li>The three adversarial review notes and the fourth check: the first on the original plan, the second at be38b77 after the first revision, the third on main at 24213d4, the fourth on cb9f3b9. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, vanilla 1.21.1 and the rtsim engine.</li>
+    <li>MOWZIE.md on mic-rtsim main at e4b7a3a (merged at 24213d4, blocker fixed at cb9f3b9, check fixes at 710950e, 05542c6 and b1ffbfc), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, UR-1, renewal, strength), walkthroughs A to E, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
+    <li>The three adversarial review notes and the later checks: the first review on the original plan, the second at be38b77 after the first revision, the third on main at 24213d4; the fourth check on cb9f3b9, the fifth on 710950e, the sixth on 05542c6; the seventh, on e4b7a3a, is running. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, vanilla 1.21.1 and the rtsim engine.</li>
     <li>The meter curve: recomputed here from the plan's section 4.3 (a meter with a 2-day time constant, a tolerance of 2 legs a day, a 10% push band with a 1-leg floor and a daily resync, a 6-day grievance half-life), median of 8 runs with passes jittered by up to 40% of the headway.</li>
     <li>The population equilibrium design: EQUILIBRIUM.md on mic-rtsim main (3590249), sections 1, 2.4.7 and 2.6; its model and results are in research/equilibrium-2026-10-21/.</li>
   </ul>
