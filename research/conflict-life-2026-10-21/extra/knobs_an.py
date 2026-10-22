@@ -1,11 +1,12 @@
 """One-knob arms against the design (CONFLICT-LIFE.md 4.5, CL-7 (c)).
 
-Usage: python3 knobs_an.py base.json knobs.json
+Usage: python3 knobs_an.py base.json knobs.json [warm.json ...]
 base.json holds the on/off arms from paired.py; knobs.json the extra arms, run as
   ARMS='{"long": {"pact_days": 384}, "easy": {"pact_effort": 1}, "kin6": {"kin_pact": 6},
          "hate6": {"hate_pact": 6}}' python3 paired.py multi,fortress 64 long,easy,kin6,hate6 knobs.json
-Each arm is paired by seed with the design ("on"): the paired difference a year in the
-player's fights and loot taken, with a two-sided sign test.
+and warm.json the warm arm from warm_an.py's run. Each arm is paired by seed with the design
+("on"): the paired difference a year in fights between camps and in each player's fights and
+loot taken, with a two-sided sign test.
 """
 import collections, json, sys
 from math import comb
@@ -17,18 +18,19 @@ def sign_p(d):
     k = min(pos, neg)
     return min(1.0, 2 * sum(comb(n, i) for i in range(k + 1)) / 2 ** n)
 
-base = json.load(open(sys.argv[1])); extra = json.load(open(sys.argv[2]))
+base = json.load(open(sys.argv[1])); extra = [r for f in sys.argv[2:] for r in json.load(open(f))]
 by = collections.defaultdict(dict)
 for r in base + extra: by[(r["name"], r["seed"])][r["arm"]] = r
 arms = sorted({r["arm"] for r in extra})
 for nm in sorted({r["name"] for r in extra}):
     players = sorted({c.split('|')[1] for r in extra if r["name"] == nm for c in r['c'] if c.startswith('on|')})
-    for a in ["on"] + arms:
+    for a in ["on"] + [x for x in arms if any(r["name"] == nm and r["arm"] == x for r in extra)]:
         keys = [k for k in by if k[0] == nm and a in by[k] and "on" in by[k]]
         rs = [by[k][a] for k in keys]; ons = [by[k]["on"] for k in keys]
         al = [r["ally"] or {} for r in rs]
         def ya(key): return float(np.mean([d.get(key, 0) for d in al])) / 50
-        line = f"{nm} {a} n {len(keys)}: camp fights {np.mean([r['camp'] for r in rs]):.3f}; sworn {ya('sworn'):.4f} offers {ya('offers'):.4f} joint {ya('joint'):.4f} demands {ya('joint_demands'):.4f}"
+        dc = [r['camp'] - o['camp'] for r, o in zip(rs, ons)]
+        line = f"{nm} {a} n {len(keys)}: camp fights {np.mean([r['camp'] for r in rs]):.3f} (paired {np.mean(dc):+.4f}, p {sign_p(dc):.2g}); sworn {ya('sworn'):.4f} offers {ya('offers'):.4f} joint {ya('joint'):.4f} demands {ya('joint_demands'):.4f}"
         pd = [x for d in al for x in d.get('pact_days', [])]
         if pd: line += f"; pact median {np.median(pd):.0f}"
         ends = collections.Counter()

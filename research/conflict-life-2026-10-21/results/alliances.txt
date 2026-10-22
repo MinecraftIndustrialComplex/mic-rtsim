@@ -156,30 +156,37 @@ drivers [(('hunger',), 81), (('hunger', 'loot'), 1)]
 hunger in drivers 82
 not sworn 59 broke own 23
 
-# One knob at a time (CL-7 (c)): extra/knobs_an.py base.json knobs.json
-# arms: long pact_days 384, easy pact_effort 1, kin6 kin_pact 6, hate6 hate_pact 6; multi and fortress, 64 seeds x 50 years
-fortress on n 64: camp fights 1.103; sworn 0.1688 offers 0.4569 joint 0.0394 demands 0.0228; pact median 101; betrayed 0.0269
+# One knob at a time, and the warm arm paired (4.5, CL-7): extra/knobs_an.py base.json knobs.json warm.json
+# arms: long pact_days 384, easy pact_effort 1, kin6 kin_pact 6, hate6 hate_pact 6 (multi and fortress); warm all four (alone, fortress, multi); 64 seeds x 50 years
+alone on n 64: camp fights 1.158 (paired +0.0000, p 1); sworn 0.1462 offers 0.2291 joint 0.0362 demands 0.0000; pact median 105; betrayed 0.0256
+alone warm n 64: camp fights 1.076 (paired -0.0822, p 0.098); sworn 0.1638 offers 0.3491 joint 0.0522 demands 0.0000; pact median 174; betrayed 0.0519
+fortress on n 64: camp fights 1.103 (paired +0.0000, p 1); sworn 0.1688 offers 0.4569 joint 0.0394 demands 0.0228; pact median 101; betrayed 0.0269
    P:Ben: fights 0.125 (paired +0.0000, p 1); loot 1.01 (paired +0.00, p 1); joint 0.0072 won 0.0041; pacts against 27
-fortress easy n 64: camp fights 1.089; sworn 0.1844 offers 0.4781 joint 0.0528 demands 0.0269; pact median 106; betrayed 0.0244
+fortress easy n 64: camp fights 1.089 (paired -0.0141, p 0.9); sworn 0.1844 offers 0.4781 joint 0.0528 demands 0.0269; pact median 106; betrayed 0.0244
    P:Ben: fights 0.130 (paired +0.0053, p 0.5); loot 0.59 (paired -0.42, p 0.39); joint 0.0078 won 0.0031; pacts against 37
-fortress hate6 n 64: camp fights 1.101; sworn 0.1762 offers 0.5444 joint 0.0422 demands 0.0244; pact median 94; betrayed 0.0306
+fortress hate6 n 64: camp fights 1.101 (paired -0.0019, p 0.79); sworn 0.1762 offers 0.5444 joint 0.0422 demands 0.0244; pact median 94; betrayed 0.0306
    P:Ben: fights 0.122 (paired -0.0028, p 0.58); loot 1.30 (paired +0.30, p 0.79); joint 0.0084 won 0.0053; pacts against 27
-fortress kin6 n 64: camp fights 1.086; sworn 0.1797 offers 0.4428 joint 0.0416 demands 0.0109; pact median 92; betrayed 0.0288
+fortress kin6 n 64: camp fights 1.086 (paired -0.0169, p 0.43); sworn 0.1797 offers 0.4428 joint 0.0416 demands 0.0109; pact median 92; betrayed 0.0288
    P:Ben: fights 0.124 (paired -0.0013, p 0.39); loot 0.62 (paired -0.39, p 0.29); joint 0.0047 won 0.0025; pacts against 19
-fortress long n 64: camp fights 1.075; sworn 0.1453 offers 0.3828 joint 0.0519 demands 0.0184; pact median 164; betrayed 0.0456
+fortress long n 64: camp fights 1.075 (paired -0.0278, p 0.79); sworn 0.1453 offers 0.3828 joint 0.0519 demands 0.0184; pact median 164; betrayed 0.0456
    P:Ben: fights 0.114 (paired -0.0113, p 0.076); loot 0.41 (paired -0.60, p 0.27); joint 0.0056 won 0.0019; pacts against 22
-multi on n 64: camp fights 0.571; sworn 0.0887 offers 0.2119 joint 0.0163 demands 0.0072; pact median 90; betrayed 0.0122
+fortress warm n 64: camp fights 1.085 (paired -0.0178, p 1); sworn 0.1800 offers 0.5656 joint 0.0728 demands 0.0437; pact median 175; betrayed 0.0512
+   P:Ben: fights 0.127 (paired +0.0022, p 0.79); loot 0.98 (paired -0.02, p 1); joint 0.0112 won 0.0044; pacts against 42
+multi on n 64: camp fights 0.571 (paired +0.0000, p 1); sworn 0.0887 offers 0.2119 joint 0.0163 demands 0.0072; pact median 90; betrayed 0.0122
    P:Ash: fights 0.322 (paired +0.0000, p 1); loot 23.62 (paired +0.00, p 1); joint 0.0034 won 0.0025; pacts against 4
    P:Bea: fights 0.141 (paired +0.0000, p 1); loot 24.83 (paired +0.00, p 1); joint 0.0000 won 0.0000; pacts against 0
-multi easy n 64: camp fights 0.588; sworn 0.0988 offers 0.3050 joint 0.0209 demands 0.0128; pact median 99; betrayed 0.0181
+multi easy n 64: camp fights 0.588 (paired +0.0169, p 0.9); sworn 0.0988 offers 0.3050 joint 0.0209 demands 0.0128; pact median 99; betrayed 0.0181
    P:Ash: fights 0.327 (paired +0.0050, p 0.69); loot 24.34 (paired +0.71, p 0.9); joint 0.0069 won 0.0050; pacts against 12
    P:Bea: fights 0.117 (paired -0.0244, p 0.0091); loot 20.60 (paired -4.22, p 0.0044); joint 0.0000 won 0.0000; pacts against 1
-multi hate6 n 64: camp fights 0.578; sworn 0.0894 offers 0.6538 joint 0.0266 demands 0.0491; pact median 88; betrayed 0.0125
+multi hate6 n 64: camp fights 0.578 (paired +0.0072, p 0.38); sworn 0.0894 offers 0.6538 joint 0.0266 demands 0.0491; pact median 88; betrayed 0.0125
    P:Ash: fights 0.334 (paired +0.0125, p 0.29); loot 27.09 (paired +3.47, p 0.16); joint 0.0144 won 0.0100; pacts against 30
    P:Bea: fights 0.139 (paired -0.0019, p 0.3); loot 24.84 (paired +0.02, p 0.26); joint 0.0000 won 0.0000; pacts against 4
-multi kin6 n 64: camp fights 0.572; sworn 0.0994 offers 0.2216 joint 0.0181 demands 0.0075; pact median 98; betrayed 0.0166
+multi kin6 n 64: camp fights 0.572 (paired +0.0009, p 0.67); sworn 0.0994 offers 0.2216 joint 0.0181 demands 0.0075; pact median 98; betrayed 0.0166
    P:Ash: fights 0.342 (paired +0.0206, p 0.14); loot 25.00 (paired +1.38, p 0.4); joint 0.0031 won 0.0022; pacts against 6
    P:Bea: fights 0.140 (paired -0.0016, p 1); loot 24.59 (paired -0.24, p 1); joint 0.0000 won 0.0000; pacts against 0
-multi long n 64: camp fights 0.540; sworn 0.0778 offers 0.1903 joint 0.0163 demands 0.0059; pact median 168; betrayed 0.0191
+multi long n 64: camp fights 0.540 (paired -0.0313, p 0.53); sworn 0.0778 offers 0.1903 joint 0.0163 demands 0.0059; pact median 168; betrayed 0.0191
    P:Ash: fights 0.322 (paired -0.0000, p 0.87); loot 24.90 (paired +1.27, p 0.23); joint 0.0025 won 0.0022; pacts against 3
    P:Bea: fights 0.146 (paired +0.0050, p 1); loot 25.86 (paired +1.04, p 0.76); joint 0.0000 won 0.0000; pacts against 0
+multi warm n 64: camp fights 0.556 (paired -0.0150, p 0.52); sworn 0.1153 offers 1.0606 joint 0.0669 demands 0.1559; pact median 164; betrayed 0.0200
+   P:Ash: fights 0.372 (paired +0.0503, p 0.00018); loot 33.19 (paired +9.56, p 7.7e-05); joint 0.0444 won 0.0350; pacts against 72
+   P:Bea: fights 0.129 (paired -0.0122, p 0.37); loot 22.87 (paired -1.95, p 0.45); joint 0.0003 won 0.0003; pacts against 11

@@ -1404,9 +1404,9 @@ joint parties were lost, against 41% of single ones.
 | A joint fight between camps, in the valley left alone | 28 | 880 |
 
 As designed, a player almost never meets an alliance. Bea, the farmer and the railway owner met none in
-3,200 world-years each; Ben would play about 3,800 server hours before two camps swore against him,
-and Ash about 9,300 before a joint party came. Between camps they are part of the valley's history,
-which a player sees only as far as he hears it (CL-9).
+3,200 world-years each; the server would run about 3,800 hours before two camps swore against Ben, and
+about 9,300 before a joint party came at Ash. Between camps they are part of the valley's history, which
+a player sees only as far as he hears it (CL-9).
 
 **No blocs.** In 310 of the 320 worlds (`extra/bloc.py`) no camp held more than one pact at a time. In
 the other 10, all fortress worlds, Mudhollow held two: with Ashpit against the Grey Outpost, and with
@@ -1426,11 +1426,14 @@ turns:
   strongest camp in reach of both, hate goblins. Every other pair weighs a culture's hate (-10) or has
   no shared foe worth it. The structure is who quarrels with whom and who reaches whom; the weights,
   kin +4 and hate -10, are tunables.
-- **Most pacts lapse.** A pact runs Exp(`pact_days` 192) days, and four in five end so, most before
-  any call: the largest ender.
-- **Half the calls are refused.** The ally's council weighs its own dead, its share and the effort of
-  sending (`pact_effort` 3) against the shame of refusing (weight 1.0), and about half the time the
-  dead win.
+- **Few offers pass.** A pact's worth to a camp is a joint war's gain and the guard, with who the other
+  is (kin, hate), less the effort of sending to swear (`pact_effort` 3); the camp that answers weighs it
+  the same way, and it must pass in both councils.
+- **Most pacts lapse.** A pact runs Exp(`pact_days` 192) days, and four in five end so: the largest
+  ender.
+- **Half the calls are refused.** The ally's council weighs its own dead and its share against the shame
+  of refusing (`call_honour` 1.0, tripled for the chief who swore), and about half the time the dead
+  win.
 - **Oaths do not outlive chiefs.** Chiefs turn over about eight times a camp a decade (3.5). The oath
   binds the chief who held the seat at the swearing three times over (the oath multiplier, 3); an heir
   is bound once, and 59 of the 82 betrayals in the valley are heirs'.
@@ -1439,8 +1442,8 @@ Between camps the structure sets the rate; against players the tunables do. The 
 four of them and multiplies Ash's joint parties 13 times, joint demands in multi 22 times and offers 5
 times.
 
-**Warmer alliances.** Doubling a pact's run (`pact_days` 384), cutting the effort of sending to 1,
-and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.py`):
+**Warmer alliances.** Doubling a pact's run (`pact_days` 384), cutting the effort of sending to swear to
+1, and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.py`):
 
 | Scenario | Warm | As designed |
 |---|---|---|
@@ -1448,13 +1451,13 @@ and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.
 | Fortress | Ben 0.127 fights a year, 97% lost, 1.0 loot; joint parties at him 0.011 a year, 0.0044 won; joint demands 0.044; 23 pacts of Mudhollow and the Sun Grove against him and 19 of Mudhollow and the Grey Outpost | 0.125, 97%, 1.0; 0.0072, 0.0041; 0.023; 12 and 15 |
 | Multi | Ash 0.372 fights a year, 33 loot; joint parties at him 0.044 a year, 0.035 won; joint demands 0.156; 72 pacts of Ashpit and the Grey Outpost against him; Bea 0.129 | 0.322, 24; 0.0034, 0.0025; 0.007; 4; 0.141 |
 
-Warm, the hunter is the one who feels it: the two camps he provokes swear against him, and against
-the design as it stands his fights rise by 16% (paired +0.050 a year, sign p 0.0002) and the loot
-taken from him by 41% (+9.6 a year, p 0.0001). The fortress still loses almost nothing, and Bea's
-fights do not rise. Fights between camps fall a little (1.08 a world-year against 1.16; sign test
-p 0.10, not significant). The cause is not measured; probably a sworn camp calls before it marches,
-and a camp with a sworn ally is a costlier target. As designed, a player almost never meets an
-alliance; warm, they are the hunter's standing problem. CL-7 asks which Ben wants.
+Warm, the hunter is the one who feels it: the two camps he provokes swear against him, and against the
+design as it stands his fights rise by 16% (paired +0.050 a year, sign p 0.0002) and the loot taken from
+him by 41% (+9.6 a year, p 0.0001; `extra/knobs_an.py`). The fortress still loses almost nothing, and
+Bea's fights do not rise. Fights between camps fall a little in the valley left alone (1.08 a world-year
+against 1.16; sign test p 0.10, not significant). The cause is not measured; probably a sworn camp calls
+before it marches, and a camp with a sworn ally is a costlier target. As designed, a player almost never
+meets an alliance; warm, they are the hunter's standing problem. CL-7 asks which Ben wants.
 
 **One knob at a time** (`extra/knobs_an.py`; the same 64 seeds, each arm paired with the design; the
 paired difference a year and its sign test in brackets):
@@ -1463,7 +1466,7 @@ paired difference a year and its sign test in brackets):
 |---|---|---|---|---|
 | As designed | 0.322; 23.6 | 0.0034; 4 | 0.141 | 0.125; 0.0072, 0.0041 |
 | A pact's run doubled (`pact_days` 384) | 0.322 (0.000, p 0.87); 24.9 (+1.3, p 0.23) | 0.0025; 3 | 0.146 (+0.005, p 1) | 0.114 (-0.011, p 0.08); 0.0056, 0.0019 |
-| Sending costs 1 (`pact_effort`) | 0.327 (+0.005, p 0.69); 24.3 (+0.7, p 0.90) | 0.0069; 12 | 0.117 (-0.024, p 0.009) | 0.130; 0.0078, 0.0031 |
+| Sending to swear costs 1 (`pact_effort`) | 0.327 (+0.005, p 0.69); 24.3 (+0.7, p 0.90) | 0.0069; 12 | 0.117 (-0.024, p 0.009) | 0.130; 0.0078, 0.0031 |
 | Kin worth 6 (`kin_pact`) | 0.342 (+0.021, p 0.14); 25.0 (+1.4, p 0.40) | 0.0031; 6 | 0.140 | 0.124; 0.0047, 0.0025 |
 | A hate costs 6 (`hate_pact`) | 0.334 (+0.013, p 0.29); 27.1 (+3.5, p 0.16) | 0.0144; 30 | 0.139 | 0.122; 0.0084, 0.0053 |
 | All four (warm) | 0.372 (+0.050, p 0.0002); 33.2 (+9.6, p 0.0001) | 0.0444; 72 | 0.129 (-0.012, p 0.37) | 0.127; 0.0112, 0.0044 |
@@ -1471,7 +1474,7 @@ paired difference a year and its sign test in brackets):
 No single knob moves the hunter's fights or his loss significantly; the four compound. The hate weight
 is the strongest alone: it lets the Grey Outpost swear with Ashpit against him (30 pacts in 3,200
 world-years against 4) and makes joint parties at him four times as common, about once in 2,200 server
-hours. Cheaper sending lowered Bea's fights and her loss (p 0.009 and 0.004): with 24 comparisons in
+hours. Cheaper swearing lowered Bea's fights and her loss (p 0.009 and 0.004): with 24 comparisons in
 the table one such result is not unlikely by chance, and the cause is not measured (probably camps
 busier with each other). No knob moves the fortress.
 
@@ -1516,7 +1519,7 @@ page load (about 5 microseconds plus 0.45 decode a faction, PM-C12). What grows 
 row three to four times the size, against today's 52.3 microseconds a faction-day at 1,024 factions,
 gives an estimated 52 to 60 (inferred).
 
-**Save CPU.** A page of four rows of 1.6 to 1.9 KB is a little over the bytes of PM-C12's 16-a-page runs
+**Save CPU.** A page of four rows of 1.6 to 1.9 KB is about the bytes of PM-C12's 16-a-page runs
 (16 rows of 450). Those saved 44 times a day for 125 ms of CPU a day at 1,024 factions and 162 times
 for 801 ms at 4,096, against 13 and 37 ms, and 47 and 276 ms, at today's 4 a page. So expect save CPU
 about three times today's: about 120 to 140 ms a game day at 1,024 factions, about 900 at 4,096
