@@ -20,6 +20,7 @@ laptop's load; compare per sample. Scenes are JSON:
      "adopt": [[x, y, z, radius], ...],          rtsim district adopt (rtsim arms only), optional dimension
      "idle": 60, "settle": 120, "busy": 300, "sample": 5,
      "unload_reload": 90,                        forceload remove all, wait, add again, wait
+     "rescan": true,                             `rtsim district rescan` after the busy window (rtsim arms)
      "info_max": 12}                             districts to ask for info
 """
 import argparse
@@ -482,6 +483,11 @@ def scene_run(s, sc, profile_s, barrier=None):
                 shutil.copy(f"{s.dir}/config/spark/{got[0]}", f"{s.dir}/busy.sparkprofile")
                 break
             time.sleep(5)
+    if sc.get("rescan") and s.rtsim:
+        # one full detection on demand, timed by the bridge (the periodic pass's work; choice SG17)
+        out = s.cmd("rtsim district rescan")
+        s.res["rescan_out"] = out
+        log(s.run, "rescan", out.strip()[:160])
     if sc.get("unload_reload"):
         w = sc["unload_reload"]
         forceload(s, boxes, add=False)
