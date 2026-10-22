@@ -91,11 +91,13 @@ fn report(world: &Path) -> Result<Value, String> {
             .read(rtsim_kernel::page::PageKey::new(DISTRICT_TABLE, id))
             .map_err(|e| format!("district page {id}: {e}"))?
             .ok_or_else(|| format!("district page {id} is listed and missing"))?;
-        let d: District = persist::from_bytes(&b).map_err(|e| format!("district page {id}: {e}"))?;
+        let d: District =
+            persist::from_bytes(&b).map_err(|e| format!("district page {id}: {e}"))?;
         for (s, rule) in &d.exchange {
-            let names_of = |set: &std::collections::BTreeSet<rtsim_industry::ids::Good>| -> Vec<String> {
-                set.iter().map(|g| iv.good_name(*g)).collect()
-            };
+            let names_of =
+                |set: &std::collections::BTreeSet<rtsim_industry::ids::Good>| -> Vec<String> {
+                    set.iter().map(|g| iv.good_name(*g)).collect()
+                };
             exchange.push(json!({
                 "district": d.id.0,
                 "station": station(s.0),
@@ -106,10 +108,17 @@ fn report(world: &Path) -> Result<Value, String> {
         }
     }
     let with_trips = iv.lines.iter().filter(|(_, e)| e.trips > 0).count();
-    let with_cargo = iv.lines.iter().filter(|(_, e)| e.cargo.iter().next().is_some()).count();
+    let with_cargo = iv
+        .lines
+        .iter()
+        .filter(|(_, e)| e.cargo.iter().next().is_some())
+        .count();
     let both = exchange
         .iter()
-        .filter(|r| r["unload"].as_array().is_some_and(|a| !a.is_empty()) && r["load"].as_array().is_some_and(|a| !a.is_empty()))
+        .filter(|r| {
+            r["unload"].as_array().is_some_and(|a| !a.is_empty())
+                && r["load"].as_array().is_some_and(|a| !a.is_empty())
+        })
         .count();
     let mut per_district: BTreeMap<u64, usize> = BTreeMap::new();
     for s in &iv.stations {
@@ -162,12 +171,19 @@ fn print_text(v: &Value) {
         format!(
             "{} (district {})",
             st["name"].as_str().unwrap_or("?"),
-            st["district"].as_u64().map_or_else(|| "-".to_string(), |d| d.to_string())
+            st["district"]
+                .as_u64()
+                .map_or_else(|| "-".to_string(), |d| d.to_string())
         )
     };
     let goods = |g: &Value| {
         g.as_object()
-            .map(|m| m.iter().map(|(k, n)| format!("{:.1} {k}", n.as_f64().unwrap_or(0.0))).collect::<Vec<_>>().join(", "))
+            .map(|m| {
+                m.iter()
+                    .map(|(k, n)| format!("{:.1} {k}", n.as_f64().unwrap_or(0.0)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default()
     };
     println!("lines (from -> to: trips, mean travel ticks, cargo per trip):");
@@ -185,7 +201,12 @@ fn print_text(v: &Value) {
     for r in v["exchange"].as_array().into_iter().flatten() {
         let list = |k: &str| {
             r[k].as_array()
-                .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
                 .unwrap_or_default()
         };
         println!(
