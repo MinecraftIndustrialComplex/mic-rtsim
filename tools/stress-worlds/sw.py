@@ -13,7 +13,9 @@ base's libraries). Stdlib only. Every server runs under nice 10 on its own ports
 copy of the world. The world sources stay untouched. Results go to <run>/sw-result.json.
 
 A pair starts its arms 5 s apart and runs the same scene in parallel threads, so both share the
-laptop's load; compare per sample. Scenes are JSON:
+laptop's load; compare per sample. The arms wait for each other at the scene's start, before the
+busy window and before the unload, so the rtsim arm's extra steps (adopts, reports, rescan) do not
+shift its windows against the others'. Scenes are JSON:
 
     {"forceload": [[x1, z1, x2, z2], ...],       block coordinates, added 10 s apart; an optional fifth
                                                  element names the dimension (default minecraft:overworld)
@@ -467,6 +469,10 @@ def scene_run(s, sc, profile_s, barrier=None):
             log(s.run, "adopt", x, z, r, out.strip()[:120])
     time.sleep(sc.get("settle", 120) / 2)
     s.rtsim_report("settled", sc.get("info_max", 12))
+    if barrier:
+        # the rtsim arm's adopts and reports take longer than nothing (110 s at 200 districts):
+        # all arms start the busy window together (choice SG22)
+        barrier.wait()
     if s.rtsim:
         s.cmd("rtsim perf reset")  # the busy window's tick cost alone (SG7)
     s.window("busy", sc.get("busy", 300), smp)
@@ -490,6 +496,8 @@ def scene_run(s, sc, profile_s, barrier=None):
         log(s.run, "rescan", out.strip()[:160])
     if sc.get("unload_reload"):
         w = sc["unload_reload"]
+        if barrier:
+            barrier.wait()  # unload together after the rtsim arm's reports and rescan (SG22)
         forceload(s, boxes, add=False)
         s.ev("unloaded")
         time.sleep(w)
