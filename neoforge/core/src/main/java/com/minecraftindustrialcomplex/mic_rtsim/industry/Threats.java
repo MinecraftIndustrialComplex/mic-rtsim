@@ -339,7 +339,7 @@ public final class Threats {
         if (source == null || !ThreatClasses.hostile(source))
             return;
         engage(source);
-        Map<BlockPos, Boolean> cache = new HashMap<>();
+        it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap cache = Districts.kindCache();
         for (BlockPos p : blocks) {
             if (level.getBlockState(p).isAir())
                 continue;
