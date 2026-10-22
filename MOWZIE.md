@@ -1549,7 +1549,10 @@ party of both cultures, the Frostmaw on its raid and the tribe's bands with the 
 is one march with one position at every tick, from its camp to its target and back. Where a player is,
 the march is bodies; beyond, the engine carries it, and a Distant Horizons far view
 (`research/distant-horizons-2026-10-21.md` §4.6, the DH note) can draw it from the same record. This
-plan exposes the position; it draws nothing.
+plan exposes the position; it draws nothing. Ben's answers to the note bound that drawing: DH-1 sends
+sim state only to clients that opt in, within their DH radius; DH-2 lets the far view show only what
+eyes would see from where the player stands, so a column of walking figures and a rider, never the
+record's counts, faction or names; DH-5 retires the note's hidden Umvuthi seat for this march.
 
 **What the engine already knows.** At departure every party has its whole route, waypoints on the road
 graph with the tick at each (`Party`, `engine.rs:199`; `route`, `2131`), and `party_pos` gives its
