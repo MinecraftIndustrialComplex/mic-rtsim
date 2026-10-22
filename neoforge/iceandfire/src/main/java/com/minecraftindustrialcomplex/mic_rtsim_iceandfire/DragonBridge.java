@@ -714,6 +714,13 @@ public final class DragonBridge implements SessionPlugin {
         return byAgent.size();
     }
 
+    /** Every live puppet's agent and body (the far feed's {@link DragonFeedSource}); skips ones being removed. */
+    void forEachBody(java.util.function.BiConsumer<Long, Entity> f) {
+        for (Puppet p : byAgent.values())
+            if (!p.removing && p.entity != null && !p.entity.isRemoved())
+                f.accept(p.agent, p.entity);
+    }
+
     public boolean isCorpse(UUID id) {
         return corpses.containsKey(id);
     }

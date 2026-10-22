@@ -435,6 +435,8 @@ pub struct Dragons {
     /// Lairs' chests the plugin reported this session (LAIR_CHEST): not saved, cleared at a
     /// session start, since a chest can be broken while nobody watches.
     pub(crate) chests: BTreeMap<LairId, Chest>,
+    /// The far view's marks (`far.rs`): not saved, per session.
+    pub(crate) far: crate::far::FarFeed,
     /// The oil nests (OG-9e): rows in pages of their own (0x4419), the rest in the meta page.
     pub nests: Nests,
 }
@@ -576,6 +578,7 @@ impl Dragons {
             tribute_stamp: 0,
             placing: BTreeMap::new(),
             chests: BTreeMap::new(),
+            far: crate::far::FarFeed::default(),
             nests: Nests::default(),
         }
         .with_oil_flags()
@@ -767,6 +770,7 @@ impl Dragons {
             sensed: Vec::new(),
         };
         let d = self.dragons.insert(row);
+        self.far.mark(d);
         self.schedule(at + left, Ev::Death { d });
         if let Some(l) = n.lair {
             self.occupy(w, d, l, at, false);
@@ -1229,6 +1233,7 @@ impl Dragons {
 
     /// Keeps [`Dragons::embodied`] in step with `d`'s state: called after every change of state.
     pub(crate) fn track(&mut self, d: DragonId) {
+        self.far.mark(d);
         if self.dragons.get(d).is_some_and(Dragon::is_embodied) {
             self.embodied.insert(d);
         } else {
@@ -1276,6 +1281,7 @@ impl Dragons {
             None => w.legs.book(path, dragon_owner(d)),
         };
         self.dragons.get_mut(d).expect("live").leg = Some(FlightLeg { path, y, stamp });
+        self.far.mark(d);
         for other in w.legs.sharing(stamp) {
             let Some(p) = w.legs.get(other.leg).and_then(|r| owner_player(r.owner)) else {
                 continue;
@@ -1300,6 +1306,7 @@ impl Dragons {
         }
         if let Some(l) = self.dragons.get_mut(d).and_then(|x| x.leg.take()) {
             w.legs.cancel(l.stamp.leg);
+            self.far.mark(d);
         }
     }
 
@@ -3647,6 +3654,7 @@ impl Dragons {
         let Some(x) = self.dragons.remove(d) else {
             return;
         };
+        self.far.mark(d);
         self.embodied.remove(&d);
         // Its bodies go from both maps (both hold only bodies in flight, so this is no pass over
         // every dragon); an adopted entry left behind would name a dead dragon for good.
