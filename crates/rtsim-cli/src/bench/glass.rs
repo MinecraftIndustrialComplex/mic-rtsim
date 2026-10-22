@@ -43,6 +43,10 @@ pub struct GlassPoint {
     pub lp_tight: u32,
     /// The first solve's L for sheets, per tick (a sanity check: cells × the cell's rate).
     pub sheets_l: f64,
+    /// One save of the engine holding the compile (`glass_replay::save_cost`): every page's
+    /// bytes and the snapshot's CPU.
+    pub save_bytes: u64,
+    pub save_cpu_ns: f64,
 }
 
 fn head(index: u32) -> GraphHead {
@@ -382,6 +386,7 @@ pub fn point(nodes: u64, slack: bool) -> GlassPoint {
         .iter()
         .find(|g| g.good == SHEET.0)
         .map_or(0.0, |g| g.in_l);
+    let (save_bytes, save_cpu_ns) = super::glass_replay::save_cost(&e);
     GlassPoint {
         nodes: u64::from(r.nodes),
         edges: u64::from(r.edges),
@@ -393,6 +398,8 @@ pub fn point(nodes: u64, slack: bool) -> GlassPoint {
         lp_skipped: sol.lp_skipped,
         lp_tight: sol.lp_tight,
         sheets_l,
+        save_bytes,
+        save_cpu_ns,
     }
 }
 
