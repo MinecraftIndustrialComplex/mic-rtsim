@@ -25,7 +25,7 @@ use rtsim_archive::kinds::{self, Kind};
 use rtsim_archive::{At, Severity, Tape};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::journal::OpId;
-use rtsim_kernel::lazy::{LazyTable, RegionId};
+use rtsim_kernel::lazy::RegionId;
 use rtsim_kernel::rng::SystemId;
 use serde::Serialize;
 
@@ -51,6 +51,7 @@ use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
     self, Leg, LegIndex, Threat, ThreatClass, ThreatSource, ThreatTarget, next_pressure_attack,
 };
+use crate::tracked::{Tracked, TrackedTable};
 use crate::tunables::Tunables;
 
 /// How a district replays while away (GLASSBOX.md §4, G2).
@@ -270,8 +271,9 @@ pub struct Engine {
     pub tun: Tunables,
     world_seed: u64,
     goods: BTreeMap<Good, GoodInfo>,
-    districts: BTreeMap<DistrictId, District>,
-    clusters: LazyTable<Cluster>,
+    /// One page each (F36), written only when changed since the last save (ID1).
+    districts: Tracked<DistrictId, District>,
+    clusters: TrackedTable<Cluster>,
     cluster_of: BTreeMap<DistrictId, RegionId<Cluster>>,
     next_cluster: u64,
     stations: BTreeMap<StationId, Station>,
@@ -327,6 +329,69 @@ pub struct Engine {
     /// `DistrictIndex` rebuilds on it, choices-oilgate.md OGC50). Drawn from a process-wide
     /// sequence, so no two engines, a restored one included, ever share a value. Not saved.
     districts_rev: u64,
+    /// The page check (ID5): every page's hash as of the last save built, kept only in a debug
+    /// build or with `RTSIM_VERIFY_PAGES` set. Not saved.
+    page_check: Option<Box<PageCheck>>,
+}
+
+/// One save's industry pages ([`Engine::save_changed`], ID2): the globals page and every page
+/// changed since the save before, and the pages of districts and clusters gone since then.
+#[derive(Debug)]
+pub struct ChangedPages {
+    pub put: Vec<(rtsim_kernel::page::PageKey, Vec<u8>)>,
+    pub delete: Vec<rtsim_kernel::page::PageKey>,
+    pub ticket: SaveTicket,
+}
+
+/// The pages one save wrote or deleted: a failed save hands it back ([`Engine::save_failed`]),
+/// and the next save writes them again (ID3).
+#[derive(Debug, Default)]
+pub struct SaveTicket {
+    districts: Vec<DistrictId>,
+    glass: Vec<DistrictId>,
+    clusters: Vec<(u64, RegionId<Cluster>)>,
+}
+
+impl SaveTicket {
+    /// Pages the save wrote or deleted, the globals page not counted.
+    pub fn len(&self) -> usize {
+        self.districts.len() + self.glass.len() + self.clusters.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// What the page check found (ID5), over every save the engine built.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PageCheck {
+    hashes: BTreeMap<rtsim_kernel::page::PageKey, u64>,
+    /// Saves checked.
+    pub saves: u64,
+    /// Pages a save wrote or deleted, the globals page not counted.
+    pub written: u64,
+    /// Pages whose bytes changed since the save before but that no mark covered: a missed mark,
+    /// so a page the store would have kept stale. Always 0; a debug build panics on one.
+    pub unmarked: u64,
+    pub first_unmarked: Option<rtsim_kernel::page::PageKey>,
+    /// Marked pages whose bytes had not changed: what the conservative marks cost.
+    pub unchanged: u64,
+}
+
+/// Whether engines keep the page check: a debug build, or `RTSIM_VERIFY_PAGES` set.
+fn page_check_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        cfg!(debug_assertions) || std::env::var_os("RTSIM_VERIFY_PAGES").is_some_and(|v| v != "0")
+    })
+}
+
+fn page_hash(b: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    b.hash(&mut h);
+    h.finish()
 }
 
 /// The next value of [`Engine::districts_rev`]; 0 is never handed out.
@@ -346,8 +411,8 @@ impl Engine {
             tun,
             world_seed,
             goods: BTreeMap::new(),
-            districts: BTreeMap::new(),
-            clusters: LazyTable::new(world_seed, REPLAY, now),
+            districts: Tracked::default(),
+            clusters: TrackedTable::new(world_seed, REPLAY, now),
             cluster_of: BTreeMap::new(),
             next_cluster: 1,
             stations: BTreeMap::new(),
@@ -379,6 +444,7 @@ impl Engine {
             tape: Tape::new(),
             undetected: BTreeSet::new(),
             districts_rev: next_districts_rev(),
+            page_check: page_check_on().then(Box::default),
         }
     }
 
@@ -711,8 +777,7 @@ impl Engine {
                 self.districts_rev = next_districts_rev();
                 let dist = self
                     .districts
-                    .entry(decl.district)
-                    .or_insert_with(|| District::new(decl.district));
+                    .get_or_insert_with(decl.district, || District::new(decl.district));
                 // The archive's place for what this declaration changes: taken before a new
                 // revision clears the chunks.
                 let spot = self
@@ -976,7 +1041,7 @@ impl Engine {
         if !self.districts.contains_key(&d) {
             self.districts_rev = next_districts_rev();
         }
-        self.districts.entry(d).or_insert_with(|| District::new(d))
+        self.districts.get_or_insert_with(d, || District::new(d))
     }
 
     /// Adopts a model as if a steady window had produced it (tests and the bench; the real path is
@@ -1070,8 +1135,7 @@ impl Engine {
         let goods = &self.goods;
         let dist = self
             .districts
-            .entry(e.district)
-            .or_insert_with(|| District::new(e.district));
+            .get_or_insert_with(e.district, || District::new(e.district));
         use crate::glass::report::discard;
         let Some(buf) = dist.sweep.take() else {
             // A sweep that sampled nothing still happened: what an older sweep sampled is gone
@@ -4222,40 +4286,170 @@ mod persist_impls {
         id
     }
 
+    fn globals_page(e: &Engine) -> (PageKey, Vec<u8>) {
+        let mut w = Writer::new();
+        globals(e, &mut w);
+        (PageKey::new(GLOBAL_TABLE, 0), w.into_bytes())
+    }
+
+    fn district_key(id: DistrictId) -> PageKey {
+        PageKey::new(DISTRICT_TABLE, key48(id.0, "district"))
+    }
+
+    fn glass_key(id: DistrictId) -> PageKey {
+        PageKey::new(GLASS_TABLE, key48(id.0, "district"))
+    }
+
+    fn cluster_page(region: &rtsim_kernel::lazy::Region<Cluster>) -> (PageKey, Vec<u8>) {
+        let mut w = Writer::new();
+        region.cell().model().put(&mut w);
+        region.cell().anchor().put(&mut w);
+        region.wake().put(&mut w);
+        (
+            PageKey::new(CLUSTER_TABLE, key48(region.key(), "cluster")),
+            w.into_bytes(),
+        )
+    }
+
     impl Engine {
         /// Every page of the engine's state (A16): globals, one per district, one per replay
-        /// cluster with its booked wake, one per district's glass state (G2-9). Call between
-        /// steps; the host puts them in its save batch. District ids must fit 48 bits (F36).
+        /// cluster with its booked wake, one per district's glass state (G2-9). District ids
+        /// must fit 48 bits (F36). A save writes [`Engine::save_changed`]'s pages instead; this
+        /// is the whole state, for a fresh store, tests and state hashes.
         pub fn snapshot(&self) -> Vec<(PageKey, Vec<u8>)> {
             let mut out = Vec::with_capacity(
                 1 + self.districts.len() + self.clusters.len() + self.glass.districts.len(),
             );
-            let mut w = Writer::new();
-            globals(self, &mut w);
-            out.push((PageKey::new(GLOBAL_TABLE, 0), w.into_bytes()));
-            for (id, d) in &self.districts {
-                out.push((
-                    PageKey::new(DISTRICT_TABLE, key48(id.0, "district")),
-                    to_bytes(d),
-                ));
+            out.push(globals_page(self));
+            for (id, d) in self.districts.iter() {
+                out.push((district_key(*id), to_bytes(d)));
             }
             for (_, region) in self.clusters.iter() {
-                let mut w = Writer::new();
-                region.cell().model().put(&mut w);
-                region.cell().anchor().put(&mut w);
-                region.wake().put(&mut w);
-                out.push((
-                    PageKey::new(CLUSTER_TABLE, key48(region.key(), "cluster")),
-                    w.into_bytes(),
-                ));
+                out.push(cluster_page(region));
             }
-            for (id, dg) in &self.glass.districts {
-                out.push((
-                    PageKey::new(GLASS_TABLE, key48(id.0, "district")),
-                    crate::glass::page::district_page(dg),
-                ));
+            for (id, dg) in self.glass.districts.iter() {
+                out.push((glass_key(*id), crate::glass::page::district_page(dg)));
             }
             out
+        }
+
+        /// One save's pages (ID2): the globals page, every district, cluster and glass page
+        /// changed since the last save, and the pages of those gone since then to delete. The
+        /// engine counts them saved from here on; a failed save hands its ticket back to
+        /// [`Engine::save_failed`]. Call between steps. With the page check on (ID5), every page
+        /// is hashed and a page that changed without a mark is counted (a debug build panics).
+        pub fn save_changed(&mut self) -> ChangedPages {
+            let mut put = vec![globals_page(self)];
+            let mut delete = Vec::new();
+            let mut ticket = SaveTicket::default();
+            for id in self.districts.take_changed() {
+                match self.districts.get(&id) {
+                    Some(d) => put.push((district_key(id), to_bytes(d))),
+                    None => delete.push(district_key(id)),
+                }
+                ticket.districts.push(id);
+            }
+            for (key, h) in self.clusters.take_changed() {
+                match self.clusters.live(key, h) {
+                    Some(region) => put.push(cluster_page(region)),
+                    None => delete.push(PageKey::new(CLUSTER_TABLE, key48(key, "cluster"))),
+                }
+                ticket.clusters.push((key, h));
+            }
+            for id in self.glass.districts.take_changed() {
+                match self.glass.districts.get(&id) {
+                    Some(dg) => put.push((glass_key(id), crate::glass::page::district_page(dg))),
+                    None => delete.push(glass_key(id)),
+                }
+                ticket.glass.push(id);
+            }
+            if self.page_check.is_some() {
+                self.check_pages(&put, &delete);
+            }
+            ChangedPages {
+                put,
+                delete,
+                ticket,
+            }
+        }
+
+        /// A save that did not reach the disk: its pages are written again by the next (ID3).
+        pub fn save_failed(&mut self, t: SaveTicket) {
+            for id in t.districts {
+                self.districts.mark(id);
+            }
+            for id in t.glass {
+                self.glass.districts.mark(id);
+            }
+            for (key, h) in t.clusters {
+                self.clusters.mark(key, h);
+            }
+        }
+
+        /// Pages changed since the last save, waiting for the next one (the globals page not
+        /// counted).
+        pub fn pages_changed(&self) -> usize {
+            self.districts.changed().len()
+                + self.clusters.changed().len()
+                + self.glass.districts.changed().len()
+        }
+
+        /// What the page check found, if it is on (ID5).
+        pub fn page_check(&self) -> Option<&PageCheck> {
+            self.page_check.as_deref()
+        }
+
+        /// Turns the page check on (from the next save, against this state) or off.
+        pub fn set_page_check(&mut self, on: bool) {
+            self.page_check = on.then(|| {
+                Box::new(PageCheck {
+                    hashes: self
+                        .snapshot()
+                        .into_iter()
+                        .map(|(k, b)| (k, page_hash(&b)))
+                        .collect(),
+                    ..PageCheck::default()
+                })
+            });
+        }
+
+        /// The page check of one save (ID5): every page whose bytes differ from the save before
+        /// (or that came or went) must be among those it wrote or deleted.
+        fn check_pages(&mut self, put: &[(PageKey, Vec<u8>)], delete: &[PageKey]) {
+            let now: BTreeMap<PageKey, u64> = self
+                .snapshot()
+                .into_iter()
+                .map(|(k, b)| (k, page_hash(&b)))
+                .collect();
+            let check = self.page_check.as_mut().expect("on");
+            let covered: BTreeSet<PageKey> = put
+                .iter()
+                .map(|(k, _)| *k)
+                .chain(delete.iter().copied())
+                .collect();
+            let keys: BTreeSet<PageKey> = now.keys().chain(check.hashes.keys()).copied().collect();
+            for k in keys {
+                if now.get(&k) != check.hashes.get(&k) && !covered.contains(&k) {
+                    check.unmarked += 1;
+                    check.first_unmarked.get_or_insert(k);
+                }
+            }
+            for k in &covered {
+                if k.table() != GLOBAL_TABLE {
+                    check.written += 1;
+                    if now.get(k) == check.hashes.get(k) {
+                        check.unchanged += 1;
+                    }
+                }
+            }
+            check.saves += 1;
+            check.hashes = now;
+            debug_assert!(
+                check.unmarked == 0,
+                "industry page {:#x} changed since the last save without a mark ({} such pages)",
+                check.first_unmarked.map_or(0, |k| k.0),
+                check.unmarked
+            );
         }
 
         /// The engine a [`Engine::snapshot`] describes. Tunables are configuration, not state.
@@ -4267,7 +4461,18 @@ mod persist_impls {
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
             let mut glass = BTreeMap::new();
+            // The page check's start (ID5): the pages as given, so a restored engine that would
+            // save other bytes than it was restored from fails the check at its first save.
+            let mut hashes = page_check_on().then(BTreeMap::new);
             for (k, bytes) in pages {
+                if let Some(h) = hashes.as_mut()
+                    && matches!(
+                        k.table(),
+                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE
+                    )
+                {
+                    h.insert(k, page_hash(&bytes));
+                }
                 match k.table() {
                     GLOBAL_TABLE => global = Some(bytes),
                     DISTRICT_TABLE => {
@@ -4320,9 +4525,9 @@ mod persist_impls {
             e.glass.records = Persist::get(&mut r)?;
             e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
-            e.glass.districts = glass;
-            e.districts = districts;
-            e.clusters = LazyTable::new(world_seed, REPLAY, e.now);
+            e.glass.districts = Tracked::restored(glass);
+            e.districts = Tracked::restored(districts);
+            e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);
             for (key, model, anchor, wake) in clusters {
                 let members = model.members();
@@ -4347,6 +4552,9 @@ mod persist_impls {
                 .map(|d| d.id)
                 .collect();
             e.dirty.extend(unreplayed);
+            if let (Some(c), Some(hashes)) = (e.page_check.as_mut(), hashes) {
+                c.hashes = hashes;
+            }
             Ok(e)
         }
     }
