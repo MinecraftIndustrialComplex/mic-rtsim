@@ -70,9 +70,14 @@ public final class FarFeed {
     static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
     /** The sweeps after the first {@link #WARM_SWEEPS} (class loading and the JIT), for the bench. */
     static long warmSweeps, warmNanos, warmCpuNanos;
-    /** The server thread's CPU time in each source's collect and in the sends, over the whole run, for the bench. */
+    /**
+     * The server thread's CPU time in each source's collect and in the sends, after the first {@link #WARM_SWEEPS},
+     * for the bench.
+     */
     static final Map<String, Long> COLLECT_CPU = new LinkedHashMap<>();
     static long sendCpuNanos;
+    /** The sends' CPU time split: the filter (with the seam mapping), the view's diff, the encoding, the network. */
+    static final long[] SEND_CPU = new long[4];
     static final int WARM_SWEEPS = 10;
     /** The server thread's own CPU time for a sweep: wall time also counts the time the thread waited for a core. */
     private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
@@ -183,15 +188,24 @@ public final class FarFeed {
     }
 
     private static String cpuSplit() {
-        if (!CPU_TIME || sweeps == 0)
+        long n = warmSweeps;
+        if (!CPU_TIME || n == 0)
             return "";
-        StringBuilder b = new StringBuilder("; CPU per sweep: ");
-        COLLECT_CPU.forEach((k, v) -> b.append(k).append(' ').append(v / sweeps / 1000).append(" us, "));
-        return b.append("sends ").append(sendCpuNanos / sweeps / 1000).append(" us").toString();
+        StringBuilder b = new StringBuilder("; CPU per sweep after the first " + WARM_SWEEPS + ": ");
+        COLLECT_CPU.forEach((k, v) -> b.append(k).append(' ').append(v / n / 1000).append(" us, "));
+        return b.append("sends ").append(sendCpuNanos / n / 1000).append(" us (filter ")
+                .append(SEND_CPU[0] / n / 1000).append(", view ").append(SEND_CPU[1] / n / 1000)
+                .append(", encode ").append(SEND_CPU[2] / n / 1000).append(", network ")
+                .append(SEND_CPU[3] / n / 1000).append(" us)").toString();
     }
 
     private static long cpu() {
         return CPU_TIME ? THREADS.getCurrentThreadCpuTime() : 0;
+    }
+
+    /** Whether this sweep counts in the CPU split: past the warm-up, and timed. */
+    private static boolean splitting() {
+        return CPU_TIME && sweeps >= WARM_SWEEPS;
     }
 
     private static void onServerTick(ServerTickEvent.Post event) {
@@ -222,6 +236,7 @@ public final class FarFeed {
         players = null;
         sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = sendCpuNanos = 0;
         COLLECT_CPU.clear();
+        java.util.Arrays.fill(SEND_CPU, 0);
     }
 
     /** One sweep over every subscriber (a test calls it directly). */
@@ -248,7 +263,8 @@ public final class FarFeed {
             LevelTopology topo = session != null ? session.topology(level) : LevelTopology.flat();
             long c0 = cpu();
             send(p, s, items, topo, gameTime);
-            sendCpuNanos += cpu() - c0;
+            if (splitting())
+                sendCpuNanos += cpu() - c0;
         }
     }
 
@@ -260,7 +276,7 @@ public final class FarFeed {
             run(src, level, gameTime, all);
         long c0 = cpu();
         List<FarItem> out = FarFilter.dedupe(all);
-        if (CPU_TIME)
+        if (splitting())
             COLLECT_CPU.merge("dedupe", cpu() - c0, Long::sum);
         return out;
     }
@@ -274,12 +290,13 @@ public final class FarFeed {
             if (n <= 3)
                 MicRtsim.LOGGER.error("[mic_rtsim] far feed source {} failed; skipped this second", src.name(), e);
         } finally {
-            if (CPU_TIME)
+            if (splitting())
                 COLLECT_CPU.merge(src.name(), cpu() - c0, Long::sum);
         }
     }
 
     private static void send(ServerPlayer p, Sub s, List<FarItem> items, LevelTopology topo, long gameTime) {
+        long c0 = cpu();
         double px = p.getX(), pz = p.getZ();
         List<FarItem> mapped;
         if (topo.isFlat()) {
@@ -293,13 +310,25 @@ public final class FarFeed {
             }
         }
         List<FarItem> chosen = FarFilter.select(mapped, px, pz, s.radius + RADIUS_MARGIN, s.budget, s.kinds, gameTime);
+        long c1 = cpu();
         List<FarWire.Rec> recs = s.view.step(chosen);
+        long c2 = cpu();
+        boolean split = splitting();
+        if (split) {
+            SEND_CPU[0] += c1 - c0;
+            SEND_CPU[1] += c2 - c1;
+        }
         if (recs.isEmpty() && !s.reset)
             return;
         FarWire.Message m = new FarWire.Message(s.reset ? FarWire.RESET : 0, gameTime, s.dimension,
                 (int) Math.floor(px), (int) Math.floor(p.getY()), (int) Math.floor(pz), recs);
         byte[] b = FarWire.encode(m);
+        long c3 = cpu();
         sink.send(p, b);
+        if (split) {
+            SEND_CPU[2] += c3 - c2;
+            SEND_CPU[3] += cpu() - c3;
+        }
         s.reset = false;
         s.messages++;
         s.bytes += b.length;

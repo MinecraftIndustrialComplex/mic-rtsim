@@ -114,7 +114,9 @@ Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
 The client's `far bench result` lines then include a `dragons:` line and a `feed:` line (messages, bytes and
 records a second, objects held), and the integrated server logs `far feed at stop` when it stops: the cost of
 its once-a-second sweeps over the whole run: the mean, the mean after the first 10 (class loading and the
-JIT) in wall time and in the server thread's own CPU time, and the worst.
+JIT) in wall time and in the server thread's own CPU time, and the worst; then, after the first 10, the CPU
+time of each source, the dedupe and the sends (split into the filter, the view's diff, the encoding and the
+network).
 
 ## What is here
 
