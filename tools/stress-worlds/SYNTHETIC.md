@@ -4,7 +4,7 @@ A flat world of N districts of running Create factories and M scheduled cargo tr
 neighbouring districts, each train loading and unloading through Portable Storage Interfaces at both
 ends. It exists to measure rtsim at scales no public world reaches (DECISIONS.md ST1, "thousands of
 Create machines") and to give station learning cargo ports and exchange rules (ST3). Results and the
-choices behind it (SG1 to SGn) are in `docs/stress-worlds-results.md` section 10.
+choices behind it (the SG rows, 10.7) are in `docs/stress-worlds-results.md` section 10.
 
 Dev and test code only: the builder is a GameTest in the create plugin
 (`gametest/stress/StressWorld.java`) that runs only in the `stressGen` Gradle run. It adds no block,
@@ -37,8 +37,9 @@ It takes `/tmp/mic-rtsim-bridge-heavy.lock` and runs at `nice -n 10`. The output
   UUID, the two stations with their blocks and calibrated dock blocks, the two goods and the build
   ticks.
 - `~/mic-stress-worlds/scenes/synthetic-<name>.json`: an `sw.py` scene. It forceloads every district
-  and the track between them, runs `rtsim district adopt` across each district, and sets a 600 s busy
-  window, which spans the 6,000-tick periodic detection pass.
+  and the track between them, runs `rtsim district adopt` across each district, sets a 600 s busy
+  window and times one `rtsim district rescan` after it. At 20 TPS the busy window also spans the
+  6,000-tick periodic detection pass; a slower world (syn200 runs at about 9 TPS) does not reach it.
 - `neoforge/create/build/stressgen-<name>.log`: the GameTest server's log.
 
 The build fails, and leaves no world, unless every line delivers: each train must make its

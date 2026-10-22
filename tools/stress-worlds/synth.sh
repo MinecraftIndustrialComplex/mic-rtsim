@@ -23,7 +23,7 @@
 # left that a fresh pack server should make itself: the stub engine's rtsim state, the GameTest
 # server's serverconfig (so the pack's defaultconfigs apply) and the experimental datapacks the
 # GameTest server enables (bundle, trade_rebalance). The world keeps the GameTest world's flat
-# terrain and game rules (no mob spawning, weather or random ticks). Choices SG1 to SG12.
+# terrain and game rules (no mob spawning, weather or random ticks). Choices: the SG rows, section 10.7.
 #
 # ~/mic-stress-worlds/synthetic is made a btrfs subvolume (/home's hourly snapshots skip it). Worlds
 # there are never committed.
