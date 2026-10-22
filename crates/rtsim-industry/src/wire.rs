@@ -807,12 +807,18 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             district,
             revision,
             part,
+            chunk,
+            partial,
             blocks,
         } => {
             let mut w = W::obs(out, IND_SURVEY_BLOCKS, n32(blocks.len()), seq, at);
             w.put_u64(district.0);
             w.put_u32(*revision);
             w.put_u32(*part);
+            w.put_i32(chunk.0);
+            w.put_i32(chunk.1);
+            w.put_u32(u32::from(*partial));
+            w.zero(4);
             for b in blocks {
                 w.pos3(b.pos);
                 w.put_u32(b.state);
@@ -1183,14 +1189,16 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             })
         }
         IND_SURVEY_BLOCKS => {
-            check(kind, size, sized(40, n, 24))?;
+            check(kind, size, sized(56, n, 24))?;
             Obs::SurveyBlocks {
                 district: r.district(24),
                 revision: r.get_u32(32),
                 part: r.get_u32(36),
+                chunk: (r.get_i32(40), r.get_i32(44)),
+                partial: r.get_u32(48) & 1 != 0,
                 blocks: (0..n)
                     .map(|i| {
-                        let e = 40 + 24 * i;
+                        let e = 56 + 24 * i;
                         ExposedBlock {
                             pos: r.pos3(e),
                             state: r.get_u32(e + 12),
@@ -1755,6 +1763,8 @@ mod tests {
                 district: d,
                 revision: 5,
                 part: 2,
+                chunk: (0, -1),
+                partial: false,
                 blocks: vec![
                     ExposedBlock {
                         pos: BlockPos::new(1, 2, 3),
@@ -1773,7 +1783,9 @@ mod tests {
             Obs::SurveyBlocks {
                 district: d,
                 revision: 5,
-                part: 3,
+                part: 0,
+                chunk: (-70_000, 12),
+                partial: true,
                 blocks: vec![],
             },
         ];
@@ -2010,7 +2022,7 @@ mod tests {
             Obs::SpawnSample(_) => 64,
             Obs::Fight(_) => 72,
             Obs::Survey(_) => 104,
-            Obs::SurveyBlocks { blocks, .. } => 40 + 24 * blocks.len(),
+            Obs::SurveyBlocks { blocks, .. } => 56 + 24 * blocks.len(),
         }
     }
 
