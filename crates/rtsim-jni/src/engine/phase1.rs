@@ -66,7 +66,7 @@ use rtsim_world::inputs as log;
 use rtsim_world::inputs::{Input, Logged, Uuid};
 
 /// The phase 1 pages: table 0x5000 ('P'; table 1 is the core's and the industry link's key, the
-/// industry engine's are 0x4900 to 0x4902) holds the meta page and the tail's chunks; table
+/// industry engine's are 0x4900 to 0x4903) holds the meta page and the tail's chunks; table
 /// 0x5001 the snapshot: the world's meta page (id 0, PF12) and the link's part in pieces after
 /// it. The world's market rows are its own table, 0x5010.
 pub const TABLE: u16 = 0x5000;

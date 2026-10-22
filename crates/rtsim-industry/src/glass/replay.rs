@@ -447,6 +447,33 @@ impl Replay {
         self.parts[0].compile
     }
 
+    /// The compile held was kept under a new session's number (choice G2-81): the replay goes on,
+    /// as that number's.
+    pub fn renumber(&mut self, compile: u32) {
+        for p in &mut self.parts {
+            p.compile = compile;
+        }
+    }
+
+    /// Does a restored replay index a graph of `n` nodes (a page check, G2-80)?
+    pub fn fits(&self, n: usize) -> bool {
+        !self.parts.is_empty()
+            && self.parts.iter().all(|p| {
+                [
+                    p.mine.len(),
+                    p.live.len(),
+                    p.sim.len(),
+                    p.inv_of.len(),
+                    p.flow.len(),
+                    p.st.ctrl_on.len(),
+                ]
+                .iter()
+                .all(|&l| l == n)
+                    && p.fed.len() == p.heaters.len()
+                    && p.heaters.iter().all(|b| (b.node as usize) < n)
+            })
+    }
+
     /// Per node: it ran in the world when this replay started.
     pub fn live(&self) -> &[bool] {
         &self.parts[0].live
@@ -2336,5 +2363,168 @@ impl Part {
             *t += shift;
         }
         self.st = st;
+    }
+}
+
+// ---- the glass page (page.rs, choice G2-80) -------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+
+    persist_unit_enum!(
+        Fallback,
+        [
+            Fallback::Unsettled,
+            Fallback::Oscillating,
+            Fallback::Stuck,
+            Fallback::Unexpected,
+        ]
+    );
+    persist_struct!(ReplayCounts {
+        regimes,
+        breakpoints,
+        cycles
+    });
+    persist_struct!(StoreInfo { fluid, cap, nodes });
+
+    impl Persist for Watch {
+        fn put(&self, w: &mut Writer) {
+            match *self {
+                Watch::Room { inv, key } => {
+                    w.u8(0);
+                    inv.put(w);
+                    key.put(w);
+                }
+                Watch::Refill { key } => {
+                    w.u8(1);
+                    key.put(w);
+                }
+                Watch::Frees { inv, key } => {
+                    w.u8(2);
+                    inv.put(w);
+                    key.put(w);
+                }
+                Watch::Switch { node, key } => {
+                    w.u8(3);
+                    node.put(w);
+                    key.put(w);
+                }
+                Watch::Undry { good } => {
+                    w.u8(4);
+                    good.put(w);
+                }
+                Watch::Seal { good } => {
+                    w.u8(5);
+                    good.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => Watch::Room {
+                    inv: Persist::get(r)?,
+                    key: Persist::get(r)?,
+                },
+                1 => Watch::Refill {
+                    key: Persist::get(r)?,
+                },
+                2 => Watch::Frees {
+                    inv: Persist::get(r)?,
+                    key: Persist::get(r)?,
+                },
+                3 => Watch::Switch {
+                    node: Persist::get(r)?,
+                    key: Persist::get(r)?,
+                },
+                4 => Watch::Undry {
+                    good: Persist::get(r)?,
+                },
+                5 => Watch::Seal {
+                    good: Persist::get(r)?,
+                },
+                _ => return invalid("glass watch"),
+            })
+        }
+    }
+
+    persist_struct!(State {
+        empty,
+        full,
+        ctrl_on,
+        dry,
+        sealed,
+        hold
+    });
+    persist_struct!(Mark {
+        at,
+        sig,
+        levels,
+        nets,
+        state,
+        watched,
+        fired,
+        room,
+        heater,
+        fire,
+        fed
+    });
+    persist_struct!(CycleRun {
+        start,
+        period,
+        marks,
+        spend
+    });
+    persist_struct!(Part {
+        id,
+        mine,
+        hubs,
+        d,
+        compile,
+        live,
+        sim,
+        inv_of,
+        stores,
+        fixed,
+        cut,
+        live_caps,
+        stock0,
+        st,
+        heaters,
+        heat_at,
+        fed,
+        flow,
+        nets,
+        watches,
+        fire,
+        built_at,
+        residual,
+        coupled,
+        learned_sources,
+        marks,
+        cycle,
+        steps,
+        counts
+    });
+    /// A replay has at least one part ([`Replay::compile`] reads the first).
+    impl Persist for Replay {
+        fn put(&self, w: &mut Writer) {
+            self.started.put(w);
+            self.parts.put(w);
+            self.covered.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            let rp = Replay {
+                started: Persist::get(r)?,
+                parts: Persist::get(r)?,
+                covered: Persist::get(r)?,
+            };
+            if rp.parts.is_empty() {
+                return invalid("glass replay without parts");
+            }
+            Ok(rp)
+        }
     }
 }

@@ -4,18 +4,19 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 057fd07
-//!   (the oil audit's F6, the oil nests, merged with main 54c544f: the dragons' pages are RTD6 and
-//!   RTN6, the nest table; an industry district page starts with IDS4, the stations' ports and five
-//!   threat classes; the industry globals carry the arrival counters and each call's ports).
-//!   Villages, roads, news, herds, a district; no caravan is on the road when the server stops
-//!   (the harness world draws caravans). A herd's route draws only when a herd is on the move at
-//!   the save, which depends on when the server stops: 6638edc's save had one, while both runs of
-//!   98d6d34 and main's 7e4042a had every herd staying put. So the route layer is not required
-//!   here; it still has to draw or say why. The district is the roof gate test's, the suite's last.
-//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from 057fd07 (the same
-//!   formats). Every module's pages, mostly empty: herds, districts and
-//!   stations draw.
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit fdbbb1e
+//!   (G2-9, the glass box's state paged, on main e442612: an industry district's glass state is a
+//!   page of table 0x4903 starting with IGL1, and the industry globals end with the glass
+//!   counters and records received; the dragons' pages are RTD6 and RTN6, the nest table; an
+//!   industry district page starts with IDS4, the stations' ports and five threat classes).
+//!   Villages, roads, news, herds, a district and its glass page; no caravan is on the road when
+//!   the server stops (the harness world draws caravans). A herd's route draws only when a herd
+//!   is on the move at the save, which depends on when the server stops: 6638edc's save had one,
+//!   while both runs of 98d6d34 and main's 7e4042a had every herd staying put. So the route layer
+//!   is not required here; it still has to draw or say why.
+//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
+//!   fdbbb1e (the same formats). Every module's pages, mostly empty: herds, districts with their
+//!   glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
 //! and these folders are replaced by a fresh GameTest run.
