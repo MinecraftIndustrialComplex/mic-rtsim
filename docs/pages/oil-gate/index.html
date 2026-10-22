@@ -222,7 +222,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#meets">At an oil field</a>
   <a href="#reserve">Reserve</a>
   <a href="#test">Danger test</a>
-  <a href="#decide">Decide</a>
+  <a href="#decide">Answers</a>
   <a href="#decided">Decided</a>
   <a href="#next">Next</a>
 </nav>
@@ -230,15 +230,15 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">Dragons now guard oil: they need it to breathe fire, nest near it and raid whoever works it. The gate's own arrivals stay off, and 5 questions are yours</h1>
-  <p class="dek" data-ss-id="dek">The oil gate's dragon half, built as you approved it (OG-1 to OG-8 and OG-10 to OG-13) and merged to mic-rtsim main at 5f8b403. The underground half comes next and is not built.</p>
+  <h1 data-ss-id="headline">Dragons now guard oil: they need it to breathe fire, nest near it and raid whoever works it. The gate's own arrivals stay off, and you answered all 5 questions</h1>
+  <p class="dek" data-ss-id="dek">The oil gate's dragon half, built as you approved it (OG-1 to OG-8 and OG-10 to OG-13) and merged to mic-rtsim main at 5f8b403. The underground half comes next and is not built. You answered its five questions on 21 October; the bigger reserve and the cheap biome look are built on branch docs/oilgate-cheese-audit, not yet on main.</p>
   <p class="lead" data-ss-id="lead">Fire dragons now carry a fuel reserve. Time and every breath of fire drain it, and they refill by resting on an oil field or by drinking a base's tanks. One with none fights with bite and claws. Every oil field gets a fire lair within reach, and dragons raid districts that work near their oil. A roof now stops a flying raid's block damage. In Control's own desert dragons and blazes are untouched. The gate's own arrivals at oil, the field flights, failed the danger test against In Control, so they ship switched off.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-built"><div class="n">12</div><div class="t">decisions built: all you approved for the dragon half</div></div>
     <div class="tile" data-ss-id="kpi-iaf"><div class="n">20 <small>of 20</small></div><div class="t">Ice and Fire GameTests, on the native engine and the stub</div></div>
     <div class="tile" data-ss-id="kpi-core"><div class="n">63 <small>of 63</small></div><div class="t">core GameTests</div></div>
     <div class="tile" data-ss-id="kpi-rust"><div class="n">about 835</div><div class="t">Rust tests</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">5</div><div class="t">questions for you, each with a recommendation</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">5</div><div class="t">questions answered</div></div>
   </div>
 </header>
 
@@ -257,11 +257,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="reserve" data-ss-id="reserve" data-ss-section>
-  <h2 data-ss-id="reserve-h">The fuel reserve lasts about three streams of fire</h2>
-  <p data-ss-id="reserve-p">Fire dragons only: ice and lightning dragons do not use oil. The numbers are placeholders until you answer question 2.</p>
+  <h2 data-ss-id="reserve-h">The fuel reserve now lasts about three fights, some 15 streams of fire</h2>
+  <p data-ss-id="reserve-p">Fire dragons only: ice and lightning dragons do not use oil. These are your numbers from question 2 (OGB-2, built as OGC44). As first built the reserve was 100, refuelling below 40, which lasted about three streams.</p>
   <div class="tiles three" data-ss-id="reserve-tiles">
-    <div class="tile" data-ss-id="res-cap"><div class="n">100</div><div class="t">points when full; refuels below 40</div></div>
-    <div class="tile" data-ss-id="res-time"><div class="n">12.5 <small>game days</small></div><div class="t">from full to empty with no fire: a point every 3,000 ticks, the pack's hunger rate</div></div>
+    <div class="tile" data-ss-id="res-cap"><div class="n">600</div><div class="t">points when full; refuels below 240</div></div>
+    <div class="tile" data-ss-id="res-time"><div class="n">75 <small>game days</small></div><div class="t">from full to empty with no fire: a point every 3,000 ticks, the pack's hunger rate</div></div>
     <div class="tile" data-ss-id="res-stream"><div class="n">35 to 41</div><div class="t">points in one stream of fire, a point per fire event</div></div>
   </div>
   <ul data-ss-id="reserve-list">
@@ -320,73 +320,41 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </tbody>
   </table>
   </div>
-  <p data-ss-id="test-early">The verdict is early. The plan asks for medians over several runs, by day and by night; these are two runs by day. Both runs fail the same two measures, so field flights stay off until a re-measure passes (question 1).</p>
+  <p data-ss-id="test-early">The verdict is early. The plan asks for medians over several runs, by day and by night; these are two runs by day. Both runs fail the same two measures, and field flights stay off. You then reframed question 1: matching In Control is no longer the bar, so this test no longer decides the switch.</p>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">Your 5 questions</h2>
-  <p data-ss-id="decide-p">The recommended option is first in each. Until you answer, the build keeps what it has now: field flights off, a reserve of 100, drinking free of the theft cap, a lost visitor's visit ended, and the exact oil lookup on every new chunk.</p>
+  <h2 data-ss-id="decide-h">You answered all 5 on 21 October</h2>
+  <p data-ss-id="decide-p">Logged as OGB-1 to OGB-5. You reframed question 1, skipped question 4, and took the recommendation on the rest.</p>
 
   <div class="decision" data-ss-id="q1">
     <h3>1. Field flights: what makes the gate dangerous enough to switch?</h3>
-    <p class="rec">Recommended: (a) keep them off, raise their draw and measure again.</p>
-    <p>Keep <code>fieldFlights</code> false and In Control's fire dragon rules as they are. Raise the flights' draw: <code>flight_chance_milli</code> from 100 to 250 and <code>flight_cap_field</code> from 8 to 12, both placeholders. Measure again with at least 5 runs per site, by day and by night, and switch when B is at least A at sites 1 and 2.</p>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) Judge danger by damage a minute alone, which B already meets, and switch now: remove the fire dragon from In Control's <code>spawner.json</code> and both <code>spawn.json</code> rules. The proposed files are in <code>neoforge/iceandfire/pack-proposal/</code>.</li>
-      <li>(c) Turn flights on alongside In Control. Danger at oil sites roughly doubles until the rule goes.</li>
-    </ul>
+    <p class="rec">Your answer: neither option. The gate is judged by your bar, not by matching In Control, which "might have been overkill".</p>
+    <p>A real oil pipeline must be infeasible to build, and hard for a semi-casual player to cheese, for example by running in, dropping a contraption as real blocks and running off laying pipe (OGB-1). A cheese audit, not an integration test, is judging the gate against that bar. Its results follow when it finishes.</p>
   </div>
 
   <div class="decision" data-ss-id="q2">
     <h3>2. How big is the fuel reserve?</h3>
-    <p class="rec">Recommended: (a) a point per fire event, capacity 600, refuelling below 240.</p>
-    <p>Size the reserve from fights. If a fight is about five streams, three fights are about 600 points. Today's 100 lasts about three streams.</p>
-    <div class="scroll">
-    <table class="stack" data-ss-id="q2-table">
-      <thead><tr><th>Option</th><th>Costs</th><th class="num">Full reserve</th><th class="num">Lasts</th></tr></thead>
-      <tbody>
-        <tr><td>(a) Recommended</td><td data-label="Costs">A point per fire event</td><td class="num" data-label="Full reserve">600</td><td class="num" data-label="Lasts">about 15 streams</td></tr>
-        <tr><td>(b)</td><td data-label="Costs">A point per burst</td><td class="num" data-label="Full reserve">100</td><td class="num" data-label="Lasts">about 100 streams</td></tr>
-        <tr><td>(c) As built</td><td data-label="Costs">A point per fire event</td><td class="num" data-label="Full reserve">100</td><td class="num" data-label="Lasts">about 3 streams</td></tr>
-      </tbody>
-    </table>
-    </div>
-    <p class="alt-h">The other options</p>
-    <ul>
-      <li>(b) A point per burst, keeping 100: a dragon is almost never dry.</li>
-      <li>(c) Keep 100 at a point per fire event: a dragon is dry after about three streams and finishes most fights with bite and claws.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) a point per fire event, capacity 600, refuelling below 240.</p>
+    <p>A full reserve lasts about three fights of five streams. A dragon that never fights drinks every 360 points, 45 game days of the slow drain. Built (OGC44).</p>
   </div>
 
   <div class="decision" data-ss-id="q3">
     <h3>3. May a drinking dragon take more than the theft cap?</h3>
-    <p class="rec">Recommended: (a) yes: drinking stays free of the cap.</p>
-    <p>A dry dragon may take its whole room from one raid: up to 100,000 mB with today's reserve, and 600,000 mB if question 2 goes to 600. The tank is the lure that draws a dry dragon to a base.</p>
-    <p class="alt-h">The other option</p>
-    <ul>
-      <li>(b) Hold drinking to the item theft cap, 10% of a stock.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) yes, drinking stays free of the cap.</p>
+    <p>A dry dragon may drink its whole room from one raid, now up to 600,000 mB with the reserve of 600. The tank is the lure that draws a dry dragon to a base (OGB-3).</p>
   </div>
 
   <div class="decision" data-ss-id="q4">
     <h3>4. Does a visitor whose body is lost end its visit?</h3>
-    <p class="rec">Recommended: (a) yes, keep the rule.</p>
-    <p>A field flight's dragon is a visitor. If its body is lost, because the session ended or the server crashed, its visit ends. After a restart, field flights draw again from fresh rolls.</p>
-    <p class="alt-h">The other option</p>
-    <ul>
-      <li>(b) Keep visitors through a session end, as wanderers.</li>
-    </ul>
+    <p class="rec">You skipped this, so it took the recommendation: (a) yes, the visit ends.</p>
+    <p>If a field flight's body is lost, because the session ended or the server crashed, its visit ends. After a restart, field flights draw again from fresh rolls (OGB-4).</p>
   </div>
 
   <div class="decision" data-ss-id="q5">
     <h3>5. Should the oil lookup on new chunks get a cheap first check?</h3>
-    <p class="rec">Recommended: (a) yes: skip chunks whose biomes cannot hold oil.</p>
-    <p>Sampling new chunks for oil costs about 3 ms a tick while players explore. Diesel Generators' <code>getBaseOilAmount</code> makes 12,800 biome lookups a chunk: 3.2 ms on average for a chunk in memory, 14.8 ms at most. One sample always runs in a tick with work. The cheap first look skips a chunk none of whose biomes can hold oil under the pack's rule, and keeps the exact call for the rest. The dieselgenerators GameTest would check it against <code>getBaseOilAmount</code>.</p>
-    <p class="alt-h">The other option</p>
-    <ul>
-      <li>(b) Keep it as it is.</li>
-    </ul>
+    <p class="rec">Your answer, as recommended: (a) yes, a cheap biome first look.</p>
+    <p>A chunk none of whose biomes can hold oil under the pack's rule is answered 0 after 504 biome lookups instead of 12,800. Every other chunk keeps the exact <code>getBaseOilAmount</code> call, so the look never changes an answer, and the dieselgenerators GameTest checks it against <code>getBaseOilAmount</code>. Built (OGB-5, OGC45).</p>
   </div>
 </section>
 
@@ -402,7 +370,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
   <h3>The reserve</h3>
   <ul>
-    <li>Fire dragons only (OGC4). Capacity 100, a point every 3,000 ticks and a point per breath, as a closed form with no per-tick work (OGC5). Every write restarts the time drain (OGC6).</li>
+    <li>Fire dragons only (OGC4). Capacity 100 (600 since OGC44), a point every 3,000 ticks and a point per breath, as a closed form with no per-tick work (OGC5). Every write restarts the time drain (OGC6).</li>
     <li>The gate opens on the first oil known, with every fire dragon full (OGC12). A roosting dragon wakes to refuel only from above the refuel level (OGC13).</li>
     <li>A breath is one Ice and Fire fire event, which fires every tick of a stream (OGC29). A dry dragon strikes at half strength (OGC18) with bite and claws: its air attack becomes a tackle and its ground fire a bite (OGC30).</li>
   </ul>
@@ -459,6 +427,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-react="off" data-ss-id="sources">
   <summary>Sources</summary>
   <ul>
+    <li>Your answers: <code>DECISIONS.md</code> rows OGB-1 to OGB-5 and <code>docs/choices-oilgate.md</code> OGC44 and OGC45, on branch docs/oilgate-cheese-audit (40fc3c8, 5390f28).</li>
     <li>mic-rtsim main at 5f8b403, "Merge feat/oilgate-dragons: the dragon half of the oil gate (OG-1 to OG-8, OG-10 to OG-13)".</li>
     <li><code>docs/choices-oilgate.md</code>: OGC1 to OGC43, the OG-10 results table (OGC35), the fire events per stream, the seam for the underground half and the five questions ("For Ben").</li>
     <li><code>OILGATE.md</code>: the design as approved, its status line and the §8 proposals OG-1 to OG-13. <code>DECISIONS.md</code>: BR-OG and OG-9 to OG-9e.</li>
