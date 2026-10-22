@@ -96,8 +96,10 @@ flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix develop ..#client --comman
 
 The bench logs `far bench` lines (the client's `far bench result` line, the server's train counts and the
 `far bench sync` bandwidth lines), leaves a screenshot in `dh/run/screenshots/` and vanilla's client profile in
-`dh/run/debug/profiling/`. `-PfarBenchDetail=LOW|MEDIUM|HIGH`, `-PfarBenchCarriages=<n>` and
-`-PfarBenchLabel=<name>` vary it.
+`dh/run/debug/profiling/` (its `client/profiling.txt` has DH's `Custom Objects` section with a
+`mic_rtsim_dh` line under it). `-PfarBenchDetail=LOW|MEDIUM|HIGH`, `-PfarBenchCarriages=<n>` and
+`-PfarBenchLabel=<name>` vary it; `-PfarBench=0` is the control with no trains. The first run creates the flat
+world `farbench` in `dh/run/saves/`, and later runs reuse it with DH's LODs already built.
 
 ## What is here
 
