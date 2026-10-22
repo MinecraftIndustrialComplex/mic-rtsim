@@ -766,6 +766,27 @@ impl Engine {
         ]
     }
 
+    /// The census (EQUILIBRIUM.md S1) of every module this session runs, each at its own now, in a
+    /// fixed order: villages, dragons and nests, herds, ships, conflict. Between steps only, as the
+    /// `with_*` reads.
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        let st = lock(&self.state);
+        let mut out = st.phase1.world.census();
+        if st.dragons.enabled {
+            out.extend(st.dragons.engine.census());
+        }
+        if st.herds.enabled {
+            out.extend(st.herds.engine.census());
+        }
+        if st.ships.enabled {
+            out.extend(st.ships.engine.census());
+        }
+        if st.conflict.enabled {
+            out.extend(st.conflict.engine.census());
+        }
+        out
+    }
+
     /// TEST mode: the view lease read now and every layer encoded and committed into the view
     /// store at once, waited for (`tap::flush`). Errors when no lease is live.
     pub fn view_tap_flush(self: &Arc<Self>) -> Result<(), String> {

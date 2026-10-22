@@ -593,6 +593,37 @@ impl Dragons {
         self.now
     }
 
+    /// The census (EQUILIBRIUM.md S1) now: `dragon.lair` (K 1, its occupants; renewals are claims
+    /// and hatchings) and `oil.nest` (K the tunable's, its worms, broken while its heart is; a nest
+    /// whose cell was given up is no site; renewals are first broods and worms renewed).
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        use rtsim_kernel::census::KindCensus;
+        let mut lairs = KindCensus::new("dragon.lair");
+        for l in self.lairs.iter() {
+            lairs.site(l.occupants.len() as u64, 1, false, 0.0);
+        }
+        lairs.renewals = self.stats.claims + self.stats.births;
+        let mut nests = KindCensus::new("oil.nest");
+        let nt = &self.tun.oil.nest;
+        let day = self.nests.day();
+        for id in self.nests.ids() {
+            let Some(n) = self.nests.get(id) else {
+                continue;
+            };
+            if n.state == crate::nest::NestState::Failed {
+                continue;
+            }
+            nests.site(
+                u64::from(n.worms),
+                u64::from(nt.k),
+                n.state == crate::nest::NestState::Broken,
+                n.pressure.now(day, nt.half_life_days),
+            );
+        }
+        nests.renewals = self.nests.stats.broods + self.nests.stats.renewed;
+        vec![lairs, nests]
+    }
+
     pub fn pending_events(&self) -> usize {
         self.wheel.len()
     }

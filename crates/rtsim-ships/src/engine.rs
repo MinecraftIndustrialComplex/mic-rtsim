@@ -739,6 +739,28 @@ impl Ships {
         self.now
     }
 
+    /// The census (EQUILIBRIUM.md S1) now: `ship.haven`, K its slots, its members the pirates
+    /// afloat (not lost and not yet refitted), P its refit pressure; renewals are refits.
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        let mut c = rtsim_kernel::census::KindCensus::new("ship.haven");
+        let day = day_num(self.now);
+        for hv in &self.havens {
+            let up = hv
+                .ships
+                .iter()
+                .filter(|&&p| self.ship(p).is_some_and(Ship::is_active))
+                .count();
+            c.site(
+                up as u64,
+                hv.ships.len() as u64,
+                false,
+                hv.pressure.now(day, self.tun.refit.half_life_days),
+            );
+        }
+        c.renewals = self.stats.rebuilds;
+        vec![c]
+    }
+
     pub fn pending_events(&self) -> usize {
         self.wheel.len()
     }
