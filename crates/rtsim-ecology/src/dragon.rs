@@ -506,7 +506,10 @@ mod tests {
 
     #[test]
     fn oil_is_closed_form() {
-        let tun = OilTunables::default();
+        let tun = OilTunables {
+            capacity: 100,
+            ..OilTunables::default()
+        };
         let mut d = dragon();
         assert_eq!(d.oil_level(&tun, Tick(2_999)), 100);
         assert_eq!(d.oil_level(&tun, Tick(3_000)), 99);

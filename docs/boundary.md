@@ -869,9 +869,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   rescues count); its strongest memories and feelings pass to its heir.
 - **DRAGON_ATE**: a sim dragon killed animals (Ice and Fire's own hunting picks them from its
   `dragon_targets` tag, verified). When the kill is inside a village's bounds, those animals were the
-  village's herd and its market stock falls by the count (P28's recommendation: watched
-  consequences go through stock, prices and caravans). Summed per (dragon, prey type, village) per
-  tick.
+  village's herd and its market stock falls by the count (P28: watched consequences go through
+  stock, prices and caravans; Ben added bounded damage too, see §6.7). Summed per (dragon, prey
+  type, village) per tick.
 - **HOARD_ROBBED**: a player broke hoard piles (`iceandfire:gold_pile` for fire, `silver_pile` for
   ice, `copper_pile` for lightning, verified) or took items from a container, inside a known lair's
   box. Summed per (player, lair) per tick. The engine takes what its abstract hoard holds of each
@@ -1015,9 +1015,12 @@ What the bridge must do:
   youngest offspring, else its mate, else its lair, and a dragon claiming an empty lair takes over
   the lair's strongest feelings.
 - A raid on a district goes through the industry engine's threat interface (`docs/industry-
-  boundary.md`): watched districts get a real fight (the dragon materializes there; no block damage,
-  P28's recommendation), unwatched ones resolve abstractly, never better for the defender than the
-  best comparable observed fight, with capped damage applied on load (C18).
+  boundary.md`): unwatched districts resolve abstractly, never better for the defender than the
+  best comparable observed fight, with capped damage applied on load (C18). A watched district
+  resolves the same way, at once, and gets a real fight too: the dragon materializes there (P28 as
+  Ben decided it, "bounded damage too"; docs/choices-oilgate.md OGC56, OGC57). Ice and Fire
+  griefing stays off, so the bounded damage is the raid's. Districts are found by any of their
+  chunks, not their centre (OGC50, OGC51).
 - **Tribute** (SINK.md §4.6, MS-5; choices MSC40 and up in docs/choices-money-sink.md). A village
   with a works purse that a lair's dragon raided becomes that lair's tributary and pays at once, then
   once a season at the calendar's season change: a share of its purse (PLACEHOLDER a quarter,
@@ -1066,9 +1069,13 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   drawing fire dragons as flights that materialize with flags 8 and 16 at the edge of view.
 - **Lairs:** a field with no fire lair within reach gets one PLACE_LAIR (when flag 2 is set); every
   new fire lair asks one OIL_SURVEY around itself.
-- **Sensing:** a district near a field that forms, drills, holds oil stock or pollutes becomes an
-  Encroachment report its drinking dragons witness, against the district and the players homed
-  near it; a grudge sends a raid.
+- **Sensing:** a district with a chunk near a field that forms, drills, holds oil stock or pollutes
+  becomes an Encroachment report its drinking dragons witness, against the district, the players
+  homed near it and the players who built there in the last `grudge_window_days` (OGC50, OGC55); a
+  grudge sends a raid. Once a game day the field watches its own ground: a fire dragon of the
+  nearest fire lair in reach senses every district with a chunk near a field, with no flight
+  (OGC52, OGC53). The industry engine keeps each district's last builders from IND_EDIT, saved with
+  it (OGC54).
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 

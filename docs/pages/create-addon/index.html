@@ -101,21 +101,21 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#create">Create</a>
   <a href="#sites">Sites</a>
   <a href="#support">Support</a>
-  <a href="#decide">Your decisions</a>
+  <a href="#decide">Your answers</a>
 </nav>
 
 <main>
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">The Create addon is easy to package and not yet ready to ship</h1>
-  <p class="dek" data-ss-id="dek">What releasing the shared native library and rtsim's factory sim as their own Create addon would involve. Checked against the repos, Modrinth's and CurseForge's rules and Create's release history on 21 October 2026.</p>
-  <p class="lead" data-ss-id="lead">It would be three mods in one download: <strong>mic_native</strong> (loads the Rust library), <strong>mic_rtsim</strong> (the engine, with only industry switched on) and <strong>mic_rtsim_create</strong> (the Create hooks). Both sites accept a jar with native code inside, and Sable, already in the MIC pack, ships its Rust physics that way. What stops a release is the product and the repos: the exact replay of Create machines is still on a branch, Create 6 package loops replay as making nothing, there is no Create-only build, and every repo it needs is private. UR-1 removes the save-format question: deleting and reinstalling only ever loses production owed to unloaded chunks.</p>
+  <p class="dek" data-ss-id="dek">What releasing the shared native library and rtsim's factory sim as their own Create addon would involve. Checked against the repos, Modrinth's and CurseForge's rules and Create's release history on 21 October 2026, and updated that evening with your four answers.</p>
+  <p class="lead" data-ss-id="lead">It would be three mods in one download: <strong>mic_native</strong> (loads the Rust library), <strong>mic_rtsim</strong> (the engine, with only industry switched on) and <strong>mic_rtsim_create</strong> (the Create hooks). Both sites accept a jar with native code inside, and Sable, already in the MIC pack, ships its Rust physics that way. You have answered all four questions: it ships as <strong>Create: Distant Factories</strong>, an alpha on Modrinth and CurseForge the same day once the 14 items below are done, under AGPL and MPL, with mic-rtsim and mic-native opened whole. Two of the 14 are done: the exact replay of Create machines is on main, and lone chests no longer start districts. What still stops a release: Create 6 package loops replay as making nothing, big bases stay on learned rates, there is no Create-only build, and the repos stay private until release. UR-1 removes the save-format question: deleting and reinstalling only ever loses production owed to unloaded chunks.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-mods"><div class="n">3</div><div class="t">mods, one download through jar-in-jar</div></div>
     <div class="tile" data-ss-id="kpi-platforms"><div class="n">2 <small>of 8</small></div><div class="t">platforms ever run: Linux x86-64, and Windows under Wine</div></div>
     <div class="tile" data-ss-id="kpi-cost"><div class="n">0.5%</div><div class="t">of the server thread at most, on 3 public Create worlds</div></div>
-    <div class="tile" data-ss-id="kpi-private"><div class="n">4</div><div class="t">private repos the build needs today</div></div>
-    <div class="tile" data-ss-id="kpi-open"><div class="n">14</div><div class="t">items to finish before strangers run it</div></div>
+    <div class="tile" data-ss-id="kpi-private"><div class="n">3</div><div class="t">private repos the build needs today; mic-viewer is public now</div></div>
+    <div class="tile" data-ss-id="kpi-open"><div class="n">12 <small>of 14</small></div><div class="t">items still to finish before strangers run it</div></div>
   </div>
 </header>
 
@@ -139,25 +139,25 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </tbody>
   </table>
   </div>
-  <p class="cap" data-ss-id="ships-cap">The viewer (mic-viewer) is only used by rtsim-cli, so it stays out.</p>
+  <p class="cap" data-ss-id="ships-cap">The viewer (mic-viewer) is only used by rtsim-cli, so it stays out of the jars. It went public on 21 October, after its history was rewritten to drop private host names (VH-1).</p>
   <h3 data-ss-id="ships-corr-h">Three things are different from how the question framed it</h3>
   <ul data-ss-id="ships-corrections">
     <li><strong>It is three mods, not one jar.</strong> NeoForge's jar-in-jar can nest them so players download one file, as Sable does.</li>
     <li><strong>There is no industry-only engine.</strong> rtsim-jni links all 12 Rust module crates, and the workspace has no Cargo features. The module switches (C25) are runtime config, and all nine default to on, so a plain install would also veto wandering traders (C8a) and run herds.</li>
-    <li><strong>A fourth private repo comes along.</strong> The engine pulls in deeptime-format from Deep Time, through rtsim-space.</li>
+    <li><strong>Deep Time comes along.</strong> The engine pulls in deeptime-format from the private Deep Time repo, through rtsim-space. Deep Time stays private (TP19), so the addon cuts deeptime-format with a Cargo feature.</li>
   </ul>
 </section>
 
 <section id="licenses" data-ss-id="licenses" data-ss-section>
   <h2 data-ss-id="licenses-h">AGPL costs server owners nothing unless they change the code</h2>
   <p class="quote" data-ss-id="agpl-plain">Running it unmodified costs a server owner nothing. If they change the code and let players connect, they must offer those players the changed source.</p>
-  <p data-ss-id="agpl-packs">A modpack that includes the jar has to say where the complete source is. That source includes everything linked into the engine, so deeptime-format has to be published or cut out.</p>
+  <p data-ss-id="agpl-packs">A modpack that includes the jar has to say where the complete source is. That source includes everything linked into the engine, so deeptime-format has to be published or cut out. It will be cut (TP19).</p>
   <div class="scroll" data-ss-id="license-table-wrap">
   <table data-ss-id="license-table">
     <thead><tr><th>Combination</th><th>Allowed</th><th>Note</th></tr></thead>
     <tbody>
       <tr><td>MPL-2.0 code (mic_native, host crates) with AGPL code</td><td class="state done">Yes</td><td>MPL 2.0 section 3.3 allows it</td></tr>
-      <tr><td>LGPL-3.0+ deeptime-format inside the AGPL engine</td><td class="state done">Yes</td><td>Its source must then be public</td></tr>
+      <tr><td>LGPL-3.0+ deeptime-format inside the AGPL engine</td><td class="state done">Yes</td><td>Its source must then be public, so the addon cuts it instead (TP19)</td></tr>
       <tr><td>Apache-2.0 microlp (the solver)</td><td class="state done">Yes</td><td>Compatible with the GPL-3.0 family</td></tr>
       <tr><td>Windows builds with Microsoft's CRT and SDK</td><td class="state done">Yes</td><td>Through cargo-xwin; you accepted its license for Deep Time on 2026-09-28</td></tr>
     </tbody>
@@ -167,28 +167,28 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="ready" data-ss-id="ready" data-ss-section>
-  <h2 data-ss-id="ready-h">Fourteen items stand between today and a public release</h2>
-  <p data-ss-id="ready-intro">Six are the product, four are safety on strangers' servers, four are packaging. Main today replays learned rates (the black box); the exact replay of Create's own machines (the glass box) is the branch in the first row.</p>
+  <h2 data-ss-id="ready-h">Twelve of the fourteen items before a public release are still open</h2>
+  <p data-ss-id="ready-intro">Six are the product, four are safety on strangers' servers, four are packaging. Since 3c974ef, main replays Create's own machines exactly (the glass box) where it can, and learned rates (the black box) elsewhere. You chose to release once all 14 are done (AD-4).</p>
   <div class="scroll" data-ss-id="ready-table-wrap">
   <table data-ss-id="ready-table">
     <thead><tr><th>Item</th><th>Where it stands</th><th>Source</th></tr></thead>
     <tbody>
       <tr class="group"><td colspan="3">Product</td></tr>
-      <tr><td>Exact Create replay (G2)</td><td>On a branch, 83 commits ahead of main, not merged</td><td>feat/glassbox-g2</td></tr>
+      <tr><td>Exact Create replay (G2)</td><td><span class="state done">Done.</span> Merged into main at 3c974ef: the glass box drives the replay</td><td>feat/glassbox-g2</td></tr>
       <tr><td>Create 6 package loops</td><td>Replay as making nothing: package addresses are not modelled. Planned for G3</td><td>G2-56</td></tr>
       <tr><td>Big bases</td><td>The solver is bounded, not solved, so they stay on learned rates. Splitting factories at links and stores (SEC-1) is designed, not built</td><td>G2-58, SEC-1</td></tr>
-      <tr><td>Accuracy evidence</td><td>The exit test (12 small factories, a far copy against a loaded copy in real Create) is on the branch; the fed-factory matrix is pending. The learned-rate replay's 99.71% comes from a synthetic Rust test</td><td>G2-55, indrework</td></tr>
-      <tr><td>Cargo trains</td><td>Station exchange seen on one passenger metro (67 arrivals, 13 simulated unloaded), never with cargo</td><td>stress worlds 4.4</td></tr>
-      <tr><td>Glass state across restarts</td><td>Not saved yet</td><td>G2-9</td></tr>
+      <tr><td>Accuracy evidence</td><td>The exit test (12 small factories, a far copy against a loaded copy in real Create) is on main since the G2 merge; the fed-factory matrix is pending. The learned-rate replay's 99.71% comes from a synthetic Rust test</td><td>G2-55, indrework</td></tr>
+      <tr><td>Cargo trains</td><td>Station exchange seen on one passenger metro (67 arrivals, 13 simulated unloaded), never with cargo. Cargo trains are going into the synthetic stress generator (ST3)</td><td>stress worlds 4.4</td></tr>
+      <tr><td>Glass state across restarts</td><td>Not saved yet; you chose to page it</td><td>G2-9</td></tr>
       <tr class="group"><td colspan="3">Safety</td></tr>
       <tr><td>Reinstall after playing without it</td><td>Not measured; an unacknowledged reconcile could replay. The fix and a rehearsal scenario are queued</td><td>UR-1</td></tr>
-      <tr><td>Lone chests become districts</td><td>Fix in progress on fix/district-seeds</td><td>DS-10</td></tr>
+      <tr><td>Lone chests become districts</td><td><span class="state done">Done.</span> Only machines start a district now, on main since 02c2096</td><td>DS-10</td></tr>
       <tr><td>Clients without the mod</td><td>It registers no blocks, items or network messages, so it should be server-only, but nobody has tried a join</td><td>rehearsal 0.12</td></tr>
       <tr><td>C2ME</td><td>The save barrier takes a reflection path under C2ME, never crash-tested on a C2ME world</td><td>JB3</td></tr>
       <tr class="group"><td colspan="3">Packaging</td></tr>
-      <tr><td>Create-only build</td><td>Every module linked and on by default; deeptime-format private</td><td>Cargo.toml, RtsimConfig</td></tr>
+      <tr><td>Create-only build</td><td>Every module linked and on by default; deeptime-format to be cut with a Cargo feature</td><td>Cargo.toml, RtsimConfig, TP19</td></tr>
       <tr><td>Natives on real machines</td><td>12 libraries for 8 platforms build; macOS, ARM and musl never ran, Windows only under Wine. No full cross-build of the engine on record</td><td>mic-native README</td></tr>
-      <tr><td>Public source</td><td>All four repos private; REL-1 says nothing new goes public</td><td>REL-1</td></tr>
+      <tr><td>Public source</td><td>Private until release (REL-1). Then mic-rtsim and mic-native open whole, after their history is scanned for secrets, private hosts and server data</td><td>REL-1, AD-1</td></tr>
       <tr><td>Third-party notices</td><td>None yet</td><td>CurseForge terms 4.1</td></tr>
     </tbody>
   </table>
@@ -244,56 +244,41 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><strong>Other performance mods.</strong> It has only run inside the MIC pack (168 mods) with C2ME, Lithium, ModernFix, FerriteCore, ServerCore and Clumps. Lithium crashed the tick-order read on a stress world until 1ed1774 fixed it. Public packs mix differently, so expect a few such reports in the first weeks.</li>
     <li><strong>Create updates.</strong> One check and possibly one release every 2 to 3 months, and a real port at 6.1.</li>
     <li><strong>Native crashes.</strong> A crash inside the Rust engine does not give a Java stack trace, so each release's debug symbols need keeping.</li>
-    <li><strong>Bug reports.</strong> They arrive on the public repo. An issue template asking for the mod list, the log and <code>/rtsim district perf</code> keeps them readable. With a mirror, pull requests need porting back to the private repo.</li>
+    <li><strong>Bug reports.</strong> They arrive on the public repo. An issue template asking for the mod list, the log and <code>/rtsim district perf</code> keeps them readable. Since the repos open whole (AD-1), pull requests land on them directly.</li>
   </ul>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">Four decisions are yours, recommendation first</h2>
+  <h2 data-ss-id="decide-h">You answered all four on 21 October</h2>
 
   <div class="decision" data-ss-id="d-public">
-    <h3 data-ss-id="d-public-h">1. What becomes public (REL-1 says nothing new does)</h3>
-    <p class="rec" data-ss-id="d-public-rec">Recommended: once the list is done, publish a source mirror of only what ships (mic-native, plus mic-rtsim's engine crates, core and Create hooks), exported each release without history. Deep Time and the viewer stay private.</p>
-    <p class="why" data-ss-id="d-public-why">The private repos' history and docs describe your server and the rest of the pack. A mirror ships the code without them.</p>
-    <ul data-ss-id="d-public-alts">
-      <li>Open mic-rtsim and mic-native whole, with history: simpler, and the history goes public.</li>
-      <li>Stay private: no public release; MIC keeps copying the jars (REL-1 as it is).</li>
-    </ul>
+    <h3 data-ss-id="d-public-h">1. What becomes public</h3>
+    <p class="rec" data-ss-id="d-public-rec">Your answer: when the addon releases, mic-rtsim and mic-native open whole, with their history (AD-1).</p>
+    <p class="why" data-ss-id="d-public-why">You did not take the recommended source mirror without history. Their history and docs describe your server and the rest of the pack, so before either goes public its history is scanned for secrets, private hosts and server data, as mic-viewer's was (VH-1). Until release, REL-1 holds: nothing new goes public. Deep Time stays private (TP19).</p>
   </div>
 
   <div class="decision" data-ss-id="d-license">
     <h3 data-ss-id="d-license-h">2. The license</h3>
-    <p class="rec" data-ss-id="d-license-rec">Recommended: keep AGPL-3.0-or-later for the engine, core and Create hooks, and MPL-2.0 for mic_native (A2, A7, A18).</p>
-    <ul data-ss-id="d-license-alts">
-      <li>GPL-3.0: no network clause, so a server could run a changed version without sharing it.</li>
-      <li>LGPL-3.0 or MPL-2.0: weaker; closed mods may build on it, and there is no network clause.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-license-rec">Your answer, as recommended: AGPL-3.0-or-later for the engine, core and Create hooks, and MPL-2.0 for mic_native (AD-2; A2, A7, A18).</p>
   </div>
 
   <div class="decision" data-ss-id="d-name">
     <h3 data-ss-id="d-name-h">3. The name</h3>
-    <p class="rec" data-ss-id="d-name-rec">Recommended: Create: Distant Factories. It says what players see, a far factory still working, without chunk jargon.</p>
-    <ul data-ss-id="d-name-alts">
-      <li>Create: Unloaded Factories (literal, for players who know chunks).</li>
-      <li>Create: Offline Factories (shorter, but reads as "no internet").</li>
-    </ul>
-    <p class="why" data-ss-id="d-name-why">No Modrinth project uses any of the three names. The mod ids can stay mic_rtsim and mic_rtsim_create.</p>
+    <p class="rec" data-ss-id="d-name-rec">Your answer, as recommended: Create: Distant Factories (AD-3).</p>
+    <p class="why" data-ss-id="d-name-why">The mod ids stay mic_rtsim and mic_rtsim_create. No Modrinth project used the name on 21 October.</p>
   </div>
 
   <div class="decision" data-ss-id="d-when">
     <h3 data-ss-id="d-when-h">4. When</h3>
-    <p class="rec" data-ss-id="d-when-rec">Recommended: an alpha on Modrinth and CurseForge on the same day, once the 14 items are done. Addon machine models (G4) follow in updates.</p>
-    <ul data-ss-id="d-when-alts">
-      <li>Sooner: once the 8 safety and packaging items are done, release the learned-rate replay from main as an early alpha, and add the exact replay later. Feedback comes sooner, but players' first impression is the weaker model.</li>
-      <li>Later: wait for G4, so packs full of Create addons get the exact replay too.</li>
-    </ul>
+    <p class="rec" data-ss-id="d-when-rec">Your answer, as recommended: an alpha on Modrinth and CurseForge the same day, once the 14 items are done (AD-4).</p>
+    <p class="why" data-ss-id="d-when-why">Addon machine models (G4) follow in updates.</p>
   </div>
 
   <div class="box" data-ss-id="my-choices">
     <p class="label" data-ss-id="my-choices-label">Choices I would make myself (all reversible)</p>
     <ul data-ss-id="my-choices-list">
       <li>One codebase: MIC runs the same jars, and its config turns the other modules on. The addon's defaults switch on industry only.</li>
-      <li>Cut deeptime-format with a Cargo feature rather than publish it.</li>
+      <li>Cut deeptime-format with a Cargo feature rather than publish it. You confirmed this with TP19.</li>
       <li>Leave the viewer out of the first release.</li>
       <li>Keep the natives inside the jar, and say so in the description, with links to the source and the build script.</li>
     </ul>
@@ -303,6 +288,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
+    <li>Your answers: mic-rtsim DECISIONS.md rows AD-1 to AD-4, VH-1, ST3 and TP19 (b2bb407); the mic-viewer re-pin to af33496 (d5199f2); the merges of feat/glassbox-g2 (3c974ef) and fix/district-seeds (02c2096); docs/choices-glassbox-g2.md G2-9.</li>
     <li>mic-rtsim main at aca3c3a: DECISIONS.md rows A2, A7, A18, C8a, C25, C31, G-B14, REL-1, SEC-1, SRV2, UR-1; Cargo.toml and crates/rtsim-jni/Cargo.toml; crates/rtsim-space (deeptime-format); neoforge core RtsimConfig.java and Module.java; neoforge/create neoforge.mods.toml and mic_rtsim_create.mixins.json; PATCHES.md rows 18 to 20 and 30 to 34; tools/natives/build-natives.sh.</li>
     <li>docs/stress-worlds-results.md sections 1, 3, 4.4, 5, 6 and 8 (StressC, StressB, Greggi and StressA); docs/choices-indrework.md; docs/choices-journal-barrier.md (JB3); docs/deploy-rehearsal-live.md item 0.12.</li>
     <li>Branch feat/glassbox-g2 at d3b4e5a: docs/choices-glassbox-g2.md (G2-9, G2-16, G2-55, G2-56, G2-58) and GLASSBOX.md sections 8.1 and 11.3. Branch fix/district-seeds at 9449891 (DS-10).</li>

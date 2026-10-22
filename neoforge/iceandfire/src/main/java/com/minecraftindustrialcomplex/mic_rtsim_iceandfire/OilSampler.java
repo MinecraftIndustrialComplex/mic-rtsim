@@ -50,7 +50,8 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public final class OilSampler {
     /**
      * PLACEHOLDER: the time sampling may take in one tick (nanoseconds); one sample always runs, so a tick
-     * with work pays at least one source call (about 3 ms for Create: Diesel Generators on a loaded chunk).
+     * with work pays at least one source call (about 3 ms for Create: Diesel Generators on a loaded chunk
+     * with an oil biome; far less for one its first look skips, OGC45).
      */
     public static final long NANOS_PER_TICK = 2_000_000L;
     /** Surveys wider than this are clamped (the engine asks for 1,024). */

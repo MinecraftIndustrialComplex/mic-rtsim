@@ -23,7 +23,7 @@
 //!   cut unwatched.
 //! - **Pacing** (I25): after an attack of a class, the district has a cooldown for that class.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rng::{StreamKey, SystemId};
@@ -265,6 +265,13 @@ pub struct ExposedBlockRow {
     pub inventory: Option<u32>,
 }
 
+impl ExposedBlockRow {
+    /// The chunk the block is in.
+    pub fn chunk(&self) -> (i32, i32) {
+        (self.x >> 4, self.z >> 4)
+    }
+}
+
 impl From<&ExposedBlock> for ExposedBlockRow {
     fn from(b: &ExposedBlock) -> Self {
         Self {
@@ -305,6 +312,34 @@ impl Defence {
             ammo_good: s.ammo_good,
             ammo_per_engagement: s.ammo_per_engagement,
         });
+    }
+
+    /// One IND_SURVEY_BLOCKS part (the oil gate audit's F5): part 0 replaces the rows of its chunk
+    /// (a partial survey, which has no walk, keeps the chunk's wall faces), every part adds its own.
+    /// The rows of other chunks stay until their chunk is surveyed again, so a district larger than
+    /// the loaded area keeps an exposed set.
+    pub fn survey_blocks(
+        &mut self,
+        chunk: (i32, i32),
+        part: u32,
+        partial: bool,
+        blocks: &[ExposedBlock],
+    ) {
+        if part == 0 {
+            self.exposed.retain(|b| {
+                b.chunk() != chunk || (partial && b.flags & BlockFlags::PERIMETER != 0)
+            });
+        }
+        self.exposed
+            .extend(blocks.iter().map(ExposedBlockRow::from));
+    }
+
+    /// Drops the rows of chunks that are no longer the district's. An empty set (the engine was
+    /// never told the district's chunks) keeps them all.
+    pub fn keep_chunks(&mut self, chunks: &BTreeSet<(i32, i32)>) {
+        if !chunks.is_empty() {
+            self.exposed.retain(|b| chunks.contains(&b.chunk()));
+        }
     }
 
     /// Records a real fight. At most 16 kept per class, newest last (TUNABLE, PLACEHOLDER).
@@ -1060,6 +1095,119 @@ mod tests {
         assert_eq!(damage(&walk, &o, &stock, &d, &tun).destroyed.len(), 5);
         // No survey: the gate is open.
         assert_eq!(roof_pass(ThreatClass::Flying, None), 1.0);
+    }
+
+    fn block(x: i32, y: i32, z: i32, flags: u32) -> ExposedBlock {
+        ExposedBlock {
+            pos: crate::ids::BlockPos::new(x, y, z),
+            state: 1,
+            flags: BlockFlags(flags),
+            inventory: None,
+        }
+    }
+
+    fn row(x: i32, y: i32, z: i32, flags: u32) -> ExposedBlockRow {
+        ExposedBlockRow::from(&block(x, y, z, flags))
+    }
+
+    /// OGB-7 (the oil gate audit's F4): a roof within reach is a roofless row of its own, and the
+    /// machine under it does not count as roofed. A flyer takes the roof and leaves the machine,
+    /// whose own row has no sky access; the next survey finds that machine open and the next raid
+    /// takes it. Cover beyond reach still shields: no roof row, and the machine counts as roofed.
+    #[test]
+    fn a_flyer_takes_a_roof_in_reach_before_the_machine_under_it() {
+        const M: u32 = BlockFlags::MACHINE;
+        const OPEN: u32 = BlockFlags::ROOFLESS;
+        const ROOF: u32 = BlockFlags::ROOFLESS | BlockFlags::ROOF;
+        let mut d = Defence::default();
+        let mut s = survey(100, 0.0, 0);
+        // A machine in a shed (its roof 3 above), and one under 12 blocks of cover (shielded).
+        s.machine_blocks = 2;
+        s.roofed_machines = 1;
+        d.set_survey(&s);
+        d.survey_blocks(
+            (0, 0),
+            0,
+            false,
+            &[block(2, 64, 2, M), block(9, 64, 9, M), block(2, 67, 2, ROOF)],
+        );
+        let tun = ThreatTunables::default();
+        let stock = GoodVec::default();
+        let mut fly = threat(ThreatClass::Flying, 4);
+        fly.loads = Some(Loads {
+            carry: 0,
+            blocks: 8,
+        });
+        let o = resolve(&fly, &d, 0, &tun);
+        assert!((o.roof_pass - 0.5).abs() < 1e-12, "{}", o.roof_pass);
+        let dmg = damage(&fly, &o, &stock, &d, &tun);
+        assert_eq!(
+            dmg.destroyed,
+            vec![row(2, 67, 2, ROOF)],
+            "the shed's roof, neither machine"
+        );
+        assert!(!dmg.machine_lost);
+        // The next survey: the roof is gone, the shed's machine sees the sky; the deep cover holds.
+        d.survey_blocks((0, 0), 0, false, &[block(2, 64, 2, M | OPEN), block(9, 64, 9, M)]);
+        let mut again = fly;
+        again.id += 1;
+        let o = resolve(&again, &d, 0, &tun);
+        let dmg = damage(&again, &o, &stock, &d, &tun);
+        assert_eq!(dmg.destroyed, vec![row(2, 64, 2, M | OPEN)], "now the machine");
+        assert!(dmg.machine_lost);
+    }
+
+    /// The oil gate audit's F5: IND_SURVEY_BLOCKS replaces one chunk's rows at a time. A partial
+    /// survey (some of the district's chunks unloaded) replaces the chunks it read, keeping their
+    /// wall faces, and leaves every other chunk's rows; a chunk read with no rows is emptied; a later
+    /// part adds to its chunk; rows of a chunk the district lost go.
+    #[test]
+    fn a_partial_survey_keeps_the_other_chunks_rows() {
+        const WALL: u32 = BlockFlags::PERIMETER;
+        const M: u32 = BlockFlags::MACHINE | BlockFlags::ROOFLESS;
+        const TANK: u32 = BlockFlags::INVENTORY | BlockFlags::ROOFLESS;
+        let at = |d: &Defence| {
+            let mut v: Vec<(i32, i32)> = d.exposed.iter().map(|b| (b.x, b.z)).collect();
+            v.sort();
+            v
+        };
+        let mut d = Defence::default();
+        // A whole survey of three chunks, one of them west of x 0.
+        d.survey_blocks((0, 0), 0, false, &[block(1, 64, 1, WALL), block(5, 64, 5, M)]);
+        d.survey_blocks((1, 0), 0, false, &[block(20, 64, 5, M)]);
+        d.survey_blocks((-1, 0), 0, false, &[block(-3, 64, 5, TANK)]);
+        assert_eq!(at(&d), vec![(-3, 5), (1, 1), (5, 5), (20, 5)]);
+        // Only chunk (0, 0) loaded: its machine moved; its wall face stays (a partial survey has no
+        // walk); the unloaded chunks keep theirs, so a raid there still has blocks to break.
+        d.survey_blocks((0, 0), 0, true, &[block(6, 64, 6, M)]);
+        assert_eq!(at(&d), vec![(-3, 5), (1, 1), (6, 6), (20, 5)]);
+        let mut fly = threat(ThreatClass::Flying, 4);
+        fly.loads = Some(Loads {
+            carry: 0,
+            blocks: 8,
+        });
+        let tun = ThreatTunables::default();
+        let o = resolve(&fly, &d, 0, &tun);
+        let broken = damage(&fly, &o, &GoodVec::default(), &d, &tun).destroyed;
+        assert!(
+            broken.contains(&row(20, 64, 5, M)) && broken.contains(&row(-3, 64, 5, TANK)),
+            "the unloaded chunks' blocks are still there to break: {broken:?}"
+        );
+        // Chunk (1, 0) read again with nothing in it: emptied.
+        d.survey_blocks((1, 0), 0, true, &[]);
+        assert_eq!(at(&d), vec![(-3, 5), (1, 1), (6, 6)]);
+        // A second part adds to its chunk.
+        d.survey_blocks((-1, 0), 1, true, &[block(-4, 64, 5, TANK)]);
+        assert_eq!(at(&d), vec![(-4, 5), (-3, 5), (1, 1), (6, 6)]);
+        // A whole survey's part 0 replaces the wall faces too.
+        d.survey_blocks((0, 0), 0, false, &[block(6, 64, 6, M)]);
+        assert_eq!(at(&d), vec![(-4, 5), (-3, 5), (6, 6)]);
+        // The district lost chunk (-1, 0).
+        d.keep_chunks(&BTreeSet::from([(0, 0), (1, 0)]));
+        assert_eq!(at(&d), vec![(6, 6)]);
+        // An engine never told the district's chunks drops nothing.
+        d.keep_chunks(&BTreeSet::new());
+        assert_eq!(at(&d), vec![(6, 6)]);
     }
 
     #[test]

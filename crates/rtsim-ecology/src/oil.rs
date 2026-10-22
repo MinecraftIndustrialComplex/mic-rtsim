@@ -60,15 +60,18 @@ pub(crate) const DIST_TAG: u64 = 0x4449_5354 << 32; // "DIST"
 /// Players' presence entries kept before the stale ones are dropped.
 const PRESENCE_KEPT: usize = 32;
 
-/// The oil gate's tunables. Every number is a PLACEHOLDER until OG-10's measurement.
+/// The oil gate's tunables. Every number but the reserve's two (Ben's, OGB-2) is a PLACEHOLDER
+/// until OG-10's measurement.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OilTunables {
-    /// Reserve points when full (OILGATE.md §4.3).
+    /// Reserve points when full (OILGATE.md §4.3). Ben's 600 (OGB-2): a point a fire event and a
+    /// fight about five streams of 35 to 41 events, so a full reserve lasts about three fights.
     pub capacity: i32,
     /// Ticks per point lost with time: the pack's `hungerTickRate`, so oil and food keep one
     /// rhythm.
     pub tick_rate: u64,
-    /// A reserve at or below this is low: the dragon wakes for it and weighs refuelling.
+    /// A reserve at or below this is low: the dragon wakes for it and weighs refuelling. Ben's
+    /// 240 (OGB-2): about one fight left.
     pub refuel_below: i32,
     /// Blocks from where it is to the oil chunk it flies to, at most.
     pub refuel_reach: u32,
@@ -95,6 +98,9 @@ pub struct OilTunables {
     pub lair_reach: u32,
     /// Districts within this many blocks of the oil chunk a dragon drinks at are sensed (OG-8).
     pub sense_reach: u32,
+    /// Sensing a district names the players who built there in the last this many days (the oil
+    /// audit's F7, OGC55).
+    pub grudge_window_days: u64,
     /// A district holding at least this much fuel signals (one tank) and draws a dry dragon.
     pub fuel_signal_mb: i64,
     /// A new lair asks for CDG's oil within this many blocks (OIL_SURVEY).
@@ -110,9 +116,9 @@ pub struct OilTunables {
 impl Default for OilTunables {
     fn default() -> Self {
         OilTunables {
-            capacity: 100,
+            capacity: 600,
             tick_rate: 3_000,
-            refuel_below: 40,
+            refuel_below: 240,
             refuel_reach: 3_000,
             refuel_dwell_ticks: 1_000,
             dry_strength_milli: 500,
@@ -125,6 +131,7 @@ impl Default for OilTunables {
             flight_age_days_max: 80,
             lair_reach: 1_500,
             sense_reach: 400,
+            grudge_window_days: 10,
             fuel_signal_mb: 1_000,
             survey_radius: 1_024,
             presence_fresh_ticks: 200,
@@ -867,7 +874,7 @@ impl Dragons {
     }
 
     /// Arriving at an oil chunk: it senses the districts around (OG-8); not full, it raids the
-    /// one holding the most fuel (OG-5; watched, it materializes there instead); then it rests
+    /// one holding the most fuel (OG-5; watched, it also materializes there, OGC56); then it rests
     /// on the field to fill up, unless the tanks filled it. A visitor always rests a while.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn refuel_arrive(
@@ -891,36 +898,39 @@ impl Dragons {
                 .filter(|(_, s, _)| s.fuel_mb >= signal)
                 .max_by(|a, b| a.1.fuel_mb.cmp(&b.1.fuel_mb).then(b.0.id.0.cmp(&a.0.id.0)))
                 .map(|(s, _, fresh)| (*s, *fresh));
-            if let Some((site, fresh)) = tank {
-                let cruise = self.tun.species(self.dragons[d].species).cruise_y;
-                // A watched district's tanks draw it once a day (the day it is first sensed):
-                // driven off, it rests on the field instead of coming back at once.
-                if site.watched {
-                    if fresh && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius) {
-                        self.note(
-                            at,
-                            "refuel",
-                            Some(d),
-                            format!(
-                                "dry: flies at the tanks of district {} (watched)",
-                                site.id.0
-                            ),
-                        );
-                        self.materialize(w, d, p, true, false, Some((site.pos, cruise)), at);
-                        return;
-                    }
-                } else {
-                    let r = self.raid_sites(infra, d, vec![site], at);
-                    self.feed(d, at, r.food, &[]);
-                    if r.any {
-                        let quarry = Quarry {
-                            kind: PreyKind::Grudge,
-                            name: format!("district {} (tanks)", site.id.0),
-                            pos: Some(site.pos),
-                            id: u128::from(site.id.0),
-                        };
-                        self.record_hunt(at, d, quarry, r.food, r.taken);
-                    }
+            // A watched district's tanks draw it once a day (the day it is first sensed): driven
+            // off, it rests on the field instead of coming back at once. Watched, the raid also
+            // resolves as an unwatched one does, at once (P28 as Ben decided it, OGC56), and the
+            // dragon comes in person.
+            if let Some((site, fresh)) = tank
+                && (!site.watched || fresh)
+            {
+                let r = self.raid_sites(infra, d, vec![site], at, false);
+                self.feed(d, at, r.food, &[]);
+                if r.any {
+                    let quarry = Quarry {
+                        kind: PreyKind::Grudge,
+                        name: format!("district {} (tanks)", site.id.0),
+                        pos: Some(site.pos),
+                        id: u128::from(site.id.0),
+                    };
+                    self.record_hunt(at, d, quarry, r.food, r.taken);
+                }
+                if site.watched
+                    && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius)
+                {
+                    let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+                    self.note(
+                        at,
+                        "refuel",
+                        Some(d),
+                        format!(
+                            "dry: flies at the tanks of district {} (watched)",
+                            site.id.0
+                        ),
+                    );
+                    self.materialize(w, d, p, true, false, Some((site.pos, cruise)), at);
+                    return;
                 }
             }
         }
@@ -983,10 +993,11 @@ impl Dragons {
         }
     }
 
-    /// Sensing (OG-8): each district within `sense_reach` of the oil chunk `d` drinks at, once a
-    /// day each, is an Encroachment report against the district (and against each player whose
-    /// home is there, P26's homes standing in for its builders) that `d` witnesses. Returns every
-    /// district near, with its signals and whether it was sensed now (not already today).
+    /// Sensing (OG-8): each district with a chunk within `sense_reach` of the oil chunk `d` drinks
+    /// at (the chunk test, OGC50), once a day each, is an Encroachment report against the
+    /// district, each player whose home is there (P26) and each player who built there lately
+    /// (OGC55), that `d` witnesses. Returns every district near, with its signals and whether it
+    /// was sensed now (not already today).
     pub(crate) fn sense(
         &mut self,
         w: &mut World,
@@ -996,75 +1007,105 @@ impl Dragons {
         at: Tick,
     ) -> Vec<(DistrictSite, DistrictSignals, bool)> {
         let reach = i64::from(self.tun.oil.sense_reach);
-        let sites = infra.districts_near(pos.frame, i64::from(pos.x), i64::from(pos.z), reach);
+        let sites = infra.districts_reaching(pos.frame, i64::from(pos.x), i64::from(pos.z), reach);
         let day = at.day().min(u64::from(u32::MAX)) as u32;
-        let fuels = self.tun.oil.fuels.clone();
-        let signal = self.tun.oil.fuel_signal_mb;
         let mut out = Vec::with_capacity(sites.len());
         for site in sites {
-            let sig = infra.signals(site.id, &fuels);
-            if self.dragons[d].sensed.contains(&(site.id.0, day)) {
-                out.push((site, sig, false));
-                continue;
-            }
-            out.push((site, sig, true));
-            let units = 1
-                + 2 * u32::from(sig.oil_sample)
-                + u32::from(sig.fuel_mb >= signal)
-                + u32::from(sig.polluted);
-            let severity = (units * u32::from(SEVERITY_UNIT)).clamp(1, 255) as u8;
-            let district = w
-                .knowledge
-                .actors_mut()
-                .register(ActorKind::Group, DIST_TAG ^ site.id.0);
-            self.districts.insert(district, (site.id.0, site.pos));
-            let me = self.dragons[d].actor;
-            let t = self.topo(site.pos.frame);
-            let mut who = vec![district];
-            for &p in self.players.keys() {
-                let home = self.homes.home(p, at).filter(|h| {
-                    h.pos.frame == site.pos.frame
-                        && flight::dist(
-                            t,
-                            (i64::from(h.pos.x), i64::from(h.pos.z)),
-                            (i64::from(site.pos.x), i64::from(site.pos.z)),
-                        ) <= HOME_RADIUS as f64
-                });
-                if home.is_some() {
-                    who.push(p);
-                }
-            }
-            for a in who {
-                let id = w.knowledge.record(Report {
-                    who: a,
-                    whom: me,
-                    kind: ReportKind::Encroachment,
-                    severity,
-                    flags: 0,
-                    at,
-                    place: place(pos, 64),
-                });
-                w.knowledge.witness(me, id, at);
-            }
-            let x = self.dragons.get_mut(d).expect("live");
-            x.sensed.retain(|(id, _)| *id != site.id.0);
-            x.sensed.push((site.id.0, day));
-            if x.sensed.len() > SENSED_KEPT {
-                x.sensed.remove(0);
-            }
-            self.stats.encroachments += 1;
-            let s = w.knowledge.sentiment(me, district, at);
-            self.note(
-                at,
-                "sense",
-                Some(d),
-                format!(
-                    "senses district {} (severity {severity}: oil sample {}, fuel {} mB, polluted {}): sentiment {s}",
-                    site.id.0, sig.oil_sample, sig.fuel_mb, sig.polluted
-                ),
-            );
+            let (sig, now) = self.sense_site(w, infra, d, site, pos, day, at);
+            out.push((site, sig, now));
         }
         out
+    }
+
+    /// `d` senses `site` from `pos` (OG-8): an Encroachment report against the district, the
+    /// players whose home is within `HOME_RADIUS` of it and the players who built there in the
+    /// last `grudge_window_days` (the oil audit's F7, OGC55), unless `d` sensed it already on
+    /// `day`. Returns the district's signals and whether it was sensed now.
+    #[allow(clippy::too_many_arguments)]
+    fn sense_site(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        site: DistrictSite,
+        pos: Pos,
+        day: u32,
+        at: Tick,
+    ) -> (DistrictSignals, bool) {
+        let signal = self.tun.oil.fuel_signal_mb;
+        let sig = infra.signals(site.id, &self.tun.oil.fuels);
+        if self.dragons[d].sensed.contains(&(site.id.0, day)) {
+            return (sig, false);
+        }
+        let units = 1
+            + 2 * u32::from(sig.oil_sample)
+            + u32::from(sig.fuel_mb >= signal)
+            + u32::from(sig.polluted);
+        let severity = (units * u32::from(SEVERITY_UNIT)).clamp(1, 255) as u8;
+        let district = w
+            .knowledge
+            .actors_mut()
+            .register(ActorKind::Group, DIST_TAG ^ site.id.0);
+        self.districts.insert(district, (site.id.0, site.pos));
+        let me = self.dragons[d].actor;
+        let t = self.topo(site.pos.frame);
+        let mut who = vec![district];
+        for &p in self.players.keys() {
+            let home = self.homes.home(p, at).filter(|h| {
+                h.pos.frame == site.pos.frame
+                    && flight::dist(
+                        t,
+                        (i64::from(h.pos.x), i64::from(h.pos.z)),
+                        (i64::from(site.pos.x), i64::from(site.pos.z)),
+                    ) <= HOME_RADIUS as f64
+            });
+            if home.is_some() {
+                who.push(p);
+            }
+        }
+        // Its builders, wherever they live (the oil audit's F7, OGC55).
+        let window = self
+            .tun
+            .oil
+            .grudge_window_days
+            .saturating_mul(TICKS_PER_DAY);
+        let since = Tick(at.0.saturating_sub(window));
+        for uuid in infra.builders(site.id, since) {
+            let p = self.player(w, uuid);
+            if !who.contains(&p) {
+                who.push(p);
+            }
+        }
+        for a in who {
+            let id = w.knowledge.record(Report {
+                who: a,
+                whom: me,
+                kind: ReportKind::Encroachment,
+                severity,
+                flags: 0,
+                at,
+                place: place(pos, 64),
+            });
+            w.knowledge.witness(me, id, at);
+        }
+        let x = self.dragons.get_mut(d).expect("live");
+        x.sensed.retain(|(id, _)| *id != site.id.0);
+        x.sensed.push((site.id.0, day));
+        if x.sensed.len() > SENSED_KEPT {
+            x.sensed.remove(0);
+        }
+        self.stats.encroachments += 1;
+        let s = w.knowledge.sentiment(me, district, at);
+        self.note(
+            at,
+            "sense",
+            Some(d),
+            format!(
+                "senses district {} (severity {severity}: oil sample {}, fuel {} mB, polluted {}): sentiment {s}",
+                site.id.0, sig.oil_sample, sig.fuel_mb, sig.polluted
+            ),
+        );
+        (sig, true)
     }
 
     /// The player last seen nearest `pos`, within `r` blocks (a watched district's player).
@@ -1093,7 +1134,7 @@ impl Dragons {
     }
 
     /// A grudge raid on a district (OG-8, `Target::District`): through the threat interface as
-    /// a home's districts are; watched, a real fight at the district.
+    /// a home's districts are; watched, that and a real fight at the district (OGC56).
     pub(crate) fn raid_district(
         &mut self,
         w: &mut World,
@@ -1113,18 +1154,12 @@ impl Dragons {
         };
         self.stats.district_target_raids += 1;
         let sites: Vec<DistrictSite> = infra
-            .districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS)
+            .districts_reaching(frame, i64::from(x), i64::from(z), HOME_RADIUS)
             .into_iter()
             .filter(|s| s.id == DistrictId(district))
             .collect();
-        let r = self.raid_sites(infra, d, sites, at);
-        if let Some(site) = r.watched {
-            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
-            if let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius) {
-                self.materialize(w, d, p, true, true, Some((site.pos, cruise)), at);
-                return;
-            }
-        }
+        let r = self.raid_sites(infra, d, sites, at, false);
+        let watched = r.watched;
         self.feed(d, at, r.food, &[]);
         let quarry = Quarry {
             kind: PreyKind::Grudge,
@@ -1132,6 +1167,17 @@ impl Dragons {
             pos: Some(Pos::new(frame, x, z)),
             id: u128::from(district),
         };
+        // Watched, it was raided too (P28, OGC56) and the dragon comes in person.
+        if let Some(site) = watched
+            && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius)
+        {
+            if r.any {
+                self.record_hunt(at, d, quarry, r.food, r.taken);
+            }
+            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+            self.materialize(w, d, p, true, true, Some((site.pos, cruise)), at);
+            return;
+        }
         self.record_hunt(at, d, quarry, r.food, r.taken);
         if !r.any {
             let x = self.dragons.get_mut(d).expect("live");
@@ -1255,6 +1301,8 @@ impl Dragons {
                 self.schedule(wake, Ev::Hungry { d, plan });
             }
         }
+        // The fields' daily watch (OGC52) starts now.
+        self.schedule(at, Ev::OilWatch);
         self.note(
             at,
             "oil",
@@ -1264,6 +1312,71 @@ impl Dragons {
                 fire.len()
             ),
         );
+    }
+
+    /// The fields' daily watch (the oil audit's F2, OGC52): every district with a chunk within
+    /// `sense_reach` of a field's chunk is sensed, as at a drink spot, by a fire dragon of the
+    /// lair nearest that chunk within `lair_reach` (OGC53); no fire lair in reach, nobody. No
+    /// flight: the dragon knows its ground. Books the next day's watch.
+    pub(crate) fn oil_watch(&mut self, w: &mut World, infra: &mut dyn Infrastructure, at: Tick) {
+        self.schedule(at + TICKS_PER_DAY, Ev::OilWatch);
+        if self.oil.is_empty() {
+            return;
+        }
+        let reach = i64::from(self.tun.oil.sense_reach);
+        let topo = self.topo.clone();
+        let oil = &self.oil;
+        let hits =
+            infra.districts_where(&mut |frame, x, z| oil.near(topo.of(frame), frame, x, z, reach));
+        let day = at.day().min(u64::from(u32::MAX)) as u32;
+        for (site, n) in hits {
+            let Some(d) = self.field_watcher(site.pos.frame, n) else {
+                continue;
+            };
+            let here = Pos::new(site.pos.frame, n.x, n.z);
+            if self.sense_site(w, infra, d, site, here, day, at).1 {
+                self.note(
+                    at,
+                    "sense",
+                    Some(d),
+                    format!(
+                        "watches field {}: district {} has a chunk {:.0} blocks from it",
+                        n.field, site.id.0, n.dist
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The dragon that watches the oil chunk `n` (OGC53): of the fire lairs within `lair_reach`
+    /// of it, the nearest with a fire dragon living there (a tie, the lower lair), its first such
+    /// occupant.
+    fn field_watcher(&self, frame: u16, n: Near) -> Option<DragonId> {
+        let reach = i64::from(self.tun.oil.lair_reach);
+        let (x, z) = (i64::from(n.x), i64::from(n.z));
+        let t = self.topo(frame);
+        let mut best: Option<(f64, u32, DragonId)> = None;
+        for (rx, rz) in self.regions_near(frame, Rect::around(x, z, reach)) {
+            for &l in self.lair_cells.get(&(frame, rx, rz)).into_iter().flatten() {
+                let lair = &self.lairs[l as usize];
+                if !self.tun.species(lair.species).uses_oil {
+                    continue;
+                }
+                let dd = flight::dist(t, (x, z), (i64::from(lair.pos.x), i64::from(lair.pos.z)));
+                if dd > reach as f64 || best.is_some_and(|b| (dd, l) >= (b.0, b.1)) {
+                    continue;
+                }
+                let Some(&d) = lair.occupants.iter().find(|&&d| {
+                    self.dragons
+                        .get(d)
+                        .is_some_and(|x| self.tun.species(x.species).uses_oil)
+                }) else {
+                    continue;
+                };
+                best = Some((dd, l, d));
+            }
+        }
+        best.map(|(_, _, d)| d)
     }
 
     /// DRAGON_BREATHS: an embodied dragon's fire costs a point a breath (OG-4).

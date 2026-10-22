@@ -9,7 +9,9 @@
 //!   restored engine continues exactly (tested). A real restart then calls
 //!   `Engine::session_start`, which discards the windows (F6). **Not saved:** the engine's text log,
 //!   and cluster events (drained after every touch).
-//! - **No format version** before release: a change wipes the save (PLAN.md §4.9).
+//! - **No format version** before release: a change wipes the save (PLAN.md §4.9). A district
+//!   page starts with a magic (`district::DISTRICT_MAGIC`, bumped on a change to the district
+//!   format), so an older page fails by name rather than mid-record.
 //!
 //! The kernel's `Encode`/`Decode` cannot be implemented for std types from this crate, so values go
 //! through [`Persist`], a crate-local trait on the kernel's `Writer` and `Reader`.

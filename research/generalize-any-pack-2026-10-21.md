@@ -500,6 +500,8 @@ None of these is wasted on MIC, so the generic path costs MIC nothing.
 Each has the recommended option first. Everything else in this note is undoable and was chosen in
 the text.
 
+**Answered 2026-10-21:** Ben took (a) on all four (DECISIONS.md GA-1 to GA-4).
+
 1. **Is "any pack" a goal?**
    - **(a) Recommended. A by-product.** Build only the slices that also serve MIC or the Create addon:
      G0, G1, G2, G4, G6, G7, G8, G10. Leave per-mod plugins (AE2, RS2, Mekanism, IE) until a non-MIC
