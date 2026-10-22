@@ -173,6 +173,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** The oil gate's counters and one dragon's reserve: {@code OIL_*} values. */
     private static native void nDragonsOil(long handle, long agent, long[] out);
 
+    /** One oil nest: {@code NEST_*} values; false for no such nest. */
+    private static native boolean nDragonsNest(long handle, long nest, long[] out);
+
     /** The world model at block (x, z) of Java's dimension {@code dim}: {@code HABITAT_INFO} values. */
     private static native void nHabitatInfo(long handle, int dim, int x, int z, long[] out);
 
@@ -491,8 +494,10 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     /** INDUSTRY_THREAT's source and class codes (rtsim-jni's orders.rs SOURCES and ThreatClass::ALL). */
-    public static final int THREAT_NATURAL = 0, THREAT_DRAGON = 1, THREAT_BANDIT = 2, THREAT_BOSS = 3, THREAT_SYNTHETIC = 4;
-    public static final int CLASS_GROUND_MELEE = 0, CLASS_GROUND_RANGED = 1, CLASS_FLYING = 2, CLASS_SIEGE = 3;
+    public static final int THREAT_NATURAL = 0, THREAT_DRAGON = 1, THREAT_BANDIT = 2, THREAT_BOSS = 3, THREAT_SYNTHETIC = 4,
+            THREAT_NEST = 5;
+    public static final int CLASS_GROUND_MELEE = 0, CLASS_GROUND_RANGED = 1, CLASS_FLYING = 2, CLASS_SIEGE = 3,
+            CLASS_BURROWING = 4;
 
     /**
      * An attack on a district (INDUSTRY_THREAT, target kind 1), resolved by the industry engine at its next
@@ -527,6 +532,15 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public void tributeStart(long village, long lair) {
         order(new NativeCodec.Orders().tributeStart(village, lair), "TRIBUTE_START");
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): the oil nests' day, their watch period and the
+     * unit of their regrowth waits (OILGATE.md §4.6), is {@code ticks} from the next step on; 0 restores the
+     * default (24,000).
+     */
+    public void nestDay(long ticks) {
+        order(new NativeCodec.Orders().nestDay(ticks), "NEST_DAY");
     }
 
     @Override
@@ -648,6 +662,23 @@ public final class NativeEngine implements ScriptedEngine {
         long[] out = new long[OIL_INFO];
         nDragonsOil(live(), agent, out);
         return out;
+    }
+
+    /** {@link #nestInfo}'s fields. NEST_STATE: 0 asked, 1 placed, 2 heart broken, 3 placement failed. */
+    public static final int NEST_STATE = 0, NEST_STAGE = 1, NEST_WORMS = 2, NEST_K = 3, NEST_AWAKE = 4,
+            NEST_PRESSURE_MILLI = 5, NEST_WAIT_TICKS = 6, NEST_RENEWED = 7, NEST_LOST_PLAYER = 8, NEST_RAIDS = 9,
+            NEST_HATCHED = 10, NEST_COUNT = 11, NEST_INFO = 12;
+
+    /**
+     * Oil nest {@code nest} (PLACE_NEST's id) as of the engine's last step (OILGATE.md §4.6, indexed by
+     * {@code NEST_*}): its state, its worms' size stage (1 to 3), worms alive, its K, whether a drilled well
+     * kept it awake at its last watch (0 or 1), its pressure in thousandths, the regrowth wait left in ticks
+     * (-1 with none running), worms renewed, worms players killed, raids sent, whether its founding brood
+     * hatched (0 or 1), and the number of nests in the world. Null for no such nest.
+     */
+    public synchronized long[] nestInfo(long nest) {
+        long[] out = new long[NEST_INFO];
+        return nDragonsNest(live(), nest, out) ? out : null;
     }
 
     /**

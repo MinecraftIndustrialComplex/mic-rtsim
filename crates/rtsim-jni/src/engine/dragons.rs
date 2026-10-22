@@ -444,6 +444,13 @@ pub(super) fn tribute_start(st: &mut State, village: u64, lair: u64) {
     take_commands(st);
 }
 
+/// NEST_DAY (a test's order, applied at step start): the oil nests watch every `ticks` from now
+/// (0 restores the tunable's day).
+pub(super) fn nest_day(st: &mut State, ticks: u64) {
+    st.dragons.engine.set_nest_day(ticks);
+    st.phase1.taint();
+}
+
 fn ingest(st: &mut State, o: &Obs, game_time: i64) {
     st.dragons.records += 1;
     let at = Tick(super::phase1::world_tick(st, game_time));
@@ -791,6 +798,13 @@ impl super::Engine {
             unplaced,
             d.placing().count() as i64,
         ]
+    }
+
+    /// Oil nest `nest` (PLACE_NEST's id, OILGATE.md §4.6) as of the engine's last step:
+    /// `rtsim_ecology::nest::NEST_INFO` values; None for a nest the engine does not keep.
+    pub fn dragons_nest(&self, nest: u64) -> Option<[i64; rtsim_ecology::nest::NEST_INFO]> {
+        let st = super::lock(&self.state);
+        st.dragons.engine.nest_info(nest)
     }
 
     /// The oil gate's counters (OILGATE.md §4, `DragonStats`): oil chunks indexed, fields,

@@ -597,6 +597,18 @@ public final class IndRecords {
         public static final int FLAG_INVENTORY = 8;
         /** The top block over a roofed machine, within {@code roofReachBlocks} of it: a flyer can break it (OGB-7). */
         public static final int FLAG_ROOF = 16;
+        /**
+         * A machine or inventory under at least {@link SurveyJob#SUBTERRANEAN_COVER} blocks of cover: it is
+         * underground, where a burrowing attacker (an oil nest's worm, OILGATE.md §4.6) reaches it first.
+         */
+        public static final int FLAG_SUBTERRANEAN = 32;
+        /**
+         * A machine or inventory a burrowing attacker cannot reach (OILGATE.md §4.6, OG-9e): one standing on
+         * {@code #mic_rtsim:armoured_floor} (within four blocks under it), or one in
+         * {@code #mic_rtsim:burrow_spared} (a well's own blocks: the nest is after the machines, not the well
+         * that feeds it).
+         */
+        public static final int FLAG_ARMOURED = 64;
 
         /** Header {@link #FLAGS}: a partial survey (the chunk's wall faces stay). */
         public static final int PARTIAL = 1;
@@ -608,7 +620,14 @@ public final class IndRecords {
         public static final int GROUND_RANGED = 1;
         public static final int FLYING = 2;
         public static final int SIEGE = 3;
+        /** The surveyed classes: the SPAWNS, TURRET_STRENGTH and GUARDS arrays carry these four only. */
         public static final int COUNT = 4;
+        /**
+         * An oil nest's worms (OILGATE.md §4.6, OG-9e). Engine-made threats only: no entity is classed as
+         * burrowing in a fight (a worm on the surface fights as {@link #GROUND_MELEE}), and the survey arrays
+         * stop at {@link #COUNT}.
+         */
+        public static final int BURROWING = 4;
     }
 
     // ---- codes ------------------------------------------------------------------------------------

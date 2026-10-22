@@ -19,6 +19,8 @@
 //! - [`exec`] and [`bsp`]: the executor the caller hands in, and the bulk-synchronous parallel
 //!   step over paged regions (SCALE.md §5).
 //! - [`profile`]: named zones, microseconds per system.
+//! - [`renewal`]: the shared renewal rule, a site's pressure and its next arrival's wait
+//!   (EQUILIBRIUM.md §2.2).
 //! - [`store`]: the agent storage facade over plain columns (P4 stays open).
 //! - [`synth`]: synthetic kinds for tests and the scale bench. Scaffolding, not content.
 //!
@@ -39,6 +41,7 @@ pub mod meta_pages;
 pub mod page;
 pub mod paging;
 pub mod profile;
+pub mod renewal;
 pub mod rng;
 pub mod rows;
 pub mod store;

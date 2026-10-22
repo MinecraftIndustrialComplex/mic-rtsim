@@ -212,6 +212,8 @@ public final class DragonBridge implements SessionPlugin {
     public final LairPlacer placer = new LairPlacer(this);
     /** OIL_SURVEY answers and new chunks' oil (OG-2). */
     public final OilSampler sampler = new OilSampler(this);
+    /** PLACE_NEST, NEST_RENEW and NEST_SORTIE: the Death Worm nests under oil fields (OG-9e). */
+    public final Nests nests = new Nests(this);
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, adopted, discarded, captured, died, hurtRecords, ateRecords, untagged, stateRecords,
@@ -259,6 +261,7 @@ public final class DragonBridge implements SessionPlugin {
         lairs.clear();
         placer.clear();
         sampler.clear();
+        nests.clear();
         materializeFlags.clear();
         materialized = rejected = adopted = discarded = captured = died = hurtRecords = ateRecords = untagged = stateRecords = steered = malformed = 0;
         breathRecords = breathsReported = fireCancelled = chargesStopped = oilConfigs = 0;
@@ -299,6 +302,7 @@ public final class DragonBridge implements SessionPlugin {
         // The journal holding their deaths is saved with this world save: the corpses are ordinary from now.
         for (UUID id : List.copyOf(corpses.keySet()))
             untagCorpse(id);
+        nests.stopping();
     }
 
     @Override
@@ -317,6 +321,11 @@ public final class DragonBridge implements SessionPlugin {
         }
         for (UUID id : List.copyOf(corpses.keySet()))
             untagCorpse(id);
+        try {
+            nests.failed();
+        } catch (RuntimeException e) {
+            MicRtsimIceAndFire.LOGGER.error("[mic_rtsim_iceandfire] sending the nests' worms home after the bridge failed", e);
+        }
     }
 
     // ---- SessionPlugin: puppets -----------------------------------------------------------------
@@ -423,6 +432,20 @@ public final class DragonBridge implements SessionPlugin {
             case DragonRecords.OIL_SURVEY -> {
                 sampler.survey(names.name(Obs.DICT_DIMENSION, b.getInt(at + DragonRecords.OilSurvey.DIM)), b.getInt(at + DragonRecords.OilSurvey.X),
                         b.getInt(at + DragonRecords.OilSurvey.Z), b.getInt(at + DragonRecords.OilSurvey.RADIUS), now);
+                yield true;
+            }
+            case DragonRecords.PLACE_NEST -> {
+                nests.place(b.getLong(at + DragonRecords.PlaceNest.NEST), names.name(Obs.DICT_DIMENSION, b.getInt(at + DragonRecords.PlaceNest.DIM)),
+                        b.getInt(at + DragonRecords.PlaceNest.CX), b.getInt(at + DragonRecords.PlaceNest.CZ), b.getInt(at + DragonRecords.PlaceNest.DEPTH), now);
+                yield true;
+            }
+            case DragonRecords.NEST_RENEW -> {
+                nests.renew(b.getLong(at + DragonRecords.NestRenew.NEST), b.getInt(at + DragonRecords.NestRenew.STAGE), aux, now);
+                yield true;
+            }
+            case DragonRecords.NEST_SORTIE -> {
+                nests.sortie(b.getLong(at + DragonRecords.NestSortie.NEST), b.getInt(at + DragonRecords.NestSortie.X), b.getInt(at + DragonRecords.NestSortie.Z),
+                        b.getInt(at + DragonRecords.NestSortie.TIMEOUT_TICKS), aux, now);
                 yield true;
             }
             default -> {
@@ -704,6 +727,7 @@ public final class DragonBridge implements SessionPlugin {
         lairs.drain(now);
         placer.tick(now);
         sampler.tick(now);
+        nests.tick(now);
         lairs.scanChests(now);
         reportUntagged(now);
         endOfTickRecords(now);

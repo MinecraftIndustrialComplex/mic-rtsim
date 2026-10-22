@@ -11,6 +11,8 @@
 //! - [`infra`]: player infrastructure as prey, through the industry threat interface.
 //! - [`oil`]: the oil gate (OILGATE.md): the oil field index, the dragons' oil reserve, field
 //!   flights, refuelling and sensing industry near oil.
+//! - [`nest`]: the oil gate's underground half (OG-9e): oil nests of Death Worms under the fields,
+//!   asleep until a pumpjack drills, renewed by the shared rule.
 //! - [`boundary`]: the records the Ice and Fire plugin speaks (docs/boundary.md §6) and their
 //!   codec.
 //! - [`engine`]: [`engine::Dragons`], every dragon's life as events on one timing wheel.
@@ -35,6 +37,7 @@ pub mod herds;
 pub mod homes;
 pub mod index;
 pub mod infra;
+pub mod nest;
 pub mod oil;
 mod persist;
 pub mod prey;
