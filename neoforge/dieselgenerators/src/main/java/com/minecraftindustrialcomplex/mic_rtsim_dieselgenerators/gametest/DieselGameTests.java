@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.api.OilSource;
 import com.minecraftindustrialcomplex.mic_rtsim.oil.OilSources;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.CdgFirstLook;
@@ -21,6 +22,7 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.RandomState;
@@ -95,6 +97,33 @@ public final class DieselGameTests {
                 })
                 .thenWaitUntil(() -> check("the same op again is a duplicate", commandResults(op).contains(Obs.CommandResult.DUPLICATE_OP)))
                 .thenExecute(() -> check("still 4,998,766", OilChunksSavedData.getChunkOilAmount(helper.getLevel(), cp) == 4_998_766))
+                .thenSucceed();
+    }
+
+    /**
+     * A pumpjack hole seeds its own district whoever set it down (the oil gate audit's F1, OGC60): a hole
+     * {@code level.setBlock} puts in a chunk with no other machine, with no player, is in the chunk's seeds
+     * at once, and a district forms around it.
+     */
+    @GameTest(template = "yard", batch = "diesel_seed", timeoutTicks = 600)
+    public static void aPumpjackHoleSeedsWithNoPlayer(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        BlockPos hole = inChunk(helper, 8, 8);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("no district before the hole", districtAt(helper, hole) == null);
+                    set(helper, hole, block("createdieselgenerators:pumpjack_hole").defaultBlockState());
+                })
+                .thenWaitUntil(() -> {
+                    LevelChunk chunk = helper.getLevel().getChunkAt(hole);
+                    check("the chunk's seeds hold the hole", chunk.getData(IndustryAttachments.SEEDS.get()).contains(hole.asLong()));
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, hole);
+                    check("a district around the hole", d != null && d.chunks.contains(chunk(hole)));
+                    record("aPumpjackHoleSeedsWithNoPlayer", "district", d.id + ", chunks " + d.chunks.size());
+                })
                 .thenSucceed();
     }
 

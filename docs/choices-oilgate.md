@@ -343,6 +343,24 @@ Nothing of the deep layer exists. What it will hang on:
   is its placement, and OIL_CHUNKS source 3 (a deposit sample: defined, sent by nothing) is one way
   a drilled chunk could reach the engine. `ThreatClass` has four classes; `Burrowing` is not added.
 
+## The audit's fixes: seeds and the survey (F1, F4, F5)
+
+docs/oilgate-cheese-audit.md §4's F1, F4 and F5. F4 builds OGB-7 (Ben, 2026-10-21); F1 and F5 are
+reversible code choices.
+
+**OGC60. A pumpjack hole seeds its own district, whoever set it down (F1).** DS-10 seeds a district
+only where a player placed a machine; the pumpjack hole is the one exception, since a hole is the only
+way to pump crude. `IndustrySeeds.record` (core) writes a seed with no player: it adds the block
+entity to its chunk's seeds when `Districts.seed` calls it a seed and asks for a rescan of the chunk.
+The dieselgenerators plugin calls it for every pumpjack hole a loading chunk holds (`HoleSeeds`), and
+from `PumpjackHoleSeedMixin` at the hole's first server tick, retrying each tick until the industry
+module answers, so a hole a contraption, a Schematicannon, a Deployer, a ship or a command sets down
+is seen at once. The plugin's `seed()` answers true for the hole; a pack can still tag it
+`#mic_rtsim:district_not_seed`. The rest of a dropped-off base joins by connection, as any machine
+does. Not widened: no other block seeds without a player (the wider forms would amend DS-10 and are
+Ben's). GameTest `aPumpjackHoleSeedsWithNoPlayer` (dieselgenerators, on the stub): a hole set down
+with `level.setBlock` and no player is in its chunk's seeds, and a district forms around it.
+
 ## For Ben (answered 2026-10-21)
 
 Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
