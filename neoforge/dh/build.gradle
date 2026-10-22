@@ -69,8 +69,9 @@ neoForge {
         // `./gradlew :dh:runClient` (inside `nix develop`, for the GL libraries): a dev client with the core,
         // mic_rtsim_create, Create 6.0.10, DH 3.3.3 and this mod. Single player runs the stub engine, so the
         // client needs no native engine build. -PfarBench=<trains> runs the far-view bench
-        // (docs/choices-dh-trains.md): it opens a flat world, puts that many synthetic trains on rings around
-        // spawn, records the client profiler and quits.
+        // (docs/choices-dh-trains.md, docs/choices-dh-feed.md): it opens a flat world, puts that many synthetic
+        // trains on rings around spawn (and made-up dragons with -PfarBenchDragons), records the client
+        // profiler and quits.
         client {
             client()
             gameDirectory = file('run')
@@ -83,6 +84,14 @@ neoForge {
                 systemProperty 'mic_rtsim.farbench.label', (project.findProperty('farBenchLabel') ?: "trains${project.property('farBench')}").toString()
                 if (project.hasProperty('farBenchDetail'))
                     systemProperty 'mic_rtsim.farbench.detail', project.property('farBenchDetail').toString()
+                // Phase 2 (docs/choices-dh-feed.md): made-up dragons, a band ring of trains inside the loaded
+                // chunks, the far feed off (Create's own sync instead), and the simulation distance
+                systemProperty 'mic_rtsim.farbench.dragons', (project.findProperty('farBenchDragons') ?: '0').toString()
+                systemProperty 'mic_rtsim.farbench.bandDragons', (project.findProperty('farBenchBandDragons') ?: '0').toString()
+                systemProperty 'mic_rtsim.farbench.bandTrains', (project.findProperty('farBenchBandTrains') ?: '0').toString()
+                systemProperty 'mic_rtsim.farbench.feed', (project.findProperty('farBenchFeed') ?: 'true').toString()
+                if (project.hasProperty('farBenchSim'))
+                    systemProperty 'mic_rtsim.farbench.sim', project.property('farBenchSim').toString()
             }
             jvmArgument '-Xmx6G'
         }

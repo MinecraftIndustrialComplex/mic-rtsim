@@ -74,6 +74,22 @@ class DragonModelTest {
     }
 
     @Test
+    void aHeadingOnAStepsEdgeKeepsItsStep() {
+        // 12 degrees is past halfway (11.25) from step 0 to step 1, but inside the hysteresis
+        double c = Math.cos(Math.toRadians(12)), s = Math.sin(Math.toRadians(12));
+        assertEquals(1, DragonModel.headingStep(c, s));
+        assertEquals(0, DragonModel.headingStep(c, s, 0));
+        assertEquals(1, DragonModel.headingStep(c, s, 1));
+        // 16 degrees is past it
+        assertEquals(1, DragonModel.headingStep(Math.cos(Math.toRadians(16)), Math.sin(Math.toRadians(16)), 0));
+        // Across the wrap from step 15 to step 0
+        double w = Math.toRadians(-12);
+        assertEquals(0, DragonModel.headingStep(Math.cos(w), Math.sin(w), 0));
+        assertEquals(15, DragonModel.headingStep(Math.cos(w), Math.sin(w), 15));
+        assertEquals(0, DragonModel.headingStep(1, 0, 15));
+    }
+
+    @Test
     void theFlipbookCyclesAndARoostingDragonFoldsItsWings() {
         Set<DragonModel.Pose> seen = new HashSet<>();
         for (int t = 0; t < 40; t++)
