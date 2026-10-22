@@ -16,8 +16,11 @@
 //! - **Becoming a row** (SCALE.md §3). When something happens to a ship (looted, raided, boarded),
 //!   the consignments it carries are cut out of the flow and held by it until it docks, when it
 //!   sells them to the port as a caravan row would (C14).
-//! - **Pirates** live at havens (C24). Each rests, chooses a lane to hunt (expected loot, cut by
-//!   patrols, bent by its captain's temperament, C25), sails there on a booked leg, hunts until it
+//! - **Pirates** live at havens (C24). Each rests and refits in port (its hull mended, its crew made
+//!   up from the haven's pool), chooses a lane to hunt among those worth it (EQUILIBRIUM.md §2.4.6
+//!   (b): a win chance it believes above 2/3 against a merchant and the lane's patrols and escorts;
+//!   with none it rests; then expected loot, cut by patrols, bent by its captain's temperament,
+//!   C25), sails there on a booked leg, hunts until it
 //!   gets bored (a scheduled departure, brought forward by damage or a full hold, C24), and sails
 //!   home. While it hunts, the lane's hazard is the share of each consignment that sails to the
 //!   haven's market instead (`rtsim-world`'s raid pipelines), so stolen goods stay in the totals.
@@ -30,8 +33,10 @@
 //! - **Navies** (M2's recommendation): a patrol service of navy ships whose presence on the lanes
 //!   it sails lowers their hazard. Players' escorts add to it ([`Ships::set_escort`]).
 //! - **Losses come back** (unlike Veloren's captains): a lost merchant or navy ship relaunches at
-//!   its home dock after a delay, on its own saved slot; a haven rebuilds a pirate ship when its
-//!   crew pool can man one, and captured crews join that pool (M2's crew conversion).
+//!   its home dock after a delay, on its own saved slot. A haven refits a lost pirate ship's slot
+//!   after `min(96, 4 x 2^P)` days once its crew pool can man it (§2.4.6, the shared rule of §2.2:
+//!   P rises by 1/slots for each pirate ship a player sinks or takes). The pool hires toward its
+//!   cap of 18 in closed form, and captured crews join it up to the cap (M2's crew conversion).
 //!
 //! # Cost
 //!
@@ -47,6 +52,7 @@ use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::{PagedArena, PagedRows};
 use rtsim_kernel::wheel::TimingWheel;
@@ -178,15 +184,21 @@ impl Ship {
 }
 
 /// A pirate haven (C24): a world node of kind Haven whose market sells what its pirates take.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Haven {
     pub node: usize,
     pub frame: u16,
     pub dock: (i32, i32, i32),
     /// 1 sea pirates, 2 sky pirates.
     pub media: u32,
-    /// Crew waiting ashore to man a new ship (M2: captured crews join it).
-    pub crew_pool: u32,
+    /// Crew waiting ashore, thousandths, as of `pool_at`: it mans refitted ships and makes up
+    /// crews in port. Hires fill it toward the cap in closed form ([`Ships::crew_pool_milli`],
+    /// EQUILIBRIUM.md §2.4.6), and captured crews join it up to the cap (M2).
+    pub pool_milli: u32,
+    pub pool_at: Tick,
+    /// Players' recent losses (§2.2): each pirate ship a player sinks or captures adds 1/slots,
+    /// and an empty slot's refit waits `min(cap, base x 2^P)` days.
+    pub pressure: Pressure,
     pub ships: Vec<ShipId>,
     /// Lanes within its pirates' reach, in lane order.
     pub lanes: Vec<u32>,
@@ -372,9 +384,9 @@ pub(crate) enum Ev {
     Respawn {
         ship: ShipId,
     },
-    Rebuild {
-        haven: u32,
-        medium: Medium,
+    /// A lost pirate ship's slot is due its refit (it waits on, if the pool cannot man it yet).
+    Refit {
+        ship: ShipId,
     },
 }
 
@@ -504,6 +516,11 @@ pub struct Ships {
 
 fn day_of(t: Tick) -> f64 {
     t.0 as f64 / TICKS_PER_DAY as f64
+}
+
+/// The ships' day number for the shared renewal rule's pressure.
+fn day_num(t: Tick) -> u32 {
+    (t.0 / TICKS_PER_DAY).min(u64::from(u32::MAX)) as u32
 }
 
 fn tick_of(t: i64) -> Tick {
@@ -828,7 +845,8 @@ impl Ships {
     }
 
     /// A haven joins (HAVEN_FOUND): node `node` (kind Haven) keeps pirates of the media in
-    /// `media` (1 sea, 2 sky), `pirates` ships of each, with a crew pool to man one more.
+    /// `media` (1 sea, 2 sky), `pirates` ships of each, with a crew pool to man one more (§2.4.6's
+    /// founding: every slot manned and one spare crew).
     pub fn add_haven(
         &mut self,
         w: &mut World,
@@ -851,7 +869,9 @@ impl Ships {
             frame,
             dock,
             media,
-            crew_pool: 0,
+            pool_milli: 0,
+            pool_at: at,
+            pressure: Pressure::default(),
             ships: Vec::new(),
             lanes: Vec::new(),
         });
@@ -866,8 +886,115 @@ impl Ships {
             }
             first_crew = first_crew.max(self.tun.medium(medium).pirate_crew);
         }
-        self.havens[h as usize].crew_pool = first_crew;
+        self.havens[h as usize].pool_milli = first_crew.min(self.tun.crew_pool_cap) * 1000;
         Some(h)
+    }
+
+    // ---- a haven's crew pool and refits (EQUILIBRIUM.md §2.4.6) ---------------------------------
+
+    /// Haven `h`'s crew pool at `at`, thousandths. Hires add `r (1 - pool/cap)` a day, so from
+    /// `pool0` at `pool_at` it is `cap - (cap - pool0) e^(-r t / cap)`: one closed form, no event.
+    pub fn crew_pool_milli(&self, h: u32, at: Tick) -> u32 {
+        let hv = &self.havens[h as usize];
+        let cap = self.tun.crew_pool_cap * 1000;
+        if hv.pool_milli >= cap || self.tun.hires_per_day <= 0.0 || at <= hv.pool_at {
+            return hv.pool_milli;
+        }
+        let days = (at.0 - hv.pool_at.0) as f64 / TICKS_PER_DAY as f64;
+        let k = self.tun.hires_per_day / f64::from(self.tun.crew_pool_cap.max(1));
+        let short = f64::from(cap - hv.pool_milli) * (-k * days).exp();
+        cap - (short.round() as u32).min(cap - hv.pool_milli)
+    }
+
+    /// Haven `h`'s pool read at `at` and stored as of `at`, before it changes.
+    fn settle_pool(&mut self, h: u32, at: Tick) {
+        let p = self.crew_pool_milli(h, at);
+        let hv = &mut self.havens[h as usize];
+        hv.pool_milli = p;
+        hv.pool_at = hv.pool_at.max(at);
+    }
+
+    /// When haven `h`'s pool will hold `need` crew (whole), from `at`: `at` if it does now, never
+    /// (`None`) if hires cannot get there. The inverse of [`Self::crew_pool_milli`], a tick late
+    /// so the closed form reads at least `need` then.
+    fn crew_ready_at(&self, h: u32, need: u32, at: Tick) -> Option<Tick> {
+        let have = self.crew_pool_milli(h, at);
+        let need = need * 1000;
+        if have >= need {
+            return Some(at);
+        }
+        let cap = self.tun.crew_pool_cap * 1000;
+        if need > cap || self.tun.hires_per_day <= 0.0 {
+            return None;
+        }
+        let k = self.tun.hires_per_day / f64::from(self.tun.crew_pool_cap.max(1));
+        let days = (f64::from(cap - have) / f64::from((cap - need).max(1))).ln() / k;
+        Some(at + (days * TICKS_PER_DAY as f64).ceil() as u64 + 1)
+    }
+
+    /// Crew joining haven `h`'s pool (captured crews, M2), up to the cap. A slot that is due its
+    /// refit and waits on crew looks again now.
+    fn add_crew(&mut self, h: u32, crew: u32, at: Tick) {
+        self.settle_pool(h, at);
+        let cap = self.tun.crew_pool_cap * 1000;
+        let hv = &mut self.havens[h as usize];
+        hv.pool_milli = (hv.pool_milli + crew.saturating_mul(1000)).min(cap.max(hv.pool_milli));
+        let waiting: Vec<ShipId> = self.havens[h as usize]
+            .ships
+            .iter()
+            .copied()
+            .filter(|&s| {
+                self.ships
+                    .get(s)
+                    .is_some_and(|x| matches!(x.status, Status::Lost { back, .. } if back <= at))
+            })
+            .collect();
+        for s in waiting {
+            self.schedule(at, Ev::Refit { ship: s });
+        }
+    }
+
+    /// Takes up to `want` whole crew from haven `h`'s pool at `at`; what it got.
+    fn take_crew(&mut self, h: u32, want: u32, at: Tick) -> u32 {
+        self.settle_pool(h, at);
+        let hv = &mut self.havens[h as usize];
+        let got = want.min(hv.pool_milli / 1000);
+        hv.pool_milli -= got * 1000;
+        got
+    }
+
+    /// A pirate refits in port before it decides (§2.4.6): its hull is mended and its crew made
+    /// up from the pool, as far as the pool goes.
+    fn refit_in_port(&mut self, s: ShipId, at: Tick) {
+        let Some(h) = self.haven_of(s) else {
+            return;
+        };
+        let full = self.tun.medium(self.ships[s].medium).pirate_crew;
+        let short = full.saturating_sub(self.ships[s].crew);
+        let got = if short > 0 {
+            self.take_crew(h, short, at)
+        } else {
+            0
+        };
+        let x = &mut self.ships[s];
+        x.crew += got;
+        x.hull_milli = 1000;
+    }
+
+    /// The value a pirate of strength `a` puts on hunting a lane of `medium` defended by
+    /// `defence` (its patrols and escorts), §2.4.6 (b): its win chance against a merchant there
+    /// with that defence is believed to be `p = A² / (A² + D²)` (the square law's weights, not a
+    /// roll: fights the engine resolves are certain), and the hunt is worth `p x loot - (1 - p) x
+    /// crew`. Positive is worth hunting.
+    pub fn hunt_value(&self, a: f64, medium: Medium, defence: f64) -> f64 {
+        let t = &self.tun;
+        let d = f64::from(t.medium(medium).merchant_crew) * t.merchant_strength + defence.max(0.0);
+        let (wa, wd) = (
+            t.attacker_effectiveness * a * a,
+            t.defender_effectiveness * d * d,
+        );
+        let p = if wa + wd > 0.0 { wa / (wa + wd) } else { 0.0 };
+        p * t.hunt_loot_value - (1.0 - p) * t.hunt_crew_value
     }
 
     fn refresh_haven_lanes(&mut self, h: u32) {
@@ -1924,7 +2051,7 @@ impl Ships {
                 }
             }
             Ev::Respawn { ship } => self.respawn(w, ship, at),
-            Ev::Rebuild { haven, medium } => self.rebuild(w, haven, medium, at),
+            Ev::Refit { ship } => self.refit(w, ship, at),
         }
     }
 
@@ -2532,6 +2659,7 @@ impl Ships {
             return;
         };
         self.ensure_captain(w, s, at);
+        self.refit_in_port(s, at);
         let tm = self.temperament(s);
         let a = self.strength(s);
         let medium = self.ships[s].medium;
@@ -2555,6 +2683,11 @@ impl Ships {
                 continue;
             }
             let defence = self.threat(l).map_or(0.0, |t| t.defence());
+            // Only a lane worth hunting (§2.4.6 (b)): escorted or patrolled beyond that, it is
+            // left alone, and with no such lane the pirate rests in port.
+            if self.hunt_value(a, medium, defence) <= 0.0 {
+                continue;
+            }
             let surv = fight::square_law(a, defence, &self.tun);
             if surv <= 0.0 {
                 continue;
@@ -3235,7 +3368,7 @@ impl Ships {
             // The beaten crew surrendered before the last man: some of them change sides (M2).
             let standing = vcrew.max((vc * self.tun.surrender_share_milli).div_ceil(1000));
             let joined = (standing * self.tun.crew_conversion_milli).div_ceil(1000);
-            self.havens[h as usize].crew_pool += joined;
+            self.add_crew(h, joined, at);
             self.stats.captures += 1;
             self.lose_merchant(w, victim, sid(p), "captured by pirates", at);
             self.note(
@@ -3559,11 +3692,18 @@ impl Ships {
             // Its grudges pass to the haven (C24: heirs inherit grudges).
             w.knowledge.die(c, at);
         }
+        // The slot's refit (§2.4.6): a ship a player sank or took presses the haven by 1/slots,
+        // and the wait read now is `min(cap, base x 2^P)` days. Losses with no player add nothing.
+        let rule = self.tun.refit;
+        let day = day_num(at);
+        let hv = &mut self.havens[h as usize];
+        if killer.is_some() {
+            let slots = hv.ships.len().max(1) as f32;
+            hv.pressure.bump(day, 1.0 / slots, rule.half_life_days);
+        }
+        let back = at + rule.delay_ticks(hv.pressure, day).max(1);
         let x = &mut self.ships[s];
-        x.status = Status::Lost {
-            since: at,
-            back: Tick(u64::MAX),
-        };
+        x.status = Status::Lost { since: at, back };
         x.plan = x.plan.wrapping_add(1);
         self.set_embodied(s, false);
         self.stats.sinkings += 1;
@@ -3577,43 +3717,44 @@ impl Ships {
             )
             .text(|| {
                 format!(
-                    "{} is sunk; its haven will rebuild",
+                    "{} is sunk; its haven will refit the slot",
                     Self::label(&self.ships[s])
                 )
             });
-        let medium = self.ships[s].medium;
-        self.schedule(
-            at + self.tun.haven_rebuild_ticks,
-            Ev::Rebuild { haven: h, medium },
-        );
+        self.schedule(back, Ev::Refit { ship: s });
         self.note(
             at,
             "sunk",
             Some(s),
-            format!("is sunk; haven {h} will rebuild"),
+            format!(
+                "is sunk; haven {h} refits the slot from day {:.2}",
+                day_of(back)
+            ),
         );
     }
 
-    /// A haven replaces a lost pirate ship when its crew pool can man one: the lost row comes
-    /// back with a new captain.
-    fn rebuild(&mut self, w: &mut World, h: u32, medium: Medium, at: Tick) {
-        let need = self.tun.medium(medium).pirate_crew;
-        let lost = self.havens[h as usize].ships.iter().copied().find(|&s| {
-            self.ships
-                .get(s)
-                .is_some_and(|x| x.medium == medium && !x.is_active())
-        });
-        let Some(s) = lost else {
+    /// A lost pirate ship's slot is refitted when its wait is over and the haven's pool can man
+    /// it (§2.4.6): the lost row comes back with a new captain. Short of crew, it waits for the
+    /// moment hires make up the crew (one event), or less if a capture fills the pool first.
+    fn refit(&mut self, w: &mut World, s: ShipId, at: Tick) {
+        let Some(x) = self.ships.get(s) else {
             return;
         };
-        if self.havens[h as usize].crew_pool < need {
-            self.schedule(
-                at + self.tun.haven_rebuild_ticks,
-                Ev::Rebuild { haven: h, medium },
-            );
+        if !matches!(x.status, Status::Lost { back, .. } if back <= at) {
             return;
         }
-        self.havens[h as usize].crew_pool -= need;
+        let Some(h) = self.haven_of(s) else {
+            return;
+        };
+        let need = self.tun.medium(x.medium).pirate_crew;
+        if self.crew_pool_milli(h, at) < need * 1000 {
+            // Never, if hires cannot reach a crew: a capture wakes it.
+            if let Some(t) = self.crew_ready_at(h, need, at) {
+                self.schedule(t.max(at + 1), Ev::Refit { ship: s });
+            }
+            return;
+        }
+        self.take_crew(h, need, at);
         self.stats.rebuilds += 1;
         let node = self.havens[h as usize].node;
         let haven_actor = w.nodes[node].actor;
@@ -3837,7 +3978,7 @@ impl Ships {
                             add(&mut self.ledger.looted_by_pirates, g, a);
                         }
                         let h = self.haven_of(p).expect("checked");
-                        self.havens[h as usize].crew_pool += c.crew_taken;
+                        self.add_crew(h, c.crew_taken, at);
                         self.stats.captures += 1;
                         self.robbery_report(w, p, s, at);
                         self.lose_merchant(w, s, sid(p), "captured by pirates", at);
@@ -4046,6 +4187,16 @@ impl Ships {
                 self.embodied
             ));
         }
+        // A haven's pool never passes its cap (§2.4.6): hires approach it, captures stop at it.
+        for (h, hv) in self.havens.iter().enumerate() {
+            if hv.pool_milli > self.tun.crew_pool_cap * 1000 {
+                return Err(format!(
+                    "haven {h}'s pool holds {} crew, over the cap of {}",
+                    f64::from(hv.pool_milli) / 1000.0,
+                    self.tun.crew_pool_cap
+                ));
+            }
+        }
         for (l, t) in self.lane_threats() {
             for &h in &t.hunters {
                 let hunting = self
@@ -4077,7 +4228,7 @@ impl Ships {
                 Ev::Bored { .. } => "bored",
                 Ev::Home { .. } => "home",
                 Ev::Respawn { .. } => "respawn",
-                Ev::Rebuild { .. } => "rebuild",
+                Ev::Refit { .. } => "refit",
             };
             *m.entry(k).or_insert(0) += 1;
         }

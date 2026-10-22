@@ -132,7 +132,7 @@ fn nobody_watching_costs_no_ship_events() {
     );
     for (k, _) in c.ships.pending_by_kind() {
         assert!(
-            ["decide", "reach_lane", "bored", "home", "rebuild"].contains(&k),
+            ["decide", "reach_lane", "bored", "home", "refit"].contains(&k),
             "a pending {k} event with nobody watching"
         );
     }
@@ -530,10 +530,12 @@ fn a_pirate_crew_killed_in_view_loses_the_ship_and_its_haven_rebuilds_it() {
         );
     }
     assert_eq!(c.ships.stats.sinkings, 2);
-    assert_eq!(c.ships.pending_by_kind().get("rebuild"), Some(&2));
+    assert_eq!(c.ships.pending_by_kind().get("refit"), Some(&2));
     c.ships.check(&c.world).expect("conserved after the losses");
-    // With crews ashore, the haven mans both again and they hunt.
-    c.ships.havens[haven].crew_pool = 20;
+    // With a full pool ashore, the haven mans both again and they hunt: no player sank them, so
+    // the refit waits only its base of 4 days.
+    c.ships.havens[haven].pool_milli = c.ships.tun.crew_pool_cap * 1000;
+    c.ships.havens[haven].pool_at = at;
     c.ships
         .run_until(&mut c.world, &mut NoInfrastructure, at + 12 * TICKS_PER_DAY);
     for p in [fought, wounded] {

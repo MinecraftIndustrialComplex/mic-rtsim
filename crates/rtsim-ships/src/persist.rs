@@ -36,6 +36,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::page::{PageError, PageKey, SaveBatch};
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::fnv1a64;
 use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, Row, RowStats};
 use rtsim_kernel::wheel::TimingWheel;
@@ -682,10 +683,9 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u8(10);
             w.u64(ship.to_bits());
         }
-        Ev::Rebuild { haven, medium } => {
+        Ev::Refit { ship } => {
             w.u8(11);
-            w.var_u64(u64::from(haven));
-            put_medium(w, medium);
+            w.u64(ship.to_bits());
         }
     }
 }
@@ -741,10 +741,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             plan: r.u32()?,
         },
         10 => Ev::Respawn { ship: handle(r)? },
-        11 => Ev::Rebuild {
-            haven: get_u32(r)?,
-            medium: get_medium(r)?,
-        },
+        11 => Ev::Refit { ship: handle(r)? },
         t => return bad(format!("event tag {t}")),
     })
 }
@@ -1015,7 +1012,11 @@ impl Ships {
                 w.var_i64(i64::from(v));
             }
             w.var_u64(u64::from(h.media));
-            w.var_u64(u64::from(h.crew_pool));
+            w.var_u64(u64::from(h.pool_milli));
+            w.u64(h.pool_at.0);
+            let (p, at) = h.pressure.parts();
+            w.f32(p);
+            w.u32(at);
             put_usize(w, h.ships.len());
             h.ships.iter().for_each(|s| w.u64(s.to_bits()));
             put_usize(w, h.lanes.len());
@@ -1111,7 +1112,9 @@ impl Ships {
             let frame = r.u16()?;
             let dock = (get_i32(r)?, get_i32(r)?, get_i32(r)?);
             let media = get_u32(r)?;
-            let crew_pool = get_u32(r)?;
+            let pool_milli = get_u32(r)?;
+            let pool_at = Tick(r.u64()?);
+            let (p, at) = (r.f32()?, r.u32()?);
             let n = r.len_prefix(8)?;
             let hs = (0..n)
                 .map(|_| handle(r))
@@ -1125,7 +1128,9 @@ impl Ships {
                 frame,
                 dock,
                 media,
-                crew_pool,
+                pool_milli,
+                pool_at,
+                pressure: Pressure::from_parts(p, at),
                 ships: hs,
                 lanes: hl,
             });
