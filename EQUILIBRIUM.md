@@ -109,7 +109,7 @@ is nearby they walk in from the nearest edge of the explored world; otherwise th
 at its next load. From
 two, vanilla breeding refills the village while a player is near (beds and food, vanilla's rules), and
 the sim grows it toward its beds while it is unloaded (§2.4.3). Unvisited, it is back to 90% in about
-456 game days in the model: under five game years, about six real days of uptime. If Ben keeps killing every pair, the pairs keep coming,
+480 game days in the model (438 to 534 across seeds): five game years, under seven real days of uptime. If Ben keeps killing every pair, the pairs keep coming,
 more slowly: about three pairs a year. Zombie sieges, raids and dragons do not add pressure; only
 player kills do. This walkthrough depends on question EQ-1.
 
@@ -117,7 +117,7 @@ player kills do. This walkthrough depends on question EQ-1.
 chunk loads, so everything runs abstract. Dragons age out at 400 days and their lairs stand empty 20
 days before a newcomer arrives: 95% of lairs are held at any time. Herds hold about 60% of their
 ranges' capacity, every range alive. Villages, dens, groves, nests and camps stay full. Pirate havens
-keep @PIRATE_UNATT@ of their ship slots manned: they lose ships to merchants and refit. The number of
+keep 83% to 94% of their ship slots manned (by century): they lose ships to merchants and refit. The number of
 renewal events per day is flat from the second game century to the 28th (§3.6). When a player
 finally logs in, the first chunks to load place what the sim says is there: a Frostmaw in each den,
 the grove's warriors, the villagers.
@@ -443,7 +443,7 @@ as today (Y20).
   villages already breed by vanilla's rules with no limit but beds.
 - **Bounds:** pop at most K (beds); villages are worldgen structures (C22).
 - **What the player sees:** an emptied village gets two settlers 32 game days later (about 11 real
-  hours) and is back to 90% in @VILLAGE_YEARS@; a murder-farmed village keeps getting pairs,
+  hours) and is back to 90% in about five game years (480 days in the model, under seven real days of uptime); a murder-farmed village keeps getting pairs,
   about three a year.
 - **Body:** vanilla. Settlers and grown villagers are ordinary villagers once placed; the sim owns
   none of them (C2 holds in that sense; EQ-1 asks Ben whether that is what C2 meant).
@@ -464,7 +464,7 @@ as today (Y20).
   (`ribbits.rs:356-359`).
 - **Bounds:** residents at most houses, houses at most the adoption count plus 8.
 - **What the player sees:** killed ribbits are replaced one per 10 prosperous days; an emptied village
-  is back to 90% in @RIBBIT_YEARS@.
+  is back to 90% in about two game years (216 days in the model, three real days).
 - **Body:** vanilla, as today. **Cost:** unchanged clock; one wheel entry while below 2.
 
 #### 2.4.5 Conflict factions (goblin, bandit, raider)
@@ -505,7 +505,8 @@ as today (Y20).
   never loses a ship.
 - **Merchant and navy ships:** unchanged (back in their slot 2 days after a loss, unconditional). They
   are the economy's carriers, not a population.
-- **What the player sees:** sinking a haven's ships quiets its sea for @PIRATE_QUIET@, not for ever.
+- **What the player sees:** sinking a haven's ships quiets its sea for a few game months, not for ever: in the model half its slots are back in 48 days
+  and 90% in 72 (96 against the same seed left alone).
 - **Body:** no ships plugin exists; puppets when one does. **Cost:** one float per haven.
 
 #### 2.4.7 Frostmaw and Umvuthana (MOWZIE)
@@ -849,7 +850,8 @@ defence climbing to 160; gate: none at the fortress, the adaptive player flat at
 
 ### 3.6 Results
 
-Every number here is in `results/summary.md` (`run.py`, about six minutes on the laptop). A ratio is
+Every number here is in `results/summary.md` (`run.py`; the committed run shared a loaded laptop with other
+sessions and took 2.4 hours, `results/run-full.log`). A ratio is
 population over capacity, averaged over the last 30 of 60 game years, written median [5th, 95th
 percentile] over seeds. "Today" is the model's `baseline` mode.
 
@@ -858,33 +860,38 @@ roamer explores and kills everything it meets):
 
 | | Today: no player | Today: homebody | Today: roamer | Proposed: no player | Proposed: homebody | Proposed: roamer |
 |---|---|---|---|---|---|---|
-| Herds, N/K | 0.65 [0.46, 0.78] | 0.75 [0.52, 0.87] | 0.36 [0.32, 0.48] | 0.59 [0.48, 0.70] | 0.77 [0.56, 0.87] | 0.59 [0.52, 0.63] |
-| Herd ranges alive | 0.89 | 0.83 | 0.90 | 1.00 | 1.00 | 1.00 |
-| Herd ranges extinct per world, 60 years | 5.6 | 3.6 | 15.3 | 0 | 0 | 0 |
+| Herds, N/K | 0.67 [0.45, 0.84] | 0.76 [0.53, 0.96] | 0.37 [0.31, 0.46] | 0.59 [0.48, 0.70] | 0.77 [0.56, 0.87] | 0.59 [0.52, 0.63] |
+| Herd ranges alive | 0.90 | 0.85 | 0.91 | 1.00 | 1.00 | 1.00 |
+| Herd ranges extinct per world, 60 years | 6.0 | 3.6 | 15.3 | 0 | 0 | 0 |
 | Lairs held | 0.95 | 0.83 | 0.93 | 0.95 | 0.61 | 0.89 |
-| Villagers over beds | 0.82 | 0.86 | 0.85 | 1.00 | 0.95 | 0.98 |
+| Villagers over beds | 0.82 | 0.85 | 0.85 | 1.00 | 0.94 | 0.98 |
 | Frostmaw dens held | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.93 |
 | Grove warriors over cap | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.94 |
 | Nest worms over cap | 1.00 | 1.00 | 0.00 | 1.00 | 1.00 | 0.94 |
 | Camp pools over cap | 1.00 | 1.00 | 0.97 | 1.00 | 1.00 | 0.97 |
-| Camp-on-camp feuds per world-year | 6.3 | 2.3 | 20.2 | 0 | 0 | 0.33 |
-| Pirate ship slots manned | 0.00 | 0.00 | 0.00 | 0.93 | 0.95 | 0.88 |
-| Renewal events per day, whole world | 0.43 | 0.27 | 1.40 | 0.51 | 0.38 | 1.83 |
+| Camp-on-camp feuds per world-year | 6.3 | 2.3 | 20.2 | 0 | 0 | 0.34 |
+| Pirate ship slots manned | 0.29 [0.00, 0.92] | 0.00 [0.00, 0.78] | 0.00 [0.00, 0.35] | 0.93 | 0.93 | 0.89 |
+| The same, havens with a lane worth hunting | 0.31 | 0.00 | 0.00 | 0.92 | 0.93 | 0.87 |
+| Renewal events per day, whole world | 0.45 | 0.27 | 1.41 | 0.51 | 0.38 | 1.83 |
 
 - **Herds sit near 0.6 K, not at K, because dragons eat:** about 40% of a range's yearly production
   goes to dragons at today's appetite. The homebody who shoots the dragons near spawn lifts his herds
   to 0.77 K and holds those lairs empty (0.61 of lairs held, the pressure he builds there).
 - **No range dies in any proposed run.** Today 4 to 15 ranges per world die in 60 years, even with no
   player, and the dead stay dead.
-- **No winner-take-all:** the largest herd holds 4% to 14% of all animals in the proposed runs; today,
-  at four times the dragons' appetite, it holds 22% (median) and up to 41%.
+- **No winner-take-all:** the largest herd holds 4% to 14% of all animals in the proposed runs (medians
+  by player; at most 19%); today, at four times the dragons' appetite, it holds 22% (median) and up to 49%.
 - **Today's villagers over beds stays near 0.82** because villages generate with fewer villagers than
   beds and nothing grows an unloaded village. Where a player loads villages and sieges take villagers,
-  the sim's own count runs 7% (homebody) to 15% (roamer) above the real one, since a census can only
+  the sim's own count runs 6% (homebody) to 15% (roamer) above the real one, since a census can only
   raise it.
 - **Factions stop feuding by habit:** under the gate a camp falls on a neighbour only when the
-  neighbour is weak (0.33 feuds a world-year with a roamer thinning camps, none without).
-- **Pirates survive:** today every haven's fleet is gone within decades, even with no player.
+  neighbour is weak (0.34 feuds a world-year with a roamer thinning camps, none without).
+- **Pirates survive:** today, with no player, the median world still has 0.29 of its slots manned in
+  years 30 to 60 (0 to 0.92 across seeds) and none after the first century (below); with a player
+  the median world has none left by year 30. Under the proposal the havens that hunt keep 0.87 to
+  0.93 of their slots manned (all havens 0.89 to 0.93), so the figure is not carried by fleets that
+  never sail.
 - **Cost:** under two renewal events a day for a whole world, with a player killing everything.
 
 **Kill all of one kind** at year 20 across the known world, then a peaceful player (16 seeds):
@@ -896,17 +903,18 @@ roamer explores and kills everything it meets):
 | Umvuthana groves | never | 48 | 96 [90, 96] | 1.00 |
 | Oil nests | never | 48 | 72 [48, 72] | 1.00 |
 | Camps | 48 days (the linear refill) | 48 | 48 [48, 72] | 1.00 |
-| Pirate fleets | never | 48 | 96 [48, 156] | 0.99 |
-| Ribbit villages | never | 120 | 216 [192, 246] | 1.00 |
-| Human villages | never | 216 | 480 [420, 534] | 1.00 |
-| Herds, local wipe (the 3 x 3 regions at spawn) | never | 1,128 [696, 1,488] | 90% of the control: 2,904 [2,136, 3,413], 81% of seeds within 40 years | 0.94 [0.81, 1.03] |
-| Herds, every herd in the known world | never | 1,368 [1,248, 1,560] | 90% of the control: 3,288 [2,760, 3,605], 94% of seeds | 0.92 [0.88, 0.96] |
+| Pirate fleets | never | 48 | 72 [48, 150] | 0.99 |
+| Ribbit villages | never | 120 | 216 [192, 240] | 1.00 |
+| Human villages | never | 228 | 480 [438, 534] | 1.00 |
+| Herds, local wipe (the 3 x 3 regions at spawn) | never | 1,128 [792, 1,608] | 90% of the control: 2,724 [2,390, 3,596], 88% of seeds within 40 years | 0.94 [0.85, 1.02] |
+| Herds, every herd in the known world | never | 1,368 [1,248, 1,656] | 90% of the control: 3,192 [2,873, 3,538], 94% of seeds | 0.92 [0.88, 0.94] |
 
 Times are on the model's 24-day census grid. The control is the same seed with the same peaceful
 turn and no kill, so "end over the control" compares like with like while a kind is still settling
 from its founding (herds founded at K are still sinking toward 0.6 K at year 20). Every proposed kind
-comes back to its control's level; herds take 10 to 15 game years to half, because they grow by one
-calving a year (§3.2).
+comes back to its control's level; herds take 12 (local) to 14 (world) game years to half, because
+they grow by one calving a year (§3.2). Every herd range is alive at the end, 40 years after the
+wipe, in every seed of both herd wipes; today a world wipe leaves none.
 
 **Farming one site** for 60 years: §3.3's table (the model matches the closed forms within 5%).
 
@@ -914,15 +922,15 @@ calving a year (§3.2).
 
 | Century | Herds N/K, today | proposed | Herd ranges alive, today | proposed | Lairs held, today | proposed | Pirate slots, today | proposed | Events per day, today | proposed |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1st | 0.47 | 0.63 | 0.89 | 1.00 | 0.94 | 0.94 | 0.03 | 0.93 | 0.37 | 0.46 |
+| 1st | 0.48 | 0.63 | 0.90 | 1.00 | 0.94 | 0.94 | 0.08 | 0.93 | 0.38 | 0.46 |
 | 2nd | 0.40 | 0.60 | 0.76 | 1.00 | 0.96 | 0.96 | 0.00 | 0.90 | 0.37 | 0.51 |
-| 11th | 0.40 | 0.60 | 0.68 | 1.00 | 0.95 | 0.95 | 0.00 | 0.87 | 0.34 | 0.51 |
-| 28th | 0.37 | 0.60 | 0.66 | 1.00 | 0.95 | 0.95 | 0.00 | 0.88 | 0.33 | 0.51 |
+| 11th | 0.40 | 0.60 | 0.69 | 1.00 | 0.95 | 0.95 | 0.00 | 0.87 | 0.34 | 0.51 |
+| 28th | 0.43 | 0.60 | 0.67 | 1.00 | 0.95 | 0.95 | 0.00 | 0.88 | 0.33 | 0.51 |
 
 In the proposed run every kind holds the same band from the second century to the 28th: villages,
 Ribbit villages, dens, groves, nests and camps at 1.00, pirates between 0.83 and 0.94 by century,
 and renewal events per day between 0.505 and 0.508. Today a third of the herd ranges die out and
-every pirate fleet is gone in the first century. Each run takes under two minutes.
+every pirate fleet is gone in the first century. Each run takes two to four minutes.
 
 ### 3.7 Knife edges
 
@@ -932,15 +940,15 @@ sweeps").
 | What changes | Result | Reading |
 |---|---|---|
 | Dragon appetite x1, x4, x16, x64, with the refuge | herds 0.57, 0.28, 0.19, 0.15 K; **no extinctions**; lairs held 0.89 to 0.80 | dragons can thin herds but not finish them; the refuge holds at any appetite |
-| The same, refuge off (switching alone) | herds 0.53, 0.17, 0.06, 0.03 K; extinctions per world 0, 1, 10, 93 | the refuge is the rule that matters; switching alone fails from x4 |
-| The same, today | herds 0.38, 0.22, 0.03, 0.02 K; extinctions 16, 98, 113, 113; one herd takes 47% of all animals at x16 | today's balance is a knife edge on the dragons' appetite |
-| Density term off (births as today, everything else proposed) | herds 0.81 [0.57, 1.04] K, above K in some seeds; 6.5 extinctions per world | Beverton-Holt is what holds herds without extinctions |
-| Forage headroom 1, 1.5, 4 | proposed: 0.70 K in all three; today: 0.34, 0.47, 1.07 K | today's herd level is set by forage tuning; the proposed one is not |
-| Starve-leave at 0.2, 0.35, 0.5 (appetite x16) | no change in any band | the threshold is safe to tune for feel |
-| Frontier founding rate 0, 0.05, 0.25, 1 per range-year (world-wide herd wipe) | never back; 50% back in 2,616, 1,464 and 1,176 days | some frontier founding is required; past 0.25 it buys little, since births set the pace |
+| The same, refuge off (switching alone) | herds 0.53, 0.16, 0.06, 0.02 K; extinctions per world 0, 1, 11, 88 | the refuge is the rule that matters; switching alone fails from x4 |
+| The same, today | herds 0.38, 0.19, 0.02, 0.02 K; extinctions 16, 99, 113, 113; at x16 the median world's largest herd holds half of all animals | today's balance is a knife edge on the dragons' appetite |
+| Density term off (births as today, everything else proposed) | herds 0.83 [0.55, 1.01] K, above K in some seeds; 0.8 extinctions per world; the largest herd holds 19% | Beverton-Holt is what holds herds without extinctions |
+| Forage headroom 1, 1.5, 4 | proposed: 0.70 K in all three; today: 0.33, 0.47, 1.08 K | today's herd level is set by forage tuning; the proposed one is not |
+| Starve-leave at 0.2, 0.35, 0.5 (appetite x16) | no change in any band (0.06 extinctions per world at 0.5) | the threshold is safe to tune for feel |
+| Frontier founding rate 0, 0.05, 0.25, 1 per range-year (world-wide herd wipe) | never back; 50% back in 2,520, 1,464 and 1,176 days; at 0.05 a range is still empty 40 years on in 81% of seeds | some frontier founding is required; past 0.25 it buys little, since births set the pace |
 | Frontier group 12 animals, 0.05 K, 0.2 K (world-wide wipe) | 50% back in 2,040, 1,464 and 888 days | a larger group is faster and places more animals no birth explains (§5.2) |
-| Dispersal donor and taker thresholds 0.8 K and 0.5 K vs 0.4 K and 0.25 K; 2% or 10% (local wipe) | with 0.8 K: 50% back in 1,560 days at either rate; with 0.4 K: 1,272 (2%), 888 (10%) | a donor threshold above the predated steady state starves dispersal; below it the rate matters |
-| Settlers' base delay 4, 16, 64 days (village wipe) | 90% back in 432, 468 and 576 days | village recovery is set by growth, not by the settlers' delay |
+| Dispersal donor and taker thresholds 0.8 K and 0.5 K vs 0.4 K and 0.25 K; 2% or 10% (local wipe) | with 0.8 K: 50% back in 1,656 (2%) and 1,464 (10%) days; with 0.4 K: 1,272 and 984 | a donor threshold above the predated steady state (0.6 K) slows a local refill by a third to a half; below it the rate matters more |
+| Settlers' base delay 4, 16, 64 days (village wipe) | 90% back in 456, 468 and 576 days | village recovery is set by growth, not by the settlers' delay |
 | Half-life H 48, 96, 192 days (farmed den) | 1.35, 1.02, 0.72 a year | H is the knob for farmed yield |
 | Grievance input σ 6, 9, 12 (strategy) | ladder at a fortress: 0, 13.8, 10.8 wars a year; gate: 0, 0, 0 | the ladder flips from peace to constant losing wars where steady grievance crosses the raid rung (σ about 7.6); the gate does not |
 
@@ -987,7 +995,7 @@ GameTest lock.
 | S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census | GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsMissingNotDead` | S4, EQ-2 |
 | S6 | Villages and Ribbits (EQ-1): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn | `kill_all_villagers` (settlers in 32 days, 90% within 600), `village_pop_follows_census_down`, `kill_all_ribbits` (90% within 300), `sim_quiet_stays_quiet_with_settlers`; GameTests `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage` | S1, EQ-1 |
 | S7 | Conflict: pressure on recruits, break and refound, the gate (EQ-5) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds`, `fortress_gets_probes_not_raids`, `weak_base_is_offered_terms_first`, `no_ratchet_over_50_years` (the adaptive base's defence and wars flat across decades) | S0, EQ-5 |
-| S8 | Ships: hires and cap, refit pressure, EV lanes | `kill_all_pirates` (90% within @PIRATE_TEST@ days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band) | S0 |
+| S8 | Ships: hires and cap, refit pressure, EV lanes | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band) | S0 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
 | S10 | Oil nests on the shared rule (with OG-9e's build) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` | S0, OG-9e |
 | S11 | The long-horizon suite | `long_horizon_stability_with_kills` (every module, 60 game years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind above in one place, `who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal events per day flat; nightly; its length is the engine's speed, about 45 minutes if the host runs 100 game days a second) | all |
@@ -1007,11 +1015,11 @@ boss loot, how fights feel, an interface another plan must follow).
 
 | Id | Question | Options | Why it is Ben's |
 |---|---|---|---|
-| EQ-1 | **How does an emptied village come back?** (reopens C2 "no villager bodies for now" and M3/M4 "growth is ribbit houses only"; covers Ribbit villages too, whose ribbits cannot breed) | (a) **Settlers plus growth while unloaded (Recommended):** a family of two from beyond the explored edge, 32 days after a player empties the village (16 if nothing a player did emptied it, longer after repeated killing); then the sim grows the village toward its beds while unloaded and places the difference as ordinary vanilla villagers at the next unwatched load. Back to 90% in @VILLAGE_YEARS_SHORT@ unvisited. Ribbit villages get the same pair, then refill through their houses. (b) Settlers only: a pair arrives, and only vanilla breeding while a player is near grows it; an unvisited village stays at two (a Ribbit village still refills through its houses). (c) Neither: only the census fix, so the economy sees the real count, and a dead village stays dead. | The sim would place villagers and ribbits, which C2 and M3/M4 set aside for later. None of the options founds new villages (that stays with C22 and P22), and none takes villagers from another village (§2.4.3). |
+| EQ-1 | **How does an emptied village come back?** (reopens C2 "no villager bodies for now" and M3/M4 "growth is ribbit houses only"; covers Ribbit villages too, whose ribbits cannot breed) | (a) **Settlers plus growth while unloaded (Recommended):** a family of two from beyond the explored edge, 32 days after a player empties the village (16 if nothing a player did emptied it, longer after repeated killing); then the sim grows the village toward its beds while unloaded and places the difference as ordinary vanilla villagers at the next unwatched load. Back to 90% in about five game years unvisited (480 days in the model). Ribbit villages get the same pair, then refill through their houses. (b) Settlers only: a pair arrives, and only vanilla breeding while a player is near grows it; an unvisited village stays at two (a Ribbit village still refills through its houses). (c) Neither: only the census fix, so the economy sees the real count, and a dead village stays dead. | The sim would place villagers and ribbits, which C2 and M3/M4 set aside for later. None of the options founds new villages (that stays with C22 and P22), and none takes villagers from another village (§2.4.3). |
 | EQ-2 | **Where does a dragon's body live?** (reopens P3, "Minecraft entities are puppets that are never saved by vanilla", for roosting dragons; MOWZIE §4.9 takes the same rule for dens and groves, so one answer can cover both) | (a) **A vanilla body while it roosts at its lair, a puppet while away (Recommended):** MOWZIE §4.9's rule; the engine still owns the counts, the pressure and every body away from home; an uninstall leaves the roosting dragons, and a reset finds them by census. (b) A puppet always, as today, plus the site ledger: a reset cannot mint, but an uninstall leaves every lair empty. (c) A puppet always and no ledger (today): a reset gives every empty lair a dragon 20 days later. | Body ownership is architecture, and (a) changes what an uninstall leaves in the world. |
 | EQ-3 | **Where does the site ledger live?** | (a) **World SavedData `mic_rtsim_sites.dat`, beside `mic_rtsim_villages.dat` (Recommended):** one file, about 32 bytes a site, outside `world/rtsim/`, so a reset keeps it and an uninstall leaves one inert file. (b) A NeoForge data attachment on each site's chunk: travels with the chunk, but is read only when the chunk loads, and vanilla strips unknown attachments while rtsim is out (the reconcile-marker problem UR-1 describes). (c) No ledger: a site found empty after a reset waits the cap (192 days); a member that died away from its unloaded home comes back after a reset. | It is a format in the world save, and it decides what a reset can mint. |
 | EQ-4 | **How fast does a killed Frostmaw come back?** (the base of the den's delay; MOWZIE's MZ-4 (a) states 6 days and defers to this, §2.6 item 5) | (a) **24 days, doubling with pressure (Recommended):** 48 days after the first kill, about one a year farmed. (b) MOWZIE's 6 days, doubling with pressure: 12 days after the first kill, about 1.8 a year farmed. (c) MOWZIE's draft, 6 days flat: 12 to 16 a year farmed. | The Frostmaw is a boss whose drops are loot; this sets their supply. |
-| EQ-5 | **When do factions fight?** | (a) **The gate (Recommended):** a war party goes out only when it is worth sending against what the faction believes of the target; terms first; scouts every 48 days otherwise. A fortress sees scouts, never raids. Camps at strength also stop fighting each other: background feuds fall from @FEUDS_TODAY@ a world-year to @FEUDS_GATE@ (§3.6), and a camp falls on a neighbour only once something has thinned it. (b) The gate plus one glory raid a season whenever grievance is at the raid rung, worth or not, and one raid a season on a hated neighbour camp, so a strong base still gets fights to win and the background wars go on; each costs the camp warriors it then recruits back. (c) Today's ladder: every rung in turn, with no check that a party can win. | It changes what a player who builds a strong base experiences ((a) gives him quiet, (b) a fight a season), and whether the world has wars of its own when no player is near. |
+| EQ-5 | **When do factions fight?** | (a) **The gate (Recommended):** a war party goes out only when it is worth sending against what the faction believes of the target; terms first; scouts every 48 days otherwise. A fortress sees scouts, never raids. Camps at strength also stop fighting each other: background feuds fall from 2 to 20 a world-year to 0 to 0.34 (§3.6), and a camp falls on a neighbour only once something has thinned it. (b) The gate plus one glory raid a season whenever grievance is at the raid rung, worth or not, and one raid a season on a hated neighbour camp, so a strong base still gets fights to win and the background wars go on; each costs the camp warriors it then recruits back. (c) Today's ladder: every rung in turn, with no check that a party can win. | It changes what a player who builds a strong base experiences ((a) gives him quiet, (b) a fight a season), and whether the world has wars of its own when no player is near. |
 | EQ-6 | **One renewal rule for every kind, in `rtsim-kernel`?** | (a) **Yes (Recommended):** `rtsim-kernel::renewal` (§2.2) owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it, with its own numbers. (b) Each engine keeps its own rule, and only the event contract (§2.2) is shared. (c) Pressure only for boss sites (lairs, dens, the Umvuthi); everything else keeps a flat refill. | It is an interface that binds MOWZIE.md and every later species plan. |
 
 ### 5.2 Decided here (each can be undone)
@@ -1030,9 +1038,9 @@ boss loot, how fights feel, an interface another plan must follow).
 | Starve-leave below 0.35 and arrival only at 0.5 of need | No effect on the bands in the sweeps (§3.7), and they keep a dragon from sitting in an eaten-out valley. |
 | M1 kept; a dispersing hatchling takes a vacant lair before a frontier newcomer | Ben's M1; the hatchling is a source the player could see and is conserved, not minted. |
 | The newcomer flies in from the nearest unexplored direction | A source in world terms: the player can watch it come. |
-| Herd dispersal: 5% of the adults of herds above 0.4 K to neighbours below 0.25 K, each spring | Both thresholds sit below the predated steady state (0.6 K); with the first run's 0.8 K and 0.5 K dispersal almost never fired, and a local wipe took 16 years to half instead of 12 to 13 (§3.7). |
+| Herd dispersal: 5% of the adults of herds above 0.4 K to neighbours below 0.25 K, each spring | Both thresholds sit below the predated steady state (0.6 K); with the first run's 0.8 K and 0.5 K dispersal seldom fired, and a local wipe took 15 to 17 years to half instead of 10 to 13 (§3.7). |
 | Frontier herds: `max(12, 0.05 K)` animals at 0.25 per range-year; the tombstone, region mark and name guard go | A world-wide wipe is half back in 14 to 15 years (21 with 12 founders); with no frontier at all it never comes back (§3.7). |
-| Herd refill speed stays biology's (one calving a year) | Faster means placing animals that no birth explains; a larger frontier group (a fifth of K) cuts a world-wipe's time to half by @FOUNDERS_CUT@ and can be turned on later. |
+| Herd refill speed stays biology's (one calving a year) | Faster means placing animals that no birth explains; a larger frontier group (a fifth of K) cuts a world-wipe's time to half by about 40% (888 days against 1,464, §3.7) and can be turned on later. |
 | Village pop follows the census both ways | Today the economy believes in villagers that are dead; this is a fix as much as a choice, and it holds whatever EQ-1 decides. |
 | Settlers are a family from beyond the explored edge; no village gives any | Taking two from a donor would mean removing vanilla villagers the player may have traded with, cured or named (C2, A10); villagers carry no loot, so a frontier family mints nothing that matters. |
 | Growth inside a site (villagers breeding, a village's growth while unloaded, the Ribbit refill) and haven hires are not slowed by pressure | They are bounded by beds, houses and the crew cap and carry no boss loot; pressure throttles what comes from outside (settlers, migrants, newcomers, refits). |
