@@ -29,10 +29,12 @@ def main():
     d = json.load(open(path))
     out = [f"# Equilibrium model results\n\nSource: `{os.path.relpath(path, HERE)}`. Bands are the 5th, "
            "50th and 95th percentiles over seeds, written `median [p5, p95]`. Ratios are population over "
-           "capacity (section 3.1 of EQUILIBRIUM.md); \"late\" is the last 30 years of a 60-year run.\n"]
+           "capacity (section 3.1 of EQUILIBRIUM.md); \"late\" is the last 30 years of a 60-year run. "
+           "`pirate_ships_hunting` counts only havens with a lane the gate would hunt (best win chance above "
+           "2/3); the others rest in port in the proposed mode.\n"]
 
     keys = ["herd_animals", "herds_alive", "dragons", "village_pop", "villages_alive", "ribbit_pop",
-            "frostmaws", "umvuthana", "worms", "camp_pool", "camps_live", "pirate_ships"]
+            "frostmaws", "umvuthana", "worms", "camp_pool", "camps_live", "pirate_ships", "pirate_ships_hunting"]
 
     def steady_table(rows, title):
         out.append(f"\n## {title}\n")
@@ -58,14 +60,16 @@ def main():
                "player turns peaceful at the same day), so 'vs control' compares like with like while a "
                "kind is still settling from its founding.\n")
     out.append("| mode | kind | over | pre | back to 50% | days to 50% | back to 90% | days to 90% | end/pre | "
-               "back to 90% of control | days | end/control |")
-    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+               "back to 90% of control | days | end/control | herd ranges alive at end (control) | "
+               "seeds with every range alive (control) |")
+    out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(d.get("killall", []), key=lambda r: (r["kind"], r["mode"], str(r["over"]))):
         out.append(f"| {r['mode']} | {r['kind']} | {over_s(r['over'])} | {r['pre_mean']} | "
                    f"{r.get('recovered50_share', float('nan')):.2f} | {b(r.get('recovery50_days'), 0)} | {r['recovered_share']:.2f} | "
                    f"{b(r['recovery_days'], 0)} | {b(r['end_over_pre'])} | "
                    f"{r.get('recovered_ctrl_share', float('nan')):.2f} | {b(r.get('recovery_ctrl_days'), 0)} | "
-                   f"{b(r.get('end_over_control'))} |")
+                   f"{b(r.get('end_over_control'))} | {b(r.get('herds_alive_end'))} ({b(r.get('herds_alive_end_ctrl'))}) | "
+                   f"{r.get('all_ranges_alive_share', float('nan')):.2f} ({r.get('all_ranges_alive_share_ctrl', float('nan')):.2f}) |")
 
     out.append("\n## Farming one site every 2 days for 60 years\n")
     out.append("| mode | site | over | kills per year | pressure at the end |\n|---|---|---|---|---|")

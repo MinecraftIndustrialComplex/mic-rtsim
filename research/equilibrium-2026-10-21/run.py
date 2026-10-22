@@ -35,6 +35,7 @@ RATIOS = {   # census key -> capacity key (None: a count already)
     "camp_pool": "camp_cap",
     "camps_live": "camps",
     "pirate_ships": "havens",     # two slots per haven: divided by 2 below
+    "pirate_ships_hunting": "havens_hunting",   # havens with a lane the gate would hunt
 }
 SHOCK_KEY = {"herds": "herd_animals", "herds_local": "herd_local", "dragons": "dragons", "villages": "village_pop",
              "ribbits": "ribbit_pop", "dens": "frostmaws", "groves": "umvuthana", "nests": "worms",
@@ -48,7 +49,7 @@ def series(hist, key):
 def ratio(hist, key):
     cap = RATIOS[key]
     num = series(hist, key)
-    den = series(hist, cap) * (2 if key == "pirate_ships" else 1)
+    den = series(hist, cap) * (2 if key.startswith("pirate_ships") else 1)
     return np.where(den > 0, num / np.maximum(den, 1e-9), np.nan)
 
 
@@ -124,6 +125,9 @@ def killall(args):
     fin = rec[np.isfinite(rec)]
     f50 = r50[np.isfinite(r50)]
     end = x[:, -24:].mean(1) / np.maximum(pre, 1e-9)
+    # herd ranges holding a herd at the last census, shocked run and control
+    alive = lambda h: series(h, "herds_alive")[:, -1] / np.maximum(series(h, "herds_founded")[:, -1], 1)
+    al, alc = alive(hist), alive(hist_c)
     return {"mode": mode, "kind": kind, "over": over, "pre_mean": round(float(np.nanmean(pre)), 1),
             "recovered_share": round(float(np.isfinite(rec).sum() / max(1, np.sum(~np.isnan(rec)))), 3),
             "recovery_days": band(fin) if fin.size else None,
@@ -132,7 +136,10 @@ def killall(args):
             "end_over_pre": band(end),
             "recovered_ctrl_share": round(float(np.isfinite(rc90).sum() / max(1, np.sum(~np.isnan(rc90)))), 3),
             "recovery_ctrl_days": band(rc90f) if rc90f.size else None,
-            "end_over_control": band(end_c)}
+            "end_over_control": band(end_c),
+            "herds_alive_end": band(al), "herds_alive_end_ctrl": band(alc),
+            "all_ranges_alive_share": round(float((al >= 1.0).mean()), 3),
+            "all_ranges_alive_share_ctrl": round(float((alc >= 1.0).mean()), 3)}
 
 
 def farm(args):
@@ -192,7 +199,7 @@ def unattended(args):
         m = (ts >= a) & (ts < b)
         row = {"from_year": a // YEAR}
         for k in ("herd_animals", "herds_alive", "dragons", "village_pop", "ribbit_pop", "frostmaws",
-                  "umvuthana", "worms", "camp_pool", "pirate_ships"):
+                  "umvuthana", "worms", "camp_pool", "pirate_ships", "pirate_ships_hunting"):
             r = ratio(hist, k)[:, m]
             row[k] = round(float(np.nanmean(r)), 3) if np.isfinite(r).any() else None
         row["events_per_day"] = round(float(series(hist, "events")[:, m].mean() / 960), 3)
