@@ -384,6 +384,14 @@ class Server:
             return
         r = {"perf": self.cmd("rtsim perf"), "district_perf": self.cmd("rtsim district perf"),
              "district_list": self.cmd("rtsim district list")}
+        # rtsim's own tick handlers since the last `rtsim perf reset` (choice SG7)
+        m = re.search(r"tick cost: (\d+) ticks since the reset; mean ([\d.]+) us, p50 ([\d.]+) us, p99 ([\d.]+) us, "
+                      r"p99\.9 ([\d.]+) us, worst ([\d.]+) us \(game tick (-?\d+)\)", r["perf"])
+        if m:
+            r["tick_cost"] = {"ticks": int(m.group(1)), "mean_us": float(m.group(2)), "p50_us": float(m.group(3)),
+                              "p99_us": float(m.group(4)), "p999_us": float(m.group(5)), "worst_us": float(m.group(6)),
+                              "worst_at": int(m.group(7))}
+            log(self.run, key, "rtsim tick cost: mean", m.group(2), "us, p99", m.group(4), "us, worst", m.group(6), "us")
         rows = re.findall(r"^\s+(\d+) '([^']*)' (\S+), (\d+) chunks, (\d+) inventories, load (-?\d+)",
                           r["district_list"], re.M)
         r["n_districts"] = len(rows)
@@ -458,6 +466,8 @@ def scene_run(s, sc, profile_s, barrier=None):
             log(s.run, "adopt", x, z, r, out.strip()[:120])
     time.sleep(sc.get("settle", 120) / 2)
     s.rtsim_report("settled", sc.get("info_max", 12))
+    if s.rtsim:
+        s.cmd("rtsim perf reset")  # the busy window's tick cost alone (SG7)
     s.window("busy", sc.get("busy", 300), smp)
     s.rtsim_report("busy", sc.get("info_max", 12))
     if profile_s:
