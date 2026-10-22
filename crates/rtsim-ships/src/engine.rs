@@ -3475,6 +3475,29 @@ impl Ships {
         );
     }
 
+    /// A pirate ship the plugin reports with no crew left (a fight it played, wounds, or a body
+    /// leaving view) is lost, as an abstract fight that kills the last man loses it
+    /// ([`Self::after_fight`]), and its haven rebuilds it when its pool can man one (T27). Kept
+    /// active, a crewless pirate had no strength, so no lane was ever worth hunting again, and it
+    /// was never rebuilt. Whether it was lost.
+    fn lose_if_crewless(
+        &mut self,
+        w: &mut World,
+        s: ShipId,
+        by: u128,
+        killer: Option<ActorId>,
+        at: Tick,
+    ) -> bool {
+        let crewless = self
+            .ships
+            .get(s)
+            .is_some_and(|x| x.is_active() && x.crew == 0 && matches!(x.role, Role::Pirate { .. }));
+        if crewless {
+            self.lose_pirate(w, s, by, killer, at);
+        }
+        crewless
+    }
+
     /// A pirate ship is sunk, by `by` (an archive id, 0 for none; `killer` is the player's actor
     /// when a player did it, for the books of the knowledge).
     fn lose_pirate(
@@ -3696,6 +3719,7 @@ impl Ships {
                     let x = &mut self.ships[s];
                     x.hull_milli = d.hull_milli.min(1000);
                     x.crew = d.crew;
+                    self.lose_if_crewless(w, s, 0, None, at);
                 }
             }
             Obs::Damaged(d) => {
@@ -3707,6 +3731,13 @@ impl Ships {
                 x.hull_milli = d.hull_milli.min(before);
                 x.crew = x.crew.saturating_sub(d.crew_lost);
                 let lost = f64::from(before.saturating_sub(x.hull_milli)) / 1000.0;
+                if self.ships[s].crew == 0 && matches!(self.ships[s].role, Role::Pirate { .. }) {
+                    let killer = (d.by == By::Player).then(|| self.player(w, d.player));
+                    let by = Self::doer(w, d.by, d.player, d.ship);
+                    if self.lose_if_crewless(w, s, by, killer, at) {
+                        return;
+                    }
+                }
                 // Wounds bring a pirate's departure forward (C24): what is left of the hunt
                 // shrinks by three times the share lost, as dragons' visits do (R12).
                 if let Some(PState::Hunting { until, .. }) =
@@ -3920,6 +3951,8 @@ impl Ships {
                     x.crew = f.defender_crew.1;
                     x.hull_milli = f.defender_hull_milli.min(1000);
                 }
+                // Pirates killed to the last man lose their ship, as in an abstract fight.
+                self.lose_if_crewless(w, a, sid(d), None, at);
                 // The fight is over: the pirates leave with what they took.
                 if self
                     .ships
@@ -3984,6 +4017,10 @@ impl Ships {
         for (id, x) in self.ships.iter() {
             if x.embodied {
                 embodied.insert(id);
+            }
+            // A crewless pirate is lost, never an active ship that can no longer hunt.
+            if x.pirate.is_some() && x.is_active() && x.crew == 0 {
+                return Err(format!("pirate {id:?} is active with no crew"));
             }
             if let Some(PState::Hunting { lane, .. }) = x.pirate.as_ref().map(|p| p.state)
                 && x.is_active()

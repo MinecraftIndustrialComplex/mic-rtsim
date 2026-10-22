@@ -398,12 +398,12 @@ repo. Seed 7 unless stated.
 | Run | Result |
 |---|---|
 | `sim dragons` 400, 1000, 2000, 4000 days | The dragon census stays at 5 (one per lair) at every horizon. Counters at 1000 / 2000 / 4000 days: deaths_age 11 / 26 / 51, respawns equal to the age deaths, claims 16 / 33 / 61, migrations 5 / 7 / 11, births 0. Nothing goes extinct and nothing grows. Respawn keeps the count steady ("Old Scorch Roost stood empty: a young dragon flies in to claim it"). |
-| `sim dragons` default (48 days) at HEAD | **4 of 8 checks FAIL**: "a wound becomes a grudge", "a grudge raid on the unwatched farm", "the slayer and the heir", "the heir hunts the player". Same for seeds 1, 2, 3, 7, 11 (seed 11 also fails "threats get bored"). The committed `scenario/results/sim-dragons.json` shows all 8 passing. At HEAD the scripted meeting hits Emberling instead of Cinderjaw (script `crates/rtsim-cli/src/sim/dragons.rs:100-196`). Scenario drift; not diagnosed. |
+| `sim dragons` default (48 days) at HEAD | **4 of 8 checks FAIL**: "a wound becomes a grudge", "a grudge raid on the unwatched farm", "the slayer and the heir", "the heir hunts the player". Same for seeds 1, 2, 3, 7, 11 (seed 11 also fails "threats get bored"). The committed `scenario/results/sim-dragons.json` shows all 8 passing. At HEAD the scripted meeting hits Emberling instead of Cinderjaw (script `crates/rtsim-cli/src/sim/dragons.rs:100-196`). Scenario drift; not diagnosed. **Diagnosed 2026-10-22:** the script's fixed days went stale with phase 1's news by messengers (ac36fbc); the meeting is now found (docs/overnight-choices-dragons.md R27a). |
 | `sim herds` 800 days | Total 33,000 to 25,661 (year 1) to 24,526 (year 2) to 27,493, 32,743, 35,004, 40,108, 42,906, 48,997 (year 8), then 67,276 at the next calving, 67,054 at day 800. Births pulse at the year turn. |
 | `sim herds` 4000 days (about 41 years) | Totals oscillate between about 40k and 117k at year starts (62,982 at year 10, 73,707 at 20, 105,143 at 30, 86,258 at 41). **Winner-take-all**: Northdown grew from 12,000 to about 62,000 while Riverbend, Windmane and Crag fell under 200 (192, 97, 144 at the end). |
 | `sim herds` 4000 days, seed 1 | Windmane (2,500 at the start) hit 0 at about day 3,880 and stayed extinct. Seeds 2 and 3 show small herds crashing to 111 to 197. |
 | `sim herds` 200 days (committed result) | 33,000 to 31,892. No extinction. Later scripted checks fail at long horizons because they are scripted for year 1. |
-| `sim ships` 12 / 120 / 1000 / 3000 days | Exit 0, all checks pass. After about day 120 hunts stay at 30, rebuilds at 1 and sinkings at 1, while fruitless hunts rise from 127 to 5,887 by day 3,000. Pirates stop making successful hunts in the quiet synthetic economy; cause not diagnosed (probably zero lane volume). |
+| `sim ships` 12 / 120 / 1000 / 3000 days | Exit 0, all checks pass. After about day 120 hunts stay at 30, rebuilds at 1 and sinkings at 1, while fruitless hunts rise from 127 to 5,887 by day 3,000. Pirates stop making successful hunts in the quiet synthetic economy; cause not diagnosed (probably zero lane volume). **Diagnosed 2026-10-22:** not lane volume. Fights the plugin played killed both crews to the last man and the pirates stayed active with no crew: no lane was worth hunting, and never lost, they were never rebuilt (fixed, docs/overnight-choices-ships.md T27a). Hunts still end once the one-crew pool is spent (row 4). |
 | `sim conflict` default and 400 days | No FAIL. A repeating roughly 14-day cycle of scouts, a 12-warrior raid, the director fight, a chief kill with the heir taking over, and a rout. By my reading the pool never empties (2/day refill against 12 spent per cycle). The sim does not print the pool. |
 | `sim phase1 --days 1000` | Conservation ok; events per market per day over the last 10 days: 0.0. |
 | `sim quiet --days 1000 --every 100` | Windows 5.40, then 0.00 for every later window. |
@@ -471,8 +471,9 @@ No tool anywhere census-counts populations over years with a player killing them
 * No test sets the conflict pool to zero, kills all pirates and waits past one rebuild, or kills all villagers.
 * The restart-adopts-natural-dragons path and the taming-triggers-respawn path are untested.
 * The dragon scenario checks fail at HEAD against a committed all-pass result: it needs a fix or a note (scenario
-  drift, not diagnosed).
-* Pirate hunts stop after about day 120 in `sim ships` (not diagnosed).
+  drift, not diagnosed). Fixed 2026-10-22 (R27a).
+* Pirate hunts stop after about day 120 in `sim ships` (not diagnosed). Diagnosed 2026-10-22: crewless pirates
+  kept active (fixed, T27a); after that, the pool (row 4).
 * The pool of a conflict faction is not printed by `sim conflict`, so equilibrium cannot be read from the output.
 * No census tooling for populations inside the soak: the soak measures bytes and heap, not who is alive.
 * Java is absent for ships and conflict, so none of the pirate and faction behaviour above has run in a real world.
