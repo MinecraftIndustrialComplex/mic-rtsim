@@ -82,6 +82,15 @@ public interface IndustryPlugin {
     }
 
     /**
+     * Whether this block entity is a station, even before it has an identity (a Create station's track graph
+     * forms a moment after it is placed). A station's chunk joins the district beside it but never starts one
+     * (DS-10).
+     */
+    default boolean isStation(BlockEntity be) {
+        return station(be) != null;
+    }
+
+    /**
      * The not-learnable code (IndRecords.NotLearnable) when industrial block entities {@code a} and
      * {@code b} touch across a district boundary (a shaft split by {@code /rtsim district split}), or 0.
      */
