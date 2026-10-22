@@ -964,7 +964,8 @@ impl Ships {
     }
 
     /// A pirate refits in port before it decides (§2.4.6): its hull is mended and its crew made
-    /// up from the pool, as far as the pool goes.
+    /// up from the pool, as far as the pool goes beyond the crews of the haven's empty slots.
+    /// Those come first, so an empty slot is never starved by top-ups.
     fn refit_in_port(&mut self, s: ShipId, at: Tick) {
         let Some(h) = self.haven_of(s) else {
             return;
@@ -972,13 +973,30 @@ impl Ships {
         let full = self.tun.medium(self.ships[s].medium).pirate_crew;
         let short = full.saturating_sub(self.ships[s].crew);
         let got = if short > 0 {
-            self.take_crew(h, short, at)
+            let due: u32 = self.havens[h as usize]
+                .ships
+                .iter()
+                .filter_map(|&o| self.ships.get(o))
+                .filter(|x| matches!(x.status, Status::Lost { .. }))
+                .map(|x| self.tun.medium(x.medium).pirate_crew)
+                .sum();
+            let spare = (self.crew_pool_milli(h, at) / 1000).saturating_sub(due);
+            self.take_crew(h, short.min(spare), at)
         } else {
             0
         };
         let x = &mut self.ships[s];
         x.crew += got;
         x.hull_milli = 1000;
+        if got > 0 && self.log_enabled {
+            let pool = f64::from(self.crew_pool_milli(h, at)) / 1000.0;
+            self.note(
+                at,
+                "crew",
+                Some(s),
+                format!("makes up {got} crew from haven {h}'s pool ({pool:.1} left ashore)"),
+            );
+        }
     }
 
     /// The value a pirate of strength `a` puts on hunting a lane of `medium` defended by
@@ -3747,10 +3765,24 @@ impl Ships {
             return;
         };
         let need = self.tun.medium(x.medium).pirate_crew;
-        if self.crew_pool_milli(h, at) < need * 1000 {
+        let pool = self.crew_pool_milli(h, at);
+        if pool < need * 1000 {
             // Never, if hires cannot reach a crew: a capture wakes it.
-            if let Some(t) = self.crew_ready_at(h, need, at) {
-                self.schedule(t.max(at + 1), Ev::Refit { ship: s });
+            let ready = self.crew_ready_at(h, need, at).map(|t| t.max(at + 1));
+            if let Some(t) = ready {
+                self.schedule(t, Ev::Refit { ship: s });
+            }
+            if self.log_enabled {
+                self.note(
+                    at,
+                    "refit",
+                    Some(s),
+                    format!(
+                        "haven {h} waits for crew: {:.1} ashore of {need}{}",
+                        f64::from(pool) / 1000.0,
+                        ready.map_or(String::new(), |t| format!(", hired by day {:.2}", day_of(t)))
+                    ),
+                );
             }
             return;
         }
