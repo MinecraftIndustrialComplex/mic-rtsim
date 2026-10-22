@@ -42,6 +42,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -87,6 +88,14 @@ public final class DragonGameTests {
         long agent = DragonKit.newAgent();
         Runnable unforce = DragonKit.forceAround(helper, 3);
         Vec3 c = DragonKit.centre(helper);
+        // A live attack target wins over steering (Ice and Fire flies at it): an earlier test's mob near the
+        // arena (a natural dragon is left alone, OG-1) would pull the dragon away, so none is left.
+        List<String> strays = new ArrayList<>();
+        for (Entity e : helper.getLevel().getEntities((Entity) null, new net.minecraft.world.phys.AABB(BlockPos.containing(c)).inflate(128, 200, 128),
+                e -> e instanceof net.minecraft.world.entity.Mob && !RtsimApi.isPuppet(e))) {
+            strays.add(BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()) + " at " + e.blockPosition().toShortString());
+            e.discard();
+        }
         Vec3 at = c.add(0, 12, 0);
         Vec3 first = c.add(28, 12, 0);
         Vec3 second = c.add(-20, 12, 8);
@@ -120,11 +129,13 @@ public final class DragonGameTests {
                     check("flying to its first target", d.isFlying() && IafDragons.flightTarget(d).distanceTo(first) < 0.01);
                     start[0] = flat(d, first);
                     record(test, "materialized", "age " + d.getAgeInTicks() + ", hunger " + d.getHunger() + ", " + d.getVariant()
-                            + ", health " + d.getHealth() + "/" + d.getMaxHealth() + ", " + start[0] + " blocks from its target");
+                            + ", health " + d.getHealth() + "/" + d.getMaxHealth() + ", " + start[0] + " blocks from its target; strays removed "
+                            + strays);
                 })
                 .thenWaitUntil(() -> {
                     DragonBaseEntity d = body(agent);
-                    check("it flies toward its target (" + flat(d, first) + " of " + start[0] + " blocks left)", flat(d, first) < start[0] - 8);
+                    check("it flies toward its target (" + flat(d, first) + " of " + start[0] + " blocks left, at " + d.blockPosition().toShortString()
+                            + ", flight target " + IafDragons.flightTarget(d) + ", attack target " + d.getTarget() + ")", flat(d, first) < start[0] - 8);
                 })
                 .thenExecute(() -> {
                     record(test, "first target", "closed from " + start[0] + " to " + flat(body(agent), first) + " blocks");
@@ -287,6 +298,8 @@ public final class DragonGameTests {
                             n.shouldBeSaved() && n.isPersistenceRequired() == naturalPersistent && !n.isAgingDisabled());
                     check("no DRAGON_MATERIALIZED names it", DragonKit.received(
                             DragonRecords.DRAGON_MATERIALIZED, DragonRecords.Materialized.ENTITY_MOST, natural.getUUID().getMostSignificantBits()).isEmpty());
+                    // Left alone by the engine; the test removes it so it fights nothing in a later test's arena.
+                    natural.discard();
                 })
                 .thenExecute(() -> {
                     long agent = bridge().agentOf(egg);

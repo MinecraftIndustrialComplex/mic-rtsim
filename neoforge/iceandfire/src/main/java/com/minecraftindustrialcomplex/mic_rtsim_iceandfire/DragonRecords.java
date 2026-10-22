@@ -22,12 +22,18 @@ public final class DragonRecords {
     public static final int HOARD_ROBBED = 0x0506;
     public static final int DRAGON_UNTAGGED = 0x0507;
     public static final int DRAGON_ATE = 0x0508;
+    public static final int OIL_CHUNKS = 0x0509;
+    public static final int DRAGON_BREATHS = 0x050A;
+    public static final int OIL_CONFIG = 0x050B;
 
     public static final int DRAGON_MATERIALIZE = 0x8500;
     public static final int DRAGON_STEER = 0x8501;
     public static final int DRAGON_DEPART = 0x8502;
     public static final int DRAGON_ADOPT = 0x8503;
     public static final int DRAGON_DISCARD = 0x8504;
+    public static final int PLACE_LAIR = 0x8505;
+    public static final int OIL_SURVEY = 0x8506;
+    // 0x8507 is reserved for the underground half (OILGATE.md §4.6, OG-9b). Nothing sends it yet.
 
     public static boolean isDragonCommand(int kind) {
         return kind >= 0x8500 && kind <= 0x85FF;
@@ -123,15 +129,44 @@ public final class DragonRecords {
         public static final int AGENT = 24, EPOCH = 32, PREY = 36, VILLAGE = 40, X = 48, Y = 56, Z = 64, SIZE = 72;
     }
 
+    /** OIL_CHUNKS (aux = entry count n): oil chunks found in one dimension (OILGATE.md §4.1, OG-2). */
+    public static final class OilChunks {
+        public static final int DIM = 24, SOURCE = 28, ENTRIES = 32;
+        /** One entry: i32 cx, i32 cz, i32 amount (mB), u32 flags. */
+        public static final int ENTRY = 16, E_CX = 0, E_CZ = 4, E_AMOUNT = 8, E_FLAGS = 12;
+        /** Most entries one record holds (boundary.rs OIL_CHUNKS_MAX). */
+        public static final int MAX = 1024;
+        public static final int SOURCE_DEEP_TIME = 1, SOURCE_CDG = 2, SOURCE_DEPOSIT = 3;
+        /** The chunk never runs dry (CDG's infinite deposits). */
+        public static final int FLAG_BOTTOMLESS = 1;
+
+        public static int size(int n) {
+            return ENTRIES + ENTRY * n;
+        }
+    }
+
+    /** DRAGON_BREATHS (aux = breaths since the last report): an embodied dragon's fire (OG-4). */
+    public static final class Breaths {
+        public static final int AGENT = 24, EPOCH = 32, SIZE = 40;
+    }
+
+    /** OIL_CONFIG (aux = flags): the oil gate's switches, sent at session start (OILGATE.md §4.2, §4.8). */
+    public static final class OilConfig {
+        public static final int SIZE = 24;
+        public static final int FLAG_FIELD_FLIGHTS = 1, FLAG_PLACE_LAIRS = 2;
+    }
+
     // ---- commands -------------------------------------------------------------------------------
 
     /** DRAGON_MATERIALIZE (aux = flags). */
     public static final class Materialize {
         public static final int AGENT = 16, EPOCH = 24, SPECIES = 28, DIM = 32, AGE_TICKS = 36, X = 40, Y = 48,
                 Z = 56, HUNGER = 64, GENDER = 68, VARIANT = 72, HEALTH = 76, HOME_X = 80, HOME_Y = 84, HOME_Z = 88,
-                TARGET_X = 96, TARGET_Y = 104, TARGET_Z = 112, TARGET_PLAYER_MOST = 120, TARGET_PLAYER_LEAST = 128,
-                SIZE = 136;
+                OIL = 92, TARGET_X = 96, TARGET_Y = 104, TARGET_Z = 112, TARGET_PLAYER_MOST = 120,
+                TARGET_PLAYER_LEAST = 128, SIZE = 136;
         public static final int FLAG_CLAMP_ABOVE_SURFACE = 1, FLAG_HAS_HOME = 2, FLAG_SLEEPING = 4, FLAG_HOSTILE = 8;
+        /** The body carries an oil reserve ({@link #OIL}): its breaths are counted, its fire stops at zero (OG-4, OG-13). */
+        public static final int FLAG_OIL = 16;
     }
 
     /** DRAGON_STEER (aux = flags, 1 settle at the target). */
@@ -157,6 +192,19 @@ public final class DragonRecords {
         public static final int ENTITY_MOST = 16, ENTITY_LEAST = 24, SIZE = 32;
     }
 
+    /**
+     * PLACE_LAIR (aux 0): a lair structure (structure dictionary) on the first load of a free site within
+     * {@code radius} blocks of (x, z), every biome allowed; at most one per field (OILGATE.md §4.4, OG-7).
+     */
+    public static final class PlaceLair {
+        public static final int FIELD = 16, DIM = 24, STRUCTURE = 28, X = 32, Z = 36, RADIUS = 40, SIZE = 48;
+    }
+
+    /** OIL_SURVEY (aux 0): sample the oil of the chunks within {@code radius} blocks, answered OIL_CHUNKS. */
+    public static final class OilSurvey {
+        public static final int DIM = 16, X = 20, Z = 24, RADIUS = 28, SIZE = 32;
+    }
+
     /** The smallest valid size of each command kind; a shorter record is skipped as malformed. */
     public static int minSize(int kind) {
         return switch (kind) {
@@ -165,6 +213,8 @@ public final class DragonRecords {
             case DRAGON_DEPART -> Depart.SIZE;
             case DRAGON_ADOPT -> Adopt.SIZE;
             case DRAGON_DISCARD -> Discard.SIZE;
+            case PLACE_LAIR -> PlaceLair.SIZE;
+            case OIL_SURVEY -> OilSurvey.SIZE;
             default -> 16;
         };
     }

@@ -357,6 +357,7 @@ fn purpose(saved: &Saved, p: &Purpose) -> String {
         Purpose::Hunt(t) => format!("to hunt {}", target_text(saved, t)),
         Purpose::Home => "home".into(),
         Purpose::Claim(l) => format!("to claim lair {l}"),
+        Purpose::Refuel { field, x, z, .. } => format!("to drink at oil field {field} ({x}, {z})"),
     }
 }
 
@@ -369,6 +370,7 @@ fn target_text(saved: &Saved, t: &Target) -> String {
         ),
         Target::Home { player, .. } => format!("the home of player {}", player.to_bits()),
         Target::Herd { herd, .. } => format!("herd {herd}"),
+        Target::District { district, .. } => format!("district {district}"),
     }
 }
 

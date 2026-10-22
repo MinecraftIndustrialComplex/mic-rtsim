@@ -1,0 +1,336 @@
+package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.Registry;
+import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.Tag;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
+import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.saveddata.SavedData;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * PLACE_LAIR (OILGATE.md §4.4, OG-7): a fire roost placed near an oil field the engine found without a
+ * fire lair in reach. The structure goes through vanilla's {@code /place structure} code path
+ * ({@code PlaceCommand.placeStructure}): {@code Structure.generate} with every biome allowed, then
+ * {@code StructureStart.placeInChunk} over the start's chunks. Server thread.
+ *
+ * <p><b>Where</b>: the chunks whose centre lies within the command's radius of its point, nearest the
+ * point first, on the first tick a site there is free: its chunks and those around it, as far as the
+ * roost reaches ({@link #SITE_CHUNKS}), loaded; no lair structure referenced in them; no player within
+ * {@link #CLEAR_OF_PLAYERS} blocks. Ice and Fire's own rolls decide the rest: its roost generates in a
+ * chunk with its configured chance (the pack's 0.5) and not within {@code dangerousDistanceLimit}
+ * (1,000 blocks) of the world spawn, the same draw for a chunk every time; a chunk whose draw fails is
+ * passed over for good. A request whose every chunk failed is dropped.
+ *
+ * <p><b>Once per field</b>: the fields asked for, the requests still waiting and the lairs placed are
+ * saved with the overworld ({@link Data}), so a repeat (an engine replaying its outbox after a crash, a
+ * restart before the site loaded) never places a second roost, and a waiting request survives a restart.
+ *
+ * <p><b>The lair</b>: {@code /place} itself leaves no structure start in the chunk, so nothing would know
+ * the roost was there. The plugin stores the start in its chunk and a reference in each chunk of its box,
+ * as world generation does: vanilla saves them with the chunks, {@link Lairs} finds the roost when its
+ * chunk loads (late) and when its dragon joins (DRAGON_UNTAGGED names it), and the engine hears of it at
+ * once (LAIR_FOUND, flag late). Ice and Fire's roost spawns its own dragon while it builds (verified from
+ * the piece's {@code postProcess}): that dragon joins untagged and the engine adopts it as the lair's
+ * occupant.
+ */
+public final class LairPlacer {
+    /** Sites tried (one {@code Structure.generate} each) per tick, PLACEHOLDER. */
+    public static final int TRIES_PER_TICK = 2;
+    /** Candidate chunks looked at per tick across the waiting requests, PLACEHOLDER. */
+    public static final int CHECKS_PER_TICK = 64;
+    /**
+     * Chunks around a site's chunk that must be loaded: Ice and Fire's roost builds out to 34 blocks from
+     * its pivot (its decoration radius, 12 + 0..7 - 2 + 15), and the pivot is near the chunk's middle.
+     */
+    public static final int SITE_CHUNKS = 3;
+    /** A site is not chosen this close to a player (blocks), so no roost appears under anyone, PLACEHOLDER. */
+    public static final int CLEAR_OF_PLAYERS = 48;
+
+    /** One PLACE_LAIR still waiting for a free site. */
+    public record Request(long field, String dimension, String structure, int x, int z, int radius) {}
+
+    /** One placed lair, for the log and the tests. */
+    public record Placed(long field, long lair, String dimension, String structure, BoundingBox box, BlockPos pivot,
+                         long gameTime, int sitesTried, long placeNanos) {}
+
+    private final DragonBridge bridge;
+    /** Per waiting request: its candidate chunks, nearest first, and the index of the next to look at. */
+    private final Map<Long, Cursor> cursors = new HashMap<>();
+
+    private static final class Cursor {
+        final List<ChunkPos> candidates;
+        final boolean[] dead;
+        int next, tried, alive;
+
+        Cursor(List<ChunkPos> candidates) {
+            this.candidates = candidates;
+            this.dead = new boolean[candidates.size()];
+            this.alive = candidates.size();
+        }
+    }
+
+    /** This session's counts. */
+    public long requests, repeats, refused, badRequests, placedCount, sitesTried, sitesFailed, exhausted;
+    /** This session's placements, oldest first. */
+    public final List<Placed> placements = new ArrayList<>();
+
+    LairPlacer(DragonBridge bridge) {
+        this.bridge = bridge;
+    }
+
+    void clear() {
+        cursors.clear();
+        requests = repeats = refused = badRequests = placedCount = sitesTried = sitesFailed = exhausted = 0;
+        placements.clear();
+    }
+
+    /** The saved state, from the overworld's data storage. */
+    public Data data() {
+        return bridge.session().server().overworld().getDataStorage().computeIfAbsent(Data.FACTORY, Data.NAME);
+    }
+
+    /** PLACE_LAIR from the engine. */
+    public void request(long field, String dimension, String structure, int x, int z, int radius) {
+        requests++;
+        if (!DragonConfig.placeLairs()) {
+            refused++;
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_LAIR for field {} refused: placeLairs is off", field);
+            return;
+        }
+        if (dimension == null || structure == null || IafDragons.lairKind(structure) == null || radius < 0 || level(dimension) == null) {
+            badRequests++;
+            MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] PLACE_LAIR for field {} names {} in {}: skipped", field, structure, dimension);
+            return;
+        }
+        Data d = data();
+        if (!d.fields.add(field)) {
+            repeats++;
+            return;
+        }
+        d.pending.add(new Request(field, dimension, structure, x, z, Math.min(radius, 1024)));
+        d.setDirty();
+        MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_LAIR: a {} for oil field {} within {} blocks of ({}, {})",
+                structure, field, radius, x, z);
+    }
+
+    private ServerLevel level(String dimension) {
+        ResourceLocation loc = ResourceLocation.tryParse(dimension);
+        return loc == null ? null : bridge.session().server().getLevel(ResourceKey.create(Registries.DIMENSION, loc));
+    }
+
+    /** End of tick, before untagged dragons are reported (a roost's dragon must find its lair known). */
+    void tick(long now) {
+        if (!DragonConfig.placeLairs())
+            return;
+        Data d = data();
+        if (d.pending.isEmpty())
+            return;
+        int checks = CHECKS_PER_TICK, tries = TRIES_PER_TICK;
+        for (Iterator<Request> it = d.pending.iterator(); it.hasNext() && checks > 0 && tries > 0; ) {
+            Request r = it.next();
+            ServerLevel level = level(r.dimension());
+            if (level == null)
+                continue;
+            Cursor c = cursors.computeIfAbsent(r.field(), k -> new Cursor(candidates(r)));
+            int n = c.candidates.size();
+            for (int i = 0; i < n && checks > 0 && tries > 0; i++) {
+                int k = c.next;
+                c.next = (c.next + 1) % Math.max(1, n);
+                if (c.dead[k])
+                    continue;
+                checks--;
+                ChunkPos at = c.candidates.get(k);
+                if (!free(level, at))
+                    continue;
+                tries--;
+                c.tried++;
+                sitesTried++;
+                Placed p = place(level, r, at, c.tried, now);
+                if (p != null) {
+                    it.remove();
+                    cursors.remove(r.field());
+                    d.placed.add(p);
+                    d.setDirty();
+                    break;
+                }
+                sitesFailed++;
+                c.dead[k] = true;
+                if (--c.alive == 0) {
+                    exhausted++;
+                    it.remove();
+                    cursors.remove(r.field());
+                    d.setDirty();
+                    MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_LAIR for field {}: no chunk within {} blocks of ({}, {}) takes a {} ({} tried); dropped",
+                            r.field(), r.radius(), r.x(), r.z(), r.structure(), c.tried);
+                    break;
+                }
+            }
+        }
+    }
+
+    /** The chunks whose centre is within the request's radius of its point, nearest first. */
+    static List<ChunkPos> candidates(Request r) {
+        int cx = SectionPos.blockToSectionCoord(r.x()), cz = SectionPos.blockToSectionCoord(r.z());
+        int reach = (r.radius() >> 4) + 1;
+        List<ChunkPos> out = new ArrayList<>();
+        long r2 = (long) r.radius() * r.radius();
+        for (int dx = -reach; dx <= reach; dx++)
+            for (int dz = -reach; dz <= reach; dz++) {
+                ChunkPos p = new ChunkPos(cx + dx, cz + dz);
+                long ex = p.getMiddleBlockX() - r.x(), ez = p.getMiddleBlockZ() - r.z();
+                if (ex * ex + ez * ez <= r2 || (dx == 0 && dz == 0))
+                    out.add(p);
+            }
+        out.sort((a, b) -> Long.compare(d2(a, r), d2(b, r)));
+        return out;
+    }
+
+    private static long d2(ChunkPos p, Request r) {
+        long ex = p.getMiddleBlockX() - r.x(), ez = p.getMiddleBlockZ() - r.z();
+        return ex * ex + ez * ez;
+    }
+
+    /** A free site: loaded around, no lair structure there, nobody close. */
+    private static boolean free(ServerLevel level, ChunkPos at) {
+        if (level.getChunkSource().getChunkNow(at.x, at.z) == null)
+            return false;
+        Registry<Structure> reg = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
+        for (int dx = -SITE_CHUNKS; dx <= SITE_CHUNKS; dx++)
+            for (int dz = -SITE_CHUNKS; dz <= SITE_CHUNKS; dz++) {
+                LevelChunk c = level.getChunkSource().getChunkNow(at.x + dx, at.z + dz);
+                if (c == null)
+                    return false;
+                for (Structure s : c.getAllReferences().keySet()) {
+                    ResourceLocation id = reg.getKey(s);
+                    if (id != null && IafDragons.lairKind(id.toString()) != null && !c.getReferencesForStructure(s).isEmpty())
+                        return false;
+                }
+            }
+        double mx = at.getMiddleBlockX(), mz = at.getMiddleBlockZ();
+        for (ServerPlayer p : level.players()) {
+            double ex = p.getX() - mx, ez = p.getZ() - mz;
+            if (ex * ex + ez * ez < (double) CLEAR_OF_PLAYERS * CLEAR_OF_PLAYERS)
+                return false;
+        }
+        return true;
+    }
+
+    /**
+     * {@code PlaceCommand.placeStructure} at the chunk {@code at} (its arguments, every biome allowed), the
+     * start then stored as world generation stores one; null when Ice and Fire's draw fails there.
+     */
+    private Placed place(ServerLevel level, Request r, ChunkPos at, int tried, long now) {
+        Registry<Structure> reg = level.registryAccess().registryOrThrow(Registries.STRUCTURE);
+        Structure structure = reg.get(ResourceLocation.parse(r.structure()));
+        if (structure == null)
+            return null;
+        long t0 = System.nanoTime();
+        ChunkGenerator gen = level.getChunkSource().getGenerator();
+        StructureStart start = structure.generate(level.registryAccess(), gen, gen.getBiomeSource(), level.getChunkSource().randomState(),
+                level.getStructureManager(), level.getSeed(), at, 0, level, b -> true);
+        if (!start.isValid())
+            return null;
+        BoundingBox box = start.getBoundingBox();
+        ChunkPos from = new ChunkPos(SectionPos.blockToSectionCoord(box.minX()), SectionPos.blockToSectionCoord(box.minZ()));
+        ChunkPos to = new ChunkPos(SectionPos.blockToSectionCoord(box.maxX()), SectionPos.blockToSectionCoord(box.maxZ()));
+        if (ChunkPos.rangeClosed(from, to).anyMatch(p -> level.getChunkSource().getChunkNow(p.x, p.z) == null))
+            return null; // cannot happen for a free site (its box is within SITE_CHUNKS); /place refuses the same
+        ChunkPos.rangeClosed(from, to).forEach(p -> start.placeInChunk(level, level.structureManager(), gen, level.getRandom(),
+                new BoundingBox(p.getMinBlockX(), level.getMinBuildHeight(), p.getMinBlockZ(), p.getMaxBlockX(), level.getMaxBuildHeight(), p.getMaxBlockZ()), p));
+        long nanos = System.nanoTime() - t0;
+        // What world generation keeps and /place does not: the start in its chunk, a reference in each.
+        LevelChunk home = level.getChunkSource().getChunkNow(at.x, at.z);
+        home.setStartForStructure(structure, start);
+        long ref = at.toLong();
+        ChunkPos.rangeClosed(from, to).forEach(p -> level.getChunkSource().getChunkNow(p.x, p.z).addReferenceForStructure(structure, ref));
+        BlockPos pivot = start.getPieces().isEmpty() ? box.getCenter() : start.getPieces().get(0).getBoundingBox().getCenter();
+        Lairs.Lair lair = bridge.lairs.placed(level, r.structure(), start, now);
+        Placed p = new Placed(r.field(), lair.id(), r.dimension(), r.structure(), box, pivot, now, tried, nanos);
+        placements.add(p);
+        placedCount++;
+        MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_LAIR: placed a {} for oil field {} at {} (chunk {}, {} tried, {} us)",
+                r.structure(), r.field(), pivot.toShortString(), at, tried, nanos / 1000);
+        return p;
+    }
+
+    /** What the plugin keeps with the world: the fields asked for, the waiting requests, the placed lairs. */
+    public static final class Data extends SavedData {
+        public static final String NAME = "mic_rtsim_iceandfire_oil_lairs";
+        static final Factory<Data> FACTORY = new Factory<>(Data::new, Data::load);
+
+        public final Set<Long> fields = new LinkedHashSet<>();
+        public final List<Request> pending = new ArrayList<>();
+        public final List<Placed> placed = new ArrayList<>();
+
+        @Override
+        public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
+            tag.putLongArray("fields", fields.stream().mapToLong(Long::longValue).toArray());
+            ListTag p = new ListTag();
+            for (Request r : pending) {
+                CompoundTag t = new CompoundTag();
+                t.putLong("field", r.field());
+                t.putString("dimension", r.dimension());
+                t.putString("structure", r.structure());
+                t.putInt("x", r.x());
+                t.putInt("z", r.z());
+                t.putInt("radius", r.radius());
+                p.add(t);
+            }
+            tag.put("pending", p);
+            ListTag l = new ListTag();
+            for (Placed x : placed) {
+                CompoundTag t = new CompoundTag();
+                t.putLong("field", x.field());
+                t.putLong("lair", x.lair());
+                t.putString("dimension", x.dimension());
+                t.putString("structure", x.structure());
+                t.putIntArray("box", new int[] {x.box().minX(), x.box().minY(), x.box().minZ(), x.box().maxX(), x.box().maxY(), x.box().maxZ()});
+                t.putLong("pivot", x.pivot().asLong());
+                t.putLong("gameTime", x.gameTime());
+                l.add(t);
+            }
+            tag.put("placed", l);
+            return tag;
+        }
+
+        public static Data load(CompoundTag tag, HolderLookup.Provider registries) {
+            Data d = new Data();
+            for (long f : tag.getLongArray("fields"))
+                d.fields.add(f);
+            for (Tag e : tag.getList("pending", Tag.TAG_COMPOUND)) {
+                CompoundTag t = (CompoundTag) e;
+                d.pending.add(new Request(t.getLong("field"), t.getString("dimension"), t.getString("structure"), t.getInt("x"),
+                        t.getInt("z"), t.getInt("radius")));
+            }
+            for (Tag e : tag.getList("placed", Tag.TAG_COMPOUND)) {
+                CompoundTag t = (CompoundTag) e;
+                int[] b = t.getIntArray("box");
+                BoundingBox box = b.length == 6 ? new BoundingBox(b[0], b[1], b[2], b[3], b[4], b[5]) : new BoundingBox(0, 0, 0, 0, 0, 0);
+                d.placed.add(new Placed(t.getLong("field"), t.getLong("lair"), t.getString("dimension"), t.getString("structure"), box,
+                        BlockPos.of(t.getLong("pivot")), t.getLong("gameTime"), 0, 0));
+            }
+            return d;
+        }
+    }
+}

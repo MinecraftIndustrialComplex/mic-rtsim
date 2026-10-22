@@ -30,10 +30,11 @@ description = '''${mod_description}'''
     ordering     = "AFTER"
     side         = "BOTH"
 
-# The plugin is built around one mod (D4); verified against Carry On 2.2.6.13.
+# The plugin is built around one mod (D4); verified against Carry On 2.2.6.13. 2.2.2.11 (TBSMP's pack)
+# has the same EntityPickupEvent (player, target) and ran with the plugin in the TBSMP stress run.
 [[dependencies.${mod_id}]]
     modId        = "carryon"
     type         = "required"
-    versionRange = "[2.2.6,)"
+    versionRange = "${carryon_version_range}"
     ordering     = "AFTER"
     side         = "BOTH"
