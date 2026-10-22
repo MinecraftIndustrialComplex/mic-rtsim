@@ -926,24 +926,20 @@ impl Engine {
             Obs::Survey(s) => {
                 let dist = self.district_mut(s.district);
                 dist.defence.set_survey(s);
-                if s.revision != dist.revision {
-                    dist.defence.exposed.clear();
-                }
+                dist.defence.keep_chunks(&dist.chunks);
                 self.schedule_pressure(s.district, at);
             }
             Obs::SurveyBlocks {
                 district,
                 part,
+                chunk,
+                partial,
                 blocks,
                 ..
             } => {
                 let dist = self.district_mut(*district);
-                if *part == 0 {
-                    dist.defence.exposed.clear();
-                }
-                dist.defence
-                    .exposed
-                    .extend(blocks.iter().map(threat::ExposedBlockRow::from));
+                dist.defence.survey_blocks(*chunk, *part, *partial, blocks);
+                dist.defence.keep_chunks(&dist.chunks);
             }
         }
     }
