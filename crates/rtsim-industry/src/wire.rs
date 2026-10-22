@@ -2649,12 +2649,12 @@ mod tests {
             duration_ticks: 0,
         }));
         let mut r = fight.clone();
-        r[4] = 4;
+        r[4] = 5;
         assert!(matches!(
             decode_obs(&r),
             Err(WireError::BadCode {
                 field: "threat_class",
-                value: 4,
+                value: 5,
                 ..
             })
         ));
