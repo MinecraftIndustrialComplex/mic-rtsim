@@ -214,7 +214,17 @@ impl Ecology {
 
     /// The ranges scenario: [`RANGES_X`] x [`RANGES_Z`] herd ranges, no oil.
     pub fn ranges(seed: u64, htun: HerdTunables) -> Self {
-        let h = rtsim_ecology::herds::synth::ranges(seed, htun, Tick::ZERO, RANGES_X, RANGES_Z);
+        Self::ranges_in(seed, htun, RANGES_X, RANGES_Z)
+    }
+
+    /// The ranges scenario's world over the herd ranges of regions `rx` x `rz`.
+    pub fn ranges_in(
+        seed: u64,
+        htun: HerdTunables,
+        rx: std::ops::RangeInclusive<i32>,
+        rz: std::ops::RangeInclusive<i32>,
+    ) -> Self {
+        let h = rtsim_ecology::herds::synth::ranges(seed, htun, Tick::ZERO, rx, rz);
         Self::with_herds(seed, h, false)
     }
 
