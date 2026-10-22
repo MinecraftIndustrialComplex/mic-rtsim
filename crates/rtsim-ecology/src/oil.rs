@@ -104,7 +104,8 @@ pub struct OilTunables {
     pub survey_radius: u32,
     /// A player's presence counts for field flights this long after its last report.
     pub presence_fresh_ticks: u64,
-    /// The switches the engine starts with (`boundary::OIL_*`); OIL_CONFIG replaces them.
+    /// The switches the engine starts with (`boundary::OIL_*`); OIL_CONFIG replaces them. Field
+    /// flights and lair placement are on (OGB-6: the sim's dragons replace In Control's).
     pub flags: u32,
     /// The goods a dragon drinks (item names; a name also matches its `name/<hash>` variants).
     pub fuels: Vec<String>,
@@ -131,7 +132,7 @@ impl Default for OilTunables {
             fuel_signal_mb: 1_000,
             survey_radius: 1_024,
             presence_fresh_ticks: 200,
-            flags: boundary::OIL_PLACE_LAIRS,
+            flags: boundary::OIL_FIELD_FLIGHTS | boundary::OIL_PLACE_LAIRS,
             fuels: [
                 "destroy:crude_oil",
                 "createdieselgenerators:oil",

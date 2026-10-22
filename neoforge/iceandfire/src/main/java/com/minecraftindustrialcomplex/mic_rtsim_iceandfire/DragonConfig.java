@@ -24,9 +24,10 @@ public final class DragonConfig {
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
         b.comment("The oil gate (OILGATE.md): fire dragons drink oil and burn it as fire.").push("oil");
-        FIELD_FLIGHTS = b.comment("The engine draws fire dragons to players near oil fields (OILGATE.md §4.2). Off until",
-                        "the danger measurement of §4.8 passes: until then In Control's fire dragon rules stay the pack's.")
-                .define("fieldFlights", false);
+        FIELD_FLIGHTS = b.comment("The engine draws fire dragons to players near oil fields (OILGATE.md §4.2). On: they",
+                        "replace In Control's desert fire dragons, whose rule the pack no longer has (DECISIONS.md OGB-6).",
+                        "Turned off, nothing draws fire dragons to oil.")
+                .define("fieldFlights", true);
         PLACE_LAIRS = b.comment("An oil field with no fire lair in reach gets a fire roost placed near it on the first load",
                         "of a free site (OILGATE.md §4.4, OG-7). At most one per field.")
                 .define("placeLairs", true);
@@ -48,7 +49,7 @@ public final class DragonConfig {
     public static boolean fieldFlights() {
         if (Test.fieldFlights != null)
             return Test.fieldFlights;
-        return loaded() ? FIELD_FLIGHTS.get() : false;
+        return loaded() ? FIELD_FLIGHTS.get() : true;
     }
 
     public static boolean placeLairs() {
