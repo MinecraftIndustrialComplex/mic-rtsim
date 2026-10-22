@@ -22,6 +22,8 @@ public final class DragonModel {
     public static final int HEADINGS = 16;
     /** Client ticks each flipbook frame shows: a wingbeat of four frames is a second. PLACEHOLDER. */
     public static final double FLAP_TICKS = 5.0;
+    /** How far past half a step a heading must turn before it takes the next step, in steps. */
+    public static final double HYSTERESIS = 0.15;
 
     /** Where the wings are. */
     public enum Pose {
@@ -48,6 +50,22 @@ public final class DragonModel {
             return 0;
         double a = Math.atan2(hz, hx);
         return Math.floorMod((int) Math.round(a / (2.0 * Math.PI / HEADINGS)), HEADINGS);
+    }
+
+    /**
+     * The heading step for (hx, hz) of a dragon cut for step {@code current} (-1: none yet): it keeps
+     * {@code current} until the heading is {@link #HYSTERESIS} past halfway to the next, so a dragon flying
+     * along a step's edge is not cut again every frame.
+     */
+    public static int headingStep(double hx, double hz, int current) {
+        if (current < 0)
+            return headingStep(hx, hz);
+        if (Math.abs(hx) < 1e-9 && Math.abs(hz) < 1e-9)
+            return current;
+        double steps = Math.atan2(hz, hx) / (2.0 * Math.PI / HEADINGS);
+        double off = steps - current;
+        off -= HEADINGS * Math.floor(off / HEADINGS + 0.5);
+        return Math.abs(off) <= 0.5 + HYSTERESIS ? current : headingStep(hx, hz);
     }
 
     /** The unit heading of a step: {hx, hz}. */

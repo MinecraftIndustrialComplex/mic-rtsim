@@ -40,11 +40,17 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  *
  * <p>The rings lie 500 to 1500 blocks east of spawn, far from the chunks around a player who stays there: a
  * carriage in an entity-ticking chunk would try to spawn its contraption entity, find none, and drop its train.
+ * {@code mic_rtsim.farbench.bandTrains} more run on a ring of radius {@link #BAND_RADIUS} around spawn, inside
+ * the client's loaded chunks and outside its entity-ticking ones (the bench sets the simulation distance to 4),
+ * which is the band mic_rtsim_dh's band renderer draws (docs/choices-dh-feed.md).
  */
 public final class FarTrainBench {
     public static final boolean ENABLED = Boolean.getBoolean("mic_rtsim.farbench");
     static final int TRAINS = Math.max(0, Integer.getInteger("mic_rtsim.farbench.trains", 0));
     static final int CARRIAGES = Math.max(1, Integer.getInteger("mic_rtsim.farbench.carriages", 4));
+    static final int BAND_TRAINS = Math.max(0, Integer.getInteger("mic_rtsim.farbench.bandTrains", 0));
+    /** The band ring: 8.75 chunks, between a simulation distance of 4 and a render distance of 12. */
+    static final double BAND_RADIUS = 140.0;
 
     static final double CENTRE_X = 1000.0, CENTRE_Z = 0.0;
     static final double[] RADII = {300.0, 500.0};
@@ -62,6 +68,7 @@ public final class FarTrainBench {
     private static final int LOG_EVERY = 200;
 
     private static final List<Ring> RINGS = new ArrayList<>();
+    private static final List<Ring> BAND = new ArrayList<>();
     private static final List<Train> BENCH = new ArrayList<>();
     private static int ticks;
 
@@ -80,11 +87,11 @@ public final class FarTrainBench {
         final TrackEdge[] forward = new TrackEdge[SIDES];
         final double[] at = new double[SIDES + 1];
 
-        Ring(ResourceKey<Level> dimension, double radius) {
+        Ring(ResourceKey<Level> dimension, double cx, double cz, double radius) {
             for (int i = 0; i < SIDES; i++) {
                 double a = 2.0 * Math.PI * i / SIDES;
-                TrackNodeLocation location = new TrackNodeLocation(CENTRE_X + radius * Math.cos(a), Y,
-                        CENTRE_Z + radius * Math.sin(a)).in(dimension);
+                TrackNodeLocation location = new TrackNodeLocation(cx + radius * Math.cos(a), Y,
+                        cz + radius * Math.sin(a)).in(dimension);
                 nodes[i] = new TrackNode(location, TrackGraph.nextNodeId(), new Vec3(0.0, 1.0, 0.0));
                 graph.addNode(nodes[i]);
             }
@@ -118,11 +125,23 @@ public final class FarTrainBench {
     }
 
     private static void started(ServerStartedEvent event) {
+        ResourceKey<Level> overworld = Level.OVERWORLD;
+        if (BAND_TRAINS > 0) {
+            Ring band = new Ring(overworld, 0.0, 0.0, BAND_RADIUS);
+            Create.RAILWAYS.putGraphWithDefaultGroup(band.graph);
+            for (int i = 0; i < BAND_TRAINS; i++) {
+                Train train = train(band, 10_000 + i, band.length() * i / BAND_TRAINS);
+                Create.RAILWAYS.addTrain(train);
+                BENCH.add(train);
+            }
+            MicRtsimCreate.LOGGER.info("far bench: {} band trains on a ring of radius {} around spawn", BAND_TRAINS,
+                    BAND_RADIUS);
+            BAND.add(band);
+        }
         if (TRAINS == 0)
             return;
-        ResourceKey<Level> overworld = Level.OVERWORLD;
         for (double r : RADII) {
-            Ring ring = new Ring(overworld, r);
+            Ring ring = new Ring(overworld, CENTRE_X, CENTRE_Z, r);
             Create.RAILWAYS.putGraphWithDefaultGroup(ring.graph);
             RINGS.add(ring);
         }
@@ -186,11 +205,14 @@ public final class FarTrainBench {
             Create.RAILWAYS.removeTrain(train.id);
         for (Ring ring : RINGS)
             Create.RAILWAYS.removeGraphAndGroup(ring.graph);
+        for (Ring ring : BAND)
+            Create.RAILWAYS.removeGraphAndGroup(ring.graph);
         if (!BENCH.isEmpty())
             MicRtsimCreate.LOGGER.info("far bench: took {} trains and {} rings out before the save", BENCH.size(),
                     RINGS.size());
         BENCH.clear();
         RINGS.clear();
+        BAND.clear();
         ticks = 0;
     }
 }
