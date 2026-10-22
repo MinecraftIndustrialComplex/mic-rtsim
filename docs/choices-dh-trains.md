@@ -61,3 +61,94 @@ is not in the pack.
   distance is above the server's simulation distance, a train crossing that band vanishes until it reaches the
   DH range. That is how Create behaves without DH as well. Nothing to decide now; phase 2 could draw those
   carriages with a vanilla-side renderer if it matters.
+
+## Measured
+
+Four bench runs on 2026-10-22 (neoforge/README.md, "The far view's dev client"): `t0` with no trains, `t20`
+with 20 trains, `t50` with 50, all on MEDIUM, and `t50h` with 50 on HIGH. Trains of 4 carriages, 500 to 1,500
+blocks from the camera: all inside DH's radius, none in vanilla's view, so nothing was hidden. Ben's laptop
+(Ryzen, 24 threads, its Radeon), single player, a 2838 by 1704 window, render and simulation distance 12, DH's
+default settings. Each profile is vanilla's 10-second client recording, taken after 900 warm-up ticks.
+
+**The machine was not quiet.** Other sessions' jobs held the load average between 20 and 29 throughout, and
+the GPU was shared. Every run, the no-train control included, had stretches at 15 to 40 fps. The four windows
+below fell in fast stretches. A first 20-train run whose window fell in a slow stretch (25 fps, 18.6 ms of GPU
+a frame against 6.3) is left out of the table. Per group, the trains there cost what DH's own cloud groups
+cost, the same as below.
+
+### Render thread (CPU), from the profile
+
+Microseconds a frame:
+
+| Run | Carriages | Groups drawn | Boxes | fps | Custom Objects | its `mic_rtsim_dh` draws | DH's 37 cloud groups | Controller |
+|---|---|---|---|---|---|---|---|---|
+| t0 | 0 | 0 | 0 | 122 | 718 | none | 212 | 14 |
+| t20 | 80 | 80 | 792 | 137 | 1,362 | 419 | 191 | 84 |
+| t50 | 200 | 96 (MEDIUM's cap) | 966 | 135 | 1,534 | 499 | 178 | 151 |
+| t50h | 200 | 200 | 2,024 | 113 | 2,408 | 1,069 | 176 | 157 |
+
+"Custom Objects" is DH's own profiler section. It holds:
+
+- DH's clouds and beacons;
+- this controller, in its setup;
+- every group's preparation and draw.
+
+Against the control, the trains added:
+
+- 644 us a frame at 20 trains;
+- 816 us at 50 on MEDIUM, with 96 drawn;
+- 1,690 us at 50 on HIGH, with 200 drawn.
+
+That is about 8 us for each carriage drawn. About 5 us of it is DH drawing the group, which is what one of
+DH's own cloud groups costs (5 us). The cost follows the number of groups drawn, not the number of boxes.
+
+The controller column is its own timer over the same window. It includes the re-cuts: 164, 200 and 404 in the
+three windows with trains. The fps column is the whole frame. These frames are GPU bound: vanilla's timer
+query has the GPU busy for 84% to 87% of each frame.
+
+### GPU
+
+**Not separated.** Vanilla's frame timer query gives only the whole frame's GPU time. Medians:
+
+| Run | GPU time a frame |
+|---|---|
+| t0 | 6.9 ms |
+| t20 | 6.3 ms |
+| t50 | 6.4 ms |
+| t50h | 7.4 ms |
+
+No run differs from the control by more than the runs differ from each other on a shared GPU. So the boxes'
+GPU time is unmeasured.
+
+### Bandwidth: Create's train map sync, per client asking
+
+| Trains | Carriages | Packet body | Packets a second | Body bytes a second |
+|---|---|---|---|---|
+| 20 | 80 | 4,122 bytes | 3.97 | 16,383 |
+| 50 | 200 | 10,302 bytes | 3.98 | 41,020 |
+
+That is 206 bytes for each 4-carriage train in every packet, at 4 packets a second: about 820 bytes a second
+for each train, to each client that asks.
+
+- This counts the body only (DHT23). The payload id, the length prefix and the connection's compression are
+  not in it. A dedicated server compresses packets over 256 bytes; how much that saves here is not measured.
+- The bench trains are unnamed and have no owner. A real train's name and its owner's name add their length
+  to every packet.
+
+### Not measured or not exercised
+
+- The boxes' GPU time (above).
+- A weak PC, where §7's tier budgets are still to be checked.
+- A dedicated server with remote clients: these runs were single player.
+- The hide test with real carriages near the camera: the bench keeps its trains out of vanilla's view on
+  purpose.
+- The macOS gate and the generic-rendering-off gate: never tripped in a run.
+- Trains built by hand in a world: the bench's trains are synthetic, though Create moves and syncs them like
+  any other train.
+
+### Log lines that are not ours
+
+- Vanilla's profiler writes a level dump for each dimension at the end of a recording. Each dump logs
+  "Preparing crash report" on the server thread. Nothing crashed.
+- DH logged "Regen queueing exception: java.sql.SQLException: stmt pointer is closed" once, while the `t50`
+  client shut down. That was its regen queue running against its closed database.
