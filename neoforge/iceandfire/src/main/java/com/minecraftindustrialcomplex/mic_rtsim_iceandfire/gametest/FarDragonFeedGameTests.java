@@ -8,6 +8,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarPayloads;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarView;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarWire;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.IafDragons;
@@ -15,8 +16,12 @@ import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.GameType;
@@ -30,7 +35,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
  * sweep. While it has a body it is sampled from the body, with the body's entity id (so the client hides the
  * proxy while it has the entity) and the looks the engine's legs give the same species and colour (so the
  * hand-over to a leg needs no new intro); once the body departs the handle carries no entity: the engine's leg
- * on the same handle, or GONE. Its own file and batch: the feed's sink and player lookup are server-wide.
+ * on the same handle, or GONE once the view's grace has run out (this scripted dragon has no engine row). Its own
+ * file and batch: the feed's sink and player lookup are server-wide.
  */
 @GameTestHolder(MicRtsimIceAndFire.MODID)
 @PrefixGameTestTemplate(false)
@@ -59,13 +65,34 @@ public final class FarDragonFeedGameTests {
         UUID w = watcher.getUUID();
         List<FarWire.Message> got = new CopyOnWriteArrayList<>();
         int[] handle = {-1}, entity = {-1}, before = {0};
+        AtomicBoolean cleaned = new AtomicBoolean();
         Runnable cleanup = () -> {
+            if (cleaned.getAndSet(true))
+                return;
             FarFeed.unsubscribe(w);
             FarFeed.setSink(null);
             FarFeed.setPlayers(null);
             FakePlayers.remove(watcher);
             unforce.run();
         };
+        // Passed or failed, the server-wide hooks, the watcher and the forced chunks go
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                cleanup.run();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                cleanup.run();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo old, GameTestInfo fresh, GameTestRunner runner) {}
+        });
         int[] malformed = {0};
         FarFeed.setSink((p, m) -> {
             if (!p.getUUID().equals(w))
@@ -122,10 +149,18 @@ public final class FarDragonFeedGameTests {
                 .thenWaitUntil(() -> check("the body departs", DragonKit.bridge().body(agent) == null))
                 .thenWaitUntil(() -> {
                     boolean gone = false, leg = false, cleared = false, intro = false;
+                    long lastSample = -1, goneAt = -1;
+                    for (FarWire.Message m : got)
+                        for (FarWire.Rec r : m.recs()) {
+                            if (r.handle() == handle[0] && r instanceof FarWire.Sample)
+                                lastSample = m.gameTime();
+                        }
                     for (FarWire.Message m : got.subList(before[0], got.size()))
                         for (FarWire.Rec r : m.recs()) {
                             if (r.handle() != handle[0])
                                 continue;
+                            if (r instanceof FarWire.Gone && !gone)
+                                goneAt = m.gameTime();
                             gone |= r instanceof FarWire.Gone;
                             leg |= r instanceof FarWire.Leg;
                             cleared |= r instanceof FarWire.Real e && e.entity() == -1;
@@ -133,11 +168,13 @@ public final class FarDragonFeedGameTests {
                         }
                     check("handed back: GONE, or the engine's leg with no entity", gone || (leg && cleared));
                     check("no new intro on the handle while it is the same dragon", gone || !intro);
-                    record(test, "departed", gone ? "gone" : "the engine's leg on the same handle, entity -1");
+                    // The scripted dragon has no engine row, so no leg follows: GONE, after the view's grace
+                    if (gone)
+                        check("held for the grace before GONE (" + (goneAt - lastSample) + " ticks after its last sample)",
+                                goneAt - lastSample >= (long) FarView.GRACE_SWEEPS * FarFeed.INTERVAL_TICKS);
+                    record(test, "departed", gone ? "gone " + (goneAt - lastSample) + " ticks after its last sample"
+                            : "the engine's leg on the same handle, entity -1");
                 })
-                .thenExecute(cleanup)
                 .thenSucceed();
-        // A wait that fails leaves the subscription until the server stops (FarFeed forgets every subscriber
-        // then); its sink only collects
     }
 }

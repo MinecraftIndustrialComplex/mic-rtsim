@@ -164,6 +164,7 @@ public final class FarFeedClient {
         } catch (IllegalArgumentException e) {
             if (malformed++ < 3)
                 MicRtsim.LOGGER.warn("[mic_rtsim] far feed: a message did not decode ({}); the view starts over", e.getMessage());
+            sent = null; // subscribe again: the server answers a subscription with a RESET and everything
             return;
         }
         records += m.recs().size();

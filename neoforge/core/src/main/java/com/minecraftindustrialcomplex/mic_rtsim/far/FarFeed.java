@@ -135,6 +135,10 @@ public final class FarFeed {
         Sub s = SUBS.computeIfAbsent(player.getUUID(), Sub::new);
         if (s.messages == 0)
             s.since = ticks;
+        // A client subscribes when its wants change or its view was lost (a message that did not decode): either
+        // way it is sent everything again, from a RESET
+        s.view.clear();
+        s.reset = true;
         s.radius = radius;
         s.tier = tier;
         s.budget = budget;

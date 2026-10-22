@@ -13,14 +13,24 @@ import java.util.Set;
  * One subscriber's far view as the server last sent it, and the records that bring the client up to date
  * with what the filter chose this second (docs/boundary.md §12.2). An object new to the view gets a handle and
  * an INTRO; a leg is sent when it changes, a sample when it moved by an eighth of a block, the entity id when
- * it changes; an object that left the view is GONE and its handle is free again. Plain Java.
+ * it changes; an object that left the view is held for {@link #GRACE_SWEEPS} sweeps, then GONE and its handle
+ * is free again. Plain Java.
  */
 public final class FarView {
+    /**
+     * Sweeps an object the filter did not choose is held before it is GONE (PLACEHOLDER). A dragon whose body was
+     * just captured is in neither source until the engine's next FAR_LEG lands: held, it comes back on its own
+     * handle and the client's mover carries on from where it was drawn; sent GONE at once, it would blink and come
+     * back as a new object.
+     */
+    public static final int GRACE_SWEEPS = 2;
+
     private static final class Sent {
         final int handle;
         FarWire.Intro intro;
         FarWire.Rec where;
         int entity;
+        int missed;
 
         Sent(int handle) {
             this.handle = handle;
@@ -43,7 +53,10 @@ public final class FarView {
         nextHandle = 0;
     }
 
-    /** The records that turn the client's view into {@code chosen}: GONE first, so their handles can be reused. */
+    /**
+     * The records that turn the client's view into {@code chosen}, after the held objects: GONE first, so their
+     * handles can be reused.
+     */
     public List<FarWire.Rec> step(List<FarItem> chosen) {
         List<FarWire.Rec> out = new ArrayList<>();
         Set<Long> keep = new HashSet<>();
@@ -52,7 +65,7 @@ public final class FarView {
         Iterator<Map.Entry<Long, Sent>> it = sent.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<Long, Sent> e = it.next();
-            if (keep.contains(e.getKey()))
+            if (keep.contains(e.getKey()) || ++e.getValue().missed <= GRACE_SWEEPS)
                 continue;
             out.add(new FarWire.Gone(e.getValue().handle));
             free.add(e.getValue().handle);
@@ -67,6 +80,7 @@ public final class FarView {
                 s.entity = -1;
                 sent.put(i.id(), s);
             }
+            s.missed = 0;
             FarWire.Intro intro = new FarWire.Intro(s.handle, i.id(), i.kind().wire, i.style(), i.variant(), i.size(), i.rgb());
             if (fresh || !intro.equals(s.intro)) {
                 out.add(intro);
