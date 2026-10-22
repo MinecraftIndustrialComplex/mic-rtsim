@@ -143,6 +143,23 @@ public final class CreateSeedGameTests {
                 .thenSucceed();
     }
 
+    /** A district's chunks, each with its seeds and block entities (for a failure message). */
+    private static String describe(GameTestHelper helper, District d) {
+        StringBuilder sb = new StringBuilder();
+        for (long c : d.chunks) {
+            net.minecraft.world.level.chunk.LevelChunk ch = helper.getLevel().getChunkSource().getChunkNow(net.minecraft.world.level.ChunkPos.getX(c), net.minecraft.world.level.ChunkPos.getZ(c));
+            sb.append("[chunk ").append(net.minecraft.world.level.ChunkPos.getX(c)).append(',').append(net.minecraft.world.level.ChunkPos.getZ(c));
+            if (ch == null)
+                sb.append(" unloaded");
+            else {
+                sb.append(" seeds ").append(ch.getData(IndustryAttachments.SEEDS.get()).positions().length).append(':');
+                ch.getBlockEntities().forEach((p, be) -> sb.append(' ').append(p.toShortString()).append('=').append(be.getBlockState().getBlock()));
+            }
+            sb.append(']');
+        }
+        return sb.toString();
+    }
+
     private static void noSeedNoDistrict(GameTestHelper helper, String what, BlockPos... at) {
         for (BlockPos p : at) {
             String n = helper.getLevel().getBlockState(p).getBlock().toString();
@@ -264,7 +281,7 @@ public final class CreateSeedGameTests {
                     check("two districts, not one", a != b);
                     check("each holds its chain end", districtAt(helper, chainA) == a && districtAt(helper, chainB) == b);
                     check("the chunk between is in neither", districtAt(helper, between) == null);
-                    check("one chunk each: " + a.chunks + ", " + b.chunks + " (presses " + chunk(pressA) + ", " + chunk(pressB) + ")", a.chunks.size() == 1 && b.chunks.size() == 1);
+                    check("one chunk each: " + describe(helper, a) + " | " + describe(helper, b), a.chunks.size() == 1 && b.chunks.size() == 1);
                 })
                 .thenSucceed();
     }
