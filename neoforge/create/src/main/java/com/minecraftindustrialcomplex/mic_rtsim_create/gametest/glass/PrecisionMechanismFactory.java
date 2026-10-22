@@ -51,7 +51,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * the loop's population grows until every belt slot is full and it jams for good. Measured once with this
  * build and the feeder at 64 RPM (a sheet per 9 ticks, the funnel's cooldown): by the end of the 1,000-tick
  * warm-up all 28 loop segments and the feeder held an item, and nothing left the loop in the 7,200-tick
- * window. So the feed here is slower than the deployers, and it sets every rate:
+ * window ({@link PrecisionOverfedFactory} builds that case). So the feed here is slower than the deployers,
+ * and it sets every rate:
  * <ul>
  *   <li>Feed ({@code FunnelBlockEntity.activateExtractingBeltFunnel}, {@code getAmountToExtract};
  *       {@code BeltBlockEntity.tryInsertingFromSide}, {@code isOccupied}): an andesite funnel moves one
@@ -113,8 +114,35 @@ public final class PrecisionMechanismFactory implements CorpusFactory {
         return 1000;
     }
 
+    /** Corpus 6's blocks: the anchor, the input chests (sheets first, then the three parts) and the output chest. */
+    record Layout(BlockPos anchor, List<BlockPos> inputs, List<BlockPos> outputs) {}
+
     @Override
     public Built build(GameTestHelper h) {
+        Layout l = layout(h, FEED_RPM);
+        double r = SHEETS_PER_MIN;
+        double minutes = WINDOW / (double) TICKS_PER_MINUTE;
+        String per = "per sheet (1 per " + FEED_TICKS + " ticks, andesite funnel onto an 8 RPM belt)";
+        List<Expect> expect = List.of(
+                chance("create:golden_sheet", -r, 8, r, "-1 sheet " + per + " plus scrap 8/150 into the output chest"),
+                chance("create:cogwheel", -LOOPS * r, 5, r, "-5 cogwheels " + per + " (5 loops x 1) plus scrap 5/150"),
+                Expect.exact("create:large_cogwheel", -LOOPS * r, "-5 large cogwheels " + per + " (5 loops x 1)"),
+                Expect.exact("minecraft:iron_nugget", -LOOPS * r, "-5 iron nuggets " + per + " (5 loops x 1)"),
+                chance("create:precision_mechanism", 0, 120, r, "pool 120/150 " + per),
+                chance("create:andesite_alloy", 0, 8, r, "pool 8/150 " + per),
+                rare("minecraft:gold_nugget", 3, r, minutes),
+                rare("create:shaft", 2, r, minutes),
+                rare("create:crushed_raw_gold", 2, r, minutes),
+                rare("minecraft:iron_ingot", 1, r, minutes),
+                rare("minecraft:clock", 1, r, minutes));
+        return new Built(l.anchor(), l.inputs(), l.outputs(), expect, List.of(), WINDOW,
+                "4-belt loop at 256 RPM, deployers at 256 RPM, feed 1 sheet per " + FEED_TICKS + " ticks; "
+                        + SHEETS + " sheets last " + SHEETS * FEED_TICKS + " ticks, " + PARTS + " of each part last "
+                        + PARTS / LOOPS * FEED_TICKS + " ticks");
+    }
+
+    /** Builds corpus 6 with the feeder belt at {@code feedRpm} (8 here, 64 in {@link PrecisionOverfedFactory}). */
+    static Layout layout(GameTestHelper h, int feedRpm) {
         // The loop: A east along z 6, B south along x 13, C west along z 10, D north along x 3.
         belt(h, at(h, 3, 1, 6), at(h, 12, 1, 6));
         belt(h, at(h, 13, 1, 6), at(h, 13, 1, 9));
@@ -130,7 +158,7 @@ public final class PrecisionMechanismFactory implements CorpusFactory {
         motor(h, at(h, 14, 1, 6), Direction.WEST, -LOOP_RPM);   // B: +256, south
         motor(h, at(h, 13, 1, 11), Direction.NORTH, -LOOP_RPM); // C: +256, west
         motor(h, at(h, 2, 1, 10), Direction.EAST, -LOOP_RPM);   // D: -256, north
-        motor(h, at(h, 9, 1, 13), Direction.WEST, FEED_RPM);    // F: -8, north
+        motor(h, at(h, 9, 1, 13), Direction.WEST, feedRpm);     // F: -8 (or -64), north
 
         // Deployers over A at x 6, 8, 10, on one X-axis shaft line at y 3.
         BlockState deployer = AllBlocks.DEPLOYER.getDefaultState()
@@ -174,34 +202,17 @@ public final class PrecisionMechanismFactory implements CorpusFactory {
         FilteringBehaviour filter = BlockEntityBehaviour.get(h.getLevel(), exit, FilteringBehaviour.TYPE);
         if (filter == null || !filter.setFilter(denyList(AllItems.INCOMPLETE_PRECISION_MECHANISM.asStack())))
             throw new GameTestAssertException("could not set the exit funnel's filter");
-
-        double r = SHEETS_PER_MIN;
-        double minutes = WINDOW / (double) TICKS_PER_MINUTE;
-        String per = "per sheet (1 per " + FEED_TICKS + " ticks, andesite funnel onto an 8 RPM belt)";
-        List<Expect> expect = List.of(
-                chance("create:golden_sheet", -r, 8, r, "-1 sheet " + per + " plus scrap 8/150 into the output chest"),
-                chance("create:cogwheel", -LOOPS * r, 5, r, "-5 cogwheels " + per + " (5 loops x 1) plus scrap 5/150"),
-                Expect.exact("create:large_cogwheel", -LOOPS * r, "-5 large cogwheels " + per + " (5 loops x 1)"),
-                Expect.exact("minecraft:iron_nugget", -LOOPS * r, "-5 iron nuggets " + per + " (5 loops x 1)"),
-                chance("create:precision_mechanism", 0, 120, r, "pool 120/150 " + per),
-                chance("create:andesite_alloy", 0, 8, r, "pool 8/150 " + per),
-                rare("minecraft:gold_nugget", 3, r, minutes),
-                rare("create:shaft", 2, r, minutes),
-                rare("create:crushed_raw_gold", 2, r, minutes),
-                rare("minecraft:iron_ingot", 1, r, minutes),
-                rare("minecraft:clock", 1, r, minutes));
-        List<BlockPos> outputs = List.of(out);
-        return new Built(at(h, 6, 3, 6), inputs, outputs, expect, List.of(), WINDOW,
-                "4-belt loop at 256 RPM, deployers at 256 RPM, feed 1 sheet per " + FEED_TICKS + " ticks; "
-                        + SHEETS + " sheets last " + SHEETS * FEED_TICKS + " ticks, " + PARTS + " of each part last "
-                        + PARTS / LOOPS * FEED_TICKS + " ticks");
+        return new Layout(at(h, 6, 3, 6), inputs, List.of(out));
     }
 
     @Override
     public void perturb(GameTestHelper h, Built built, int windowTick) {
-        if (windowTick != 0)
-            return;
-        // Not a regime change: a check that the loop turns the way the layout needs.
+        if (windowTick == 0)
+            checkBelts(h);
+    }
+
+    /** Not a regime change: a check that the loop and the feeder turn the way the layout needs. */
+    static void checkBelts(GameTestHelper h) {
         Object[][] belts = {{at(h, 5, 1, 6), Direction.EAST}, {at(h, 13, 1, 8), Direction.SOUTH},
                 {at(h, 8, 1, 10), Direction.WEST}, {at(h, 3, 1, 8), Direction.NORTH}, {at(h, 8, 1, 12), Direction.NORTH}};
         for (Object[] b : belts) {

@@ -19,7 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Graph, carries_goods, term_amount};
 use super::q::Q;
 use super::records::{
-    EdgeKind, NodeKind, edge_flags, heat as heat_level, node_flags, rule, term_flags,
+    EdgeKind, NodeKind, edge_flags, heat as heat_level, model, node_flags, recipe_type, rule,
+    term_flags,
 };
 use super::report::why;
 use crate::ids::Good;
@@ -40,6 +41,19 @@ pub fn chance_variance(e: f64) -> f64 {
         k * p * (1.0 - p)
     }
 }
+
+/// GB72 (GLASSBOX.md §3.3, changed by Ben 2026-10-21): belt side insertion as Create has it.
+/// `BeltInventory.canInsertAtFromSide` (`isBlocking`) stops an insertion only while an earlier
+/// insertion at the same segment from the same side is within a block of it, never for the items
+/// passing, so at a belt segment the insertions go first, sharing the segment's capacity among
+/// themselves, and the through traffic (in-edges flagged `THROUGH`) takes what is left. `false`
+/// restores the earlier rule: the main line first, the side inputs sharing the rest.
+pub const BELT_INSERTIONS_FIRST: bool = true;
+
+/// GB72 (GLASSBOX.md §3.4, changed by Ben 2026-10-21): a sequenced-assembly loop fed faster than
+/// its machines finish items stalls ([`Solver::shut_overfed_loops`]). `false` restores
+/// settling at the machines' capacity.
+pub const OVERFED_LOOPS_STALL: bool = true;
 
 /// Taint levels, ordered: a good takes the worst on its paths (`report::class`).
 pub const EXACT: u8 = 0;
@@ -159,6 +173,9 @@ pub struct Solution {
     pub edge_flow: Vec<f64>,
     /// Read-store edges with their good and L flow: (edge, good, flow, into the store).
     pub store_edges: Vec<(u32, Good, f64, bool)>,
+    /// Every goods edge's exact L flow per good, nonzero only, by edge then good: what the glass
+    /// replay books per store and across a partial load's cut (G2).
+    pub edge_goods: Vec<(u32, Good, Q)>,
     /// Per domain: the running level index under L (None: stopped or overstressed).
     pub dom_level: Vec<Option<u32>>,
     /// Per node: a heater's duty under L.
@@ -168,10 +185,17 @@ pub struct Solution {
     pub fed: Vec<f64>,
     /// Graph-wide: a black box or port (or a demoted node) exists.
     pub has_unbounded: bool,
-    /// LPs run, LPs skipped as too big (`glass.lpVarsMax`), LPs not needed (linear bound = L).
+    /// LPs run, LPs skipped as too big (`glass.lpVarsMax`) or past the work (`glass.lpWorkMax`),
+    /// LPs not needed (linear bound = L).
     pub lp_solves: u32,
     pub lp_skipped: u32,
     pub lp_tight: u32,
+    /// Work units the rounds did, probes included (`glass.solveWorkMax`), and the LPs' work
+    /// (`glass.lpWorkMax`) (choices G2-58, G2-59).
+    pub work: u64,
+    pub lp_work: u64,
+    /// The rounds stopped for want of work, not at `glass.solveRoundsMax`.
+    pub starved: bool,
 }
 
 /// A per-good scratch array that clears only what it touched.
@@ -392,6 +416,28 @@ pub struct Solver<'a> {
     rbuf: Vec<Q>,
     rbuf2: Vec<Q>,
     takes: Vec<(usize, Q)>,
+    /// A belt merge's in-edges in priority order (GB72).
+    in_order: Vec<u32>,
+    /// GB72's switches, from [`BELT_INSERTIONS_FIRST`] and [`OVERFED_LOOPS_STALL`] (tests flip
+    /// them).
+    pub(crate) insertions_first: bool,
+    pub(crate) loops_stall: bool,
+    /// Nodes taken as sinks: an over-fed loop's probe (what its feed brings when the loop takes
+    /// everything). Empty in a solve.
+    as_sink: Vec<bool>,
+    /// Work units the rounds may still do (`glass.solveWorkMax`, choice G2-58), and those done,
+    /// probes included.
+    pub(crate) work_left: u64,
+    pub work_used: u64,
+    /// The rounds stopped because the next did not fit the work left.
+    pub starved: bool,
+    /// Per node: something at it moved in the last round (an acceptance fell, a back edge's push
+    /// changed, its domain's level or its duty changed). An unconverged solve bounds only the
+    /// parts that hold one (choice G2-60).
+    pub(crate) moved: Vec<bool>,
+    /// The over-fed loops' check (GB72) has not run: an unconverged solve bounds the parts with a
+    /// cyclic sequenced machine, whose stall it never looked for.
+    pub(crate) stall_pending: bool,
 }
 
 impl<'a> Solver<'a> {
@@ -445,6 +491,15 @@ impl<'a> Solver<'a> {
             rbuf: Vec::new(),
             rbuf2: Vec::new(),
             takes: Vec::new(),
+            in_order: Vec::new(),
+            insertions_first: BELT_INSERTIONS_FIRST,
+            loops_stall: OVERFED_LOOPS_STALL,
+            as_sink: Vec::new(),
+            work_left: tun.solve_work_max,
+            work_used: 0,
+            starved: false,
+            moved: vec![false; n],
+            stall_pending: false,
         };
         s.reachability();
         s.slots();
@@ -462,6 +517,9 @@ impl<'a> Solver<'a> {
     /// The node's kind as the solve treats it: a demoted model is a black box (G-B14), and a store
     /// the sampler does not read is a buffer (its stock is unknown, so it only passes goods on).
     pub fn kind(&self, v: u32) -> NodeKind {
+        if self.as_sink.get(v as usize) == Some(&true) {
+            return NodeKind::Sink;
+        }
         let n = self.g.node(v);
         match n.kind {
             NodeKind::Store => {
@@ -489,8 +547,9 @@ impl<'a> Solver<'a> {
 
     // ---- reachability and slots -----------------------------------------------------------
 
-    fn bit(&self, v: u32, gi: u32) -> bool {
-        self.reach[v as usize * self.words + gi as usize / 64] >> (gi % 64) & 1 == 1
+    /// The node's reachability words.
+    fn row(&self, v: u32) -> &[u64] {
+        &self.reach[v as usize * self.words..(v as usize + 1) * self.words]
     }
 
     fn set_bit(&mut self, v: u32, gi: u32) -> bool {
@@ -545,12 +604,21 @@ impl<'a> Solver<'a> {
             let mut changed = false;
             for &v in &g.order {
                 // The goods arriving at v.
+                // Word by word over the goods that can be at the tail (not every good: a base's
+                // goods grow with it, choice G2-62).
                 in_goods.iter_mut().for_each(|w| *w = 0);
                 for &e in g.in_g.of(v) {
-                    let from = g.edge(e).from;
-                    for gi in 0..self.goods.len() as u32 {
-                        if self.bit(from, gi) && g.allows(e, self.goods[gi as usize]) {
-                            in_goods[gi as usize / 64] |= 1 << (gi % 64);
+                    let ed = g.edge(e);
+                    let row = self.row(ed.from);
+                    if ed.filter.is_empty() && ed.flags & edge_flags::DENY == 0 {
+                        for (w, r) in in_goods.iter_mut().zip(row) {
+                            *w |= r;
+                        }
+                    } else {
+                        for gi in bits(row) {
+                            if g.allows(e, self.goods[gi as usize]) {
+                                in_goods[gi as usize / 64] |= 1 << (gi % 64);
+                            }
                         }
                     }
                 }
@@ -579,8 +647,8 @@ impl<'a> Solver<'a> {
                             }
                         }
                         if pass {
-                            for gi in 0..self.goods.len() as u32 {
-                                if has_in(gi) && !taken.contains(&self.goods[gi as usize]) {
+                            for gi in bits(&in_goods) {
+                                if !taken.contains(&self.goods[gi as usize]) {
                                     changed |= self.set_bit(v, gi);
                                 }
                             }
@@ -592,10 +660,11 @@ impl<'a> Solver<'a> {
                     | NodeKind::Junction
                     | NodeKind::BlackBox
                     | NodeKind::Port => {
-                        for gi in 0..self.goods.len() as u32 {
-                            if has_in(gi) {
-                                changed |= self.set_bit(v, gi);
-                            }
+                        let words = self.words;
+                        let row = &mut self.reach[v as usize * words..(v as usize + 1) * words];
+                        for (r, w) in row.iter_mut().zip(&in_goods) {
+                            changed |= *w & !*r != 0;
+                            *r |= w;
                         }
                     }
                     _ => {}
@@ -614,8 +683,9 @@ impl<'a> Solver<'a> {
         off.push(0u32);
         for (e, ed) in g.edges.iter().enumerate() {
             if carries_goods(ed.kind) {
-                for gi in 0..self.goods.len() as u32 {
-                    if self.bit(ed.from, gi) && g.allows(e as u32, self.goods[gi as usize]) {
+                // Ascending, as `slot_of` searches.
+                for gi in bits(self.row(ed.from)) {
+                    if g.allows(e as u32, self.goods[gi as usize]) {
                         sg.push(gi);
                     }
                 }
@@ -650,6 +720,33 @@ impl<'a> Solver<'a> {
         let r = self.slots_of(e);
         let base = r.start;
         self.slot_good[r].binary_search(&gi).ok().map(|i| base + i)
+    }
+
+    /// One round's work units (`glass.solveWorkMax`, choice G2-58): a count that grows as the
+    /// passes' loops do, not a clock. Per node: its slots in and out, plus per slot arriving its
+    /// out-edges (the sides of each good) and its recipes' terms (a machine's acceptance and
+    /// crafts), plus its recipes' terms per out-edge (the outputs' acceptance); per edge, one.
+    pub fn round_work(&self) -> u64 {
+        let g = self.g;
+        let mut w = g.edges.len() as u64;
+        for v in 0..g.nodes.len() as u32 {
+            let slots =
+                |row: &[u32]| -> u64 { row.iter().map(|&e| self.slots_of(e).len() as u64).sum() };
+            let ins = slots(g.in_g.of(v));
+            let outs = slots(g.out_g.of(v));
+            let deg = g.out_g.of(v).len() as u64;
+            let terms: u64 = g
+                .node_recipes
+                .of(v)
+                .iter()
+                .map(|&r| {
+                    let rec = &g.recipes[r as usize];
+                    (rec.inputs.len() + rec.outputs.len()) as u64
+                })
+                .sum();
+            w += 1 + ins + outs + ins * (deg + terms) + terms * deg;
+        }
+        w.max(1)
     }
 
     // ---- capacities ---------------------------------------------------------------------------
@@ -1222,9 +1319,33 @@ impl<'a> Solver<'a> {
         self.use_proportional(v, |s, gi| if room { Q::INF } else { s.s_push.get(gi) });
     }
 
+    /// A belt segment where insertions meet the through traffic (GB72): a BELT mover with a
+    /// `THROUGH` in-edge and another in-edge. Writes its in-edges into `order` in two priority
+    /// groups and returns where the second starts: the insertions, then the through traffic
+    /// ([`BELT_INSERTIONS_FIRST`]), or the other way round with the switch off. None for any
+    /// other node, whose in-edges keep their order.
+    fn belt_merge(&self, v: u32, kind: NodeKind, order: &mut Vec<u32>) -> Option<usize> {
+        let g = self.g;
+        if kind != NodeKind::Mover || g.node(v).model != model::BELT {
+            return None;
+        }
+        let ins = g.in_g.of(v);
+        let through = |e: u32| g.edge(e).flags & edge_flags::THROUGH != 0;
+        let n = ins.iter().filter(|&&e| through(e)).count();
+        if n == 0 || n == ins.len() {
+            return None;
+        }
+        let first_through = !self.insertions_first;
+        order.clear();
+        order.extend(ins.iter().copied().filter(|&e| through(e) == first_through));
+        let split = order.len();
+        order.extend(ins.iter().copied().filter(|&e| through(e) != first_through));
+        Some(split)
+    }
+
     /// Buffers, movers, junctions and sinks: conserve each good under a shared capacity, taking
     /// in-edges by priority group (a mover's in-edges in order, side insertion's main line
-    /// first, else one proportional group).
+    /// first, a belt merge's insertions then its through traffic, else one proportional group).
     fn fwd_conserve(&mut self, v: u32, dl: &[Option<u32>]) {
         let g = self.g;
         let kind = self.kind(v);
@@ -1242,16 +1363,31 @@ impl<'a> Solver<'a> {
         }
         let allowed = |s: &Self, gi: u32| if sink { Q::INF } else { s.s_acc.get(gi) };
         // Priority groups of in-edges.
-        let ins = g.in_g.of(v);
+        let mut order = std::mem::take(&mut self.in_order);
+        let merge = self.belt_merge(v, kind, &mut order);
+        let ins: &[u32] = if merge.is_some() {
+            &order
+        } else {
+            g.in_g.of(v)
+        };
         let mut takes = std::mem::take(&mut self.takes);
         takes.clear();
         let mut remaining = cap;
         let mut i = 0;
         let mut binding = false;
+        let mut edges_flowing = 0;
         while i < ins.len() {
-            let j = match (kind, node.rule) {
-                (NodeKind::Mover, _) => i + 1,
-                (_, rule::SIDE_INSERT) => {
+            let j = match (merge, kind, node.rule) {
+                // A belt merge: two groups, each shared in proportion to supply (GB72).
+                (Some(k), _, _) => {
+                    if i < k {
+                        k
+                    } else {
+                        ins.len()
+                    }
+                }
+                (None, NodeKind::Mover, _) => i + 1,
+                (None, _, rule::SIDE_INSERT) => {
                     let o = g.edge(ins[i]).order;
                     let mut j = i + 1;
                     if o == 0 {
@@ -1314,7 +1450,22 @@ impl<'a> Solver<'a> {
             if binding && flowing > 1 && kind != NodeKind::Mover {
                 self.taint_node(v, BOUNDED, why::SHARED_CAPACITY);
             }
+            if merge.is_some() {
+                let mut k = start;
+                for &e in group {
+                    let n = self.slots_of(e).len();
+                    if takes[k..k + n].iter().any(|t| t.1.is_pos()) {
+                        edges_flowing += 1;
+                    }
+                    k += n;
+                }
+            }
             i = j;
+        }
+        // A belt merge that binds with two in-edges flowing: which gets the gaps depends on the
+        // ticks of each insertion and of the through traffic, not modelled (GB72).
+        if merge.is_some() && binding && edges_flowing > 1 {
+            self.taint_node(v, BOUNDED, why::SHARED_CAPACITY);
         }
         if !cap.is_inf() && remaining.is_zero() {
             self.saturated[v as usize] = true;
@@ -1350,6 +1501,7 @@ impl<'a> Solver<'a> {
             self.used[t.0] = u;
         }
         self.takes = takes;
+        self.in_order = order;
     }
 
     /// Machines and sources: crafts per recipe, time-shared, limited by inputs, capacity, heat and
@@ -1749,18 +1901,60 @@ impl<'a> Solver<'a> {
         let max = max.max(1);
         let mut rounds = 0;
         let mut converged = false;
-        // Heaters start lit unless gated (the duty the first backward pass assumes).
+        // Every round costs the same work (choice G2-58). A solve's first round always runs (L
+        // needs one pass); a probe's only if it fits what its solve has left.
+        let per_round = self.round_work();
+        if self.as_sink.is_empty() {
+            self.work_left = self.work_left.max(per_round);
+        }
+        // Heaters start lit unless gated (the duty the first backward pass assumes), and so does
+        // the first forward pass: a machine before its heater in the order (a loop through the
+        // heat edge) reads the round before's duty, and a duty of 0 there would cap its inputs
+        // at nothing for good (choice G2-24). L only comes down from there.
         for v in 0..self.g.nodes.len() as u32 {
             if self.g.node(v).kind == NodeKind::Heater && self.rg.gate_off[v as usize] {
                 self.duty_assumed[v as usize] = Q::ZERO;
             }
         }
+        self.duty.clone_from(&self.duty_assumed);
         let mut warming = vec![false; self.g.nodes.len()];
-        while rounds < max {
+        // A back edge's tail reads the acceptance its head set the round before: one that changed
+        // is input the next round reads anew, so its part has not settled.
+        let back_slots: Vec<usize> = (0..self.g.edges.len() as u32)
+            .filter(|&e| self.g.back[e as usize])
+            .flat_map(|e| self.slots_of(e))
+            .collect();
+        let mut back_acc: Vec<Q> = vec![Q::ZERO; back_slots.len()];
+        let mut limit = max;
+        // A probe (`as_sink`) never looks for over-fed loops itself.
+        let mut stall_checked = !self.loops_stall || !self.as_sink.is_empty();
+        while rounds < limit {
+            if self.work_left < per_round {
+                self.starved = true;
+                break;
+            }
+            self.work_left -= per_round;
+            self.work_used += per_round;
             rounds += 1;
+            self.moved.iter_mut().for_each(|m| *m = false);
+            for (a, &sl) in back_acc.iter_mut().zip(&back_slots) {
+                *a = self.acc[sl];
+            }
             self.backward();
             self.forward();
             let mut changed = false;
+            for e in 0..self.g.edges.len() as u32 {
+                if self.g.back[e as usize] {
+                    let r = self.slots_of(e);
+                    let i = back_slots.partition_point(|&sl| sl < r.start);
+                    if r.clone()
+                        .zip(i..)
+                        .any(|(sl, k)| self.acc[sl] != back_acc[k])
+                    {
+                        self.moved[self.g.edge(e).to as usize] = true;
+                    }
+                }
+            }
             // A back edge's head used what arrived this round: its tail's push of the round
             // before. While that push still changes, the head is warming up (in the first round
             // nothing has come round yet): it may have run short for want of it, so its in-edges
@@ -1771,7 +1965,9 @@ impl<'a> Solver<'a> {
                     continue;
                 }
                 if self.slots_of(e).any(|s| self.f[s] != self.back_in[s]) {
-                    warming[self.g.edge(e).to as usize] = true;
+                    let to = self.g.edge(e).to as usize;
+                    warming[to] = true;
+                    self.moved[to] = true;
                     changed = true;
                 }
             }
@@ -1785,22 +1981,235 @@ impl<'a> Solver<'a> {
                     let arrived = if back { self.back_in[s] } else { self.f[s] };
                     if self.used[s] < arrived && self.used[s] < self.ovr[s] {
                         self.ovr[s] = self.used[s];
+                        self.moved[ed.to as usize] = true;
                         changed = true;
                     }
                 }
             }
             if self.dom_next != self.dom_level {
+                for d in 0..self.dom_level.len() {
+                    if self.dom_next[d] != self.dom_level[d] {
+                        self.mark_domain(d as u32);
+                    }
+                }
                 self.dom_level = self.dom_next.clone();
                 changed = true;
             }
+            // A duty that changed is not a change of L's (the round after reads it as assumed),
+            // but its part has not settled.
+            for v in 0..self.g.nodes.len() {
+                if self.duty[v] != self.duty_assumed[v] {
+                    self.moved[v] = true;
+                }
+            }
             self.duty_assumed.clone_from(&self.duty);
             if !changed {
+                // Settled: shut the over-fed sequenced-assembly loops once (GB72), and run more
+                // rounds (a fresh budget) to carry their stall up- and downstream.
+                if !stall_checked {
+                    stall_checked = true;
+                    match self.shut_overfed_loops() {
+                        Some(true) => {
+                            limit = rounds + max;
+                            continue;
+                        }
+                        Some(false) => {}
+                        // A probe ran out of work: whether a loop stalls is not known, so its
+                        // part is not settled.
+                        None => {
+                            stall_checked = false;
+                            self.starved = true;
+                            break;
+                        }
+                    }
+                }
                 converged = true;
                 break;
             }
         }
+        self.stall_pending = !converged && !stall_checked;
         (rounds, converged)
     }
+
+    /// Marks every node of domain `d` moved: its members and the nodes in it.
+    fn mark_domain(&mut self, d: u32) {
+        let g = self.g;
+        let dom = &g.domains[d as usize];
+        if let Some(b) = dom.driver {
+            self.moved[b as usize] = true;
+        }
+        for m in &dom.members {
+            if let Some(v) = m.node {
+                self.moved[v as usize] = true;
+            }
+        }
+        for (v, node) in g.nodes.iter().enumerate() {
+            if node.domain == Some(d) {
+                self.moved[v] = true;
+            }
+        }
+    }
+
+    /// GB72 (GLASSBOX.md §3.4): shuts the over-fed sequenced-assembly loops of a settled L and
+    /// returns whether it shut any.
+    ///
+    /// A loop is a goods component holding a SEQUENCED machine (the collapsed line, §9.3), with no
+    /// store in it. Create's belt insertions never wait for the items passing (§3.3), so a loop's
+    /// feed is what the outside would bring if the loop took everything: a probe solve with the
+    /// component as a sink gives it, per good, on the edges into the component. The machine works
+    /// at most `μ` of the sequence's base input a tick (its capacity, in base input per craft).
+    /// With the machine running flat out (saturated, so no other input is short: a deployer
+    /// without its part lets the item pass) and a feed `f > μ` of a base input, the loop's
+    /// population grows by `f - μ` a tick until every belt slot is full; then no item moves, and
+    /// a stopped item is never processed (`BeltInventory.handleBeltProcessingAndCheckIfRemoved`
+    /// returns on `noMovement`) or taken by a funnel (`BeltFunnelInteractionHandler` needs the
+    /// item to cross it): a jam for good. Every goods edge into the component is shut
+    /// (acceptance 0). `f = μ` runs.
+    ///
+    /// None when a probe ran out of the solve's work (`glass.solveWorkMax`) before settling.
+    fn shut_overfed_loops(&mut self) -> Option<bool> {
+        let g = self.g;
+        let n = g.nodes.len();
+        let mut shut = false;
+        let mut seen = vec![false; n];
+        for h in 0..n as u32 {
+            if seen[h as usize]
+                || !g.cyclic[h as usize]
+                || g.node(h).model != model::SEQUENCED
+                || self.kind(h) != NodeKind::Machine
+                || !self.saturated[h as usize]
+            {
+                continue;
+            }
+            let comp = self.goods_component(h);
+            for (v, &c) in comp.iter().enumerate() {
+                seen[v] |= c;
+            }
+            if (0..n).any(|v| comp[v] && g.nodes[v].kind == NodeKind::Store) {
+                continue;
+            }
+            let drain = self.sequence_drain(h);
+            if drain.iter().all(|&(_, mu)| mu.is_inf()) {
+                continue;
+            }
+            let (feed, starved) = self.loop_feed(&comp);
+            if starved {
+                return None;
+            }
+            let Some(feed) = feed else {
+                continue;
+            };
+            if !drain.iter().any(|&(gi, mu)| feed[gi as usize] > mu) {
+                continue;
+            }
+            for (e, ed) in g.edges.iter().enumerate() {
+                if carries_goods(ed.kind) && comp[ed.to as usize] {
+                    for s in self.slots_of(e as u32) {
+                        self.ovr[s] = Q::ZERO;
+                    }
+                }
+            }
+            shut = true;
+        }
+        Some(shut)
+    }
+
+    /// The nodes on a goods cycle with `h`: reachable from it and reaching it by goods edges.
+    fn goods_component(&self, h: u32) -> Vec<bool> {
+        let g = self.g;
+        let n = g.nodes.len();
+        let walk = |forward: bool| {
+            let mut mark = vec![false; n];
+            let mut stack = vec![h];
+            mark[h as usize] = true;
+            while let Some(v) = stack.pop() {
+                let row = if forward { g.out_g.of(v) } else { g.in_g.of(v) };
+                for &e in row {
+                    let ed = g.edge(e);
+                    let w = if forward { ed.to } else { ed.from };
+                    if !mark[w as usize] {
+                        mark[w as usize] = true;
+                        stack.push(w);
+                    }
+                }
+            }
+            mark
+        };
+        let ahead = walk(true);
+        let behind = walk(false);
+        ahead.iter().zip(&behind).map(|(a, b)| *a && *b).collect()
+    }
+
+    /// What a SEQUENCED machine works of each base input (its sequences' first input) a tick at
+    /// its capacity under L, by dense good.
+    fn sequence_drain(&self, h: u32) -> Vec<(u32, Q)> {
+        let g = self.g;
+        let mut out: Vec<(u32, Q)> = Vec::new();
+        for &r in g.node_recipes.of(h) {
+            let rec = &g.recipes[r as usize];
+            if rec.recipe_type != recipe_type::SEQUENCED {
+                continue;
+            }
+            let Some(t) = rec.inputs.first() else {
+                continue;
+            };
+            let Some(gi) = self.gidx(t.good) else {
+                continue;
+            };
+            let cap = self
+                .recipe_cap_with(h, r, &self.dom_level)
+                .mul(self.heat_factor_with(h, rec.heat, &self.duty));
+            let mu = cap.mul(term_amount(t.num, t.den));
+            match out.iter_mut().find(|x| x.0 == gi) {
+                Some(x) => x.1 = x.1.add(mu),
+                None => out.push((gi, mu)),
+            }
+        }
+        out
+    }
+
+    /// The probe: per dense good, what the edges into `comp` carry when `comp` takes everything
+    /// (each of its nodes a sink, under its own capacity). None if the probe did not settle; with
+    /// whether it stopped for want of work. Its rounds come out of this solve's work.
+    fn loop_feed(&mut self, comp: &[bool]) -> (Option<Vec<Q>>, bool) {
+        let g = self.g;
+        let mut p = Solver::new(g, self.rg, self.tun);
+        p.insertions_first = self.insertions_first;
+        p.as_sink = comp.to_vec();
+        p.work_left = self.work_left;
+        let (_, converged) = p.run();
+        self.work_left = p.work_left;
+        self.work_used += p.work_used;
+        if !converged {
+            return (None, p.starved);
+        }
+        let mut feed = vec![Q::ZERO; p.goods.len()];
+        for (e, ed) in g.edges.iter().enumerate() {
+            if !carries_goods(ed.kind) || !comp[ed.to as usize] || comp[ed.from as usize] {
+                continue;
+            }
+            for s in p.slots_of(e as u32) {
+                let gi = p.slot_good[s] as usize;
+                feed[gi] = feed[gi].add(p.used[s]);
+            }
+        }
+        (Some(feed), false)
+    }
+}
+
+/// The set bits of a bit set, ascending.
+pub(crate) fn bits(words: &[u64]) -> impl Iterator<Item = u32> + '_ {
+    words.iter().enumerate().flat_map(|(i, &w)| {
+        let mut w = w;
+        std::iter::from_fn(move || {
+            if w == 0 {
+                return None;
+            }
+            let b = w.trailing_zeros();
+            w &= w - 1;
+            Some(i as u32 * 64 + b)
+        })
+    })
 }
 
 /// Union-find for the classes.
@@ -1840,7 +2249,8 @@ impl Uf {
 /// at the component's worst taint: a `report::why` code and its node or edge).
 pub(crate) type Classes = (Vec<u8>, Uf, Vec<bool>, Vec<(u32, u32)>);
 
-pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> Classes {
+/// The classes; an unconverged solve also has its unsettled parts' L set to 0 (choice G2-60).
+pub(crate) fn classes(s: &mut Solver<'_>, converged: bool) -> Classes {
     let g = s.g;
     let n = g.nodes.len();
     let mut uf = Uf::new(2 * n);
@@ -1986,14 +2396,73 @@ pub(crate) fn classes(s: &Solver<'_>, converged: bool) -> Classes {
         cycles[x as usize] = cycles[r];
     }
     if !converged {
-        for (t, w) in out.iter_mut().zip(outw.iter_mut()) {
-            if *t < BOUNDED {
+        let unsettled = unsettled(s, &mut uf);
+        for (x, (t, w)) in out.iter_mut().zip(outw.iter_mut()).enumerate() {
+            if *t < BOUNDED && unsettled[x] {
                 *t = BOUNDED;
                 *w = (why::UNCONVERGED, u32::MAX);
             }
         }
+        // A part still moving has no fixed point to stand on: its last round may run above it (an
+        // over-fed loop takes its whole feed until its belt fills), and an over-fed sequenced loop
+        // not yet looked for would jam. Its L is 0, the pessimistic bound of §3.5 (choice G2-60).
+        for e in 0..g.edges.len() as u32 {
+            let ed = g.edge(e);
+            if !carries_goods(ed.kind) || !unsettled[ed.to as usize] {
+                continue;
+            }
+            for sl in s.slots_of(e) {
+                s.used[sl] = Q::ZERO;
+                s.f[sl] = Q::ZERO;
+            }
+        }
     }
     (out, uf, cycles, outw)
+}
+
+/// An unconverged solve's parts still moving (choice G2-60), per class index (`2n`: a store's
+/// out-side at `n + v`): a part of the classes' union-find, joined further by every domain (a
+/// level couples its members whether or not a driver unites them), that holds a node moved in
+/// the last round, or a cyclic sequenced machine whose stall (GB72) was never looked for. A part
+/// where nothing moved computes the same round again (its passes read only its own state), so it
+/// has settled by the solve's own test.
+fn unsettled(s: &Solver<'_>, uf: &mut Uf) -> Vec<bool> {
+    let g = s.g;
+    let n = g.nodes.len();
+    let mut su = Uf::new(2 * n);
+    for x in 0..2 * n as u32 {
+        su.union(x, uf.find(x));
+    }
+    for (d, dom) in g.domains.iter().enumerate() {
+        let mut first: Option<u32> = dom.driver;
+        let mut join = |v: u32, su: &mut Uf| match first {
+            Some(a) => su.union(a, v),
+            None => first = Some(v),
+        };
+        for m in &dom.members {
+            if let Some(v) = m.node {
+                join(v, &mut su);
+            }
+        }
+        for (v, node) in g.nodes.iter().enumerate() {
+            if node.domain == Some(d as u32) {
+                join(v as u32, &mut su);
+            }
+        }
+    }
+    let mut root = vec![false; 2 * n];
+    for v in 0..n as u32 {
+        let stall = s.stall_pending
+            && g.cyclic[v as usize]
+            && g.node(v).model == model::SEQUENCED
+            && s.kind(v) == NodeKind::Machine;
+        if s.moved[v as usize] || stall {
+            root[su.find(v) as usize] = true;
+        }
+    }
+    (0..2 * n as u32)
+        .map(|x| root[su.find(x) as usize])
+        .collect()
 }
 
 /// A priority node (rule NONE or PREFER_FIRST) with two goods out-edges of one `order` that can
@@ -2023,9 +2492,22 @@ fn priority_tie(s: &Solver<'_>, v: u32) -> bool {
 
 /// The district's solve: L, classes, then U (`lp.rs`).
 pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
+    solve_with(g, rg, tun, BELT_INSERTIONS_FIRST, OVERFED_LOOPS_STALL)
+}
+
+/// [`solve`] with GB72's switches given (tests).
+pub(crate) fn solve_with(
+    g: &Graph,
+    rg: &Regime,
+    tun: &GlassTunables,
+    insertions_first: bool,
+    loops_stall: bool,
+) -> Solution {
     let mut s = Solver::new(g, rg, tun);
+    s.insertions_first = insertions_first;
+    s.loops_stall = loops_stall;
     let (rounds, converged) = s.run();
-    let (comp_taint, _uf, comp_cycle, comp_why) = classes(&s, converged);
+    let (comp_taint, _uf, comp_cycle, comp_why) = classes(&mut s, converged);
     let n = g.nodes.len();
     let out_side = |v: u32| -> usize {
         if s.kind(v) == NodeKind::Store {
@@ -2164,6 +2646,14 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
             .map(|e| s.slots_of(e).map(|sl| s.used[sl].to_f64()).sum())
             .collect(),
         store_edges,
+        edge_goods: (0..g.edges.len() as u32)
+            .flat_map(|e| {
+                let s = &s;
+                s.slots_of(e)
+                    .filter(|&sl| !s.used[sl].is_zero())
+                    .map(move |sl| (e, s.goods[s.slot_good[sl] as usize], s.used[sl]))
+            })
+            .collect(),
         dom_level: s.dom_level.clone(),
         duty: s.duty.clone(),
         fed: s.fed.iter().map(|q| q.to_f64()).collect(),
@@ -2171,11 +2661,15 @@ pub fn solve(g: &Graph, rg: &Regime, tun: &GlassTunables) -> Solution {
         lp_solves: 0,
         lp_skipped: 0,
         lp_tight: 0,
+        work: s.work_used,
+        lp_work: 0,
+        starved: s.starved,
     };
     let ub = super::lp::upper(&s, (&in_l, &out_l), &cyc_good, &on_store, &cls);
     sol.lp_solves = ub.lp_solves;
     sol.lp_skipped = ub.lp_skipped;
     sol.lp_tight = ub.lp_tight;
+    sol.lp_work = ub.lp_work;
     for gi in 0..gn {
         if !on_store[gi] {
             continue;

@@ -34,10 +34,13 @@ pub struct Upper {
     pub in_lin: Vec<Q>,
     pub out_lin: Vec<Q>,
     pub lp_solves: u32,
-    /// LPs not run: more than `glass.lpVarsMax` variables (the linear bound stands).
+    /// LPs not run: more than `glass.lpVarsMax` variables, past `glass.lpWorkMax`, or failed (the
+    /// linear bound stands).
     pub lp_skipped: u32,
     /// LPs not needed: the linear bound already equals L.
     pub lp_tight: u32,
+    /// LP work done, variables squared summed (`glass.lpWorkMax`).
+    pub lp_work: u64,
 }
 
 /// The U-side capacities: every domain level a node could run at in the regime, heaters at the
@@ -432,6 +435,7 @@ fn taken(s: &Solver<'_>, v: u32, gi: u32) -> bool {
 /// descendants of their out-edges, stopping at stores with room.
 fn cone(
     s: &Solver<'_>,
+    st: &StoreEdges,
     gi: u32,
     into: bool,
     mark: &mut [bool],
@@ -452,25 +456,15 @@ fn cone(
             .binary_search(&s.goods[gk as usize])
             .is_ok()
     };
-    for v in 0..g.nodes.len() as u32 {
-        if s.kind(v) != NodeKind::Store {
-            continue;
-        }
+    for &e in st.of(gi, into) {
+        let ed = g.edge(e);
         if into {
-            for &e in g.in_g.of(v) {
-                if s.slot_of(e, gi).is_some() {
-                    add(g.edge(e).from, seen, &mut queue);
-                }
-            }
+            add(ed.from, seen, &mut queue);
         } else {
-            for &e in g.out_g.of(v) {
-                if s.slot_of(e, gi).is_some() {
-                    add(g.edge(e).to, seen, &mut queue);
-                    // A store that does not hold the good passes on what it receives.
-                    if !holds(v, gi) {
-                        add(v, seen, &mut queue);
-                    }
-                }
+            add(ed.to, seen, &mut queue);
+            // A store that does not hold the good passes on what it receives.
+            if !holds(ed.from, gi) {
+                add(ed.from, seen, &mut queue);
             }
         }
     }
@@ -523,6 +517,33 @@ fn cone(
     }
 }
 
+/// The edges with an end in the part (objective edges with no end in the cone are summed by the
+/// caller, [`free_objective`]), sorted, and the part's LP variables: their slots and the part's
+/// recipes.
+fn part_edges(s: &Solver<'_>, list: &[u32]) -> (Vec<u32>, usize) {
+    let g = s.g;
+    let mut edges: Vec<u32> = Vec::new();
+    for &v in list {
+        edges.extend_from_slice(g.in_g.of(v));
+        edges.extend_from_slice(g.out_g.of(v));
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    let mut nvars = 0usize;
+    for &e in &edges {
+        nvars += s.slots_of(e).len();
+    }
+    for &v in list {
+        nvars += g.node_recipes.of(v).len();
+    }
+    (edges, nvars)
+}
+
+/// The LP work units one LP costs before its variables (choice G2-62): an LP of 6 or 7 variables
+/// took 12 to 34 us (about 25 at a load of 12 to 17), where its variables squared, at the 0.25 to
+/// 0.55 ns a unit of large LPs, account for 20 ns.
+pub const LP_WORK_FIXED: u64 = 50_000;
+
 /// Builds and solves one LP over the cone (`mark`, `list`), maximizing the flow of `gi` on the
 /// read stores' in-edges (`into`) or out-edges. None when it is too big or microlp fails; `+∞` when
 /// unbounded.
@@ -538,22 +559,7 @@ fn lp(
     let g = s.g;
     const NO: u32 = u32::MAX;
     let is_store = |v: u32| s.kind(v) == NodeKind::Store;
-    // Edges with an end in the part (objective edges with no end in the cone are summed by the
-    // caller, [`free_objective`]).
-    let mut edges: Vec<u32> = Vec::new();
-    for &v in list {
-        edges.extend_from_slice(g.in_g.of(v));
-        edges.extend_from_slice(g.out_g.of(v));
-    }
-    edges.sort_unstable();
-    edges.dedup();
-    let mut nvars = 0usize;
-    for &e in &edges {
-        nvars += s.slots_of(e).len();
-    }
-    for &v in list {
-        nvars += g.node_recipes.of(v).len();
-    }
+    let (edges, nvars) = part_edges(s, list);
     if nvars > s.tun.lp_vars_max {
         return None;
     }
@@ -691,6 +697,14 @@ fn lp(
                             }
                             push(&mut cons, &mut terms, ComparisonOp::Le, c.to_f64());
                         }
+                    } else if pass {
+                        // Without recipes a pass-through machine (a sequenced loop's deployers)
+                        // passes every good on unchanged, as L and the linear bound have it. Read
+                        // as passing nothing, a stalled loop's U fell to L's 0 (GB72).
+                        for (ins, outs) in per.values() {
+                            net(&mut terms, ins, outs, 1.0, -1.0);
+                            push(&mut cons, &mut terms, ComparisonOp::Eq, 0.0);
+                        }
                     } else {
                         // A machine without recipes passes nothing.
                         for (ins, outs) in per.values() {
@@ -816,33 +830,68 @@ fn lp(
 
 /// The objective edges of a good with neither end in the cone (a store handing straight to a
 /// store): each carries at most its capacity.
-fn free_objective(s: &Solver<'_>, gi: u32, into: bool, mark: &[bool]) -> f64 {
+fn free_objective(s: &Solver<'_>, st: &StoreEdges, gi: u32, into: bool, mark: &[bool]) -> f64 {
     let g = s.g;
     let mut total = 0.0;
-    for v in 0..g.nodes.len() as u32 {
-        if s.kind(v) != NodeKind::Store {
+    for &e in st.of(gi, into) {
+        let ed = g.edge(e);
+        if mark[ed.from as usize] || mark[ed.to as usize] {
             continue;
         }
-        let row = if into { g.in_g.of(v) } else { g.out_g.of(v) };
-        for &e in row {
-            let ed = g.edge(e);
-            if s.slot_of(e, gi).is_none() || mark[ed.from as usize] || mark[ed.to as usize] {
-                continue;
-            }
-            if matches!(s.kind(ed.to), NodeKind::BlackBox | NodeKind::Port)
-                || matches!(s.kind(ed.from), NodeKind::BlackBox | NodeKind::Port)
-            {
-                continue;
-            }
-            let cap = g.edge_cap(e);
-            total += if cap.is_inf() {
-                f64::INFINITY
-            } else {
-                cap.to_f64()
-            };
+        if matches!(s.kind(ed.to), NodeKind::BlackBox | NodeKind::Port)
+            || matches!(s.kind(ed.from), NodeKind::BlackBox | NodeKind::Port)
+        {
+            continue;
         }
+        let cap = g.edge_cap(e);
+        total += if cap.is_inf() {
+            f64::INFINITY
+        } else {
+            cap.to_f64()
+        };
     }
     total
+}
+
+/// The read stores' in-edges and out-edges carrying each dense good, in node then row order:
+/// what a good's cone starts from and its free objective sums. Built once per solve, so a good
+/// costs its own edges, not a scan of the graph (choice G2-62).
+pub(crate) struct StoreEdges {
+    into: Vec<Vec<u32>>,
+    out: Vec<Vec<u32>>,
+}
+
+impl StoreEdges {
+    fn new(s: &Solver<'_>) -> StoreEdges {
+        let g = s.g;
+        let gn = s.goods.len();
+        let mut into = vec![Vec::new(); gn];
+        let mut out = vec![Vec::new(); gn];
+        for v in 0..g.nodes.len() as u32 {
+            if s.kind(v) != NodeKind::Store {
+                continue;
+            }
+            for &e in g.in_g.of(v) {
+                for sl in s.slots_of(e) {
+                    into[s.slot_good[sl] as usize].push(e);
+                }
+            }
+            for &e in g.out_g.of(v) {
+                for sl in s.slots_of(e) {
+                    out[s.slot_good[sl] as usize].push(e);
+                }
+            }
+        }
+        StoreEdges { into, out }
+    }
+
+    fn of(&self, gi: u32, into: bool) -> &[u32] {
+        if into {
+            &self.into[gi as usize]
+        } else {
+            &self.out[gi as usize]
+        }
+    }
 }
 
 fn find(p: &mut [u32], mut x: u32) -> u32 {
@@ -857,10 +906,11 @@ fn find(p: &mut [u32], mut x: u32) -> u32 {
 /// The LP of one good and direction, one per connected part of its cone (goods and heat edges
 /// inside the cone join nodes; stores outside it are free and join nothing), summed. Independent
 /// lines of a district solve as small LPs, so the cost stays linear in their number. None when a
-/// part is too big or microlp fails.
+/// part is too big, the parts' LP work is more than is left, or microlp fails.
 #[allow(clippy::too_many_arguments)]
 fn lp_parts(
     s: &Solver<'_>,
+    st: &StoreEdges,
     caps: &UCaps,
     gi: u32,
     into: bool,
@@ -868,9 +918,10 @@ fn lp_parts(
     list: &mut [u32],
     var_of: &mut [u32],
     parent: &mut [u32],
+    budget: &mut u64,
 ) -> Option<f64> {
     let g = s.g;
-    let mut total = free_objective(s, gi, into, mark);
+    let mut total = free_objective(s, st, gi, into, mark);
     for &v in list.iter() {
         parent[v as usize] = v;
     }
@@ -890,7 +941,7 @@ fn lp_parts(
     for &v in list.iter() {
         mark[v as usize] = false;
     }
-    let mut out = Some(0.0);
+    let mut parts: Vec<Vec<u32>> = Vec::new();
     let mut i = 0;
     while i < keyed.len() {
         let root = keyed[i].0;
@@ -898,12 +949,39 @@ fn lp_parts(
         while j < keyed.len() && keyed[j].0 == root {
             j += 1;
         }
-        let part: Vec<u32> = keyed[i..j].iter().map(|&(_, v)| v).collect();
-        for &v in &part {
+        parts.push(keyed[i..j].iter().map(|&(_, v)| v).collect());
+        i = j;
+    }
+    // The good's LP work (`glass.lpWorkMax`, choices G2-59 and G2-62), all its parts together:
+    // each part's variables squared, a simplex's growth, plus what any LP costs to set up. A
+    // good that does not fit runs none (its U stays the linear bound) and spends nothing, so the
+    // goods after it can still use the work.
+    let mut w = 0u64;
+    for part in &parts {
+        let nvars = part_edges(s, part).1;
+        if nvars > s.tun.lp_vars_max {
+            w = u64::MAX;
+            break;
+        }
+        w = w.saturating_add(
+            (nvars as u64)
+                .saturating_mul(nvars as u64)
+                .saturating_add(LP_WORK_FIXED),
+        );
+    }
+    let mut out = None;
+    if w <= *budget {
+        *budget -= w;
+        out = Some(0.0);
+    } else {
+        parts.clear();
+    }
+    for part in &parts {
+        for &v in part {
             mark[v as usize] = true;
         }
-        let r = lp(s, caps, gi, into, mark, &part, var_of);
-        for &v in &part {
+        let r = lp(s, caps, gi, into, mark, part, var_of);
+        for &v in part {
             mark[v as usize] = false;
         }
         match r {
@@ -913,7 +991,6 @@ fn lp_parts(
             }
             Some(x) => total += x,
         }
-        i = j;
     }
     // The caller unmarks the cone: mark it again as it was.
     for &v in list.iter() {
@@ -969,7 +1046,10 @@ pub fn upper(
         lp_solves: 0,
         lp_skipped: 0,
         lp_tight: 0,
+        lp_work: 0,
     };
+    let mut budget = s.tun.lp_work_max;
+    let st = StoreEdges::new(s);
     let mut mark = vec![false; g.nodes.len()];
     let mut seen = vec![false; g.nodes.len()];
     let mut list = Vec::new();
@@ -992,9 +1072,16 @@ pub fn upper(
                 up.lp_tight += 1;
                 continue;
             }
-            cone(s, gi, into, &mut mark, &mut seen, &mut list);
+            // A cone costs its nodes (choice G2-62): once the work is spent, no good walks one.
+            if budget == 0 {
+                up.lp_skipped += 1;
+                continue;
+            }
+            cone(s, &st, gi, into, &mut mark, &mut seen, &mut list);
+            budget = budget.saturating_sub(list.len().max(1) as u64);
             let r = lp_parts(
                 s,
+                &st,
                 &caps,
                 gi,
                 into,
@@ -1002,6 +1089,7 @@ pub fn upper(
                 &mut list,
                 &mut var_of,
                 &mut parent,
+                &mut budget,
             );
             for &v in &list {
                 mark[v as usize] = false;
@@ -1031,5 +1119,6 @@ pub fn upper(
             }
         }
     }
+    up.lp_work = s.tun.lp_work_max - budget;
     up
 }

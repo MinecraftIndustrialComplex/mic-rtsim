@@ -10,7 +10,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The G1 corpus: GLASSBOX.md §11.3's twelve factories plus C32's sheep farm, in the exit test's order.
+ * The G1 corpus: GLASSBOX.md §11.3's twelve factories plus C32's sheep farm and GB72's over-fed loop, in the
+ * exit test's order.
  * {@link #prepare} builds one and makes it a district; {@link GlassCorpusGameTests} runs each for a
  * window and checks Create against the hand-worked rates; the G1 exit test (integration) adds the glass
  * box's prediction on top of the same builds.
@@ -25,6 +26,7 @@ public final class GlassCorpus {
             new MillstoneFlourFactory(),
             new SawShaftsFactory(),
             new PrecisionMechanismFactory(),
+            new PrecisionOverfedFactory(),
             new CrafterGridFactory(),
             new ArmBurnersDepotsFactory(),
             new BoilerOverstressFactory(),

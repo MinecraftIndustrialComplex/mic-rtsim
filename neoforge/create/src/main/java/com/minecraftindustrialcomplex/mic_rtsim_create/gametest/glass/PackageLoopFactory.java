@@ -195,8 +195,8 @@ public final class PackageLoopFactory implements CorpusFactory {
                 Expect.exact("minecraft:clay_ball", CLAY_BALLS_PER_CLAY * c,
                         "milling/clay: 4 clay balls per clay, no chance outputs; millstone 5 ticks per clay at 256 RPM")),
                 List.of(), 3600,
-                String.format(Locale.ROOT, "requests of %d clay every %d ticks to '%s'; chain %d RPM, millstone %d RPM",
-                        PER_PACKAGE, CLOCK, ADDRESS, CHAIN_RPM, MILL_RPM));
+                String.format(Locale.ROOT, "requests of %d clay every %d ticks to '%s'; chain %d RPM, millstone %d RPM; frequency %s (drawn per build)",
+                        PER_PACKAGE, CLOCK, ADDRESS, CHAIN_RPM, MILL_RPM, freq));
     }
 
     /**

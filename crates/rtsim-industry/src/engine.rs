@@ -53,6 +53,17 @@ use crate::threat::{
 };
 use crate::tunables::Tunables;
 
+/// How a district replays while away (GLASSBOX.md §4, G2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GlassMode {
+    /// On its compiled graph, one regime at a time.
+    Glass,
+    /// Frozen: a compile that has not passed a window yet, or one edited since (G-B4, G2-2).
+    Freeze,
+    /// By the black box as before (no compile, a compile it does not model yet, or a fallback).
+    Black,
+}
+
 /// The replay table's system id (the replay draws nothing; the id only names the table).
 const REPLAY: SystemId = SystemId::named("industry.replay");
 
@@ -944,6 +955,7 @@ impl Engine {
             c.add_to_pool(PoolKey::Stock(d, g), n, false, at)
         });
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
         got
     }
 
@@ -986,6 +998,11 @@ impl Engine {
             });
         self.glass
             .ingest(at, g, view.as_ref(), &self.goods, &self.tun.glass);
+        // A new compile or a chunk's ticking changes how the district replays (G2).
+        use crate::glass::records::GlassObs;
+        if matches!(g, GlassObs::End(_) | GlassObs::ChunkTicking(_)) {
+            self.mark(g.district());
+        }
     }
 
     fn sweep_end(&mut self, at: Tick, e: &crate::obs::SweepEnd) {
@@ -1154,6 +1171,10 @@ impl Engine {
         }
         match p {
             Presence::Live => {
+                // A fallback holds until the district is live again (§4.5).
+                if let Some(dg) = self.glass.districts.get_mut(&d) {
+                    dg.fallback = None;
+                }
                 self.reconcile_round(d, at, Round::Full);
             }
             Presence::Partial => self.mark(d),
@@ -1204,13 +1225,24 @@ impl Engine {
             return;
         }
         let held = dist.hold_until.is_some_and(|h| h > at);
-        let want = if held || dist.freeze_reason(season).is_some() {
-            BTreeSet::new()
-        } else {
-            dist.unloaded_inventories()
+        let mode = self.glass_mode(d);
+        let want = match mode {
+            _ if held => BTreeSet::new(),
+            GlassMode::Glass => self.glass_covered(d),
+            GlassMode::Freeze => BTreeSet::new(),
+            GlassMode::Black if dist.freeze_reason(season).is_some() => BTreeSet::new(),
+            GlassMode::Black => dist.unloaded_inventories(),
         };
         if let Some(span) = &dist.sim {
-            if span.invs == want {
+            let same_kind = span.glass == (mode == GlassMode::Glass);
+            let same_live = !span.glass
+                || self
+                    .glass
+                    .districts
+                    .get(&d)
+                    .and_then(|g| g.replay.as_ref())
+                    .is_some_and(|r| r.live() == self.glass_live(d).as_slice());
+            if span.invs == want && same_kind && same_live {
                 return;
             }
             let leaving: BTreeSet<ChunkPos> = span
@@ -1235,6 +1267,11 @@ impl Engine {
     /// engine knows they hold (I5, I6, I7). Nothing starts while it is live, frozen, held for a
     /// player on the way, or when no process could run in the part that is unloaded.
     fn start_sim(&mut self, d: DistrictId, at: Tick) {
+        match self.glass_mode(d) {
+            GlassMode::Glass => return self.start_glass(d, at),
+            GlassMode::Freeze => return,
+            GlassMode::Black => {}
+        }
         let season = self.season_at(at);
         let dist = &self.districts[&d];
         if dist.freeze_reason(season).is_some()
@@ -1334,8 +1371,13 @@ impl Engine {
             base,
             season,
             invs: part,
+            glass: false,
         });
         self.stats.sims_started += 1;
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.replay_model = crate::glass::report::replay_model::BLACK_BOX;
+            dg.replay_since = Some(at);
+        }
         if pollutes {
             self.wake_seq += 1;
             let at_next = at + self.tun.replay.live_pollution_ticks.max(1);
@@ -1361,6 +1403,11 @@ impl Engine {
     ) -> Option<(SimSpan, Vec<crate::cluster::Pool>)> {
         let h = *self.cluster_of.get(&d)?;
         self.cluster_of.remove(&d);
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.replay = None;
+            dg.replay_model = crate::glass::report::replay_model::NONE;
+            dg.replay_since = None;
+        }
         let out = self.clusters.apply(h, at, |c, at| c.remove_member(d, at))?;
         // Book what the replay made and used.
         let mut minted = GoodVec::new();
@@ -1399,11 +1446,23 @@ impl Engine {
         };
         self.stats.cluster_settles += settles;
         let mut season_change = false;
+        let mut glass_stops: Vec<(DistrictId, u16, Stop)> = Vec::new();
         for e in events {
             match e {
                 ClusterEvent::Stopped { at, owner, id, why }
                     if id < crate::district::LINK_PROC_BASE =>
                 {
+                    // A glass replay's parts are its processes 0, 1, ... (choice G2-22).
+                    if why != Stop::Disabled
+                        && self
+                            .glass
+                            .districts
+                            .get(&owner)
+                            .and_then(|g| g.replay.as_ref())
+                            .is_some_and(|r| id < r.parts())
+                    {
+                        glass_stops.push((owner, id, why));
+                    }
                     if let Some(dist) = self.districts.get_mut(&owner) {
                         dist.last_run = Some((at, Some(why)));
                     }
@@ -1440,8 +1499,271 @@ impl Engine {
                 _ => {}
             }
         }
+        for (d, id, why) in glass_stops {
+            self.glass_step(h, d, Some((id, why)), at);
+        }
         if season_change {
             self.season_boundary(h, at);
+        }
+    }
+
+    // ---- the glass replay (GLASSBOX.md §4, G2) ----------------------------------------------
+
+    /// How district `d` replays while away. A compiled district replays on its graph once a
+    /// window of the compile passed (G-B4), and freezes before that; what the glass replay does
+    /// not model yet (deposits, cross-district links, PowerGrid coupling, damage) keeps the black
+    /// box (choice G2-16), as does a compile whose glass replay fell back (§4.5).
+    fn glass_mode(&self, d: DistrictId) -> GlassMode {
+        let Some(dg) = self.glass.districts.get(&d) else {
+            return GlassMode::Black;
+        };
+        let Some(comp) = dg.compiled.as_ref() else {
+            return GlassMode::Black;
+        };
+        let Some(dist) = self.districts.get(&d) else {
+            return GlassMode::Black;
+        };
+        if dist.phase == Phase::Damaged
+            || !dist.deposits.is_empty()
+            || !dist.links.is_empty()
+            || dist.power_source.is_some()
+            || self.sinks_of.get(&d).is_some_and(|s| !s.is_empty())
+            || dg.fallback.is_some()
+        {
+            return GlassMode::Black;
+        }
+        if comp.eligible() {
+            GlassMode::Glass
+        } else {
+            GlassMode::Freeze
+        }
+    }
+
+    /// Does chunk `c` of the district run in the world (loaded and block-ticking)? A Java side
+    /// that sends no IND_CHUNK_TICKING is read as "every loaded chunk ticks" (choice G2-17).
+    fn chunk_runs(&self, d: DistrictId, c: ChunkPos) -> bool {
+        let Some(dist) = self.districts.get(&d) else {
+            return false;
+        };
+        let ticking = self.glass.districts.get(&d).map(|g| &g.ticking);
+        dist.loaded_chunks.contains(&c) && ticking.is_none_or(|t| t.is_empty() || t.contains(&c))
+    }
+
+    /// The inventories a glass replay covers: every one whose chunk does not run (I7, §6.1).
+    fn glass_covered(&self, d: DistrictId) -> BTreeSet<u32> {
+        let dist = &self.districts[&d];
+        dist.inventories
+            .values()
+            .filter(|i| !i.destroyed && !self.chunk_runs(d, i.chunk))
+            .map(|i| i.decl.index)
+            .collect()
+    }
+
+    /// Per graph node: it runs in the world. A compile on a moving frame (a Sable ship, frame
+    /// not 0) has no world positions: every node is simulated (choice G2-18).
+    fn glass_live(&self, d: DistrictId) -> Vec<bool> {
+        let Some(comp) = self
+            .glass
+            .districts
+            .get(&d)
+            .and_then(|g| g.compiled.as_ref())
+        else {
+            return Vec::new();
+        };
+        let dim = self.districts.get(&d).map_or(0, |x| x.dim);
+        if comp.graph.end.frame != 0 {
+            return vec![false; comp.graph.nodes.len()];
+        }
+        comp.graph
+            .nodes
+            .iter()
+            .map(|n| self.chunk_runs(d, n.pos.chunk(dim)))
+            .collect()
+    }
+
+    /// Starts a glass replay over the district's covered inventories, from what the engine knows
+    /// they hold. It has its own cluster (G2-16 keeps linked districts on the black box).
+    fn start_glass(&mut self, d: DistrictId, at: Tick) {
+        use crate::glass::replay::{Replay, Setup, StoreDecl};
+        let season = self.season_at(at);
+        let Some(dist) = self.districts.get(&d) else {
+            return;
+        };
+        if dist.sim.is_some()
+            || dist.presence == Presence::Live
+            || dist.hold_until.is_some_and(|h| h > at)
+        {
+            return;
+        }
+        let part = self.glass_covered(d);
+        if part.is_empty() {
+            return;
+        }
+        let mut setup = Setup {
+            district: d,
+            live: self.glass_live(d),
+            covered: BTreeMap::new(),
+            contents: BTreeMap::new(),
+            owed: dist.owed.clone(),
+            live_decls: BTreeMap::new(),
+        };
+        let mut base = GoodVec::new();
+        for inv in dist.inventories.values().filter(|i| !i.destroyed) {
+            let c = inv.effective();
+            if part.contains(&inv.decl.index) {
+                setup.covered.insert(
+                    inv.decl.index,
+                    StoreDecl {
+                        item_slots: inv.decl.item_slots,
+                        fluid_capacity: inv.decl.fluid_capacity,
+                    },
+                );
+                base.merge(&c);
+            } else {
+                setup.live_decls.insert(
+                    inv.decl.index,
+                    StoreDecl {
+                        item_slots: inv.decl.item_slots,
+                        fluid_capacity: inv.decl.fluid_capacity,
+                    },
+                );
+            }
+            setup.contents.insert(inv.decl.index, c);
+        }
+        let Engine {
+            glass, goods, tun, ..
+        } = self;
+        let Some(dg) = glass.districts.get_mut(&d) else {
+            return;
+        };
+        let Some(comp) = dg.compiled.as_mut() else {
+            return;
+        };
+        let (rp, spec) = match Replay::start(comp, setup, goods, &tun.glass, at) {
+            Ok(x) => x,
+            Err(f) => {
+                if f == crate::glass::replay::Fallback::Oscillating {
+                    comp.replay_oscillations += 1;
+                }
+                dg.fallback = Some(f);
+                self.glass.stats.fallbacks += 1;
+                self.note(d, at, format!("glass replay falls back: {}", f.words()));
+                self.start_sim(d, at);
+                return;
+            }
+        };
+        let cut = rp.cut_edges();
+        let parts = rp.parts();
+        dg.replay = Some(rp);
+        dg.replay_model = crate::glass::report::replay_model::GLASS;
+        dg.replay_since = Some(at);
+        let mut c = Cluster::new(self.tun.replay.restart_min_run_ticks);
+        c.add_member(spec, at);
+        let key = self.next_cluster;
+        self.next_cluster += 1;
+        let h = self.clusters.insert(key, c, at);
+        self.cluster_of.insert(d, h);
+        let dist = self.districts.get_mut(&d).expect("exists");
+        let whole = dist.is_whole(&part);
+        let covered = part.len();
+        dist.sim = Some(SimSpan {
+            started: at,
+            base,
+            season,
+            invs: part,
+            glass: true,
+        });
+        self.stats.sims_started += 1;
+        self.glass.stats.replays += 1;
+        let what = if whole {
+            "glass replay starts".to_string()
+        } else {
+            format!("glass replay starts over {covered} inventories ({cut} cut edges)")
+        };
+        self.note(d, at, what);
+        self.after_cluster(h, at);
+        // A first regime blocked at once stops silently: take it as its breakpoint.
+        for id in 0..parts {
+            if let Some(Run::Stopped(w)) = self
+                .clusters
+                .get(h)
+                .and_then(|r| r.cell().model().run_of(d, id))
+                && w != Stop::Disabled
+            {
+                self.glass_step(h, d, Some((id, w)), at);
+            }
+        }
+    }
+
+    /// The glass replay of `d` at a breakpoint of its part `why.0` (`why.1`), or after an outside
+    /// event changed its pools (None): the next regime, or a fallback.
+    fn glass_step(
+        &mut self,
+        h: RegionId<Cluster>,
+        d: DistrictId,
+        why: Option<(u16, Stop)>,
+        at: Tick,
+    ) {
+        if self.cluster_of.get(&d) != Some(&h) {
+            return;
+        }
+        let Engine {
+            clusters,
+            glass,
+            goods,
+            tun,
+            dirty,
+            ..
+        } = self;
+        let Some(dg) = glass.districts.get_mut(&d) else {
+            return;
+        };
+        let (Some(rp), Some(comp)) = (dg.replay.as_mut(), dg.compiled.as_mut()) else {
+            return;
+        };
+        if rp.compile() != comp.graph.end.compile {
+            // A new compile came in: the coverage pass stops this replay.
+            dirty.insert(d);
+            return;
+        }
+        let r = clusters.apply(h, at, |c, at| match why {
+            Some((id, w)) => rp.on_stop(comp, c, id, w, at, goods, &tun.glass),
+            None => rp.refresh(comp, c, at, goods, &tun.glass),
+        });
+        match r {
+            Some(Err(f)) => self.glass_fallback(d, f, at),
+            _ => self.after_cluster(h, at),
+        }
+    }
+
+    /// The glass replay cannot go on (§4.5): what it did is carried, and the district replays by
+    /// the black box until the next compile or until it is live again.
+    fn glass_fallback(&mut self, d: DistrictId, f: crate::glass::replay::Fallback, at: Tick) {
+        if let Some(dg) = self.glass.districts.get_mut(&d) {
+            dg.fallback = Some(f);
+            if f == crate::glass::replay::Fallback::Oscillating
+                && let Some(c) = dg.compiled.as_mut()
+            {
+                c.replay_oscillations += 1;
+            }
+        }
+        self.glass.stats.fallbacks += 1;
+        self.note(d, at, format!("glass replay falls back: {}", f.words()));
+        self.sync_coverage(d, at);
+    }
+
+    /// An outside event changed a glass replay's pools (an import, an export, a theft).
+    fn glass_touch(&mut self, d: DistrictId, at: Tick) {
+        if !self
+            .glass
+            .districts
+            .get(&d)
+            .is_some_and(|g| g.replay.is_some())
+        {
+            return;
+        }
+        if let Some(&h) = self.cluster_of.get(&d) {
+            self.glass_step(h, d, None, at);
         }
     }
 
@@ -1546,10 +1868,20 @@ impl Engine {
         for p in &pools {
             dist.minted_carried.add(p.key.good(), p.books.minted);
             match p.key {
+                // A glass replay's district pool holds only events (imports waiting, G2-14).
+                PoolKey::Stock(_, g) if span.glass => dist.owed.add(g, p.level - p.books.initial),
                 // Level pollution pushed live (I14) is in the world (and in `remaining`) already.
                 PoolKey::Stock(_, g) if live.contains(&g) => dist.owed.add(g, p.level - p.pushed),
                 PoolKey::Stock(_, g) => dist.owed.add(g, p.level - span.base.get(g)),
                 PoolKey::Mail(_, _, _, g) => dist.owed.add(g, p.level - p.pushed),
+                // A store's change stays with that store (G2-3), counted in its contents.
+                PoolKey::Store(_, inv, g) => {
+                    let change = p.level - p.books.initial;
+                    match dist.inventories.get_mut(&inv) {
+                        Some(i) if !i.destroyed => i.held.add(g, change),
+                        _ => dist.owed.add(g, change),
+                    }
+                }
             }
         }
         // Deposits are read back from their pools, not carried as owed.
@@ -1596,6 +1928,9 @@ impl Engine {
             .collect();
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut net = GoodVec::new();
+        // A glass replay's `Stock` change (the cut's carry both ways, imports): owed, so it is
+        // planned with the district's owed and lands on the live side where it crossed (G2-11).
+        let mut stock = GoodVec::new();
         let mut deposits = GoodVec::new();
         let mut span_minted = std::mem::take(&mut dist.minted_carried);
         let since = stopped.as_ref().map_or(at, |s| s.0.started);
@@ -1609,10 +1944,21 @@ impl Engine {
         let covered: BTreeSet<u32> = stopped
             .as_ref()
             .map_or_else(|| all.clone(), |(span, _)| span.invs.clone());
+        // A glass replay's per-store changes land in their own stores (G2-3).
+        let mut direct: BTreeMap<(u32, Good), i64> = BTreeMap::new();
         if let Some((span, pools)) = stopped {
             for p in &pools {
                 span_minted.add(p.key.good(), p.books.minted);
                 match p.key {
+                    PoolKey::Store(_, inv, g) => {
+                        let change = p.level - p.books.initial;
+                        if dist.inventories.get(&inv).is_some_and(|i| !i.destroyed) {
+                            *direct.entry((inv, g)).or_default() += change;
+                        } else {
+                            net.add(g, change);
+                        }
+                    }
+                    PoolKey::Stock(_, g) if span.glass => stock.add(g, p.level - p.books.initial),
                     PoolKey::Stock(_, g) => {
                         // Level pollution pushed live (I14) is in the world already.
                         let change = if live.contains(&g) {
@@ -1648,13 +1994,25 @@ impl Engine {
         // changes, theft while frozen), with what step 1 could not place: over everything in a
         // full round, over the covered part in a partial one (it stays virtual there).
         let owed = std::mem::take(&mut dist.owed);
-        let mut deltas: BTreeMap<(u32, Good), i64> = BTreeMap::new();
+        // Direct store changes first: the plan below sees the stores as they left them.
+        for (&(i, g), &n) in &direct {
+            if let Some(inv) = dist.inventories.get_mut(&i) {
+                inv.held.add(g, n);
+            }
+        }
         let plan1 = reconcile::plan(&states(dist, &covered), &net, &self.goods);
+        for (&(i, g), &n) in &direct {
+            if let Some(inv) = dist.inventories.get_mut(&i) {
+                inv.held.add(g, -n);
+            }
+        }
+        let mut deltas = direct;
         for p in &plan1.deltas {
             *deltas.entry((p.inventory, p.good)).or_default() += p.delta;
         }
         let mut rest = plan1.unplaced.clone();
         rest.merge(&owed);
+        rest.merge(&stock);
         if !rest.is_empty() {
             // Step 2 sees the inventories as step 1 left them.
             for (&(i, g), &n) in &deltas {
@@ -2200,6 +2558,7 @@ impl Engine {
             return;
         };
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
         if entries.is_empty() {
             return;
         }
@@ -2303,6 +2662,7 @@ impl Engine {
                 short
             });
             self.after_cluster(h, at);
+            self.glass_touch(d, at);
             if let Some(short) = short
                 && let Some(dist) = self.districts.get_mut(&d)
             {
@@ -2420,11 +2780,35 @@ impl Engine {
                 inv.known.add(g, (sign * n).max(-inv.known.get(g)));
             }
         }
+        let glass_span = dist.sim.as_ref().is_some_and(|s| s.glass);
         let h = self.cluster_of[&d];
         let goods = p.goods.clone();
         let out = p.direction == Direction::Out;
         let inv = p.inventory;
         let address = p.address;
+        // A glass replay books the world's own change on the store it landed in, as already
+        // written (choice G2-14): its reconcile writes each store's change, not a stock's.
+        if glass_span {
+            let covered = self
+                .glass
+                .districts
+                .get(&d)
+                .and_then(|g| g.replay.as_ref())
+                .is_some_and(|r| r.covers(inv));
+            self.clusters.apply(h, at, |c, at| {
+                for (g, n) in goods.iter() {
+                    let key = if covered {
+                        PoolKey::Store(d, inv, g)
+                    } else {
+                        PoolKey::Stock(d, g)
+                    };
+                    c.rebase(key, sign * n, at);
+                }
+            });
+            self.after_cluster(h, at);
+            self.glass_touch(d, at);
+            return;
+        }
         let moved = self.clusters.apply(h, at, |c, at| {
             let mut moved = GoodVec::new();
             for (g, n) in goods.iter() {
@@ -2453,6 +2837,7 @@ impl Engine {
             span.base.merge(&moved);
         }
         self.after_cluster(h, at);
+        self.glass_touch(d, at);
     }
 
     // ---- threats --------------------------------------------------------------------------
@@ -2844,6 +3229,9 @@ impl Engine {
                         .apply(h, at, |c, at| c.set_enabled(d, false, at));
                 }
                 self.after_cluster(h, at);
+                if !dmg.machine_lost {
+                    self.glass_touch(d, at);
+                }
                 // A doomed inventory takes its room with it: rebuild the member (F20).
                 if doomed_any {
                     if dmg.machine_lost {
@@ -3206,6 +3594,11 @@ impl Engine {
                         .map(|t| c.pools()[t.pool as usize].key.good())
                         .collect(),
                     crate::cluster::Body::Link { .. } => Vec::new(),
+                    crate::cluster::Body::Cycle(cy) => cy
+                        .pools
+                        .iter()
+                        .map(|&i| c.pools()[i as usize].key.good())
+                        .collect(),
                 };
                 (p.id, goods, p.run)
             })
@@ -3232,6 +3625,10 @@ impl Engine {
                         }
                         crate::cluster::Body::Link { from, to, .. } => {
                             (vec![key(*from).good()], Some(key(*to)))
+                        }
+                        // A glass replay's closed-form cycle (G2-13): every pool its pieces move.
+                        crate::cluster::Body::Cycle(cy) => {
+                            (cy.pools.iter().map(|&i| key(i).good()).collect(), None)
                         }
                     };
                     let run = view.run_of(d, p.id).unwrap_or(p.run);
@@ -3272,7 +3669,7 @@ fn stock_of(v: &ClusterView, d: DistrictId) -> GoodVec {
     v.levels
         .iter()
         .filter_map(|&(k, l)| match k {
-            PoolKey::Stock(o, g) if o == d => Some((g, l)),
+            PoolKey::Stock(o, g) | PoolKey::Store(o, _, g) if o == d => Some((g, l)),
             _ => None,
         })
         .collect()
@@ -3336,6 +3733,8 @@ fn stop_words(why: Stop, goods: &BTreeMap<Good, GoodInfo>) -> String {
         Stop::Target(k) => format!("stopped: target reached ({})", name(k)),
         Stop::SourceStopped(src) => format!("stopped: power source {} stopped", src.0),
         Stop::Waiting => "waiting to restart".to_string(),
+        Stop::Bound(_, tag) => format!("stopped: store bound {tag}"),
+        Stop::Timer => "stopped: regime timer".to_string(),
     }
 }
 
@@ -3544,6 +3943,15 @@ mod persist_impls {
                     e.cluster_of.insert(m, h);
                 }
             }
+            // A glass replay's regime state is not paged (choice G2-9): its district goes on by
+            // the black box (or freezes) from the next step, its stores' changes carried.
+            let glass: Vec<DistrictId> = e
+                .districts
+                .values()
+                .filter(|d| d.sim.as_ref().is_some_and(|s| s.glass))
+                .map(|d| d.id)
+                .collect();
+            e.dirty.extend(glass);
             Ok(e)
         }
     }
