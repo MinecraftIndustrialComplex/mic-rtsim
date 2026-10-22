@@ -26,6 +26,7 @@ use rtsim_ecology::infra::{
     DistrictIndex, DistrictSignals, DistrictSite, IndustryLink, Infrastructure, NoInfrastructure,
     RaidOutcome,
 };
+use rtsim_ecology::oil::Near;
 use rtsim_ecology::prey::Item;
 use rtsim_ecology::species::{Gender, Species};
 use rtsim_ecology::synth::{self, FakeIaf, Reaction};
@@ -118,6 +119,9 @@ fn materializations(cmds: &[Cmd]) -> Vec<boundary::Materialize> {
 #[derive(Clone, Default)]
 struct Tanks {
     sites: Vec<DistrictSite>,
+    /// Each site's chunks, for the fields' watch (OGC52); a site with none is one chunk at its
+    /// position.
+    chunks: Vec<Vec<(i32, i32)>>,
     signals: DistrictSignals,
     raids: Vec<(DistrictId, f64, i64)>,
 }
@@ -134,6 +138,7 @@ impl Tanks {
                     loaded: watched,
                 })
                 .collect(),
+            chunks: Vec::new(),
             signals,
             raids: Vec::new(),
         }
@@ -150,6 +155,30 @@ impl Infrastructure for Tanks {
                 s.pos.frame == frame && dx * dx + dz * dz <= r * r
             })
             .collect()
+    }
+
+    fn districts_where(
+        &mut self,
+        near: &mut dyn FnMut(u16, i64, i64) -> Option<Near>,
+    ) -> Vec<(DistrictSite, Near)> {
+        let mut out = Vec::new();
+        for (i, s) in self.sites.iter().enumerate() {
+            let points: Vec<(i32, i32)> = match self.chunks.get(i) {
+                Some(c) if !c.is_empty() => {
+                    c.iter().map(|&(x, z)| (x * 16 + 8, z * 16 + 8)).collect()
+                }
+                _ => vec![(s.pos.x, s.pos.z)],
+            };
+            for (x, z) in points {
+                if let Some(n) = near(s.pos.frame, i64::from(x), i64::from(z)) {
+                    let mut site = *s;
+                    site.pos = Pos::new(s.pos.frame, x, z);
+                    out.push((site, n));
+                    break;
+                }
+            }
+        }
+        out
     }
 
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
@@ -354,6 +383,90 @@ fn a_watched_tank_draws_the_dragon_in_person() {
     assert_eq!(m.target_player, PLAYER);
     // In person, nothing was raided abstractly.
     assert!(tanks.raids.is_empty(), "{:?}", tanks.raids);
+}
+
+// ---- The oil audit's F2: the field watches its own ground (OGC52, OGC53) ----------------------
+
+/// A field 70 chunks long by 3 wide from chunk (0, 0): blocks 0 to 1,119 east, 0 to 47 south.
+fn long_field() -> Obs {
+    Obs::OilChunks(OilChunks {
+        dimension: 0,
+        source: boundary::OIL_SOURCE_DEEP_TIME,
+        chunks: (0..70)
+            .flat_map(|cx| (0..3).map(move |cz| (cx, cz)))
+            .map(|(cx, cz)| OilChunkRec {
+                cx,
+                cz,
+                amount: 1,
+                flags: 0,
+            })
+            .collect(),
+    })
+}
+
+/// Runs the long field with its fire lair at (`lair_x`, 24) and a dragon that never runs low: a
+/// district starts drilling at the field's east end half a day in. Returns the Encroachments at
+/// each half day to a day and a half, the refuels, and where the dragon would drink.
+fn watched_ground(lair_x: i32) -> (Vec<u64>, u64, Option<Near>) {
+    let (mut w, _) = synth::world(21);
+    let mut d = Dragons::new(21, quick_oil(1 << 40), Tick::ZERO);
+    let l = fire_lair(&mut w, &mut d, 4, lair_x, 24);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), Tick(0));
+    d.ingest(&mut w, &mut NoInfrastructure, &long_field(), Tick(0));
+    assert!(d.oil_gated(x));
+    let drink = d.oil.near(
+        rtsim_space::topology::all_flat().of(0),
+        0,
+        i64::from(lair_x),
+        24,
+        i64::from(d.tun.oil.lair_reach) * 4,
+    );
+    let mut tanks = Tanks::default();
+    tanks.signals = DistrictSignals {
+        oil_sample: true,
+        polluted: false,
+        fuel_mb: 0,
+    };
+    let mut by_half_day = Vec::new();
+    let mut t = Tick(0);
+    for half in 1..=3u64 {
+        if half == 2 {
+            // A pumpjack at the east end: its chunks lie on the field's last few chunks.
+            tanks.sites.push(DistrictSite {
+                id: DistrictId(9),
+                pos: Pos::new(0, 1_080, 24),
+                watched: false,
+                loaded: false,
+            });
+            tanks.chunks.push(vec![(66, 1), (67, 1), (68, 1)]);
+        }
+        while t.0 < half * TICKS_PER_DAY / 2 {
+            t += 500;
+            d.run_until(&mut w, &mut tanks, t);
+        }
+        by_half_day.push(d.stats.encroachments);
+    }
+    d.check(&w, None).unwrap();
+    (by_half_day, d.stats.refuels, drink)
+}
+
+/// The oil audit's F2 test: a drilling district 1,000 blocks from where the field's dragon drinks,
+/// but on the field, is sensed within a day of starting, with no flight; with no fire lair in
+/// reach of its part of the field, nobody senses it.
+#[test]
+fn a_district_drilling_far_along_the_field_is_sensed_within_a_day() {
+    let (seen, refuels, drink) = watched_ground(-300);
+    let drink = drink.expect("the lair drinks at the field's west end");
+    assert!(
+        f64::from(1_080 - drink.x).hypot(f64::from(24 - drink.z)) >= 1_000.0,
+        "the district is 1,000 blocks from the drink spot: {drink:?}"
+    );
+    assert_eq!(refuels, 0, "no flight to the field");
+    assert_eq!(seen[0], 0, "nothing drills before half a day");
+    assert_eq!(seen[2], 1, "sensed once within a day of drilling: {seen:?}");
+    // The lair 2,000 blocks west of the field: out of reach of the district's end of it.
+    let (seen, _, _) = watched_ground(-2_000);
+    assert_eq!(seen[2], 0, "no fire lair in reach, nobody: {seen:?}");
 }
 
 // ---- OG-13: the dry fight ----------------------------------------------------------------------

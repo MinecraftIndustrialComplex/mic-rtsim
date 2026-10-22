@@ -523,6 +523,21 @@ mod tests {
         // The base itself is still found at the base.
         assert_eq!(link.districts_reaching(0, 0, 0, 64).len(), 1);
         assert!(link.districts_reaching(0, 1_500, 0, 64).is_empty());
+        // The fields' watch (OGC52) asks chunk by chunk: a field under the well answers there.
+        let mut asked = 0;
+        let hits = link.districts_where(&mut |_, x, z| {
+            asked += 1;
+            (x > 2_900).then_some(Near {
+                field: 5,
+                x: x as i32,
+                z: z as i32,
+                dist: 0.0,
+            })
+        });
+        assert_eq!(asked, 26, "every chunk asked once, the well last");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.id, DistrictId(7));
+        assert_eq!((hits[0].0.pos.x, hits[0].1.field), (3_000 / 16 * 16 + 8, 5));
     }
 
     /// `DistrictIndex::refresh` rebuilds when a district grows, not only when the count changes.
