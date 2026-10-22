@@ -44,7 +44,14 @@ import java.util.Map;
  *       the dimension's {@code monster_spawn_block_light_limit}; the district's own, and the ring's
  *       ({@code spawnRingChunks}) for the spawn samples.</li>
  *   <li><b>Machines</b> are the district's industrial block entities that are not boundary stock;
- *       roofed when the block above them cannot see the sky ({@code canSeeSky}: full sky light).</li>
+ *       roofed when a block above them keeps the sky out (full sky light, {@code canSeeSky}, read from the
+ *       chunk's sky light sources, which change with the block and do not wait for the light engine).
+ *       A roof whose top block is at most {@code roofReachBlocks} above the machine is itself listed, as a
+ *       roofless block a flyer can break (OGB-7, choice OGC63); only deeper cover shields the machine,
+ *       and only shielded machines count as roofed in IND_SURVEY.</li>
+ *   <li><b>Partial</b> (the oil gate audit's F5, OGC61): a district with some chunks unloaded is read for
+ *       its loaded chunks' block entities only, with no columns and no walk: its exposed blocks per chunk,
+ *       never the perimeter or the dark count, which need the whole area.</li>
  * </ul>
  */
 final class SurveyJob {
@@ -74,14 +81,25 @@ final class SurveyJob {
     int machines;
     int roofed;
     int killMachines;
+    /** Roofed machines whose roof is within reach: not shielded, the roof listed (OGB-7). */
+    int roofReachable;
     final List<Exposed> machineBlocks = new ArrayList<>();
     final List<Exposed> inventoryBlocks = new ArrayList<>();
+    /** The roofs within reach over roofed machines, flagged roofless and roof (OGB-7). */
+    final List<Exposed> roofBlocks = new ArrayList<>();
+    /** The district chunks whose block entities were read. */
+    final LongArrayList surveyed = new LongArrayList();
+    /** A survey of every district chunk, with the walk; false: the loaded chunks' block entities only (F5). */
+    final boolean whole;
+    private final int roofReach;
     final float[] turretStrength = new float[IndRecords.ThreatClass.COUNT];
     final Map<String, Long> ammo = new HashMap<>();
     boolean aborted;
 
-    SurveyJob(District d, ServerLevel level, long now, int ring) {
+    SurveyJob(District d, ServerLevel level, long now, int ring, boolean whole) {
         this.district = d;
+        this.whole = whole;
+        this.roofReach = ThreatConfig.get(ThreatConfig.ROOF_REACH);
         this.revision = d.revision;
         this.level = level;
         this.startedAt = now;
@@ -116,7 +134,7 @@ final class SurveyJob {
     }
 
     boolean done() {
-        return aborted || cursor >= chunks.size() + districtChunks.size();
+        return aborted || cursor >= (whole ? chunks.size() + districtChunks.size() : districtChunks.size());
     }
 
     /** The ground level walkers move at: the median height of the district's industrial blocks (Q14). */
@@ -125,18 +143,20 @@ final class SurveyJob {
 
     /**
      * Reads up to {@code budget} chunks: first the district's block entities (the machines, and the ground
-     * level), then the columns of the district and its ring. A district chunk that is not loaded aborts.
+     * level), then the columns of the district and its ring. A district chunk that is not loaded aborts a
+     * whole survey; a partial one passes it by and reads no columns.
      */
     void step(Industry ind, int budget) {
         int nd = districtChunks.size();
-        while (budget-- > 0 && cursor < chunks.size() + nd) {
+        int end = whole ? chunks.size() + nd : nd;
+        while (budget-- > 0 && cursor < end) {
             int i = cursor++;
             boolean bePass = i < nd;
             long c = chunks.getLong(bePass ? i : i - nd);
             boolean inDistrict = districtChunks.contains(c);
             LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
             if (chunk == null) {
-                if (inDistrict) {
+                if (inDistrict && whole) {
                     aborted = true;
                     return;
                 }
@@ -144,6 +164,7 @@ final class SurveyJob {
             }
             if (bePass) {
                 readBlockEntities(ind, chunk);
+                surveyed.add(c);
                 continue;
             }
             if (ground == Integer.MIN_VALUE)
@@ -288,20 +309,39 @@ final class SurveyJob {
                 continue;
             heights.add(pos.getY());
             // INDUSTRY.md §13.5: roofed is "without sky access (canSeeSky)", from the block above the machine,
-            // so a glass roof, which lets the sky's light through, is no roof against flyers.
-            boolean isRoofed = !level.canSeeSky(pos.above());
+            // so a glass roof, which lets the sky's light through, is no roof against flyers. The top block
+            // that keeps the sky out is the one under the column's lowest sky light source.
+            int top = roofTop(chunk, pos);
+            boolean isRoofed = top > pos.getY();
             District.Inventory inv = district.inventoryAt(pos);
             int flags = isRoofed ? 0 : IndRecords.SurveyBlocks.FLAG_ROOFLESS;
             if (inv != null) {
                 inventoryBlocks.add(new Exposed(pos, be.getBlockState(), flags | IndRecords.SurveyBlocks.FLAG_INVENTORY, inv.index()));
             } else {
                 machines++;
-                if (isRoofed)
-                    roofed++;
+                if (isRoofed && top - pos.getY() <= roofReach) {
+                    // OGB-7: a roof within reach is a block a flyer breaks; the next survey finds the machine open.
+                    roofReachable++;
+                    BlockPos roof = new BlockPos(pos.getX(), top, pos.getZ());
+                    roofBlocks.add(new Exposed(roof, chunk.getBlockState(roof),
+                            IndRecords.SurveyBlocks.FLAG_ROOFLESS | IndRecords.SurveyBlocks.FLAG_ROOF, IndRecords.NO_INVENTORY));
+                } else if (isRoofed) {
+                    roofed++; // shielded: the cover is deeper than a flyer reaches
+                }
                 machineCols.add(col(pos.getX(), pos.getZ()));
                 machineBlocks.add(new Exposed(pos, be.getBlockState(), flags | IndRecords.SurveyBlocks.FLAG_MACHINE, IndRecords.NO_INVENTORY));
             }
         }
+    }
+
+    /**
+     * The y of the highest block over {@code pos}'s column that keeps the sky out (the block under the
+     * column's lowest sky light source, as the light engine counts it), or {@code Integer.MIN_VALUE} when
+     * the sky reaches below the world.
+     */
+    private static int roofTop(LevelChunk chunk, BlockPos pos) {
+        int lowest = chunk.getSkyLightSources().getLowestSourceY(pos.getX() & 15, pos.getZ() & 15);
+        return lowest == Integer.MIN_VALUE ? Integer.MIN_VALUE : lowest - 1;
     }
 
     // ---- the reduction --------------------------------------------------------------------------

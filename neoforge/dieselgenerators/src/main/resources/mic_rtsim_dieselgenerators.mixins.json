@@ -4,7 +4,8 @@
   "package": "com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.mixin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
-    "OilChunksSavedDataAccessor"
+    "OilChunksSavedDataAccessor",
+    "PumpjackHoleSeedMixin"
   ],
   "injectors": {
     "defaultRequire": 1

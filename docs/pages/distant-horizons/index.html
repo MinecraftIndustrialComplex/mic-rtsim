@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sim in Distant Horizons</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --open: #8f620f;
+  --slow-bg: #f4e7c9;
+  --slow-line: #d4b878;
+  --stop-bg: #e2f0e8;
+  --stop-ink: #1d5a3b;
+  --stop-line: #93c4aa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 26px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; margin: 10px 0 8px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td .sub { display: block; color: var(--muted); font-size: 14.5px; margin-top: 4px; }
+table.ledger th:first-child { width: 18%; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100% !important; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 12px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 8px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 650; font-size: 17px; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+blockquote { margin: 0 0 14px; padding: 0 0 0 0; font-style: italic; max-width: 38em; }
+
+/* verdict pills */
+.v { display: inline-block; font-weight: 650; font-size: 14px; line-height: 1.35; padding: 2px 8px; border-radius: 4px; border: 1px solid transparent; margin: 0 6px 6px 0; }
+.v.now { background: var(--stop-bg); color: var(--stop-ink); border-color: var(--stop-line); }
+.v.plugin { background: var(--slow-bg); color: var(--ink); border-color: var(--slow-line); }
+.v.sim { background: #fff; color: var(--accent); border-color: var(--accent); }
+.v.notyet { background: #fff; color: var(--muted); border: 1px dashed #8a8a93; }
+.limits { margin-top: 18px; }
+.limits ul { margin-bottom: 10px; }
+
+/* item cards */
+.items { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin: 16px 0 8px; }
+.item { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+.item .pic { background: var(--card); border-bottom: 1px solid var(--line); padding: 14px 14px 10px; }
+.item .pic svg.sk { display: block; width: 100%; height: auto; max-height: 150px; }
+.item .pic .pc { font-size: 14px; color: var(--muted); line-height: 1.4; margin: 8px 0 0; max-width: none; }
+.item .txt { padding: 14px 16px 6px; }
+.item h3 { margin: 0 0 8px; font-size: 20px; }
+.item p { font-size: 16.5px; max-width: none; }
+.item .lbl { display: block; font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 1px; }
+.item .verdicts { margin: 0 0 8px; }
+
+/* walkthrough */
+.walk { list-style: none; padding: 0; margin: 12px 0 14px; }
+.walk li { display: grid; grid-template-columns: 9.5em 1fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--line); max-width: 52em; margin: 0; }
+.walk li:last-child { border-bottom: 0; }
+.walk .d { font-weight: 600; color: var(--accent); font-size: 16px; padding-top: 1px; }
+@media (max-width: 520px) {
+  .walk li { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* versions */
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }
+.two .box { margin: 0; }
+.box.bad { background: #fff; border-color: var(--slow-line); }
+
+/* phases */
+.phases { list-style: none; padding: 0; margin: 12px 0 14px; counter-reset: ph; }
+.phases > li { display: grid; grid-template-columns: 3em 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); max-width: 52em; margin: 0; }
+.phases > li:last-child { border-bottom: 0; }
+.phases .n { font-weight: 700; font-size: 22px; color: var(--accent); line-height: 1.2; font-variant-numeric: tabular-nums; }
+.phases h3 { margin: 0 0 4px; font-size: 18px; }
+.phases p, .phases ul { font-size: 16.5px; margin-bottom: 6px; }
+.phases li li { margin-bottom: 3px; }
+.phases .first { font-weight: 600; color: var(--stop-ink); }
+
+/* bars */
+.bars { margin: 14px 0 6px; display: grid; gap: 12px; max-width: 46em; }
+.bar { display: grid; grid-template-columns: 13em 1fr; gap: 4px 14px; align-items: center; font-size: 15.5px; }
+.bar .lb { line-height: 1.35; font-weight: 600; }
+.bar .lb small { display: block; font-weight: 400; color: var(--muted); font-size: 14px; }
+.bar .track { display: flex; align-items: center; gap: 8px; }
+.bar .fill { height: 14px; border-radius: 0 4px 4px 0; flex: none; width: calc((100% - 8.5em) * var(--w)); min-width: 3px; background: var(--accent); }
+.bar .fill.old { background: #8a8a93; }
+.bar .val { font-variant-numeric: tabular-nums; font-size: 15px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .bar { grid-template-columns: 1fr; }
+}
+table.nums { font-variant-numeric: tabular-nums; }
+table.nums td.num, table.nums th.num { text-align: right; padding-right: 14px; }
+@media (max-width: 600px) {
+  table.nums { font-size: 14px; }
+  table.nums th, table.nums td { padding: 8px 8px 8px 0; }
+  table.nums th { white-space: normal; }
+}
+.decision .alt { color: var(--muted); }
+.decision .who { font-size: 15px; color: var(--muted); font-style: italic; }
+.open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
+
+/* decisions */
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision p, .decision li { max-width: none; }
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#items">The six</a>
+  <a href="#walk">Walkthrough</a>
+  <a href="#chunky">Far terrain</a>
+  <a href="#plan">Plan</a>
+  <a href="#ledger">Reuse</a>
+  <a href="#decide">Your answers</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">Yes: everything you listed can show in Distant Horizons, as moving coloured boxes that cannot rotate</h1>
+  <p class="dek" data-ss-id="dek">Research of 21 October for your ask: dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. It was read from the jars and the code. Nothing was built, run or measured, so frame cost, bandwidth and how smoke looks are estimates. You answered its four questions on 21 October (DH-1 to DH-4).</p>
+  <p class="lead" data-ss-id="lead">Distant Horizons 3.3.1, the version in the pack, lets a mod draw coloured boxes at any distance and move them every frame. The one hard limit is that boxes cannot rotate, so anything that turns (sails, wings, a ship changing course) is a flipbook of a few poses that swap. The first slice is trains: client only, through Create's own map sync, with no server or sim change.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-doable"><div class="n">6 <small>of 6</small></div><div class="t">things you asked for are doable</div></div>
+    <div class="tile" data-ss-id="kpi-jar"><div class="n">1</div><div class="t">new jar, client only: the renderer</div></div>
+    <div class="tile" data-ss-id="kpi-d3"><div class="n">0</div><div class="t">new entities, blocks or items</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">4</div><div class="t">decisions answered, three as recommended</div></div>
+  </div>
+  <div class="box limits" data-ss-id="limits">
+    <h3>Three limits to know up front</h3>
+    <ul>
+      <li><strong>Players on the current pack may see no far terrain at all.</strong> DH 3.3.1 switches it off on any client with Chunky, and the pack ships Chunky on clients. DH 3.3.3 fixes it, and the pack is moving to it now (DH-3). <a href="#chunky">More below</a>.</li>
+      <li><strong>Mac players see none of it.</strong> DH skips all box drawing on macOS.</li>
+      <li><strong>Players who turn off DH's "generic rendering"</strong> (the switch for its beacons and clouds) see none of it either. The mod notices and asks the server for nothing.</li>
+    </ul>
+  </div>
+</header>
+
+<section id="items" data-ss-id="items" data-ss-section>
+  <h2 data-ss-id="items-h">The six things you asked for, and what you would see</h2>
+  <p data-ss-id="items-p">Each is drawn far away only, where vanilla does not draw. When you get close, the real thing takes its place where its boxes were. The sketches show the box shapes; they are illustrations, not screenshots.</p>
+  <div class="items" data-ss-id="item-list">
+
+    <div class="item" data-ss-id="item-trains">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 136" role="img" aria-label="A train as boxes: on straight track each carriage is one long dark block; on a diagonal it is a staircase of short blocks" preserveAspectRatio="xMidYMid meet"><line x1="8" y1="92" x2="150" y2="92" stroke="#a3a3ab" stroke-width="3"/><rect x="12" y="72" width="42" height="18" fill="#2f2f36"/><rect x="58" y="72" width="42" height="18" fill="#2f2f36"/><rect x="104" y="72" width="42" height="18" fill="#2f2f36"/><line x1="176" y1="128" x2="318" y2="8" stroke="#a3a3ab" stroke-width="3"/><rect x="182" y="112" width="10" height="10" fill="#2f2f36"/><rect x="189" y="106" width="10" height="10" fill="#2f2f36"/><rect x="196" y="100" width="10" height="10" fill="#2f2f36"/><rect x="203" y="94" width="10" height="10" fill="#2f2f36"/><rect x="210" y="88" width="10" height="10" fill="#2f2f36"/><rect x="223" y="77" width="10" height="10" fill="#2f2f36"/><rect x="230" y="71" width="10" height="10" fill="#2f2f36"/><rect x="237" y="65" width="10" height="10" fill="#2f2f36"/><rect x="244" y="59" width="10" height="10" fill="#2f2f36"/><rect x="251" y="53" width="10" height="10" fill="#2f2f36"/><rect x="264" y="42" width="10" height="10" fill="#2f2f36"/><rect x="271" y="36" width="10" height="10" fill="#2f2f36"/><rect x="278" y="30" width="10" height="10" fill="#2f2f36"/><rect x="285" y="24" width="10" height="10" fill="#2f2f36"/><rect x="292" y="18" width="10" height="10" fill="#2f2f36"/><line x1="163" y1="10" x2="163" y2="130" stroke="#e5e5ea" stroke-width="1"/></svg><p class="pc">Left, from the side: one long dark block per carriage. Right, from above on a diagonal: a staircase of short blocks.</p></div>
+      <div class="txt">
+        <h3>Trains</h3>
+        <p class="verdicts"><span class="v now">Doable now</span><span class="v now">No sim work</span></p>
+        <p><span class="lbl">What you would see</span>Each carriage as a dark block about 3 wide and 3 tall, gliding along the track the far terrain already shows. On a diagonal it is a short staircase of boxes.</p>
+        <p><span class="lbl">How</span>Create already moves every train on the server, loaded or not, and already sends every carriage's position to any client that asks, for map mods. The pack has no such map mod, so today nobody asks.</p>
+        <p><span class="lbl">Up close</span>It becomes the real Create train.</p>
+      </div>
+    </div>
+
+    <div class="item" data-ss-id="item-dragons">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 82" role="img" aria-label="A dragon as about 16 red boxes, drawn in three wing poses: up, level and down" preserveAspectRatio="xMidYMid meet"><rect x="4" y="54" width="13" height="5" fill="#a8382a"/><rect x="16" y="50" width="13" height="8" fill="#a8382a"/><rect x="28" y="46" width="13" height="11" fill="#a8382a"/><rect x="40" y="40" width="16" height="17" fill="#a8382a"/><rect x="55" y="42" width="12" height="14" fill="#a8382a"/><rect x="44" y="57" width="5" height="9" fill="#7d2a20"/><rect x="59" y="56" width="5" height="9" fill="#7d2a20"/><rect x="66" y="38" width="8" height="9" fill="#a8382a"/><rect x="72" y="31" width="8" height="9" fill="#a8382a"/><rect x="78" y="27" width="15" height="9" fill="#a8382a"/><rect x="81" y="36" width="10" height="3" fill="#7d2a20"/><rect x="78" y="22" width="4" height="5" fill="#7d2a20"/><rect x="48" y="20" width="11" height="20" fill="#7d2a20"/><rect x="55" y="8" width="9" height="14" fill="#7d2a20"/><rect x="61" y="1" width="6" height="9" fill="#7d2a20"/><rect x="116" y="54" width="13" height="5" fill="#a8382a"/><rect x="128" y="50" width="13" height="8" fill="#a8382a"/><rect x="140" y="46" width="13" height="11" fill="#a8382a"/><rect x="152" y="40" width="16" height="17" fill="#a8382a"/><rect x="167" y="42" width="12" height="14" fill="#a8382a"/><rect x="156" y="57" width="5" height="9" fill="#7d2a20"/><rect x="171" y="56" width="5" height="9" fill="#7d2a20"/><rect x="178" y="38" width="8" height="9" fill="#a8382a"/><rect x="184" y="31" width="8" height="9" fill="#a8382a"/><rect x="190" y="27" width="15" height="9" fill="#a8382a"/><rect x="193" y="36" width="10" height="3" fill="#7d2a20"/><rect x="190" y="22" width="4" height="5" fill="#7d2a20"/><rect x="146" y="33" width="34" height="7" fill="#7d2a20"/><rect x="136" y="35" width="12" height="4" fill="#7d2a20"/><rect x="274" y="50" width="10" height="18" fill="#7d2a20"/><rect x="282" y="64" width="8" height="14" fill="#7d2a20"/><rect x="228" y="54" width="13" height="5" fill="#a8382a"/><rect x="240" y="50" width="13" height="8" fill="#a8382a"/><rect x="252" y="46" width="13" height="11" fill="#a8382a"/><rect x="264" y="40" width="16" height="17" fill="#a8382a"/><rect x="279" y="42" width="12" height="14" fill="#a8382a"/><rect x="268" y="57" width="5" height="9" fill="#7d2a20"/><rect x="283" y="56" width="5" height="9" fill="#7d2a20"/><rect x="290" y="38" width="8" height="9" fill="#a8382a"/><rect x="296" y="31" width="8" height="9" fill="#a8382a"/><rect x="302" y="27" width="15" height="9" fill="#a8382a"/><rect x="305" y="36" width="10" height="3" fill="#7d2a20"/><rect x="302" y="22" width="4" height="5" fill="#7d2a20"/></svg><p class="pc">About 16 boxes in the species colour, in three wing poses: up, level, down. The poses swap a few times a second.</p></div>
+      <div class="txt">
+        <h3>Dragons</h3>
+        <p class="verdicts"><span class="v sim">Doable with sim work</span><span class="v now">Real dragons near another player: doable now</span></p>
+        <p><span class="lbl">What you would see</span>A dragon-shaped cluster flying in a straight line at cruise height, wings beating. It circles while hunting, and lies on its lair, wings folded, while roosting.</p>
+        <p><span class="lbl">How</span>The sim knows every dragon's flight as a straight leg with start and end times, so the client can place it exactly every frame. It needs one new message from the engine per leg. Dragons are few, so it is a trickle.</p>
+        <p><span class="lbl">Up close</span>Within 160 blocks of a player the real Ice and Fire dragon spawns on its leg, where the boxes were.</p>
+      </div>
+    </div>
+
+    <div class="item" data-ss-id="item-airships">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 92" role="img" aria-label="An airship as a blocky silhouette cut into 2-block cells: a stepped envelope over a stepped hull" preserveAspectRatio="xMidYMid meet"><rect x="72" y="6" width="112" height="8" fill="#cfc6b0"/><rect x="56" y="14" width="144" height="8" fill="#cfc6b0"/><rect x="48" y="22" width="160" height="8" fill="#cfc6b0"/><rect x="48" y="30" width="160" height="8" fill="#cfc6b0"/><rect x="56" y="38" width="144" height="8" fill="#cfc6b0"/><rect x="72" y="46" width="112" height="8" fill="#cfc6b0"/><rect x="72" y="6" width="112" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="56" y="14" width="144" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="48" y="22" width="160" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="48" y="30" width="160" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="56" y="38" width="144" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="72" y="46" width="112" height="8" fill="none" stroke="#9e927a" stroke-width="1"/><rect x="107" y="54" width="2" height="16" fill="#8a8a93"/><rect x="163" y="54" width="2" height="16" fill="#8a8a93"/><rect x="88" y="70" width="96" height="8" fill="#7a5634"/><rect x="96" y="78" width="80" height="8" fill="#7a5634"/><rect x="40" y="22" width="8" height="16" fill="#5a5a62"/><rect x="208" y="24" width="8" height="8" fill="#5a5a62"/></svg><p class="pc">The ship cut into 2-block cells, outer cells only. When it turns far enough, the silhouette is cut again for the new heading.</p></div>
+      <div class="txt">
+        <h3>Airships</h3>
+        <p class="verdicts"><span class="v plugin">Loaded player ships: doable now, plugin work</span><span class="v sim">Between bases with nobody near: sim work (VOYAGE)</span><span class="v notyet">NPC fleets: not until they have bodies</span></p>
+        <p><span class="lbl">What you would see</span>The ship's blocky silhouette sliding smoothly across the sky, turning in steps.</p>
+        <p><span class="lbl">How</span>Sable freezes a ship when nobody is near it, so a ship crossing empty country needs the sim to fly it: that is VOYAGE, already designed. NPC ships are not drawn, because drawing a ship you can fly toward and never reach would break the rule that what you see is real.</p>
+        <p><span class="lbl">Up close</span>Inside Sable's 320-block range the real ship takes over.</p>
+      </div>
+    </div>
+
+    <div class="item" data-ss-id="item-windmills">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 86" role="img" aria-label="Windmill sails as boxes in four poses, 0, 22.5, 45 and 67.5 degrees; four arms repeat every 90 degrees, so these four cover a full turn" preserveAspectRatio="xMidYMid meet"><rect x="35" y="40" width="14" height="44" fill="#a3a3ab"/><rect x="3" y="31" width="6" height="6" fill="#b08f52"/><rect x="3" y="37" width="6" height="6" fill="#b08f52"/><rect x="9" y="31" width="6" height="6" fill="#b08f52"/><rect x="9" y="37" width="6" height="6" fill="#b08f52"/><rect x="15" y="31" width="6" height="6" fill="#b08f52"/><rect x="15" y="37" width="6" height="6" fill="#b08f52"/><rect x="21" y="31" width="6" height="6" fill="#b08f52"/><rect x="21" y="37" width="6" height="6" fill="#b08f52"/><rect x="27" y="31" width="6" height="6" fill="#b08f52"/><rect x="27" y="37" width="6" height="6" fill="#b08f52"/><rect x="33" y="31" width="6" height="6" fill="#b08f52"/><rect x="33" y="37" width="6" height="6" fill="#b08f52"/><rect x="33" y="43" width="6" height="6" fill="#b08f52"/><rect x="33" y="49" width="6" height="6" fill="#b08f52"/><rect x="33" y="55" width="6" height="6" fill="#b08f52"/><rect x="33" y="61" width="6" height="6" fill="#b08f52"/><rect x="33" y="67" width="6" height="6" fill="#b08f52"/><rect x="33" y="73" width="6" height="6" fill="#b08f52"/><rect x="39" y="1" width="6" height="6" fill="#b08f52"/><rect x="39" y="7" width="6" height="6" fill="#b08f52"/><rect x="39" y="13" width="6" height="6" fill="#b08f52"/><rect x="39" y="19" width="6" height="6" fill="#b08f52"/><rect x="39" y="25" width="6" height="6" fill="#b08f52"/><rect x="39" y="31" width="6" height="6" fill="#b08f52"/><rect x="39" y="43" width="6" height="6" fill="#b08f52"/><rect x="39" y="49" width="6" height="6" fill="#b08f52"/><rect x="39" y="55" width="6" height="6" fill="#b08f52"/><rect x="39" y="61" width="6" height="6" fill="#b08f52"/><rect x="39" y="67" width="6" height="6" fill="#b08f52"/><rect x="39" y="73" width="6" height="6" fill="#b08f52"/><rect x="45" y="1" width="6" height="6" fill="#b08f52"/><rect x="45" y="7" width="6" height="6" fill="#b08f52"/><rect x="45" y="13" width="6" height="6" fill="#b08f52"/><rect x="45" y="19" width="6" height="6" fill="#b08f52"/><rect x="45" y="25" width="6" height="6" fill="#b08f52"/><rect x="45" y="31" width="6" height="6" fill="#b08f52"/><rect x="45" y="37" width="6" height="6" fill="#b08f52"/><rect x="45" y="43" width="6" height="6" fill="#b08f52"/><rect x="51" y="37" width="6" height="6" fill="#b08f52"/><rect x="51" y="43" width="6" height="6" fill="#b08f52"/><rect x="57" y="37" width="6" height="6" fill="#b08f52"/><rect x="57" y="43" width="6" height="6" fill="#b08f52"/><rect x="63" y="37" width="6" height="6" fill="#b08f52"/><rect x="63" y="43" width="6" height="6" fill="#b08f52"/><rect x="69" y="37" width="6" height="6" fill="#b08f52"/><rect x="69" y="43" width="6" height="6" fill="#b08f52"/><rect x="75" y="37" width="6" height="6" fill="#b08f52"/><rect x="75" y="43" width="6" height="6" fill="#b08f52"/><rect x="38" y="36" width="8" height="8" fill="#4f4234"/><rect x="115" y="40" width="14" height="44" fill="#a3a3ab"/><rect x="83" y="25" width="6" height="6" fill="#b08f52"/><rect x="89" y="19" width="6" height="6" fill="#b08f52"/><rect x="89" y="25" width="6" height="6" fill="#b08f52"/><rect x="95" y="19" width="6" height="6" fill="#b08f52"/><rect x="95" y="25" width="6" height="6" fill="#b08f52"/><rect x="101" y="25" width="6" height="6" fill="#b08f52"/><rect x="101" y="31" width="6" height="6" fill="#b08f52"/><rect x="101" y="61" width="6" height="6" fill="#b08f52"/><rect x="101" y="67" width="6" height="6" fill="#b08f52"/><rect x="107" y="25" width="6" height="6" fill="#b08f52"/><rect x="107" y="31" width="6" height="6" fill="#b08f52"/><rect x="107" y="49" width="6" height="6" fill="#b08f52"/><rect x="107" y="55" width="6" height="6" fill="#b08f52"/><rect x="107" y="61" width="6" height="6" fill="#b08f52"/><rect x="107" y="67" width="6" height="6" fill="#b08f52"/><rect x="107" y="73" width="6" height="6" fill="#b08f52"/><rect x="113" y="31" width="6" height="6" fill="#b08f52"/><rect x="113" y="37" width="6" height="6" fill="#b08f52"/><rect x="113" y="43" width="6" height="6" fill="#b08f52"/><rect x="113" y="49" width="6" height="6" fill="#b08f52"/><rect x="113" y="55" width="6" height="6" fill="#b08f52"/><rect x="119" y="31" width="6" height="6" fill="#b08f52"/><rect x="119" y="43" width="6" height="6" fill="#b08f52"/><rect x="125" y="19" width="6" height="6" fill="#b08f52"/><rect x="125" y="25" width="6" height="6" fill="#b08f52"/><rect x="125" y="31" width="6" height="6" fill="#b08f52"/><rect x="125" y="37" width="6" height="6" fill="#b08f52"/><rect x="125" y="43" width="6" height="6" fill="#b08f52"/><rect x="131" y="1" width="6" height="6" fill="#b08f52"/><rect x="131" y="7" width="6" height="6" fill="#b08f52"/><rect x="131" y="13" width="6" height="6" fill="#b08f52"/><rect x="131" y="19" width="6" height="6" fill="#b08f52"/><rect x="131" y="25" width="6" height="6" fill="#b08f52"/><rect x="131" y="43" width="6" height="6" fill="#b08f52"/><rect x="131" y="49" width="6" height="6" fill="#b08f52"/><rect x="137" y="7" width="6" height="6" fill="#b08f52"/><rect x="137" y="13" width="6" height="6" fill="#b08f52"/><rect x="137" y="43" width="6" height="6" fill="#b08f52"/><rect x="137" y="49" width="6" height="6" fill="#b08f52"/><rect x="143" y="49" width="6" height="6" fill="#b08f52"/><rect x="143" y="55" width="6" height="6" fill="#b08f52"/><rect x="149" y="49" width="6" height="6" fill="#b08f52"/><rect x="149" y="55" width="6" height="6" fill="#b08f52"/><rect x="155" y="49" width="6" height="6" fill="#b08f52"/><rect x="118" y="36" width="8" height="8" fill="#4f4234"/><rect x="195" y="40" width="14" height="44" fill="#a3a3ab"/><rect x="169" y="55" width="6" height="6" fill="#b08f52"/><rect x="169" y="61" width="6" height="6" fill="#b08f52"/><rect x="175" y="7" width="6" height="6" fill="#b08f52"/><rect x="175" y="13" width="6" height="6" fill="#b08f52"/><rect x="175" y="55" width="6" height="6" fill="#b08f52"/><rect x="175" y="61" width="6" height="6" fill="#b08f52"/><rect x="181" y="7" width="6" height="6" fill="#b08f52"/><rect x="181" y="13" width="6" height="6" fill="#b08f52"/><rect x="181" y="19" width="6" height="6" fill="#b08f52"/><rect x="181" y="43" width="6" height="6" fill="#b08f52"/><rect x="181" y="49" width="6" height="6" fill="#b08f52"/><rect x="181" y="55" width="6" height="6" fill="#b08f52"/><rect x="187" y="19" width="6" height="6" fill="#b08f52"/><rect x="187" y="25" width="6" height="6" fill="#b08f52"/><rect x="187" y="37" width="6" height="6" fill="#b08f52"/><rect x="187" y="43" width="6" height="6" fill="#b08f52"/><rect x="187" y="49" width="6" height="6" fill="#b08f52"/><rect x="193" y="19" width="6" height="6" fill="#b08f52"/><rect x="193" y="25" width="6" height="6" fill="#b08f52"/><rect x="193" y="31" width="6" height="6" fill="#b08f52"/><rect x="193" y="37" width="6" height="6" fill="#b08f52"/><rect x="193" y="43" width="6" height="6" fill="#b08f52"/><rect x="199" y="25" width="6" height="6" fill="#b08f52"/><rect x="199" y="31" width="6" height="6" fill="#b08f52"/><rect x="199" y="43" width="6" height="6" fill="#b08f52"/><rect x="199" y="49" width="6" height="6" fill="#b08f52"/><rect x="205" y="31" width="6" height="6" fill="#b08f52"/><rect x="205" y="37" width="6" height="6" fill="#b08f52"/><rect x="205" y="43" width="6" height="6" fill="#b08f52"/><rect x="205" y="49" width="6" height="6" fill="#b08f52"/><rect x="205" y="55" width="6" height="6" fill="#b08f52"/><rect x="211" y="25" width="6" height="6" fill="#b08f52"/><rect x="211" y="31" width="6" height="6" fill="#b08f52"/><rect x="211" y="37" width="6" height="6" fill="#b08f52"/><rect x="211" y="49" width="6" height="6" fill="#b08f52"/><rect x="211" y="55" width="6" height="6" fill="#b08f52"/><rect x="217" y="19" width="6" height="6" fill="#b08f52"/><rect x="217" y="25" width="6" height="6" fill="#b08f52"/><rect x="217" y="31" width="6" height="6" fill="#b08f52"/><rect x="217" y="55" width="6" height="6" fill="#b08f52"/><rect x="217" y="61" width="6" height="6" fill="#b08f52"/><rect x="217" y="67" width="6" height="6" fill="#b08f52"/><rect x="223" y="13" width="6" height="6" fill="#b08f52"/><rect x="223" y="19" width="6" height="6" fill="#b08f52"/><rect x="223" y="61" width="6" height="6" fill="#b08f52"/><rect x="223" y="67" width="6" height="6" fill="#b08f52"/><rect x="229" y="13" width="6" height="6" fill="#b08f52"/><rect x="229" y="19" width="6" height="6" fill="#b08f52"/><rect x="198" y="36" width="8" height="8" fill="#4f4234"/><rect x="275" y="40" width="14" height="44" fill="#a3a3ab"/><rect x="243" y="43" width="6" height="6" fill="#b08f52"/><rect x="243" y="49" width="6" height="6" fill="#b08f52"/><rect x="249" y="43" width="6" height="6" fill="#b08f52"/><rect x="249" y="49" width="6" height="6" fill="#b08f52"/><rect x="255" y="43" width="6" height="6" fill="#b08f52"/><rect x="255" y="49" width="6" height="6" fill="#b08f52"/><rect x="261" y="37" width="6" height="6" fill="#b08f52"/><rect x="261" y="43" width="6" height="6" fill="#b08f52"/><rect x="267" y="1" width="6" height="6" fill="#b08f52"/><rect x="267" y="7" width="6" height="6" fill="#b08f52"/><rect x="267" y="13" width="6" height="6" fill="#b08f52"/><rect x="267" y="37" width="6" height="6" fill="#b08f52"/><rect x="267" y="43" width="6" height="6" fill="#b08f52"/><rect x="273" y="1" width="6" height="6" fill="#b08f52"/><rect x="273" y="7" width="6" height="6" fill="#b08f52"/><rect x="273" y="13" width="6" height="6" fill="#b08f52"/><rect x="273" y="19" width="6" height="6" fill="#b08f52"/><rect x="273" y="25" width="6" height="6" fill="#b08f52"/><rect x="273" y="31" width="6" height="6" fill="#b08f52"/><rect x="273" y="37" width="6" height="6" fill="#b08f52"/><rect x="273" y="43" width="6" height="6" fill="#b08f52"/><rect x="279" y="19" width="6" height="6" fill="#b08f52"/><rect x="279" y="25" width="6" height="6" fill="#b08f52"/><rect x="279" y="31" width="6" height="6" fill="#b08f52"/><rect x="279" y="43" width="6" height="6" fill="#b08f52"/><rect x="279" y="49" width="6" height="6" fill="#b08f52"/><rect x="279" y="55" width="6" height="6" fill="#b08f52"/><rect x="285" y="31" width="6" height="6" fill="#b08f52"/><rect x="285" y="37" width="6" height="6" fill="#b08f52"/><rect x="285" y="43" width="6" height="6" fill="#b08f52"/><rect x="285" y="49" width="6" height="6" fill="#b08f52"/><rect x="285" y="55" width="6" height="6" fill="#b08f52"/><rect x="285" y="61" width="6" height="6" fill="#b08f52"/><rect x="285" y="67" width="6" height="6" fill="#b08f52"/><rect x="285" y="73" width="6" height="6" fill="#b08f52"/><rect x="291" y="31" width="6" height="6" fill="#b08f52"/><rect x="291" y="37" width="6" height="6" fill="#b08f52"/><rect x="291" y="61" width="6" height="6" fill="#b08f52"/><rect x="291" y="67" width="6" height="6" fill="#b08f52"/><rect x="291" y="73" width="6" height="6" fill="#b08f52"/><rect x="297" y="31" width="6" height="6" fill="#b08f52"/><rect x="297" y="37" width="6" height="6" fill="#b08f52"/><rect x="303" y="25" width="6" height="6" fill="#b08f52"/><rect x="303" y="31" width="6" height="6" fill="#b08f52"/><rect x="309" y="25" width="6" height="6" fill="#b08f52"/><rect x="309" y="31" width="6" height="6" fill="#b08f52"/><rect x="315" y="25" width="6" height="6" fill="#b08f52"/><rect x="315" y="31" width="6" height="6" fill="#b08f52"/><rect x="278" y="36" width="8" height="8" fill="#4f4234"/></svg><p class="pc">Sails turn in 22.5 degree steps. Four arms repeat every 90 degrees, so these four poses cover a whole turn.</p></div>
+      <div class="txt">
+        <h3>Windmills and factories</h3>
+        <p class="verdicts"><span class="v plugin">Doable with plugin work</span><span class="v sim">Stopping when the sim says: sim work, allowed by DH-2</span></p>
+        <p><span class="lbl">What you would see</span>The sails, which the far view does not show at all today, turning in small jumps you only notice if you stare. Lit windows at night should already glow in the far terrain (not checked).</p>
+        <p><span class="lbl">How</span>The Create plugin records the sail shape, axis and speed while the windmill is loaded, in a cache that can be deleted and rebuilt. You amended I18 so the far view shows what eyes would see (DH-2), so the sails also stop when the sim says the windmill's machines were destroyed. That needs the sim's word sent to the client.</p>
+        <p><span class="lbl">Up close</span>The real sails take over once the windmill's chunk loads.</p>
+      </div>
+    </div>
+
+    <div class="item" data-ss-id="item-fire">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 134" role="img" aria-label="Fire, smoke and scars as boxes: orange and yellow specks over a raided base, under a dark column of puffs that widens and pales as it rises, with dark burnt patches left on the roofs and ground" preserveAspectRatio="xMidYMid meet"><rect x="0" y="128" width="326" height="4" fill="#c9c9d1"/><rect x="96" y="106" width="34" height="22" fill="#b9b9c2"/><rect x="134" y="98" width="26" height="30" fill="#b9b9c2"/><rect x="176" y="110" width="40" height="18" fill="#b9b9c2"/><rect x="222" y="102" width="22" height="26" fill="#b9b9c2"/><rect x="100" y="106" width="10" height="6" fill="#2b2724"/><rect x="140" y="98" width="8" height="8" fill="#2b2724"/><rect x="182" y="110" width="12" height="5" fill="#2b2724"/><rect x="204" y="124" width="14" height="4" fill="#2b2724"/><rect x="226" y="102" width="8" height="6" fill="#2b2724"/><rect x="80" y="124" width="12" height="4" fill="#2b2724"/><rect x="161" y="109" width="6" height="6" fill="#e8641a"/><rect x="169" y="110" width="5" height="5" fill="#e8641a"/><rect x="188" y="116" width="5" height="5" fill="#e8641a"/><rect x="138" y="95" width="7" height="7" fill="#f2a51a"/><rect x="183" y="104" width="6" height="6" fill="#e8641a"/><rect x="187" y="117" width="5" height="5" fill="#f2a51a"/><rect x="97" y="118" width="7" height="7" fill="#f2a51a"/><rect x="210" y="102" width="7" height="7" fill="#e8641a"/><rect x="171" y="111" width="6" height="6" fill="#f2a51a"/><rect x="193" y="106" width="6" height="6" fill="#e8641a"/><rect x="244" y="122" width="5" height="5" fill="#f7c84a"/><rect x="140" y="99" width="6" height="6" fill="#f2a51a"/><rect x="103" y="115" width="6" height="6" fill="#f2a51a"/><rect x="221" y="104" width="5" height="5" fill="#f2a51a"/><rect x="124" y="120" width="5" height="5" fill="#e8641a"/><rect x="149" y="113" width="6" height="6" fill="#f2a51a"/><rect x="178" y="98" width="7" height="7" fill="#f7c84a"/><rect x="143" y="101" width="5" height="5" fill="#e8641a"/><rect x="207" y="96" width="5" height="5" fill="#f2a51a"/><rect x="94" y="106" width="6" height="6" fill="#e8641a"/><rect x="161" y="83" width="8" height="8" fill="#3e3e45"/><rect x="164" y="86" width="8" height="8" fill="#3e3e45"/><rect x="170" y="84" width="8" height="8" fill="#3e3e45"/><rect x="171" y="84" width="8" height="8" fill="#3e3e45"/><rect x="162" y="68" width="10" height="10" fill="#3e3e45"/><rect x="167" y="72" width="10" height="10" fill="#3e3e45"/><rect x="170" y="72" width="10" height="10" fill="#3e3e45"/><rect x="172" y="69" width="10" height="10" fill="#3e3e45"/><rect x="183" y="70" width="10" height="10" fill="#3e3e45"/><rect x="159" y="54" width="12" height="12" fill="#3e3e45"/><rect x="164" y="56" width="12" height="12" fill="#3e3e45"/><rect x="171" y="56" width="12" height="12" fill="#3e3e45"/><rect x="183" y="56" width="12" height="12" fill="#3e3e45"/><rect x="186" y="55" width="12" height="12" fill="#3e3e45"/><rect x="160" y="40" width="14" height="14" fill="#5a5a61"/><rect x="167" y="42" width="14" height="14" fill="#5a5a61"/><rect x="175" y="42" width="14" height="14" fill="#5a5a61"/><rect x="189" y="41" width="14" height="14" fill="#5a5a61"/><rect x="196" y="43" width="14" height="14" fill="#5a5a61"/><rect x="159" y="27" width="16" height="16" fill="#5a5a61"/><rect x="175" y="29" width="16" height="16" fill="#5a5a61"/><rect x="187" y="29" width="16" height="16" fill="#5a5a61"/><rect x="204" y="29" width="16" height="16" fill="#5a5a61"/><rect x="162" y="14" width="18" height="18" fill="#7c7c84"/><rect x="183" y="12" width="18" height="18" fill="#7c7c84"/><rect x="206" y="14" width="18" height="18" fill="#7c7c84"/><rect x="169" y="3" width="18" height="18" fill="#7c7c84"/><rect x="208" y="2" width="18" height="18" fill="#7c7c84"/></svg><p class="pc">Orange and yellow specks glow and flicker over the base, under a dark column of puffs that rises, widens and thins out. The black patches are the burnt blocks that stay.</p></div>
+      <div class="txt">
+        <h3>Smoke, fire and scars under attack</h3>
+        <p class="verdicts"><span class="v sim">Doable with sim work</span></p>
+        <p><span class="lbl">What you would see</span>Glowing specks over the raided base or village, flickering for a while and going out, under a smoke column that lasts longer. Every player sees the same fire at the same time. When it is over, the scar stays: patches of burnt blocks over the raided ground.</p>
+        <p><span class="lbl">How</span>The engine knows every raid's place and time; it needs one new message per war event. When the raided chunk next loads, the sim applies the damage as now (broken machines, taken stores) and, by your answer, also swaps some surface blocks of the district or village for burnt ones, with no fire placed (DH-4). The scar is then real blocks, so it shows up close and in the far terrain. Whether DH passes a changed chunk on to other players' far views is not yet checked.</p>
+        <p><span class="lbl">Up close</span>The fire and smoke are drawn, never placed, so they end where your loaded chunks begin. The burnt blocks are real.</p>
+      </div>
+    </div>
+
+    <div class="item" data-ss-id="item-bands">
+      <div class="pic"><svg class="sk" viewBox="0 0 326 132" role="img" aria-label="A war band seen from above: rows of two small boxes along a bending road from its camp, with one larger gold box, the leader, in the middle" preserveAspectRatio="xMidYMid meet"><path d="M 6 112 C 90 112 120 40 200 44 S 300 30 322 18" fill="none" stroke="#e7dfcc" stroke-width="22" stroke-linecap="round"/><rect x="42" y="98" width="6" height="6" fill="#6b4a32"/><rect x="45" y="108" width="6" height="6" fill="#6b4a32"/><rect x="53" y="94" width="6" height="6" fill="#6b4a32"/><rect x="57" y="103" width="6" height="6" fill="#6b4a32"/><rect x="64" y="89" width="6" height="6" fill="#6b4a32"/><rect x="68" y="98" width="6" height="6" fill="#6b4a32"/><rect x="74" y="84" width="6" height="6" fill="#6b4a32"/><rect x="79" y="93" width="6" height="6" fill="#6b4a32"/><rect x="84" y="78" width="6" height="6" fill="#6b4a32"/><rect x="89" y="87" width="6" height="6" fill="#6b4a32"/><rect x="94" y="72" width="6" height="6" fill="#6b4a32"/><rect x="99" y="81" width="6" height="6" fill="#6b4a32"/><rect x="104" y="66" width="6" height="6" fill="#6b4a32"/><rect x="109" y="75" width="6" height="6" fill="#6b4a32"/><rect x="113" y="62" width="12" height="12" fill="#d1a21c" stroke="#8f620f" stroke-width="1"/><rect x="124" y="55" width="6" height="6" fill="#6b4a32"/><rect x="128" y="63" width="6" height="6" fill="#6b4a32"/><rect x="134" y="49" width="6" height="6" fill="#6b4a32"/><rect x="138" y="58" width="6" height="6" fill="#6b4a32"/><rect x="145" y="45" width="6" height="6" fill="#6b4a32"/><rect x="148" y="54" width="6" height="6" fill="#6b4a32"/><rect x="156" y="41" width="6" height="6" fill="#6b4a32"/><rect x="159" y="50" width="6" height="6" fill="#6b4a32"/><rect x="168" y="38" width="6" height="6" fill="#6b4a32"/><rect x="170" y="48" width="6" height="6" fill="#6b4a32"/><rect x="181" y="36" width="6" height="6" fill="#6b4a32"/><rect x="182" y="46" width="6" height="6" fill="#6b4a32"/><rect x="8" y="96" width="30" height="30" fill="none" stroke="#a3a3ab" stroke-width="1" stroke-dasharray="3 3"/></svg><p class="pc">From above: rows of two along the road from the camp, a gold leader in the middle. The rows bob half a block out of step, so the column reads as walking.</p></div>
+      <div class="txt">
+        <h3>War bands on the march</h3>
+        <p class="verdicts"><span class="v sim">Doable with sim work</span></p>
+        <p><span class="lbl">What you would see</span>A column two abreast in its culture's colours, creeping along the road from its camp. An Umvuthana Invasion is led by a taller figure in sun-mask gold. You can make it out within about a kilometre, about two Minecraft days of warning at march pace. At night it is as dark as the land; no torches are invented.</p>
+        <p><span class="lbl">How</span>The engine already plans each march as a route with a time at every waypoint, so the positions exist. It needs one message per march. This covers every faction's war band, not only the Mowzie groves.</p>
+        <p><span class="lbl">Up close</span>The real band stands where the column was. You decided the grove's band walks visibly toward the player, the Umvuthi included (MZ-15). The Mowzie plan is being reworked so the band, and how the Umvuthi travels with it, has real bodies along the route; the leader's handover is being designed in that rework.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<section id="walk" data-ss-id="walk" data-ss-section>
+  <h2 data-ss-id="walk-h">What a player would see from a roof at dusk</h2>
+  <p data-ss-id="walk-p">You stand on your base's roof with vanilla render distance 12 and Distant Horizons at 256 chunks.</p>
+  <ul class="walk" data-ss-id="walk-list">
+    <li><span class="d">East, 900 blocks</span><span>Your second base on the ridge is a grey mass in the far terrain, as today. New: the big windmill's four sails turn above it in small jumps.</span></li>
+    <li><span class="d">Your station below</span><span>A four-carriage train leaves north. As it passes your render distance it does not vanish: four dark blocks keep gliding along the track, past the lake, until the hills hide them.</span></li>
+    <li><span class="d">Over the mountains</span><span>A red shape with beating wings crosses the sky and drops onto the peak where you know a lair is. It folds up there. At night it is a dark lump against the stars.</span></li>
+    <li><span class="d">South, the village</span><span>A column of dark puffs starts to rise, with orange specks glowing under it: a raid has just resolved. The specks flicker and go out; the smoke thins later. When you ride down, the market is poorer and patches of the village are burnt black, though nothing is still burning.</span></li>
+    <li><span class="d">South-west, at dawn</span><span>A dark strip lies on the road out of the Umvuthana grove 800 blocks away: a column two abreast with a taller gold figure in its middle. It hardly seems to move, but by evening it has crossed the river. When it comes within 160 blocks, the real masked warriors are on the road where the column was.</span></li>
+    <li><span class="d">West, 1,500 blocks</span><span>Your friend's airship lifts off their base: a blocky silhouette that slides across the sky and turns in steps. Within 320 blocks the real ship takes its place.</span></li>
+    <li><span class="d">Later, away from home</span><span>Your own district is raided while you are at the other base. You see the smoke from there. When you go back, the broken machines are already missing and the yard is scorched, because the chunk caught up when you arrived.</span></li>
+  </ul>
+</section>
+
+<section id="chunky" data-ss-id="chunky" data-ss-section>
+  <h2 data-ss-id="chunky-h">First, far terrain: players on the current pack may see none, and the pack is moving to DH 3.3.3 to fix it</h2>
+  <p data-ss-id="chunky-p">Distant Horizons 3.3.0 to 3.3.2 switch off far-terrain generation on any client that has Chunky installed. The config screen still shows it as on. The pack ships DH 3.3.1 and Chunky 1.4.23, both on clients and servers, so every player's client is affected: far terrain probably shows only where they have walked. This is confirmed in DH's source and the pack's config, but not checked in game.</p>
+  <div class="two" data-ss-id="chunky-two">
+    <div class="box bad" data-ss-id="chunky-now">
+      <h3>Today: DH 3.3.1 with Chunky on the client</h3>
+      <p>The client asks for no far terrain, in single player or from a server. Trains and dragons would float over a void, which is worse than no far view.</p>
+    </div>
+    <div class="box" data-ss-id="chunky-fix">
+      <h3>The fix: DH 3.3.3</h3>
+      <p>The only newer DH for 1.21.1. It switches far terrain off only while Chunky is actually generating. It resets DH's config file, which the pack does not ship. Whether it breaks another mod in the pack is untested.</p>
+    </div>
+  </div>
+  <p data-ss-id="chunky-alt">The other fix was to make Chunky server-only. You chose DH 3.3.3 (DH-3), Chunky stays on both sides, and an agent is updating the pack now. Nothing the far view needs is newer than DH 3.3.1, so the renderer works on either version, and no DH version, released or in development, adds rotation.</p>
+</section>
+
+<section id="plan" data-ss-id="plan" data-ss-section>
+  <h2 data-ss-id="plan-h">The plan: trains first, then one kind at a time</h2>
+  <p data-ss-id="plan-p">Each phase ends with something you can look at in game.</p>
+  <ol class="phases" data-ss-id="phase-list">
+    <li><span class="n">0</span><div><h3>Far terrain <span class="first">under way</span></h3><p>The pack moves to DH 3.3.3 (DH-3); then check that a client sees far terrain in multiplayer. Without it nothing below looks right.</p></div></li>
+    <li><span class="n">1</span><div><h3>Trains, the first slice <span class="first">client only, no server or sim change</span></h3>
+      <ul>
+        <li>In rtsim's core, a client-side list of far objects that knows neither DH nor Create.</li>
+        <li>In the Create plugin, a client source that asks Create's map sync for train positions and copies them into that list.</li>
+        <li>The new renderer, <code>mic_rtsim_dh</code>: a group of boxes per carriage cut as a straight block or a staircase, one controller that moves them every frame, the test that hides them near the player, a detail setting, and the Mac and generic-rendering checks.</li>
+      </ul>
+      <p>Then measure the frame cost and bandwidth with 20 and 50 trains.</p></div></li>
+    <li><span class="n">2</span><div><h3>Our own feed, and dragons</h3><p>Two network messages and a subscriber filter in core; a once-a-second train source replacing Create's all-trains stream; the engine's dragon leg message; real dragons near other players from the Ice and Fire plugin; the dragon boxes with wing poses; the hand-over to the real dragon. You approved the streaming this needs (DH-1).</p></div></li>
+    <li><span class="n">3</span><div><h3>Windmills</h3><p>The capture in the Create plugin (sail shape, axis, speed) with its throwaway cache, and the pose cutter and flipbook on the client. Then the sim's word on whether the windmill's machines still stand, so the sails stop when they were destroyed (DH-2).</p></div></li>
+    <li><span class="n">4</span><div><h3>War</h3><p>The engine's war event message from raids and ambushes; fire and smoke on the client, set on the ground height DH already knows; and the burnt-block swap when a raided chunk loads (DH-4). Then war bands on the march: the engine's route message, the column and leader boxes, hiding them when the real band appears, and the leader's handover from the Mowzie rework.</p></div></li>
+    <li><span class="n">5</span><div><h3>Airships</h3><p>A Sable plugin source for loaded and frozen ships (silhouette and pose), and the re-cut on turns. Ships moving between bases while unloaded arrive with VOYAGE, not here.</p></div></li>
+    <li><span class="n">6</span><div><h3>Later, once they exist in the world</h3><p>NPC fleets, after they get bodies (P8), and far herds.</p></div></li>
+  </ol>
+
+  <h3 data-ss-id="cost-h">What it costs, estimated</h3>
+  <p data-ss-id="cost-p">Nothing here was measured. The engine gains no per-tick work: dragon legs, war events and marches are messages sent when they happen. On the client, what costs on a weak PC is draw calls, not boxes; DH's own debug code builds a 10,000-box group. Phase 1 measures the real frame cost with DH's own "Custom Objects" profiler entry.</p>
+  <p data-ss-id="bw-p">Bandwidth per watching player, 50 four-carriage trains all in range:</p>
+  <div class="bars" data-ss-id="bw-bars">
+    <div class="bar"><span class="lb">Create's map sync<small>phase 1; every train in the world, 4 times a second</small></span><span class="track"><span class="fill old" style="--w: 1"></span><span class="val">about 45 KB/s</span></span></div>
+    <div class="bar"><span class="lb">Our own feed<small>phase 2; only trains in range, once a second</small></span><span class="track"><span class="fill" style="--w: 0.124"></span><span class="val">about 5.6 KB/s</span></span></div>
+  </div>
+  <p data-ss-id="tiers-p">A detail setting on the client, with numbers to be replaced by phase 1's measurements:</p>
+  <table class="nums" data-ss-id="tiers">
+    <thead><tr><th scope="col">Setting</th><th scope="col" class="num">Groups drawn</th><th scope="col" class="num">Boxes</th><th scope="col">Flipbook poses</th></tr></thead>
+    <tbody>
+      <tr><td>Off</td><td class="num">0</td><td class="num">0</td><td>nothing asked of the server</td></tr>
+      <tr><td>Low</td><td class="num">32</td><td class="num">4,000</td><td>wings 2, sails 2, smoke does not rise</td></tr>
+      <tr><td>Medium</td><td class="num">96</td><td class="num">12,000</td><td>wings 3, sails 4</td></tr>
+      <tr><td>High</td><td class="num">256</td><td class="num">30,000</td><td>wings 3, sails 6, see-through smoke if it works</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="boxes-cap">Boxes each, estimated: a carriage 1 to 10, a dragon about 20, a windmill about 100 a pose, a ship 100 to 300, a burning district 30 to 60, a marching band 15 to 20.</p>
+
+  <h3 data-ss-id="prior-h">Nobody has done this before</h3>
+  <p data-ss-id="prior-p">No mod draws Create trains, windmills or dragons through Distant Horizons. The only confirmed user of DH's box API is LOD Entity Rendering, for 1.20.1, which draws every entity as one box and sends every position to every player every tick; the far view filters and throttles instead. Separate Sable Render Distance stretches Sable's own range, which sends full ship data to far players; a silhouette is far cheaper. Nothing to reuse beyond DH's API itself.</p>
+</section>
+
+<section id="ledger" data-ss-id="ledger" data-ss-section>
+  <h2 data-ss-id="ledger-h">What is reused, and what we write</h2>
+  <table class="stack ledger" data-ss-id="ledger-table">
+    <thead><tr><th scope="col">Piece</th><th scope="col">Reused</th><th scope="col">We write</th></tr></thead>
+    <tbody>
+      <tr><td>Far terrain</td><td data-label="Reused">DH's own: bases, track, docks, lairs and villages as they stand</td><td data-label="We write">Nothing</td></tr>
+      <tr><td>Drawing boxes</td><td data-label="Reused">DH's box groups, its lighting and fog</td><td data-label="We write">The box shapes for each kind; one controller</td></tr>
+      <tr><td>Train positions</td><td data-label="Reused">Create's map sync (phase 1), then Create's own train list (phase 2)</td><td data-label="We write">The carriage staircase; the once-a-second sampler</td></tr>
+      <tr><td>Train hand-over</td><td data-label="Reused">Create's real carriages near the player</td><td data-label="We write">The hide test</td></tr>
+      <tr><td>Dragon flight</td><td data-label="Reused">The engine's flight legs; Ice and Fire dragons near players</td><td data-label="We write">The leg message; the dragon boxes and wing poses</td></tr>
+      <tr><td>Airships</td><td data-label="Reused">Sable's ships, its 320-block tracking and sync near the player</td><td data-label="We write">The silhouette cutter; the pose sampler; VOYAGE for unloaded travel</td></tr>
+      <tr><td>Windmills</td><td data-label="Reused">Create's windmill bearing, its sails and speed while loaded</td><td data-label="We write">The capture cache; the pose cutter</td></tr>
+      <tr><td>War</td><td data-label="Reused">The conflict engine's raids and damage, applied when a chunk loads</td><td data-label="We write">The war event message; fire and smoke boxes; the burnt-block swap</td></tr>
+      <tr><td>War bands</td><td data-label="Reused">The engine's routes and timings, its meeting and embodying of bands, Mowzie's and other pack mobs as the real bodies</td><td data-label="We write">The route message; the column and leader boxes</td></tr>
+      <tr><td>Ground height</td><td data-label="Reused">DH's far terrain, read by column</td><td data-label="We write">Nothing</td></tr>
+      <tr><td>Networking</td><td data-label="Reused">NeoForge's optional messages; vanilla's game-time sync</td><td data-label="We write">Two messages and their distance filter</td></tr>
+      <tr><td>Settings</td><td data-label="Reused">DH's render distance and generic-rendering switch</td><td data-label="We write">A detail setting</td></tr>
+    </tbody>
+  </table>
+  <p data-ss-id="ledger-note">Nothing adds an entity, block or item. The only new jar is <code>mic_rtsim_dh</code>, on clients only; clients without it still join and cost nothing. The far terrain is never written to: stamping damage or a docked ship into it would outlast the real thing.</p>
+</section>
+
+<section id="decide" data-ss-id="decide" data-ss-section>
+  <h2 data-ss-id="decide-h">You answered all 4 on 21 October</h2>
+  <p data-ss-id="decide-p">Logged as DH-1 to DH-4. Three as recommended; for raid scars you chose burnt blocks. DH-5 records that MZ-15 settles how the Umvuthi travels with its band.</p>
+
+  <div class="decision" data-ss-id="dec-1">
+    <h3>1. May the server stream sim state to clients that opt in?</h3>
+    <p class="rec">Your answer, as recommended: yes, opt-in clients.</p>
+    <p>Only to clients running the new renderer with DH's generic rendering on, filtered to their DH distance, at a detail setting they choose. This reverses PLAN §4.10's "No sim state is streamed" and adds mic_rtsim's first network messages and client code (DH-1).</p>
+  </div>
+
+  <div class="decision" data-ss-id="dec-2">
+    <h3>2. How does I18 read for a far view?</h3>
+    <p class="rec">Your answer, as recommended: show what eyes see.</p>
+    <p>For the far view, I18 now reads: it shows what your eyes would see from where you stand (movement, fire, smoke, sails turning or stopped), never numbers, names or anything you could not see from there. Windmills may stop when the sim says their machines were destroyed (DH-2).</p>
+  </div>
+
+  <div class="decision" data-ss-id="dec-3">
+    <h3>3. How do clients get far terrain back?</h3>
+    <p class="rec">Your answer, as recommended: update to DH 3.3.3.</p>
+    <p>It fixes the Chunky trap at its source, and Chunky stays on both sides. An agent is updating the pack now, so phase 0 is under way (DH-3).</p>
+  </div>
+
+  <div class="decision" data-ss-id="dec-4">
+    <h3>4. Do raids leave scars?</h3>
+    <p class="rec">Your answer: burnt blocks.</p>
+    <p>Not the recommendation, which was smoke and fire only. When a raided district or village next loads, the sim swaps some of its surface blocks for burnt ones, with no fire placed, so the scar stays visible near and far (DH-4).</p>
+  </div>
+
+  <div class="box" data-ss-id="my-choices">
+    <h3>Decided in the research; each can be undone</h3>
+    <ul>
+      <li>No test mod was built: the jars answered how to draw, whether rotation exists and what costs a frame. Frame numbers come in phase 1.</li>
+      <li>The feed and the client list live in rtsim's core with no pack mod in them; each source sits in its own mod's plugin; the renderer is its own client-only plugin.</li>
+      <li>The first slice reuses Create's map sync; phase 2 replaces it with our own filtered feed.</li>
+      <li>Rotation by flipbooks and re-cuts, not by replacing DH's shader, which would also take over its beacons and clouds and fight shader packs for the same slot.</li>
+      <li>Near the player, a proxy hides as soon as the real thing exists on the client, or its chunk is loaded.</li>
+      <li>NPC ships are not drawn until they have bodies. Smoke is solid first, see-through only once it is seen to work.</li>
+      <li>Bands mustering at camp or walking home are not drawn, since a player who rode up to one would find nothing there today.</li>
+    </ul>
+  </div>
+</section>
+
+<details data-ss-react="off" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li><code>research/distant-horizons-2026-10-21.md</code> on mic-rtsim main (5ab9fad, 7a1159c, 4519194).</li>
+    <li>The pack's Distant Horizons jar, 3.3.1 (API 7.1.0), read in bytecode with its shaders; Create 6.0.10 and Sable 2.0.5 read in bytecode; <code>pack/mods/distanthorizons.pw.toml</code> and <code>pack/mods/chunky.pw.toml</code>. No jar was run.</li>
+    <li>DH's source at tags 3.3.0 to 3.3.2 (<code>AbstractModInitializer.java</code>) and its 3.3.3 fix ("Only disable DH world gen when Chunky world gen is active"); DH's API versions on Modrinth and its Javadoc.</li>
+    <li>The sim's own code: dragon flight legs in <code>rtsim-ecology</code>, war parties, routes and raids in <code>rtsim-conflict</code>, raid damage in <code>rtsim-industry</code>.</li>
+    <li>Prior art: LOD Entity Rendering, SeeU, Separate Sable Render Distance, Valkyrien Skies issue 1300, and DH's API example.</li>
+    <li>Your answers: <code>DECISIONS.md</code> DH-1 to DH-5 (1476624). Your rules: I18; <code>PLAN.md</code> §4.10; MZ-15 for the Mowzie band.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">
+  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+</footer>
+</body>
+</html>

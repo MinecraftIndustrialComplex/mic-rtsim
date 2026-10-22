@@ -46,6 +46,11 @@ section { padding: 30px 0 8px; border-top: 1px solid var(--line); margin-top: 26
 .pages .what { grid-column: 1 / -1; color: var(--ink); font-size: 16.5px; max-width: 40em; }
 .pages .new { font-size: 14px; color: var(--accent); font-weight: 600; margin-left: 8px; }
 .coming { color: var(--muted); font-size: 16px; margin-top: 10px; }
+.done { list-style: none; padding: 0; margin: 0 0 8px; }
+.done > li { max-width: none; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 16.5px; }
+.done > li:last-child { border-bottom: 0; }
+.done a { display: inline-block; min-height: 44px; line-height: 44px; }
+.hold { font-size: 16.5px; }
 .wait { list-style: none; padding: 0; margin: 0; }
 .wait > li { max-width: none; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 6px; margin-bottom: 10px; }
 .wait .head { font-weight: 600; margin-bottom: 4px; }
@@ -68,31 +73,43 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 
 <header data-ss-id="hub-header">
   <h1 data-ss-id="hub-title">mic-rtsim for Ben</h1>
-  <p class="dek" data-ss-id="hub-dek">Every page about mic-rtsim, newest first, and what is waiting on you. Updated 21 October 2026.</p>
+  <p class="dek" data-ss-id="hub-dek">Every page about mic-rtsim, now with Deep Time's too, newest first, and what you have answered. <a href="#waiting">5 Deep Time decisions</a> wait on you. Updated 22 October 2026.</p>
 </header>
 
 <section id="pages" data-ss-id="pages" data-ss-section>
   <h2 data-ss-id="pages-h">Pages</h2>
   <ul class="pages" data-ss-id="page-list">
+    <li data-ss-id="page-volcanoes">
+      <a href="https://spacesheep.dev/@benmac/deeptime-volcanoes">Volcanoes: Realism or Us?</a><span class="date">22 Oct</span>
+      <span class="what">Deep Time. Mostly us: your world draws the cone stretched 2.3 to 1, its vent sits 13 to 27 blocks off the summit, and its crater is 3 blocks deep. Thin flows, small craters and few lava lakes are the honest cost of scale. Five fixes are under way. 5 decisions wait on you.</span>
+    </li>
+    <li data-ss-id="page-dh">
+      <a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons">Sim in Distant Horizons</a><span class="date">21 Oct</span>
+      <span class="what">Yes: trains, dragons, airships, spinning windmills, smoke, fire and burnt scars from raids, and war bands on the march can all show past render distance, as moving boxes that cannot rotate. Trains come first, client only. 4 decisions, answered.</span>
+    </li>
+    <li data-ss-id="page-cheese-audit">
+      <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit">Oil Cheese Audit</a><span class="date">21 Oct</span>
+      <span class="what">The oil gate as built fails your bar: 18 of 26 tricks a semi-casual player would try get past it, from your minecart drop-off to roofing the pumpjack. Nine fixes close them and are being built. 3 questions, answered.</span>
+    </li>
     <li data-ss-id="page-test-worlds">
       <a href="https://spacesheep.dev/@benmac/rtsim-create-test-worlds">Big Create Test Worlds</a><span class="date">21 Oct</span>
       <span class="what">Updated with the TBSMP result: rtsim runs on TBSMP Season 2's own pack with all 11 dimensions, at about 0.6 ms a tick, after three small fixes for Create addons MIC lacks. No decisions.</span>
     </li>
     <li data-ss-id="page-oil-gate">
       <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate">Dragons Guard Oil</a><span class="date">21 Oct</span>
-      <span class="what">The oil gate's dragon half, built: fire dragons need oil to breathe fire, nest near the fields and raid the districts that work them, and a dry one fights with bite and claws. The gate's own arrivals stay off after failing the danger test at site 1. 5 questions.</span>
+      <span class="what">The oil gate's dragon half, built: fire dragons need oil to breathe fire, nest near the fields and raid the districts that work them, and a dry one fights with bite and claws. The gate's own arrivals stay off after failing the danger test at site 1, until the cheese audit's first fixes land. 5 questions, answered.</span>
     </li>
     <li data-ss-id="page-viewer">
       <a href="https://spacesheep.dev/@benmac/rtsim-viewer">The New Viewer</a><span class="date">21 Oct</span>
-      <span class="what">The redesigned map before and after: Create's own track, trains drawn as their cars, factories you can read and no furnace clutter, with the ports to open on the laptop. 6 things still open, none waiting on you.</span>
+      <span class="what">The redesigned map before and after: Create's own track, trains drawn as their cars, factories you can read and no furnace clutter, with the ports to open on the laptop. mic-viewer is public now, its history rewritten first (VH-1). 6 things still open, none waiting on you.</span>
     </li>
     <li data-ss-id="page-equilibrium">
       <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium">Population Equilibrium</a><span class="date">21 Oct</span>
-      <span class="what">How every kind comes back after you wipe it out, slower each time you farm it: about one boss a year from a camped site, herds that never die out, factions that raid only when it pays, and a world that holds steady for ten real years alone. 6 decisions.</span>
+      <span class="what">How every kind comes back after you wipe it out, slower each time you farm it: about one boss a year from a camped site, herds that never die out, factions that raid only when it pays, and a world that holds steady for ten real years alone. 6 decisions, answered.</span>
     </li>
     <li data-ss-id="page-mowzie">
       <a href="https://spacesheep.dev/@benmac/rtsim-mowzie">Mowzie's Mobs Factions</a><span class="date">21 Oct</span>
-      <span class="what">A Frostmaw that comes to hate your railway and robs its trains, and an Umvuthana tribe that sends an envoy for gold. Both come back after you kill them and survive an uninstall. After the seventh check its camp-body sync is being rewritten. 7 decisions.</span>
+      <span class="what">A Frostmaw that comes to hate your railway and robs its trains, and an Umvuthana tribe that sends an envoy for gold. Both come back after you kill them and survive an uninstall. After the seventh check its camp-body sync is being rewritten. 7 decisions, answered; MZ-3 has the Umvuthi lead the Invasion, so the plan is being reworked.</span>
     </li>
     <li data-ss-id="page-gregtech">
       <a href="https://spacesheep.dev/@benmac/rtsim-gregtech-lag">rtsim and GregTech Lag</a><span class="date">21 Oct</span>
@@ -100,11 +117,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
     </li>
     <li data-ss-id="page-any-pack">
       <a href="https://spacesheep.dev/@benmac/rtsim-any-pack">rtsim on Any Pack</a><span class="date">21 Oct</span>
-      <span class="what">Already runs non-Create factories with no plugin; the four small fixes for other packs, the top gaps, the plan in slices, and 4 decisions.</span>
+      <span class="what">Already runs non-Create factories with no plugin; the four small fixes for other packs, the top gaps, the plan in slices, and your 4 answers, all as recommended.</span>
     </li>
     <li data-ss-id="page-create-addon">
       <a href="https://spacesheep.dev/@benmac/rtsim-create-addon">Standalone Create addon</a><span class="date">21 Oct</span>
-      <span class="what">Easy to package, not ready to ship: what releasing the native library and the factory sim as a Create addon involves, and 4 decisions.</span>
+      <span class="what">Easy to package, not ready to ship: what releasing the native library and the factory sim as a Create addon involves. You answered all 4: Create: Distant Factories, an alpha on both sites after 14 items, AGPL and MPL, and the repos opened whole.</span>
     </li>
     <li data-ss-id="page-briefing">
       <a href="https://spacesheep.dev/@benmac/oil-coin-ships-and-map">Oil, Coin, Ships and Map</a><span class="date">20 Oct</span>
@@ -119,51 +136,44 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
       <span class="what">What the world sim holds at each scale, from one chunk to a galaxy, and the trick that keeps each scale affordable.</span>
     </li>
   </ul>
-  <p class="coming" data-ss-id="pages-coming">Coming: the Mowzie's Mobs plan once its camp-body sync is rewritten as one reconciler.</p>
+  <p class="coming" data-ss-id="pages-coming">Coming: the Mowzie's Mobs plan, reworked for your MZ-3 answer, after an eighth review.</p>
 </section>
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
-  <h2 data-ss-id="waiting-h">Waiting on you: 7 groups need an answer, 30 choices stand unless you object</h2>
+  <h2 data-ss-id="waiting-h">5 decisions wait on you</h2>
+  <p data-ss-id="waiting-p">All 5 are Deep Time's, from the volcano page. On mic-rtsim you answered every open group on 21 October. The deploy items stay on hold until you restart the deploy, and 30 choices made on my recommendation stand unless you object.</p>
 
   <ul class="wait" data-ss-id="wait-list">
-    <li data-ss-id="wait-anypack">
-      <div class="head"><span class="count">4</span> decisions on rtsim for any pack</div>
-      <p>Whether "any pack" is a goal, how storage networks and wireless links are modelled, the machine model for non-Create mods, and the release shape. G0 to G3 get built either way: G1 and G2 fix MIC, G0 serves the addon. <a href="https://spacesheep.dev/@benmac/rtsim-any-pack#decide">Recommendations on the page</a>.</p>
-    </li>
-    <li data-ss-id="wait-addon">
-      <div class="head"><span class="count">4</span> decisions on the standalone Create addon</div>
-      <p>What goes public, the license, the name, and when. <a href="https://spacesheep.dev/@benmac/rtsim-create-addon#decide">Recommendations on the page</a>.</p>
-    </li>
-    <li data-ss-id="wait-mowzie">
-      <div class="head"><span class="count">7</span> decisions on the Mowzie's Mobs plan</div>
-      <p>Where the conflict module's Java half lives (MZ-1, which blocks every conflict plugin), what comes back after a boss dies and which Mowzie's items stay (MZ-4), what an ambush does to a train (MZ-5), whom a line's grudge falls on (MZ-13), the grove's people (MZ-11), which bosses leave home (MZ-3) and the tribute (MZ-6). Nothing is built. <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#decide">Recommendations on the page</a>.</p>
-    </li>
-    <li data-ss-id="wait-equilibrium">
-      <div class="head"><span class="count">6</span> decisions on population equilibrium and renewal</div>
-      <p>How an emptied village comes back (EQ-1, which reopens your "no villagers for now"), whether a roosting dragon is a saved vanilla mob (EQ-2, which reopens P3), where the site ledger lives in the world save (EQ-3), how fast a killed Frostmaw returns (EQ-4, the delay MZ-4 defers to), when factions fight (EQ-5) and whether one renewal rule binds every kind (EQ-6). Nothing is built. <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium#decide">Recommendations on the page</a>.</p>
-    </li>
-    <li data-ss-id="wait-oilgate">
-      <div class="head"><span class="count">5</span> questions on the oil gate's dragon half</div>
-      <p>What makes the gate's own dragon flights dangerous enough to switch on (Q1: a bigger draw and a re-measure over 5 runs a site), the fuel reserve's size (Q2: 600 rather than today's 100, which lasts about three streams), whether drinking stays free of the theft cap (Q3), whether a lost visitor's visit ends (Q4) and a cheap biome check before the oil lookup on new chunks (Q5). It is built and runs on today's settings until you answer. <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate#decide">Recommendations on the page</a>.</p>
-    </li>
-    <li data-ss-id="wait-stress">
-      <div class="head"><span class="count">4</span> stress-world follow-ups, recommended but not built</div>
+    <li data-ss-id="wait-volcanoes">
+      <div class="head">Deep Time volcanoes, <span class="count">5</span> (D1 to D5)</div>
+      <p>Answer like "D1 a, D2 b" or "all as recommended". Fixes 1 to 4 and 9 are under way without you; fixes 5 to 7 wait on D1 to D3.</p>
       <ul>
-        <li>Server heap for big Create worlds: <code>-Xms</code> equal to <code>-Xmx</code>, at least 8 GB.</li>
-        <li>Tell players not to bring 1.19.2 worlds, which lose item data on upgrade.</li>
-        <li>Put cargo trains in the synthetic stress generator (station learning has only seen a passenger metro).</li>
-        <li>Spread the 5-minute district rescan over several ticks.</li>
+        <li><strong>D1.</strong> Draw volcanoes and craters round in world blocks, with the planet kept Petroff-Guyou (recommended); keep the stretch; or move the whole planet to the cube layout.</li>
+        <li><strong>D2.</strong> A smooth fresh summit with gullied older flanks (recommended), or keep young cones smooth.</li>
+        <li><strong>D3.</strong> Jagged detail and cliff bands in the heightfield (recommended); add 3D overhangs too, so far terrain stops matching exactly; or leave it.</li>
+        <li><strong>D4.</strong> Keep your cone size for visibility (recommended), or move toward Earth's median.</li>
+        <li><strong>D5.</strong> A fresh multiplayer world on the new build, keeping the old world's folder on the VM (recommended), or stay on the old build. The new build cannot open the current world.</li>
       </ul>
-    </li>
-    <li data-ss-id="wait-deploy">
-      <div class="head"><span class="count">9</span> deploy items (DR1 to DR9), on hold under DR-0</div>
-      <p>They come back when you restart the server deploy. DR1, an Ice and Fire crash, blocks it; the others are heap, watchdog, deploy order, pack scripts and the glass box setting on the host.</p>
-    </li>
-    <li data-ss-id="wait-tp19">
-      <div class="head">Low priority: TP19</div>
-      <p>Should Deep Time get a public layout API? It overlaps the addon's deeptime-format question.</p>
+      <p><a href="https://spacesheep.dev/@benmac/deeptime-volcanoes#decide">Decide on the page</a></p>
     </li>
   </ul>
+
+  <h3 data-ss-id="answered-h">Answered on 21 October</h3>
+  <ul class="done" data-ss-id="answered-list">
+    <li data-ss-id="ans-dh"><strong>Distant Horizons far view, 4 (DH-1 to DH-4).</strong> Three as recommended: sim state streams to clients that opt in, I18 reads as "show what eyes see" for the far view, and the pack moves to DH 3.3.3, which is under way. For raid scars you chose burnt blocks over the recommended smoke only: a raided district or village gets some burnt surface blocks, with no fire placed. DH-5 is settled by MZ-15. <a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons#decide">On the page</a></li>
+    <li data-ss-id="ans-addon"><strong>Create addon, 4 (AD-1 to AD-4).</strong> At release, mic-rtsim and mic-native open whole with their history, after a scan for secrets and private hosts, rather than the recommended mirror; until then REL-1 holds. The rest as recommended: AGPL and MPL, the name Create: Distant Factories, and an alpha on Modrinth and CurseForge the same day after the page's 14 items. <a href="https://spacesheep.dev/@benmac/rtsim-create-addon#decide">On the page</a></li>
+    <li data-ss-id="ans-anypack"><strong>Any pack, 4 (GA-1 to GA-4).</strong> All as recommended: a by-product, one shared store for storage networks (G4), recipe-constrained learning (G7) then G11, and nothing public for a non-MIC pack yet. <a href="https://spacesheep.dev/@benmac/rtsim-any-pack#decide">On the page</a></li>
+    <li data-ss-id="ans-vh1"><strong>mic-viewer history (VH-1).</strong> Rewritten and force-pushed: three private host names, a tailnet address and your server's name are gone from a test, a comment, a doc row and one commit message. mic-rtsim now pins af33496, which was 335ae9c.</li>
+    <li data-ss-id="ans-st3"><strong>Stress follow-ups, 4 (ST3).</strong> All approved and being built: heap advice (<code>-Xms</code> equal to <code>-Xmx</code>, at least 8 GB), a warning not to bring 1.19.2 worlds, cargo trains in the synthetic stress generator, and the district rescan spread over several ticks.</li>
+    <li data-ss-id="ans-tp19"><strong>TP19.</strong> Not now: Deep Time gets no public layout API, and the addon cuts deeptime-format with a Cargo feature.</li>
+    <li data-ss-id="ans-mowzie"><strong>Mowzie's Mobs, 7.</strong> Six as recommended: the ConflictBridge in the core, heirs with their crystal and Mowzie's items kept, capped cargo loss plus the swipe and ice balls, tribute in gold nuggets, real warriors with a census, and <code>Train.owner</code> with P14 as the fallback. For MZ-3 you chose (b): the Umvuthi also leads the Invasion in person, so the plan is being reworked and an eighth review follows. <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#decide">On the page</a></li>
+    <li data-ss-id="ans-equilibrium"><strong>Population equilibrium, 6.</strong> Four as recommended. EQ-4 took the 6-day base for a killed Frostmaw, doubling with pressure, rather than 24 days. On EQ-5 you asked for faction fighting that feels more lifelike; that redesign is under way. <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium#decide">On the page</a></li>
+    <li data-ss-id="ans-oilgate"><strong>Oil gate, 5 (OGB-1 to OGB-5).</strong> You reframed Q1: In Control was overkill, and the gate only has to make a real oil pipeline infeasible and hard for a semi-casual player to cheese. The <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit">cheese audit</a> then judged it against that bar. The reserve is 600, refuelling below 240; drinking ignores the theft cap; a lost visitor's visit ends (you skipped Q4); and new chunks get a cheap biome first look. <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate#decide">On the page</a></li>
+    <li data-ss-id="ans-cheese"><strong>Oil cheese audit, 3 (OGB-6 to OGB-8).</strong> Two as recommended: field flights replace In Control's fire dragon once fixes F1 to F3 ship, with the blazes kept, and a roof within 8 blocks of a machine is itself breakable. Ethanol stays the pre-oil fuel, made realistic so it is poor in diesel engines, rather than locked behind oil; that rebalance is being done separately in the pack. Fixes F1 to F9 are being built. <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit#answers">On the page</a></li>
+  </ul>
+
+  <h3 data-ss-id="hold-h">On hold</h3>
+  <p class="hold" data-ss-id="hold-deploy"><strong>9 deploy items (DR1 to DR9)</strong> wait under DR-0 until you restart the server deploy. DR1, an Ice and Fire crash, blocks it; the others are heap, watchdog, deploy order, pack scripts and the glass box setting on the host.</p>
 
   <h3 data-ss-id="stand-h">Built on my recommendation; each stands unless you object</h3>
 
@@ -235,6 +245,6 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 </section>
 
 </main>
-<footer data-ss-react="off">Private pages for Ben, built from the mic-rtsim repos. Each page lists its sources at the end.</footer>
+<footer data-ss-react="off">Private pages for Ben, built from the mic-rtsim and Deep Time repos. Each page lists its sources at the end.</footer>
 </body>
 </html>

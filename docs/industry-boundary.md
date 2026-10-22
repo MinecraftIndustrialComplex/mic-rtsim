@@ -115,8 +115,8 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
 | 0x0431 | IND_FIGHT | class 0 to 3 | 24 u64 district, 32 u32 attackers, 36 f32 attackerStrength, 40 u32 attackersKilled, 44 u32 blocksDestroyed, 48 u32 machinesDestroyed, 52 u32 guardsLost, 56 i64 itemsStolen, 64 i64 durationTicks | 72 |
-| 0x0432 | IND_SURVEY | flags: 1 mobGriefing | 24 u64 district, 32 u32 revision, 36 u32 perimeterColumns, 40 u32 perimeterGaps, 44 u32 darkSpawnable, 48 u32 machineBlocks, 52 u32 roofedMachines, 56 u32 killMachinesAtGaps, 60 u32 ammoGood (0 none), 64 f32 turretStrength[4], 80 u32 guards[4], 96 u32 ammoPerEngagement, 100 u32 reserved | 104 |
-| 0x0433 | IND_SURVEY_BLOCKS | n blocks | 24 u64 district, 32 u32 revision, 36 u32 part, 40 n × Block24 | 40 + 24n |
+| 0x0432 | IND_SURVEY | flags: 1 mobGriefing | 24 u64 district, 32 u32 revision, 36 u32 perimeterColumns, 40 u32 perimeterGaps, 44 u32 darkSpawnable, 48 u32 machineBlocks, 52 u32 roofedMachines (cover beyond roofReachBlocks), 56 u32 killMachinesAtGaps, 60 u32 ammoGood (0 none), 64 f32 turretStrength[4], 80 u32 guards[4], 96 u32 ammoPerEngagement, 100 u32 reserved | 104 |
+| 0x0433 | IND_SURVEY_BLOCKS | n blocks | 24 u64 district, 32 u32 revision, 36 u32 part (within the chunk), 40 i32 chunkX, 44 i32 chunkZ, 48 u32 flags (1 partial), 52 u32 reserved, 56 n × Block24 | 56 + 24n |
 
 **Sub-records:**
 - **Carriage block:** `0 u32 index, 4 u32 itemSlots, 8 i64 fluidCapacity, 16 u32 entryCount,
@@ -124,7 +124,8 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 - **Result24:** `0 u32 inventory (or carriage), 4 u32 good, 8 i64 requested, 16 i64 applied`.
 - **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
-  2 roofless, 4 machine, 8 boundary inventory), 20 u32 inventory (0xFFFFFFFF none)`.
+  2 roofless, 4 machine, 8 boundary inventory, 16 roof: the top block over a roofed machine within
+  roofReachBlocks, OGB-7), 20 u32 inventory (0xFFFFFFFF none)`.
 
 **Codes:**
 - **Port kinds:** 1 train cargo, 2 package, 3 player container session, 4 player toss, 5 player pickup,
@@ -145,7 +146,10 @@ revision replaces the old lists. Detection (I2) is the Java side's.
 
 **Edits and staleness.** IND_EDIT (a `BlockEvent` with a player inside the district) makes a learned
 district Stale (I5: stale freezes) and discards the open window. IND_DISCARD discards the open window
-only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3).
+only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
+district keeps the players of its last edits (placed, broken, configured; not commands): the last 8
+distinct players with the tick of each one's latest edit, saved with it, so the dragons can name a
+well's builders (docs/choices-oilgate.md OGC54).
 
 **Load states.** IND_LOAD_STATE is sent when the count of block-ticking chunks crosses 0 or the total.
 - **Live:** the replay catches up to now and stops, and the engine reconciles everything it did
@@ -195,14 +199,20 @@ while the source runs (I13). A source that is live is assumed to be running (F21
 attacks there are real fights (INDUSTRY.md §13.1). The sampler sends it when it changes and every few
 seconds while it holds; an unloaded district is never watched. Attacks on a district that is
 unwatched resolve abstractly: applied at once, as a reconcile round, if its chunks are loaded; at the
-next load if not (C18).
+next load if not (C18). A dragon raid on a watched district resolves the same way, at once, through
+`threat_in_sight`, while the dragon also comes in person (P28 as Ben decided it, "bounded damage
+too"; docs/choices-oilgate.md OGC56); the industry's own threats still leave a watched district to
+its real fights.
 
 **Threat data.**
 - **IND_SPAWN_SAMPLE:** natural hostile spawns counted while a player was in the district at night,
   per dark spawnable block in and around it (I20).
 - **IND_FIGHT:** a real fight in the district, the observation that caps abstract outcomes (I22).
 - **IND_SURVEY and IND_SURVEY_BLOCKS:** the defence vector and the exposed block set (I21),
-  recomputed after edits.
+  recomputed after edits. A whole survey needs every district chunk loaded; a partly loaded district
+  gets IND_SURVEY_BLOCKS alone for its loaded chunks, flagged partial. Each chunk a survey reads gets
+  part 0, empty when it has no rows, which replaces that chunk's rows in the engine (a partial one keeps
+  the chunk's wall faces); the other chunks' rows stay (docs/choices-oilgate.md OGC61 to OGC63).
 
 ## 4. Commands
 

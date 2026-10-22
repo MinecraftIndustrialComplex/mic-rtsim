@@ -10,7 +10,8 @@ import net.minecraft.world.level.ChunkPos;
  * {@code OilChunksSavedData.getBaseOilAmount} (the seed's Perlin field shaped by the chunk's biomes, 12,800
  * {@code getBiome} lookups between y 60 and 109; under KubeJS, the pack's own rule), what the chunk holds
  * before any pumpjack drew from it. {@link Integer#MAX_VALUE} past Diesel's infinite threshold. In a Deep
- * Time level Deep Time's mixin answers at the head of the same method (its trap's share).
+ * Time level Deep Time's mixin answers at the head of the same method (its trap's share). A chunk the
+ * {@link CdgFirstLook} finds no oil biome in is answered 0 without the exact call (OGB-5).
  */
 public final class CdgOilSource implements OilSource {
     @Override
@@ -25,6 +26,13 @@ public final class CdgOilSource implements OilSource {
 
     @Override
     public int baseOil(ServerLevel level, ChunkPos chunk) {
+        if (CdgFirstLook.applies()) {
+            CdgFirstLook.looked++;
+            if (!CdgFirstLook.mayHoldOil(level, chunk)) {
+                CdgFirstLook.skipped++;
+                return 0;
+            }
+        }
         return OilChunksSavedData.getBaseOilAmount(level, chunk);
     }
 }
