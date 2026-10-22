@@ -189,7 +189,7 @@ compatibility before release).
 ## The plugin side (`neoforge/iceandfire`, `neoforge/dieselgenerators`, core)
 
 **OGC28. The switches and OIL_CONFIG.** The plugin's server config (`DragonConfig`,
-`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (false) and `placeLairs` (true); OIL_CONFIG
+`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (true since OGB-6, OGC46) and `placeLairs` (true); OIL_CONFIG
 carries them to the engine at each session start. On a GameTest server every side effect of the gate
 starts off (no flight, no lair placed, no chunk sampled, no survey answered) and a test switches on
 what it needs: the tests share one engine and a reused world.
@@ -342,7 +342,8 @@ First hit by any hostile at site 1: A 165 and 291, B 185 and 184.
 dragon hit comes 40 to 50% later and B brings a third to a half of A's distinct dragons. Site 2 passes
 trivially (nothing reaches the sealed pocket in either arm); site 3 falls, as designed. OILGATE.md §4.8
 asks for medians over several runs by day and night; these are two runs by day, so the verdict is
-early, but both runs fail the same two measures. Field flights stay off (For Ben 1, now OGB-1 and the cheese audit).
+early, but both runs fail the same two measures. Field flights stayed off (For Ben 1, now OGB-1 and the cheese audit)
+until OGB-6 retired the pass condition and turned them on (OGC46).
 
 **Fire events per stream** (a 30-day fire dragon, native): ground fire came in 14 bursts, mostly 33 to
 38 events over 40 to 44 ticks, with 2 charges inside them; scorch in 12 bursts of 41 events over 41
