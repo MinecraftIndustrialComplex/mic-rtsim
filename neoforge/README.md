@@ -9,7 +9,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `core` | `mic_rtsim` | NeoForge and mic_native, MIC's native host (no pack mod, D4) | the bridge, and phase 1's vanilla side: villages, markets, caravans, gossip, damage, rescues, robbery, player bases, growth; and the vanilla herd adapter (sheep, cows, pigs, horses and goats, docs/boundary.md §8) |
 | `ribbits` | `mic_rtsim_ribbits` | Ribbits 4.1.6 (with YUNG's API 5.1.9, GeckoLib 4.9.3) | ribbit villages and residents, merchant caravans, touring bands, sorcerers who remember, growth from YUNG's houses (C7, C23) |
 | `carryon` | `mic_rtsim_carryon` | Carry On 2.2.6.13 | a creature picked up leaves the sim (A10) |
-| `create` | `mic_rtsim_create` | Create 6.0.10 (its jar-in-jar Ponder, Flywheel and Registrate for compiling) | the industry plugin (INDUSTRY.md §12 layer 2): kinetic, belt, pipe and chain merging, vault and tank controllers, packager targets, postboxes counted by package contents, station names, train arrivals and departures, carriage deltas through `TrainCargoManager`, the "District ledger" display source; and every industry GameTest |
+| `create` | `mic_rtsim_create` | Create 6.0.10 (its jar-in-jar Ponder, Flywheel and Registrate for compiling) | the industry plugin (INDUSTRY.md §12 layer 2): kinetic, belt, pipe and chain merging, vault and tank controllers, packager targets, postboxes counted by package contents, station names, train arrivals and departures, carriage deltas through `TrainCargoManager`, the "District ledger" display source; and every industry GameTest. On clients, the far view's train source (`client.TrainFarSource`: Create's own train map sync copied into the core's far registry, no server change) |
 | `iceandfire` | `mic_rtsim_iceandfire` | Ice and Fire CE 2.1-beta.1 (with Uranus 2.4.1, Jupiter 2.3.7, GeckoLib 4.9.3; Architectury 13.0.11 at runtime) | phase 2's dragons (PLAN.md §9, docs/boundary.md §6): the dragon body adapter (materialize with the engine's state, steer, depart, capture), wounds, deaths, meals, lairs and robbed hoards, and every other dragon reported untagged for the engine to adopt or discard (P13); no mixin. Choices Z1 to Z21 in `docs/overnight-choices-iceandfire.md` |
 | `oreexcavation` | `mic_rtsim_oreexcavation` | Create Ore Excavation 1.6.8 | veins as finite deposits (I11): read under drilling machines and extractors, depleted by a reconcile's deposit delta |
 | `dieselgenerators` | `mic_rtsim_dieselgenerators` | Create Diesel Generators 1.3.15 | chunk oil as a finite deposit (I11), written at once by IND_DEPOSIT_DELTA |
@@ -18,6 +18,7 @@ per plugin (`mic_rtsim_<mod>`, PLAN.md §1.3). Minecraft 1.21.1, NeoForge 21.1.2
 | `destroy` | `mic_rtsim_destroy` | Destroy 0.4.1 (with Petrolpark 1.5.11) | pollution attributed to districts by position and written back (I14), chunk crude oil as a finite deposit (I11) |
 | `climate` | `mic_rtsim_climate` | mic_climate 0.1.0, Serene Seasons 10.1.0.3, Thermoo 4.8.1 | IND_CONDITIONS from Serene Seasons' calendar, mic-climate's temperature (I12); the habitat sampler's climate source (X2-7) |
 | `radar` | `mic_rtsim_radar` | Create Radars 0.4.9.4, Create Big Cannons 5.11.7 | radar-driven auto-turrets with rounds for the defence survey (I21) |
+| `dh` | `mic_rtsim_dh` | Distant Horizons 3.3.3 (client only; not in the pack yet) | the far view, phase 1 (research/distant-horizons-2026-10-21.md §13; DECISIONS.md DH-1, DH-2): what the core's far registry holds, drawn as DH boxes beyond the vanilla view. Phase 1 draws Create carriages: one relative box group per carriage with a staircase cut, one controller per frame, hidden where the real carriage or a loaded chunk is, a detail tier option, off on macOS and when DH's generic rendering is off. Choices DHT1 to DHT24 in `docs/choices-dh-trains.md` |
 
 The plugins compile against the pack's own jars, read from `packMods` in `gradle.properties` (the MIC
 smoke server's mods folder next to this repository; `-PpackMods=...` to point elsewhere), and their
@@ -78,6 +79,26 @@ compared. About two minutes for all three on the laptop, most of it server start
   replaying the journal the last one left (choice B37). Delete the directory for a clean world.
 - `-PgametestDebugLog` turns on DEBUG logging, which shows the mixins being applied.
 
+## The far view's dev client
+
+`mic_rtsim_dh` compiles against the pack's DH 3.3.3 jar, which `:dh:fetchDistantHorizons` downloads from
+Modrinth and checks against the pack's sha512 (`-PdhJar=<jar>` to use another copy). Its dev client loads
+the core, `mic_rtsim_create`, Create 6.0.10, DH and `mic_rtsim_dh` on the stub engine, in `dh/run/`; it needs
+the flake's client shell, which has the window and sound libraries:
+
+```sh
+cd neoforge
+flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix develop ..#client --command ./gradlew --max-workers=4 :dh:runClient -PskipJni
+
+# the bench: 20 synthetic Create trains of 4 carriages, a profile, then quit (docs/choices-dh-trains.md DHT22)
+flock /tmp/mic-rtsim-bridge-heavy.lock nice -n 10 nix develop ..#client --command ./gradlew --max-workers=4 :dh:runClient -PskipJni -PfarBench=20
+```
+
+The bench logs `far bench` lines (the client's `far bench result` line, the server's train counts and the
+`far bench sync` bandwidth lines), leaves a screenshot in `dh/run/screenshots/` and vanilla's client profile in
+`dh/run/debug/profiling/`. `-PfarBenchDetail=LOW|MEDIUM|HIGH`, `-PfarBenchCarriages=<n>` and
+`-PfarBenchLabel=<name>` vary it.
+
 ## What is here
 
 | Package | What |
@@ -102,6 +123,7 @@ compared. About two minutes for all three on the laptop, most of it server start
 | `herd` | the vanilla herd adapter (docs/boundary.md §8.5, choices Y8 to Y21 in `docs/overnight-choices-herdsmc.md`): a `SessionPlugin` the core registers itself (`HerdBridge`, commands 0x8700 to 0x87FF, agents 0x48) that materializes the engine's herd groups as vanilla animals with the engine's look, age, shearing and identity seed (`HerdBodies`), steers them toward the herd's waypoints with vanilla AI otherwise (`HerdFollowGoal`), captures them with each member's state, reports kills, shearing, takings and obstacles (`HerdRecords`, `HerdEvents`). |
 | `habitat` | the habitat sampler (docs/boundary.md §10, choices X2-1 to X2-25 in `docs/overnight-choices-worldmodel.md`): a `SessionPlugin` the core registers itself (`HabitatSampler`, commands 0x8900 to 0x89FF) that samples each 64-block cell from its chunks' centre columns once its chunks are loaded (surface, water, ice, biome and its tags, vanilla temperature and downfall, the herd species' spawn shares, chunk-generation animals), under a per-tick budget, and sends HABITAT only when the engine's fingerprint (HABITAT_KNOWN at each session start) differs; `ClimateSource` and `RtsimApi.registerClimate` for a seasons or temperature plugin (`Climates`, vanilla otherwise). |
 | `gametest` | the GameTests, in the `mic_rtsim` namespace, and helpers the plugins' tests share (`RtsimTests`, `FakePlayers`). |
+| `far` | client side: the far-object registry (`FarObjects`: sources commit what moves far away, renderers say how far they want it; no DH, no Create), its movers and clock. `MicRtsimClient` is the core's `Dist.CLIENT` entry that ticks the clock and clears the registry on leaving a world. Choices DHT1 to DHT3 in `docs/choices-dh-trains.md`. |
 
 ## The GameTests
 
