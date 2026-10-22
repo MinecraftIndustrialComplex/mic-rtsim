@@ -83,7 +83,7 @@ public final class RescanBudgetGameTests {
                     District d = districtAt(helper, ms[0]);
                     record("aBigDetectionSpreadsOverTicksAndChangesTheSetOnce", "ticks seen busy", busyTicks[0]);
                     record("aBigDetectionSpreadsOverTicksAndChangesTheSetOnce", "detection ticks / longest tick (us)",
-                            ind().districts().lastRescanSlices() + " / " + ind().districts().maxSliceNanos() / 1000);
+                            ind().districts().lastRescanSlices() + " / " + ind().districts().lastRescanLongestNanos() / 1000);
                     check("the district set was never seen half-updated, " + violations[0] + " times", violations[0] == 0);
                     check("spread over at least four ticks, got " + ind().districts().lastRescanSlices(), ind().districts().lastRescanSlices() >= 4);
                     check("all four chunks, not " + d.chunks.size(), d.chunks.size() == 4);
@@ -227,6 +227,61 @@ public final class RescanBudgetGameTests {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     check("one call, one district of two chunks", districtAt(helper, ms[0]) != null && districtAt(helper, ms[0]).chunks.size() == 2);
                     check("and nothing left running", !ind().districts().rescanning());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * What spreading buys: a district of nine chunks with about 200 inert block entities each (1,800 in all),
+     * detected in one call (the old way: one tick) and at the default budget. Logs both; passes when the
+     * default budget's longest tick is under the one-call time (a figure for the report, not a timing gate).
+     */
+    @GameTest(template = YARD, batch = "rescan_budget_5", timeoutTicks = 1200)
+    public static void aBigDetectionsLongestTickIsBelowTheOneCallTime(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        long[] oneCall = new long[3];
+        long[] spread = new long[4]; // cold: slices, longest tick; warm: slices, longest tick
+        helper.startSequence()
+                .thenExecute(() -> {
+                    BlockPos base = inChunk(helper, 0, 0);
+                    for (int cx = 0; cx < 3; cx++)
+                        for (int cz = 0; cz < 3; cz++) {
+                            BlockPos o = new BlockPos(base.getX() + 16 * cx, base.getY(), base.getZ() + 16 * cz);
+                            for (int x = 1; x < 15; x++)
+                                for (int z = 1; z < 15; z++)
+                                    set(helper, o.offset(x, 0, z), TestMachines.INERT.get().defaultBlockState());
+                            set(helper, o, TestMachines.MACHINE.get().defaultBlockState());
+                            playerPlaced(helper, o);
+                        }
+                })
+                .thenWaitUntil(() -> {
+                    check("the district is detected", !ind().districts().rescanning() && ind().districts().all().size() == 1);
+                    spread[0] = ind().districts().lastRescanSlices();
+                    spread[1] = ind().districts().lastRescanLongestNanos();
+                })
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        long t0 = System.nanoTime();
+                        ind().districts().rescanNow(level);
+                        oneCall[i] = System.nanoTime() - t0;
+                    }
+                    ind().districts().markDirty(level.dimension(), chunk(inChunk(helper, 1, 1)));
+                })
+                .thenWaitUntil(() -> {
+                    check("the second spread detection is done", !ind().districts().rescanning() && ind().districts().lastRescanSlices() > 1);
+                    spread[2] = ind().districts().lastRescanSlices();
+                    spread[3] = ind().districts().lastRescanLongestNanos();
+                })
+                .thenExecute(() -> {
+                    java.util.Arrays.sort(oneCall);
+                    String t = "aBigDetectionsLongestTickIsBelowTheOneCallTime";
+                    record(t, "one call, three runs (us)", oneCall[0] / 1000 + " / " + oneCall[1] / 1000 + " / " + oneCall[2] / 1000);
+                    record(t, "default budget, first (cold): ticks, longest tick (us)", spread[0] + ", " + spread[1] / 1000);
+                    record(t, "default budget, later (warm): ticks, longest tick (us)", spread[2] + ", " + spread[3] / 1000);
+                    check("spread over several ticks, got " + spread[2], spread[2] >= 4);
+                    check("the longest spread tick (" + spread[3] / 1000 + " us) is under the one-call time (" + oneCall[1] / 1000 + " us)", spread[3] < oneCall[1]);
                 })
                 .thenSucceed();
     }

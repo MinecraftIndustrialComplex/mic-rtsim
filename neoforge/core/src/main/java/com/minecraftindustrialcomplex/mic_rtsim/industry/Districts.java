@@ -100,8 +100,9 @@ public final class Districts {
     long rescans;
     long rescanNanos;
     long lastRescanNanos;
-    /** Ticks the last detection took, and the longest single tick of detection work since the module started. */
+    /** Ticks the last detection took, its longest tick, and the longest tick of ticked detection work since the module started. */
     int lastRescanSlices;
+    long lastRescanLongestNanos;
     long maxSliceNanos;
     long declared;
 
@@ -131,7 +132,15 @@ public final class Districts {
         return lastRescanSlices;
     }
 
-    /** The longest single tick of detection work (a slice, or the commit with it) since the module started. */
+    /** The longest single tick of the last detection (a slice, or the commit with it). */
+    public long lastRescanLongestNanos() {
+        return lastRescanLongestNanos;
+    }
+
+    /**
+     * The longest single tick of detection work (a slice, or the commit with it) since the module started. A
+     * detection a command runs in one call ({@link #rescanNow}) is not counted: it is asked for, not scheduled.
+     */
     public long maxSliceNanos() {
         return maxSliceNanos;
     }
@@ -167,6 +176,7 @@ public final class Districts {
         requeueRescans(dim);
         LongOpenHashSet taken = dirty.remove(dim);
         Rescan r = new Rescan(level, true, taken == null ? new LongOpenHashSet() : taken);
+        r.manual = true;
         while (!r.step(Integer.MAX_VALUE))
             ;
         lastRescan = ind.gameTime();
@@ -659,6 +669,8 @@ public final class Districts {
         long nanos;
         int slices;
         long maxSlice;
+        /** Run in one call by a command or a test: its one big tick is not a scheduling figure. */
+        boolean manual;
 
         Rescan(ServerLevel level, boolean full, LongOpenHashSet dirtyHere) {
             this.level = level;
@@ -742,8 +754,10 @@ public final class Districts {
                 rescanNanos += nanos;
                 lastRescanNanos = nanos;
                 lastRescanSlices = slices;
+                lastRescanLongestNanos = maxSlice;
             }
-            maxSliceNanos = Math.max(maxSliceNanos, dt);
+            if (!manual)
+                maxSliceNanos = Math.max(maxSliceNanos, dt);
             return done;
         }
 
