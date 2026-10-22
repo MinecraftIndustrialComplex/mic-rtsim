@@ -121,6 +121,18 @@ fn slug(id: &str) -> String {
         .collect()
 }
 
+/// The world's own name (level.dat's `LevelName`, "WorldPaperCity"), read into memory and let go.
+fn level_name(world: &Path) -> Option<String> {
+    let bytes = std::fs::read(world.join("level.dat")).ok()?;
+    let root = mic_viewer_surveyor::nbt::read_gzip(&bytes[..], 64 << 20).ok()?;
+    match root.get("Data")?.get("LevelName")? {
+        mic_viewer_surveyor::nbt::Tag::String(n) if !n.trim().is_empty() => {
+            Some(n.trim().to_owned())
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn union(a: Option<[f64; 4]>, b: [f64; 4]) -> [f64; 4] {
     match a {
         None => b,
@@ -201,7 +213,7 @@ impl View {
                         frame: frame_id(&saved, sa.dim),
                         a: [sa.pos.x, sa.pos.y, sa.pos.z],
                         b: [sb.pos.x, sb.pos.y, sb.pos.z],
-                        label: crate::cards::line_label(&saved, v, *a, *b, l.trips),
+                        label: crate::cards::line_label(&saved, v, *a, *b, l),
                     })
                 })
                 .collect();
@@ -290,10 +302,12 @@ impl View {
         }
         let manifest = saved.pages_dir.join("manifest.rtm");
         let saved_ms = mtime_ms(&manifest).unwrap_or_else(now_ms);
-        let name = saved
-            .world_dir
-            .file_name()
-            .map_or_else(|| "world".into(), |n| n.to_string_lossy().into_owned());
+        let name = level_name(&saved.world_dir).unwrap_or_else(|| {
+            saved
+                .world_dir
+                .file_name()
+                .map_or_else(|| "world".into(), |n| n.to_string_lossy().into_owned())
+        });
         let g = saved.generation;
         let mut note = format!(
             "save {} (observations to {}), {} pages",
@@ -318,7 +332,7 @@ impl View {
             freshness: Freshness {
                 age_ms: 0,
                 cycle_ms: None,
-                note: "a save: nothing moves".into(),
+                note: "nothing moves".into(),
             },
             budget: MARK_BUDGET,
             event_kinds: events
@@ -595,8 +609,9 @@ impl View {
             if let Some(d) = saved.industry.as_ref().and_then(|v| v.district(id)) {
                 let frame = frame_id(&saved, d.dim);
                 let (things, missing) = self.create.in_chunks(&frame, &d.chunk_list);
-                c.sections
-                    .extend(mic_viewer_create::draw::census_sections(&things));
+                // What it makes and its machines lead; the engine's own sections follow.
+                let census = mic_viewer_create::draw::census_sections(&things);
+                c.sections.splice(0..0, census);
                 if missing > 0 {
                     keep = false;
                     let read = d.chunk_list.len() - missing;

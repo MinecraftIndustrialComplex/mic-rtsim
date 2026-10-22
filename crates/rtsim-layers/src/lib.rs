@@ -581,12 +581,16 @@ pub fn specs() -> Vec<Spec> {
             .describe("Industrial districts, outlined by their chunks")
             .priority(8)
             .legend_st(&[
-                ("Running", "#2a8a82", None),
-                ("Learning", "#b7791f", Some("dash")),
-                ("Live", "#2e8b57", None),
-                ("Suspended", "#8b949e", Some("dot")),
-                ("Stopped", "#d1242f", Some("bad")),
-                ("Out of season", "#8b949e", Some("dot")),
+                ("Unloaded, run by rtsim", "#2a8a82", None),
+                ("Being learned", "#b7791f", Some("dash")),
+                ("Loaded, run by the game", "#2e8b57", None),
+                ("Partly loaded, paused", "#57606a", Some("dot")),
+                (
+                    "Stopped: damaged, edited or not learnable",
+                    "#d1242f",
+                    Some("bad"),
+                ),
+                ("Learned, idle this season", "#57606a", Some("dot")),
             ])
             .fields(&["State", "Chunks"]),
             "industry",
@@ -620,8 +624,11 @@ pub fn specs() -> Vec<Spec> {
                 "edge",
                 "#5ab4ac",
             )
-            .describe("Station pairs trains ran between, wider with more trips")
-            .priority(3)
+            .describe(
+                "Goods trains between station pairs, beside the track, wider with more trips a day",
+            )
+            // Over the track (80) it follows, under the stations (85).
+            .priority(82)
             .line("flow")
             .label_bpp(8.0),
             "industry",
@@ -1344,7 +1351,7 @@ fn lines(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
                 id: Some(format!("{a}-{b}")),
                 a: pa,
                 b: pb,
-                w: Some(1.0 + (1.0 + l.trips as f64).log10()),
+                w: Some(industry::line_width(l)),
                 ci: None,
                 c: None,
             },
