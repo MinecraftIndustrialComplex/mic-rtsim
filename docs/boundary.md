@@ -859,7 +859,11 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x0508 | DRAGON_ATE | count | 24 u64 agent, 32 u32 epoch, 36 u32 prey (dictionary 3), 40 u64 village (0: none), 48 f64 x, 56 f64 y, 64 f64 z | 72 |
 | 0x0509 | OIL_CHUNKS | n | 24 u32 dimension, 28 u32 source (1 Deep Time, 2 CDG, 3 a deposit sample), 32 n × (i32 chunkX, i32 chunkZ, i32 amount mB, u32 flags: 1 bottomless). n at most 1024 per record | 32 + 16n |
 | 0x050A | DRAGON_BREATHS | count | 24 u64 agent, 32 u32 epoch, 36 reserved | 40 |
-| 0x050B | OIL_CONFIG | flags: 1 field flights, 2 place lairs | (none) | 24 |
+| 0x050B | OIL_CONFIG | flags: 1 field flights, 2 place lairs, 4 place nests | (none) | 24 |
+| 0x050C | NEST_FOUND | 1 placed, 2 failed (no room) | 24 u64 nest, 32 u32 dimension, 36 i32 heartX, 40 heartY, 44 heartZ (zero when failed) | 48 |
+| 0x050D | NEST_CENSUS | flags: 1 the heart is gone | 24 u64 nest, 32 u32 worms (alive, an unloaded one counting as alive, plus those still owed), 36 reserved | 40 |
+| 0x050E | NEST_LOSS | cause (`LossCause`: 0 player, 1 age, 2 starved, 3 faction, 4 predator, 5 other) | 24 u64 nest, 32 u32 count, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast (zero for none) | 56 |
+| 0x050F | NEST_HEART | 0 | 24 u64 nest, 32 u64 playerMost, 40 u64 playerLeast (zero for none) | 48 |
 
 - **DRAGON_HURT** sums one attacker's hits on one dragon over a tick (PLACEHOLDER: over 20 ticks
   would also do). The engine turns a player's wound into an assault report the dragon and its lair
@@ -887,8 +891,18 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 - **DRAGON_BREATHS** (OG-4): the `DragonFireEvent`s of one embodied MAT_OIL dragon since its last
   report, summed (PLACEHOLDER: per 20 ticks, and before its DEMATERIALIZED). Each costs one point of
   the reserve.
-- **OIL_CONFIG** (OG-3, OG-7): the plugin's two switches, sent once per session before the first
-  PLAYER. Without it the engine keeps its defaults (field flights on, lair placement on; OGB-6).
+- **OIL_CONFIG** (OG-3, OG-7, OG-9e): the plugin's three switches, sent once per session before the
+  first PLAYER. Without it the engine keeps its defaults (field flights on, lair placement on, nests on;
+  OGB-6, OGC70).
+- **NEST_FOUND** (OG-9e, §6.8): answers PLACE_NEST, placed (with the heart's block) or failed (the
+  chunk has no natural ground for the chamber). Sent again, with the same heart, for a PLACE_NEST of a
+  nest already placed. Not ledgered: the engine keeps the nest, the plugin keeps the chamber.
+- **NEST_CENSUS**: a nest counted when its heart's chunk loads and after its worms spawn. The engine
+  reconciles without pressure: a count above K is K, a shortfall is a loss of cause other (OGC78).
+  Flag 1 (the heart's block is not the spawner) is a heart broken with no player named.
+- **NEST_LOSS**: worms of one nest died. A worm drops boss loot, so a death no wild mob is credited
+  with is a player's (EQUILIBRIUM.md §2.2); only cause 0 bumps the nest's pressure.
+- **NEST_HEART**: a player (or something else, zero) broke the heart's spawner.
 - **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
   `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this
   session for a `ChestBlockEntity` inside the box with an empty slot (a chest whose loot table is not
@@ -911,7 +925,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
-| 0x8507 | (reserved) | | for the underground half (OILGATE.md §4.6, OG-9b): placing the deep layer on an oil chunk's first load. Nothing sends it yet | | |
+| 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
+| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 reserved | 40 | NEST_CENSUS once they spawn |
+| 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
 lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
@@ -1061,6 +1077,18 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   the flights replace In Control's fire dragon, OGC46) and `placeLairs` (default true).
 - **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
   above y 15 (In Control's `minheight`).
+- **Keeps the oil nests** (OG-9e, OILGATE.md §4.6, OGC84 to OGC102): a PLACE_NEST waits in the saved
+  state until its chunk is loaded, then carves a 9 by 9 chamber whose sand floor lies `depth` blocks
+  under the chunk's ocean-floor heightmap, only where the chamber and its shell are natural ground with
+  no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
+  answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
+  placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
+  Death Worms, sized by the stage), placed on the chamber floor when the heart's chunk ticks entities
+  with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
+  chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
+  NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up
+  it; a worm stops under a block tagged `#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` and
+  glides home, else it surfaces, fights until `timeoutTicks` and glides home.
 
 **What the engine does with them:**
 - **The gate opens** on the first oil chunk it knows (OGC12): before that, no dragon is held to oil
@@ -1080,6 +1108,12 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   nearest fire lair in reach senses every district with a chunk near a field, with no flight
   (OGC52, OGC53). The industry engine keeps each district's last builders from IND_EDIT, saved with
   it (OGC54).
+- **Oil nests** (when OIL_CONFIG flag 4 is set, OGC70 to OGC83): an oil chunk new to the index founds
+  a nest in its cell of 8 by 8 chunks and sends PLACE_NEST. A nest is asleep until a pumpjack's
+  deposit sample of its district's latest sweep lies within reach of the heart; awake, it hatches K
+  worms, renews lost ones by EQUILIBRIUM.md §2.2's rule while drilling lasts, and raids the districts
+  in reach as threat class `Burrowing` (docs/industry-boundary.md). The nest's id packs the frame
+  (top 16 bits) and the cell's x and z (24 bits each, signed).
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 

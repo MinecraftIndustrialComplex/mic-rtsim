@@ -66,6 +66,7 @@ use crate::herds::{HerdId, Herds};
 use crate::homes::Homes;
 use crate::index::PreyIndex;
 use crate::infra::{DistrictSite, Infrastructure};
+use crate::nest::Nests;
 use crate::oil::{OilIndex, Roll};
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
@@ -193,6 +194,11 @@ pub(crate) enum Ev {
     /// a field is sensed by a dragon of the field's lair. One for the world, booked when the gate
     /// opens and again each day.
     OilWatch,
+    /// The oil nests' watch (OG-9e): one for the world, booked when the first nest is founded and
+    /// again each nest day; stale unless `plan` is the nests' booked one.
+    NestWatch {
+        plan: u32,
+    },
     /// A tributary village's next season's payment to the lair that raided it (SINK.md §4.6),
     /// stale unless `stamp` is still the village's tribute row's.
     Tribute {
@@ -431,6 +437,8 @@ pub struct Dragons {
     pub(crate) chests: BTreeMap<LairId, Chest>,
     /// The far view's marks (`far.rs`): not saved, per session.
     pub(crate) far: crate::far::FarFeed,
+    /// The oil nests (OG-9e): rows in pages of their own (0x4419), the rest in the meta page.
+    pub nests: Nests,
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -571,6 +579,7 @@ impl Dragons {
             placing: BTreeMap::new(),
             chests: BTreeMap::new(),
             far: crate::far::FarFeed::default(),
+            nests: Nests::default(),
         }
         .with_oil_flags()
     }
@@ -1203,6 +1212,7 @@ impl Dragons {
             }
             Ev::FieldRoll { frame, plan } => self.field_roll(w, frame, plan, at),
             Ev::OilWatch => self.oil_watch(w, infra, at),
+            Ev::NestWatch { plan } => self.nest_watch(w, infra, plan, at),
             Ev::Tribute { node, stamp } => {
                 let Some(row) = self.tribute.get(&node).copied() else {
                     self.stats.stale += 1;
@@ -3073,7 +3083,15 @@ impl Dragons {
             Obs::Ate(a) => self.ate(w, a, at),
             Obs::OilChunks(o) => self.oil_chunks(o, at),
             Obs::Breaths(b) => self.breaths(b, at),
-            Obs::OilConfig(c) => self.oil_flags = c.flags,
+            Obs::OilConfig(c) => {
+                let was = self.oil_flags;
+                self.oil_flags = c.flags;
+                self.nests_config(was, at);
+            }
+            Obs::NestFound(f) => self.nest_found(f, at),
+            Obs::NestCensus(c) => self.nest_census(c, at),
+            Obs::NestLoss(l) => self.nest_loss(l, at),
+            Obs::NestHeart(h) => self.nest_heart(h, at),
             Obs::LairChest(c) => {
                 if let Some(l) = self.lair_of_key(c.lair) {
                     let chest = Chest {
@@ -4300,6 +4318,13 @@ impl Dragons {
                 wr.raw(&v.to_le_bytes());
             }
         }
+        wr.u32(self.nests.day);
+        wr.u32(self.nests.plan);
+        for (k, n) in self.nests.rows.iter() {
+            wr.u64(crate::nest::nest_id(*k));
+            wr.bool(self.nests.awake.contains(k));
+            crate::persist::put_nest(n, &mut wr);
+        }
         wr.u64(self.oil.chunks);
         wr.u64(u64::from(self.oil.next_field));
         wr.u64(u64::from(self.oil.live));
@@ -4326,6 +4351,7 @@ impl Dragons {
             ("prey index", self.index.heap_bytes()),
             ("oil index", self.oil.heap_bytes()),
             ("oil gate maps", self.oil_gate_bytes()),
+            ("oil nests", self.nests.heap_bytes()),
             (
                 "log and players",
                 self.log.capacity() * std::mem::size_of::<LogEntry>()

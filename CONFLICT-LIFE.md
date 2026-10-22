@@ -4,6 +4,10 @@
 MOWZIE.md's MZ-15. Nothing is built and no engine code changes here. Ben approves this design before
 code. Branch `plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`.
 
+**Ben's answers (2026-10-22).** CL-1 to CL-4 take (a), as recommended. CL-5 takes (b): "Add
+alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed, and
+the alliance design is being added (section 8 has the answers).
+
 **What the revision changed.** The engine's abstract fights are deterministic: the stronger side wins
 (`village_outcome`, `engine.rs:4343-4365`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
 model rolled Lanchester odds as a chance to win, and so did EQUILIBRIUM.md's gate. The model now
@@ -1082,7 +1086,7 @@ GameTests, only where Java is involved:
 | CL-D16 | The Frostmaw is a council of one whose rail grievance is revenge, not a threshold | its robbing rises smoothly with traffic and each lurk is a decision (CL-3) |
 | CL-D17 | The Umvuthi leads an invasion in person only with wounded pride of 0.8 or more, and the grove has no invasion without it | MZ-3 (b) says it leads; a pride gate makes it rare and always provoked |
 | CL-D18 | Blame spill 0.3 | multiplayer stories where a camp cannot tell two players apart (CL-2) |
-| CL-D19 | No alliances | a coalition needs a model of its own and joint parties (CL-5) |
+| CL-D19 | **Reversed by Ben's CL-5 (b), 2026-10-22.** Was: no alliances | the alliance design replaces it |
 | CL-D20 | Reasons as codes, text written when read | 8-byte memories; no text in saves |
 | CL-D21 | Every draw from `StreamKey(seed, SYS_COUNCIL or SYS_CLASH, faction key)` slotted by the faction's own counter; the world deterministic in the wheel's order | one faction's draws do not shift with another's sittings |
 | CL-D22 | A stolen crystal is a Theft report naming the player at the steal | MOWZIE.md reports the steal in its CHIEF_STATE record (crystal held, §4.2); this makes it a grievance and a memory |
@@ -1109,7 +1113,19 @@ GameTests, only where Java is involved:
 
 ---
 
-## 8. Questions for Ben
+## 8. Ben's answers and questions
+
+**Answered** (Ben, 2026-10-22, in one line for all five: CL-1 to CL-4 as recommended, "Add alliances" for CL-5):
+
+| Id | Question | Ben's answer |
+|---|---|---|
+| CL-1 | **Should a faction tell the player why?** | (a), as recommended (Ben, 2026-10-22): an envoy says one line when it arrives, and a notice says who is angry and for what |
+| CL-2 | **Can a camp blame the wrong player?** | (a), as recommended (Ben, 2026-10-22): blame spill 3 times in 10 (CL-D18) |
+| CL-3 | **How often does a Frostmaw rob a busy line?** | (a), as recommended (Ben, 2026-10-22): a lurk about 0.35 a year at 4 legs a day, 1.9 at 12, 5.2 at 24 (CL-D16) |
+| CL-4 | **How often is a strong base tested?** | (a), as recommended (Ben, 2026-10-22): about one fight in eight years at a fortress, every one lost by the attackers |
+| CL-5 | **Alliances between camps?** | **(b)**, not the recommendation (Ben, 2026-10-22): "Add alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed |
+
+**The questions as they were asked** (recommended option first):
 
 | Id | Question | Options | Why it is yours |
 |---|---|---|---|

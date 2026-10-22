@@ -1,0 +1,9 @@
+{
+  "replace": false,
+  "values": [
+    {
+      "id": "createdieselgenerators:pumpjack_hole",
+      "required": false
+    }
+  ]
+}
