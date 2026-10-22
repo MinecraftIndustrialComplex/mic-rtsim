@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lifelike Faction Conflict</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --open: #8f620f;
+  --slow-bg: #f4e7c9;
+  --slow-line: #d4b878;
+  --stop-bg: #e2f0e8;
+  --stop-ink: #1d5a3b;
+  --stop-line: #93c4aa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 960px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 26px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; margin: 10px 0 8px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td .sub { display: block; color: var(--muted); font-size: 14.5px; margin-top: 4px; }
+table.ledger th:first-child { width: 18%; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100% !important; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 12px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 8px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 650; font-size: 17px; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+blockquote { margin: 0 0 14px; padding: 0 0 0 0; font-style: italic; max-width: 38em; }
+
+/* verdict pills */
+.v { display: inline-block; font-weight: 650; font-size: 14px; line-height: 1.35; padding: 2px 8px; border-radius: 4px; border: 1px solid transparent; margin: 0 6px 6px 0; }
+.v.now { background: var(--stop-bg); color: var(--stop-ink); border-color: var(--stop-line); }
+.v.plugin { background: var(--slow-bg); color: var(--ink); border-color: var(--slow-line); }
+.v.sim { background: #fff; color: var(--accent); border-color: var(--accent); }
+.v.notyet { background: #fff; color: var(--muted); border: 1px dashed #8a8a93; }
+.limits { margin-top: 18px; }
+.limits ul { margin-bottom: 10px; }
+
+/* item cards */
+.items { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin: 16px 0 8px; }
+.item { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; display: flex; flex-direction: column; }
+.item .pic { background: var(--card); border-bottom: 1px solid var(--line); padding: 14px 14px 10px; }
+.item .pic svg.sk { display: block; width: 100%; height: auto; max-height: 150px; }
+.item .pic .pc { font-size: 14px; color: var(--muted); line-height: 1.4; margin: 8px 0 0; max-width: none; }
+.item .txt { padding: 14px 16px 6px; }
+.item h3 { margin: 0 0 8px; font-size: 20px; }
+.item p { font-size: 16.5px; max-width: none; }
+.item .lbl { display: block; font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 1px; }
+.item .verdicts { margin: 0 0 8px; }
+
+/* walkthrough */
+.walk { list-style: none; padding: 0; margin: 12px 0 14px; }
+.walk li { display: grid; grid-template-columns: 9.5em 1fr; gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--line); max-width: 52em; margin: 0; }
+.walk li:last-child { border-bottom: 0; }
+.walk .d { font-weight: 600; color: var(--accent); font-size: 16px; padding-top: 1px; }
+@media (max-width: 520px) {
+  .walk li { grid-template-columns: 1fr; gap: 2px; }
+}
+
+/* versions */
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }
+.two .box { margin: 0; }
+.box.bad { background: #fff; border-color: var(--slow-line); }
+
+/* phases */
+.phases { list-style: none; padding: 0; margin: 12px 0 14px; counter-reset: ph; }
+.phases > li { display: grid; grid-template-columns: 3em 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); max-width: 52em; margin: 0; }
+.phases > li:last-child { border-bottom: 0; }
+.phases .n { font-weight: 700; font-size: 22px; color: var(--accent); line-height: 1.2; font-variant-numeric: tabular-nums; }
+.phases h3 { margin: 0 0 4px; font-size: 18px; }
+.phases p, .phases ul { font-size: 16.5px; margin-bottom: 6px; }
+.phases li li { margin-bottom: 3px; }
+.phases .first { font-weight: 600; color: var(--stop-ink); }
+
+/* bars */
+.bars { margin: 14px 0 6px; display: grid; gap: 12px; max-width: 46em; }
+.bar { display: grid; grid-template-columns: 13em 1fr; gap: 4px 14px; align-items: center; font-size: 15.5px; }
+.bar .lb { line-height: 1.35; font-weight: 600; }
+.bar .lb small { display: block; font-weight: 400; color: var(--muted); font-size: 14px; }
+.bar .track { display: flex; align-items: center; gap: 8px; }
+.bar .fill { height: 14px; border-radius: 0 4px 4px 0; flex: none; width: calc((100% - 8.5em) * var(--w)); min-width: 3px; background: var(--accent); }
+.bar .fill.old { background: #8a8a93; }
+.bar .val { font-variant-numeric: tabular-nums; font-size: 15px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .bar { grid-template-columns: 1fr; }
+}
+table.nums { font-variant-numeric: tabular-nums; }
+table.nums td.num, table.nums th.num { text-align: right; padding-right: 14px; }
+@media (max-width: 600px) {
+  table.nums { font-size: 14px; }
+  table.nums th, table.nums td { padding: 8px 8px 8px 0; }
+  table.nums th { white-space: normal; }
+}
+.decision .alt { color: var(--muted); }
+.decision .who { font-size: 15px; color: var(--muted); font-style: italic; }
+.open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
+
+/* council */
+.council { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 14px 0 8px; }
+.voice { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 10px; }
+.voice h3 { margin: 0 0 2px; font-size: 18px; }
+.voice .st { font-size: 15px; color: var(--muted); margin: 0 0 10px; }
+.tbar { display: grid; grid-template-columns: 6.6em 1fr 2.4em; align-items: center; gap: 8px; font-size: 15px; margin: 0 0 6px; max-width: none; }
+.tbar .tr { height: 10px; background: #ebebef; border-radius: 0 4px 4px 0; }
+.tbar .f { height: 100%; width: calc(var(--w) * 100%); background: var(--accent); border-radius: 0 4px 4px 0; }
+.tbar .val { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
+
+/* wants */
+.wants { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px 16px; margin: 12px 0 10px; list-style: none; padding: 0; }
+.wants li { margin: 0; max-width: none; border-top: 1px solid var(--line); padding-top: 8px; font-size: 16.5px; }
+.wants b { display: block; font-size: 17px; }
+
+/* steps */
+.steps { list-style: none; padding: 0; margin: 12px 0 14px; counter-reset: st; }
+.steps > li { counter-increment: st; display: grid; grid-template-columns: 2.2em 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); max-width: 52em; margin: 0; }
+.steps > li:last-child { border-bottom: 0; }
+.steps > li::before { content: counter(st); font-weight: 700; font-size: 20px; color: var(--accent); line-height: 1.3; font-variant-numeric: tabular-nums; }
+
+/* the key point */
+.box.key { background: #fff; border: 1.5px solid var(--accent); padding: 18px 20px 8px; }
+.box.key p { font-size: 17.5px; }
+.box.key h3 { font-size: 19px; }
+
+/* belief figures */
+.figs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin: 14px 0 6px; }
+.fig { border: 1px solid var(--line); border-radius: 6px; padding: 12px 12px 8px; background: #fff; }
+.fig h4 { margin: 0 0 6px; font-size: 16px; }
+.fig svg.belief { display: block; width: 100%; height: auto; }
+.fig p { font-size: 15px; color: var(--muted); margin: 6px 0 4px; max-width: none; }
+
+/* stories */
+.story { margin: 28px 0 10px; }
+.story > h3 { font-size: 21px; margin: 0 0 6px; }
+.story .setup { color: var(--muted); font-size: 16.5px; }
+.story .walk li { grid-template-columns: 7.5em 1fr; }
+@media (max-width: 520px) { .story .walk li { grid-template-columns: 1fr; } }
+.why { font-style: italic; }
+.after { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px 2px; margin: 10px 0 8px; }
+.after p { font-size: 16.5px; max-width: none; }
+.cl-opts { list-style: none; padding: 0; margin: 4px 0 12px; }
+.cl-opts li { padding: 6px 0 6px; border-top: 1px solid var(--line); margin: 0; max-width: none; }
+.cl-opts li:first-child { border-top: 0; }
+.cl-opts .k { font-weight: 700; margin-right: 4px; }
+.answer-how { font-size: 16px; }
+@media (max-width: 600px) {
+  table.stack.nums td.num { text-align: left; padding: 1px 0 4px; }
+  table.stack.nums td.num[data-label]::before { display: inline-block; min-width: 7.5em; margin-right: 8px; font-size: 14px; }
+  table.stack.nums td:first-child { font-size: 16px; }
+}
+table.traffic th, table.traffic td { padding-right: 10px; }
+
+/* decisions */
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision p, .decision li { max-width: none; }
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#model">The model</a>
+  <a href="#fight">The fight</a>
+  <a href="#results">Results</a>
+  <a href="#stories">Stories</a>
+  <a href="#marches">Marches</a>
+  <a href="#build">Building it</a>
+  <a href="#waiting">Waiting for you</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">Camps now decide like people: a council with moods, wants, memories and wrong guesses, so nobody can call a faction's next move</h1>
+  <p class="dek" data-ss-id="dek">The redesign you asked for when you answered EQ-5 with "only faction fighting" and wanted it lifelike: CONFLICT-LIFE.md on mic-rtsim main (9775d54), revised after an adversarial review and your MZ-15. Nothing is built. The numbers come from a runnable model of one valley that runs today's ladder, the gate you rejected and this design on the same world: 64 worlds of 50 game years each, and 8 left alone for 500. Five questions wait for you (CL-1 to CL-5).</p>
+  <p class="lead" data-ss-id="lead">A camp is no longer a rule. It is three people, a chief, a war leader and an elder, each with a temper of his own. It gets hungry in winter, angry when you refuse its envoy, proud, restless, afraid. It guesses how strong you are and is sometimes badly wrong, remembers who killed its chief, and decides with one of those guesses in hand. The fight itself stays the engine's, and certain, so every lost raid is a council that guessed wrong, and every fight has a reason it can tell you.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-fortress"><div class="n">1 <small>in 8 years</small></div><div class="t">a fight on a walled base that never pays, each with a reason (today's ladder: 2.7 a year, every one lost)</div></div>
+    <div class="tile" data-ss-id="kpi-call"><div class="n">2%</div><div class="t">of a camp's next acts can be called to the day from its last two (ladder 18%, gate 17%)</div></div>
+    <div class="tile" data-ss-id="kpi-endless"><div class="n">0 <small>of 64</small></div><div class="t">worlds left alone with an endless war (ladder: all 64)</div></div>
+    <div class="tile" data-ss-id="kpi-wait"><div class="n">5</div><div class="t">questions waiting for you, CL-1 to CL-5</div></div>
+  </div>
+</header>
+
+<section id="model" data-ss-id="model" data-ss-section>
+  <h2 data-ss-id="model-h">How a camp decides, in plain words</h2>
+  <p data-ss-id="model-p">Everything below is a number the engine already has or can keep cheaply between events. Each culture has its own values in its data file, so goblins, bandits, raiders, the Umvuthana and the Frostmaw think alike in shape and differ in temper.</p>
+
+  <h3 data-ss-id="council-h">A council of three</h3>
+  <p data-ss-id="council-p">Each camp has a chief, a war leader who is also his heir, and an elder. Each has a temperament: how bold, how aggressive, how sociable. When the camp sits, one of them has the floor, drawn by standing; his temper carries the day and the other two soften it. So the same camp, in the same state, is bolder on the days the war leader speaks.</p>
+  <div class="council" data-ss-id="council">
+    <div class="voice" data-ss-id="voice-chief">
+      <h3>The chief</h3>
+      <p class="st">Standing 1.0: speaks most often</p>
+      <div class="tbar"><span>Bold</span><span class="tr"><span class="f" style="--w:0.55;display:block"></span></span><span class="val">0.55</span></div>
+      <div class="tbar"><span>Aggressive</span><span class="tr"><span class="f" style="--w:0.60;display:block"></span></span><span class="val">0.60</span></div>
+      <div class="tbar"><span>Sociable</span><span class="tr"><span class="f" style="--w:0.35;display:block"></span></span><span class="val">0.35</span></div>
+    </div>
+    <div class="voice" data-ss-id="voice-war">
+      <h3>The war leader, his heir</h3>
+      <p class="st">Standing 0.7: bolder, hotter, less sociable</p>
+      <div class="tbar"><span>Bold</span><span class="tr"><span class="f" style="--w:0.67;display:block"></span></span><span class="val">0.67</span></div>
+      <div class="tbar"><span>Aggressive</span><span class="tr"><span class="f" style="--w:0.75;display:block"></span></span><span class="val">0.75</span></div>
+      <div class="tbar"><span>Sociable</span><span class="tr"><span class="f" style="--w:0.25;display:block"></span></span><span class="val">0.25</span></div>
+    </div>
+    <div class="voice" data-ss-id="voice-elder">
+      <h3>The elder</h3>
+      <p class="st">Standing 0.6: the cautious voice</p>
+      <div class="tbar"><span>Bold</span><span class="tr"><span class="f" style="--w:0.40;display:block"></span></span><span class="val">0.40</span></div>
+      <div class="tbar"><span>Aggressive</span><span class="tr"><span class="f" style="--w:0.45;display:block"></span></span><span class="val">0.45</span></div>
+      <div class="tbar"><span>Sociable</span><span class="tr"><span class="f" style="--w:0.45;display:block"></span></span><span class="val">0.45</span></div>
+    </div>
+  </div>
+  <p class="cap" data-ss-id="council-cap">The goblin culture's average council. Each camp draws its own three around these, with a spread of 0.2, so two goblin camps in one world behave differently, and a camp changes when its chief does.</p>
+  <ul data-ss-id="council-more">
+    <li><strong>Standing moves.</strong> A won fight lifts the standing of whoever argued for it. A lost one cuts it and hands the floor to the elder. A hothead who wins keeps winning the argument until he loses.</li>
+    <li><strong>Chiefs come and go.</strong> They die of a fever, in a quarrel or a hunting accident, are deposed, grow old, or fall leading a beaten attack. The war leader takes over with his own temper and a season to prove himself, a year if his chief was killed. He keeps part of each grudge, more if he is aggressive.</li>
+  </ul>
+
+  <h3 data-ss-id="wants-h">What it wants, and what it fears</h3>
+  <ul class="wants" data-ss-id="wants">
+    <li data-ss-id="want-food"><b>Food</b>Its stores fill in summer and run down in winter, more or less in a good or a bad year. A hungry camp values loot; a fed one hardly at all.</li>
+    <li data-ss-id="want-loot"><b>Loot</b>What a raid would carry home, planned against what the camp last saw you holding, not what you really hold.</li>
+    <li data-ss-id="want-revenge"><b>Revenge</b>The grievance today's engine already keeps, from your mines and smoke, a culture's old hatreds and the railway.</li>
+    <li data-ss-id="want-honour"><b>Honour</b>Wounded pride after a refused envoy, a killed envoy, a raid, a stolen crystal, a dead chief. It fades, and it counts for little when the camp has no hope of winning.</li>
+    <li data-ss-id="want-glory"><b>Glory</b>Warriors grow restless the longer they go without a fight. A new war leader must prove himself.</li>
+    <li data-ss-id="want-fear"><b>Fear</b>Of losses: its own dead, a lost fight, a dragon strike. A frightened camp counts every risk higher. Raiders also fear a neighbour grown too strong, and may strike first.</li>
+  </ul>
+
+  <h3 data-ss-id="beliefs-h">What it believes, and what it remembers</h3>
+  <ul data-ss-id="beliefs">
+    <li><strong>A guess at each neighbour's strength, with an uncertainty.</strong> For camps and villages it has always known, the guess starts within about a third. For a new player base it starts wide: about 15, where anything from 5 to 40 seems plausible.</li>
+    <li><strong>Looking sharpens it.</strong> A fight is the best look, then scouts, then an envoy who walked to your gate and back, then rumour. Left alone the guess blurs again over a year or two, four times slower for a player's base, because walls do not fall down.</li>
+    <li><strong>A defeat teaches.</strong> A base that destroyed a party is at least that strong, and the camp remembers that for a while.</li>
+    <li><strong>Word that you are away</strong> halves its guess of you for 3 to 10 days: your walls are home, you are not. It changes nothing it believes about your walls.</li>
+    <li><strong>A record of who pays.</strong> How often you have paid its envoys, fading back toward even over two years.</li>
+    <li><strong>Up to four memories about each neighbour</strong>, the strongest kept, each fading: "player Bea killed Vorr, our chief, in the spring of year 3", "we lost 26 at player Ben", "player Ben refused our envoy", "Crowsnest's hunters killed 2 of ours at the border", "word came that the trains ride without guards", and the kind ones, "player Bea paid 87". A grievance says how angry the camp is; a memory says why.</li>
+  </ul>
+
+  <h3 data-ss-id="sits-h">When it sits</h3>
+  <table class="stack" data-ss-id="sits">
+    <thead><tr><th>Occasion</th><th>What starts it</th><th>How soon</th></tr></thead>
+    <tbody>
+      <tr><td>Provoked</td><td data-label="What starts it">Members killed by a player or a camp, a raid on the camp, a border clash, a stolen crystal</td><td data-label="How soon">A hothead within a day or two; a cool chief a week or more, and he may let it pass</td></tr>
+      <tr><td>Refused</td><td data-label="What starts it">Its envoy came back refused, or did not come back</td><td data-label="How soon">A few days to a few weeks, sooner under an aggressive chief</td></tr>
+      <tr><td>News</td><td data-label="What starts it">Word that a neighbour is weak, a player is away, the trains ride without guards</td><td data-label="How soon">The day it arrives, which is days after it happened</td></tr>
+      <tr><td>Prey passes</td><td data-label="What starts it">A caravan on the road, a train through its range that it notices</td><td data-label="How soon">At once</td></tr>
+      <tr><td>Restless</td><td data-label="What starts it">Nothing in particular: its own clock</td><td data-label="How soon">About every 12 days for goblins, sooner when it is hungry, angry or proud</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="sits-cap">An insult a cool chief lets pass is not forgotten: its grievance and pride make the camp restless sooner.</p>
+
+  <h3 data-ss-id="choose-h">How it chooses</h3>
+  <ol class="steps" data-ss-id="choose">
+    <li><span>One voice takes the floor, drawn by standing.</span></li>
+    <li><span>For each neighbour before it, the council draws <strong>one guess</strong> of that neighbour's strength from its belief. A wide belief sometimes gives a guess low enough to try: that is how a camp tests a new base, and how it is sometimes badly wrong. A bold speaker guesses his enemies weaker.</span></li>
+    <li><span>Against that guess it weighs each thing it could do: wait, warn (a howl, a roar, the gong, a war band shown at your edge), send scouts, send an envoy for tribute, send a band, a raid or an invasion, fall on a rival camp's hunters, lie in wait for a train or a caravan, offer a truce, or, for the Umvuthana, send the raptors after a village's animals.</span></li>
+    <li><span>Each act scores what it might win, less the warriors it might lose, plus revenge, honour and glory, less the cost of breaking a sworn truce or making a new enemy.</span></li>
+    <li><span>It then picks among staying home and its best idea for each neighbour: usually the best, sometimes the second best, rarely something rash. An aggressive council is more erratic.</span></li>
+  </ol>
+
+  <h3 data-ss-id="terms-h">Terms first, when terms make sense</h3>
+  <p data-ss-id="terms-p">An envoy asks only where the camp's threat is credible. The price falls between what the war is worth to the camp and the loot it believes it would carry off, nearer the top when the speaker is aggressive or hungry. Both sides are better off with the payment than with the war. The envoy walks to your gate and back, so the camp learns your walls and your stock whether or not you pay. A payment buys a truce of about 48 days, sworn by the chief who took it. Breaking it costs him three times what it costs his heir, which is how heirs come to raid a payer. A refusal wounds the camp's pride and is remembered. A camp that has been paid for years does not lightly kill the goose.</p>
+
+  <details data-ss-id="brakes">
+    <summary>What keeps a world stable over decades</summary>
+    <ul>
+      <li>A camp attacked meets its guard, a quarter of its people (a grove stands all its warriors and the Umvuthi around the throne). Without that, no full camp was ever beaten and camps never fought each other.</li>
+      <li>A lost fight destroys the party, frightens the camp, hands the floor to the elder and teaches it a floor. A raid that wins on a camp costs the defenders, which feeds their grievance.</li>
+      <li>A won fight sates vengeance: it halves the grievance and takes most of the wound away.</li>
+      <li>Survivors walk home for 1 to 3 days, and the camp is weaker until they are back.</li>
+      <li>A fed camp values loot little: most fights come in winter and after bad years.</li>
+      <li>A camp afraid or sociable enough offers a truce, and both chiefs swear it. In 64 worlds of 50 years, 1,562 truces were sworn; the chiefs who swore them broke them 55 times, later chiefs 261 times.</li>
+      <li>Making a new enemy, or fighting one's own culture, is dear.</li>
+      <li>Hunters of two hostile camps meet at the border about once in two years when both are fed, two or three times a year when both starve. Each clash is remembered, and some become feuds. Without them, camps at strength drifted into permanent peace.</li>
+    </ul>
+  </details>
+</section>
+
+<section id="fight" data-ss-id="fight" data-ss-section>
+  <h2 data-ss-id="fight-h">The fight stays the engine's, and certain</h2>
+  <div class="box key" data-ss-id="keypoint">
+    <h3>A lost raid is a council that guessed wrong</h3>
+    <p>When a party meets a defence, the engine already decides it with no dice: the stronger side wins, and how many each side loses follows from the ratio. This design keeps that exactly. The doubt is in the council's head, not in the fight. It does not know how strong you are; it guesses. So every lost raid has a story: a new base guessed weak, a guard guessed thin, a player believed away.</p>
+    <p>The gate you rejected rolled odds against a fight that has no dice. It treated its belief as a chance to win, so it thought a weaker party had a fair chance, and sent it. That is why it attacked camps it could not beat (75% of its fights on camps were lost, 99% of those on the fortress) and left alone targets it would have beaten.</p>
+  </div>
+  <p data-ss-id="fight-only">The one fight that is drawn is one you are at in person outside the raid director: waking the Frostmaw while you steal its crystal is Minecraft's own fight.</p>
+  <div class="figs" data-ss-id="belief-figs">
+    <div class="fig" data-ss-id="fig-before">
+      <h4>Before the first fight</h4>
+      <svg class="belief" viewBox="0 0 340 200" role="img" aria-label="Before the first fight: the guess is wide around 15, and most of it lies below the invasion strength of 30.4, while the real walls are 80."><polygon points="14.0,150 14.0,123.2 15.4,122.3 16.8,121.4 18.3,120.6 19.7,119.7 21.1,118.7 22.5,117.8 23.9,116.9 25.3,115.9 26.8,114.9 28.2,113.9 29.6,112.9 31.0,111.9 32.4,110.9 33.9,109.9 35.3,108.8 36.7,107.7 38.1,106.7 39.5,105.6 40.9,104.5 42.4,103.4 43.8,102.3 45.2,101.1 46.6,100.0 48.0,98.9 49.5,97.7 50.9,96.6 52.3,95.4 53.7,94.3 55.1,93.1 56.5,92.0 58.0,90.8 59.4,89.6 60.8,88.5 62.2,87.3 63.6,86.2 65.1,85.0 66.5,83.9 67.9,82.7 69.3,81.6 70.7,80.5 72.1,79.3 73.6,78.2 75.0,77.1 76.4,76.0 77.8,75.0 79.2,73.9 80.7,72.9 82.1,71.8 83.5,70.8 84.9,69.8 86.3,68.8 87.7,67.9 89.2,66.9 90.6,66.0 92.0,65.1 93.4,64.2 94.8,63.4 96.3,62.5 97.7,61.7 99.1,61.0 100.5,60.2 101.9,59.5 103.3,58.8 104.8,58.1 106.2,57.5 107.6,56.9 109.0,56.3 110.4,55.8 111.9,55.3 113.3,54.8 114.7,54.4 116.1,54.0 117.5,53.6 118.9,53.3 120.4,53.0 121.8,52.8 123.2,52.5 124.6,52.4 126.0,52.2 127.5,52.1 128.9,52.0 130.3,52.0 131.7,52.0 133.1,52.0 134.5,52.1 136.0,52.2 137.4,52.4 138.8,52.6 140.2,52.8 141.6,53.1 143.1,53.4 144.5,53.7 145.9,54.1 147.3,54.5 148.7,54.9 150.1,55.4 151.6,55.9 153.0,56.4 154.4,57.0 155.8,57.6 157.2,58.2 158.7,58.9 160.1,59.6 161.5,60.3 162.9,61.1 164.3,61.8 165.7,62.6 167.2,63.5 168.6,64.3 170.0,65.2 171.4,66.1 172.8,67.0 174.3,68.0 175.7,68.9 177.1,69.9 178.5,70.9 179.9,71.9 181.3,73.0 181.3,150" fill="#8f620f" fill-opacity="0.22"/><polyline points="14.0,123.2 15.4,122.3 16.8,121.4 18.3,120.6 19.7,119.7 21.1,118.7 22.5,117.8 23.9,116.9 25.3,115.9 26.8,114.9 28.2,113.9 29.6,112.9 31.0,111.9 32.4,110.9 33.9,109.9 35.3,108.8 36.7,107.7 38.1,106.7 39.5,105.6 40.9,104.5 42.4,103.4 43.8,102.3 45.2,101.1 46.6,100.0 48.0,98.9 49.5,97.7 50.9,96.6 52.3,95.4 53.7,94.3 55.1,93.1 56.5,92.0 58.0,90.8 59.4,89.6 60.8,88.5 62.2,87.3 63.6,86.2 65.1,85.0 66.5,83.9 67.9,82.7 69.3,81.6 70.7,80.5 72.1,79.3 73.6,78.2 75.0,77.1 76.4,76.0 77.8,75.0 79.2,73.9 80.7,72.9 82.1,71.8 83.5,70.8 84.9,69.8 86.3,68.8 87.7,67.9 89.2,66.9 90.6,66.0 92.0,65.1 93.4,64.2 94.8,63.4 96.3,62.5 97.7,61.7 99.1,61.0 100.5,60.2 101.9,59.5 103.3,58.8 104.8,58.1 106.2,57.5 107.6,56.9 109.0,56.3 110.4,55.8 111.9,55.3 113.3,54.8 114.7,54.4 116.1,54.0 117.5,53.6 118.9,53.3 120.4,53.0 121.8,52.8 123.2,52.5 124.6,52.4 126.0,52.2 127.5,52.1 128.9,52.0 130.3,52.0 131.7,52.0 133.1,52.0 134.5,52.1 136.0,52.2 137.4,52.4 138.8,52.6 140.2,52.8 141.6,53.1 143.1,53.4 144.5,53.7 145.9,54.1 147.3,54.5 148.7,54.9 150.1,55.4 151.6,55.9 153.0,56.4 154.4,57.0 155.8,57.6 157.2,58.2 158.7,58.9 160.1,59.6 161.5,60.3 162.9,61.1 164.3,61.8 165.7,62.6 167.2,63.5 168.6,64.3 170.0,65.2 171.4,66.1 172.8,67.0 174.3,68.0 175.7,68.9 177.1,69.9 178.5,70.9 179.9,71.9 181.3,73.0 182.8,74.0 184.2,75.1 185.6,76.2 187.0,77.3 188.4,78.4 189.9,79.5 191.3,80.6 192.7,81.7 194.1,82.9 195.5,84.0 196.9,85.2 198.4,86.3 199.8,87.5 201.2,88.6 202.6,89.8 204.0,91.0 205.5,92.1 206.9,93.3 208.3,94.4 209.7,95.6 211.1,96.7 212.5,97.9 214.0,99.0 215.4,100.2 216.8,101.3 218.2,102.4 219.6,103.5 221.1,104.6 222.5,105.7 223.9,106.8 225.3,107.9 226.7,108.9 228.1,110.0 229.6,111.0 231.0,112.1 232.4,113.1 233.8,114.1 235.2,115.1 236.7,116.0 238.1,117.0 239.5,117.9 240.9,118.9 242.3,119.8 243.7,120.7 245.2,121.5 246.6,122.4 248.0,123.3 249.4,124.1 250.8,124.9 252.3,125.7 253.7,126.5 255.1,127.3 256.5,128.0 257.9,128.7 259.3,129.5 260.8,130.2 262.2,130.9 263.6,131.5 265.0,132.2 266.4,132.8 267.9,133.4 269.3,134.0 270.7,134.6 272.1,135.2 273.5,135.7 274.9,136.3 276.4,136.8 277.8,137.3 279.2,137.8 280.6,138.3 282.0,138.7 283.5,139.2 284.9,139.6 286.3,140.1 287.7,140.5 289.1,140.9 290.5,141.2 292.0,141.6 293.4,142.0 294.8,142.3 296.2,142.6 297.6,143.0 299.1,143.3 300.5,143.6 301.9,143.9 303.3,144.1 304.7,144.4 306.1,144.7 307.6,144.9 309.0,145.1 310.4,145.4 311.8,145.6 313.2,145.8 314.7,146.0 316.1,146.2 317.5,146.4 318.9,146.6 320.3,146.7 321.7,146.9 323.2,147.0 324.6,147.2 326.0,147.3" fill="none" stroke="#8f620f" stroke-width="2" stroke-linejoin="round"/><line x1="14" y1="150" x2="326" y2="150" stroke="#c9c9d1" stroke-width="1"/><line x1="51.1" y1="150" x2="51.1" y2="154" stroke="#c9c9d1"/><text x="51.1" y="169" font-size="14" fill="#52514a" text-anchor="middle">5</text><line x1="101.5" y1="150" x2="101.5" y2="154" stroke="#c9c9d1"/><text x="101.5" y="169" font-size="14" fill="#52514a" text-anchor="middle">10</text><line x1="151.8" y1="150" x2="151.8" y2="154" stroke="#c9c9d1"/><text x="151.8" y="169" font-size="14" fill="#52514a" text-anchor="middle">20</text><line x1="202.2" y1="150" x2="202.2" y2="154" stroke="#c9c9d1"/><text x="202.2" y="169" font-size="14" fill="#52514a" text-anchor="middle">40</text><line x1="252.5" y1="150" x2="252.5" y2="154" stroke="#c9c9d1"/><text x="252.5" y="169" font-size="14" fill="#52514a" text-anchor="middle">80</text><text x="170.0" y="190" font-size="14" fill="#52514a" text-anchor="middle">the strength it guesses for your base</text><line x1="182.2" y1="28" x2="182.2" y2="150" stroke="#52514a" stroke-width="1.5" stroke-dasharray="4 3"/><text x="178.2" y="22" font-size="14" fill="#1a1a1f" text-anchor="end">invasion 30.4</text><line x1="252.5" y1="28" x2="252.5" y2="150" stroke="#1a1a1f" stroke-width="2"/><text x="256.5" y="22" font-size="14" fill="#1a1a1f" font-weight="600">walls 80</text></svg>
+      <p>A goblin camp's guess of your new base: wide, around 15. Every guess in the shaded part puts your walls below its invasion of 30.4, so attacking looks worth it. Your walls are 80.</p>
+    </div>
+    <div class="fig" data-ss-id="fig-after">
+      <h4>After the lost invasion</h4>
+      <svg class="belief" viewBox="0 0 340 200" role="img" aria-label="After the lost invasion: the guess sits close to 80, and nothing below 30.4 is believed any more."><defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#c9c9d1" stroke-width="2"/></pattern></defs><rect x="14" y="34" width="168.2" height="116" fill="url(#hatch)"/><text x="18" y="50" font-size="14" fill="#52514a">ruled out</text><polyline points="14.0,150.0 15.4,150.0 16.8,150.0 18.3,150.0 19.7,150.0 21.1,150.0 22.5,150.0 23.9,150.0 25.3,150.0 26.8,150.0 28.2,150.0 29.6,150.0 31.0,150.0 32.4,150.0 33.9,150.0 35.3,150.0 36.7,150.0 38.1,150.0 39.5,150.0 40.9,150.0 42.4,150.0 43.8,150.0 45.2,150.0 46.6,150.0 48.0,150.0 49.5,150.0 50.9,150.0 52.3,150.0 53.7,150.0 55.1,150.0 56.5,150.0 58.0,150.0 59.4,150.0 60.8,150.0 62.2,150.0 63.6,150.0 65.1,150.0 66.5,150.0 67.9,150.0 69.3,150.0 70.7,150.0 72.1,150.0 73.6,150.0 75.0,150.0 76.4,150.0 77.8,150.0 79.2,150.0 80.7,150.0 82.1,150.0 83.5,150.0 84.9,150.0 86.3,150.0 87.7,150.0 89.2,150.0 90.6,150.0 92.0,150.0 93.4,150.0 94.8,150.0 96.3,150.0 97.7,150.0 99.1,150.0 100.5,150.0 101.9,150.0 103.3,150.0 104.8,150.0 106.2,150.0 107.6,150.0 109.0,150.0 110.4,150.0 111.9,150.0 113.3,150.0 114.7,150.0 116.1,150.0 117.5,150.0 118.9,150.0 120.4,150.0 121.8,150.0 123.2,150.0 124.6,150.0 126.0,150.0 127.5,150.0 128.9,150.0 130.3,150.0 131.7,150.0 133.1,150.0 134.5,150.0 136.0,150.0 137.4,150.0 138.8,150.0 140.2,150.0 141.6,150.0 143.1,150.0 144.5,150.0 145.9,150.0 147.3,150.0 148.7,150.0 150.1,150.0 151.6,150.0 153.0,150.0 154.4,150.0 155.8,150.0 157.2,150.0 158.7,150.0 160.1,150.0 161.5,150.0 162.9,150.0 164.3,150.0 165.7,150.0 167.2,150.0 168.6,150.0 170.0,150.0 171.4,150.0 172.8,150.0 174.3,150.0 175.7,150.0 177.1,150.0 178.5,150.0 179.9,150.0 181.3,150.0 182.8,150.0 184.2,150.0 185.6,150.0 187.0,150.0 188.4,150.0 189.9,150.0 191.3,150.0 192.7,150.0 194.1,150.0 195.5,150.0 196.9,150.0 198.4,150.0 199.8,150.0 201.2,150.0 202.6,150.0 204.0,150.0 205.5,150.0 206.9,150.0 208.3,150.0 209.7,150.0 211.1,149.9 212.5,149.9 214.0,149.8 215.4,149.7 216.8,149.5 218.2,149.3 219.6,149.0 221.1,148.5 222.5,147.8 223.9,146.9 225.3,145.7 226.7,144.0 228.1,142.0 229.6,139.3 231.0,136.1 232.4,132.2 233.8,127.5 235.2,122.1 236.7,116.0 238.1,109.3 239.5,102.0 240.9,94.4 242.3,86.7 243.7,79.1 245.2,71.9 246.6,65.5 248.0,60.0 249.4,55.9 250.8,53.1 252.3,52.0 253.7,52.5 255.1,54.7 256.5,58.3 257.9,63.3 259.3,69.5 260.8,76.4 262.2,83.9 263.6,91.6 265.0,99.3 266.4,106.7 267.9,113.6 269.3,120.0 270.7,125.6 272.1,130.5 273.5,134.7 274.9,138.2 276.4,141.1 277.8,143.3 279.2,145.1 280.6,146.5 282.0,147.5 283.5,148.3 284.9,148.8 286.3,149.2 287.7,149.5 289.1,149.7 290.5,149.8 292.0,149.9 293.4,149.9 294.8,149.9 296.2,150.0 297.6,150.0 299.1,150.0 300.5,150.0 301.9,150.0 303.3,150.0 304.7,150.0 306.1,150.0 307.6,150.0 309.0,150.0 310.4,150.0 311.8,150.0 313.2,150.0 314.7,150.0 316.1,150.0 317.5,150.0 318.9,150.0 320.3,150.0 321.7,150.0 323.2,150.0 324.6,150.0 326.0,150.0" fill="none" stroke="#8f620f" stroke-width="2" stroke-linejoin="round"/><line x1="14" y1="150" x2="326" y2="150" stroke="#c9c9d1" stroke-width="1"/><line x1="51.1" y1="150" x2="51.1" y2="154" stroke="#c9c9d1"/><text x="51.1" y="169" font-size="14" fill="#52514a" text-anchor="middle">5</text><line x1="101.5" y1="150" x2="101.5" y2="154" stroke="#c9c9d1"/><text x="101.5" y="169" font-size="14" fill="#52514a" text-anchor="middle">10</text><line x1="151.8" y1="150" x2="151.8" y2="154" stroke="#c9c9d1"/><text x="151.8" y="169" font-size="14" fill="#52514a" text-anchor="middle">20</text><line x1="202.2" y1="150" x2="202.2" y2="154" stroke="#c9c9d1"/><text x="202.2" y="169" font-size="14" fill="#52514a" text-anchor="middle">40</text><line x1="252.5" y1="150" x2="252.5" y2="154" stroke="#c9c9d1"/><text x="252.5" y="169" font-size="14" fill="#52514a" text-anchor="middle">80</text><text x="170.0" y="190" font-size="14" fill="#52514a" text-anchor="middle">the strength it guesses for your base</text><line x1="182.2" y1="28" x2="182.2" y2="150" stroke="#52514a" stroke-width="1.5" stroke-dasharray="4 3"/><text x="178.2" y="22" font-size="14" fill="#1a1a1f" text-anchor="end">invasion 30.4</text><line x1="252.5" y1="28" x2="252.5" y2="150" stroke="#1a1a1f" stroke-width="2"/><text x="256.5" y="22" font-size="14" fill="#1a1a1f" font-weight="600">walls 80</text></svg>
+      <p>All 26 died. The camp now knows roughly how strong you are, and nothing below its own invasion is believed any more. Years later the guess blurs again, slowly; word that you are away halves it for a few days. That is when the rare second test comes.</p>
+    </div>
+  </div>
+  <p class="cap" data-ss-id="figs-cap">Illustrations drawn from the model's numbers, not a run's output.</p>
+</section>
+
+<section id="results" data-ss-id="results" data-ss-section>
+  <h2 data-ss-id="results-h">The three designs on the same world</h2>
+  <p data-ss-id="results-p">Today's grievance ladder (EQ-5 (c)), the gate you rejected (EQ-5 (a)) and this design, each run on the same valley of seven camps, two villages, a road and a railway, 64 worlds of 50 game years each. All three fight by the engine's certain rule; they differ only in how they decide. Players are scripts.</p>
+  <table class="stack" data-ss-id="results-table">
+    <thead><tr><th>Who</th><th>Today's ladder</th><th>The gate (rejected)</th><th>This design</th></tr></thead>
+    <tbody>
+      <tr><td>A walled base (defence 80) near three camps, never pays</td><td data-label="Today's ladder">2.7 fights a year on him, every one lost; 39 attackers killed a year</td><td data-label="The gate (rejected)">0.8 a year, 99% lost; 16 killed a year</td><td data-label="This design">0.13 a year (one in eight years), every one lost; 3 killed a year. A new neighbour's first test, a feud after a chief fell at his walls, word that he was away</td></tr>
+      <tr><td>A weak base (defence 6) that pays when the price is no more than a raid would take</td><td data-label="Today's ladder">14.7 wars a year in the last decade: in some camps the price outgrows the raid, and one refusal is war for good; 138 tribute a year</td><td data-label="The gate (rejected)">No war; 329 tribute a year</td><td data-label="This design">0.1 fights a year; 177 tribute and 30 loot a year, 43% of his income</td></tr>
+      <tr><td>A weak base that never pays</td><td data-label="Today's ladder">23.7 wars a year</td><td data-label="The gate (rejected)">10.4</td><td data-label="This design">3.4, which take all his income</td></tr>
+      <tr><td>A player who hunts a goblin camp and kills its envoys (defence 50)</td><td data-label="Today's ladder">7.5 fights a year on him</td><td data-label="The gate (rejected)">3.3</td><td data-label="This design">0.33: the attacks that find him away win (25 loot a year, 5% of his income); the rest break on his walls</td></tr>
+      <tr><td>A railway at 4 legs a day past a goblin camp and a Frostmaw den</td><td data-label="Today's ladder">No robbery</td><td data-label="The gate (rejected)">No robbery</td><td data-label="This design">2.9 train ambushes a year: 2.5 by the goblins (one in seven lost to the guards the owner puts on) and 0.36 Frostmaw lurks; 0.7 caravan ambushes</td></tr>
+      <tr><td>Nobody: the world left alone</td><td data-label="Today's ladder">30 fights a year, 10 between camps and every one of those lost; every world a forever war</td><td data-label="The gate (rejected)">12.6 a year, 2.1 between camps, 75% of those lost</td><td data-label="This design">7.3 a year, 1.2 between camps, 12% of those lost; wars that start and end</td></tr>
+    </tbody>
+  </table>
+
+  <h3 data-ss-id="predict-h">How predictable each one is</h3>
+  <table class="stack nums" data-ss-id="predict-table">
+    <thead><tr><th>Measure (the world left alone unless said)</th><th class="num">Ladder</th><th class="num">Gate</th><th class="num">This design</th></tr></thead>
+    <tbody>
+      <tr><td>A camp's next act called to the day from its last two</td><td class="num" data-label="Ladder">18%</td><td class="num" data-label="Gate">17%</td><td class="num" data-label="This design">2%</td></tr>
+      <tr><td>Two seeds of one world: share of the first ten years' acts that match (chance in brackets)</td><td class="num" data-label="Ladder">52% (49%)</td><td class="num" data-label="Gate">38% (36%)</td><td class="num" data-label="This design">9% (7%)</td></tr>
+      <tr><td>A fortress refuses an envoy: days to that camp's next fight on him, median and the middle 80%</td><td class="num" data-label="Ladder">9 (9 to 10)</td><td class="num" data-label="Gate">3 (3 to 3)</td><td class="num" data-label="This design">4 (1 to 65)</td></tr>
+      <tr><td>Refusals followed by a fight within a year</td><td class="num" data-label="Ladder">100%</td><td class="num" data-label="Gate">99%</td><td class="num" data-label="This design">30%</td></tr>
+      <tr><td>Fights the attackers lost</td><td class="num" data-label="Ladder">34%</td><td class="num" data-label="Gate">12%</td><td class="num" data-label="This design">2%</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="predict-cap">Today a refused envoy is followed by a raid 9 or 10 days later, every time, and under the gate 3 days later. In this design you cannot call it, and at a fortress most refusals are never answered with a fight at all.</p>
+
+  <h3 data-ss-id="reply-h">Each side plays close to its best reply</h3>
+  <p data-ss-id="reply-p">For a weak base, refusing costs everything, paying costs 43% of its income, building a little and paying costs 35%, and walls of 80 cost nothing a year. So your best reply is to pay or to build, and the camp's best reply to a payer is to ask, not raid: 0.1 fights a year on him against 3.4 on the refuser. Toward a fortress its best reply is to leave it alone, and it nearly does. Each side plays near its best reply with some noise, and the noise is what makes the world feel alive. Under the ladder the camp plays its worst reply against strength: 9.6 lost wars a year at a fortress in the one-on-one runs, 65 dead.</p>
+</section>
+
+<section id="stories" data-ss-id="stories" data-ss-section>
+  <h2 data-ss-id="stories-h">What you would live through</h2>
+  <p data-ss-id="stories-p">Four worlds from the model's own runs. Each is the seed, of 16, whose headline count is nearest the median, so these are typical, not picked. The players are scripts; the camps are the design. A war party you are online for is met on its march, walking in from the edge of what the game ticks; one you are away for meets your walls without you, and you find the damage when you come back. An envoy's spoken reason is CL-1's recommended answer. A game year is 96 days, four seasons of 24.</p>
+
+  <div class="story" id="story-envoy" data-ss-id="story-envoy">
+    <h3>The envoy, the truce, and the heir who never swore it</h3>
+    <p class="setup">Bea's base is weak (defence 8); she pays an envoy when the price is no more than a raid would take, and she has done nothing to anyone. Her neighbour Ash (defence 50) hunts the goblins of Ashpit every few weeks and kills their envoys. Both live in reach of Ashpit and of the Grey Outpost, a pillager camp.</p>
+    <ol class="walk" data-ss-id="walk-envoy">
+      <li><span class="d">Y1 d11</span><span>Ash raids Ashpit's camp and kills four.</span></li>
+      <li><span class="d">Y1 d13</span><span>Two days later a goblin envoy and his guards walk up to Bea's gate. Chief Nub asks 81 emeralds: <span class="why">"You killed 4 of ours at our camp."</span> It was Ash. Nobody saw who did it, and the camp blamed the neighbour it could see (CL-2). The price sits between what a war is worth to Ashpit and what it believes she would lose. She pays, and Nub swears a truce.</span></li>
+      <li><span class="d">Y1 d83</span><span>The Grey Outpost has asked her for nothing. Its band of 8 marches on her anyway, wins, loses 3 and carries off 43. Its reason: <span class="why">"Loot."</span></span></li>
+      <li><span class="d">Y2 d38, d68</span><span>Ash kills Ashpit's chief Nub, then his successor Gitz. A week later Ashpit's new chief Mott sends an envoy to Bea for 87: <span class="why">"You killed Nub, our chief, in the summer of year 2."</span> She pays.</span></li>
+      <li><span class="d">Y2 to Y5</span><span>Both camps' envoys keep coming, about three a year between them, asking 68 to 127. She pays every one. The Grey Outpost's envoys say <span class="why">"again: you paid 100 in the winter of year 2"</span>; they have learned she pays.</span></li>
+      <li><span class="d">Y5 d62</span><span>Ashpit's chief, a later Nub, takes 93 from her and swears a truce.</span></li>
+      <li><span class="d">Y5 d81</span><span>Ash kills him on one of his hunts. His war leader Brakka is chief now, with his own temper, and he swore nothing.</span></li>
+      <li><span class="d">Y5 d93</span><span>Brakka's invasion of 26 marches on Bea's base, wins, loses 1 and takes 185. The reason it carries: <span class="why">"Loot; Brakka had not sworn Nub's truce."</span></span></li>
+    </ol>
+    <div class="after" data-ss-id="after-envoy">
+      <p>Over the 50 years: 7 fights on Bea, every one won by the attackers, and all but that first band by a camp she was paying. Their reasons read like a family history: <span class="why">"the new war leader must prove himself"</span>, <span class="why">"empty stores"</span>, <span class="why">"winter hunger; Captain Hesk broke his own truce"</span>, <span class="why">"word came that player Bea was away; loot; Talv broke his own truce"</span>. She pays about 27 envoys a decade. Over the 64 worlds she pays 272 a year and loses 25 to raids, 62% of her income; Ash, who started it, takes 0.33 fights a year and loses 5% of his.</p>
+    </div>
+  </div>
+
+  <div class="story" id="story-heirs" data-ss-id="story-heirs">
+    <h3>The Frostmaw's heirs come for the man who killed the one before</h3>
+    <p class="setup">You (defence 30, you pay envoys) kill the North Den's Frostmaw whenever it is back, and now and then steal the crystal from the sleeping Frostmaw at the Pass Den. The Sun Grove's Umvuthana are also in reach.</p>
+    <ol class="walk" data-ss-id="walk-heirs">
+      <li><span class="d">Y1 d2</span><span>You kill the North Den's Frostmaw. A new one takes the den 12 days later; you kill it two days after that.</span></li>
+      <li><span class="d">Y1 d21</span><span>You steal the Pass Den's crystal while its Frostmaw sleeps.</span></li>
+      <li><span class="d">Y1 d39</span><span>You go back for another. The Frostmaw wakes; in the fight you are at in person, you kill it.</span></li>
+      <li><span class="d">Y1 d39</span><span>The same day the North Den's next heir arrives, after a wait your farming has doubled. It knows who killed the one before it, and its restlessness built up while the den stood empty: it comes for you that day. Your walls are 30; it is 41.7. It wins and takes 60. Its reason: <span class="why">"Honour: player Ben killed the Frostmaw before me in the spring of year 1."</span> You kill it two days later.</span></li>
+      <li><span class="d">Y1 d55</span><span>The Pass Den's heir, four days in its den, raids you for the same reason and takes 44.</span></li>
+      <li><span class="d">Y1 d78</span><span>The Sun Grove's envoy asks 14 gold. A grove raid could not take your walls, so you refuse. The gong follows, about once a year.</span></li>
+      <li><span class="d">Y2</span><span>You steal three more crystals. The Pass Den answers 21 days, 3 days and the same day later, and again on d84: <span class="why">"Honour: player Ben stole the crystal."</span> Each raid wins and takes 44.</span></li>
+      <li><span class="d">Y4 to Y5</span><span>Four times the Frostmaw wakes as you reach for the crystal and drives you off.</span></li>
+    </ol>
+    <div class="after" data-ss-id="after-heirs">
+      <p>Over the 50 years: 79 Frostmaw raids on you, none lost; 24 by the den you farm and 55 by the den you rob. The North Den's Frostmaw died 87 times at your hand, 1.73 a game year over all 64 worlds, close to the Mowzie plan's 1.8 for a farmed den. You lost 92 items a year, 19% of your income. The Umvuthi led its grove at your walls 58 times in 40 of the 64 worlds, its pride wounded by your refusals, and fell every time.</p>
+    </div>
+  </div>
+
+  <div class="story" id="story-line" data-ss-id="story-line">
+    <h3>The busy line: goblins and a Frostmaw rob your trains</h3>
+    <p class="setup">Your railway runs past Ashpit (goblins) and the Pass Den (a Frostmaw) at 12 legs a day. You (defence 30) never pay; after three robberies in 30 days you put guards on the trains for 48 to 144 days.</p>
+    <ol class="walk" data-ss-id="walk-line">
+      <li><span class="d">Y1 d3</span><span>The Frostmaw roars at the line. Your traffic has made it angry, and a roar is cheap.</span></li>
+      <li><span class="d">Y1 d7 to d73</span><span>Ashpit ambushes five trains, 8 goblins lying in wait by the track each time, 49 items a train: <span class="why">"A train came through; loot; and old hatred of the railway."</span> Once: <span class="why">"the new war leader must prove himself."</span></span></li>
+      <li><span class="d">Y1 d73</span><span>Robbed three times in a month, you put guards on.</span></li>
+      <li><span class="d">Y1 d77</span><span>The next ambush, argued for by the elder Snag, meets the guards. All 8 goblins die.</span></li>
+      <li><span class="d">Y1 d95 to Y2 d9</span><span>The Frostmaw lies in wait by the track three times and robs a train each time. It beats your guards (41.7 against 20) and loses half its haul to them: 33 items.</span></li>
+      <li><span class="d">Y2 d13</span><span>Ashpit's envoy asks you 122 emeralds. You refuse.</span></li>
+      <li><span class="d">Y2 d48</span><span>Word reaches Ashpit that you are away. Its invasion of 26 takes your base, loses 3 and carries off 167. You come home to find it gone.</span></li>
+      <li><span class="d">Y2 d63 to d86</span><span>The guards are off again. The Frostmaw robs twice and Ashpit once in 15 days; the guards go back on, and the next goblin ambush loses all 8.</span></li>
+    </ol>
+    <div class="after" data-ss-id="after-line">
+      <p>The pattern holds, but not on a calendar. Across the 64 worlds the first robbery after the guards come off follows by a median of 27 days, anywhere from 5 to 74: word of the guards going reaches the camps late, and the watch misses them half the time. Over the 50 years: 238 fights on the line and its owner, 25 of them lost by the attackers; Ashpit ambushed 112 trains, the Frostmaw lay in wait 119 times and roared 232 times, and the guards went on 34 times.</p>
+    </div>
+    <table class="nums traffic" data-ss-id="traffic-table">
+      <thead><tr><th>Legs a day</th><th class="num">Lurks</th><th class="num">Roars</th><th class="num">Goblin ambushes</th><th class="num">Guards on</th></tr></thead>
+      <tbody>
+        <tr><td>2</td><td class="num">0.17</td><td class="num">0.88</td><td class="num">2.33</td><td class="num">0.31</td></tr>
+        <tr><td>4</td><td class="num">0.35</td><td class="num">1.97</td><td class="num">2.42</td><td class="num">0.43</td></tr>
+        <tr><td>8</td><td class="num">0.91</td><td class="num">3.58</td><td class="num">2.63</td><td class="num">0.55</td></tr>
+        <tr><td>12</td><td class="num">1.89</td><td class="num">4.29</td><td class="num">2.38</td><td class="num">0.62</td></tr>
+        <tr><td>24</td><td class="num">5.19</td><td class="num">5.02</td><td class="num">2.06</td><td class="num">0.83</td></tr>
+      </tbody>
+    </table>
+    <p class="cap" data-ss-id="traffic-cap">Each a year, from 8 worlds of 20 years at each traffic. Lurks and roars are the Frostmaw's; a lurk is lying in wait by the track to rob a train. Its robbing grows smoothly with traffic; the goblins rob for loot at any traffic, and the guards cap them. Today's ladder has no Frostmaw robbery at 4 legs, and at 12 a lurk every 10 days, to the day, in every world (CL-3).</p>
+  </div>
+
+  <div class="story" id="story-fortress" data-ss-id="story-fortress">
+    <h3>The fortress: a new neighbour's first test, then years of gongs</h3>
+    <p class="setup">Your walled base (defence 80) sits in reach of the Sun Grove (Umvuthana), Mudhollow (goblins) and the Grey Outpost (pillagers). Your industry angers them. You never attack them and never pay.</p>
+    <ol class="walk" data-ss-id="walk-fortress">
+      <li><span class="d">Y1 d27 to d74</span><span>The Sun Grove's masks beat the gong at you; the Grey Outpost shows you a war band at the edge of your land. Nobody knows how strong your new base is: each camp guesses 15, give or take a factor of three.</span></li>
+      <li><span class="d">Y1 d76</span><span>The Grey Outpost invades with 23. Its war leader Captain Vask had the floor, and its chief Captain Hesk leads, as raider captains do. Their guess of you came out low. If you are home, you see its column on the march. All 23 die at your walls, and Hesk with them. Vask leads now.</span></li>
+      <li><span class="d">Y1 d77</span><span>The next day Mudhollow invades with 26 under its chief Vorr, for loot and its restless warriors. All 26 die. Both camps now know a floor: your base beat their whole invasion.</span></li>
+      <li><span class="d">Y2 to Y4</span><span>No fights. War bands at your border, howls, the gong, and Mudhollow's scouts. On Y4 d67 an envoy sent by Mudhollow's elder asks 115 emeralds: <span class="why">"We lost 26 at your walls in the winter of year 1."</span> You refuse.</span></li>
+      <li><span class="d">Y5 d96</span><span>In a hungry winter, word reaches Mudhollow that you are away. Its chief Mott invades with 26, guessing your walls at half. Half is 40, and 30.4 is short of it: all 26 die. You were not there; your walls held.</span></li>
+      <li><span class="d">Y8 d12 to d22</span><span>The Grey Outpost's envoy asks 94, reminding you of the 23 lost in year 1. Refused. Ten days later its chief Dorn leads 23 out of honour, and falls with them.</span></li>
+    </ol>
+    <div class="after" data-ss-id="after-fortress">
+      <p>Over the 50 years: 7 fights, every one lost by the attackers, 173 killed at your walls, 12 envoys, nothing paid, and in between 57 war bands shown, 66 gongs and 13 howls. Over the 64 worlds: a fight every eight years, and the first test of a new base within two years in 73% of them. The Sun Grove asked once, for 9 gold, and never sent a party: its best is 12.6 against your 80, and the Umvuthi never leads it there.</p>
+    </div>
+  </div>
+
+  <div class="box" data-ss-id="chronicle">
+    <h3>A valley with no players at all</h3>
+    <p>The first years of one world, as the log tells them: a dragon strikes Ashpit; Ashpit's chief Grukk is killed in a quarrel; the Grey Outpost's war leader Captain Mol ambushes a caravan; Ashpit's hunters kill one of the Grey Outpost's at the border; Mudhollow's war leader Brakka takes 26 to the village of Lowmarsh <span class="why">"to prove himself"</span> and comes back with 120; a Grey Outpost band falls on Mudhollow and dies; Mudhollow, its stores empty, invades the dragon-struck Grey Outpost, and four days later the Grey Outpost, its hunting ground lost, invades Ashpit; the Sun Grove's hungry raptors take Lowmarsh's animals.</p>
+    <p>Over 50 years that world has 54 fights between camps and wars that start and end. The next seed on the same map tells another history: different rivals, different feuds. Chiefs turn over about three times a camp a decade, and each new war leader brings a season or a year to prove himself, which is much of why no two decades read alike. Left alone for 500 years, fights a year by century stay between 6.1 and 8.4, with no trend.</p>
+  </div>
+</section>
+
+<section id="marches" data-ss-id="marches" data-ss-section>
+  <h2 data-ss-id="marches-h">What MZ-15 already settles</h2>
+  <p data-ss-id="marches-p">Your MZ-15, that whoever a grove sends marches visibly, wins wherever it and this design differ. The design takes it as it is.</p>
+  <ul data-ss-id="marches-list">
+    <li><strong>Every party marches.</strong> A band walks its route from its camp to the target and back: real bodies where a player is, the engine beyond, its position known at every tick so the far view can draw it from about a kilometre away. This design adds no march record of its own. Every act the council picks is one of today's party kinds and rides the same march: a skirmish's route ends at the rival camp's edge, a caravan ambush's on the road, a lurk's at its ambush spot by the track.</li>
+    <li><strong>The Umvuthi rides with its band,</strong> at the rear of the column. Its strength is in the band's (12.6 for a full invasion), and missing from the grove's defence until it is home. It leads only when its pride is wounded, and if the band is destroyed it falls with it, and the grove waits for an heir. How the leader travels and hands over is being designed in the Mowzie rework.</li>
+    <li><strong>Item 11: the census never ends a march.</strong> When a camp comes into range while its party is out, the party's bodies are taken and it marches on. A living member away is counted with its party, not called home. A party ends only at its own home or at its last death. The cost is UR-1's: members away when rtsim is uninstalled are lost.</li>
+    <li><strong>The 128-block rule holds.</strong> A war party on the march is not an arrival: its members are its camp's own, already walking toward you, so the rule does not apply to them. Its bodies appear where its march puts them as they come inside the ticking area, a stack at a time (a Sun Grove column comes as rows of warriors, a raptor pack, the chief and its horse). None of them is drawn where it appears; they walk into sight, and nothing appears that was not already walking toward you. A party that reaches you with no bodies yet (you log in or teleport there as it arrives) walks in along its own route from the farthest ticking point. The rule's other half stands: an arrival (a recruit, a new Frostmaw, a new Umvuthi) is never placed within 128 blocks of a player. The exact distances at each simulation distance are being corrected in MOWZIE.md.</li>
+    <li><strong>The spawn quota does not shrink a band.</strong> At most 16 members are in Minecraft at once. A goblin invasion of 26 keeps its whole strength in the fight; the rest walk in along the route as the quota frees, so you see it arrive in two or three bunches.</li>
+  </ul>
+</section>
+
+<section id="build" data-ss-id="build" data-ss-section>
+  <h2 data-ss-id="build-h">Building it</h2>
+  <p data-ss-id="build-p">Nothing is built; code starts after you approve the design. The order, by what gets built:</p>
+  <ol class="steps" data-ss-id="build-order">
+    <li><span><strong>The council on the engine's test harness</strong>, with no Java: feuds toward camps and villages, the sittings, drives, beliefs, the choice, the price, truces, succession, defender losses and the reason codes, driving today's party kinds.</span></li>
+    <li><span><strong>Saving the new fields</strong>, and the paged sweep that measures them at scale.</span></li>
+    <li><span><strong>The reasons in the game</strong>: an envoy's spoken line and a notice's reason, with their GameTests.</span></li>
+    <li><span><strong>Train ambushes for every culture that ambushes</strong>, once the Mowzie plan's lurk and track sampler exist.</span></li>
+    <li><span><strong>A stolen crystal as a theft</strong>, once the Mowzie plan reports who holds it.</span></li>
+    <li><span><strong>The walk-in</strong>, once MZ-15's march record exists.</span></li>
+    <li><span><strong>Caravan ambushes</strong>: the world answers which caravans pass a camp, and the robbery's loss reaches the economy.</span></li>
+  </ol>
+
+  <h3 data-ss-id="cost-h">What it costs</h3>
+  <ul data-ss-id="cost">
+    <li><strong>Memory:</strong> about 45 bytes a faction and 96 a feud. A faction's saved row grows from about 450 bytes to 1.4 to 1.7 KB, but rows are paged to disk, so resident memory grows only by about 0.4 MB at 4,096 factions.</li>
+    <li><strong>Step CPU:</strong> a sitting replaces today's plunder clock about one for one, and its arithmetic is small beside loading the faction's page. Estimated 52 to 60 microseconds a faction-day against today's 52.3 at 1,024 factions.</li>
+    <li><strong>Save CPU:</strong> estimated about three times today's, 110 to 125 ms a game day at 1,024 factions and about 800 at 4,096. The paged sweep measures it; if it is too much, the new feuds move to a page of their own.</li>
+    <li><strong>Nothing scans per tick</strong>, and nothing grows with time: memories are four slots, beliefs two numbers.</li>
+    <li><strong>Size:</strong> about 3,200 lines (estimate), about 1,300 of them tests.</li>
+  </ul>
+  <p class="cap" data-ss-id="cost-cap">CPU figures are inferred from today's measurements, not measured.</p>
+
+  <h3 data-ss-id="ledger-h">Reused and custom</h3>
+  <table class="stack" data-ss-id="ledger">
+    <thead><tr><th>Need</th><th>Reused</th><th>Custom</th></tr></thead>
+    <tbody>
+      <tr><td>Grievance and the rail meter</td><td data-label="Reused">Today's grievance signals; the Mowzie plan's rail meter</td><td data-label="Custom">None</td></tr>
+      <tr><td>Parties, marches, fights</td><td data-label="Reused">Today's party kinds, raid director and fight rules; MZ-15's march</td><td data-label="Custom">A skirmish target, defender losses, a leading chief's fall</td></tr>
+      <tr><td>Envoy and tribute</td><td data-label="Reused">Today's envoy, demand and tribute goods; the Mowzie plan's gold</td><td data-label="Custom">The price; the spoken reason</td></tr>
+      <tr><td>Train ambushes</td><td data-label="Reused">The Mowzie plan's lurk, ambush spot and train robbery</td><td data-label="Custom">The lurk opened to every culture that ambushes</td></tr>
+      <tr><td>Caravan ambushes</td><td data-label="Reused">rtsim's caravans</td><td data-label="Custom">A query for caravans passing a camp; the cargo loss reported</td></tr>
+      <tr><td>Chiefs and heirs</td><td data-label="Reused">Today's chiefs, heirs, temperaments and inherited grudges</td><td data-label="Custom">The elder, standing, tenure</td></tr>
+      <tr><td>Memories and notices</td><td data-label="Reused">rtsim's 8-byte memory slots; the howl, roar and gong notices</td><td data-label="Custom">Conflict memory kinds; the reason on a notice</td></tr>
+      <tr><td>Renewal, pressure, camp bodies</td><td data-label="Reused">Population Equilibrium's rules; the Mowzie plan's camp sync and MZ-15's census</td><td data-label="Custom">None</td></tr>
+      <tr><td>The decision</td><td data-label="Reused">Nothing fits</td><td data-label="Custom">The council: drives, beliefs, the one-guess draw, the softened choice, truces, border clashes</td></tr>
+    </tbody>
+  </table>
+  <p data-ss-id="d3">No new entities, blocks or items, and no new record type: the reasons ride as new fields on two records that exist. Removing rtsim leaves nothing behind, and reinstalling starts every council fresh.</p>
+
+  <details data-ss-id="leaves-out">
+    <summary>What the model leaves out</summary>
+    <ul>
+      <li>The march out: in the model a fight resolves the day it is decided; the engine's marches add days before it. The walk home is modelled.</li>
+      <li>The watched fight: every fight is the abstract one except the Frostmaw woken at its den. The raid director's waves, the spawn quota and the walk-in are not modelled.</li>
+      <li>Players are scripts: a fortress, a payer, a hunter, a thief, a railway owner. Real players change.</li>
+      <li>One valley of seven factions, two villages, a road and one line.</li>
+      <li>Dragon strikes and lost hunting grounds are the model's stand-ins for the world, not part of the design.</li>
+    </ul>
+  </details>
+  <p data-ss-id="d-choices">42 smaller choices (CL-D1 to CL-D42 in the doc) are taken in the design, and each can be undone: among them, a council of three, one guess drawn from a belief, a softened best choice, camp stores with seasons, border clashes, truces sworn by chiefs, no sieges and no starvation.</p>
+</section>
+
+<section id="waiting" data-ss-id="waiting" data-ss-section>
+  <h2 data-ss-id="waiting-h">5 questions wait for you</h2>
+  <p class="answer-how" data-ss-id="waiting-p">Answer like "CL-1 a, CL-2 b", or "all as recommended". The recommended option is first in each.</p>
+
+  <div class="decision" data-ss-id="cl1">
+    <h3>CL-1. Should a faction tell you why? <span class="open-tag">Waiting for you</span></h3>
+    <ul class="cl-opts">
+      <li><span class="k">(a) Yes (recommended).</span>An envoy says one line when he arrives: "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." A howl, roar or gong says who is angry and for what.</li>
+      <li><span class="k">(b) Only on request,</span>through a command or a page.</li>
+      <li><span class="k">(c) Never:</span>you guess.</li>
+    </ul>
+    <p class="who">Why it is yours: it is what you read in the game. The reasons are kept either way.</p>
+  </div>
+
+  <div class="decision" data-ss-id="cl2">
+    <h3>CL-2. Can a camp blame the wrong player? <span class="open-tag">Waiting for you</span></h3>
+    <ul class="cl-opts">
+      <li><span class="k">(a) Yes, 3 times in 10 (recommended),</span>when a kill had no witness and another player is in reach: a bystander may be asked to pay, or raided, for a neighbour's deeds. Bea, in the first story: 0.14 fights a year on her with it, 0.08 without.</li>
+      <li><span class="k">(b) Never:</span>only the one who did it is blamed.</li>
+    </ul>
+    <p class="who">Why it is yours: in multiplayer it punishes one player for what another did.</p>
+  </div>
+
+  <div class="decision" data-ss-id="cl3">
+    <h3>CL-3. How often does a Frostmaw rob a busy line? <span class="open-tag">Waiting for you</span></h3>
+    <ul class="cl-opts">
+      <li><span class="k">(a) This design's rate (recommended):</span>a lurk by the track about 0.35 times a year at 4 legs a day, 1.9 at 12, 5.2 at 24, with roars between.</li>
+      <li><span class="k">(b) Today's ladder:</span>none below a grievance of 70 (none at 4 legs), then one every 10 days, to the day: 9.6 a year at 12 legs.</li>
+      <li><span class="k">(c) This design with the grudge counting double:</span>0.33 at 4 legs, 4.2 at 12, 12.5 at 24.</li>
+    </ul>
+    <p class="who">Why it is yours: it sets what a railway costs in Frostmaw country.</p>
+  </div>
+
+  <div class="decision" data-ss-id="cl4">
+    <h3>CL-4. How often is a strong base tested? <span class="open-tag">Waiting for you</span></h3>
+    <ul class="cl-opts">
+      <li><span class="k">(a) Now and then (recommended):</span>about one fight in eight years at a fortress, every one lost by the attackers, each with a reason: a new neighbour's first test, a feud after a chief fell at your walls, word that you are away.</li>
+      <li><span class="k">(b) Never</span>unless you provoke them.</li>
+      <li><span class="k">(c) About once a season.</span></li>
+    </ul>
+    <p class="who">Why it is yours: it decides whether walls end the game's danger.</p>
+  </div>
+
+  <div class="decision" data-ss-id="cl5">
+    <h3>CL-5. Alliances between camps? <span class="open-tag">Waiting for you</span></h3>
+    <ul class="cl-opts">
+      <li><span class="k">(a) Not in this build (recommended):</span>camps fight, make truces and feud in pairs.</li>
+      <li><span class="k">(b) Yes:</span>camps that share an enemy can ally and send joint war parties.</li>
+    </ul>
+    <p class="who">Why it is yours: alliances are a new mechanic, with joint parties the game has to show.</p>
+  </div>
+</section>
+
+<details data-ss-id="sources" data-ss-react="off">
+  <summary>Sources</summary>
+  <ul>
+    <li>CONFLICT-LIFE.md on mic-rtsim main at 9775d54: the model (§2), the walkthroughs (§3), the numbers (§4), cost (§5), tests (§6), choices CL-D1 to CL-D42 (§7) and the questions (§8).</li>
+    <li>EQUILIBRIUM.md: §2.2's 128-block rule as reworded for MZ-15, and §2.6 item 11, the census.</li>
+    <li>research/conflict-life-2026-10-21/results: summary.md, walkthroughs.md (the four stories: seeds 1000, 1002, 1003 and 1000), stories.md and results.json.</li>
+    <li>DECISIONS.md: EQ-5 and MZ-15.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">
+  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at 9775d54. Private page for Ben, 22 October 2026.</p>
+</footer>
+
+</body>
+</html>
