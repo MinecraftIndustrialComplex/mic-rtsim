@@ -888,7 +888,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   report, summed (PLACEHOLDER: per 20 ticks, and before its DEMATERIALIZED). Each costs one point of
   the reserve.
 - **OIL_CONFIG** (OG-3, OG-7): the plugin's two switches, sent once per session before the first
-  PLAYER. Without it the engine keeps its defaults (field flights off, lair placement on).
+  PLAYER. Without it the engine keeps its defaults (field flights on, lair placement on; OGB-6).
 - **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
   `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this
   session for a `ChestBlockEntity` inside the box with an empty slot (a chest whose loot table is not
@@ -980,8 +980,9 @@ What the bridge must do:
    `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
    (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
    pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
-   lists (the blaze rules stay). This is a pack change (outward-facing: Ben's to apply); the edited
-   files are ready in `neoforge/iceandfire/pack-proposal/config/incontrol/` (not applied, Z21).
+   lists (the blaze rules stay). This is a pack change; Ben chose it (DECISIONS.md OGB-6) and it is
+   applied in the pack with field flights on (OGC46). `neoforge/iceandfire/pack-proposal/config/incontrol/`
+   still holds the same files for OG-10's harness (Z21).
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
@@ -1053,8 +1054,8 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   `DragonFireEvent` it posts costs one point and is summed into DRAGON_BREATHS; at zero the event is
   cancelled, so the dragon fights with bite and claws only (OG-13). A body without flag 16 breathes
   freely and is not counted.
-- **Sends OIL_CONFIG** from its config at session start: `fieldFlights` (default false until the
-  measurement of OILGATE.md §4.8 passes) and `placeLairs` (default true).
+- **Sends OIL_CONFIG** from its config at session start: `fieldFlights` (default true since OGB-6:
+  the flights replace In Control's fire dragon, OGC46) and `placeLairs` (default true).
 - **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
   above y 15 (In Control's `minheight`).
 

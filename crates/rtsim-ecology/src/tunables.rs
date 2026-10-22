@@ -138,10 +138,9 @@ pub struct DragonTunables {
     pub herd_risk: i32,
     /// Adopt (and so, per R18, discard) untagged dragons that spawned naturally or from a
     /// spawner. False leaves them alone: not adopted, not discarded, not tracked, plain Ice and
-    /// Fire mobs exactly as without the mod, so In Control's desert fire dragons stay the oil
-    /// progression gate (P13: In Control stays untouched until the sim version is measured to
-    /// be at least as dangerous; OILGATE.md OG-1). TUNABLE, default false: set true only after
-    /// the oil gate (OILGATE.md OG-10) measures at least as dangerous as In Control.
+    /// Fire mobs exactly as without the mod (OILGATE.md OG-1, P13). TUNABLE, default false.
+    /// Since OGB-6 the pack's In Control spawns no fire dragon, so nothing natural is left for
+    /// this to act on; it stays false (docs/choices-oilgate.md OGC47).
     pub adopt_natural_dragons: bool,
     /// The oil gate (OILGATE.md §4): the reserve, refuelling, field flights, sensing.
     pub oil: OilTunables,

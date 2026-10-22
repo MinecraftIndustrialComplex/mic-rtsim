@@ -92,8 +92,10 @@ public final class OilDangerGameTests {
     static final int FLOOR_R = 104, FLOOR_Y = 64;
     /** The pocket of site 2: the probe's feet at y 10, below the gate's flight_min_y (15). */
     static final int POCKET_Y = 10;
-    /** The hour both arms start at: morning (fire dragons sleep at night). */
+    /** The hour both arms start at by default: morning (fire dragons sleep at night). */
     static final long MORNING = 1000;
+    /** The hour both arms start at: {@code -Pog10Hour=<day time>} picks another (14000 runs them by night). */
+    static final long START = Long.getLong("mic_rtsim.og10.hour", MORNING);
     /** A hit within this many ticks of the last one counts only its excess (LivingEntity.hurt). */
     static final int HURT_WINDOW = 10;
     static final String STAND_IN = "mic_rtsim_og10_stand_in";
@@ -298,6 +300,7 @@ public final class OilDangerGameTests {
             return;
         }
         check("In Control is on the GameTest server", inControlPresent());
+        record(test, "start", "each arm starts at day time " + START);
         watch();
         boolean oil = siteNo != 3;
         boolean pocket = siteNo == 2;
@@ -435,7 +438,7 @@ public final class OilDangerGameTests {
             throw new IllegalStateException("could not load In Control's arm " + rules + " rules: " + e, e);
         }
         DragonKit.oilConfig(oilFlags);
-        level.setDayTime(MORNING);
+        level.setDayTime(START);
         long[] o = DragonKit.nativeOil(0);
         arm.drawsAt = o[NativeEngine.OIL_FIELD_DRAWS];
         arm.refuelsAt = o[NativeEngine.OIL_REFUELS];
