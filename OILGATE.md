@@ -3,11 +3,13 @@
 **Status:** Ben approved OG-1 to OG-8 and OG-10 to OG-13 as recommended (2026-10-21). The dragon
 half is built (2026-10-21): the engine side in `crates/rtsim-ecology/src/oil.rs` (with the drinking
 raid and the roof gate in `crates/rtsim-industry`), the plugin side in `neoforge/iceandfire`, the
-records in docs/boundary.md §6 and §6.8, the choices in `docs/choices-oilgate.md` (OGC#). Field
-flights ship switched off (`fieldFlights` false) until §4.8's measurement passes; In Control is
-untouched. §4.8 was first measured on 2026-10-21 (two runs by day, OGC35): at site 1 the gate's field
-flights matched In Control's damage per minute but hit 40 to 50% later and brought a third to a half
-as many dragons, so the gate does not pass yet (For Ben 1 in the choices file). The underground half
+records in docs/boundary.md §6 and §6.8, the choices in `docs/choices-oilgate.md` (OGC#). **Field
+flights are on and In Control's fire dragon is gone** (DECISIONS.md OGB-6, built with the cheese
+audit's F1 to F3, OGC46 to OGC49): the plugin's `fieldFlights` defaults true at the built draw, and the
+pack's `config/incontrol/spawner.json` and `spawn.json` keep only the blazes. §4.8 was first measured
+on 2026-10-21 (two runs by day, OGC35): at site 1 the gate's field flights matched In Control's damage
+per minute but hit 40 to 50% later and brought a third to a half as many dragons. OGB-6 retired that
+pass condition: the gate is judged by Ben's bar (OGB-1), not by matching In Control. The underground half
 (OG-9, §4.6) is not built; its seam is in `docs/choices-oilgate.md`. The design below is as approved;
 where the build chose a number or a detail, the choices file says so.
 
@@ -28,7 +30,8 @@ visitor body ends its visit; the Diesel oil source takes a cheap biome first loo
   touch, the idea behind this system was. A) Restrict oil to desert biomes. B) Make desert biomes
   extremely hostile to players s.t. they would need guns or a similar level of progression in the tech
   tree in order to soft-lock oil behind guns." and "Danger follow deposits, though potentially make it a
-  bit more interesting."
+  bit more interesting." (OGB-6, 2026-10-21, ended "untouched": the sim's dragons replace In Control's
+  fire dragon at oil fields; its blazes stay.)
 - **P12:** dragons prey on caravans, village livestock, wild herds, and the farms of players they hold a
   grudge against. **P26:** a player's home is the region where they spent the most time recently.
   **P28:** watched dragon fights place bounded sim damage too; Ice and Fire griefing stays off.
@@ -56,7 +59,7 @@ PLACEHOLDER. Anything unverified says UNVERIFIED.
 
 Oil is found with the Diesel Generators oil scanner, as now. The ground over oil is dragon country:
 fire dragons come to drink there, nest near it, and arrive within a minute or two of anyone standing
-on it, as In Control's desert dragons do today. Start a base near the oil and the dragons that drink
+on it, as In Control's desert dragons did before them. Start a base near the oil and the dragons that drink
 there take it as an intrusion: once you drill, store crude or foul the air, they come for your works
 and for you, watched or not. Dig down to the oil instead and you find the deep layer under every oil
 field grown over with sculk: shriekers that call wardens when you make a noise. A player with iron gear
@@ -88,14 +91,16 @@ and a bow can visit an oil field and run; holding one takes guns.
 
 1. **The oil field index** in the engine: oil chunks and fields, from Deep Time's sites or CDG's own
    amount (§4.1).
-2. **Field flights** (§4.2): the floor that keeps In Control's danger where oil is.
+2. **Field flights** (§4.2): In Control's arrival process keyed to fields, which replaced its fire
+   dragon (OGB-6).
 3. **The oil reserve** on each sim dragon: two saved fields, a closed form, a `DragonFireEvent` handler
    (§4.3), and a `Refuel` purpose.
 4. **Lair choice weighted by oil**, and lair placement where a field has none (§4.4).
 5. **One report kind** (`Encroachment`) and a `District` target for dragons (§4.5).
 6. **One placed-feature file** in the mic_rtsim datapack and one boundary record to place it (§4.6).
-7. **R18's exemption** for In Control's dragons until the gate passes (§3.3).
-8. **The measurement harness** (§4.8).
+7. **R18's exemption** for In Control's dragons until the gate passes (§3.3; kept after OGB-6, with
+   nothing left for it to act on, OGC47).
+8. **The measurement harness** (§4.8; its pass condition retired by OGB-6).
 9. **Roof cover in `resolve()`**, already designed in INDUSTRY.md §13.6 and not built (§4.5).
 
 No new blocks, items or entities.
@@ -160,7 +165,8 @@ fire dragon is In Control's. **With mic_rtsim_iceandfire installed, the desert g
 P13's "In Control stays untouched until measured". OG-1: until the gate passes, the plugin leaves
 natural fire dragons alone (not adopted, not discarded, not given the oil rules), and the ledger counts
 them as "In Control's". Landed 2026-10-20: the engine tunable `adopt_natural_dragons` (default false)
-leaves them alone; true restores R18's discard (R18a).
+leaves them alone; true restores R18's discard (R18a). Since OGB-6 the pack spawns no natural fire
+dragon, so the exemption has nothing left to act on; it stays false (OGC47).
 
 ## 4. The design
 
@@ -185,7 +191,8 @@ leaves them alone; true restores R18's discard (R18a).
 
 ### 4.2 Field flights: the danger floor
 
-The gate must stay at least as dangerous as In Control where the oil is. A finite population of
+Written to keep the gate at least as dangerous as In Control where the oil is; OGB-6 retired that bar
+and the flights replaced In Control's fire dragon at the built draw (OGC46). A finite population of
 dragons cannot match a spawner that adds one every 10 seconds, so the sim runs the same arrival process,
 keyed to fields instead of the desert biome:
 
@@ -335,6 +342,13 @@ threat there is vanilla's own, placed where the oil is:
 
 ### 4.8 Measuring against In Control, and the switch-over
 
+**Retired (OGB-6, 2026-10-21).** Ben judges the gate by his own bar (OGB-1) and chose to replace In
+Control's fire dragon once the cheese audit's F1 to F3 shipped. The switch-over below is done: field
+flights on at the built draw, the fire dragon gone from the pack's `spawner.json` and both `spawn.json`
+rules, the blazes kept (OG-12). The pass condition gates nothing now; the harness stays as a measure of
+the field flights' danger (with the pack's rules now without the fire dragon, its arm A has none,
+OGC48). The rest of this section is as it was approved.
+
 "At least as dangerous" is measured, not argued.
 - **The probe:** a mock player (the GameTest harness's `makeMockServerPlayerInLevel`, which In Control's
   `level.players()` sees) held at a site, invulnerable, healed each tick; a `LivingIncomingDamageEvent`
@@ -354,10 +368,10 @@ threat there is vanilla's own, placed where the oil is:
 
 ## 5. Walkthroughs
 
-**A. Today's pack, a desert with oil.**
+**A. The pack, a desert with oil.**
 1. Mara scans the dunes east of Brindle with the oil scanner: "high".
 2. She stands there. Each second the field flight rolls; within the first minute a stage-2 fire dragon
-   flies in from the edge of view, then another. She runs, as she would from In Control's dragons today.
+   flies in from the edge of view, then another. She runs, as she would have from In Control's dragons.
 3. Cinderjaw, an adult whose roost is 1,100 blocks away, drinks at this field: its reserve fell below
    its refuel level yesterday. Players who visit see it resting on the sand.
 4. A week later Mara returns with a Model 943 and builds a small base 150 blocks from the field: a
@@ -423,7 +437,7 @@ threat there is vanilla's own, placed where the oil is:
 | OG-7 | Lairs near oil | lair choice weighs distance to oil, and one fire roost is placed near a field that has none within reach | (b) weighing only (Deep Time fields far from fire biomes stay empty); (c) placement only |
 | OG-8 | What dragons sense and what they do | district formation, drilling samples, oil stock and pollution near a field become reports; grudges send raids on the works and at the player's home | (b) drilling samples only (nothing until oil flows); (c) presence only, no industry signal |
 | OG-9 | The underground threat | vanilla sculk with summoning shriekers below y 15 in every oil chunk; wardens | (b) the sim warns and summons wardens itself from block events (invisible, no counterplay); (c) death worms with raised health (sand only); (d) natural pressure only (I20) |
-| OG-10 | How "at least as dangerous" is measured | passive mock-player probes at four sites, A/B, damage per minute and time to first contact | (b) arithmetic from the two arrival rates; (c) play-testing by Ben |
+| OG-10 | How "at least as dangerous" is measured (pass condition retired by OGB-6) | passive mock-player probes at four sites, A/B, damage per minute and time to first contact | (b) arithmetic from the two arrival rates; (c) play-testing by Ben |
 | OG-11 | Roof cover against flyers | build INDUSTRY.md §13.6's roof gate in `resolve()` | (b) leave it out: roofed and underground districts take flying raids' block damage |
 | OG-12 | In Control's desert blazes when the dragon rule goes | keep the blaze rule as it is (desert-keyed, untouched) | (b) re-key it to fields with OG-3 (c); (c) remove it |
 | OG-13 | A dragon with no oil | fights with bite and claws only, at a reduced strength while abstract | (b) it breaks off and flies to refuel; (c) it still breathes, weakly |

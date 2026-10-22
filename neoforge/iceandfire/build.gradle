@@ -76,6 +76,8 @@ neoForge {
             systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
             // OG-10's danger A/B (a quarter of an hour of server time) runs only when asked for.
             if (project.hasProperty('og10')) systemProperty 'mic_rtsim.og10', 'true'
+            // The day time each OG-10 arm starts at (default 1000, morning; 14000 is night).
+            if (project.hasProperty('og10Hour')) systemProperty 'mic_rtsim.og10.hour', project.property('og10Hour').toString()
             jvmArgument '-Xmx4G'
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
