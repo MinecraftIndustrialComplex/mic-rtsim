@@ -109,7 +109,9 @@ Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
   140-block ring around spawn, in the band the client has loaded but the server does not tick, which the
   band renderer draws; either sets the simulation distance to 5, vanilla's least (`-PfarBenchSim=<chunks>` to choose);
 - `-PfarBenchFeed=false`: the client never subscribes to the far feed, so Create's own map sync carries the
-  trains, as in phase 1.
+  trains, as in phase 1;
+- `-PfarBenchWarmup=<ticks>` (900 at least) and `-PfarBenchWarmSweeps=<n>` (10 by default): a longer run, whose
+  stop log counts the sweep's CPU time only after the first n sweeps, to time the sweep once the JIT compiled it.
 
 The client's `far bench result` lines then include a `dragons:` line and a `feed:` line (messages, bytes and
 records a second, objects held), and the integrated server logs `far feed at stop` when it stops: the cost of

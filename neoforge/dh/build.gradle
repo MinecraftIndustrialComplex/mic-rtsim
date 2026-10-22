@@ -92,6 +92,11 @@ neoForge {
                 systemProperty 'mic_rtsim.farbench.feed', (project.findProperty('farBenchFeed') ?: 'true').toString()
                 if (project.hasProperty('farBenchSim'))
                     systemProperty 'mic_rtsim.farbench.sim', project.property('farBenchSim').toString()
+                // A longer warm-up, and the far feed's stop log counting its CPU split only after so many sweeps
+                if (project.hasProperty('farBenchWarmup'))
+                    systemProperty 'mic_rtsim.farbench.warmup', project.property('farBenchWarmup').toString()
+                if (project.hasProperty('farBenchWarmSweeps'))
+                    systemProperty 'mic_rtsim.farfeed.warmSweeps', project.property('farBenchWarmSweeps').toString()
             }
             jvmArgument '-Xmx6G'
         }

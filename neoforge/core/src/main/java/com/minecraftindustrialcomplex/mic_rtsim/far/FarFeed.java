@@ -78,7 +78,8 @@ public final class FarFeed {
     static long sendCpuNanos;
     /** The sends' CPU time split: the filter (with the seam mapping), the view's diff, the encoding, the network. */
     static final long[] SEND_CPU = new long[4];
-    static final int WARM_SWEEPS = 10;
+    /** 10, or {@code mic_rtsim.farfeed.warmSweeps} (a long bench run, to time the sweep once the JIT compiled it). */
+    static final int WARM_SWEEPS = Math.max(1, Integer.getInteger("mic_rtsim.farfeed.warmSweeps", 10));
     /** The server thread's own CPU time for a sweep: wall time also counts the time the thread waited for a core. */
     private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
     private static final boolean CPU_TIME = THREADS.isCurrentThreadCpuTimeSupported();
