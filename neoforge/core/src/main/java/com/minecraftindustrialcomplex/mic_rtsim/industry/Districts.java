@@ -262,6 +262,10 @@ public final class Districts {
             edit(d, IndRecords.Edit.PLACED, player, pos);
             if (be != null)
                 markDirty(level.dimension(), chunk.getPos().toLong());
+        } else if (be != null && industrial(level, be, new HashMap<>())) {
+            // Industrial but no seed, outside any district: a station (whose track graph forms a moment after it
+            // is placed) beside one joins it at the next detection (DS-10); it starts none.
+            markDirty(level.dimension(), chunk.getPos().toLong());
         }
     }
 
@@ -546,6 +550,9 @@ public final class Districts {
         final Map<BlockPos, Boolean> seedCache = new HashMap<>();
         /** Live seeds of each loaded chunk the detection looked at (every candidate and every reached chunk). */
         final Long2IntOpenHashMap seedCounts = new Long2IntOpenHashMap();
+        /** Chunks looked at for a station, and the ones that hold one. */
+        final LongOpenHashSet stationLooked = new LongOpenHashSet();
+        final LongOpenHashSet stationChunks = new LongOpenHashSet();
     }
 
     /**
@@ -599,7 +606,8 @@ public final class Districts {
                 LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
                 if (chunk == null)
                     continue;
-                if (seedsIn(level, chunk, scan) > 0 || pins.containsKey(c) || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan))) {
+                if (seedsIn(level, chunk, scan) > 0 || pins.containsKey(c) || holdsStation(chunk, scan)
+                        || (index.containsKey(c) && touchesUnloadedMember(level, chunk, index, scan))) {
                     if (visited.add(c))
                         queue.enqueue(c);
                 }
@@ -920,6 +928,27 @@ public final class Districts {
         }
         scan.seedCounts.put(c, n);
         return n;
+    }
+
+    /**
+     * Whether a loaded chunk holds a station (DS-10). A station is an anchor, not a seed: its chunk is
+     * rooted in the walk, so it joins the district beside it (adjacent, or linked by what touches it), but
+     * it never counts toward a district's survival, so a station far from any machine makes no district.
+     */
+    private boolean holdsStation(LevelChunk chunk, Scan scan) {
+        long c = chunk.getPos().toLong();
+        if (!scan.stationLooked.add(c))
+            return scan.stationChunks.contains(c);
+        for (BlockEntity be : chunk.getBlockEntities().values()) {
+            if (be.isRemoved())
+                continue;
+            for (IndustryPlugin plugin : IndustryApi.PLUGINS)
+                if (plugin.isStation(be)) {
+                    scan.stationChunks.add(c);
+                    return true;
+                }
+        }
+        return false;
     }
 
     /**

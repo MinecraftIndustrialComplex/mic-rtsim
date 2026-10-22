@@ -183,6 +183,11 @@ public final class CreatePlugin implements IndustryPlugin {
     }
 
     @Override
+    public boolean isStation(BlockEntity be) {
+        return be instanceof StationBlockEntity;
+    }
+
+    @Override
     public int crossing(BlockEntity a, BlockEntity b) {
         if (a instanceof KineticBlockEntity && b instanceof KineticBlockEntity)
             return IndRecords.NotLearnable.ROTATION_CROSSES;

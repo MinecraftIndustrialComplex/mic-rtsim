@@ -288,4 +288,80 @@ public final class CreateSeedGameTests {
                 })
                 .thenSucceed();
     }
+
+    /** A station on a track along {@code row} (a chunk row's dz), its target track set so the graph takes it in. */
+    private static void station(GameTestHelper helper, BlockPos stationPos, int fromX, int toX) {
+        BlockState track = block("create:track").defaultBlockState()
+                .setValue(com.simibubi.create.content.trains.track.TrackBlock.SHAPE, com.simibubi.create.content.trains.track.TrackShape.XO);
+        for (int x = fromX; x <= toX; x++)
+            set(helper, new BlockPos(x, stationPos.getY(), stationPos.getZ() - 1), track);
+    }
+
+    private static void placeStation(GameTestHelper helper, BlockPos stationPos) {
+        set(helper, stationPos, block("create:track_station").defaultBlockState());
+        net.minecraft.world.level.block.entity.BlockEntity be = helper.getLevel().getBlockEntity(stationPos);
+        com.simibubi.create.content.trains.station.StationBlockEntity sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) be;
+        net.minecraft.nbt.CompoundTag tag = sbe.saveWithFullMetadata(helper.getLevel().registryAccess());
+        tag.put("TargetTrack", net.minecraft.nbt.NbtUtils.writeBlockPos(new BlockPos(0, 0, -1)));
+        tag.putBoolean("TargetDirection", true);
+        sbe.loadWithComponents(tag, helper.getLevel().registryAccess());
+        playerPlacedBare(helper, stationPos);
+    }
+
+    /** A station one chunk from a press: it joins the press's district (it is a member and is listed), and starts none itself. */
+    @GameTest(template = YARD, batch = "create_seed_8", timeoutTicks = 600)
+    public static void aStationNextToAMachineJoinsItsDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos press = at(helper, 0, 8, 2), stationPos = at(helper, 1, 8, 6);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX());
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    placeStation(helper, stationPos);
+                    playerPlacedBare(helper, press);
+                })
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> ind().districts().rescanNow(helper.getLevel()))
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, press);
+                    check("the press's district", d != null);
+                    check("the station's chunk is in it", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("one seed, the press's: " + d.seeds(), d.seeds() == 1);
+                    record("aStationNextToAMachineJoinsItsDistrict", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
+    /** A station with no machine anywhere near it makes no district: it is an anchor, never a seed. */
+    @GameTest(template = YARD, batch = "create_seed_9", timeoutTicks = 400)
+    public static void aLoneStationMakesNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 1, 8, 6);
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> ind().districts().rescanNow(helper.getLevel()))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    noSeedNoDistrict(helper, "station", stationPos);
+                    record("aLoneStationMakesNoDistrict", "districts", 0);
+                })
+                .thenSucceed();
+    }
 }
