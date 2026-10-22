@@ -239,12 +239,15 @@ approved it.
   raid.
 - (c) Stage 4 fire dragons ignore the roof gate; younger ones keep it.
 
+Ben chose (a) as OGB-7. **Built** (docs/choices-oilgate.md OGC64, OGC65), with its tests.
+
 **F5. Survey what is loaded** (C3). A survey runs only when every chunk of the district is loaded
 (`Threats.java:441`), so a district larger than the loaded area never gets an exposed set and no raid
 on it breaks anything (`threat.rs:528`). Survey the loaded chunks of a partly loaded district for its
 exposed blocks, and keep each chunk's last rows until that chunk is surveyed again (the
 `IND_SURVEY_BLOCKS` parts then carry their chunk); keep the all-loaded rule for the perimeter cut,
 which needs the whole area. Not Ben.
+**Built** (docs/choices-oilgate.md OGC61 to OGC63), with its tests.
 
 **F6. The underground half, as decided** (C4). OG-9e's Death Worm oil nest,
 asleep until a pumpjack drills, is already Ben's decision and its seams exist
