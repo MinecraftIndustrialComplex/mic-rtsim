@@ -276,6 +276,29 @@ impl HerdSpeciesData {
         r.clamp(16.0, 1_536.0) as u32
     }
 
+    /// Beverton-Holt's M over K (EQUILIBRIUM.md §3.2), from this species' own ages and
+    /// mortality: with births `f x A / (1 + A/M)` a year from the adults A, the herd's
+    /// post-calving steady state is K. Over a year of age at a time from birth, `l_n` is the
+    /// expected years alive per newborn and `l_a` those as an adult (old animals do not breed);
+    /// the steady state has `A* = M (f l_a - 1)` and a post-calving total of `A* l_n / l_a`, so
+    /// `M = K l_a / (l_n (f l_a - 1))`. `None` when the species cannot replace itself at full
+    /// condition (`f l_a <= 1`): no density term then.
+    pub fn bh_m_per_k(&self, year_days: u32) -> Option<f64> {
+        let yd = i64::from(year_days.max(1));
+        let (mut l_n, mut l_a, mut s) = (0.0f64, 0.0f64, 1.0f64);
+        let mut age = 0i64;
+        while let Some(c) = self.cohort_at(age) {
+            l_n += s;
+            if c == Cohort::Adult {
+                l_a += s;
+            }
+            s *= 1.0 - self.annual_mortality[c.index()];
+            age += yd;
+        }
+        let r = self.fertility * l_a - 1.0;
+        (r > 0.0 && l_n > 0.0).then(|| l_a / (l_n * r))
+    }
+
     pub fn breeds_in(&self, sub_in_year: u32) -> bool {
         self.breeding_sub_seasons
             .first()

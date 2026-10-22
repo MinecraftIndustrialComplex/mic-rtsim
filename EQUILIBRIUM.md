@@ -238,6 +238,9 @@ belonging to it, and a **pressure** P:
     own route: placed at the farthest ticking point on that route back from the target, it walks the
     rest, instead of today's waves on the arc 112 blocks out. That point is at least 160 blocks off
     along an axis at a simulation distance of 10, and at least 128 at 8.
+  - **A joint attack** (CONFLICT-LIFE.md §2.16) is two such parties, each its own camp's members on its
+    own route with its own BAND_MARCH; the rule holds for each contingent, and the two share one
+    spawn quota of 16 members (CL-D49).
 - **Bounds.** n never exceeds K. The sim never creates a site: sites are the structures the world
   generated (C22), or the herd ranges the world model sampled.
 - **The oil gate** (OILGATE.md on main) adds two dragon sources near oil fields, and they are its
@@ -493,7 +496,8 @@ as today (Y20).
 
 - **Site:** the camp; K = the culture's `pool_cap` (goblin 60, bandit 40, raider 50).
 - **Losses:** warriors killed by a player, at home or in a party, add `killed/K`; war-party losses to
-  another faction or a village add nothing.
+  another faction or a village add nothing. In a joint attack (CONFLICT-LIFE.md §2.16) each camp books
+  only its own contingent's dead, against its own K.
 - **Renewal (Regrow):** recruits at `recruits_per_day / 2^P` (goblin 2, bandit 1.5, raider 2): word
   gets around that the camp is a death trap. Closed form between events: P is read at the last event
   that touched the pool (a muster, a loss, a census), so the pool stays linear in time.
@@ -706,7 +710,9 @@ follow it.
     a living member away is counted with its party and not recalled, and a party ends only at its own
     home or at its last death. Removals are clamped to the bodies the census finds (a world that ran
     without rtsim may have lost them already). The cost is UR-1's: once its camp has come in, a member
-    is away for the rest of its march, and an uninstall then loses it (§2.3).
+    is away for the rest of its march, and an uninstall then loses it (§2.3). A joint attack
+    (CONFLICT-LIFE.md §2.16) is two parties: the rule holds for each contingent, and a camp that comes
+    in has only its own contingent's bodies taken.
 12. **§4.10 item 5 and §7, tests:** `sim mowzie` reports in the `sim census` format (§4, slice S1), and
     the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, about
     1.8 a year: §3.3's 1.79 closed form, the figure MOWZIE.md's "Loot supply" states for a den and,
@@ -1050,7 +1056,7 @@ GameTest lock.
 |---|---|---|---|
 | S0 | `rtsim-kernel::renewal` (§2.2) | `pressure_halves_each_half_life`, `delay_is_capped`, `farmed_steady_state_matches_closed_form` (simulate kill-on-arrival for 60 years against `RenewalRule::farmed`, within 5%) | nothing |
 | S1 | `rtsim-cli sim census`: one line per kind every N days (sites, members, capacity, short, broken, mean P, renewals) for every module the scenario runs; the same hook in the host soak. **Built 2026-10-22** (`crates/rtsim-kernel/src/census.rs`, `crates/rtsim-cli/src/sim/census.rs`, `Engine::census`; docs/overnight-choices-equilibrium.md EQC1 to EQC8, which add an `empty` column) | `census_counts_every_kind`, `census_is_flat_with_no_player` (`crates/rtsim-cli/src/sim/census.rs`) | S0 |
-| S2 | Herds: density term, refuge in `predate`, spring dispersal, frontier founding, tombstone removal | `herds_settle_without_forage_tuning` (forage headroom 1 to 4 gives one band), `predation_never_takes_a_herd_below_refuge`, `kill_all_herds` (world wipe: half back within 25 years, all ranges alive by 40), `local_wipe_refills_from_neighbours`, the property tests extended (founding is a booked source) | S0, S1 |
+| S2 | Herds: density term, refuge in `predate`, spring dispersal, frontier founding, tombstone removal. **Built 2026-10-22** (`crates/rtsim-ecology/src/herds/engine.rs`, `herds/synth.rs`'s ranges grid; docs/overnight-choices-equilibrium.md EQC9 to EQC21, and its S2 findings: both wipes and the forage sweep inside the model's bands on seeds 1 to 30) | `herds_settle_without_forage_tuning` (forage headroom 1 to 4 gives one band), `predation_never_takes_a_herd_below_refuge`, `kill_all_herds` (world wipe: half back within 25 years, all ranges alive by 40), `local_wipe_refills_from_neighbours`, the property tests extended (founding is a booked source) (`crates/rtsim-cli/src/sim/equilibrium.rs`, the 30-seed versions `#[ignore]`d; `crates/rtsim-ecology/tests/herds.rs`: `founding_and_dispersal_are_booked_sources`, `a_restored_ranges_engine_continues_exactly`) | S0, S1 |
 | S3 | Site ledger (world game time, relative hand-over) and SITE_FOUND carrying it; kill credit in every bridge; missing members and strays; the no-unload census | GameTests `resetKeepsAFarmedSiteFarmed`, `siteFoundEmptyWithoutLedgerWaitsTheCap`, `reinstallKeepsPressure` (the engine's clock restarts, the wait does not shorten), `uninstallLeavesHomeBodies`, `petKillRaisesPressure`, `trapKillAtABossSiteIsAPlayerLoss`, `tameIsAPlayerLoss`, `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`, `aForceLoadedSiteRefillsWhenUnwatched` | S0 |
 | S4 | Dragons: lair pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitors only into due lairs | `kill_all_dragons` (90% back within 72 days), `farmed_lair_yields_closed_form` (60 years, at most 1.2 a year), `starving_dragon_leaves_and_returns_when_fed`, `visitor_claims_only_a_due_lair`, `long_horizon_dragons_and_herds_with_kills` (60 years, roamer script, the §3.6 bands); GameTest `resetDoesNotMintADragon` | S2, S3 |
 | S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census | GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsMissingNotDead` | S4 (EQ-2 a, decided) |

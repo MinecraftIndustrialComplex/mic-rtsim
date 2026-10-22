@@ -7,6 +7,10 @@
 //!   O18), **one per district's glass state** ([`GLASS_TABLE`], id = district id: the compile, its
 //!   passed window and the glass replay, `glass::page`, G2-9), and **one page of globals**
 //!   ([`GLOBAL_TABLE`], id 0).
+//! - **A save writes the globals page and the pages changed since the save before**
+//!   (`Engine::save_changed`, docs/choices-industry-dirty-pages.md): the engine marks a district,
+//!   cluster or glass page on every change, and a marked page whose entry is gone is deleted.
+//!   `Engine::snapshot` is the whole state, for a fresh store.
 //! - **Everything else is saved**, open learning windows and half-assembled sweeps included, so a
 //!   restored engine continues exactly (tested). A real restart then calls
 //!   `Engine::session_start`, which discards the windows (F6). **Not saved:** the engine's text log,

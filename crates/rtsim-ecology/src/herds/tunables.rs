@@ -87,6 +87,28 @@ pub struct HerdTunables {
     pub follow_ticks: u64,
     /// Followers a herd keeps at most. PLACEHOLDER 4.
     pub followers_cap: usize,
+    /// Births are density-dependent toward each range's K (EQUILIBRIUM.md §2.4.2, §3.2). Off:
+    /// births as before (the knife-edge sweep's "density term off", §3.7).
+    pub density_term: bool,
+    /// Predators never take a herd below `max(refuge_min, refuge_share x K)` (§3.4). TUNABLE
+    /// 10%, at least 8.
+    pub refuge_share: f64,
+    pub refuge_min: u64,
+    /// Spring dispersal (§2.4.2): this share of the latent adults of a herd above `donor_above` of
+    /// its K walk to the neighbouring ranges below `taker_below` of theirs. TUNABLE 5%, 0.4 and
+    /// 0.25: both thresholds sit below the steady state herds reach under predation (about
+    /// 0.6 K). 0: no dispersal.
+    pub disperse_share: f64,
+    pub donor_above: f64,
+    pub taker_below: f64,
+    /// Frontier founding (§2.4.2): an empty range is founded again at this rate a range-year by
+    /// `max(frontier_min, frontier_share x K)` animals. TUNABLE 0.25, 12 and 5%. 0: never.
+    pub frontier_per_year: f64,
+    pub frontier_min: u64,
+    pub frontier_share: f64,
+    /// Ranges (in each direction) searched for the nearest live herd frontier newcomers come
+    /// from. PLACEHOLDER 3.
+    pub frontier_search: i32,
 }
 
 impl Default for HerdTunables {
@@ -122,6 +144,16 @@ impl Default for HerdTunables {
             follow_factor: 3.0,
             follow_ticks: 24 * TICKS_PER_DAY,
             followers_cap: 4,
+            density_term: true,
+            refuge_share: 0.1,
+            refuge_min: 8,
+            disperse_share: 0.05,
+            donor_above: 0.4,
+            taker_below: 0.25,
+            frontier_per_year: 0.25,
+            frontier_min: 12,
+            frontier_share: 0.05,
+            frontier_search: 3,
         }
     }
 }

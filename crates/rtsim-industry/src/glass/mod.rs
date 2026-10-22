@@ -32,8 +32,6 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-
 use rtsim_kernel::clock::Tick;
 use serde::Serialize;
 
@@ -74,7 +72,9 @@ pub struct GlassStats {
 pub struct Glass {
     /// Glass records received.
     pub records: u64,
-    pub districts: BTreeMap<DistrictId, DistrictGlass>,
+    /// One page each (G2-80), written only when changed since the last save (ID1): every `&mut`
+    /// to an entry marks it.
+    pub districts: crate::tracked::Tracked<DistrictId, DistrictGlass>,
     pub stats: GlassStats,
 }
 
@@ -175,7 +175,7 @@ impl Glass {
     ) {
         self.records += 1;
         let d = g.district();
-        let dg = self.districts.entry(d).or_default();
+        let dg = self.districts.get_or_insert_with(d, DistrictGlass::default);
         // After a session start, the held compile's number is the last session's: Java's new
         // numbers are neither older nor a resend of it (G2-81).
         let held = dg

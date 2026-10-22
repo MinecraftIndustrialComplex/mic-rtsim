@@ -217,6 +217,8 @@ table.traffic th, table.traffic td { padding-right: 10px; }
 .decision h3 { margin-top: 0; }
 .decision .rec { font-weight: 600; }
 .decision p, .decision li { max-width: none; }
+.decision h4 { margin: 18px 0 4px; font-size: 18px; }
+.decision h4:first-of-type { margin-top: 8px; }
 
 details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
 summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
@@ -235,6 +237,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#fight">The fight</a>
   <a href="#results">Results</a>
   <a href="#stories">Stories</a>
+  <a href="#alliances">Alliances</a>
   <a href="#marches">Marches</a>
   <a href="#build">Building it</a>
   <a href="#waiting">Waiting for you</a>
@@ -244,13 +247,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Camps now decide like people: a council with moods, wants, memories and wrong guesses, so nobody can call a faction's next move</h1>
-  <p class="dek" data-ss-id="dek">The redesign you asked for when you answered EQ-5 with "only faction fighting" and wanted it lifelike: CONFLICT-LIFE.md on mic-rtsim main (9775d54), revised after an adversarial review and your MZ-15. Nothing is built. The numbers come from a runnable model of one valley that runs today's ladder, the gate you rejected and this design on the same world: 64 worlds of 50 game years each, and 8 left alone for 500. Five questions wait for you (CL-1 to CL-5).</p>
-  <p class="lead" data-ss-id="lead">A camp is no longer a rule. It is three people, a chief, a war leader and an elder, each with a temper of his own. It gets hungry in winter, angry when you refuse its envoy, proud, restless, afraid. It guesses how strong you are and is sometimes badly wrong, remembers who killed its chief, and decides with one of those guesses in hand. The fight itself stays the engine's, and certain, so every lost raid is a council that guessed wrong, and every fight has a reason it can tell you.</p>
+  <p class="dek" data-ss-id="dek">The redesign you asked for when you answered EQ-5 with "only faction fighting" and wanted it lifelike: CONFLICT-LIFE.md on mic-rtsim main (a92c5f3), revised after adversarial reviews and your MZ-15. On 22 October you answered CL-1 to CL-4 as recommended and CL-5 with "Add alliances": the alliances are now designed and measured, <a href="#alliances">below</a>. Nothing is built. The numbers come from a runnable model of one valley that runs today's ladder, the gate you rejected and this design on the same world: 64 worlds of 50 game years each, and 8 left alone for 500. Four new questions wait for you (<a href="#waiting">CL-6 to CL-9</a>), CL-6 and CL-7 best answered together.</p>
+  <p class="lead" data-ss-id="lead">A camp is no longer a rule. It is three people, a chief, a war leader and an elder, each with a temper of his own. It gets hungry in winter, angry when you refuse its envoy, proud, restless, afraid. It guesses how strong you are and is sometimes badly wrong, remembers who killed its chief, and decides with one of those guesses in hand. The fight itself stays the engine's, and certain, so every lost raid is a council that guessed wrong, and every fight has a reason it can tell you. Since your CL-5, two camps that share a foe can swear against it and march on it together; such pacts are rare, and a player almost never meets one.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-fortress"><div class="n">1 <small>in 8 years</small></div><div class="t">a fight on a walled base that never pays, each with a reason (today's ladder: 2.7 a year, every one lost)</div></div>
     <div class="tile" data-ss-id="kpi-call"><div class="n">2%</div><div class="t">of a camp's next acts can be called to the day from its last two (ladder 18%, gate 17%)</div></div>
     <div class="tile" data-ss-id="kpi-endless"><div class="n">0 <small>of 64</small></div><div class="t">worlds left alone with an endless war (ladder: all 64)</div></div>
-    <div class="tile" data-ss-id="kpi-wait"><div class="n">5</div><div class="t">questions waiting for you, CL-1 to CL-5</div></div>
+    <div class="tile" data-ss-id="kpi-wait"><div class="n">4</div><div class="t">questions waiting for you, CL-6 to CL-9 (CL-6 and CL-7 together)</div></div>
   </div>
 </header>
 
@@ -378,7 +381,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <table class="stack" data-ss-id="results-table">
     <thead><tr><th>Who</th><th>Today's ladder</th><th>The gate (rejected)</th><th>This design</th></tr></thead>
     <tbody>
-      <tr><td>A walled base (defence 80) near three camps, never pays</td><td data-label="Today's ladder">2.7 fights a year on him, every one lost; 39 attackers killed a year</td><td data-label="The gate (rejected)">0.8 a year, 99% lost; 16 killed a year</td><td data-label="This design">0.13 a year (one in eight years), every one lost; 3 killed a year. A new neighbour's first test, a feud after a chief fell at his walls, word that he was away</td></tr>
+      <tr><td>A walled base (defence 80) near three camps, never pays</td><td data-label="Today's ladder">2.7 fights a year on him, every one lost; 39 attackers killed a year</td><td data-label="The gate (rejected)">0.8 a year, 99% lost; 16 killed a year</td><td data-label="This design">0.13 a year (one in eight years), every one lost; 3 killed a year. A new neighbour's first test, a feud after a chief fell at his walls, word that he was away. With alliances, 97% lost (CL-6)</td></tr>
       <tr><td>A weak base (defence 6) that pays when the price is no more than a raid would take</td><td data-label="Today's ladder">14.7 wars a year in the last decade: in some camps the price outgrows the raid, and one refusal is war for good; 138 tribute a year</td><td data-label="The gate (rejected)">No war; 329 tribute a year</td><td data-label="This design">0.1 fights a year; 177 tribute and 30 loot a year, 43% of his income</td></tr>
       <tr><td>A weak base that never pays</td><td data-label="Today's ladder">23.7 wars a year</td><td data-label="The gate (rejected)">10.4</td><td data-label="This design">3.4, which take all his income</td></tr>
       <tr><td>A player who hunts a goblin camp and kills its envoys (defence 50)</td><td data-label="Today's ladder">7.5 fights a year on him</td><td data-label="The gate (rejected)">3.3</td><td data-label="This design">0.33: the attacks that find him away win (25 loot a year, 5% of his income); the rest break on his walls</td></tr>
@@ -386,6 +389,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td>Nobody: the world left alone</td><td data-label="Today's ladder">30 fights a year, 10 between camps and every one of those lost; every world a forever war</td><td data-label="The gate (rejected)">12.6 a year, 2.1 between camps, 75% of those lost</td><td data-label="This design">7.3 a year, 1.2 between camps, 12% of those lost; wars that start and end</td></tr>
     </tbody>
   </table>
+  <p class="cap" data-ss-id="results-ally">These tables and the four stories below are the runs with alliances off, which reproduce the design before alliances exactly. With alliances on, the averages move by a few hundredths at most (the doc's section 4 now quotes those), with one exception: at the fortress 97% of the fights are lost, not all, because two sworn camps have won there while he was away (<a href="#alliances">Alliances</a>, CL-6).</p>
 
   <h3 data-ss-id="predict-h">How predictable each one is</h3>
   <table class="stack nums" data-ss-id="predict-table">
@@ -406,7 +410,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <section id="stories" data-ss-id="stories" data-ss-section>
   <h2 data-ss-id="stories-h">What you would live through</h2>
-  <p data-ss-id="stories-p">Four worlds from the model's own runs. Each is the seed, of 16, whose headline count is nearest the median, so these are typical, not picked. The players are scripts; the camps are the design. A war party you are online for is met on its march, walking in from the edge of what the game ticks; one you are away for meets your walls without you, and you find the damage when you come back. An envoy's spoken reason is CL-1's recommended answer. A game year is 96 days, four seasons of 24.</p>
+  <p data-ss-id="stories-p">Four worlds from the model's own runs. Each is the seed, of 16, whose headline count is nearest the median, so these are typical, not picked. The players are scripts; the camps are the design. A war party you are online for is met on its march, walking in from the edge of what the game ticks; one you are away for meets your walls without you, and you find the damage when you come back. An envoy's spoken reason is CL-1 (a), as you answered. A game year is 96 days, four seasons of 24. These four are the worlds with alliances off; with them on the same seeds draw other histories, which CONFLICT-LIFE.md section 3 now tells, and the alliance stories are <a href="#alliances">below</a>.</p>
 
   <div class="story" id="story-envoy" data-ss-id="story-envoy">
     <h3>The envoy, the truce, and the heir who never swore it</h3>
@@ -496,15 +500,103 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
 </section>
 
+<section id="alliances" data-ss-id="alliances" data-ss-section>
+  <h2 data-ss-id="alliances-h">Alliances: two camps against a third</h2>
+  <p data-ss-id="alliances-p">You answered CL-5 with <span class="why">"Add alliances"</span>. CONFLICT-LIFE.md section 2.16 now has them, and the model runs them on the same 64 worlds of 50 years, each paired with the same seed run with alliances off. In short: two camps that share a foe may swear against it, call each other to fight, fight as one party, and fall out. They are rare, and a player almost never meets one.</p>
+
+  <h3 data-ss-id="ally-how-h">How a pact works</h3>
+  <ul class="wants" data-ss-id="ally-how">
+    <li data-ss-id="ally-who"><b>Who can swear</b>Two camps that reach each other and both reach a foe: a camp, a village or a player, never the railway or a caravan. Both quarrel with it (a standing hate, a grievance of 30 or more, or wounded pride), or one does and the other is kin. The Frostmaw never swears; bandits swear most readily. At most 4 pacts a camp, and while one runs, the two camps' hunters do not clash at the border.</li>
+    <li data-ss-id="ally-why"><b>Why a camp swears</b>For what a joint war would win that it could not win alone, and for the guard an ally gives. Kin count for it, a hated culture strongly against, and sending to swear has a cost. The camp asked weighs it the same way, refuses outright if it holds a grudge or wounded pride against the asker, and remembers a refusal for 48 days.</li>
+    <li data-ss-id="ally-oath"><b>The oath</b>Both chiefs swear. A pact runs about two game years on average, drawn, and the two camps share what each believes about the foe. While it runs, a sworn camp calls its ally instead of marching alone with a party the ally could join.</li>
+    <li data-ss-id="ally-call"><b>The call</b>The ally may be busy (no blame), come, or refuse. A refusal shames the oath, three times over for the chief who swore it, strains the pact and wounds the caller's pride: <span class="why">"Mudhollow would not come against the Grey Outpost in the winter of year 3."</span> The caller may then go alone.</li>
+    <li data-ss-id="ally-fight"><b>The joint fight</b>Still the engine's, and certain. At a camp or a village it is one fight on the sum, each contingent losing the same share and splitting the take by what it can carry; at a base, one threat a class. Each camp books its own dead and its own memory. The target blames both, and its own allies are provoked.</li>
+    <li data-ss-id="ally-after"><b>After the fight</b>A win warms the pact; a defeat strains it, more for the ally than the caller. An ally that sent less than four fifths of what was counted on is resented for it. Strain fades by half in 96 days.</li>
+    <li data-ss-id="ally-end"><b>How pacts end</b>Most lapse (four in five). Others break under strain, after refusals, when a camp is sworn to both sides of a fight, or in betrayal.</li>
+    <li data-ss-id="ally-betray"><b>Betrayal</b>A sworn camp that falls on its ally pays the oath and more. The betrayed takes it as the gravest insult, with a lasting memory, <span class="why">"Ashpit broke its oath and fell on us in the summer of year 12"</span>, and every camp that knows the betrayer trusts its word less. The oath binds the chief who held the seat at the swearing; his heir is bound only once: <span class="why">"Gitz was not chief when Mudhollow swore."</span></li>
+    <li data-ss-id="ally-deter"><b>Deterrence</b>Before it attacks, a camp counts the target's sworn allies that can reach it. Camps know each other's pacts; a player is told only of a pact against him.</li>
+    <li data-ss-id="ally-demand"><b>Joint demands</b>An envoy may name the ally as the threat: <span class="why">"Mudhollow would come with us."</span> The price is set on the joint take, the payment is split, and the ally is bound by the truce.</li>
+    <li data-ss-id="ally-hear"><b>What you hear</b>The envoy names the ally: <span class="why">"You killed Vorr, our chief, in the spring of year 3. Ashpit and Mudhollow ask 140 emeralds."</span> A pact against you is told when it is sworn: <span class="why">"Ashpit and Mudhollow have sworn against you."</span> A party's reason names both camps: <span class="why">"beside the Grey Outpost, sworn against player Ben"</span>. Pacts between camps reach you only under <a href="#cl9">CL-9 (a)</a>.</li>
+    <li data-ss-id="ally-see"><b>What you see</b>Two columns of two cultures from two camps, each marching its own route and arriving on one tick. They share one spawn quota of 16 bodies, split by bodies (a raptor pack counts 5), so two invasions show about 8 of each at first. Allies do not turn on each other: the bridge cancels a target change toward a body of the same joint attack, with no mixin and no scoreboard team. A stray blow still hurts.</li>
+    <li data-ss-id="ally-peace"><b>Peaceful, uninstall, the grove</b>On Peaceful pacts may be sworn, but no call is made and no joint party leaves. Nothing new is added to the world and no record id is new: the ally rides on the envoy, notice and march records, so UR-1 is unchanged. The Sun Grove may swear and its raid can be called; its invasion still goes only on the Umvuthi's own pride, aloft at the rear.</li>
+  </ul>
+
+  <h3 data-ss-id="ally-feel-h">What a player feels: almost nothing</h3>
+  <table class="stack nums" data-ss-id="ally-feel">
+    <thead><tr><th>Player</th><th class="num">Fights a year, on</th><th class="num">Off</th><th class="num">Paired difference (p)</th><th class="num">Loot a year, on / off</th></tr></thead>
+    <tbody>
+      <tr><td>The fortress (walls 80, never pays)</td><td class="num" data-label="On">0.125</td><td class="num" data-label="Off">0.125</td><td class="num" data-label="Paired (p)">-0.0003 (0.18)</td><td class="num" data-label="Loot on / off">1.0 / 0</td></tr>
+      <tr><td>The farmer of the Frostmaw den</td><td class="num" data-label="On">1.93</td><td class="num" data-label="Off">1.92</td><td class="num" data-label="Paired (p)">+0.010 (0.70)</td><td class="num" data-label="Loot on / off">93 / 92</td></tr>
+      <tr><td>Ash, the hunter</td><td class="num" data-label="On">0.32</td><td class="num" data-label="Off">0.33</td><td class="num" data-label="Paired (p)">-0.012 (0.79)</td><td class="num" data-label="Loot on / off">24 / 25</td></tr>
+      <tr><td>Bea, who pays</td><td class="num" data-label="On">0.14</td><td class="num" data-label="Off">0.14</td><td class="num" data-label="Paired (p)">+0.001 (0.59)</td><td class="num" data-label="Loot on / off">25 / 25</td></tr>
+      <tr><td>The railway owner, 4 legs a day</td><td class="num" data-label="On">0.16</td><td class="num" data-label="Off">0.17</td><td class="num" data-label="Paired (p)">-0.006 (0.69)</td><td class="num" data-label="Loot on / off">19 / 20</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="ally-feel-cap">64 worlds of 50 years each, alliances on against the same seeds with them off, paired by seed. No difference comes near significance, the Frostmaw's rates move by 0.02 a year at most, no camp died out and no war became endless. The one change is the fortress: 97% of the fights on it are lost instead of all, and it loses about one item a year (CL-6).</p>
+
+  <div class="tiles" data-ss-id="ally-tiles">
+    <div class="tile" data-ss-id="ally-pacts"><div class="n">0.146</div><div class="t">pacts sworn a year in the valley left alone: one about every seven years</div></div>
+    <div class="tile" data-ss-id="ally-joint"><div class="n">0.036</div><div class="t">joint fights a year there, one about every 28 years; 99% of those between camps won</div></div>
+    <div class="tile" data-ss-id="ally-run"><div class="n">100 <small>days</small></div><div class="t">a pact's median run; four in five lapse, about one in six ends in betrayal</div></div>
+    <div class="tile" data-ss-id="ally-blocs"><div class="n">0 <small>blocs</small></div><div class="t">no pact holds more than two camps; in 310 of 320 worlds no camp held two pacts at once</div></div>
+  </div>
+
+  <h3 data-ss-id="ally-meet-h">How often a player meets one</h3>
+  <table class="stack nums" data-ss-id="ally-meet">
+    <thead><tr><th>As designed</th><th class="num">Once in (world-years)</th><th class="num">About (server hours)</th></tr></thead>
+    <tbody>
+      <tr><td>A pact sworn against the fortress</td><td class="num" data-label="Once in (years)">119</td><td class="num" data-label="Server hours">3,800</td></tr>
+      <tr><td>A joint party at the fortress</td><td class="num" data-label="Once in (years)">139</td><td class="num" data-label="Server hours">4,450</td></tr>
+      <tr><td>A joint win at the fortress</td><td class="num" data-label="Once in (years)">246</td><td class="num" data-label="Server hours">7,900</td></tr>
+      <tr><td>A joint party at Ash, the hunter</td><td class="num" data-label="Once in (years)">291</td><td class="num" data-label="Server hours">9,300</td></tr>
+      <tr><td>A joint fight between camps, the valley left alone</td><td class="num" data-label="Once in (years)">28</td><td class="num" data-label="Server hours">880</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="ally-meet-cap">A game year of 96 days is 32 hours of a running server. Bea, the farmer and the railway owner met no joint party in 3,200 world-years each.</p>
+
+  <ul data-ss-id="ally-notes">
+    <li><strong>Why they are rare.</strong> Between camps the fight is linear: two parties together lose about what one party of their joint strength would, so a pact buys more carry home and wins a camp could not take alone, and the ally pays for its part with its own dead. In this valley only one pair passes often: the two goblin camps, kin, against the Grey Outpost, which hates goblins and is the strongest camp in reach of both. Half the calls are refused, and oaths do not outlive chiefs, who turn over about eight times a camp a decade.</li>
+    <li><strong>Joint parties do better on players than single ones.</strong> At the fortress 13 of 23 won, every win while he was away; of the 10 lost, 7 found him home. No single party ever wins there: the strongest is 36 against his 40 when he is away. At Ash, 27% of joint parties were lost, against 41% of single ones.</li>
+    <li><strong>Betrayal is a hungry heir's.</strong> 82 betrayals in the valley's 64 worlds, every one a hungry goblin camp invading its kin, 59 of them under a chief who was not chief when his camp swore.</li>
+  </ul>
+
+  <div class="story" id="story-pact" data-ss-id="story-pact">
+    <h3>The goblin pair, and the oath Gitz never swore</h3>
+    <p class="setup">The valley with no player, seed 1000: 9 pacts and 3 joint fights in 50 years (the median over 16 seeds is 2 joint fights). Every pact is the same pair, Ashpit and Mudhollow, two goblin camps and kin, against the Grey Outpost.</p>
+    <ol class="walk" data-ss-id="walk-pact">
+      <li><span class="d">Y3 d3</span><span>Mudhollow's chief Lugg sends to Ashpit to swear against the Grey Outpost. Sworn; it lapses eleven days later. Pacts between the two come and go: sworn again in Y4 and Y5.</span></li>
+      <li><span class="d">Y7 d5</span><span>Mudhollow's chief Ozzit, his stores empty, calls Ashpit, and it comes. Mudhollow's 26 march beside Ashpit's band of 8: <span class="why">"Empty stores; and loot; beside Ashpit, sworn against the Grey Outpost."</span> They win, losing 17 and 5, and take 76. Alone, the same invasion loses 22 of 26 for 32: about the same dead, but twelve carry home instead of four.</span></li>
+      <li><span class="d">Y11</span><span>Three calls, one from Ashpit and two from Mudhollow, are each refused: each time the ally's council weighed its own dead and its share against the shame of refusing, and said no.</span></li>
+      <li><span class="d">Y22 d8</span><span>Mudhollow swears with Ashpit, its war leader Gitz speaking for the chief. 17 days later Gitz is chief.</span></li>
+      <li><span class="d">Y23 d75</span><span>163 days after the swearing, Mudhollow, in winter hunger, invades Ashpit: <span class="why">"Winter hunger; Gitz was not chief when Mudhollow swore."</span> It wins, losing 18, and takes 60. The pact ends in betrayal: Ashpit takes it as the gravest insult, and every camp that knows Mudhollow trusts its word less.</span></li>
+      <li><span class="d">Y26 to Y29</span><span>Ashpit's elder Snag swears with Mudhollow. Twice in Y27 Mudhollow calls and Ashpit comes: two joint invasions of the Grey Outpost, both won (17 and 5 dead for 83; 15 and 5 for 81). In Y29 Ashpit refuses twice, and the second refusal ends the pact.</span></li>
+    </ol>
+  </div>
+
+  <div class="story" id="story-pact-fortress" data-ss-id="story-pact-fortress">
+    <h3>The fortress: the one way its walls fall</h3>
+    <p class="setup">The fortress of the stories above (walls 80, 40 while you are away). Joint parties came at it in 3 of 16 worlds of 50 years.</p>
+    <ol class="walk" data-ss-id="walk-pact-fortress">
+      <li><span class="d">Seed 1002</span><span>You see the notice: the Grey Outpost and Mudhollow have sworn against you.</span></li>
+      <li><span class="d">Y4 d12</span><span>While you are away, two columns arrive together: the Grey Outpost's 23 under its chief Captain Mol, and Mudhollow's invasion of 26. <span class="why">"Empty stores; beside Mudhollow, sworn against player Ben."</span> 49 against 40: they win, losing 5 and 5, and take 297. You come home to find it gone.</span></li>
+      <li><span class="d">Y4 d65</span><span>The Grey Outpost again, with Mudhollow's band of 8: won, 14 and 5 dead, 94 taken.</span></li>
+      <li><span class="d">Seed 1014</span><span>Y11 d9: Mudhollow invades with 26 beside the Grey Outpost's 23, <span class="why">"newly sworn against player Ben; empty stores"</span>, and finds you home. All 49 die.</span></li>
+    </ol>
+    <div class="after" data-ss-id="after-pact-fortress">
+      <p>Over the 64 fortress worlds a joint party came about once in 140 years and won about once in 250. Whether it may is <a href="#cl6">CL-6</a>.</p>
+    </div>
+  </div>
+</section>
+
 <section id="marches" data-ss-id="marches" data-ss-section>
   <h2 data-ss-id="marches-h">What MZ-15 already settles</h2>
   <p data-ss-id="marches-p">Your MZ-15, that whoever a grove sends marches visibly, wins wherever it and this design differ. The design takes it as it is.</p>
   <ul data-ss-id="marches-list">
     <li><strong>Every party marches.</strong> A band walks its route from its camp to the target and back: real bodies where a player is, the engine beyond, its position known at every tick so the far view can draw it from about a kilometre away. This design adds no march record of its own. Every act the council picks is one of today's party kinds and rides the same march: a skirmish's route ends at the rival camp's edge, a caravan ambush's on the road, a lurk's at its ambush spot by the track.</li>
-    <li><strong>The Umvuthi rides with its band,</strong> at the rear of the column. Its strength is in the band's (12.6 for a full invasion), and missing from the grove's defence until it is home. It leads only when its pride is wounded, and if the band is destroyed it falls with it, and the grove waits for an heir. How the leader travels and hands over is being designed in the Mowzie rework.</li>
+    <li><strong>The Umvuthi goes with its band,</strong> aloft at the rear of the column (MZ-16's second round, provisional). Its strength is in the band's (12.6 for a full invasion), and missing from the grove's defence until it is home. It leads only when its pride is wounded, and if the band is destroyed it falls with it, and the grove waits for an heir.</li>
     <li><strong>Item 11: the census never ends a march.</strong> When a camp comes into range while its party is out, the party's bodies are taken and it marches on. A living member away is counted with its party, not called home. A party ends only at its own home or at its last death. The cost is UR-1's: members away when rtsim is uninstalled are lost.</li>
-    <li><strong>The 128-block rule holds.</strong> A war party on the march is not an arrival: its members are its camp's own, already walking toward you, so the rule does not apply to them. Its bodies appear where its march puts them as they come inside the ticking area, a stack at a time (a Sun Grove column comes as rows of warriors, a raptor pack, the chief and its horse). None of them is drawn where it appears; they walk into sight, and nothing appears that was not already walking toward you. A party that reaches you with no bodies yet (you log in or teleport there as it arrives) walks in along its own route from the farthest ticking point. The rule's other half stands: an arrival (a recruit, a new Frostmaw, a new Umvuthi) is never placed within 128 blocks of a player. The exact distances at each simulation distance are being corrected in MOWZIE.md.</li>
-    <li><strong>The spawn quota does not shrink a band.</strong> At most 16 members are in Minecraft at once. A goblin invasion of 26 keeps its whole strength in the fight; the rest walk in along the route as the quota frees, so you see it arrive in two or three bunches.</li>
+    <li><strong>The 128-block rule holds.</strong> A war party on the march is not an arrival: its members are its camp's own, already walking toward you, so the rule does not apply to them. Its bodies appear where its march puts them as they come inside the ticking area, a stack at a time (a Sun Grove column comes as rows of warriors, a raptor pack, the chief alone). None of them is drawn where it appears; they walk into sight, and nothing appears that was not already walking toward you. A party that reaches you with no bodies yet (you log in or teleport there as it arrives) walks in along its own route from the farthest ticking point. The rule's other half stands: an arrival (a recruit, a new Frostmaw, a new Umvuthi) is never placed within 128 blocks of a player. That edge is 160 to 176 blocks off along an axis at a simulation distance of 10, vanilla's default, and 128 to 144 at 8. The Umvuthi, the one body drawn beyond 128 blocks, comes in aloft at the rear: at 8 it can be seen to appear 128 to 132 blocks off, never nearer.</li>
+    <li><strong>The spawn quota does not shrink a band.</strong> At most 16 members are in Minecraft at once. A goblin invasion of 26 keeps its whole strength in the fight; the rest walk in along the route as the quota frees, so you see it arrive in two or three bunches. The two contingents of a joint party share one quota of 16.</li>
   </ul>
 </section>
 
@@ -519,15 +611,16 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><span><strong>A stolen crystal as a theft</strong>, once the Mowzie plan reports who holds it.</span></li>
     <li><span><strong>The walk-in</strong>, once MZ-15's march record exists.</span></li>
     <li><span><strong>Caravan ambushes</strong>: the world answers which caravans pass a camp, and the robbery's loss reaches the economy.</span></li>
+    <li><span><strong>Alliances</strong> (section 2.16): pacts, calls, the joint fight and march, strain and betrayal on the engine's harness first; then the ally's name on the envoy and the notice, allies that do not turn on each other, and the shared quota, with their GameTests.</span></li>
   </ol>
 
   <h3 data-ss-id="cost-h">What it costs</h3>
   <ul data-ss-id="cost">
-    <li><strong>Memory:</strong> about 45 bytes a faction and 96 a feud. A faction's saved row grows from about 450 bytes to 1.4 to 1.7 KB, but rows are paged to disk, so resident memory grows only by about 0.4 MB at 4,096 factions.</li>
+    <li><strong>Memory:</strong> about 45 bytes a faction and 96 a feud, and for pacts 16 a faction and about 40 a camp feud. A faction's saved row grows from about 450 bytes to 1.6 to 1.9 KB, but rows are paged to disk, so resident memory grows only by about 0.4 MB at 4,096 factions.</li>
     <li><strong>Step CPU:</strong> a sitting replaces today's plunder clock about one for one, and its arithmetic is small beside loading the faction's page. Estimated 52 to 60 microseconds a faction-day against today's 52.3 at 1,024 factions.</li>
-    <li><strong>Save CPU:</strong> estimated about three times today's, 110 to 125 ms a game day at 1,024 factions and about 800 at 4,096. The paged sweep measures it; if it is too much, the new feuds move to a page of their own.</li>
+    <li><strong>Save CPU:</strong> estimated about three times today's, about 120 to 140 ms a game day at 1,024 factions and about 900 at 4,096. The paged sweep measures it; if it is too much, the new feuds move to a page of their own.</li>
     <li><strong>Nothing scans per tick</strong>, and nothing grows with time: memories are four slots, beliefs two numbers.</li>
-    <li><strong>Size:</strong> about 3,200 lines (estimate), about 1,300 of them tests.</li>
+    <li><strong>Size:</strong> about 4,600 lines (estimate), about 1,750 of them tests; alliances are about 1,380 of the total.</li>
   </ul>
   <p class="cap" data-ss-id="cost-cap">CPU figures are inferred from today's measurements, not measured.</p>
 
@@ -543,10 +636,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td>Chiefs and heirs</td><td data-label="Reused">Today's chiefs, heirs, temperaments and inherited grudges</td><td data-label="Custom">The elder, standing, tenure</td></tr>
       <tr><td>Memories and notices</td><td data-label="Reused">rtsim's 8-byte memory slots; the howl, roar and gong notices</td><td data-label="Custom">Conflict memory kinds; the reason on a notice</td></tr>
       <tr><td>Renewal, pressure, camp bodies</td><td data-label="Reused">Population Equilibrium's rules; the Mowzie plan's camp sync and MZ-15's census</td><td data-label="Custom">None</td></tr>
+      <tr><td>Alliances</td><td data-label="Reused">Today's fight rules and parties; BAND_MARCH; the envoy and notice records</td><td data-label="Custom">Pacts, the call, the joint resolve, strain, betrayal, deterrence, the shared quota, the target listener</td></tr>
       <tr><td>The decision</td><td data-label="Reused">Nothing fits</td><td data-label="Custom">The council: drives, beliefs, the one-guess draw, the softened choice, truces, border clashes</td></tr>
     </tbody>
   </table>
-  <p data-ss-id="d3">No new entities, blocks or items, and no new record type: the reasons ride as new fields on two records that exist. Removing rtsim leaves nothing behind, and reinstalling starts every council fresh.</p>
+  <p data-ss-id="d3">No new entities, blocks or items, and no new record id: the reasons and the ally ride as new fields on ENVOY_MATERIALIZE, FACTION_NOTICE and BAND_MARCH, which exist. Removing rtsim leaves nothing behind, and reinstalling starts every council fresh.</p>
 
   <details data-ss-id="leaves-out">
     <summary>What the model leaves out</summary>
@@ -558,76 +652,75 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <li>Dragon strikes and lost hunting grounds are the model's stand-ins for the world, not part of the design.</li>
     </ul>
   </details>
-  <p data-ss-id="d-choices">42 smaller choices (CL-D1 to CL-D42 in the doc) are taken in the design, and each can be undone: among them, a council of three, one guess drawn from a belief, a softened best choice, camp stores with seasons, border clashes, truces sworn by chiefs, no sieges and no starvation.</p>
+  <p data-ss-id="d-choices">55 smaller choices (CL-D1 to CL-D55 in the doc) are taken in the design, and each can be undone: among them, a council of three, one guess drawn from a belief, a softened best choice, camp stores with seasons, border clashes, truces sworn by chiefs, no sieges and no starvation; and for alliances, oaths that bind the chief who swore, one shared quota, and allies who never turn on each other. CL-D19, no alliances, is reversed by your CL-5.</p>
 </section>
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
-  <h2 data-ss-id="waiting-h">5 questions wait for you</h2>
-  <p class="answer-how" data-ss-id="waiting-p">Answer like "CL-1 a, CL-2 b", or "all as recommended". The recommended option is first in each.</p>
+  <h2 data-ss-id="waiting-h">4 questions wait for you</h2>
+  <p class="answer-how" data-ss-id="waiting-p">The alliances raise four. Answer like "CL-6 a, CL-7 a, CL-8 a, CL-9 a", or "all as recommended". The recommended option is first in each. CL-6 and CL-7 are best answered together: CL-6 (b) would bar pacts against players and take most of CL-7 (b)'s and (c)'s effect on players with it.</p>
 
-  <div class="decision" data-ss-id="cl1">
-    <h3>CL-1. Should a faction tell you why? <span class="open-tag">Waiting for you</span></h3>
+  <div class="decision" id="cl6" data-ss-id="cl6">
+    <h3>CL-6 and CL-7, together <span class="open-tag">Waiting for you</span></h3>
+    <h4>CL-6. May two sworn camps beat a strong base while its owner is away?</h4>
     <ul class="cl-opts">
-      <li><span class="k">(a) Yes (recommended).</span>An envoy says one line when he arrives: "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." A howl, roar or gong says who is angry and for what.</li>
-      <li><span class="k">(b) Only on request,</span>through a command or a page.</li>
-      <li><span class="k">(c) Never:</span>you guess.</li>
+      <li><span class="k">(a) Yes, rarely (recommended).</span>A pact against you is told to you when it is sworn, and its joint party fights as any party does. At the fortress, two sworn camps found Ben away and won 13 times in 3,200 world-years, about once in 250 years (about 7,900 server hours). A win takes about 297 items; 97% of the fights on him are still lost, and he loses about one item a year on average. A pact is the only way his walls ever fall: no single party wins there, even when he is away.</li>
+      <li><span class="k">(b) No:</span>a player is never the foe of a pact. Pacts are sworn only against camps and villages, and every fight on a fortress is lost, as in CL-4.</li>
     </ul>
-    <p class="who">Why it is yours: it is what you read in the game. The reasons are kept either way.</p>
+    <p class="who">Why it is yours: it changes CL-4's answer, "every one lost by the attackers", and lets walls fail while their owner is away.</p>
+    <h4 id="cl7">CL-7. How common should alliances be?</h4>
+    <ul class="cl-opts">
+      <li><span class="k">(a) As designed: rare (recommended).</span>In the valley one pact about every seven years and a joint fight about every 28 (about 880 server hours). A joint party came at the fortress about once in 4,450 server hours, at the hunter about once in 9,300, and never at Bea, the farmer or the railway. Nothing a player feels changes. The weights can be warmed later without a format change.</li>
+      <li><span class="k">(b) Warm:</span>pacts run twice as long, sending to swear costs 1 instead of 3, kin count 6 instead of 4, and a hated culture costs 6 instead of 10 to swear across. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loot taken (both significant), joint parties at him 13 times as often (about once in 720 server hours) and joint envoys about 20 times as often. The fortress and Bea barely move.</li>
+      <li><span class="k">(c) One knob, the hate weight at 6:</span>pacts against the hunter 30 in 3,200 world-years instead of 4, joint parties at him four times as often (about once in 2,200 server hours), 4% more fights and 15% more loot taken, neither significant. The fortress and Bea barely move.</li>
+    </ul>
+    <p class="who">Why it is yours: it decides whether an alliance is a rare story or a standing answer to a player who provokes.</p>
   </div>
 
-  <div class="decision" data-ss-id="cl2">
-    <h3>CL-2. Can a camp blame the wrong player? <span class="open-tag">Waiting for you</span></h3>
+  <div class="decision" id="cl8" data-ss-id="cl8">
+    <h3>CL-8. Can a player swear with a camp? <span class="open-tag">Waiting for you</span></h3>
     <ul class="cl-opts">
-      <li><span class="k">(a) Yes, 3 times in 10 (recommended),</span>when a kill had no witness and another player is in reach: a bystander may be asked to pay, or raided, for a neighbour's deeds. Bea, in the first story: 0.14 fights a year on her with it, 0.08 without.</li>
-      <li><span class="k">(b) Never:</span>only the one who did it is blamed.</li>
+      <li><span class="k">(a) Not in this build (recommended):</span>pacts are between camps; you deal with a camp by tribute, truce and feud, as now.</li>
+      <li><span class="k">(b) Yes:</span>a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call you can answer, a place to show it, and rules for your refusals and betrayals.</li>
     </ul>
-    <p class="who">Why it is yours: in multiplayer it punishes one player for what another did.</p>
+    <p class="who">Why it is yours: it is a new mechanic players use, with its own interface.</p>
   </div>
 
-  <div class="decision" data-ss-id="cl3">
-    <h3>CL-3. How often does a Frostmaw rob a busy line? <span class="open-tag">Waiting for you</span></h3>
+  <div class="decision" id="cl9" data-ss-id="cl9">
+    <h3>CL-9. Should players see pacts between camps? <span class="open-tag">Waiting for you</span></h3>
     <ul class="cl-opts">
-      <li><span class="k">(a) This design's rate (recommended):</span>a lurk by the track about 0.35 times a year at 4 legs a day, 1.9 at 12, 5.2 at 24, with roars between.</li>
-      <li><span class="k">(b) Today's ladder:</span>none below a grievance of 70 (none at 4 legs), then one every 10 days, to the day: 9.6 a year at 12 legs.</li>
-      <li><span class="k">(c) This design with the grudge counting double:</span>0.33 at 4 legs, 4.2 at 12, 12.5 at 24.</li>
+      <li><span class="k">(a) A notice to the players both camps reach (recommended),</span>a line with no sound: when they swear (<span class="why">"Ashpit and Mudhollow have sworn against the Grey Outpost"</span>), when they march together (<span class="why">"Ashpit and Mudhollow march on the Grey Outpost"</span>) and when one betrays the other (<span class="why">"Mudhollow broke its oath and fell on Ashpit"</span>). In the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance.</li>
+      <li><span class="k">(b) Nothing, as designed so far:</span>you learn of a pact only when it is sworn against you or its parties reach you.</li>
     </ul>
-    <p class="who">Why it is yours: it sets what a railway costs in Frostmaw country.</p>
+    <p class="who">Why it is yours: it decides whether the valley's politics is news a player reads or history he never sees.</p>
   </div>
 
-  <div class="decision" data-ss-id="cl4">
-    <h3>CL-4. How often is a strong base tested? <span class="open-tag">Waiting for you</span></h3>
-    <ul class="cl-opts">
-      <li><span class="k">(a) Now and then (recommended):</span>about one fight in eight years at a fortress, every one lost by the attackers, each with a reason: a new neighbour's first test, a feud after a chief fell at your walls, word that you are away.</li>
-      <li><span class="k">(b) Never</span>unless you provoke them.</li>
-      <li><span class="k">(c) About once a season.</span></li>
-    </ul>
-    <p class="who">Why it is yours: it decides whether walls end the game's danger.</p>
-  </div>
-
-  <div class="decision" data-ss-id="cl5">
-    <h3>CL-5. Alliances between camps? <span class="open-tag">Waiting for you</span></h3>
-    <ul class="cl-opts">
-      <li><span class="k">(a) Not in this build (recommended):</span>camps fight, make truces and feud in pairs.</li>
-      <li><span class="k">(b) Yes:</span>camps that share an enemy can ally and send joint war parties.</li>
-    </ul>
-    <p class="who">Why it is yours: alliances are a new mechanic, with joint parties the game has to show.</p>
-  </div>
+  <h3 data-ss-id="answered-h">Answered on 22 October</h3>
+  <table class="stack" data-ss-id="answered">
+    <thead><tr><th>Question</th><th>Your answer</th></tr></thead>
+    <tbody>
+      <tr><td>CL-1. Should a faction tell you why?</td><td data-label="Your answer">(a), as recommended: an envoy's one line, and a notice that says who is angry and for what</td></tr>
+      <tr><td>CL-2. Can a camp blame the wrong player?</td><td data-label="Your answer">(a), as recommended: yes, 3 times in 10</td></tr>
+      <tr><td>CL-3. How often does a Frostmaw rob a busy line?</td><td data-label="Your answer">(a), as recommended: this design's rate, a lurk about 0.35 a year at 4 legs, 1.9 at 12 and 5.2 at 24</td></tr>
+      <tr><td>CL-4. How often is a strong base tested?</td><td data-label="Your answer">(a), as recommended: about one fight in eight years at a fortress. CL-6 asks whether a pact may change "every one lost"</td></tr>
+      <tr><td>CL-5. Alliances between camps?</td><td data-label="Your answer">(b), not the recommendation: <span class="why">"Add alliances"</span>. Designed and measured <a href="#alliances">above</a></td></tr>
+    </tbody>
+  </table>
 </section>
 
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
-    <li>CONFLICT-LIFE.md on mic-rtsim main at 9775d54: the model (§2), the walkthroughs (§3), the numbers (§4), cost (§5), tests (§6), choices CL-D1 to CL-D42 (§7) and the questions (§8).</li>
+    <li>CONFLICT-LIFE.md on mic-rtsim main at a92c5f3: the model (§2), alliances (§2.16), the walkthroughs (§3, the alliance stories in §3.6), the numbers (§4, alliances in §4.5), cost (§5), tests (§6), choices CL-D1 to CL-D55 (§7), and your answers and the questions (§8).</li>
     <li>EQUILIBRIUM.md: §2.2's 128-block rule as reworded for MZ-15, and §2.6 item 11, the census.</li>
-    <li>research/conflict-life-2026-10-21/results: summary.md, walkthroughs.md (the four stories: seeds 1000, 1002, 1003 and 1000), stories.md and results.json.</li>
-    <li>DECISIONS.md: EQ-5 and MZ-15.</li>
+    <li>research/conflict-life-2026-10-21/results: summary.md, walkthroughs.md as it stood at 9775d54 (the four stories: seeds 1000, 1002, 1003 and 1000, which the alliances-off runs reproduce exactly), stories.md, results.json, and alliances.txt for the alliance measurements.</li>
+    <li>DECISIONS.md: EQ-5, MZ-15 and CL-1 to CL-5.</li>
   </ul>
 </details>
 
 </main>
 
 <footer data-ss-react="off">
-  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at 9775d54. Private page for Ben, 22 October 2026.</p>
+  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at a92c5f3. Private page for Ben, 22 October 2026, updated for alliances.</p>
 </footer>
 
 </body>

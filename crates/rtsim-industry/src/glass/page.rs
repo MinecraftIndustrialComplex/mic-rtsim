@@ -3,10 +3,11 @@
 //! page store"; choices G2-80 to G2-85 in docs/choices-glassbox-g2.md).
 //!
 //! - **One page per district's glass state** (`persist::GLASS_TABLE`, id = the district's id),
-//!   written whole at every save like the industry engine's other pages (F36): the compile it
-//!   holds as its records (the graph's indices are rebuilt by [`Graph::build`] on restore), the
-//!   check's open window and its passed one, the solve and its regime cache, the glass replay's
-//!   parts with their regime state, marks and running cycle, and a half-assembled compile.
+//!   written whole by a save when it changed since the one before, like the industry engine's
+//!   other pages (docs/choices-industry-dirty-pages.md): the compile it holds as its records
+//!   (the graph's indices are rebuilt by [`Graph::build`] on restore), the check's open window
+//!   and its passed one, the solve and its regime cache, the glass replay's parts with their
+//!   regime state, marks and running cycle, and a half-assembled compile.
 //! - **The counters across districts** ([`GlassStats`], records received) go in the globals page.
 //! - **Not saved:** the solve's wall-clock time (`Compiled::solve_micros`), a measurement of this
 //!   process. Everything else is, so a restored engine replays exactly as one that never stopped

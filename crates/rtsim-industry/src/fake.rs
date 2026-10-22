@@ -267,6 +267,10 @@ pub struct Event {
     pub what: String,
 }
 
+/// Ticks between the fake world's check saves ([`FakeWorld::check_saves`]): PLACEHOLDER 1,000,
+/// twenty to the minute of game time, so a run of days makes hundreds of saves.
+pub const CHECK_SAVE_PERIOD: u64 = 1000;
+
 pub struct FakeWorld {
     pub engine: Engine,
     pub t: Tick,
@@ -317,6 +321,10 @@ pub struct FakeWorld {
     /// [`FakeWorld::outgoing`], commands come in through [`FakeWorld::deliver`], threats go to
     /// [`FakeWorld::threats_out`], and `engine` is unused.
     pub remote: bool,
+    /// A save every [`CHECK_SAVE_PERIOD`] ticks whose pages go nowhere, for the engine's page
+    /// check (`Engine::check_save`, docs/choices-industry-dirty-pages.md ID5): nothing unless
+    /// the check is on (a debug build, or `RTSIM_VERIFY_PAGES`). Off: a test that saves itself.
+    pub check_saves: bool,
     pub outgoing: Vec<Outgoing>,
     pub threats_out: Vec<Threat>,
     /// Every IND_PROBE_SET the engine sent (GLASSBOX.md §5.3), oldest first.
@@ -365,6 +373,7 @@ impl FakeWorld {
             log: Vec::new(),
             wire_bytes: 0,
             remote: false,
+            check_saves: true,
             fail_carriage_deltas: false,
             station_ports: true,
             outgoing: Vec::new(),
@@ -760,6 +769,9 @@ impl FakeWorld {
             return;
         }
         self.engine.advance_to(self.t);
+        if self.check_saves && self.t.0.is_multiple_of(CHECK_SAVE_PERIOD) {
+            self.engine.check_save();
+        }
         // The step's commands.
         for c in self.engine.drain_commands() {
             self.cmd_seq += 1;
