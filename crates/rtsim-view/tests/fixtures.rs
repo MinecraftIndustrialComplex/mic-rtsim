@@ -2,16 +2,17 @@
 //! The save viewer on real saves (VIEWER.md §16, V1's exit test): GameTest worlds the mod wrote,
 //! each its `rtsim/` pages and `data/mic_rtsim_journal.dat`, copied as they were.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 98d6d34
-//!   (feat/oilgate-dragons merged with main: the oil gate's dragon pages, RTD4 and RTN4, replaced
-//!   the money sink's RTD3 ones, which had replaced 6638edc's).
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit CORE_COMMIT
+//!   (the oil audit's F2, F3, F7 and F9 merged with main: the dragons' pages are RTD5 and RTN5, the
+//!   fields' daily watch; an industry district page starts with IDS2, its builders).
 //!   Villages, roads, news, herds, a district; no caravan is on the road when the server stops
 //!   (the harness world draws caravans). A herd's route draws only when a herd is on the move at
 //!   the save, which depends on when the server stops: 6638edc's save had one, while both runs of
 //!   98d6d34 and main's 7e4042a had every herd staying put. So the route layer is not required
-//!   here; it still has to draw or say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from 98d6d34's first
-//!   run. Every module's pages, mostly empty: herds, districts and stations draw.
+//!   here; it still has to draw or say why. The district is the roof gate test's, the suite's last.
+//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from 97bbf65 (the same
+//!   fixes merged with main eedf467). Every module's pages, mostly empty: herds, districts and
+//!   stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
 //! and these folders are replaced by a fresh GameTest run.
