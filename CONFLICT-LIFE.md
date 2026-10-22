@@ -1,12 +1,15 @@
 # Conflict life: how factions decide to fight
 
 **Status:** design for Ben's review, 2026-10-21; revised 2026-10-22 after an adversarial review and
-MOWZIE.md's MZ-15. Nothing is built and no engine code changes here. Ben approves this design before
-code. Branch `plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`.
+MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Nothing is
+built and no engine code changes here. Ben approves this design before code. Branch
+`plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`; the alliances on branch
+`plan/umvuthi-alliances`, worktree `mods/mic-rtsim-conflict2`.
 
 **Ben's answers (2026-10-22).** CL-1 to CL-4 take (a), as recommended. CL-5 takes (b): "Add
 alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed, and
-the alliance design is being added (section 8 has the answers).
+section 2.16 is the alliance design. Section 8 has the answers, and CL-6 and CL-7, the questions the
+alliances raise.
 
 **What the revision changed.** The engine's abstract fights are deterministic: the stronger side wins
 (`village_outcome`, `engine.rs:4343-4365`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
@@ -328,6 +331,8 @@ that was at least a quarter of it.
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets the share of the camp out hunting (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk and AMBUSH_SPOT, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.15) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
+| Pact | a camp, against a foe both quarrel with (2.16) | nothing seen between camps; against a player, a notice naming both camps | new feud fields (2.16) |
+| Call | a sworn ally, against the foe | a joint party: two columns from two camps, arriving together | two of today's parties, each with its BAND_MARCH, naming each other (2.16) |
 | Hunt | a village (Umvuthana only, when hungry) | raptor packs take a district's animals | MZ-8's owed hunts |
 
 Siege stays in the culture data but is not chosen in this design (section 7, CL-D14).
@@ -380,6 +385,10 @@ Every escalation has a brake that comes from the state, not a cap:
   swear it. In 64 worlds of 50 years, 1,562 truces between camps were sworn; the chiefs who swore them
   fought the other camp 55 times while they ran, later chiefs 261 times.
 - **Peace cost and kin cost.** Making a new enemy, or fighting one's own culture, is dear.
+- **Pacts fray** (2.16). A pact lapses after Exp(192) days; refusals, defeats and short contingents
+  strain it until it breaks; falling on an ally ends it and brands the betrayer. A sworn ally makes a
+  camp dearer to attack (deterrence), and an alliance only pays where one camp cannot win alone, so it
+  does not snowball into a bloc.
 - **Clashes keep it from going quiet.** Hunters of two hostile neighbouring camps meet about once in
   two years when both are fed, up to two or three times a year when both starve (rate 1 a year x
   (0.5 + hunger + hunger)); one side loses one or two members. Each clash is a provocation with a
@@ -448,8 +457,8 @@ today (PM-C2).
 | | believed stock: amount and day | 8 | |
 | | guards news | 4 | the day word came that the trains ride bare (a railway feud) |
 
-About 45 bytes a faction and 96 a feud. A memory is a code and its numbers, not text: the story is
-written when it is read (2.14). The parties on the road home are today's `Party` records.
+About 45 bytes a faction and 96 a feud, and 40 more on each feud toward a camp for alliances (2.16).
+A memory is a code and its numbers, not text: the story is written when it is read (2.14). The parties on the road home are today's `Party` records.
 
 **Events.** `Ev::Plunder` and its Poisson clock (`schedule_plunder`, `SYS_PLUNDER`) become
 `Ev::Council { faction, stamp }`, booked from `StreamKey(seed, SYS_COUNCIL, key).slot(n)` at the
@@ -478,6 +487,8 @@ party u64: an actor, or a chief's name index):
   "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." (CL-1).
 - **A notice carries its reason.** FACTION_NOTICE (0x8801, `boundary.rs:35`) grows from 64 to 80
   bytes, shown with the howl, roar or gong.
+- **Alliances (2.16)** add the ally's actor to both, 8 bytes each (128 + 8m and 88), and the partner's
+  agent and a joint flag to BAND_MARCH (72 bytes plus its counts and waypoints).
 No backward compatibility is needed before a release. A truce, a skirmish between camps, a border
 clash and a caravan ambush are unwatched in nearly every case and need nothing from Java: a skirmish
 or a caravan ambush a player meets is a band party on its march, as a plunder is today.
@@ -496,6 +507,9 @@ crystal held) and BAND_MARCH (0x880B, MZ-15). Build order:
 5. With CHIEF_STATE: a stolen crystal as a Theft report (test 14).
 6. With BAND_MARCH and MZ-15's march: the walk-in and the quota's walk-in (2.12).
 7. Caravan ambushes: the `rtsim-world` query and the robbery report.
+8. Alliances (2.16): the pact fields and acts, the call and the joint fight on the harness first (tests
+   21 to 25); then, with BAND_MARCH, the joint march, the shared quota, and the ConflictBridge's target
+   listener (GameTests 5 and 6).
 
 **UR-1.** The design adds no entity, block or item, no body and no world change. Its state lives in
 the faction rows and the wheel, which rtsim saves and drops as today; removing rtsim leaves nothing,
@@ -510,7 +524,7 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
 - **BAND_MARCH (0x880B) is the march record.** This design has no march or route record of its own
   and adds no record id. Its acts are today's party kinds, so each rides BAND_MARCH like any party: a
   skirmish's route ends at the rival's territory edge, a caravan ambush's on the road, a lurk's at its
-  AMBUSH_SPOT. The ids it touches, FACTION_NOTICE 0x8801 and ENVOY_MATERIALIZE 0x8802, gain fields,
+  AMBUSH_SPOT. A joint party is two parties, each with its own BAND_MARCH naming the other (2.16). The ids it touches, FACTION_NOTICE 0x8801 and ENVOY_MATERIALIZE 0x8802, gain fields,
   and none clashes with MOWZIE.md's planned 0x080C, 0x0811, 0x0091, 0x8807, 0x8809 or 0x880B.
 - **The 128-block rule**, worded once in EQUILIBRIUM.md §2.2 and used here as written:
 
@@ -548,7 +562,8 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   the fight's books. Its column is embodied up to the quota, and the members past it stay in the
   record and walk in along the route from the ticking edge as the quota frees, as `start_fight`'s
   later waves send only the members not yet in Minecraft (`spawn_wave`, `engine.rs:3364-3378`). The
-  player sees the band the far view drew, arriving in two or three bunches.
+  player sees the band the far view drew, arriving in two or three bunches. The two contingents of a
+  joint party share one quota of 16 (2.16, CL-D49).
 
 ### 2.13 Cultures as data
 
@@ -563,15 +578,20 @@ with a pool of one, the Umvuthana one with a small pool, an invasion gate and ra
 | Culture | bold | aggr | soc | spread | τ | greed | pride_half | wake_days | effort | demand bias | other |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | goblin | 0.55 | 0.6 | 0.35 | 0.2 | 4 | 1.6 | 12 | 12 | 2 | 0 | ambush weight 1.4 |
-| bandit | 0.45 | 0.45 | 0.6 | 0.15 | 2 | 1.2 | 24 | 14 | 4 | 6 | ambush weight 1.6 |
-| raider | 0.6 | 0.6 | 0.35 | 0.15 | 2.5 | 0.9 | 96 | 20 | 4 | 2 | preempt 10, oath 10, pride_w 20 |
+| bandit | 0.45 | 0.45 | 0.6 | 0.15 | 2 | 1.2 | 24 | 14 | 4 | 6 | ambush weight 1.6, ally weight 1.2 |
+| raider | 0.6 | 0.6 | 0.35 | 0.15 | 2.5 | 0.9 | 96 | 20 | 4 | 2 | preempt 10, oath 10, pride_w 20, ally weight 0.8 |
 | Umvuthana | 0.5 | 0.45 | 0.65 | 0.15 | 2.5 | 1.2 | 48 | 16 | 6 | 10 | guard share 1, invasion pride 0.8, chief strength 5, one by one, heir wait, hunts |
-| Frostmaw | 0.5 | 0.5 | 0.1 | 0.25 | 3 | 1.0 | 96 | 30 | 14 | none | council of one, its life 60, pride_w 25, killer's grudge 80 and pride 2 |
+| Frostmaw | 0.5 | 0.5 | 0.1 | 0.25 | 3 | 1.0 | 96 | 30 | 14 | none | council of one, its life 60, pride_w 25, killer's grudge 80 and pride 2, ally weight 0 |
+
+The ally weight (2.16) is 1.0 where the table names none; the `mind` block gains it, one line.
 
 World numbers, shared: loot value 0.2 an item fed, 0.03 beyond the stores; boldness shift 1; battle
 doubt 0.3; belief drift 1/384 a day, a quarter of it for a player's base; rumour error 0.5; speaker
 weight 0.6; train notice 0.05; caravan attention 0.03; clash rate 1 a year a pair; guard share 0.25;
 field share 0.15; peace cost 8; tributary cost 12; sworn multiplier 3; tribute truce 48 days.
+Alliances (2.16): pact days 192; kin +4 and hated -10 to a pact's worth; effort of offering 3, of a
+call no one answers 1; a refused call costs 1.0 of the oath's truce cost; strain breaks a pact above 2
+and halves over 96 days; betrayal 10 beyond the oath; the guard up to 8 and deterrence up to 4 an ally.
 
 ### 2.14 The story
 
@@ -602,6 +622,238 @@ written when a player, a page or a log reads it (from the model's runs):
 | Renewal and pressure | EQUILIBRIUM.md §2.4.5 and §2.4.7 (as designed there; `rtsim-kernel::renewal` is EQ-6 (a)'s design, not built) | none |
 | Camp bodies, UR-1 | MOWZIE.md §4.9 reconciler, MZ-15's census | none |
 | Decision | none fits | the council: drives, beliefs, Thompson draw, logit choice, truces, clashes |
+| Alliances (2.16) | feud rows, the sitting's acts, the engine's fight, today's parties and BAND_MARCH, NeoForge's `LivingChangeTargetEvent` (the core listens already, `industry/ThreatEvents.java:32`) | the pact fields and acts, the call, the joint fight's books, a partner on `Party` and BAND_MARCH, the shared quota, the target listener |
+
+### 2.16 Alliances (CL-5 (b))
+
+Ben's answer to CL-5 (2026-10-22): "Add alliances". Camps that share an enemy can ally and send joint
+war parties. This section is that design. The model has it (`"alliances"` in `LIFE_DEFAULTS`), and
+every number in sections 3 and 4 is measured with it on. Alliances draw from a random stream of their
+own, so with them off the model is the world before them, draw for draw: `run.py`'s `*_noally`
+scenarios are the same seeds with alliances off, and they reproduce the earlier results exactly. They
+are the control for every comparison in section 4.5.
+
+**What the fight allows.** Between camps the engine's fight is the linear law: the winner loses d / A
+of its party. For members of one strength that is the same number of dead whatever the party's size,
+and beside an ally each contingent loses the same share of its members. The take is the target's
+stock, split by carry. So a camp that can win alone gains little from an ally: it loses fewer and
+takes less, in about the same proportion. A joint party pays where one camp cannot win alone, or where
+the dead it would lose alone are dear. At a player's base the square law holds, and a bigger party
+loses fewer, so two camps gain more there. The model learned this the hard way: with pacts that bound
+nobody, camps swore and then marched alone (CL-D44).
+
+**Who can swear.** Camp f can offer camp y a pact against x when all of these hold:
+- each reaches the other, and both reach x. x is a camp, a village or a player; never the railway or
+  a caravan, which a band ambushes alone (CL-D24).
+- both quarrel with x (a standing hate, a grievance of 30 or more, or wounded pride of 0.5 or more), or
+  one does and the other is of its own culture.
+- neither is sworn to the other already, neither is sworn to x, and neither is sworn against the
+  other: a camp sworn against the Grey Outpost cannot swear beside it against a player.
+- y's culture makes alliances. The Frostmaw never does: a council of one has no one to swear with
+  (ally weight 0). Bandits swear most readily (1.2), raiders least (0.8), goblins and the Umvuthana at
+  1.0.
+- f is calm toward y (grievance under 30, wounded pride under 0.5), and y has not turned f down in the
+  last 48 days.
+
+A camp may hold several pacts, each with one camp against one foe.
+
+**What a pact is worth.** An offer is one of the acts a sitting weighs toward x (2.6), on the same
+Thompson draw of x's strength. Its worth:
+- **The gain:** the best joint war f could make beside y, over the best war it could make alone today
+  (none is 0). The joint war counts y's help at the chance y comes: y's record of coming, Beta(ka, kb),
+  1 in 2 at first. If y does not come, the party goes alone, or turns home if going alone is worth
+  less than the call's effort (1).
+- **The guard:** what y at f's side is worth for safety against x, up to 8. It grows with the danger
+  x poses (the members x killed lately, a tenth of the camp being full danger; for a camp, also how far
+  its believed strength passes f's own defence) and with y's strength against x's.
+- The gain and the guard are scaled by the culture's ally weight and the council's sociability
+  (0.5 + soc).
+- **Who y is:** kin +4; a culture that hates f's, or that f's hates, -10 (raiders hate goblins and
+  bandits, goblins hate bandits); less the grudge and wounded pride f bears y, as for any act.
+- Less the effort of sending, 3.
+
+A camp offers only when the gain and the guard together are above 0: as it sees x today, it would do
+better or be safer beside y.
+
+**The answer.** y weighs the same worth from its side, with its council's mean temper and its middle
+guess of x. No speaker is drawn: a camp that is asked answers without calling a sitting. Its logit
+weighs the pact against refusing (0). A refusal is remembered for 48 days.
+
+**Swearing.** Both chiefs swear. The pact runs Exp(192) days (mean two game years) unless something
+ends it first. Each camp tells the other what it knows of x: each belief takes the other's guess as an
+observation (its uncertainty plus 0.3 in the log), and the stronger floor (2.4) is shared. Each camp
+then sits on x within 1 + Exp(2) days (an "allied" occasion, always sat). While a camp is sworn
+against x, the peace cost toward x (2.9) is waived: the oath has made x its enemy already.
+
+**The oath binds** (CL-D44). A camp sworn against x does not march alone on x with a party its ally
+could stand beside: it calls the ally. It still sends alone what no ally could join: a skirmish on x's
+hunters, and a band where the ally can muster no party that small.
+
+**The call.** The council weighs each of its war parties beside the ally's help as it believes it: the
+ally's largest party no bigger than its own, from the members it believes the ally has at home (its
+guess of the ally's defence). The grove's invasion is never counted on: it waits on the Umvuthi's own
+pride (2.10), which no ally can know. When the council chooses a joint party, an envoy goes to the
+ally. Between two camps nobody sees him, and the ally answers in the same sitting:
+- **Busy.** It cannot send: it is still busy with its last fight (two days in the model; in the engine,
+  until that party is home), or it cannot muster a party no bigger than the caller's. No blame.
+- **Join or refuse.** The caller's envoy tells what it knows of x, as at the swearing. The ally's
+  council draws a guess of its own and weighs each party it could send, no bigger than the caller's,
+  as its own war beside the caller's party: its own dead, its share of the take by carry, its own
+  grudges and pride toward x, and the cost of x's allies (deterrence, below). It takes the best and
+  weighs it against refusing. Refusing shames the oath: the culture's oath x (1.5 - aggression), the
+  cost of breaking a truce, 3 times over for the chief who swore (CL-D8's multiplier) and once for his
+  heir. A logit decides.
+
+A refusal costs the ally the caller's trust (kb + 1), strains the pact (+1), and wounds the caller's
+pride (+0.2), with a memory: "Mudhollow would not come against the Grey Outpost in the winter of year
+3". The caller then goes alone if that is worth more than turning home, and its reason says so:
+"Mudhollow would not come, so it went alone". A join adds to the ally's record (ka + 1).
+
+**The joint fight.** The two contingents fight x as one: one fight of A + AB against d, by the
+engine's law (`village_outcome`, `threat.rs`), and certain, as every fight is (CL-D25). Each
+contingent loses the same share of its members. A destroyed party destroys both contingents, and a
+chief who led either falls with it (CL-D41). The take is split by carry. Each camp books its own:
+- its dead, its fear, what it learned of x, and its floor if it lost;
+- its memory: "we lost 9 at the Grey Outpost beside Mudhollow";
+- at a player's base, its own pressure (EQUILIBRIUM.md §2.4.5: the warriors the player killed, over
+  its own cap) and its own grievance for its dead.
+
+The target meets one fight and blames both. A camp attacked bears each attacker the grievance of its
+dead in proportion to that attacker's strength, +20 each, and wounded pride. It keeps a memory naming
+both ("Ashpit and Mudhollow raided us in the spring of year 7") and sits on each. Its own sworn allies
+are provoked at both attackers (+10 grievance, +0.2 pride, a memory, an occasion). Word of its losses
+spreads as after any raid.
+
+**After the fight.** A win draws the two together: the ally's record of coming rises (ka + 1), and the
+strain in the pact falls by 0.5 on each side. A defeat strains it, the ally most (+1 for the ally, +0.5
+for the caller): it followed and lost. An ally that sent less than the caller counted on (under 0.8 of
+the strength it believed) is resented: +1 strain and a memory, "Mudhollow sent too few against the
+Grey Outpost". Strain halves over 96 days, and the record of coming fades toward even over 192, as
+tribute trust does (2.4).
+
+**How a pact ends.**
+- **Lapsed:** its Exp(192) days ran out.
+- **Strained:** the strain on either side passed 2, after defeats and short contingents.
+- **Refused:** a refusal took the strain past 2.
+- **Torn:** a camp sworn to both sides of a fight. An attack on x provokes x's allies; one that is also
+  sworn to the attacker takes +1 strain on that pact.
+- **Betrayed:** one camp fell on the other.
+
+**Betrayal.** Falling on a sworn ally costs the oath (as breaking a truce does, 3 times over for the
+chief who swore) and 10 more. A council that does it anyway ends the pact. The betrayed camp takes it as
+the gravest insult: +1 pride, +40 grievance, and a memory of weight 3, "Ashpit broke its oath and fell
+on us in the summer of year 12". Every camp that knows the betrayer trusts its word less (kb + 1): it
+counts less on the betrayer's help, so a pact with it is worth less. The betrayer's reason names the oath:
+"Gitz broke the oath sworn with Mudhollow against the Grey Outpost", or, for an heir, "Gitz had not
+sworn it".
+
+**Deterrence.** Falling on a camp costs more for each of its sworn allies that can reach the attacker:
+up to 4 each, by that ally's believed strength against the attacker's own defence. A camp that swears
+is safer for it, which is half of why camps swear (the guard).
+
+**Joint demands** (CL-D48). An envoy may name a joint party as its threat: "Mudhollow would come with
+us". The price is set on the joint take (2.8: between the war's worth to the camp and the believed
+chance to win times what both would carry home). A payment is split by carry, and the ally is bound by
+the same truce, sworn by its own chief, and remembers the payment. Only the caller's envoy walks: one
+party, one line. A player who refuses may meet the joint party, called as any is, and the ally may still
+refuse.
+
+**Envoys and notices** (CL-1 (a), CL-D55).
+- **The envoy names the ally:** "You killed Vorr, our chief, in the spring of year 3. Ashpit and
+  Mudhollow ask 140 emeralds." ENVOY_MATERIALIZE's reason gains the ally's actor, 8 bytes (128 + 8m).
+- **A pact against a player is told.** When two camps swear against him, the caller's notice plays for
+  him (the howl, the gong, the war band shown) with one line: "Ashpit and Mudhollow have sworn against
+  you." FACTION_NOTICE's reason gains the ally, 8 bytes (88), and the notice is kept until shown
+  (NOTICE_SHOWN, MOWZIE.md §4.12).
+- **A joint party's reason names both camps:** "beside the Grey Outpost, sworn against player Ben".
+- A pact against a camp or a village is not told: no one sees it, and a player learns of it from its
+  parties.
+
+**What the player sees.**
+- An envoy naming two camps, often first, and the notice of the pact.
+- Two columns of two cultures marching on him from two camps and arriving together: a goblin band and
+  a pillager war band side by side, not fighting each other (below).
+- After a fight he wins at his walls, two camps that hate him for their dead, each with its own memory.
+  After one they win while he is away, each camp takes its part of his stock.
+
+**Peaceful** (MOWZIE.md §4.12: no war party leaves; CL-D53). Councils sit and pacts may still be sworn:
+a pact is words between camps. No call is made and no joint party leaves.
+
+**UR-1.** A pact is fields on two feud rows (2.11), saved and dropped with them, and a joint attack is
+two ordinary parties that name each other. Nothing is added to the world: no entity, block, item,
+scoreboard team or saved tag. The Java side's joint key lives in memory only, built from BAND_MARCH
+records, which the engine resends at every session start. An uninstall leaves nothing, and a reinstall
+starts with no pacts, as every council starts fresh (2.11).
+
+#### In the engine
+
+**State.**
+
+| Where | Field | Bytes | Notes |
+|---|---|---|---|
+| `Feud`, toward a camp | pact until, since | 8 | days; a pact is open while now is before its lapse, so nothing is booked for it |
+| | the swearing chief | 4 | the chief's ordinal (`Faction::chiefs`), as for a truce |
+| | the foe | 8 | its actor |
+| | the ally's record of coming: ka, kb | 8 | fading toward even (192 days), as trust |
+| | strain, at an anchor day | 4 | halves over 96 days |
+| | refused at | 4 | the day this camp last turned our offer down |
+| | hurt | 4 | our members this neighbour killed lately (danger), halving over 96 days |
+| `Party` | the partner party | 8 | a handle, set on both contingents of a joint attack |
+| | going on alone | 1 bit | the sitting found going alone worth more than turning home |
+
+About 40 bytes on each feud toward a camp. A feud toward a village or a player has no ally fields.
+
+**Events and draws.** No new event kind. An offer and a call are answered inside the caller's sitting:
+the answer reads the other camp's row, a page load when it is not resident, as a fight on a camp is.
+The answering camp's draws come from `StreamKey(seed, SYS_ALLY, its key).slot(n)`, n its own count of
+answers, so its answers never shift another camp's draws (CL-D21, CL-D54).
+
+**Records.** No record carries two factions' members, and no record id is new:
+- **BAND_MARCH (0x880B):** each contingent is its own party with its own record: one faction, one
+  culture, its own route and phase. It gains the partner's agent (8 bytes) and a joint flag: 72 bytes
+  plus 8 per body kind and 16 per waypoint.
+- **ENVOY_MATERIALIZE (0x8802)** and **FACTION_NOTICE (0x8801)** gain the ally's actor, 8 bytes each.
+
+**The march** (MZ-15, CL-D51). Each contingent marches its own route from its own camp. The engine
+ends the nearer contingent's muster later, so both arrive at the target on one tick. The mustering
+phase already holds a band at its camp, its members standing in it (MOWZIE.md §4.9, §4.16). A
+contingent that arrives first, because a route changed or a column slowed, waits at the target (phase
+waiting) until the other arrives or ends. If the other was destroyed or recalled on its march, the
+survivor goes on alone only if its sitting found going alone worth it (the party's flag); otherwise it
+turns home. The census treats each contingent as any party (CL-D42; EQUILIBRIUM.md §2.6 item 11): a
+camp that comes in while its contingent is out has that contingent's bodies taken, and the march goes
+on.
+
+**Edge loading and the quota** (CL-D35, MZ-17, CL-D49). Each column fills in stack by stack at the
+entity-ticking edge, as any band's does (2.12). A joint attack shares one spawn quota (D1): 16 members in
+Minecraft at once for both contingents (`tunables.rs:94` is per band today), split in proportion to
+their members, at least one stack each (a raptor pack is one member of 5 bodies, MOWZIE.md §4.5). The members past a contingent's share walk in along its route
+as the quota frees, as `spawn_wave` does for one band (`engine.rs:3364-3378`). Two invasions (a
+goblin 26 and a raider 23) show about 8 members of each at first, and the rest in bunches.
+
+**The watched fight.** At a watched target the raid director runs one fight for both contingents: its
+waves draw from both within the shared quota, and each contingent books its own dead from its own
+bodies' deaths.
+
+**Allies do not fight each other** (CL-D50). Bodies of one joint attack must not turn on each other
+when a stray arrow hits. Vanilla mobs retaliate through `HurtByTargetGoal`, and every change of a mob's
+target goes through `Mob.setTarget`, or for a brain mob through `StartAttacking`. Both fire NeoForge's
+cancellable `LivingChangeTargetEvent` (`Mob.java:245-250`, `StartAttacking.java:33`). The
+ConflictBridge listens and cancels a change of target to a body of the same joint attack, from each
+body's party and BAND_MARCH's partner. It listens at a higher priority than the industry's own
+listener (`industry/ThreatEvents.java:32`), which skips cancelled events. There is no mixin and no
+scoreboard team: a team is saved with the world (UR-1), and a mixin on `Entity.isAlliedTo` misses any
+mod's override that does not call super (`AbstractIllager.java:35` does). Friendly fire still hurts,
+since `Projectile.canHitEntity` has no ally check (`Projectile.java:257-264`); only the grudge is
+suppressed. A mob whose AI sets its target without `setTarget` would slip through: UNVERIFIED for the
+pack's goblin and Mowzie bodies (GameTest 5 checks them).
+
+**The far view.** Two columns, each drawn as any band from its own BAND_MARCH (DH-2: walking figures,
+never names or counts), converging on one target. Nothing new is drawn.
+
+**The Mowzie cultures.** The Frostmaw never swears. The grove may swear, against a player both it and a
+goblin camp hate, and its raid can be called; its invasion goes only on the Umvuthi's own pride, with
+the Umvuthi aloft at the rear of its own column (MOWZIE.md §4.16). No ally counts on it.
 
 ---
 
@@ -1050,6 +1302,22 @@ seeds unless said. The model's value for each is in brackets.
 20. `a_beaten_party_takes_its_leader`: a destroyed raider invasion ends its captain's rule; a destroyed
     Umvuthana invasion ends the Umvuthi's, the grove then waits the later of its cowed time and
     `min(192, 6 x 2^P)` days and its count falls by one when a warrior takes up the mask.
+21. `alliances_off_is_the_world_before` (2.16): with alliances off, every faction's draws and the
+    state hash equal a build without them [the model's `*_noally` runs reproduce the earlier results
+    exactly].
+22. `a_pact_needs_a_shared_foe`: every pact sworn joins two camps that reach each other and the foe,
+    both quarrelling with it or kin with one quarrelling; none by the Frostmaw; none against the
+    railway or a caravan.
+23. `the_joint_fight_is_the_engines`: a joint fight's outcome and losses equal `village_outcome` or
+    `threat.rs` on A + AB and d; each contingent loses the same share of its members; the take splits
+    by carry; each camp's pressure counts its own dead only.
+24. `the_oath_binds_and_frays`: a camp sworn against x sends no party alone on x that its ally could
+    join, unless the ally refused or was busy at the call; a refusal adds 1 strain, and a pact past 2
+    ends; a betrayal ends the pact and sets W + 1, +40 and a memory of weight 3 on the betrayed.
+25. `alliances_keep_the_world_settled`: on the same seeds with alliances on and off, the world left
+    alone keeps its fights a year within 5% [7.4 and 7.3], no endless war and no camp dying out [none
+    in either], and the fortress at most 0.3 fights a year [0.12]; on Peaceful no call is made and no
+    joint party leaves.
 
 GameTests, only where Java is involved:
 
@@ -1062,6 +1330,13 @@ GameTests, only where Java is involved:
 4. `aWatchedSkirmishIsABand`: a skirmish between two camps, and a caravan ambush, that a player meets
    are band parties on their BAND_MARCH routes, their bodies placed where the march puts them; a band
    past the spawn quota walks its remaining members in from the ticking edge as the quota frees.
+5. `alliesDoNotFightEachOther` (2.16): a goblin band and a pillager band of one joint attack at a
+   target; an arrow from one hits the other, and neither turns on the other (`LivingChangeTargetEvent`
+   cancelled), while both keep the player as their target; with the partner cleared, the hit one turns.
+   Run with the pack's goblin and Mowzie bodies too, to check that their AI goes through `setTarget`.
+6. `aJointPartyArrivesTogether`: two contingents on routes of different lengths arrive on one tick;
+   the members in Minecraft never pass 16 for both; the members past the shared quota walk in from
+   the ticking edge as it frees.
 
 ---
 
@@ -1087,7 +1362,7 @@ GameTests, only where Java is involved:
 | CL-D16 | The Frostmaw is a council of one whose rail grievance is revenge, not a threshold | its robbing rises smoothly with traffic and each lurk is a decision (CL-3) |
 | CL-D17 | The Umvuthi leads an invasion in person only with wounded pride of 0.8 or more, and the grove has no invasion without it | MZ-3 (b) says it leads; a pride gate makes it rare and always provoked |
 | CL-D18 | Blame spill 0.3 | multiplayer stories where a camp cannot tell two players apart (CL-2) |
-| CL-D19 | **Reversed by Ben's CL-5 (b), 2026-10-22.** Was: no alliances | the alliance design replaces it |
+| CL-D19 | **Reversed by Ben's CL-5 (b), 2026-10-22.** Was: no alliances. Now: section 2.16, CL-D43 to CL-D55 | the alliance design replaces it |
 | CL-D20 | Reasons as codes, text written when read | 8-byte memories; no text in saves |
 | CL-D21 | Every draw from `StreamKey(seed, SYS_COUNCIL or SYS_CLASH, faction key)` slotted by the faction's own counter; the world deterministic in the wheel's order | one faction's draws do not shift with another's sittings |
 | CL-D22 | A stolen crystal is a Theft report naming the player at the steal | MOWZIE.md reports the steal in its CHIEF_STATE record (crystal held, §4.2); this makes it a grievance and a memory |
@@ -1111,6 +1386,19 @@ GameTests, only where Java is involved:
 | CL-D40 | The Frostmaw dies in every abstract fight it loses; its killer gets +80 grievance and +2 pride; its heir arrives with half and a provoked occasion | a party that loses is destroyed, and the Frostmaw's party is itself; a den should hate its killer |
 | CL-D41 | A chief who leads falls with a destroyed party, and with a chance of a tenth of his party's loss in a win | a beaten invasion is a story about its leader |
 | CL-D42 | EQUILIBRIUM.md §2.6 item 11: the census does not recall a band's living members | MZ-15: the march goes on; a recall broke it at every visit to a camp |
+| CL-D43 | A pact joins two camps against one foe both quarrel with (or kin, one quarrelling), offered only when a joint war's gain or the guard against a feared foe is above 0, sworn by both chiefs, lapsing after Exp(192) days | an alliance needs a reason both sides see; a lapse keeps pacts from lasting for ever |
+| CL-D44 | The oath binds: a camp sworn against x calls its ally rather than march alone on a party the ally could join; refusing a call costs 1.0 of the oath's truce cost, 3 times over for the chief who swore | under the linear law a camp that can win alone gains little beside an ally; with pacts that bound nobody, camps swore and then marched alone |
+| CL-D45 | A joint fight is one engine fight on the sum; each contingent loses the same share; the take splits by carry; each camp books its own dead, pressure and memories | the engine owns the truth (P3); pressure is per site (EQUILIBRIUM.md §2.4.5) |
+| CL-D46 | Strain: +1 for a refusal, +1 for the ally and +0.5 for the caller after a lost joint fight, +1 for a contingent under 0.8 of what was counted on; a pact ends above 2; strain halves over 96 days | a pact should fray from what happens inside it, not on a clock |
+| CL-D47 | Betrayal costs the oath and 10 more; the betrayed takes +1 pride, +40 grievance and a memory of weight 3; every camp that knows the betrayer counts less on its help | a broken oath is the gravest insult, and a reputation |
+| CL-D48 | Joint demands: one envoy names the joint threat; the price is set on the joint take, the tribute split by carry, and the ally bound by the same truce | the price must match the threat the envoy names |
+| CL-D49 | A joint attack shares one spawn quota of 16, split by members, at least one stack each | D1: two bands at 16 each would double the bodies a weak PC carries |
+| CL-D50 | Allies do not turn on each other: the ConflictBridge cancels a `LivingChangeTargetEvent` toward a body of the same joint attack; no team and no mixin; friendly fire still hurts | UR-1 (a team is saved with the world); a mixin on `isAlliedTo` misses overrides that skip super |
+| CL-D51 | Each contingent marches its own route; the nearer musters longer so both arrive on one tick; one that arrives first waits; a survivor whose partner ended goes on only if its sitting found going alone worth it | MZ-15's march is per party; a joint attack is one fight |
+| CL-D52 | Ally weight by culture: Frostmaw 0, raider 0.8, bandit 1.2, the others 1.0; no ally counts on the grove's invasion | a council of one swears with no one; the Umvuthi's pride is its own (2.10) |
+| CL-D53 | Peaceful: pacts may be sworn; no call is made and no joint party leaves | MOWZIE.md §4.12 |
+| CL-D54 | Alliances draw from their own stream (`SYS_ALLY` in the engine, `arng` in the model); with them off the world is the one before them, draw for draw | a clean same-seed control for every comparison (4.5) |
+| CL-D55 | A pact against a player is told by a notice naming both camps; a joint envoy and a joint party name the ally | CL-1 (a): a faction tells the player why |
 
 ---
 
