@@ -95,9 +95,9 @@ instead of coming back at once.
 
 ## Field flights (OG-3)
 
-**OGC10. Field flights are off by default; the plugin's config sends the switches.** OIL_CONFIG
-carries `fieldFlights` (default false) and `placeLairs` (default true). Off until OG-10's A/B shows
-the gate at least as dangerous as In Control at the oil sites; the engine's own default
+**OGC10. The plugin's config sends the switches.** OIL_CONFIG carries `fieldFlights` and
+`placeLairs` (default true). `fieldFlights` was off by default until OG-10's A/B showed the gate at
+least as dangerous as In Control; since OGB-6 it is on (OGC46). The engine's own default
 (`OilTunables::flags`) matches.
 
 **OGC11. Visitors are hostile and do not stay.** A field flight's dragon materializes hostile
@@ -119,6 +119,30 @@ comes near a field.
 
 **OGC19. A refuelling dragon is seen.** A dragon flying to a field passes a player's view like a
 hunting one (within two view radii of its target): the sight that tells a player where oil is.
+
+## In Control's fire dragon replaced (OGB-6, the audit's F8)
+
+**OGC46. Field flights on at the built draw, and the pack's In Control keeps only its blazes.**
+`DragonConfig`'s `fieldFlights` defaults true, and so does the engine's `OilTunables::flags` (field
+flights and lair placement), at the draw OGC24 built (a roll a 10 seconds per dimension, 200 alive
+per dimension, 8 per field). GameTests still start with every oil switch off (`DragonConfig.Test`).
+In the pack repo (`master`), `config/incontrol/spawner.json` loses its `iceandfire:fire_dragon` entry
+and both `onjoin` rules in `spawn.json` hold only `minecraft:blaze` (OG-12 (a): the blazes stay
+desert-keyed), the files `neoforge/iceandfire/pack-proposal/` held. Both sides land together, so there
+is never a pack with neither danger nor one with both. The pack's `index.toml` and `pack.toml` take
+the two files' new hashes by hand: `packwiz refresh` in a fresh pack worktree also drops the raw jars
+that worktree lacks. OG-10's "at least as dangerous as In Control" no longer gates anything
+(OILGATE.md §4.8).
+
+**OGC47. OG-1's exemption stays.** `adopt_natural_dragons` stays false: a natural or spawner fire
+dragon is still left alone. With In Control's rule gone the pack spawns none, so the setting has
+nothing to act on; true would discard any that a server's own In Control rules still make, and is the
+switch if one turns up. Left alone, the untagged-dragon tests stand as they are.
+
+**OGC48. OG-10's harness stays, as a measure.** `OilDangerGameTests` (`-Pog10`) is kept for measuring
+the field flights. Its arm A reads In Control's rules from `packMods`' config (the smoke server's
+copy), which keeps the fire dragon until that copy is synced from the pack; after that arm A has no
+fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
 
 ## Lairs near oil (OG-7)
 
@@ -348,7 +372,7 @@ Nothing of the deep layer exists. What it will hang on:
 Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
 are in docs/oilgate-cheese-audit.md §5.
 
-1. **Superseded (OGB-1).** Ben judged In Control's dragons possibly overkill and set his own bar: a
+1. **Superseded (OGB-1); the switch is built (OGB-6, OGC46).** Ben judged In Control's dragons possibly overkill and set his own bar: a
    real oil pipeline must be infeasible and cheesing it hard for a semi-casual player.
    docs/oilgate-cheese-audit.md judges the gate against that bar and asks the follow-up. The question
    as it stood: **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its
