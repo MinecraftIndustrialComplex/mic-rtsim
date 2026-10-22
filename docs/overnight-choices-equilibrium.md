@@ -94,3 +94,42 @@ The 30-seed checks of EQC21 on the 8 x 7 ranges grid, release build, seeds 1 to 
 | EQC31 | **S3 is not built, so S4 takes the conservative path:** (a) a lair found late (rediscovered after a reset, or placed by `PLACE_LAIR`) starts at P 0 and waits the base 20 days, as today, not at the cap that §2.3 gives a site found empty with no ledger row, since telling a lair found at world generation from one rediscovered after a reset needs the ledger (EQ-3); (b) the bridges' kill credit (`getKillCredit()`, a pet's owner, `onTame` naming the tamer) stays S3's, so a pet's kill still reads `Mob` and costs the lair nothing; (c) the GameTest `resetDoesNotMintADragon` waits for S3, because without the ledger a reset still gives an empty lair a dragon 20 days later, which is what it forbids. No Java changes. | The task: S4 waits for S3; take the conservative path and record it. |
 | EQC32 | **The world checks are in `sim::equilibrium`, on the 8 x 7 ranges grid and its five lairs** (`dragon_run`, `Roamer`, `dragon_kill_all`). The roamer is the model's, on dragons only: every second day a step to one of the nine regions around it, refused beyond `min(6, 2 + day / 48)` regions of spawn; each day, with chance 0.5, it kills every dragon at home in the lairs of its region. It kills no herd (nor does the model's). Lairs held counts lairs with a dragon at home, on the 24-day census. The kill-all runs the roamer to year 20, kills every dragon in the world as its player, then turns peaceful; the control is the same seed turning peaceful with no kill (the model's `killall`). The 60-year check runs each seed with the roamer and with nobody, read over the last 30 years. The always-run versions use seed 1 on the whole grid (no lair lies within the 3 x 3 at spawn): a kill-all in year 1 and four years of the roamer. | §3.6's scripts and measures, as close as the engine's world allows. |
 | EQC33 | **Three tests turn starve-leave off** (`starve_leave = 0`): the tribute test and the archive test's hatching (their pairs live on roads and a tributary village and catch about a third of their need, so they would leave before what the tests watch), and the grudge test reads the new wait (80 days after two player kills). The farmed-lair and starving-dragon tests are in `crates/rtsim-ecology/tests/lair_renewal.rs` (the starving one on uniform grassland, so the herds that bring the newcomer stay by the lair); `visitor_claims_only_a_due_lair` is in `oil.rs`. | The tests watch other rules; the synthetic worlds feed their dragons less than a real one would. |
+
+## What the S4 checks found (not edited)
+
+The 30-seed checks of EQC32 on the 8 x 7 ranges grid and its five lairs, release build, seeds 1 to
+30, median [5th, 95th] over seeds, against §3.6's model:
+
+| Check | Engine | Model |
+|---|---|---|
+| Lairs held, years 30 to 60, the roamer | 0.83 [0.79, 0.88] | 0.89 |
+| Lairs held, years 30 to 60, nobody | 0.89 [0.86, 0.93] | 0.95 |
+| Herds N/K, the roamer | 0.78 [0.76, 0.80] | 0.59 [0.52, 0.63] |
+| Herds N/K, nobody | 0.78 [0.75, 0.79] | |
+| Fewest ranges alive, either | 1.00 in every seed | 1.00 |
+| Kill-all: days to half the year before | 48 [48, 72] | 48 |
+| Kill-all: days to 90% of the control | 72 [48, 96], every seed (the longest 144) | 48 [48, 72] |
+| Kill-all: second half of the 6 years over the control | 1.02 [0.73, 1.22] | 1.01 |
+| Farmed lair (one player killing every newcomer within 2 days), years 30 to 60 | 1.10 a year, P after a kill 2.13 | 1.083, P* 2.115 |
+
+- **The lairs are held about 0.06 below the model's, with the roamer and without.** With nobody,
+  each seed's five lairs lose about 68 dragons to age in 60 years, each followed by the 20-day base
+  wait, and the gate puts off about 66 arrivals for 24 days each: together about 11% of the lairs'
+  time. The roamer adds about 35 kills a seed (each a player's loss, every one in `player_losses`);
+  about one dragon a seed starves away in 60 years, with the roamer or without. The roamer still sits below nobody in every band, as in
+  the model.
+- **The herds are where S2 left them, and the roamer does not move them:** 0.78 with it and without.
+  The grid's five lairs over 56 ranges eat too little to show (the S2 finding); the model's 0.59 is a
+  world with a lair per few ranges.
+- **The kill-all's 90% is 24 days slower than the model's at the median, and the plan's 72 at the
+  median holds.** Five lairs make 90% of the control every lair the control holds, so one lair still
+  slow from the roamer's kills before the shock holds the seed back (seed 17: P near 2.9 after the
+  kill, a wait near 144 days); the model reads many lairs, where one slow lair is under the 10%. The
+  test asserts the median within 72 and every seed back within the rule's cap read on the census
+  (216 days), not the 95th within 72. The end level is the control's at the median; the spread
+  (0.73 to 1.22) is five lairs on a 24-day census.
+- **The census scenario holds three or four of its five lairs from day 360 on** (`sim census
+  --scenario ecology`, seed 7): Cinder Hollow and Old Scorch have neither a village nor a herd in
+  their nine regions most of the year, so once their first dragons die of age the gate keeps them
+  empty until a migrating herd passes. That is the gate doing what §2.4.1 says; the scenario's lairs
+  were placed before there was a gate.
