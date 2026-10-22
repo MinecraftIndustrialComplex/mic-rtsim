@@ -110,8 +110,11 @@ warriors walking in from its edge.
 | Puppets: bodies the sim owns while they are away | `BodyAdapter` (`core/body/BodyAdapter.java:16`) and `BodyKinds.registerBody` (`core/body/BodyKinds.java:41`), as dragons and herds use them | mic_rtsim |
 | Keeping golems off an envoy | NeoForge `LivingChangeTargetEvent`, which the core already listens to (`core/industry/ThreatEvents.java:32`, `56`) | neoforge |
 | Keeping turret shells and stray blows off an envoy | NeoForge `LivingIncomingDamageEvent` (cancelable; not yet used in the core) and `DamageSource.getEntity()`, the attacker or a projectile's owner | neoforge, minecraft |
-| Knowing a camp's bodies are in before counting them | `ServerLevel.areEntitiesLoaded(long)` (`ServerLevel.java:1702`): entities load after their chunk, asynchronously (`PersistentEntitySectionManager.java:215-222`, `243-250`) | minecraft |
-| Camps found when they load | the lair finder pattern: a structure start seen on `ChunkEvent.Load` (`neoforge/iceandfire/.../Lairs.java:44-60`, `114-125`) | mic_rtsim_iceandfire (pattern) |
+| Knowing when a camp's bodies are all in | NeoForge `ChunkTicketLevelUpdatedEvent` for each footprint chunk's level (`ChunkMap.java:425`), then `ServerLevel.areEntitiesLoaded(long)` (`ServerLevel.java:1702`): entities load after their chunk, asynchronously (`PersistentEntitySectionManager.java:215-222`, `243-250`), and unload when it drops below FULL, which can happen with no chunk unload and end with no new `ChunkEvent.Load` (§4.9) | neoforge, minecraft |
+| Camps found when they first load | the lair finder pattern: a structure start seen on `ChunkEvent.Load` (`neoforge/iceandfire/.../Lairs.java:44-60`, `114-125`) | mic_rtsim_iceandfire (pattern) |
+| Telling a camp's bodies apart | an entity attachment, `mic_rtsim:camp_member`, saved with the entity as `mic_rtsim:gossip_ops` is on villagers (`core/puppet/RtsimAttachments.java:36-38`) | mic_rtsim |
+| Records that ride on bodies | `mic_rtsim:pending` (`core/puppet/RtsimAttachments.java:30-31`) on a camp body or a `minecraft:marker` (no tick, never sent to a client, `Marker.java:21`, `39`), journaled again at load as `docs/boundary.md` §3.1 does for chests | mic_rtsim, minecraft |
+| The journal never ahead of a body's chunk | `ChunkWriteBarrier` (`core/journal/ChunkWriteBarrier.java:62`), extended to entity chunks (ledger 22) | mic_rtsim |
 | Tribute put in a real chest | `TRANSFER_TO_CONTAINER` 0x8005 (`docs/boundary.md:286`), as the dragons' `LAIR_CHEST` uses it (`docs/boundary.md:850`, `892-923`) | mic_rtsim |
 | A rail fixture for tests | `RailFixtureGameTests` (branch `test/create-rail-fixture`, not merged): real Create 6.0.10 track with a 90 degree curve and an S-bend, two stations, a signal and an assembled two-carriage train on a schedule | mic_rtsim_create |
 
@@ -119,7 +122,7 @@ warriors walking in from its edge.
 
 Sizes are estimates by analogy with code that exists; they are not measured.
 
-**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 1,700 lines plus tests:**
+**Engine (Rust: rtsim-conflict, rtsim-settle and the composition), about 1,900 lines plus tests:**
 1. **Rail from sampled trains** (§4.3). `SignalKind::Rail` = 6, appended. The composition decodes
    RAIL_PASS and keeps one decayed leg count per (faction, actor) over all of that actor's passes,
    with a hysteresis band and a daily resync, pushing a rate only on those and booking one wake for
@@ -154,39 +157,35 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    wait is already over, the send fails again, and `plan_feud` books the next tick (`1569`), one
    wake a tick, about 72,000 for a feud over the 3 days a den takes to refill from 0.5 (a den found
    empty with a busy line, or a bold chief's cowed time under 6 days). About 30.
-7. **A pool cap per camp, the census, and bodies leaving and coming home** (§4.9). `pool_cap` is per
-   culture today (`engine.rs:882`, `1062`); a camp's cap becomes the count of its bodies at
-   FACTION_FOUND (a grove's 5 to 9), bounded by the culture's. Nothing at the boundary says a party has
-   left or come home today (the commands are Territory, Notice, Envoy, Materialize, Steer, Recall and
-   Settled, `boundary.rs:385-393`), and no party reaches its camp in a body (`seen` skips the walk
-   home, `engine.rs:3608-3610`; `go_home` recalls, `3106-3110`). So a war party's members are booked
-   *away, body left behind* from the muster; BAND_DEPART at the muster's end has the plugin take their
-   bodies if the camp's entities are all in; `home` books the survivors whose bodies were taken as
-   *owed* and orders them with an unprompted HOME_SPAWN; and the plugin answers every BAND_DEPART and
-   HOME_SPAWN with CAMP_BODIES, what it did, which the engine books instead of the order. HOME_CENSUS
-   on each camp load, once every chunk of the camp has its entities in, carries the bodies present and
-   the nearest player whose chunk is within the view distance plus 2 chunks of a camp chunk (Chebyshev;
-   §4.9), and the engine reconciles its count with them in §4.9's three steps. It keeps per kind the
-   war party members away whose bodies stayed behind, those dead whose bodies stayed behind, and the
-   members home owed a body. HOME_SPAWN removes the dead ones' bodies, takes the bodies of members
-   whose party is watched (by kind, with the party's agent), and spawns those owed. A camp loading
-   while a member is away with its body there and its party not watched ends that party through `home`
-   (`engine.rs:3170`: survivors to the pool, loot stocked). `recall` (`engine.rs:3146-3167`) is not the
-   tool: it only despawns a party's bodies in the world, and an unwatched party has none, so the
-   BAND_RECALL reasons stay 1 to 6 (`docs/boundary.md:1460`); the one command is AMBUSH_SPOT's removed
-   flag if the party was lurking (ledger 8). `home` runs today only from the party's own last event
-   (`engine.rs:2425`), so the census also cancels that event (the generational handles already make the
-   party's other pending events stale). About 300.
-8. **Lying in wait** (§4.4): a war party at a position with no district waits out its patience
-   (today it "finds nothing to raid", `engine.rs:2869-2878`), sends AMBUSH_SPOT, and rolls
-   `ambush_milli` once per TRAIN_PASSED; a hit calls `attack_train` for that train id. The spot's
-   passes come from sampling, never from `trains_crossed`'s 512-block regions (the real track can sit
-   in a different region from the straight booked leg). Whenever a lurk ends (its patience out, the
-   party killed, routed or otherwise sent home, or ended by a census, §4.9), the engine sends
+7. **A pool cap per camp, and the camp reconciler's engine half** (§4.9). `pool_cap` is per culture
+   today (`engine.rs:882`, `1062`); a camp's cap becomes the count of its bodies at FACTION_FOUND (a
+   grove's 5 to 9), bounded by the culture's. Nothing at the boundary says a party has left or come
+   home today (the commands are Territory, Notice, Envoy, Materialize, Steer, Recall and Settled,
+   `boundary.rs:385-393`), and no party reaches its camp in a body (`seen` skips the walk home,
+   `engine.rs:3608-3610`; `go_home` recalls, `3106-3110`). So each camp keeps a ledger: a slot per
+   member, each with a generation and one of five states, following the pool under §4.9's invariants.
+   `send_party` draws slots in §4.9's order (today it draws a count, `engine.rs:2236-2250`), and losses
+   away fall on slots. The engine marks a camp in and out (CAMP_CENSUS, CAMP_OUT); reconciles each
+   census by §4.9's table; orders a muster's end, a homecoming and a refill at a camp that is in, as
+   CAMP_RECONCILE lines with derived op ids; books CAMP_BODIES and CAMP_DEATH by the world fact each
+   reports; and keeps at most one line in flight per slot, voiding them at an epoch's end and a session
+   start. A census can end a party through `home` (`engine.rs:3170`: survivors to the pool, loot
+   stocked), and so can a party's last death. `recall` (`engine.rs:3146-3167`) is not the tool: it only
+   despawns a party's bodies in the world, and an unwatched party has none, so the BAND_RECALL reasons
+   stay 1 to 6 (`docs/boundary.md:1460`); the one command is AMBUSH_SPOT's removed flag if the party
+   was lurking (ledger 8). `home` runs today only from the party's own last event (`engine.rs:2425`),
+   so the census also cancels that event (the generational handles already make the party's other
+   pending events stale). About 450.
+8. **Lying in wait** (§4.4): a war party at a position with no district waits out its patience (today
+   it "finds nothing to raid", `engine.rs:2869-2878`), sends AMBUSH_SPOT, and rolls `ambush_milli` once
+   per TRAIN_PASSED; a hit calls `attack_train` for that train id. The spot's passes come from
+   sampling, never from `trains_crossed`'s 512-block regions (the real track can sit in a different
+   region from the straight booked leg). Whenever a lurk ends (its patience out, the party killed,
+   routed or otherwise sent home, ended by a census, or left with no units, §4.9), the engine sends
    AMBUSH_SPOT again with its removed flag; without it Java would go on sampling the spot and sending
    TRAIN_PASSED for an agent that is gone. A recall alone does not end it: `player_left` recalls an
-   embodied party in any phase (`engine.rs:4448`), which only despawns the puppet, and the lurk goes
-   on unseen, keeping its spot and rolling its ambushes. About 150.
+   embodied party in any phase (`engine.rs:4448`), which only despawns the puppet, and the lurk goes on
+   unseen, keeping its spot and rolling its ambushes. About 150.
 9. **Threat source and class from the culture:** ambushes and district raids use the culture's source
    (`Boss`) and each unit's class and carry (today both hard-code `Bandit`, and ambushes
    `GroundMelee`, `engine.rs:2663-2664`, `2947`). A chief state bit picks between two unit rows (the
@@ -208,28 +207,31 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     node (a new `NodeKind::Lair` in `crates/rtsim-settle/src/lib.rs:48`, no stock or market rows),
     because `add_faction` makes every camp a `NodeKind::Haven(market)` node today
     (`engine.rs:854-861`), and a Frostmaw trades nothing. About 60 with the match arms.
-14. **Reports the engine has no record for** (§4.12): CAMP_DEATH (a body or the chief killed at
-    home, with the killer and an op id), CHIEF_STATE (latest-wins: health, crystal), TRADED (a
-    masked trade at the grove, into `Conflict::traded`, `engine.rs:2045`, which has no caller today),
-    a haven's chest (latest-wins, as `LAIR_CHEST`), NOTICE_SHOWN (a notice is kept per feud until the
-    plugin has played it, and resent at each session start), TRAIN_ROBBED (the train the robbed-train
-    roar plays for), and the world's difficulty (no war party leaves on Peaceful). An envoy party
-    wiped out with no player among its killers withdraws its demand: a new DEMAND_SETTLED outcome 5
-    (today 1 to 4, `docs/boundary.md:1461`) with no relief, no refusal and no climb, the feud staying
-    on Envoy (today the demand would run to its deadline and expire as if refused,
-    `demand_due`, `engine.rs:1809-1821`). About 260 with the decoding.
+14. **Reports the engine has no record for** (§4.12): CAMP_DEATH (a camp body killed or carried off, at
+    home or left behind, with its slot and generation, the killer and an op id), CHIEF_STATE
+    (latest-wins: health, crystal), TRADED (a masked trade at the grove, into `Conflict::traded`,
+    `engine.rs:2045`, which has no caller today), a haven's chest (latest-wins, as `LAIR_CHEST`),
+    NOTICE_SHOWN (a notice is kept per feud until the plugin has played it, and resent at each session
+    start), TRAIN_ROBBED (the train the robbed-train roar plays for), and the world's difficulty (no
+    war party leaves on Peaceful). An envoy party wiped out with no player among its killers withdraws
+    its demand: a new DEMAND_SETTLED outcome 5 (today 1 to 4, `docs/boundary.md:1461`) with no relief,
+    no refusal and no climb, the feud staying on Envoy (today the demand would run to its deadline and
+    expire as if refused, `demand_due`, `engine.rs:1809-1821`). About 280 with the decoding.
 15. **Two cultures as data:** `data/cultures/frostmaw.json` and `umvuthana.json`, added to `builtin()`
     (`culture.rs:430-432`, `449`), each with `market_culture` (`Culture::resolve` errors without it,
     `culture.rs:383-387`), `chief_lifespan_days` 1,000,000 (§4.2) and the fields above. About 140
     lines of JSON.
 
-**Java, about 2,700 lines plus about 1,300 of GameTests and kit:**
+**Java, about 3,050 lines plus about 1,400 of GameTests and kit:**
 16. **ConflictBridge** in the core (MZ-1): the conflict module's Java half, which does not exist yet
     (`crates/rtsim-jni/src/engine/conflict.rs:5`): territories (kept in a spatial hash the train
     sampler also reads), the territory signals from vanilla block and death events, the envoy and its
     payment, the raid director (waves on an arc), steering, recalls, casualties, notices and their
-    acknowledgement, the census and body-order plumbing, the Peaceful flag. Vanilla only (D4). About
-    1,100, by analogy with `core/herd/HerdBridge.java` (940).
+    acknowledgement, the camp reconciler's plumbing (each footprint chunk's level, epochs and CAMP_OUT,
+    applying CAMP_RECONCILE, records on bodies and markers, journaled again at load; §4.9), the
+    `mic_rtsim:camp_member` attachment and its index, the Peaceful flag. Vanilla only (D4). About
+    1,250, by analogy with `core/herd/HerdBridge.java` (940). In the Carry On plugin, the pickup hook
+    (`MicRtsimCarryOn.java:39-43`) also takes tagged camp bodies: about 20.
 17. **The train sampler** in the Create plugin (`neoforge/create`, `TrainSampler.java` beside
     `TrainWatch.java`): once a second it walks `GlobalRailwayManager.trains`, reads each train's
     leading point and tests the segment from its last sample against the territory hash; it reports
@@ -237,21 +239,30 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     samples every tick; it plays the robbed-train roar (TRAIN_ROBBED). About 300.
 18. **The Mowzie plugin** `neoforge/mowziesmobs` (mod id `mic_rtsim_mowziesmobs`): body adapters for
     the Frostmaw, the Umvuthana warrior, raptor pack and envoy; camp finding and the census for the two
-    structures (with the nearest player at the census tick, and the bodies HOME_SPAWN removes or
-    takes); taking a war party's home bodies when it sets out (BAND_DEPART) and spawning saved vanilla
-    bodies when it comes home (HOME_SPAWN), answering each order with CAMP_BODIES (§4.9); persistence
-    for a robbed Frostmaw (a mixin at the steal, §4.7); the swipe at passing carriages; the envoy
-    party's targeting and damage (§4.5); a mixin on `EntityUmvuthi.rememberTrade` and an event on
-    minion trades; the notice sounds. About 1,100 to 1,300, by analogy with the Ice and Fire plugin
+    structures (the bodies by slot, the strays, the census player); a reconcile's lines for the two
+    kinds: adopting and tagging strays, taking bodies, handing them to a party's puppets as it sets
+    out, spawning tagged vanilla bodies when it comes home or the pool refills, a Frostmaw's spawn held
+    out of sight, and removing (§4.9); restricting a tagged Frostmaw to its den at each join;
+    persistence for a robbed Frostmaw (a mixin at the steal, §4.7); the swipe at passing carriages; the
+    envoy party's targeting and damage (§4.5); a mixin on `EntityUmvuthi.rememberTrade` and an event on
+    minion trades; the notice sounds. About 1,200 to 1,400, by analogy with the Ice and Fire plugin
     (`DragonBridge.java` 1,267, `Lairs.java` 419).
 19. **A strength hook for observed fights:** `IND_FIGHT` counts one per attacker today
     (`core/industry/Threats.java:384-385`); plugins supply a per-entity strength (§4.13). About 40.
 20. **One core exclusion tag**, `mic_rtsim:threat/ignored`, checked first in `ThreatClasses.hostile`
     (`core/industry/ThreatClasses.java:36-39`), with `mowziesmobs:foliaath` as an optional entry
     (§4.15). About 10 lines and one JSON file.
-21. **GameTests and a kit** (`MowzieGameTests`, `MowzieKit`), about 1,000 and 300, by analogy with
+21. **GameTests and a kit** (`MowzieGameTests`, `MowzieKit`), about 1,100 and 300, by analogy with
     `DragonGameTests.java` (701) and `DragonKit` (329); the rider and swipe tests build on the rail
-    fixture; and **`rtsim-cli sim mowzie`**, about 550, by analogy with `sim/conflict.rs` (423).
+    fixture; and **`rtsim-cli sim mowzie`**, about 600, by analogy with `sim/conflict.rs` (423).
+22. **Entity chunks in the journal barrier** (§4.9). The `ChunkWriteBarrier`
+    (`core/journal/ChunkWriteBarrier.java:62`) notes level chunks today (`dependsOn(LevelChunk)`,
+    `:170`) and puts them on disk through `ChunkMap.save`; a chunk's entities are stored apart, in
+    their own region files through their own IOWorker (`EntityStorage.java:86-108`,
+    `SimpleRegionStorage.java:17`, `24`). A camp record needs the entity chunk it speaks for noted the
+    same way: saved, put on disk ahead of the queue, and waited for before the journal's file is
+    written. How the barrier asks vanilla for one chunk's entities, and whether C2ME moves entity
+    storage as it does chunk storage, are UNVERIFIED. About 150.
 
 No new blocks, items or entities.
 
@@ -262,18 +273,18 @@ No new blocks, items or entities.
 |---|---|---|---|
 | 0x080C | RAIL_PASS | Java to engine | faction, train id, train owner, the sampled point nearest the camp, entry and exit ticks |
 | 0x080D | TRAIN_PASSED | Java to engine | agent, epoch, train id, the nearest carriage's index, watched flag |
-| 0x080E | CAMP_DEATH | Java to engine | faction, body kind, chief flag, killer kind and UUID, op id |
-| 0x080F | HOME_CENSUS | Java to engine | faction, bodies present by kind (before any take), chief present, crystal held, and the nearest player whose chunk is within the view distance plus 2 chunks of a camp chunk (Chebyshev) at the census tick, with its position (none if there is none) |
+| 0x080E | CAMP_DEATH | Java to engine | faction, body kind, its slot and generation (none for a stray), chief flag, killer kind (a player, a mob, taken by Carry On, none) and UUID, op id; carried on a marker where the body was until acknowledged (§4.9) |
+| 0x080F | CAMP_CENSUS | Java to engine | faction, a new epoch, the footprint's bodies of the camp's kinds, each by slot and generation or as a stray by UUID; the camp's tagged bodies loaded elsewhere; chief present, crystal held, health; the census player (§4.9) and its position, if any |
 | 0x0810 | TRADED | Java to engine | faction, player, gold nuggets that changed hands (the engine values them in coins at the grove market's price, as `Conflict::traded` takes coins), op id |
 | 0x0811 | NOTICE_SHOWN | Java to engine | faction, player |
-| 0x0812 | CAMP_BODIES | Java to engine | the answer to every BAND_DEPART and HOME_SPAWN: faction, the order's id, and for each line of the order (bodies removed, taken with their party's agent, spawned) the count done; all 0 when the camp's entities were not all in (§4.9) |
+| 0x0812 | CAMP_BODIES | Java to engine | the answer to a CAMP_RECONCILE: faction, epoch, the reconcile's op id, and per line its slot, generation and outcome (done, nothing to do, stale); carried on the bodies and markers it changed until acknowledged (§4.9) |
+| 0x0813 | CAMP_OUT | Java to engine | faction, the epoch that ended: a footprint chunk dropped below FULL (§4.9) |
 | 0x0091 | CHIEF_STATE (latest-wins) | Java to engine | faction, health, crystal held |
 | 0x0092 | HAVEN_CHEST (latest-wins) | Java to engine | faction, dimension, a grove chest's position, its free slots (as `LAIR_CHEST`) |
 | 0x0093 | DIFFICULTY (latest-wins) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x8807 | AMBUSH_SPOT | engine to Java | agent, epoch, faction, dimension, the track point, the body's spot, reach; flag removed (sent whenever the lurk ends, ledger 8) |
-| 0x8808 | HOME_SPAWN | engine to Java | a census's answer, or unprompted when a war party comes home with bodies owed or a grove's pool has a whole warrior ready (§4.9): faction, an order id, bodies to remove by kind (members that died away, §4.9 step 1), bodies to take by kind, each with the party's agent and epoch (members whose party is watched, step 2), bodies to spawn by kind (those owed), chief flag, crystal |
+| 0x8808 | CAMP_RECONCILE | engine to Java | faction, epoch, an op id derived from the faction, epoch and decision, and lines: slot, generation, kind, and an action (spawn, adopt a stray by UUID, take, set out with the party's agent and epoch, remove a slot's body or a stray by UUID), chief flag, crystal (§4.9) |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
-| 0x880A | BAND_DEPART | engine to Java | agent, epoch, faction, an order id, units by kind: a war party's muster is over and it sets out (§4.9) |
 
 FACTION_FOUND's reserved word (`docs/boundary.md:1421`) carries the census at discovery: the count
 of home bodies, chief present, crystal held.
@@ -396,12 +407,12 @@ with `haven: false` so the den joins as a market-less node (ledger 13).
 
 ### 4.2 The Frostmaw: a culture of one
 
-**Who it is.** The den's Frostmaw is the faction's chief and only body. At home it stays the jar's
-own entity, saved by vanilla and untagged (§4.9): asleep, holding its crystal, with its own health.
-The engine keeps a copy of its state from the census and CHIEF_STATE (health, crystal) for the times
-it is away. Asleep it heals 0.3 a tick (`heals_out_of_battle`, on by default, `ConfigHandler.java:446`;
-`EntityFrostmaw.java:594-596`), full from nothing in about 830 ticks, so the engine counts a Frostmaw
-that has come home as healed.
+**Who it is.** The den's Frostmaw is the faction's chief and only body. At home it stays the jar's own
+entity, saved by vanilla with only the plugin's tag added (§4.9): asleep, holding its crystal, with its
+own health. The engine keeps a copy of its state from the census and CHIEF_STATE (health, crystal) for
+the times it is away. Asleep it heals 0.3 a tick (`heals_out_of_battle`, on by default,
+`ConfigHandler.java:446`; `EntityFrostmaw.java:594-596`), full from nothing in about 830 ticks, so the
+engine counts a Frostmaw that has come home as healed.
 
 **Its pool is one.** `pool_cap` 1 (the den holds one Frostmaw, `frostmaw_spawn.nbt`). Its Raid and
 Invasion parties are the chief alone: one `frostmaw` unit, flagged as the chief (`BAND_MATERIALIZE`
@@ -440,9 +451,10 @@ routs. What this plan adds:
 - **A third player kills it on its raid.** The party's feud steps down, as the engine does today: a
   Frostmaw raiding Iva's line and killed by Bram drops Iva's feud to Notice. Bram gets the Killing
   report, so the heir holds a small grudge against him (about 2.5, under Notice) that decays.
-- **The body.** The pool is empty while the den waits for a migrant (§4.10): at `recruits_per_day`
-  1/6 (TUNABLE) a new Frostmaw is ready six days later, and the plugin places it in the den, asleep,
-  the next time the den loads (HOME_SPAWN). Whether it arrives with its crystal is MZ-4.
+- **The body.** The pool is empty while the den waits for a migrant (§4.10): at `recruits_per_day` 1/6
+  (TUNABLE) a new Frostmaw is ready six days later, and the plugin places it in the den, asleep, the
+  next time the den comes in while it is home, once no player is within 160 blocks (§4.9). Whether it
+  arrives with its crystal is MZ-4.
 - **Old age** (decided): `chief_lifespan_days` 1,000,000 (about 2,700 years) for both cultures, so
   the chief changes only when its body dies. Reason: an age death would make `ensure_chief` replace
   the chief with no body dying on screen, while the den's Frostmaw sleeps on unchanged; the renewal
@@ -614,48 +626,47 @@ players only (`284`).
 - **No collision.** A train passes through a Frostmaw (§3.1): the spot keeps it off the rail so it
   never looks that way.
 
-**Its den while it is out.** If it left while the den was loaded, BAND_DEPART took its body (§4.9): a
-player who visits finds the ruin and no Frostmaw. If it left while the den was unloaded, its vanilla
-body is still in the saved den, and what the den's next load does depends on whether the Frostmaw
-by the line is *watched* (§4.9: its puppet is in the world, or the nearest player whose chunk is
-within the view distance plus 2 chunks of a den chunk, as the player who loads it always is, is
-nearer the Frostmaw than the den):
-- **Not watched.** The body stays and the engine ends the party through `home` (`engine.rs:3170`),
-  as if it had walked in: the Frostmaw has come home to mind its den. So a player who visits the den
-  ends a lurk early; the next raid comes `repeat_days` after this return. Reason (UR-1): removing
-  the body instead would leave the den empty while its Frostmaw lives, and an uninstall then would
-  empty it for good.
-- **Watched.** It stays out, and the plugin takes its body from the den as when it leaves a loaded
-  den, so it is never in two places; from then on it is an ordinary member away, with no body left
-  behind. A rider coming along straight track meets this case at any view distance: the spot is 5
-  blocks off the rail and the den about 145 blocks beyond it, so a rider on the line is nearer the
-  spot than the den. On track that curves round the den's mountain she may not: with a 200-block
-  radius, 200 blocks along the track from the spot she is 178 blocks from the den and 189 from the
-  spot, with no puppet yet; a den's entities load at the view distance plus 2 chunks (§4.9), so at
-  the default 10, on any heading, the den loads while she is still nearer it than the spot, and she
-  finds the Frostmaw home, its lurk ended. That is coherent, only earlier than on straight track.
-  Reason, over "watched means its puppet is in the world" alone: the puppet appears once the rider
-  is within 160 blocks of the spot (`view_radius`), when on straight track the den is about 219
-  blocks away, so that test would hold only if the den loads after the puppet appears, that is
-  below about 12 chunks of view distance when the den lies along an axis from the rider, and about
-  8 when it lies on a diagonal (the server's own setting is UNVERIFIED); "a player within
-  `view_radius` of the spot" is the same test. This has the uninstall exposure of any member away
-  from a loaded camp, which §4.9 lists.
+**Its den while it is out.** If it set out while the den was in, its body went with it (§4.9): handed
+to its puppet if a player saw it go, else taken. A player who visits finds the ruin and no Frostmaw. If
+it set out while the den was out, its vanilla body is still in the saved den, and what the den's next
+census does depends on whether the Frostmaw by the line is *watched* (§4.9: its puppet is in the world,
+or the census player, the nearest player whose chunk is within the view distance plus 2 chunks of a den
+chunk, is nearer the Frostmaw than the den):
+- **Not watched.** The body stays and the engine ends the party through `home` (`engine.rs:3170`), as
+  if it had walked in: the Frostmaw has come home to mind its den. So a player who visits the den ends
+  a lurk early; the next raid comes `repeat_days` after this return. Reason (UR-1): removing the body
+  instead would leave the den empty while its Frostmaw lives, and an uninstall then would empty it for
+  good.
+- **Watched.** It stays out, and the census's reconcile takes its body from the den, so it is never in
+  two places; from then on its body is gone, and none is left behind. A rider coming along straight
+  track meets this case at any view distance: the spot is 5 blocks off the rail and the den about 145
+  blocks beyond it, so a rider on the line is nearer the spot than the den. On track that curves round
+  the den's mountain she may not: with a 200-block radius, 200 blocks along the track from the spot she
+  is 178 blocks from the den and 189 from the spot, with no puppet yet; a den comes in at the view
+  distance plus 2 chunks (§4.9), so at the default 10, on any heading, the den comes in while she is
+  still nearer it than the spot, and she finds the Frostmaw home, its lurk ended. That is coherent,
+  only earlier than on straight track. Reason, over "watched means its puppet is in the world" alone:
+  the puppet appears once the rider is within 160 blocks of the spot (`view_radius`), when on straight
+  track the den is about 219 blocks away, so that test would hold only if the den comes in after the
+  puppet appears, that is below about 12 chunks of view distance when the den lies along an axis from
+  the rider, and about 8 when it lies on a diagonal (the server's own setting is UNVERIFIED); "a player
+  within `view_radius` of the spot" is the same test. This has the uninstall exposure of any member
+  away whose body is gone, which §4.9 lists.
 
 ### 4.5 The Umvuthana: a tribe
 
-**Who it is.** The grove's Umvuthana are the tribe's warriors (MZ-11). At home they stay the jar's
-own entities, saved by vanilla and untagged (§4.9). On the grove's first load the plugin counts them,
-and that count is both the pool and the grove's own `pool_cap` (5 to 9; ledger 7). The Umvuthi stays a
-vanilla entity at its fire pit (persistent, `EntityUmvuthi.java:393`), so it keeps its own memory of
-who traded with it (`TRADED_PLAYERS`, NBT `"players"`, `779-792`). Umvuthana it summons in a fight
-are vanilla minions like the rest, and the census counts them up to the grove's cap. Its cranes stay
-vanilla and are never counted: a crane heals and shields only the Umvuthi
+**Who it is.** The grove's Umvuthana are the tribe's warriors (MZ-11). At home they stay the jar's own
+entities, saved by vanilla with only the plugin's tag added (§4.9). At the grove's first census the
+plugin counts them, and that count is both the pool and the grove's own `pool_cap` (5 to 9; ledger 7).
+The Umvuthi stays a vanilla entity at its fire pit (persistent, `EntityUmvuthi.java:393`), so it keeps
+its own memory of who traded with it (`TRADED_PLAYERS`, NBT `"players"`, `779-792`). Umvuthana it
+summons in a fight are vanilla minions like the rest: strays, which the census adopts up to the grove's
+cap. Its cranes stay vanilla and are never counted: a crane heals and shields only the Umvuthi
 (`EntityUmvuthanaCrane.java:174`), so it has no place in a band away from it. The pool is a count of
 fighters, and a raptor pack counts as one. At home every pool unit is a warrior's body: a war party's
-raptor pack that leaves a loaded grove takes one warrior's body with it, and one that comes home is
-one warrior again (§4.9). A scouting raptor pack draws on no pool: it takes no warrior's body and
-turns back into none.
+raptor pack holds one warrior's slot, so setting out from a grove that is in it takes that warrior's
+body, and coming home it is owed one again (§4.9). A scouting raptor pack draws on no pool: it takes no
+warrior's body and turns back into none.
 
 **Units** (strength by §4.13):
 
@@ -761,9 +772,10 @@ drops `sol_visage` when a player kills it (`loot_table/entities/umvuthi.json`); 
 A warrior killed at the grove is a CAMP_DEATH without the chief flag: the pool loses one, and a kill
 by a player is also the killing signal (P14).
 
-The new chief's body: the Umvuthi is placed at the fire pit (HOME_SPAWN with the chief flag) the
-first time the grove loads after the cowed time ends, finalized as a structure spawn and restricted
-to the pit, as `UmvuthanaGrovePieces.java:276-288` does. The Frostmaw's comes with the pool (§4.2).
+The new chief's body: the Umvuthi's slot is owed a body from the end of the cowed time, and a
+reconcile's spawn line with the chief flag places it at the fire pit at the grove's next census (§4.9),
+finalized as a structure spawn and restricted to the pit, as `UmvuthanaGrovePieces.java:276-288` does.
+The Frostmaw's comes with the pool (§4.2).
 
 **At a station (Invasion).** A Frostmaw that finds a district within 64 blocks of its station spot
 raids it as well: Lanchester, class by its crystal, nothing broken, nothing stolen beyond the cargo
@@ -773,10 +785,10 @@ rule.
 
 | Body | At home | Away (a puppet) | State it gives back |
 |---|---|---|---|
-| Frostmaw | the jar's vanilla body, untagged; `PersistenceRequired` set by the plugin at the steal, which also reports CHIEF_STATE: a mixin at the `setHasCrystal(false)` call in `EntityFrostmaw.tick` (`615`), not on the setter itself, which loading NBT also calls (`963`); without it the random despawn takes a robbed Frostmaw within about a minute (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health from the engine | health and crystal (CHIEF_STATE; census), death with killer |
-| Umvuthana warrior, envoy | the jar's vanilla bodies (an envoy party's three are fresh puppets, never taken from home, §4.9) | its constructor, then `finalizeSpawn` so it gets its trade table (`EntityUmvuthanaMinion.java:243-250`); mask (NBT `"mask"`), weapon (NBT `"weapon"`, `EntityUmvuthana.java:682-690`) | casualties with killer |
+| Frostmaw | the jar's vanilla body, tagged by the plugin and restricted to its den (§4.9); `PersistenceRequired` set by the plugin at the steal, which also reports CHIEF_STATE: a mixin at the `setHasCrystal(false)` call in `EntityFrostmaw.tick` (`615`), not on the setter itself, which loading NBT also calls (`963`); without it the random despawn takes a robbed Frostmaw within about a minute (§3.1) | its constructor; NBT `has_crystal`, `active`, `alwaysActive` set before its first tick (`EntityFrostmaw.java:960-975`); health from the engine | health and crystal (CHIEF_STATE; census), death with killer |
+| Umvuthana warrior, envoy | the jar's vanilla bodies, tagged (an envoy party's three are fresh puppets, never taken from home, §4.9) | its constructor, then `finalizeSpawn` so it gets its trade table (`EntityUmvuthanaMinion.java:243-250`); mask (NBT `"mask"`), weapon (NBT `"weapon"`, `EntityUmvuthana.java:682-690`) | casualties with killer |
 | Raptor pack | not at home: a raptor pack exists only in a party | the raptor's constructor, then 4 followers through the public `(type, level, leader)` constructor (`EntityUmvuthanaFollowerToRaptor.java:33`), not `finalizeSpawn` (which adds 4 or 5 of its own, `EntityUmvuthanaRaptor.java:191-199`) | casualties |
-| Umvuthi | vanilla, always; a new chief by HOME_SPAWN: its constructor, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit | never away (MZ-3) | death with killer |
+| Umvuthi | vanilla and tagged, always; a new chief by a reconcile's spawn line: its constructor, `finalizeSpawn` as a structure spawn, `restrictTo` the fire pit | never away (MZ-3) | death with killer |
 
 Steering moves the restriction centre for the bodies that walk to it, the Frostmaw
 (`EntityFrostmaw.java:208`) and the warrior (`EntityUmvuthanaMinion.java:127`); the raptor has no such
@@ -794,146 +806,328 @@ in code (P15 as built).
 | Ships | None: its biomes exclude ocean, river and beach. A watched fight by a river port ices water for 140 ticks. | None. |
 | Players | Watched: attacks players only. | Unmasked players, at their base (P26). |
 
-### 4.9 Bodies, saves and uninstall (UR-1)
+### 4.9 The camp reconciler: bodies, saves and uninstall (UR-1)
 
 UR-1 lets Ben remove rtsim at any time and lets a reset lose only the sim's own state. Puppets are
 never saved by vanilla (the core's `EntitySaveMixin`, `core/puppet/AgentTag.java:10-12`), so a den
 whose Frostmaw were a puppet would be empty after an uninstall, and a grove of puppets would lose its
-warriors. So:
-- **Bodies at home stay vanilla:** saved by vanilla, untagged, with their own health, crystal, mask and
-  weapon. Remove rtsim and every den and grove looks as the jar left it, give or take what players
-  did.
-- **Leaving.** Only a war party's members take bodies from home: raid, invasion, siege and plunder, the
-  kinds that draw on the pool (`PartyKind::is_war`, `culture.rs:216-221`; `send_party`,
-  `engine.rs:2222-2235`). While a war party musters (from `send_party`), its members are out of the
-  pool but their vanilla bodies stand in the camp, so the engine books each one, per kind, as *away,
-  body left behind*. When the muster ends (`party_event`, `engine.rs:2413-2417`), the engine sends
-  BAND_DEPART (agent, epoch, faction, units by kind): today nothing tells Java that a party has left,
-  as the engine's only commands are Territory, Notice, Envoy, Materialize, Steer, Recall and Settled
-  (`boundary.rs:385-393`). If every chunk of the camp's footprint has its entities in (the census's own
-  test, below), the plugin removes one home body for each unit, those farthest from any player (a
-  warrior's for a raptor pack), and answers CAMP_BODIES with the count taken by kind; if it finds fewer
-  bodies than units, it takes those it finds. If the camp's entities are not all in, it takes none and
-  answers 0, and the bodies stay in the saved chunks. The engine clears the booking for the bodies
-  taken only. No puppet is spawned then: a party gets bodies only when `seen` embodies it
-  (`engine.rs:3602-3610`), fresh ones, with the engine's health and crystal for a Frostmaw
-  (CHIEF_STATE, census) and a new mask and weapon for a warrior. A member booked left behind that dies
-  away is booked *dead, body left behind* instead; deaths away fall first on members whose bodies were
-  taken, so fewer bodies are removed and spawned later. A body killed at the camp during a muster
-  (CAMP_DEATH) comes off the pool while it has a whole member there, else off the mustering party, one
-  unit fewer. An envoy party and a scouting raptor pack draw on no pool (`engine.rs:2222-2223`: "envoys
-  and scouts always go"), so their bodies are fresh puppets: they take no home body, book none left
-  behind, and are gone when they end. So a census never meets them, and never ends an envoy with its
-  demand open. Reason: `home` would free the party while `Demand.envoy` (`engine.rs:1694`) still
-  pointed at it, and with a demand open the feud wakes only at the deadline (`1548-1549`), where the
-  demand would expire as if refused (`1809-1821`), the outcome that ledger 14's withdrawal exists to
-  prevent.
-- **Coming home.** No party reaches its camp in a body: `seen` skips a party walking home or mustering
-  (`engine.rs:3608-3610`), and `go_home` recalls an embodied one (`3106-3110`), so its puppets despawn
-  on the way. At `home` (`engine.rs:3170`) a war party's survivors go back to the pool. Those whose
-  bodies stayed behind are simply home again (all of them, for a party sent home during its muster,
-  which never sent BAND_DEPART). The engine books the rest as *owed* a body and orders them with an
-  unprompted HOME_SPAWN, as its bodies to spawn. If the camp's entities are all in, the plugin spawns
-  them at once, placed as step 3 places a refill (the Frostmaw asleep at the den's template spot,
-  warriors at the grove's edge farthest from any player, walking in), as saved vanilla bodies (no tag,
-  `PersistenceRequired` set), and answers CAMP_BODIES with the count spawned. Otherwise it spawns none
-  and answers 0, and they stay owed until the next census spawns them (step 3). When `home` runs inside
-  a census (step 2), its owed bodies go in that census's own HOME_SPAWN. A grove's refill is owed the
-  same way: each whole warrior the pool gains is ordered at once (§4.10). A den's new Frostmaw is owed
-  but not ordered: it waits for the den's next census, asleep in the ruin. An envoy or scouting party
-  despawns when it ends, wherever it is: it took no body, so it turns back into none, and no census
-  pools it as warriors.
-- **Orders in flight.** A BAND_DEPART or HOME_SPAWN is in flight from its sending until its CAMP_BODIES
-  answer, and the engine books the answer, not the order: a removal, take or spawn the plugin did not
-  do stays booked as it was, so a camp that unloads between a census and its answer loses nothing. The
-  plugin writes each answer when it applies the order, and each census when it takes it, so the engine
-  reads them in the order they happened, and a census that meets an order in flight was taken before
-  the plugin applied it. Step 2 then skips a party whose BAND_DEPART is in flight, and step 3 counts
-  that party's bodies as present, and a homecoming's ordered bodies as absent and not to be ordered
-  again.
-- **When the census runs.** Entities load after their chunk, asynchronously
-  (`PersistentEntitySectionManager.java:215-222`, `243-250`), so a count taken at `ChunkEvent.Load`
-  could see an empty den, book its Frostmaw as dead, and six days later spawn a second one, crystal
-  and all, beside the first. So a camp chunk loading only queues the camp, and the census runs at
-  the end of the first server tick in which `ServerLevel.areEntitiesLoaded` (`ServerLevel.java:1702`)
-  holds for every chunk of the camp's footprint (the den's template, the grove's 25-block circle). A
-  partly loaded camp (a player at the edge of a grove) is skipped and stays queued until it is whole
-  or unloads. A player's tickets bring every chunk within the view distance, Chebyshev, to entity
-  ticking (`DistanceManager.java:40`, `549-551`); the level rises one per chunk step beyond
-  (`ChunkTracker.java:23-25`, `71-72`), and FULL, where entities load (`Visibility.java:26-31`), is
-  two steps further out (`ChunkLevel.java:10-12`). So a camp's entities load when a player's chunk
-  comes within the view distance plus 2 chunks of the camp's chunks: at the default 10, about 192 to
-  208 blocks on an axis and 271 to 294 on a diagonal. FACTION_FOUND's census waits the same way.
-  Reason, over counting `EntityJoinLevelEvent`s as `HabitatEvents.java:25` and `DragonBridge.java:1167`
-  do: a count has to know the last body is in, and join events alone cannot say when that is.
-- **The census** (HOME_CENSUS; ledger 7), in three steps:
-  1. **The dead left behind.** HOME_SPAWN removes one vanilla body of the kind for each member booked
-     dead with its body left behind. So a Frostmaw killed by a line does not reappear in its den.
-  2. **The living away.** For each member booked away with its body here, the census asks whether
-     its party is *watched*: its puppets are in the world, or the player HOME_CENSUS names (the
-     nearest whose chunk is within the view distance, `PlayerList.getViewDistance`,
-     `PlayerList.java:771`, plus 2 chunks of a camp chunk, Chebyshev, at the census tick: the same
-     as that player's tickets holding a camp chunk at FULL, so it never leaves out the player whose
-     approach loaded the camp) is nearer the party than the camp. The position
-     comes in the census itself, not from the engine's PLAYER table, which is sent every 20 ticks
-     (`docs/boundary.md:187`) and trusted for 2,400 (`player_stale_ticks`, `tunables.rs:118`), so a
-     player who has just logged in or teleported beside the camp is where the census says. With no
-     player that near (a chunk loader holding the camp, a player 2,000 blocks away), only the puppet
-     clause counts. A party still mustering, or whose BAND_DEPART is in flight, is skipped: its bodies
-     are in the camp and stay there.
-     - **Not watched:** the bodies stay and the engine ends the party through `home`
-       (`engine.rs:3170`): its survivors are back in the pool, its loot is stocked at the camp (a
-       Frostmaw carries none, ledger 10), and its pending event is cancelled. The only command to
-       Java is AMBUSH_SPOT with its removed flag, if the party was lurking (ledger 8): the party has
-       no bodies in the world, which is all `recall` (`engine.rs:3146-3167`) would despawn.
-     - **Watched:** HOME_SPAWN's *bodies to take* (by kind, with the party's agent) has the plugin take
-       the members' bodies from the camp, as BAND_DEPART does at a loaded camp, and CAMP_BODIES's
-       answer clears their *body left behind* booking. They are then ordinary members away: at `home`
-       their bodies are owed and ordered, so one that comes home to an unloaded camp is spawned by the
-       next census, not taken for dead by step 3.
-     So no member is in two places, and none that lives is taken from its camp unless its puppet is in
-     the world or a player is nearer to it than to the camp. A player riding or flying in loads the
-     camp's entities at the view distance plus 2 chunks, beyond the range a client tracks the body from
-     (10 chunks for a Frostmaw, 8 for an Umvuthana, `EntityHandler.java:98`, `94`, capped by the view
-     distance, `ChunkMap.java:1331`; this assumes the server's `entity-broadcast-range-percentage` is
-     100, which nobody has verified), so the take, a round trip later, is rarely seen. The budget is
-     tight on an axis approach: at the default 10 the entities load 192 to 208 blocks out and a
-     Frostmaw shows from 160, so a powered train at 40 blocks a second (2 a tick, §4.3) leaves 16 to 24
-     ticks, and an Umvuthana (128 blocks) 32 to 40; on a diagonal (271 to 294 blocks) a Frostmaw leaves
-     55 or more. In those ticks the entities are read from disk (asynchronously), the census runs at
-     the end of the tick they are all in, and one hand-over brings HOME_SPAWN back, at least a tick
-     later and more while a step is still running (`docs/boundary.md:12-13`, §1.2 there). On a server
-     that keeps up that is a few ticks; on one whose entity reads or engine fall behind, a rider at
-     full speed on an axis can see the Frostmaw in its den for a moment before it goes. Test 22
-     measures the ticks. It can also be seen by a player who logs in or teleports within that tracking
-     range of a camp whose party is watched: while another player watches its puppet, or alone, within
-     160 blocks of a den but nearer the lurk (at a station near the den, say). That is unlikely, as a
-     client's chunks usually arrive after the round trip. Reason, over dropping the body at
-     `EntityJoinLevelEvent` before any client tracks it: for a den that would work (it has one
-     Frostmaw, so with its faction's puppet in the world a joining body can only be the one left
-     behind), but in a grove the plugin cannot tell a body left behind from a home one without a count
-     per party from the engine, and one mechanism serves both.
-  3. **The rest.** The bodies HOME_CENSUS reported, less step 1's removals and step 2's takes, are
-     compared with the bodies the engine expects there: the whole members in the pool after step 2's
-     homecomings, less those owed a body, plus the members of the parties step 2 skipped. Fewer: the
-     missing ones died unseen (a despawn, a death the plugin missed, a warrior carried off with Carry
-     On), and the pool loses them. A member owed a body never counts as missing: HOME_SPAWN spawns
-     those owed (but not those an order in flight is spawning), the Frostmaw asleep at the den's
-     template spot, warriors at the grove's edge farthest from any player, restricted to its centre as
-     `UmvuthanaGrovePieces.java:494-507` does. More (the Umvuthi summoned some): the pool takes them up
-     to the grove's cap; the rest stay vanilla and uncounted.
-- **A reset** recreates each faction from FACTION_FOUND, which carries the census: a robbed den comes
-  back robbed (the body's `has_crystal` is 0), a grove comes back with the warriors standing in it, a
-  den found empty starts with an empty pool (§4.10).
-- **What an uninstall or reset loses:** members away whose bodies left their camp (BAND_DEPART took
-  them from a loaded camp, or a census took them for a watched party, step 2), members home whose
-  bodies are still owed (they came home to an unloaded camp), and the grudges, which are the sim's own.
-  The other way round, a member that left an unloaded camp and died away comes back with an uninstall
-  if its camp has not loaded since (the census's first step removes its body then), since its vanilla
-  body was still in the saved camp: the jar's state wins, which UR-1 allows.
-- **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as
-  no player joined (`docs/deploy-rehearsal-live.md:461-462`); dragons carry the same gap. Test 4
+warriors. So **bodies at home stay vanilla**: the jar's own entities, saved by vanilla with their own
+health, crystal, mask and weapon. Remove rtsim and every den and grove looks as the jar left it, give
+or take what players did.
+
+This section is one mechanism, and the only place the plan moves a body at a camp. Each camp keeps a
+ledger of its members' bodies under six invariants; a census runs every time the camp's entities have
+all come in; the engine compares the ledger with the census and sends one order that is safe to apply
+twice; and the record of what that order did rides on the entities it changed, so the next census
+repairs a crash at any point.
+
+**Who has a body at home.** Only war parties draw on the pool: raid, invasion, siege and plunder
+(`PartyKind::is_war`, `culture.rs:216-221`; `send_party`, `engine.rs:2224-2251`). An envoy party and a
+scouting raptor pack draw on no pool (`engine.rs:2222-2223`: "envoys and scouts always go"), so their
+bodies are fresh puppets: they hold no slot, take no home body, and are gone when they end, wherever
+they are. So a census never meets them, and never ends an envoy with its demand open. Reason: `home`
+would free the party while `Demand.envoy` (`engine.rs:1694`) still pointed at it, and with a demand
+open the feud wakes only at the deadline (`1548-1549`), where the demand would expire as if refused
+(`1809-1821`), the outcome that ledger 14's withdrawal exists to prevent.
+
+**The ledger.** The engine keeps, per camp, one *slot* for each member of the camp's pool and of its
+war parties away. A raptor pack is one slot: it is one pool unit, and one warrior's body at home
+(§4.5). Each slot has a *generation*, derived from the slot and the tick its member was recruited or
+adopted by the op id rule (`docs/boundary.md:153-163`), so a replay after a crash derives the same one.
+A grove also has a slot for its Umvuthi, the chief, which is in no pool and never away (MZ-3), owed a
+body from the end of the cowed time after a death; a den's Frostmaw is its chief and its pool's one
+member. Each slot is in one of five states:
+
+| State | The member | Its body |
+|---|---|---|
+| home, body | in the pool | in the camp, tagged |
+| home, owed | in the pool | none yet: to be spawned |
+| away, left | in a war party | still in the camp, tagged: the camp was out when the party set out, or it is still mustering |
+| away, gone | in a war party | none: taken, handed to the party as its puppet, or never had one (it was owed when it was drawn, and carries the debt) |
+| dead, left | none: it died away | still in the camp, to be removed |
+
+The invariants:
+- **I1.** Every member has exactly one slot, and every slot is in exactly one state.
+- **I2.** `floor(pool_at)` (`engine.rs:1053-1058`) is the number of the pool's slots at home, and the
+  slots away are the war units out. The ledger follows the pool: when the pool gains a whole member a
+  slot is added, home and owed, with its generation from the tick it became whole; every other change
+  to the pool (a draw, a return, a death, a write-off, an adoption) moves a slot with it.
+- **I3.** The camp's tagged bodies in the world, loaded or saved, are exactly its slots home with a
+  body, away with it left, and dead with it left. So the bodies in the world plus the bodies owed equal
+  the members at home plus the bodies left behind, and with none left behind, the members at home.
+- **I4.** No order is applied twice (*Orders and answers*, below).
+- **I5.** No member has two bodies: a spawn is ordered only for a member owed one, Java does nothing
+  for a spawn whose body is already loaded, and if two loaded bodies ever carry one slot and
+  generation, the next census removes the one farther from the camp.
+- **I6.** The engine books only what Java reports it found or did (CAMP_CENSUS, CAMP_BODIES,
+  CAMP_DEATH), never what it ordered.
+
+A crash can break I3 only in the ways the crash table below lists, and the next census repairs each.
+
+**Identity.** Every body a slot holds (at home, left behind, or dead and left) carries a
+`mic_rtsim:camp_member` entity attachment: the faction (the camp's key), the slot and the generation.
+Vanilla saves it with the entity, as `mic_rtsim:gossip_ops` rides on villagers
+(`core/puppet/RtsimAttachments.java:36-38`); after an uninstall NeoForge skips it with a log line
+(`AttachmentHolder.java:162`) and the jar's entity is as it was. A *stray* is a body of the camp's
+kinds in its footprint that is untagged (the jar's own at a camp's first census, Umvuthana the Umvuthi
+summoned, a body put down from Carry On) or tagged with a slot and generation the books do not hold
+(from before a reset, or written off). The engine remembers the generation each slot last retired, and
+whether at a death. The plugin keeps an index of the loaded tagged bodies by `EntityJoinLevelEvent` and
+`EntityLeaveLevelEvent` (`ServerLevel.java:1820`).
+
+**A home Frostmaw stays in its den.** The jar never calls `restrictTo` on a Frostmaw, so its
+`MoveTowardsRestrictionGoal` (`EntityFrostmaw.java:208`) is inert, and one that chased a player falls
+asleep wherever it stands 1,200 ticks after losing its target (`581-586`), outside its den. A
+restriction is not saved (`Mob.java:132-133`, `1305-1326`), so the plugin restricts a tagged Frostmaw
+to its den's spot (8 blocks, PLACEHOLDER) each time it joins the level. A warrior already keeps its
+home: it saves `HomePosX/Y/Z` and `HomeDist` and restricts itself again on load
+(`EntityUmvuthanaMinion.java:281-285`), 25 blocks round the grove's centre
+(`UmvuthanaGrovePieces.java:507`). Whether a Frostmaw walks back before it sleeps is UNVERIFIED (test
+22).
+
+**When a camp is in.** A camp's *footprint* is the den's template box (6 × 5 × 7 blocks, 1 to 4 chunks)
+or the grove's 25-block circle (at most 5 × 5 chunks). Its bodies are all there only while every
+footprint chunk is at FULL and has its entities loaded. Entities load after their chunk, asynchronously
+(`PersistentEntitySectionManager.java:215-222`, `243-250`), and unload as soon as the chunk drops below
+FULL (`149-152`, `224-241`; below FULL is HIDDEN, `Visibility.java:26-31`). The chunk itself can stay
+in memory up to level 44 (`ChunkLevel.java:15`) and come back to FULL with no new `ChunkEvent.Load`,
+which fires only in a chunk's first FULL load task (`ChunkStatusTasks.java:215`): a held chunk keeps
+its finished FULL result (`GenerationChunkHolder.java:161-165`), and one waiting to unload comes back
+as it is (`ChunkMap.java:414`). So:
+- The plugin follows each footprint chunk's ticket level through `ChunkTicketLevelUpdatedEvent`
+  (`ChunkMap.java:425`), on the server thread, before the chunk's holder is promoted or demoted. FULL
+  is level 33 or lower (`ChunkLevel.java:10`).
+- When any footprint chunk's level rises above 33, the camp is **out**: Java stops applying its orders
+  and sends CAMP_OUT with the epoch that ended.
+- While every footprint chunk is at 33 or lower, the plugin checks `ServerLevel.areEntitiesLoaded`
+  (`ServerLevel.java:1702`) for each at the end of every server tick. At the end of the first tick in
+  which all hold, the camp is **in**: Java mints a new *epoch* (a fresh Java op id,
+  `docs/boundary.md:154-155`) and takes the census.
+- A body tagged for a camp that is in, read from disk outside the footprint (its chunk loading later),
+  starts a new epoch and census the same way.
+- `ChunkEvent.Load` only finds camps: a chunk holding a structure start (the lair finder pattern,
+  `Lairs.java:44-60`) registers the camp's footprint; the plugin reads each footprint chunk's current
+  level once, then follows the events. At a camp's discovery FACTION_FOUND (§4.1) goes first, and its
+  slots start owed, for the census's strays to fill.
+
+A player's tickets bring every chunk within the view distance, Chebyshev, to entity ticking
+(`DistanceManager.java:40`, `549-551`); the level rises one per chunk step beyond
+(`ChunkTracker.java:23-25`, `71-72`), and FULL is two steps further out (`ChunkLevel.java:10-12`). So a
+camp comes in when a player's chunk comes within the view distance plus 2 chunks of every footprint
+chunk: at the default 10, about 192 to 208 blocks on an axis and 271 to 294 on a diagonal. A player 3
+to 13 chunks beyond the view distance (about 210 to 370 blocks at the default 10) holds the camp's
+chunks in memory below FULL, and every time they return to FULL the camp comes in again, with a new
+census. Reason, over counting `EntityJoinLevelEvent`s as `HabitatEvents.java:25` and
+`DragonBridge.java:1167` do: a count has to know the last body is in, and join events alone cannot say
+when that is.
+
+**The census** (CAMP_CENSUS) carries the epoch; every body of the camp's kinds in the footprint, tagged
+(its slot and generation) or a stray (its UUID); the camp's tagged bodies loaded elsewhere, from the
+index; whether the chief is present, its crystal and health; and the *census player*: the nearest
+player whose chunk is within the view distance (`PlayerList.getViewDistance`, `PlayerList.java:771`)
+plus 2 chunks of a footprint chunk, Chebyshev, at the census tick, with its position. That is the
+player whose tickets hold the camp at FULL, so it never leaves out the player whose approach brought
+the camp in. The position comes in the census itself, not from the engine's PLAYER table, which is sent
+every 20 ticks (`docs/boundary.md:187`) and trusted for 2,400 (`player_stale_ticks`,
+`tunables.rs:118`), so a player who has just logged in or teleported beside the camp is where the
+census says. A party is **watched** if its puppets are in the world, or the census player is nearer the
+party than the camp. With no census player (a chunk loader holding the camp, a player 2,000 blocks
+away), only the puppet clause counts.
+
+**The reconcile.** On CAMP_CENSUS the engine marks the camp in at that epoch, voids every line of an
+earlier epoch still in flight, and compares each slot with the bodies found:
+
+| Slot | Its body found | Not found |
+|---|---|---|
+| home, body | stays; its misses reset | a miss; at the third, at least 2 days after the first (PLACEHOLDER), the member died unseen: the pool loses it and its generation is retired |
+| home, owed | home, body (a spawn whose answer was lost) | a stray fills it (an adopt line), else a spawn line |
+| away, left | by its party's phase: mustering, nothing; out and watched, a take line; out and not watched, or walking home, the party ends through `home` and the slot is home, body | away, gone (a take whose answer was lost) |
+| away, gone | away, left, then as that row | stays |
+| dead, left | a remove line | the slot is freed |
+
+Then the strays left over: a body whose generation the books retired at a death is removed; the rest
+fill new slots (adopt lines, the pool gaining each) while the camp is under its cap, and are removed
+above it. Of two bodies with one slot and generation, the one farther from the camp is removed.
+
+A party that ends through `home` (`engine.rs:3170`) has its survivors back in the pool, its loot
+stocked at the camp (a Frostmaw carries none, ledger 10), and its pending event cancelled; its
+survivors whose bodies are gone are owed, with spawn lines in the same reconcile. The only command to
+Java is AMBUSH_SPOT with its removed flag, if the party was lurking (ledger 8): the party has no bodies
+in the world, which is all `recall` (`engine.rs:3146-3167`) would despawn. A party walking home is
+never embodied (`seen` skips it, `engine.rs:3608-3610`), so ending it on the spot shows nothing
+different from its arrival. So no member is in two places, and none that lives is taken from its camp
+unless its puppet is in the world or a player is nearer to it than to the camp. And while a camp is in,
+a body is left behind only while its party musters or a line for it is in flight.
+
+**While a camp is in,** the engine orders each change as it happens, in the same form:
+- **A muster's end** (`party_event`, `engine.rs:2413-2417`): a set-out line with the party's agent for
+  its members' bodies left. When a BAND_MATERIALIZE for that agent comes in the same hand-over, Java
+  hands them off: it removes each body and spawns the party's puppet in its place, with its health and
+  crystal or its mask and weapon; otherwise it takes them. The party is materialized then when it is
+  seen as it sets out: a player's area (`view_radius` 160) already covers the camp, so `book_leg` books
+  their meeting at the leg's start (`engine.rs:2338`, `2378-2394`). A party not seen then gets fresh
+  puppets when `seen` embodies it later (`engine.rs:3602-3610`), with the engine's health and crystal
+  for a Frostmaw (CHIEF_STATE, census) and a new mask and weapon for a warrior. A raptor pack's slot
+  gives up the warrior body farthest from any player, taken, as a pack's puppets are a raptor and its
+  followers.
+- **A homecoming** (`home`): the survivors whose bodies are gone are owed again, and each gets a spawn
+  line.
+- **A refill:** each whole member the pool gains is a slot owed a body, and a spawn line.
+
+While a camp is out, nothing is ordered: its slots change only by events, and its next census
+reconciles them.
+
+**Draws and losses** (walkthrough A, "kill it"). `send_party` draws its units from the camp's slots at
+home: first those whose bodies the last census found, then those whose bodies it missed, then those
+owed. A slot drawn with a body is away, left; one drawn owed is away, gone, carrying its debt: no take
+and no spawn is ordered for it while it is away, and at `home` it is owed again. Losses away fall first
+on slots whose bodies are gone, so fewer bodies are removed later; a slot left behind that dies is
+dead, left.
+
+**Deaths** (CAMP_DEATH, ledger 14) carry the body's slot and generation, and are journaled at the end
+of the tick (`docs/boundary.md:253`). The death of a body whose slot and generation the books hold
+kills that member wherever the books have it: at home, the pool loses one (the Umvuthi's slot is owed
+again from the end of the cowed time); away, its party loses that unit in any phase (mustering, setting
+out with its answer in flight, out with its body left); dead, nothing more. A stray's death books
+nothing. A party left with no units ends through `home`, with AMBUSH_SPOT's removed flag if it lurked.
+The chief flag runs the camp form of `chief_killed` (ledger 5), whose `go_home` routs every party out
+(`engine.rs:4183-4188`), so a Frostmaw whose left-behind body is killed ends its own raid. A tagged
+body that Carry On picks up leaves the sim (A10) through the existing hook
+(`MicRtsimCarryOn.java:39-43`, extended to tagged bodies): its tag goes and it is a CAMP_DEATH with
+killer kind taken. One removed as DISCARDED (`Entity.java:3891-3895`) by anything but the plugin (a
+despawn, another mod) is a CAMP_DEATH with killer kind none.
+
+**Orders and answers.** The one order is CAMP_RECONCILE: faction, epoch, an op id derived from the
+faction, epoch and decision (`docs/boundary.md:153-163`), and lines, each a slot and generation with
+what to do. It goes through the outbox in the industry reconcile's form
+(`docs/industry-boundary.md:356-362`, F27): it is not resent after a restart, but derived again at the
+camp's next census.
+- Java applies a CAMP_RECONCILE only while its camp is in that epoch, every line in the tick it
+  arrives; otherwise it answers STALE and applies nothing. The one wait is a Frostmaw's spawn: Java
+  holds that line until no player is within 160 blocks of the den's spot (the Frostmaw's tracking
+  range, `EntityHandler.java:98`) or for 6,000 ticks (PLACEHOLDER), whichever is first, so a player who
+  lives beside a den still gets its Frostmaw back; a held line still waiting when its epoch ends is
+  answered stale.
+- Each line names a target state: a spawn does nothing if a body with that slot and generation is
+  loaded; a take, set-out or removal does nothing if none is. With the camp in, every footprint body is
+  loaded, so applying a line twice changes nothing.
+- Java answers with CAMP_BODIES: per line, done, nothing to do, or stale. The engine books the world
+  fact the answer reports, by state, as it books TAKEN and DIED (`docs/boundary.md:249-252`). *Body
+  gone* (a take, set-out or removal, done or with nothing to do): home, body becomes owed; away, left
+  becomes gone; dead, left is freed. *Body there* (a spawn, done or with nothing to do, or an adoption
+  done): home, owed becomes home, body; away, gone becomes left, reconciled then by its party's phase
+  as at a census. A line for a stray names it by UUID and books nothing for any slot, but an adoption
+  is *body there* for the slot it fills. A replayed answer is then a no-op, and an answer or record for
+  a generation its slot no longer holds books nothing.
+- The engine keeps at most one line in flight per slot, and sends only to camps that are in. On
+  CAMP_OUT it marks the camp out and voids that epoch's lines still in flight, which Java answers
+  stale. Java applies an epoch's lines before that epoch's CAMP_OUT or the next census, so their
+  answers reach the engine first, and a second census never meets the first's lines unapplied. At a
+  session start every camp is out and every line in flight is void, as every conflict command is per
+  session (`docs/boundary.md:1463-1464`). A CAMP_CENSUS replayed from an earlier session only marks its
+  camp out.
+
+**Records ride on the entities.** Spawns, takes and deaths change saved entity chunks, which vanilla
+writes apart from the journal: in their own region files through their own IOWorker
+(`SimpleRegionStorage.java:17`, `24`), each chunk's entities in one write
+(`EntityStorage.java:86-108`), after `saveLevelData` has queued the journal's write
+(`ServerLevel.java:817`, `824-826`). So the record of each line and each death rides on an entity in
+the same chunk as the change, in `mic_rtsim:pending` (`core/puppet/RtsimAttachments.java:30-31`), as
+`docs/boundary.md` §3.1 keeps transfers on chests and TAKEN on creatures. A spawned or adopted body
+carries its own. A taken, handed-off, removed or killed body leaves a `minecraft:marker` where it
+stood, holding the record: never sent to a client (`EntityType.java:496-498`, `Marker.java:39`) and
+with no tick (`Marker.java:21`). The camp's chunk would not do: its record could be on disk while the
+entity change was not, or the other way round. Whenever a holder loads with its record, Java journals
+the record again with the same op id, which the engine skips if it has it; on the engine's
+acknowledgement Java drops the record, at once or when the holder next loads, and discards the marker.
+And the `ChunkWriteBarrier` (ledger 22) learns entity chunks: the journal's write waits until the
+entity chunks that a camp record speaks for are on disk, or is held to the next world save, so the
+journal is never ahead of them. Today "Entities that carry records are not covered" (`docs/boundary.md`
+§3.1).
+
+**Crashes.** One reconcile's steps: (1) the engine decides and writes CAMP_RECONCILE; (2) Java applies
+it in one tick, leaves the records on their holders, and journals CAMP_BODIES, noting the holders'
+entity chunks to the barrier; (3) those entity chunks are saved, at an unload or a world save; (4) the
+journal's file is written, after (3) by the barrier; (5) the engine admits CAMP_BODIES and its pages
+are saved; (6) the engine acknowledges and Java drops the records. A death starts at (2).
+
+| A crash | What is on disk | What the next start does |
+|---|---|---|
+| before (2), or between (2) and (3) | nothing changed | the order is void; the camp's next census orders again whatever is still needed |
+| between (3) and (4) | the entity change and its record; no answer in the journal | the holder's record is journaled again when its chunk loads, before the camp's census (a holder in the footprint loads with it), and booked by state; a holder outside the footprint is booked when it loads, and meanwhile the census books the missing body by its table |
+| between (4) and (5) | the answer in the journal | replayed, and booked by state |
+| between (5) and (6) | the answer in the pages too | skipped by op id; a holder's record journaled again is a no-op |
+| the journal ahead of an entity chunk | nothing, while the barrier holds the journal's write (it gives up after 3 held saves in a row, logged, `GIVE_UP_ROUNDS`) | without it, or after it gives up: a spawn booked but not on disk is missed three times and written off (a member lost); a take booked whose body is on disk is found, so away, left, then as that row; a death booked whose body is on disk has a generation retired at a death, so the census removes it |
+| the engine's pages ahead of the world save (P29, still open) | a line or death booked that the world lost | as the row above, without the barrier's help |
+| an order in flight at a shutdown | | void; the next census orders it again, so it is never answered late or applied twice |
+
+So a crash can lose a member, a spawn the world lost being written off after three misses, but never
+make a second body of one, and a living member is booked dead only after three misses over two days.
+
+**In plain view.**
+- **Setting out.** A party seen as it sets out leaves in its members' own bodies, handed off, as they
+  stand. Otherwise no player is within 160 blocks of the camp (for a grove, of its centre, so at least
+  135 blocks from any of its bodies), and no client tracks the bodies the set-out line takes: a
+  Frostmaw is tracked from 10 chunks and an Umvuthana from 8 (`EntityHandler.java:98`, `94`), capped by
+  the view distance (`ChunkMap.java:1331`), assuming the server's `entity-broadcast-range-percentage`
+  is 100, which nobody has verified. The warrior body a raptor pack stands for is the one that can be
+  seen to go, when every body is within 128 blocks of a player.
+- **Coming home.** An embodied party is recalled on the way (`go_home`, `engine.rs:3106-3110`) and its
+  puppets despawn as today. A Frostmaw's spawn waits until no player is within 160 blocks of the den's
+  spot (or 6,000 ticks), then places it asleep there; warriors spawn at the grove's edge farthest from
+  any player and walk in, restricted to the centre as `UmvuthanaGrovePieces.java:494-507` does. Each
+  spawned body is tagged, with `PersistenceRequired` set.
+- **A take at a census** comes a round trip after the camp's entities come in at the view distance plus
+  2 chunks, beyond those ranges. The budget is tight on an axis approach. At a den the census waits for
+  the farther chunk when the template straddles a chunk border, so a powered train at 40 blocks a
+  second (2 a tick, §4.3) leaves 14 to 24 ticks before the Frostmaw shows at 160 blocks, and about 50
+  or more on a diagonal (271 to 294 blocks). At a grove the census waits for the circle's far side, so
+  a near-side warrior is 142 to 158 blocks off when it runs and shows at 128: 7 to 15 ticks. In those
+  ticks the entities are read from disk (asynchronously), the census runs at the end of the tick they
+  are all in, and one hand-over brings CAMP_RECONCILE back, at least a tick later and more while a step
+  is still running (`docs/boundary.md:12-13`, §1.2 there). On a server that keeps up that is a few
+  ticks; on one whose entity reads or engine fall behind, a rider at full speed on an axis can see the
+  body for a moment before it goes. Test 22 measures the ticks. A player who logs in or teleports
+  within tracking range of a camp whose party is watched can also see it go. Reason, over dropping the
+  body at `EntityJoinLevelEvent` before any client tracks it: the watched test needs the party's
+  position, which only the engine has.
+
+**Reset and uninstall.**
+- **A reset** recreates each faction from FACTION_FOUND, which carries the counts at the camp's first
+  census: a robbed den comes back robbed (the body's `has_crystal` is 0), a grove comes back with the
+  warriors standing in it, a den found empty starts with an empty pool (§4.10). Its slots start owed,
+  with new generations, and the bodies, strays to the new books, fill them.
+- **What an uninstall or reset loses:** members away whose bodies are gone, members owed a body, and
+  the grudges, which are the sim's own. The other way round, a member that set out while its camp was
+  out and died away comes back with an uninstall if its camp has not come in since (its body is removed
+  at that census), as its body was still in the saved camp: the jar's state wins, which UR-1 allows.
+  Markers not yet acknowledged stay as inert `minecraft:marker` entities (no tick, never sent to a
+  client); a datapack that selects every marker would see them.
+- **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as no
+  player joined (`docs/deploy-rehearsal-live.md:461-462`); dragons carry the same gap. Test 4
   covers this plan's bodies.
+
+**Walked through** (walkthroughs A and B, §5; one row per change):
+
+| When | What happens | The slots | Order, and its answer |
+|---|---|---|---|
+| A, day 0 | the den comes in as Iva scouts; FACTION_FOUND counts 1 | slot 0 owed, and the jar's Frostmaw, a stray, fills it | adopt; done: home, body |
+| A, 7.5 | the raid musters; the den is out | slot 0 away, left | none |
+| A, 8.5 | the muster ends; the den is out | as it was; the party marches abstractly | none |
+| A, 9.5 | the den comes in as Iva rides north, nearer the spot than the den: watched | slot 0 away, left, its party out | take; done: away, gone, a marker holding the record |
+| A, 9.5, kill it | its puppet dies by the line | slot 0 freed, no body to remove; the heir succeeds; the pool is 0 | none |
+| A, 15.5 | the pool reaches 1; the den is out | slot 0, a new generation, owed | none |
+| A, 15.5 to 17 | her trains still run: the new Frostmaw musters and sets out | drawn owed: away, gone, with its debt | none: nothing to take, nothing to spawn while it is away |
+| A, its return | `home` | owed | a spawn at the den's next census (at once if the den is in), held while a player is within 160 blocks; done: home, body |
+| B, step 1 | the grove comes in; FACTION_FOUND counts 7 | 7 owed, filled by the 7 strays | 7 adopts; done |
+| B, step 2 | Tomas kills four (CAMP_DEATH by slot) | 4 freed; the pool is 3 | none |
+| B, step 3 | the pool refills while the grove is in | each whole warrior a slot owed | a spawn at the far edge; done |
+| B, step 4 | a raid musters; the grove is in | 4 drawn with bodies: away, left, standing in the grove | none |
+| B, step 4 | the muster ends; Tomas, 150 blocks off, sees it set out | 4 away, left | set out; done: 3 handed off, 1 taken for the raptor pack: away, gone |
+| B, step 4 | a warrior and the pack die | 2 freed | none |
+| B, step 4 | `home`; the grove is in | 2 owed | 2 spawns at the far edge; done |
+| B, step 5 | a raid musters, sets out and comes home; the grove is out throughout | 4 away, left; at `home`, home, body | none |
+| B, step 5 | Tomas comes back; the grove comes in | every body found | none |
 
 ### 4.10 Renewal: heirs, migrants and regrowth
 
@@ -944,9 +1138,9 @@ These two factions plug into it with the rules below; every rate is TUNABLE unti
 | What renews | How | Rate (TUNABLE) | On screen |
 |---|---|---|---|
 | A chief (the notable) | `succeed`, at once, holding the grudges (§3.3) | immediate | nothing until a body exists |
-| A Frostmaw (the body) | the pool refills from 0 to 1 after a death, or for a den found empty; a migrant moves into the empty den | `recruits_per_day` 1/6 (6 days), as the dragons' vacant lairs refill on a delay (`respawn_delay_days` 20 in the inventory) | asleep in the den at its next load (HOME_SPAWN); with or without its crystal is MZ-4 |
-| Grove warriors | the pool refills toward the grove's own cap | `recruits_per_day` 2 (goblin's): an emptied grove of 7 is whole in 3.5 days | walking in from the grove's edge: if the grove is loaded, as each whole body is ready (an unprompted HOME_SPAWN, §4.9), else at its next load |
-| The Umvuthi (the body) | after the cowed time | 6 days, scaled by boldness | at the fire pit at the next load |
+| A Frostmaw (the body) | the pool refills from 0 to 1 after a death, or for a den found empty; a migrant moves into the empty den | `recruits_per_day` 1/6 (6 days), as the dragons' vacant lairs refill on a delay (`respawn_delay_days` 20 in the inventory) | asleep in the den at its next census while it is home, once no player is within 160 blocks (§4.9); with or without its crystal is MZ-4 |
+| Grove warriors | the pool refills toward the grove's own cap | `recruits_per_day` 2 (goblin's): an emptied grove of 7 is whole in 3.5 days | walking in from the grove's edge: if the grove is in, as each whole body is ready, else at its next census (§4.9) |
+| The Umvuthi (the body) | after the cowed time | 6 days, scaled by boldness | at the fire pit at the next census |
 | Raptor packs in war parties | from the pool, as warriors are | as warriors | only in parties; a scouting pack is a fresh puppet, drawn from no pool and gone when it ends |
 
 Natural Mowzie spawns (raptor packs, Naga, Foliaath, Elokosa, Lantern, Grottol) are the jar's own and
@@ -1042,10 +1236,10 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 
 **A. A rail line through a Frostmaw's range.**
 1. Iva mines copper in the snowy slopes. She lays Create track 1,800 blocks south to her smelter town,
-   with a station at each end, "Copper Halt" and "Smelter". The track bends around a ridge and runs
-   150 blocks from a Frostmaw den she has never seen. The den's chunk loaded once when she scouted the
-   route: the plugin reported FACTION_FOUND with its census (one Frostmaw, holding its crystal). The
-   Frostmaw sleeps on as the jar's own entity.
+   with a station at each end, "Copper Halt" and "Smelter". The track bends around a ridge and runs 150
+   blocks from a Frostmaw den she has never seen. The den's chunk loaded once when she scouted the
+   route: the plugin reported FACTION_FOUND with its census (one Frostmaw, holding its crystal), and
+   tagged it. The Frostmaw sleeps on as the jar's own entity.
 2. Day 0: one train shuttles between the stations, 12 legs a Minecraft day. Every leg's leading point
    enters the den's circle; the sampler reports a RAIL_PASS each time, and the pass counts at once
    on the den's meter for Iva, the train's owner (MZ-13 (a)); each arrival also credits the line
@@ -1055,20 +1249,18 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 4. Day 2.7: the grievance passes 10. She is at the smelter, outside the range, so the notice waits.
    The next morning she rides north and, as her train enters the range, hears a roar from the north.
 5. Day 7.5: the grievance passes 70; the Frostmaw climbs from Notice straight to Raid. After its 1-day
-   muster it leaves the den (the den is unloaded, so at BAND_DEPART the plugin takes nothing: its
-   vanilla body stays in the saved chunk, booked left behind, and the party marches abstractly), walks
-   150 blocks at 0.02 blocks a tick (7,500 ticks, under a third of a day) and waits 5 blocks off the
-   rail at the point of the real track nearest its den, from day 8.8 to day 10.8. It is home on day
-   11.1.
+   muster it leaves the den (the den is out, so nothing is ordered: its vanilla body stays in the saved
+   chunk, its slot away with the body left, and the party marches abstractly), walks 150 blocks at 0.02
+   blocks a tick (7,500 ticks, under a third of a day) and waits 5 blocks off the rail at the point of
+   the real track nearest its den, from day 8.8 to day 10.8. It is home on day 11.1.
 6. She is at her smelter, 1,500 blocks away. Each train passing within 8 blocks of the spot rolls; a
    hit takes up to 64 ingots and at most 10% of what the train carries, destroyed, at most once a
    train a day. Over the two days her two trains lose at most 256 ingots. When a robbed train pulls
    into Smelter, she hears the roar from the north. No track is cut.
 7. Day 9.5: she rides north. Cresting the ridge, she sees the Frostmaw beside the line, awake (it
-   appeared as she came within 160 blocks of its spot; the track runs straight past the den's side
-   of the range, so whenever the den loads, before or after that, she is the player who loaded it
-   and nearer the spot than the den, the party is watched, and the plugin takes the body left in
-   it, §4.4). It
+   appeared as she came within 160 blocks of its spot; the track runs straight past the den's side of
+   the range, so whenever the den comes in, before or after that, she is its census player and nearer
+   the spot than the den, the party is watched, and the reconcile takes the body left in it, §4.4). It
    throws an ice ball well ahead of her train; it bursts beside her seat, she freezes, and she is
    pulled off the carriage. For 2.5 seconds she stands frozen in the snow next to the Frostmaw while
    her train runs on to Copper Halt. As the second carriage passed, it swiped; the carriage's chest is
@@ -1077,9 +1269,12 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    - **Kill it.** Her bow and her trident do nothing; she brings a TaCZ rifle and fire. It falls after
      250 damage; she gets an ice crystal (it still had its crystal and a player killed it). Her feud
      drops to Notice, the faction is cowed for about 6 days, and the heir takes over at once, holding
-     the old grievance plus about 2.5. Six days later a new Frostmaw sleeps in the den (MZ-4). If her
-     24 legs a day still run, the grievance is still over 70 when the cowed time ends, and the new
-     Frostmaw raids within a day or two. Killing buys a week.
+     the old grievance plus about 2.5. Six days later the pool has a new Frostmaw (MZ-4), placed asleep
+     in the den when the den next comes in (walkthrough D). If her 24 legs a day still run, the
+     grievance is still over 70 when the cowed time ends, and the new Frostmaw raids within a day or
+     two. If the den has not come in since, it sets out still owed a body and carries the debt: nothing
+     is taken, no one is booked dead, no second Frostmaw appears, and its body is placed in the den
+     when it comes home (§4.9). Killing buys a week.
    - **Steal its crystal first.** She drinks a potion of invisibility and walks into the den while it
      sleeps (a sleeping Frostmaw drops a target that has invisibility, `EntityFrostmaw.java:597-599`).
      She stands by the crystal in its fist: it is hers, and the Frostmaw wakes without it. The plugin
@@ -1107,9 +1302,9 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    - **Pay.** The Frostmaw takes no tribute. Running the trains and accepting the losses is the price.
 
 **B. A savanna base near a grove.**
-1. Tomas builds a windmill and a cattle ranch 150 blocks from an Umvuthana grove, inside its
-   200-block range. The grove loaded when he arrived: the census counted 7 warriors, so the tribe's
-   pool and cap are 7.
+1. Tomas builds a windmill and a cattle ranch 150 blocks from an Umvuthana grove, inside its 200-block
+   range. The grove came in when he arrived: the census counted 7 warriors and tagged them, so the
+   tribe's pool and cap are 7.
 2. While he scouts, four masked warriors chase him and he kills them (killing weighs 8 each: 32).
    Each death is a CAMP_DEATH: the pool is 3. That evening he hears a gong.
 3. Half a day later (Notice's dwell), his grievance has decayed to 30.2 and the tribe climbs to Envoy:
@@ -1123,33 +1318,33 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    When he next visits the grove, his nuggets are in its chests, and new warriors have walked in from
    its edge (the pool refills at 2 a day).
 4. He clears acacia for his ranch, day after day, and kills the warriors who come at him unmasked.
-   Weeks later the grievance passes 70 and a war band musters: three warriors and a raptor pack. While
-   he is home the grove is loaded (every grove chunk is within 11 chunks of his ranch's, inside the
-   default view distance plus 2), so when the muster ends the plugin takes four warriors' bodies from
-   the far side of the grove (BAND_DEPART; CAMP_BODIES: 4 taken). The band arrives in waves at the edge
-   of view. The raptors go for his cattle, the warriors for him, and his iron golem for all of them.
-   Two warriors live; when the fight ends they are recalled, and their puppets withdraw toward the
-   grove and despawn. At `home`, a third of a day later, they rejoin the pool, and an unprompted
-   HOME_SPAWN puts two warriors at the grove's edge farthest from him at once, as the grove is still
-   loaded (CAMP_BODIES: 2 spawned). Had he left on a trip before they got home, the plugin would have
-   spawned none (CAMP_BODIES: 0): the two would stay owed, and the census when he came back would place
-   them, with no one booked dead.
-5. He goes on a trip. The next raid musters while he is away and the grove is unloaded, so at
-   BAND_DEPART the plugin takes nothing (CAMP_BODIES: 0), and the warriors' bodies stay in the saved
-   grove, booked left behind. His ranch has a fence all the way round, so the ground band is stopped at
-   it (I22): nothing happens, and it walks home, where its members are home again with nothing to
-   spawn. Had the fence a gap and the band won, the raptors would owe him dead cows, and he would find
-   them dead when he got back. When he comes back, the grove loads as he nears the ranch, and the
-   census finds the warriors the engine expects: none removed, none taken, none booked dead.
+   Weeks later the grievance passes 70 and a war band musters: three warriors and a raptor pack, drawn
+   from the warriors whose bodies stand in the grove. While he is home the grove is in (every grove
+   chunk is within 11 chunks of his ranch's, inside the default view distance plus 2), and at 150
+   blocks he is within 160 of it, so the band is seen as it sets out: three warriors walk out of the
+   grove as its puppets in their own bodies, and the one warrior the raptor pack stands for is taken
+   (CAMP_BODIES: done). The band comes at his ranch. The raptors go for his cattle, the warriors for
+   him, and his iron golem for all of them. Two warriors live; when the fight ends they are recalled,
+   and their puppets withdraw toward the grove and despawn. At `home`, a third of a day later, they
+   rejoin the pool owed bodies, and a reconcile puts two warriors at the grove's edge farthest from him
+   at once, as the grove is still in (CAMP_BODIES: done). Had he left on a trip before they got home,
+   the grove would be out and nothing would be ordered: the two would stay owed, and the census when he
+   came back would place them, with no one booked dead.
+5. He goes on a trip. The next raid musters while he is away and the grove is out, so nothing is
+   ordered, and the warriors' bodies stay in the saved grove, their slots away with the bodies left.
+   His ranch has a fence all the way round, so the ground band is stopped at it (I22): nothing happens,
+   and it walks home, where its members are home again in the bodies they left, with nothing to spawn.
+   Had the fence a gap and the band won, the raptors would owe him dead cows, and he would find them
+   dead when he got back. When he comes back, the grove comes in as he nears the ranch, and the census
+   finds every body its slots expect: nothing is ordered and no one is booked dead.
 6. He finds a Fury mask on a dead warrior and wears it. The tribe's bodies no longer target him; only
    a warrior he has provoked still does. He sells bones to the grove's warriors for nuggets: the
    tribe's grudge softens a little with each trade.
 7. Or he ends it: he walks into the grove unmasked and fights the Umvuthi at its fire pit. It summons
    warriors while fewer than 4 are near it, and cranes each time it loses 45 health; while a crane
    shields it with Sunblock his shots do nothing, so he shoots the cranes first. When it dies, his own
-   feud drops two rungs, the tribe is cowed for about six days and its bands run home. He takes the
-   Sol Visage. When the cowed time is over, a new Umvuthi sits at the pit the next time the grove
-   loads.
+   feud drops two rungs, the tribe is cowed for about six days and its bands run home. He takes the Sol
+   Visage. When the cowed time is over, a new Umvuthi sits at the pit the next time the grove comes in.
 
 **C. A village herd.**
 1. A plains village 900 blocks from the grove trades wool and leather. The tribe plunders on its own
@@ -1159,27 +1354,29 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 
 **D. Clearing a range, and what comes back.**
 1. Iva kills the Frostmaw by her line on day 9.5, as in A. The den is empty.
-2. She visits the den on day 12. It loads, and she finds the ruin and no Frostmaw: its body was taken
-   when the den loaded while she watched it by the line (§4.4), so the census has nothing to remove.
-   Had the den stayed unloaded until she killed it, the census would now remove the body left behind,
-   as its member is dead (§4.9). The pool is at 0.4, and while it is under 1 the feud waits for a
-   whole body without waking (ledger 6).
-3. On day 15.5 the pool reaches 1. Nothing shows yet: the den is unloaded.
-4. On day 17 she flies over the den; it loads, the census finds the den empty and the new Frostmaw owed
-   a body (§4.9), and the plugin places it asleep in the ruin. If her trains still run, it is already
-   angry: the heir took the old grievance.
+2. She visits the den on day 12. It comes in, and she finds the ruin and no Frostmaw: its body was
+   taken when the den came in while she watched it by the line (§4.4), so the census has nothing to
+   remove. Had the den stayed out until she killed it, the census would now remove the body left
+   behind, its slot dead (§4.9). The pool is at 0.4, and while it is under 1 the feud waits for a whole
+   body without waking (ledger 6).
+3. On day 15.5 the pool reaches 1, a slot owed a body. Nothing shows yet: the den is out.
+4. On day 17 she flies over the den; it comes in, the census finds the den empty and the new Frostmaw's
+   slot owed (§4.9), and the plugin places it asleep in the ruin once she has flown more than 160
+   blocks on. If her trains still run, it is already angry: the heir took the old grievance, and it may
+   have mustered and set out before she came (A, "kill it"); then its slot is away and still owed,
+   nothing is placed, and its body is placed when it comes home.
 5. Bram, another player, kills it at its den on day 20 while it sleeps (he has no feud with it). The
    faction is cowed again, the heir grudge falls on Bram, and Iva's feud does not step down; she only
    gains the six empty days.
 
 **E. Removing rtsim.**
 Ben removes mic-rtsim on day 10, while the Frostmaw waits by Iva's line and Iva has stayed at her
-smelter. The den's saved chunk still holds the vanilla body (the den has not loaded since it left), so
-after the uninstall the Frostmaw is home asleep. Had Iva ridden north as in A, step 7, the den would
-have loaded while she watched the Frostmaw, its body would have been taken, and the uninstall
-would leave the den empty: the exposure §4.9 lists. The grove keeps its vanilla warriors and its
-Umvuthi. Ben reinstalls on day 30: FACTION_FOUND rebuilds both factions from their censuses (crystal
-held, 7 warriors), with no grudges.
+smelter. The den's saved chunk still holds the vanilla body (the den has not come in since it set out),
+so after the uninstall the Frostmaw is home asleep. Had Iva ridden north as in A, step 7, the den would
+have come in while she watched the Frostmaw, its body would have been taken, and the uninstall would
+leave the den empty: the exposure §4.9 lists. The grove keeps its vanilla warriors and its Umvuthi. Ben
+reinstalls on day 30: FACTION_FOUND rebuilds both factions from their censuses (crystal held, 7
+warriors), with no grudges, and the tagged bodies, strays to the new books, fill the new slots.
 
 ## 6. Cost model
 
@@ -1196,8 +1393,11 @@ held, 7 warriors), with no grudges.
 | Rail meters | per (faction, actor), plus a line count per (line, faction, actor) | a few dozen bytes and one booked wake per meter, a few bytes per line count (no wakes); about one push a day while over the tolerance, 19 to 37 in a new line's first 20 days (§4.3) |
 | Lying in wait | per pass within reach of a spot | one roll; a hit is one `attack_train`, as today's bandit ambushes |
 | Envoy guard | per damage event to a living entity, server-wide | one lookup of the target's UUID in the open envoy parties, usually an empty set |
-| Camp finding and census | per camp chunk load | one check of the chunk's structure starts (`Lairs.java:114-125`); while the camp is queued, one `areEntitiesLoaded` lookup per footprint chunk a tick (a grove's 51-block circle spans at most 5 × 5 chunks) until its entities are in; then one entity scan of the den's template or the grove's 25-block circle |
-| Departures and homecomings | per war party | BAND_DEPART and its answer when it sets out, HOME_SPAWN and its answer when it comes home with bodies owed: one `areEntitiesLoaded` lookup per footprint chunk each and, at a loaded camp, one entity scan or a few spawns; a grove's refill orders, at most 2 a day |
+| Camp finding | per chunk load | one check of the chunk's structure starts (`Lairs.java:114-125`), and for a camp found, one read of each footprint chunk's level |
+| Camps in and out | per ticket level change of a footprint chunk | one lookup in the footprint index; while every footprint chunk is at FULL and the camp is not yet in, one `areEntitiesLoaded` lookup per footprint chunk a tick (at most 25: a grove's 51-block circle spans at most 5 × 5 chunks) |
+| Census and reconcile | each time a camp comes in | one entity scan of the den's template or the grove's 25-block circle, and one CAMP_RECONCILE when anything differs; a player at the edge (the view distance plus 2 chunks) can bring a camp in again and again, one census each time |
+| Camp body index | per entity join or leave, server-wide | one attachment check |
+| Orders at a camp that is in | per war party and refill | a set-out line at a muster's end, spawn lines at a homecoming, a grove's refill (at most 2 a day): a few takes, hand-offs or spawns, each with a record on the body or a marker until acknowledged; the barrier saves the 1 to 4 entity chunks of a den (up to 25 of a grove) ahead of the journal's next write |
 | Notices | per feud | one pending bit, resent at session start |
 | Watched boss | while seen | one Frostmaw, or a band in waves of at most 16 |
 | Animals owed | per district load with a debt | one entity scan of the district's loaded chunks, capped |
@@ -1217,10 +1417,14 @@ mechanism, and the moving form runs if the fixture's train moves.
 2. `aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack`: the steal sets `PersistenceRequired`
    and sends CHIEF_STATE; loading a robbed Frostmaw from NBT does neither.
 3. `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt`.
-4. `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved`.
-5. `aRefilledPoolIsSpawnedAtTheNextCampLoad`, for a den and an unloaded grove; at a loaded grove each
-   whole warrior is spawned when it is ready (HOME_SPAWN, answered 1); a member that left an unloaded
-   camp and came back to it is not spawned a second time.
+4. `aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved`, and the NBT of a tagged body and
+   of a marker holds nothing a world without rtsim cannot load: the attachment is skipped with its log
+   line (`AttachmentHolder.java:162`) and the marker is inert.
+5. `aRefilledPoolIsSpawnedAtTheNextCensus`, for a den and a grove that are out; at a grove that is in,
+   each whole warrior is spawned when it is ready (CAMP_BODIES: done); strays fill owed slots before
+   any spawn; a den's Frostmaw spawn waits while a mock player is within 160 blocks, and is placed once
+   it leaves or at 6,000 ticks; a member that set out from a camp that was out and came back to it is
+   not spawned a second time.
 6. `anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw` (TaCZ's bullet if TaCZ is in the test run;
    otherwise a `Projectile` stand-in).
 7. `anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw` (a mock player).
@@ -1248,49 +1452,71 @@ mechanism, and the moving form runs if the fixture's train moves.
 18. `aNaturalFoliaathIsNotCountedAsPressure` (the core tag).
 19. `aNoticeWaitsForThePlayersNextEntryAcrossALogout`.
 20. Strength fights: each body against reference bases through `IND_FIGHT`, for §4.13.
-21. `theCensusWaitsForEntitiesOnACampsColdLoad`: the stationary form calls the plugin's chunk-load
-    hook for a den whose chunk is loaded but whose entities are not yet in (`areEntitiesLoaded`
-    false), and asserts no HOME_CENSUS and no HOME_SPAWN; once they are in, the count is 1 with the
-    crystal. A grove with one footprint chunk unloaded is skipped until that chunk loads.
-22. `aDenLoadingWhileItsFrostmawIsAwayKeepsTheBody`, for a Frostmaw lurking by the line, and the
-    departure and homecoming paths for a den and a grove:
-    - unwatched: the body stays, the party ends through `home`, AMBUSH_SPOT's removed flag is sent,
-      no BAND_RECALL is sent, and no TRAIN_PASSED arrives for the agent afterwards;
+21. `theCensusWaitsForEntitiesOnACampsColdLoad`: the stationary form holds a den's chunk at FULL with
+    its entities not yet in (`areEntitiesLoaded` false), and asserts no CAMP_CENSUS and no
+    CAMP_RECONCILE; once they are in, the census reports 1 with the crystal. A grove with one footprint
+    chunk below FULL stays out until that chunk is at FULL with its entities in.
+22. `theCampReconcilerKeepsItsInvariants`, for a den and a grove, asserting I1 to I6 (§4.9) after every
+    step, in the stationary form unless named:
+    - **bodies that reload without their chunk**: a mock player moved from inside the view distance to
+      3 chunks beyond the view distance plus 2 and back holds the camp's chunks in memory below FULL,
+      so no `ChunkEvent.Load` fires on its return; the camp goes out (CAMP_OUT) and comes in again with
+      a new epoch and census, so a body left behind by a party that set out meanwhile is taken or its
+      party ended, an owed body is spawned, and a left-behind body killed in between is a CAMP_DEATH by
+      slot that kills its party's unit;
+    - **a member drawn while owed** (walkthrough A, "kill it"): with the den out, the pool refills to
+      an owed slot and the Frostmaw musters and sets out; the den comes in, watched and again
+      unwatched: nothing is taken, nothing is spawned, no member is booked dead, and the slot stays
+      away and gone; at `home` it is owed and spawned once; the books and the world each hold one
+      Frostmaw and one crystal throughout;
+    - **the draw order**: a grove with three bodies found, one missed and two owed sends a party of
+      four: the three found and the one missed are drawn, none owed; the set-out line's answer for the
+      missed one is nothing to do, and it is booked away and gone;
+    - **crashes**, in the style of `ReconcileAheadGameTests`
+      (`neoforge/create/.../gametest/ReconcileAheadGameTests.java:296`, `616`), which reads the journal
+      and the chunk as they are on disk at each point: a take, a spawn, a set-out with its hand-off, a
+      removal and a death, each stopped between every pair of the crash table's steps and started again
+      from the files; each start does what its row says, a holder's record is journaled again with its
+      op id and booked once, and the barrier holds the journal's write until the entity chunks are on
+      disk; with the barrier off, the journal-ahead row's repairs follow;
+    - **a second census before the first's lines**: CAMP_OUT and a new census arrive before an epoch's
+      CAMP_RECONCILE, which Java answers stale and does not apply; the new census's reconcile removes,
+      takes and spawns each body once; a den going out while a Frostmaw's spawn is held answers it
+      stale, the next census orders it once, and no living Frostmaw is removed;
+    - **deaths in every phase**: a body killed at the camp during a muster with the pool at 0, between
+      a muster's end and its answer, and while its party is out with the body left: each kills that
+      member's unit; a party left with no units ends through `home`, with AMBUSH_SPOT's removed flag if
+      it lurked; the chief's kill routs every party out; a stray's death books nothing;
+    - **in plain view**: with a mock player 150 blocks from a grove that is in, a band that sets out
+      walks out in its members' bodies (health, mask and weapon kept), and no body vanishes but the
+      warrior the raptor pack stands for, the one farthest from the player;
+    - unwatched: the body stays, the party ends through `home`, AMBUSH_SPOT's removed flag is sent, no
+      BAND_RECALL is sent, and no TRAIN_PASSED arrives for the agent afterwards;
     - watched (a mock player nearer the spot than the den, with the puppet not yet spawned, and again
-      with it spawned): HOME_SPAWN takes the body, the party stays out, step 3 counts 0 at home (the
-      1 reported less the 1 taken, so the Frostmaw is not also pooled), and when it later comes home
-      to the unloaded den (its HOME_SPAWN answered 0) the next census spawns it rather than counting
-      it dead;
-    - on a curved fixture (track of 200-block radius round the den): a mock player 200 blocks along
-      the track from the spot when the den loads is nearer the den, and finds the Frostmaw home;
-    - a mock player whose approach on a diagonal loads the den, its chunk at the view distance plus 2
-      chunks of the den's, counts; one teleported beside the den in the census tick counts at its new
-      position; one 2,000 blocks away while a forced chunk holds the den does not count;
+      with it spawned): the reconcile takes the body, the party stays out, and the slot is away and
+      gone; when it later comes home to a den that is out, the next census spawns it;
+    - on a curved fixture (track of 200-block radius round the den): a mock player 200 blocks along the
+      track from the spot when the den comes in is nearer the den, and finds the Frostmaw home;
+    - a mock player whose approach on a diagonal brings the den in, its chunk at the view distance plus
+      2 chunks of the den's, is the census player; one teleported beside the den in the census tick
+      counts at its new position; one 2,000 blocks away while a forced chunk holds the den does not
+      count;
     - a `player_left` recall during the lurk sends no removed flag, and TRAIN_PASSED still arrives;
-    - a member that died away has its body removed; a grove's envoy party out while the grove loads
-      is not touched and its demand stays open; an envoy or scouting party that ends at a loaded
-      grove despawns, and the next census pools nothing from it; no body is ever counted twice;
-    - departure from a loaded camp (a den, and a grove held by a mock player 150 blocks off):
-      BAND_DEPART removes one body per unit, a warrior's for the raptor pack, those farthest from the
-      player, and CAMP_BODIES answers the counts; the engine clears the left-behind booking for those
-      only; with one footprint chunk's entities not in, nothing is taken, the answer is 0, and the
-      booking stands;
-    - homecoming (walkthrough B, steps 4 and 5): `home` at the loaded grove sends HOME_SPAWN for the
-      survivors whose bodies were taken, the plugin spawns them at once at the edge, untagged and
-      persistent, and the answer clears them as owed; with the grove unloaded the answer is 0 and the
-      next census spawns them; a band that left the grove unloaded comes home with nothing to spawn; in
-      each, the next census books no living survivor dead;
-    - in flight: a census written in the tick before the plugin applies a BAND_DEPART skips that party
-      and counts its bodies as present; one written before a homecoming's HOME_SPAWN is applied does
-      not order those bodies again; a camp unloaded between a census and its HOME_SPAWN keeps every
-      booking, and the next census settles them;
-    - a body killed at a grove during a muster, with the pool at 0, makes the party one unit smaller,
-      and the take finds as many bodies as units;
-    - the take's budget: a mock player moved toward the den at 2 blocks a tick along an axis, and again
-      on a diagonal, with the Frostmaw away and watched; the ticks from its chunk coming within the
-      view distance plus 2 chunks of the den's to the take are logged against the 16 and 55 ticks
-      before it is within 160 blocks (unthrottled GameTest ticks make the entity read span more ticks
-      than on a live server, so the count errs high).
+    - a grove's envoy party out while the grove comes in is not touched and its demand stays open; an
+      envoy or scouting party that ends at a grove that is in despawns, and the next census adopts
+      nothing from it;
+    - **strays and identity**: the jar's untagged bodies fill a new camp's owed slots; a body tagged
+      with a generation the books retired at a death is removed, and one written off is adopted under
+      the cap; of two loaded bodies with one tag, the farther is removed; a tagged Frostmaw is
+      restricted to its den at each join, and one that chased a player and lost it walks back before it
+      sleeps (UNVERIFIED until this runs);
+    - **Carry On**, if it is in the test run: picking up a tagged warrior is a CAMP_DEATH with killer
+      kind taken and clears its tag, and putting it down makes a stray;
+    - **the take's budget**: a mock player moved toward the den at 2 blocks a tick along an axis, and
+      again on a diagonal, with the Frostmaw away and watched, and toward a grove; the ticks from the
+      camp coming in to the take are logged against 14 to 24 (den, axis), about 50 (den, diagonal) and
+      7 to 15 (grove) before the body is in tracking range (unthrottled GameTest ticks make the entity
+      read span more ticks than on a live server, so the count errs high).
 
 **`rtsim-cli sim mowzie`** (a scenario beside `sim conflict`, `main.rs:81-85`), with runs:
 1. A line through a range, with the meter: notice, raid, repeat, invasion, at §4.3's first table;
@@ -1302,15 +1528,22 @@ mechanism, and the moving form runs if the fixture's train moves.
 3. Reroute: the new track's passes miss the circle and the old line's meter decays.
 4. Two dens on one line: both feel it; a den found after the line exists feels the next pass.
 5. The tribe: envoy paid at the priced demand; envoy refused, then a raid and an invasion; plunder;
-   raids that leave and come home with the grove loaded and unloaded (CAMP_BODIES answered as the
-   plugin would), after which no census books a living survivor dead.
+   raids that leave and come home with the grove in and out (CAMP_BODIES answered as the plugin would),
+   after which no census books a living survivor dead.
 6. Renewal: an emptied grove refills to its own cap; an emptied den gets a body after six days; a den
    found empty gets a migrant.
 7. Kills: by the feud's player on a raid, by a third player on a raid, at the camp by a player with no
    feud: which feud steps down in each.
-8. Save and restore in the middle of a lurk, a cowed time and a meter's decay, with identical results.
+8. Save and restore in the middle of a lurk, a cowed time, a meter's decay and a reconcile in flight,
+   with identical results; a session restart there voids the lines, and the next census orders them
+   again.
 9. A trunk: 14 lines at 1.7 legs a day through one range reach §4.3's trunk row, as one line of 23.8
    does; the focus follows the busiest line; two owners' trains on one line make two meters.
+10. The camp reconciler: camps coming in and out at random (a player at the edge), musters,
+    homecomings, refills, deaths in every phase, answers lost, late, replayed and stale, and session
+    restarts at random points, with Java emulated as a world of tagged bodies; after every event I1 to
+    I6 hold, and at the end no member has two bodies and no living member is booked dead unless its
+    body was lost.
 
 **Bench:** `rtsim-cli bench scale --only factions,factions-paged` (`crates/rtsim-cli/src/main.rs:25`)
 before and after, and a sampler bench at 200 trains on the laptop.
@@ -1328,9 +1561,10 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Old age | `chief_lifespan_days` 1,000,000 for both cultures | §4.2. |
 | Envoy party | While a demand is open: targeting stripped, golems kept off, every hit cancelled unless a player struck it; a party killed by anything else withdraws the demand | §4.5: golems and radar turrets would otherwise start a war the player never chose. |
 | Rail meter | One meter per (den, actor), tolerance once; a band plus a daily resync; line counts only for the focus | §4.3: a meter per line hid a trunk of light lines, and the band alone froze a rate up to 1 leg off. |
-| Census | Only once every chunk of the camp has its entities in | §4.9: a cold count books living bodies as dead and, six days later, dupes a Frostmaw and its crystal. |
-| Bodies away | Only war parties book bodies left behind (envoys and scouts are fresh puppets). A dead member's body is removed; a camp loading while a member is out keeps the body and ends the party through `home`, unless the party is watched: its puppets are in the world, or the nearest player whose chunk is within the view distance plus 2 chunks of a camp chunk at the census tick (carried by HOME_CENSUS; the player who loaded the camp always is), is nearer the party than the camp. Watched, HOME_SPAWN takes the body and its answer clears the booking | §4.4, §4.9 (UR-1): a living member's camp is emptied only for its puppet or a player nearer the member than the camp, and no member is in two places. The nearer-player test lets a rider on straight track meet a lurking Frostmaw at any view distance (on track curving round the den she may find it home); a puppet-only test would need under about 12 chunks, or about 8 with the den on a diagonal from the rider. A body taken while a player logs in or teleports within tracking range of the camp is seen to go, as it can be by a rider at full speed on an axis approach when the server falls behind (16 ticks of budget), accepted over a join-time drop that would work for a den but that a grove cannot do without a count per party, to keep one mechanism. |
-| Departures and homecomings | BAND_DEPART when a war party's muster ends, and the plugin takes its bodies if the camp's entities are all in; members stay booked left behind until CAMP_BODIES says their bodies were taken. `home` orders the survivors whose bodies were taken with an unprompted HOME_SPAWN, spawned at once at a loaded camp and otherwise owed to the next census. Every BAND_DEPART and HOME_SPAWN is answered with CAMP_BODIES, and the engine books the answer, not the order | §4.9: nothing signalled a party leaving or coming home, so no body ever came back and a census booked living survivors as dead (walkthrough B). Booking the answer keeps a camp that unloads mid-order right, and the plugin keeps no state of its own. The two new kinds are internal to mic-rtsim and unreleased. |
+| Camp reconciler | One ledger per camp (a slot per member, five states, six invariants). A census each time every footprint chunk is at FULL with its entities in, followed by ticket level, not only at a chunk's first load. One epoch-scoped order, CAMP_RECONCILE, whose lines name target states and whose answer is booked by the world fact it reports. Orders void at a session start, derived again by the next census. Records on the bodies and markers they change, journaled again at load, and the journal barrier extended to entity chunks | §4.9: each check found a new gap in the piecemeal rules (a census missed when bodies reloaded without their chunk, a member drawn while owed, orders lost or applied twice across a restart, a second census before the first's order, deaths outside a muster). One mechanism with invariants and a crash table replaces them. Voiding and deriving again, in the industry reconcile's form (F27), over resending with a duplicate answer: conflict commands are per session (`docs/boundary.md:1463`), and a census rebuilds what is needed from the world. Records ride on entities, not on the camp's chunk, because vanilla stores entities apart from chunks. The new and renamed kinds are internal to mic-rtsim and unreleased. |
+| Bodies away | Only war parties take home bodies (envoys and scouts are fresh puppets). A census that finds a member's body left behind ends its party through `home`, unless the party is watched: its puppets are in the world, or the census player (the nearest whose chunk is within the view distance plus 2 chunks of a footprint chunk, carried by CAMP_CENSUS) is nearer the party than the camp. Watched, the body is taken. An owed member drawn carries its debt away | §4.4, §4.9 (UR-1): a living member's camp is emptied only for its puppet or a player nearer the member than the camp, and no member is in two places. The nearer-player test lets a rider on straight track meet a lurking Frostmaw at any view distance (on track curving round the den she may find it home); a puppet-only test would need under about 12 chunks, or about 8 with the den on a diagonal from the rider. |
+| In plain view | A party seen as it sets out leaves in its members' own bodies, handed to its puppets. A Frostmaw's spawn waits until no player is within 160 blocks of its den, or 6,000 ticks. A take at a census can be seen by a rider at full speed on an axis approach when the server falls behind (14 to 24 ticks of budget at a den, 7 to 15 at a grove), or by a player who logs in or teleports within tracking range | §4.9: the hand-off and the held spawn remove the two common pops; dropping a body at its join instead would need the party's position, which only the engine has. |
+| Unseen deaths and strays | A home body missing from three censuses, the third at least 2 days after the first (PLACEHOLDER), is written off. A stray fills an owed slot before any spawn | §4.9: one miss can be a Frostmaw that chased a player out of the footprint into an unloaded chunk; three over two days is a lost body. Adopting strays keeps a reset's bodies, the Umvuthi's summons and Carry On's put-downs in the books instead of spawning beside them. |
 | Peaceful | No war parties leave | §4.12. |
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
@@ -1344,6 +1578,6 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | MZ-4 | After a boss dies, and what of Mowzie's items the pack keeps (this merges MZ-4, MZ-7 and MZ-10) | (a) heirs come back (the body after 6 days, TUNABLE), the Frostmaw with its crystal; keep Mowzie's drops, masks, trades and the steal. The ice crystal and Sol Visage become renewable at one per den or grove per heir, and `tacz_new_recipes.js:994` keeps a supply of ice crystal. A Frostmaw robbed of its crystal drops none, so stealing then killing still yields one crystal per heir. | (b) the heir arrives without its crystal: no crystal renewal, and after its first death a den is melee-only, so walls hold it and riders are safe; (c) heirs with crystals, but Mowzie's items removed as the README's TODO says: masks, trades and drops go, tribute is the only peace with the tribe, and stealing the crystal still disarms but gives nothing |
 | MZ-5 | What a Frostmaw ambush does to a train (trains cannot hit it, §3.1) | (a) cargo destroyed, at most 64 a train a day and 10% of a leg, the same watched or not; watched, it swipes passing carriages from beside the track and its ice balls unseat riders | (b) a forced stop: the train is held at the spot for a time (a mixin on Create's train), so riders must face it and unwatched legs arrive late; (c) a delay only: legs arrive late, no cargo lost (INDUSTRY.md §13.8 lists delay as an alternative); (d) riders only, as in the jar: unwatched trains lose nothing |
 | MZ-13 | Whom a line's grudge falls on | (a) the train's owner (Create's `Train.owner`; who sets it is checked in the hash-matched jar before code), with P14 at the line's stations when it has none | (b) P14 at the stations: whoever spends most time in their chunks, which in multiplayer can be a bystander |
-| MZ-11 | The grove's people | (a) the real warriors, saved as vanilla at home, counted by a census on each load, tagged only while away (§4.9): killing them at the grove shrinks raids, and an uninstall leaves the grove as it was | (b) left vanilla, with a separate abstract pool: the grove looks the same whatever happens |
+| MZ-11 | The grove's people | (a) the real warriors, saved as vanilla at home with the plugin's tag, counted by a census each time the grove comes in (§4.9): killing them at the grove shrinks raids, and an uninstall leaves the grove as it was | (b) left vanilla, with a separate abstract pool: the grove looks the same whatever happens |
 | MZ-3 | Which bosses leave home | the Frostmaw only; the Umvuthi is fought at its grove | (b) the Umvuthi also leads the Invasion in person (it then needs a puppet form, and its trade memory moves into the engine); (c) neither |
 | MZ-6 | The tribe's tribute | (a) gold nuggets, a new phase 1 good, priced by value: 0.5 emerald's worth a point, 9 nuggets an emerald until the market has a price (135 nuggets at the Envoy threshold) | (b) emeralds, as goblins (no new good); (c) gold ingots, priced the same way (also a new phase 1 good: 15 ingots at the Envoy threshold, in coarser steps) |
