@@ -4,6 +4,7 @@
 
 mod bench;
 mod export;
+mod lines;
 mod run;
 mod sim;
 mod sys;
@@ -102,7 +103,10 @@ usage:
       new fork in <dir>: one whole generation even from a running server; nothing is written
       into the world.
   rtsim-cli view <world> [options]
-      Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.";
+      Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.
+  rtsim-cli lines <world> [--json]
+      The industry engine's learned train lines (trips, mean travel ticks, cargo per trip) and
+      each district's station exchange rules, from the world's confirmed save (read only).";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -440,6 +444,7 @@ fn main() -> ExitCode {
         ["run", rest @ ..] => run::cli(rest),
         ["export", rest @ ..] => export::cli(rest),
         ["view", rest @ ..] => view::cli(rest),
+        ["lines", rest @ ..] => lines::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS
