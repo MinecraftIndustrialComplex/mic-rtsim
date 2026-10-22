@@ -46,7 +46,8 @@ mic_rtsim_dh is still not in the pack.
 ## Measured
 
 Bench round 3 on 2026-10-22, 10:21 to 11:11 (neoforge/README.md, "The far view's dev client"), on this branch
-between 30c6bd6 and 1500bc5 (the commits between change only what the feed's stop log prints). Ben's laptop
+between 30c6bd6 and 1500bc5 (the commits between change only what the feed's stop log prints), and r3long2
+at e5fa3fb, until 11:24. Ben's laptop
 (Ryzen, 24 threads, its Radeon), single player, render distance 12, simulation distance 12 (5 in the band run),
 DH's default settings, MEDIUM unless named. Each profile is vanilla's 10-second client recording after 900
 warm-up ticks. Trains are phase 1's (4 carriages, 500 to 1,500 blocks east); dragons are `FarDragonBench`'s
@@ -146,12 +147,15 @@ those 10, before the JIT has compiled most of the path:
 | r3d64t50h | 3,731 us | Create trains 396, dedupe 351, sends 2,625 (filter 368, view 1,518, encode 648, network 80) |
 | r3band | 1,352 us | |
 | r3long, after 240 sweeps | 1,386 us | Create trains 217, dedupe 75, sends 655 (filter 192, view 229, encode 150, network 64) |
-| r3long2, after 240 sweeps | R3LONG2 | |
+| r3long2, after 240 sweeps | 1,092 us | engine legs 35, bench dragons 30, Create trains 243, dedupe 63, sends 512 (filter 144, view 155, encode 129, network 63) |
 
 - The same filter, view and encoder in a plain-Java loop outside Minecraft (not committed), once warm: 160 to
   280 us a sweep for 200 carriages with or without 64 dragons, 24 to 42 us for 24 dragons. So most of the bench
-  figures are the JIT and the load: even after 240 sweeps the server's figure is about five times the loop's.
-- The longest single sweep in each run took 12 to 70 ms of wall time; the log does not say which sweep it was.
+  figures are the JIT and the load: even after 240 sweeps, r3long's and r3long2's dedupe and sends (730 and
+  575 us) are 2 to 5 times the loop's. Both long runs had a load average of 15 to 22.
+- The longest single sweep took 12 to 70 ms of wall time in the one-minute runs and 187 ms in r3long2; the log
+  does not say which sweep it was. In r3long2 it is longer than the 93 measured sweeps together (153 ms), so
+  it fell in the warm-up.
 - **The sends are per subscriber; the trains and dedupe are once a sweep.** Every subscriber's send happens in
   the same tick, so many subscribers make a spike once a second. By arithmetic, not measured: at r3long's 655
   us of sends, 10 subscribers would put about 6.5 ms into that one tick. Spreading the subscribers over the 20
@@ -167,7 +171,7 @@ those 10, before the JIT has compiled most of the path:
   GameTests (DHT31); the hand-back from a real body to the engine's leg runs only in the core GameTest, as the
   Ice and Fire GameTest checks a real puppet's id, looks and position.
 - The hide test with real carriages or dragons near the camera.
-- A server running for hours: the longest run was r3long2's.
+- A server running for hours: the longest run was r3long2's 333 sweeps.
 - The band's light at night or under the darkness effect, and block light (DHT33 leaves them out).
 
 ### Traps the bench found
@@ -175,7 +179,8 @@ those 10, before the JIT has compiled most of the path:
 - **An autosave with the synthetic trains crashed the server** (r3long, at tick 6,000): Create's
   `RailwaySavedData.save` threw "MountedStorageManager is uninitialized" writing a carriage with no
   contraption. The bench now turns saving off while its trains run (e5fa3fb); the stop save still runs after
-  the trains are taken out. Earlier runs ended before the first autosave.
+  the trains are taken out. Earlier runs ended before the first autosave. r3long2 ran 333 sweeps (about 6,660
+  ticks) with it and stopped cleanly.
 - **Vanilla refuses a simulation distance below 5** (30c6bd6).
 
 ### Log lines that are not ours
