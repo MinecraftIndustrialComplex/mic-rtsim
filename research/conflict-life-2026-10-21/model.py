@@ -1955,12 +1955,13 @@ class World:
 
     def pact_ok(self, f, y, x):
         """Could f swear with camp y against x? Both reach each other and x, both quarrel with x (or one
-        does and the other is its kin), y lives and makes alliances, and neither is already sworn to the
-        other or to x."""
-        if y not in self.factions or y == x or self.allied(f, y) or self.allied(f, x):
+        does and the other is its kin), y lives and makes alliances, neither is already sworn to the
+        other or to x, and neither is sworn against the other."""
+        if y not in self.factions or y == x or self.allied(f, y) or self.allied(f, x) or self.sworn_vs(f, y):
             return False
         B = self.factions[y]
-        if B.dead or B.c.ally_w <= 0 or f.id not in B.rel or x not in B.rel or self.allied(B, x):
+        if B.dead or B.c.ally_w <= 0 or f.id not in B.rel or x not in B.rel or self.allied(B, x) \
+                or self.sworn_vs(B, f.id):
             return False
         if x in self.factions and self.factions[x].dead:
             return False

@@ -3,8 +3,9 @@
 **Status:** design for Ben's review, revised 2026-10-21 after two adversarial reviews that were checked
 against the jars, then reworked the same day for Ben's answers (§8), and again on 2026-10-22 for his
 rejection of the horse: the Umvuthi now travels aloft, provisional, MZ-16's second round (§4.5, §8),
-fixed the same day for a third review against the jar and vanilla's sources. Nothing is built. Ben
-approves this design before code.
+fixed the same day for a third review against the jar and vanilla's sources. Touched again on
+2026-10-22 for alliances (CONFLICT-LIFE.md §2.16, Ben's CL-5 (b)): §0, §4.5, §4.11, §4.12 and §4.16's
+BAND_MARCH. Nothing is built. Ben approves this design before code.
 
 **Decided, and binding here:**
 - **Ben's request:** "go ahead and plan out some support for Mowzie's mobs, creating factions for the
@@ -96,7 +97,9 @@ off. At your base it sinks to the ground and summons more. Wear an Umvuthana mas
 you alone, as it does today. Kill the Umvuthi, on its throne or out on the invasion (its healers make it
 untouchable until you kill them), and every masked warrior near it falls with it, its raiders flee, and
 the tribe stays quiet until a warrior takes up its mask. A grove you have thinned fills back up over a
-few days, with warriors walking in from its edge.
+few days, with warriors walking in from its edge. Rarely, a grove and a goblin camp that both hate you
+swear against you: the envoy names both, and the masked war band and the goblins march on you from their
+two camps and arrive together, never fighting each other (CONFLICT-LIFE.md §2.16).
 
 ## 1. Reuse table
 
@@ -470,7 +473,7 @@ checking other branches for the same ids):
 | 0x8808 | CAMP_RECONCILE | engine to Java | faction, epoch, an op id derived from the faction, epoch and decision, and lines: slot, generation, kind, and an action (spawn, adopt a stray by UUID, take, set out with the party's agent and epoch, hand back a party's puppet by its agent and epoch, remove a slot's body or a stray by UUID, seat the heir in place of a dead slot's throne body), chief flag, crystal; for an Umvuthi's spawn, the throne spot and direction (§4.6) (§4.9) |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |
 | 0x880A | CHIEF_BODY | engine to Java | faction, agent and epoch (0 and the camp's epoch at home, else the party's), health, crystal held, the traded players' UUIDs (written with `setTradedPlayersCompound`); sent ahead of a chief's stack, spawn line or hand-back, and to a loaded chief body whose traded set is short (§4.5) |
-| 0x880B | BAND_MARCH | engine to Java | agent, revision, faction, culture, party kind, dimension, phase (mustering, out, waiting, fighting, home), flags (the chief leads, ended), the muster's end tick, unit counts by body kind, waypoints with their ticks from the segment the party is on (`route[seg]` and `times[seg]` unchanged, chart coordinates); sent at each change of a party's march and at each session start (§4.16) |
+| 0x880B | BAND_MARCH | engine to Java | agent, revision, faction, culture, party kind, dimension, phase (mustering, out, waiting, fighting, home), flags (the chief leads, ended, joint), the partner contingent's agent for a joint attack (CONFLICT-LIFE.md §2.16), the muster's end tick, unit counts by body kind, waypoints with their ticks from the segment the party is on (`route[seg]` and `times[seg]` unchanged, chart coordinates); sent at each change of a party's march and at each session start (§4.16) |
 
 FACTION_FOUND's reserved word (`docs/boundary.md:1421`) carries the census at discovery: the count
 of home bodies, chief present, crystal held.
@@ -1101,7 +1104,9 @@ the horse and every other animal mount (MZ-16, 2026-10-22): "Given the current m
   fight, its strength (5.0, §4.13) counts in the band's, as the conflict-life design has it
   (CONFLICT-LIFE.md §2.7). An Invasion is 8 units (16 bodies: 6 warriors and 2 packs of 5), under the
   spawn quota of 16 units (`tunables.rs:94`), so a Mowzie band is never cut down when it is met
-  (§4.16).
+  (§4.16). A joint attack shares one quota for both contingents (CONFLICT-LIFE.md §2.16, CL-D49): an
+  invasion beside a goblin band shows its share at first, at least one stack, and walks the rest in
+  from the ticking edge as the quota frees.
 - **Leaving a grove that is in.** At the muster's end the set-out line covers its slot too (§4.9). If
   the band is seen as it sets out, its throne body is handed to its puppet where it sits, the puppet
   facing the quarter of its route out (a hand-off is a new body, so it turns as it is replaced), and
@@ -1783,6 +1788,15 @@ near 52.
 ### 4.11 Relations
 
 - **With each other:** none. Snow and savanna do not meet; neither culture hates the other.
+- **Alliances** (CONFLICT-LIFE.md §2.16, CL-5 (b)). The Frostmaw never swears: a council of one has no
+  one to swear with. The grove may swear with a camp that also quarrels with a player, most often a
+  goblin camp (both hate humans), and the measured fortress world has it about once in 450 world-years.
+  Its raid can be called; its invasion goes only on the Umvuthi's own wounded pride (§4.5), which no
+  ally counts on, and then with the Umvuthi aloft at the rear of its own column. A goblin band and the
+  masked warriors of one joint attack do not turn on each other: the ConflictBridge cancels a change of
+  target to a body of the same attack (`LivingChangeTargetEvent`; CONFLICT-LIFE.md CL-D50), which the
+  Umvuthana's target goals go through (`EntityUmvuthanaMinion.java:131-151`, UNVERIFIED for every goal;
+  the conflict-life GameTest 5 checks them).
 - **Iron golems** attack every body in this plan but the envoy party (§4.5): vanilla's golem targets
   any `Enemy` but a creeper (`IronGolem.java:78`), and the Frostmaw (`EntityFrostmaw.java:152`), the
   Umvuthi (`EntityUmvuthi.java:209`), the warrior and crane (`EntityUmvuthanaMinion.java:105`), the
@@ -1806,7 +1820,11 @@ near 52.
 - **Peaceful** (decided): the plugin reports the world's difficulty; while it is Peaceful no war party
   of either culture leaves, ambushes and raids do nothing, and feuds keep their grievance and decay as
   usual. The jar's Frostmaw never wakes on Peaceful (`EntityFrostmaw.java:582`, `600`), so unwatched
-  losses with no fight possible would be unfair.
+  losses with no fight possible would be unfair. Councils still sit, and a pact may be sworn (words
+  between camps); no ally is called and no joint party leaves (CONFLICT-LIFE.md §2.16, CL-D53).
+- **A pact against a player is told** (CONFLICT-LIFE.md §2.16, CL-D55): the caller's notice plays for
+  him with the ally named ("the Sun Grove and Mudhollow have sworn against you"), kept until shown as
+  every notice is; FACTION_NOTICE and ENVOY_MATERIALIZE carry the ally's actor (8 bytes each).
 
 ### 4.13 Strength
 
@@ -1886,7 +1904,9 @@ bodies:
 - agent, a revision (each record replaces the agent's earlier ones), faction, culture, party kind,
   dimension;
 - phase: mustering, out, waiting, fighting, home;
-- flags: the chief leads, ended;
+- flags: the chief leads, ended, joint;
+- the partner's agent: for one contingent of a joint attack (CONFLICT-LIFE.md §2.16), the other
+  contingent's party, else none;
 - the muster's end tick (its departure);
 - the unit counts by body kind (a raptor pack its own kind, of 5 bodies);
 - the route from the segment the party is on to the route's end, as waypoints with their ticks: the
@@ -1894,7 +1914,7 @@ bodies:
   (`engine.rs:694-715`), not the party's position at the record's tick; a party that waits or fights
   has one waypoint and the tick it leaves.
 
-It is 64 bytes plus 8 per body kind and 16 per waypoint: 400 for 20 waypoints and two body kinds, 408
+It is 72 bytes plus 8 per body kind and 16 per waypoint: 408 for 20 waypoints and two body kinds, 416
 with three. `route` (`engine.rs:2131-2205`) puts no cap on its waypoints, so a long route makes a
 longer record, 16 bytes a waypoint. The engine sends it when a party is sent (mustering, `send_party`,
 `engine.rs:2224`); at each change of route or phase; when a casualty changes its counts, at most one a
@@ -2305,7 +2325,7 @@ warriors), with no grudges, and the tagged bodies, strays to the new books, fill
 | Chief's summons | per minion or crane a chief puppet summons | a tag and an entry in the ConflictBridge's groups before it joins (the mixin at `addFreshEntity`); nothing for any other join |
 | Trade memory | resident, per grove | 16 bytes a player who has paid its Umvuthi; one journaled CHIEF_PAID per first payment to an Umvuthi body |
 | Rule U holds | per held Umvuthi line, per tick | one nearest-player check against the body, and for a take or removal its target, for as long as a player stays; a spawn for at most 6,000 ticks |
-| BAND_MARCH | per change of a party's march | 64 bytes plus 8 per body kind and 16 per waypoint (400 for 20 waypoints and two kinds): at a send, each change of route or phase, a casualty (at most one a tick per party), the end, and every live party at a session start; the ConflictBridge keeps one per party out |
+| BAND_MARCH | per change of a party's march | 72 bytes plus 8 per body kind and 16 per waypoint (408 for 20 waypoints and two kinds): at a send, each change of route or phase, a casualty (at most one a tick per party), the end, and every live party at a session start; the ConflictBridge keeps one per party out |
 | Pending stacks | per stack of a met band not yet wholly entity-ticking | two hash lookups a tick per chunk a pending stack waits on (no event follows the entity-ticking state), and a stack's test only when one of those chunks changes or its place moves into another chunk, in the ConflictBridge; at a stop, one walk-in from the edge per stack still pending, which then holds one chunk inside it until the band moves on; no record (MZ-17 (a)) |
 | The walk home | per band walking home within a player's area | as one going out: its puppets and their steering, which today only bands going out cost |
 | Animals owed | per district load with a debt | one entity scan of the district's loaded chunks, capped |
