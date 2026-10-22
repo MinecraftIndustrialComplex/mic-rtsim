@@ -569,7 +569,8 @@ fn finish(
         surveyor_files += copy_tree(&world.join(&d), &dir.join(&d))?;
     }
     let pages_dir = dir.join(save::PAGES);
-    fs::rename(partial, &pages_dir).map_err(|e| format!("{}: {e}", pages_dir.display()))?;
+    rtsim_kernel::page::rename_over(partial, &pages_dir)
+        .map_err(|e| format!("{}: {e}", pages_dir.display()))?;
     if let Some(b) = &c.journal {
         save::write_atomic(&dir.join(save::JOURNAL), b)?;
     }

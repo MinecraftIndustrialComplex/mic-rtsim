@@ -685,6 +685,11 @@ impl LegIndex {
         self.legs.iter().map(|(id, l)| (*id, l))
     }
 
+    /// The legs with ids in `ids`, in id order.
+    pub fn range(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = (u64, &Leg)> {
+        self.legs.range(ids).map(|(id, l)| (*id, l))
+    }
+
     /// The most recent leg of a train that is under way at `at`.
     pub fn leg_of(&self, train: TrainId, at: Tick) -> Option<u64> {
         self.by_train.get(&train)?.iter().rev().copied().find(|id| {

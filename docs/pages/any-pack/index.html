@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtsim on Any Pack</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --good: #2d6a3e;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; }
+h3 { font-size: 19px; margin: 22px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+table.wide { min-width: 640px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+.state { font-weight: 600; }
+.state.used { color: var(--good); }
+.state.no { color: var(--muted); font-weight: 400; }
+tr.milestone td { color: var(--muted); font-style: italic; background: var(--card); padding-left: 10px; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td { border-bottom: 0; padding: 2px 0 6px; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+  table.stack td.state::before, table.stack td.short::before { display: inline; margin-right: 8px; }
+  table.stack.wide { min-width: 0; }
+  tr.milestone td { padding: 8px 10px; }
+}
+.cap { font-size: 15px; color: var(--muted); margin: 6px 0 16px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
+.decision h3 { margin-top: 0; }
+.decision .rec { font-weight: 600; }
+.decision ul { margin-top: 4px; }
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#breaks">What breaks</a>
+  <a href="#gaps">Top gaps</a>
+  <a href="#plan">Plan</a>
+  <a href="#now">Building now</a>
+  <a href="#tbsmp">TBSMP run</a>
+  <a href="#decide">Your decisions</a>
+</nav>
+
+<main>
+
+<header data-ss-id="page-header">
+  <h1 data-ss-id="headline">rtsim already runs non-Create factories, because it never models machines</h1>
+  <p class="dek" data-ss-id="dek">How far rtsim's factory sim is from working on any pack, with any tech mods, from a few mods in single player up to a 500-mod SMP. From the generalization note on main (5578751); mod facts were checked against each mod's 1.21.1 source.</p>
+  <p class="lead" data-ss-id="lead">rtsim measures the stock at a factory's edge, learns the net rate of each good and replays those rates while the chunks are unloaded. Any block entity with a NeoForge item, fluid or energy capability counts, so a Mekanism, Immersive Engineering, Modern Industrialization or GregTech factory with no Create is grouped, learned and replayed today, with no plugin. What breaks on a non-Create pack is generic plumbing: four small fixes, about one agent-week. The real per-mod work is storage networks and wireless links such as AE2 and Refined Storage. The number of mods costs nothing per tick; the size of the world does.</p>
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-plugins"><div class="n">0</div><div class="t">plugins needed for Mekanism, IE, MI or GregTech machines</div></div>
+    <div class="tile" data-ss-id="kpi-fixes"><div class="n">4</div><div class="t">small generic fixes before a non-Create pack works</div></div>
+    <div class="tile" data-ss-id="kpi-week"><div class="n">~1 <small>week</small></div><div class="t">of agent work for those four (slices G0 to G3)</div></div>
+    <div class="tile" data-ss-id="kpi-cap"><div class="n">48</div><div class="t">goods per factory before learning loses its structure</div></div>
+    <div class="tile" data-ss-id="kpi-decisions"><div class="n">4</div><div class="t">decisions for you, at the end</div></div>
+  </div>
+</header>
+
+<section id="breaks" data-ss-id="breaks" data-ss-section>
+  <h2 data-ss-id="breaks-h">On a non-Create pack, four generic things break, not the machines</h2>
+  <div class="scroll" data-ss-id="breaks-wrap">
+  <table class="stack" data-ss-id="breaks-table">
+    <thead><tr><th>What breaks</th><th>Today</th><th>Fix</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Old machines never become factories</strong></td><td data-label="Today">Only a block a player places can start a district. A base built before rtsim was installed needs an operator's <code>/rtsim district adopt</code></td><td data-label="Fix">G1: the district seed fix (DS-10), plus automatic adoption on a chunk's first load. S</td></tr>
+      <tr><td><strong>Most storage is not counted</strong></td><td data-label="Today">Only chests and barrels are stock. Mekanism bins and energy cubes, IE crates, drawers and Sophisticated Storage are not</td><td data-label="Fix">G1: a shipped list of storage blocks, one tag file. S</td></tr>
+      <tr><td><strong>Opening a machine's screen wipes the learning</strong></td><td data-label="Today">Any menu on a district block that is not stock discards the learning window, and so does a backpack or wireless terminal opened inside a district. Create has few screens, so this never showed</td><td data-label="Fix">G2: a screen session that only moves items in and out of that block counts as a port, like a chest. S</td></tr>
+      <tr><td><strong>Some pipes are invisible</strong></td><td data-label="Today">Pipez item and fluid pipes expose nothing (null, or an empty handler), so a Pipez line through empty chunks splits a factory in two. SFM cables and bare AE2 cables probably do the same</td><td data-label="Fix">G3: a tag for pipes that join whatever they touch. S, no Java</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p data-ss-id="breaks-fallback">Where rtsim cannot see something, the factory learns that nothing happens and stays frozen while unloaded, which is what vanilla does anyway. An AE2 base today is that case: its machines pull from and push into the ME network, no chest changes, so nothing is replayed. It is never worse than without rtsim.</p>
+</section>
+
+<section id="gaps" data-ss-id="gaps" data-ss-section>
+  <h2 data-ss-id="gaps-h">The five biggest gaps are storage networks, big factories, world size, wires and packaging</h2>
+  <p data-ss-id="gaps-intro">A kitchen-sink factory is mostly AE2 and Mekanism, with drawers and Pipez between. In an 8,107-chunk sample of ATM10 Season 2, AE2 blocks are 2,695 of 26,505 block entities, Create 1,554 and Mekanism 745.</p>
+  <div class="scroll" data-ss-id="gaps-wrap">
+  <table class="stack" data-ss-id="gaps-table">
+    <thead><tr><th>Gap</th><th>Who hits it</th><th>Fix</th><th>Size</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Storage networks and wireless links</strong></td><td data-label="Who hits it">AE2, Refined Storage 2, Mekanism QIO and Entangloporters, EnderStorage: goods sit where no NeoForge capability shows them</td><td data-label="Fix">A shared store in Rust that no district owns, with district ports into it (G4), then one plugin per mod (G5)</td><td class="short" data-label="Size">M, then AE2 M, RS2 M, Mekanism M, EnderStorage S</td></tr>
+      <tr><td><strong>2. Factories past 48 goods</strong></td><td data-label="Who hits it">Big GregTech lines. Past 48 goods the learner drops coupling, and one empty input stops the whole factory</td><td data-label="Fix">Learning constrained by the pack's own recipes from the RecipeManager (G7); splitting factories at stores and links (G10)</td><td class="short" data-label="Size">M plus S per mod; M</td></tr>
+      <tr><td><strong>3. World size</strong></td><td data-label="Who hits it">Big SMPs and weak PCs. Every district stays in memory (8.6 KB each: 100k districts is 860 MB), detection runs in one tick, and items with changing data (charging tools, storage cells) mint new goods forever</td><td data-label="Fix">Districts under the page budget, detection spread over ticks, folding such items to their bare id (G6)</td><td class="short" data-label="Size">M plus S each</td></tr>
+      <tr><td><strong>4. Wires and finite ores</strong></td><td data-label="Who hits it">IE wires and Flux Networks move power between distant blocks; IE excavator veins run dry. Without a plugin, power links are missed and veins act as infinite</td><td data-label="Fix">A power-link and deposit plugin per mod (G9)</td><td class="short" data-label="Size">S each</td></tr>
+      <tr><td><strong>5. Packaging</strong></td><td data-label="Who hits it">Every plugin hard-requires its mod at a pinned version (Create <code>[6.0.10,6.1)</code>), all modules are on, the natives depend on private repos</td><td data-label="Fix">An industry-only profile (G0); optional plugins and public natives (G12)</td><td class="short" data-label="Size">S; M, and needs you (REL-1)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="gaps-cap">S is up to about 500 lines or one agent-day; M is 500 to 3,000 lines, a few days to two weeks; L is more, or a change to saved formats.</p>
+  <p data-ss-id="gaps-scale">Mod count is free because rtsim never walks registries, recipes or tags per tick, and its goods list grows only with goods actually seen in storage. Exact per-machine replay for other mods is optional and comes last: Mekanism and Modern Industrialization are S to M each, GregTech is L. Thermal is out of reach: it has no 1.21.1 release.</p>
+</section>
+
+<section id="plan" data-ss-id="plan" data-ss-section>
+  <h2 data-ss-id="plan-h">The plan is fourteen slices, and most also help MIC or the Create addon</h2>
+  <div class="scroll" data-ss-id="plan-wrap">
+  <table class="wide stack" data-ss-id="plan-table">
+    <thead><tr><th>Slice</th><th>What it does</th><th>Size</th><th>Helps MIC</th><th>Helps the addon</th></tr></thead>
+    <tbody>
+      <tr><td><strong>G0</strong></td><td data-label="What it does">Industry-only profile; industry tunables from the server config</td><td class="short" data-label="Size">S</td><td class="state no" data-label="Helps MIC">No</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G1</strong></td><td data-label="What it does">District seed fix, automatic adoption, the storage list</td><td class="short" data-label="Size">S</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G2</strong></td><td data-label="What it does">Machine screens and backpacks no longer wipe learning</td><td class="short" data-label="Size">S</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G3</strong></td><td data-label="What it does">Tag for pipes with no item or fluid access</td><td class="short" data-label="Size">S</td><td class="state no" data-label="Helps MIC">No</td><td class="state no" data-label="Helps the addon">No</td></tr>
+      <tr class="milestone"><td colspan="5">After G0 to G3: a Mekanism, IE, MI or GregTech pack with chests, drawers and pipes works at learned-rate fidelity.</td></tr>
+      <tr><td><strong>G4</strong></td><td data-label="What it does">Shared store in Rust for networks and wireless links</td><td class="short" data-label="Size">M</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G5</strong></td><td data-label="What it does">AE2, RS2, Mekanism and EnderStorage plugins</td><td class="short" data-label="Size">M each, EnderStorage S</td><td class="state no" data-label="Helps MIC">No</td><td class="state no" data-label="Helps the addon">No</td></tr>
+      <tr class="milestone"><td colspan="5">After G4 and G5: a kitchen-sink pack's main factories work.</td></tr>
+      <tr><td><strong>G6</strong></td><td data-label="What it does">Scale walls: paging, spread detection, item folding</td><td class="short" data-label="Size">M plus S each</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G7</strong></td><td data-label="What it does">Learning constrained by recipes</td><td class="short" data-label="Size">M plus S per mod</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G8</strong></td><td data-label="What it does">Machine activity from block states: duty cycle, starvation, day and night</td><td class="short" data-label="Size">S</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state no" data-label="Helps the addon">No</td></tr>
+      <tr><td><strong>G9</strong></td><td data-label="What it does">Power-wire and deposit plugins (IE, Flux Networks, GregTech)</td><td class="short" data-label="Size">S each</td><td class="state no" data-label="Helps MIC">No</td><td class="state no" data-label="Helps the addon">No</td></tr>
+      <tr><td><strong>G10</strong></td><td data-label="What it does">Sections with generic cut rules (SEC-1)</td><td class="short" data-label="Size">M</td><td class="state used" data-label="Helps MIC">Yes</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G11</strong></td><td data-label="What it does">Exact replay beyond Create</td><td class="short" data-label="Size">M, then S to L per mod</td><td class="state no" data-label="Helps MIC">No</td><td class="state no" data-label="Helps the addon">No</td></tr>
+      <tr><td><strong>G12</strong></td><td data-label="What it does">Packaging: optional plugins, public natives</td><td class="short" data-label="Size">M</td><td class="state no" data-label="Helps MIC">No</td><td class="state used" data-label="Helps the addon">Yes</td></tr>
+      <tr><td><strong>G13</strong></td><td data-label="What it does">Villages, trade and wildlife from data, for other packs</td><td class="short" data-label="Size">L</td><td class="state no" data-label="Helps MIC">No</td><td class="state no" data-label="Helps the addon">No</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p data-ss-id="plan-mic">For MIC: G1 picks up the existing bases, G2 stops Destroy, Vintage, PowerGrid and Sophisticated Backpacks screens wiping learning, G4 models Create 6 stock networks and Ender Transmission without merging districts, and G7 covers addon machines the glass box does not reach yet.</p>
+</section>
+
+<section id="now" data-ss-id="now" data-ss-section>
+  <h2 data-ss-id="now-h">Building now, without asking: G0 to G3</h2>
+  <div class="box" data-ss-id="now-box">
+    <p data-ss-id="now-p1">They start after today's district fix (DS-10, branch fix/district-seeds) lands, whatever you answer to decision 1. Each is small and can be undone:</p>
+    <ul data-ss-id="now-list">
+      <li><strong>G1 and G2</strong> fix MIC itself: the district seed fix, automatic adoption, the storage list, and screens that no longer wipe learning.</li>
+      <li><strong>G0</strong> is what the Create addon needs, and it puts industry tunables in the server config.</li>
+      <li><strong>G3</strong> is one tag file. The MIC pack has no Pipez, SFM or AE2, so it pays off only on other packs.</li>
+    </ul>
+    <p data-ss-id="now-p2">If you choose "no" on decision 1, G0 and G3 are the only throwaway work.</p>
+  </div>
+</section>
+
+<section id="tbsmp" data-ss-id="tbsmp" data-ss-section>
+  <h2 data-ss-id="tbsmp-h">The TBSMP run, still in progress, settles the size questions but not the mod ones</h2>
+  <p data-ss-id="tbsmp-status">Its branch (feat/tbsmp-compat) is building the Create and Carry On plugins against TBSMP's Create 6.0.6. No results yet. It will settle:</p>
+  <ol data-ss-id="tbsmp-list">
+    <li><strong>Version spread:</strong> whether the Create plugin works on a Create older than its pin, the first test of rtsim on someone else's pack.</li>
+    <li><strong>Detection at scale:</strong> the rescan and adoption cost on 633k overworld block entities, which says whether spread detection (G6) is urgent.</li>
+    <li><strong>District count and memory:</strong> how many districts a real SMP makes, and so whether paging districts is needed now.</li>
+    <li><strong>Goods growth:</strong> how many goods a 144-mod world mints, with Sophisticated Backpacks and Storage in it.</li>
+  </ol>
+  <p data-ss-id="tbsmp-not">It cannot test non-Create factories, because TBSMP is a Create pack. That needs a Mekanism or AE2 world; the ATM10 Season 2 sample is the candidate.</p>
+</section>
+
+<section id="decide" data-ss-id="decide" data-ss-section>
+  <h2 data-ss-id="decide-h">Four decisions are yours, recommendation first</h2>
+
+  <div class="decision" data-ss-id="d-goal">
+    <h3 data-ss-id="d-goal-h">1. Is "any pack" a goal?</h3>
+    <p class="rec" data-ss-id="d-goal-rec">Recommended: a by-product. Build only the slices that also serve MIC or the Create addon (G0, G1, G2, G4, G6, G7, G8, G10), and leave the per-mod plugins until a non-MIC release is on the table.</p>
+    <ul data-ss-id="d-goal-alts">
+      <li>An active goal: also build G3, G5 and G9 now, about four more agent-weeks.</li>
+      <li>No: keep rtsim MIC-only and skip G0 and G3.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="d-networks">
+    <h3 data-ss-id="d-networks-h">2. How storage networks and wireless links are modelled</h3>
+    <p class="rec" data-ss-id="d-networks-rec">Recommended: a shared store in Rust (G4). Districts stay small, and the network is one store with ports.</p>
+    <ul data-ss-id="d-networks-alts">
+      <li>Merge every district on one network into one, as Ender Transmission does today. No extra work, but giant half-loaded districts follow, and the 48-good cap.</li>
+      <li>Freeze any district attached to a network.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="d-model">
+    <h3 data-ss-id="d-model-h">3. The machine model for non-Create mods</h3>
+    <p class="rec" data-ss-id="d-model-rec">Recommended: recipe-constrained learning first (G7), recipe-based exact replay later (G11). No per-mod Java until a pack needs exactness.</p>
+    <ul data-ss-id="d-model-alts">
+      <li>Per-mod exact models now, starting with Mekanism.</li>
+      <li>Learned rates only, forever, for non-Create mods.</li>
+    </ul>
+  </div>
+
+  <div class="decision" data-ss-id="d-release">
+    <h3 data-ss-id="d-release-h">4. Release shape for a non-MIC pack</h3>
+    <p class="rec" data-ss-id="d-release-rec">Recommended: nothing public until you say so (REL-1). Build G0 and the in-tree parts of G12, so a release is a switch, not a project.</p>
+    <ul data-ss-id="d-release-alts">
+      <li>Plan a public "rtsim industry" mod, with mic-native and deeptime-format made public or vendored.</li>
+      <li>Ship rtsim industry only inside the Create addon.</li>
+    </ul>
+  </div>
+</section>
+
+<details data-ss-id="sources" data-ss-react="off">
+  <summary>Sources</summary>
+  <ul>
+    <li>mic-rtsim main at 5578751: research/generalize-any-pack-2026-10-21.md, sections 0 to 12 (an assessment of main at 03022e8).</li>
+    <li>Code it cites: Districts.java (capabilities, seeds, stock tag, closure), PlayerPorts.java (screen discards), learn.rs and tunables.rs (the learner and its 48-good cap), Goods.java (data-component goods), obs.rs (PowerLink), GLASSBOX.md (8.6 KB per district), RtsimConfig.java (modules).</li>
+    <li>Mod facts from each mod's 1.21.1 source on GitHub: AE2, Refined Storage 2, Mekanism 10.7.19, Immersive Engineering, Pipez, FTB Chunks, GTCEu Modern, Modern Industrialization, EnderStorage, Flux Networks, JEI and EMI; Thermal from teamcofh.com and the CoFH branches. Unverified points are listed in the note's section 12.</li>
+    <li>research/stress-worlds-2026-10-21-data/audits/atm10-s2-sample-8k-chunks.json (the ATM10 sample); research/stress-worlds-smp-2026-10-21.md (TBSMP); branches feat/tbsmp-compat (d7c68a1) and fix/district-seeds (d91bc8c); the MIC pack's mod list (pack/mods).</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026. Private page.</footer>
+
+</body>
+</html>

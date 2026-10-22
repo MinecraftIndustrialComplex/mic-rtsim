@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use mic_viewer::api::{Card, MARK_BUDGET, MarksAnswer, WorldInfo};
 use mic_viewer::http::{Handler, Reply, Request};
-use mic_viewer::viewer::App;
+use mic_viewer::viewer::{App, Backend};
 use rtsim_view::View;
 
 /// What a folder's entry holds in place of bytes.
@@ -68,7 +68,7 @@ pub fn assert_same(before: &Snapshot, after: &Snapshot) {
 }
 
 /// A GET through the app: (status, body).
-pub fn get(app: &App<View>, path: &str, query: &str) -> (u16, Vec<u8>) {
+pub fn get(app: &dyn Handler, path: &str, query: &str) -> (u16, Vec<u8>) {
     let req = Request {
         method: "GET".into(),
         path: path.into(),
@@ -82,7 +82,7 @@ pub fn get(app: &App<View>, path: &str, query: &str) -> (u16, Vec<u8>) {
     }
 }
 
-pub fn get_json<T: serde::de::DeserializeOwned>(app: &App<View>, path: &str, query: &str) -> T {
+pub fn get_json<T: serde::de::DeserializeOwned>(app: &dyn Handler, path: &str, query: &str) -> T {
     let (status, body) = get(app, path, query);
     assert_eq!(
         status,
@@ -113,10 +113,29 @@ pub struct Session {
 /// base map tiles across each frame at three zooms.
 pub fn session(view: Arc<View>) -> Session {
     let app = App::new(Arc::clone(&view));
+    session_on(&app, &*view, &sampled_regions(&view))
+}
+
+/// Up to 32 of the world model's sampled regions (where the base map draws).
+pub fn sampled_regions(view: &View) -> Vec<(i32, i32)> {
+    view.saved()
+        .world_model
+        .as_ref()
+        .and_then(|w| {
+            let g = w.read();
+            g.sampled_ref()
+                .map(|m| m.regions().map(|(k, _)| (k.rx, k.rz)).take(32).collect())
+        })
+        .unwrap_or_default()
+}
+
+/// [`session`] through any handler over any backend (the live source's), the base map asked over
+/// `regions`.
+pub fn session_on<B: Backend>(app: &dyn Handler, view: &B, regions: &[(i32, i32)]) -> Session {
     let mut s = Session::default();
-    let world: WorldInfo = get_json(&app, "/api/world", "");
-    let layers: mic_viewer::api::Layers = get_json(&app, "/api/layers", "");
-    let _: serde_json::Value = get_json(&app, "/api/status", "");
+    let world: WorldInfo = get_json(app, "/api/world", "");
+    let layers: mic_viewer::api::Layers = get_json(app, "/api/layers", "");
+    let _: serde_json::Value = get_json(app, "/api/status", "");
     s.requests += 3;
     let ids: Vec<&str> = layers.layers.iter().map(|l| l.id.as_str()).collect();
     let all = ids.join(",");
@@ -124,9 +143,9 @@ pub fn session(view: Arc<View>) -> Session {
         // The timeline: the newest rows and the strip, as the page asks on opening it.
         if world.has_events {
             let a: mic_viewer::api::EventsAnswer =
-                get_json(&app, "/api/events", &format!("frame={}&limit=500", f.id));
+                get_json(app, "/api/events", &format!("frame={}&limit=500", f.id));
             let h: mic_viewer::api::Histogram = get_json(
-                &app,
+                app,
                 "/api/events/histogram",
                 &format!("frame={}&buckets=120", f.id),
             );
@@ -140,7 +159,7 @@ pub fn session(view: Arc<View>) -> Session {
                 "frame={}&x0={}&z0={}&x1={}&z1={}&bpp={bpp}&layers={all}",
                 f.id, b[0], b[1], b[2], b[3]
             );
-            let a: MarksAnswer = get_json(&app, "/api/marks", &q);
+            let a: MarksAnswer = get_json(app, "/api/marks", &q);
             s.requests += 1;
             let n: usize = a.layers.values().map(|l| l.marks.len()).sum();
             s.most_marks = s.most_marks.max(n);
@@ -152,7 +171,7 @@ pub fn session(view: Arc<View>) -> Session {
             }
         }
         // Every mark's card, from the scene itself.
-        let scene = mic_viewer::viewer::Backend::scene(&*view, &f.id, None).expect("a scene");
+        let scene = view.scene(&f.id, None).expect("a scene");
         for d in &layers.layers {
             let Some(rows) = scene.layers.get(&d.id) else {
                 panic!("layer {} has no rows in frame {}", d.id, f.id)
@@ -163,7 +182,7 @@ pub fn session(view: Arc<View>) -> Session {
             for m in rows.marks() {
                 let Some(id) = m.id() else { continue };
                 let path = format!("/api/thing/{}/{}", d.id, id);
-                let c: Card = get_json(&app, &path, "");
+                let c: Card = get_json(app, &path, "");
                 s.requests += 1;
                 s.cards += 1;
                 assert_eq!(c.layer, d.id);
@@ -171,22 +190,12 @@ pub fn session(view: Arc<View>) -> Session {
             }
         }
         // Base map tiles over every sampled region (up to 32), at three zooms, and a few far away.
-        let regions: Vec<(i32, i32)> = view
-            .saved()
-            .world_model
-            .as_ref()
-            .and_then(|w| {
-                let g = w.read();
-                g.sampled_ref()
-                    .map(|m| m.regions().map(|(k, _)| (k.rx, k.rz)).take(32).collect())
-            })
-            .unwrap_or_default();
         for t in &f.tiles {
             let (lo, hi) = (t.pyramid.min_zoom, t.pyramid.max_zoom);
             for z in [lo, (lo + hi) / 2, hi] {
                 let size = 256.0 * 2f64.powi(-z);
                 let mut asked = std::collections::BTreeSet::new();
-                for &(rx, rz) in &regions {
+                for &(rx, rz) in regions {
                     let (x, z0) = (f64::from(rx) * 512.0 + 256.0, f64::from(rz) * 512.0 + 256.0);
                     asked.insert(((x / size).floor() as i64, (z0 / size).floor() as i64));
                 }
@@ -194,7 +203,7 @@ pub fn session(view: Arc<View>) -> Session {
                     asked.insert((far, far));
                 }
                 for (x, y) in asked {
-                    let (status, body) = get(&app, &format!("/tiles/{}/{z}/{x}/{y}.png", t.id), "");
+                    let (status, body) = get(app, &format!("/tiles/{}/{z}/{x}/{y}.png", t.id), "");
                     s.requests += 1;
                     s.tiles += 1;
                     assert!(status == 200 || status == 204, "tile {z}/{x}/{y}: {status}");
