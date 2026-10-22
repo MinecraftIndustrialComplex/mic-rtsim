@@ -461,12 +461,15 @@ In short:
 - **Cost:** rtsim's own tick handlers take 0.7 to 0.8 ms per tick at 40 districts (1,280
   factories, 64 trains) and 1.2 to 1.6 ms at 200 (6,400 factories, 360 trains). MSPT differences
   are the size of the A/A controls'.
-- **Detection** is the largest single tick: 0.17 to 0.75 s for a full pass, and up to 0.37 s for
-  one adopt at 200 districts (10.4).
-- **Station learning:** every line edge is learned, with exact trips and travel times. Exchange
-  rules get the load good right everywhere but miss the unload, a snapshot timing problem, and
-  simulated calls take their cargo from the factories' input chests (10.5). Both are for Ben
-  (10.6).
+- **Detection** was the largest single tick: 0.17 to 0.75 s for a full pass, and up to 0.37 s for
+  one adopt at 200 districts (10.4). DS-11 spreads the passes: at syn40 the periodic pass now runs
+  over 70 ticks, with a longest tick of 14 to 23 ms. Commands still detect in one call: an adopt
+  costs 41 to 46 ms at 40 districts and grows with the districts found, as before DS-11 (10.8).
+- **Station learning:** every line edge is learned, with exact trips and travel times. The first
+  runs missed most unloads, and simulated calls took full carriages out of the factories' input
+  chests (10.5). Both are fixed (10.8): at syn40 every station's rule now has its load and unload,
+  a simulated call moves about 30 items through its station's own port vaults, and the factories'
+  chests change only by their own machines' work.
 
 ### 10.1 What the generator builds
 
@@ -706,21 +709,24 @@ journal; neither is fixed here.
 
 Recommended option first in each.
 
-1. **Exchange rules miss the unload** (10.5): the dock starts 4 to 6 ticks before
-   `Train.arriveAt`, so the arrival snapshot comes after the unload. (a) Recommended: take the
-   arrival snapshot on the final approach, once the train is braking for the station and before a
-   PSI can dock (a hook in Create's navigation). (b) Diff each departure against the train's
-   previous departure: no new hook, but a stop at a station outside any district would be booked to
-   the next district station.
-2. **Simulated calls take from the factories and fill the carriage** (10.5). (a) Recommended: give
-   each station its port inventories (the containers its PSIs reach) and book simulated exchanges
-   on those. (b) Cap a simulated load at the edge's learned cargo per trip. (c) Keep the
-   district-wide booking but prefer containers that feed no machine. (b) is the smallest change
-   and fixes the 1,664-item legs; only (a) stops the reconcile starving factories.
-3. **The detection tick on many districts** (10.4): a full pass of 0.2 to 0.45 s at 200 districts,
-   and adopts that grow with the district count. (a) Recommended: land the budgeted rescan and
-   re-measure on syn200. (b) Also limit an adopt's work to its own neighbourhood.
-4. **A 1.2 to 3.6 s tick at the start of every rtsim session:** it coincides with a C2ME
+1. **Exchange rules miss the unload** (10.5). **Decided (a), fixed (10.8).** The dock starts 4 to 6
+   ticks before `Train.arriveAt`, so the arrival snapshot comes after the unload. (a) Recommended:
+   take the arrival snapshot on the final approach, once the train is braking for the station and
+   before a PSI can dock (a hook in Create's navigation). (b) Diff each departure against the
+   train's previous departure: no new hook, but a stop at a station outside any district would be
+   booked to the next district station.
+2. **Simulated calls take from the factories and fill the carriage** (10.5). **Decided (a) with (b),
+   fixed (10.8).** (a) Recommended: give each station its port inventories (the containers its PSIs
+   reach) and book simulated exchanges on those. (b) Cap a simulated load at the edge's learned
+   cargo per trip. (c) Keep the district-wide booking but prefer containers that feed no machine.
+   (b) is the smallest change and fixes the 1,664-item legs; only (a) stops the reconcile starving
+   factories.
+3. **The detection tick on many districts** (10.4). **(a) landed as DS-11; syn40 re-measured in
+   10.8.** A full pass of 0.2 to 0.45 s at 200 districts, and adopts that grow with the district
+   count. (a) Recommended: land the budgeted rescan and re-measure on syn200. (b) Also limit an
+   adopt's work to its own neighbourhood.
+4. **A 1.2 to 3.6 s tick at the start of every rtsim session.** **Profiled (a): Project
+   Atmosphere's, reached through rtsim's habitat sampler (10.8).** It coincides with a C2ME
    density-function compile on the server thread (1.0 to 3.3 s). Both arms log such compiles in
    their first half minute, the off arms one and the rtsim arms two (sg40a, sg200a). So one compile
    per boot is the pack's, and the rtsim arms' second falls inside rtsim's tick handlers. (a)
@@ -733,7 +739,7 @@ Recommended option first in each.
    deploy server shows it; then find the mod that touches Create's registrate from its own
    constructor thread.
 
-### 10.7 Reversible decisions taken (SG1 to SG24)
+### 10.7 Reversible decisions taken (SG1 to SG24, SG30 onwards)
 
 | Id | Decision | Why |
 |---|---|---|
@@ -761,3 +767,172 @@ Recommended option first in each.
 | SG22 | The harness's arms wait for each other before the busy window and the unload | the rtsim arm's adopts, reports and rescan started its windows up to 110 s late |
 | SG23 | No 200 x 8 world | 200 x 32 already gives 6,400 factories and 56,918 Create block entities |
 | SG24 | sg200a (before SG22) kept for tick cost, detection and line edges, not for its deltas | its busy and reloaded windows started 110 s apart |
+| SG30 | An arrival's cargo is read at the first Portable Storage Interface dock near the station (a mixin at the head of `startTransferringTo`, PATCHES.md row 19a), flag 2 | a dock comes on the last block of braking at 0.25 blocks per tick or less, before `arriveAt`, on every call that moves goods; nothing moves before it |
+| SG31 | No dock near the station on a watched trip: the head of `arriveAt` (flag 2); a dock that could not name its station: the cargo at the previous departure (flag 4); a first watched stop: `arriveAt`, late (flag 0). `/rtsim district perf` counts each path | coordinator's option (b) only where no early hook fires; the flags say which path each arrival took |
+| SG32 | Station ports (IND_STATION_PORTS, 0x0415): at a loaded call's departure, a walk from the docked interfaces through chutes, funnels, hoppers, pipes, pumps and valves, at most 8 blocks, loaded chunks only, no belts; sent when the set changes; cleared by a district revision | the containers the station's interfaces serve, found from what docked; belts would reach the factories |
+| SG33 | A simulated call books only on its station's ports (black box: the district's pool as well, so its processes see the goods; glass: a port's store pool for the good, else the port's own contents); a station with a rule and no ports moves nothing (`exchanges_portless`) | the coordinator's (a); never the district's stock |
+| SG34 | A simulated load is at most the median of the station's last 8 loaded calls' amounts of that good (placeholder window); unloads are not capped | the coordinator's (b), about 30 items here; the median ignores the first thin calls and a catch-up call after an absence |
+| SG35 | Before a station call on a black-box span, the replay's change so far is placed in the ports by the reconcile's own plan (as their `held`), and the span's base moves with it | otherwise a port's bookings from earlier calls grow without bound while the replay's change waits for the reconcile, and a load finds nothing to take |
+| SG36 | The first-tick stall is reported, not fixed: it is Project Atmosphere's region forecast (a fresh `RandomState` that C2ME compiles), reached through rtsim's habitat sampler and mic_climate | the cost is PA's and C2ME's; any first temperature query in a new region pays it |
+| SG37 | The fixes' GameTest (`stationcargo.saw_shafts`) builds the glass corpus' saw shafts factory far from the yard and a port as the generator builds one, runs a synthetic train, and records its dock by hand (`TrainWatch.dockedForTest`) | a synthetic train has no carriage entity, so no interface can dock; the rest (ports walk, simulated call, reload, reconcile) is the real path |
+| SG38 | `tools/stress-worlds/stock.py` reads the saved worlds' chests and port vaults, off arm first | factory stock and port vaults are the coordinator's question; no command lists them, and the saved world is what a player would find |
+| SG39 | Jar set `sg-cce8b6a`: this branch after merging main 72fa63e (DS-11), `mic_native` from 7177451; the create suite run on the same tree just before. sg40c, started before DS-11 landed, was stopped and deleted | the coordinator asked for DS-11 in the re-run |
+| SG40 | The adopt question measured by the adopt loop alone, two servers side by side (before DS-11, `sg-2313699`, and after, `sg-cce8b6a`), reading `rtsim district perf` after each adopt, with spark on both | sg40d's settle window mixes adopts with ticked passes on a loaded laptop; the perf line's last detection after an adopt is that adopt's own |
+| SG41 | syn200 not re-run | other agents' benches and GameTests were queued on the bridge lock and the load average stayed between 8 and 14 |
+| SG42 | The adopt spike reported, not fixed | the adopt command and `rescanNow` are the district work's files (DS-11 left them unbudgeted on purpose) |
+
+### 10.8 The station fixes, and syn40 again
+
+10.6 items 1, 2 and 4 were decided (the coordinator, while Ben slept: these can be undone) and are
+fixed or reported here. Item 3 is the budgeted rescan, DS-11, which reached main at 72fa63e and is
+in the re-run's jars.
+
+**The unload (10.6 item 1, option (a)).** The arrival's cargo is now read when the first Portable
+Storage Interface docks at the station, not at `Train.arriveAt` (SG30, a mixin at the head of
+`PortableStorageInterfaceBlockEntity.startTransferringTo`, PATCHES.md row 19a).
+
+- No navigation hook fires earlier on every arrival. Create's approach is arithmetic inside
+  `Navigation.tick` with no event, and a train already under the approach speed never takes the
+  slowing branch. The dock is the earliest point that matters: an interface docks only within reach
+  at 0.25 blocks per tick or less, which every stopping train passes through, and nothing moves
+  between a train and a station before it.
+- Where no dock names the station, the bridge falls back (SG31), and the arrival record's flags and
+  `/rtsim district perf` say which path each arrival took:
+  - a watched trip with no dock near the station: nothing can have moved, so the head of `arriveAt`
+    is read (flag 2, counted as an approach);
+  - a dock near the station that could not name it (the train had no destination): the cargo at the
+    train's departure for this station, option (b) (flag 4, counted as a departure);
+  - a train's first watched stop: the head of `arriveAt`, late (no flag).
+
+**Simulated calls (10.6 item 2, options (a) and (b) together).**
+
+- (a) Station ports (SG32, IND_STATION_PORTS 0x0415). At a loaded call's departure the bridge walks
+  from each interface that docked through chutes, funnels, hoppers, pipes, pumps and valves (at most
+  8 blocks, loaded chunks only, no belts, so it stops before the factories) and sends the district
+  inventories it reached. On the generated ports that is the supply vault and the sink vault.
+- A simulated call books only on its station's ports (SG33). A station with a rule and no ports
+  moves nothing (`exchanges_portless` in the engine); it never falls back to the district's stock.
+- (b) A simulated load is capped at the median of the station's last 8 loaded calls' amounts of the
+  good (SG34): about 30 items here. Unloads are not capped: they put down what the carriage holds.
+- On a black-box span the replay's change so far is placed in the ports before each call (SG35);
+  otherwise a port's bookings from earlier calls grow while the replay waits for the reconcile.
+- `rtsim-cli lines` shows each rule's ports, its recent per-call amounts and the load cap.
+
+**The GameTest** (`stationcargo.saw_shafts`, in the create suite, SG37). It builds the glass corpus'
+saw shafts factory far from the yard, with 256 copper and 128 gold added to its input chest, and a
+port as the generator builds one: a supply vault, a smart chute, the interface, a smart chute and a
+sink vault, with a station beside it. A synthetic train (no carriage entity, so the test records the
+dock through `TrainWatch.dockedForTest`) makes one loaded call that moves 30 gold into the sink and
+30 copper into the carriage, then leaves. The test checks the station's ports are exactly the two
+vaults, unloads the district, brings the train back carrying 30 gold, waits for the simulated call's
+`IND_CARRIAGE_RESULT`, and reloads. After the reload's reconcile:
+
+- the factory's input chest holds the same copper and gold as before the unload (its alloy changed,
+  574 to 549, by the factory's own replay);
+- the supply vault fell by 30 copper (481 to 451) and the sink rose by 30 gold (30 to 60), each
+  exactly the learned amount;
+- the carriage holds 30 copper.
+
+All 142 of the create suite's GameTests pass with it.
+
+**The first tick (10.6 item 4).** One boot was profiled from its first tick (Java Flight Recorder,
+`sgprof1`). The second density-function compile is not rtsim's own work, but rtsim reaches it:
+
+- rtsim's habitat sampler asks mic_climate for a temperature (`HabitatSampler.sample` and `write`,
+  `Climates.temperature`, `ClimatePlugin.temperature`).
+- mic_climate asks Thermoo, whose Project Atmosphere source asks PA for the region's weather
+  (`ProjectAtmosphereSource.celsius`, `AtmoApi.getCurrentWeather`).
+- PA's forecast for a region it has not loaded builds a `BiomeSampler` with a fresh `RandomState`
+  (`RegionForecastOrchestrator.ensureLoaded`, `ForecastGenerator.sampleSquare`), and C2ME compiles
+  that state's density functions on the server thread.
+- PA already compiles once in its own `onServerStarted`, on both arms. rtsim's first habitat sample,
+  3 s later, pays the second: about 0.9 s of server-thread samples.
+
+So the cost is Project Atmosphere's and C2ME's: any first temperature query in a new region pays it,
+rtsim's or another mod's (SG36). Not fixed here. Recommended: mic_climate gives PA's `BiomeSampler`
+the level's own `RandomState` (a mixin in mic_climate), so nothing is compiled twice.
+
+**syn40 again (sg40d: on, on, off).** Jar set `sg-cce8b6a`: this branch after merging main 72fa63e
+(DS-11), with `mic_native` from 7177451 (SG39). The create suite passed on the same tree first. The
+one-minute load average over the busy windows was 3 to 14.
+
+- **Exchange rules:** the unload is learned at all 128 stations on both rtsim arms, and the load at
+  all 128; none is wrong. Each rule was observed 25 or 26 times.
+
+  | Run | Arm | Stations | Load right | Unload learned | Unload missing |
+  |---|---|---:|---:|---:|---:|
+  | sg40d | on | 128 | 128 | 128 | 0 |
+  | sg40d | on (A/A) | 128 | 128 | 128 | 0 |
+
+- **Cargo source:** every real arrival's cargo was read at an interface dock: 3,020 approaches, no
+  departure fallback and no late read, beside 500 simulated arrivals (3,511 docks in all). 128
+  station port records at the first departures and 134 after the reload, where four districts were
+  declared again and some of their stations sent their ports anew.
+- **Line edges:** 128 of 128, 29 trips each, travel 129 to 131 ticks, and cargo 29 to 31 items per
+  trip (mean 30), against 205 to 322 before: no full-carriage legs.
+- **Factory stock no longer drops.** Against the off arm, each factory chest changed by its own
+  machines' replay over the unloaded window, the same amount for every factory of a kind:
+  - every saw shafts chest -42 andesite alloy (322 chests); every millstone chest -61 wheat (565);
+  - every press chest -125 iron ingots (237) or -61 (27), with +116 to +118 iron sheets;
+  - no chest lost more than its own machines used. In sg40b the same check found saw chests that
+    had lost 1,437 alloy each, and 10.5's sg40a presses lost 576 iron ingots while making 1 sheet.
+- **The ports took the simulated calls instead.** The supply vaults held 13,989 and 14,191 items
+  fewer than the off arm's, and the sink vaults 14,981 and 15,201 more: about 30 items a call over
+  the 500 simulated calls. Per good, 463 to 1,974 left the supply vaults and 482 to 2,066 reached
+  the sinks.
+- **Reload:** 384 reconciles applied on each rtsim arm, no short deltas.
+- **Cost** (busy window; the A/A is the second rtsim arm minus the first):
+
+  | Comparison | dMSPT | dCPU/tick | dServer thread/tick |
+  |---|---:|---:|---:|
+  | busy, on minus off (2) | +0.88, -0.25 | +4.0, +1.5 | +1.07, +0.38 |
+  | busy, A/A | -1.13 | -2.5 | -0.69 |
+  | reloaded, on minus off (2) | +0.42, -0.12 | +3.0, +2.2 | +0.28, -0.35 |
+  | reloaded, A/A | -0.54 | -0.8 | -0.62 |
+
+  MSPT differences stay inside the A/A's, as in 10.3. rtsim's own tick cost over the busy window
+  had a mean of 0.60 and 0.61 ms (p99 2.3 ms, p99.9 4.9 and 5.4 ms), against 0.69 to 0.82 in sg40a
+  and sg40b.
+- **Detection (DS-11):** the periodic pass at game tick 12,001 now runs over 70 ticks (142 and 143
+  ms in all). Its longest tick was 14 and 23 ms (256 and 310 block entities), and the busy window's
+  worst rtsim tick 16 and 26 ms, against 326 to 755 ms in one tick before. The timed `rtsim district
+  rescan`, which a command still runs in one call, took 80 and 81 ms (167 and 322 ms in sg40b).
+  After the reload, the pass ran over 70 ticks (52 and 55 ms in all), and the reloaded window's
+  worst rtsim tick was 38 and 42 ms.
+- **The first tick** still holds the 1.65 s stall at game tick 1,293 on both rtsim arms (SG36).
+- **syn200 was not re-run:** other agents' client benches and GameTests were queued on the bridge
+  lock and the load average stayed between 8 and 14, so two 10 GB servers would have measured the
+  laptop, not rtsim.
+
+**Does an adopt still spike (the coordinator's DS-11 question)?** Yes, and the spike comes from the
+adopt command itself, not from the detection triggers DS-11 spreads over ticks.
+
+- `IndustryCommands.adopt` calls `Districts.rescanNow`, which runs a full detection in the command's
+  own tick with no budget (`Rescan.step(Integer.MAX_VALUE)`). A full detection takes every
+  district's chunks as candidates, so an adopt costs more with each district already found. DS-11
+  left this path unbudgeted on purpose, and `/rtsim district perf` leaves it out of its longest
+  tick.
+- Measured side by side (SG40): the scene's forceload and 80 adopts on syn40, one server before
+  DS-11 and one after, reading `rtsim district perf` after each adopt.
+
+  | Adopt's own detection | Before DS-11 | After DS-11 |
+  |---|---:|---:|
+  | First ten adopts (median) | 7.0 ms | 9.4 ms |
+  | Last ten, at about 40 districts (median) | 46.1 ms | 40.7 ms |
+  | Largest | 55.6 ms | 52.0 ms |
+  | Sum (79 and 80 adopts read) | 2.15 s | 1.96 s |
+
+  The cost climbs steadily with the district count on both, so DS-11 did not change it. Spark puts
+  93% of the adopts' server-thread time in the walk (`Rescan.root` and `walk`) and 7% in the commit.
+- sg40d's own adopt loop took 11.5 to 12.2 s (3.2 to 3.3 s in sg40b), and its settle window held 4.9
+  to 5.1 s of detection (1.6 to 1.7 s). Those servers were slow at that moment, not the adopts: each
+  command's round trip was about 150 ms from the very first adopt, when an adopt's own detection
+  costs under 10 ms, and both rtsim servers logged running 12 s behind just after the loop. The
+  side-by-side pair is the comparison to use.
+- The ticked detection, the path DS-11 changed, had a longest tick of at most 14 and 23 ms over the
+  whole of each sg40d rtsim run.
+- Not changed here: `Districts.java` and `IndustryCommands.java` belong to the district work.
+  Recommended: let an adopt detect only around its own chunks (a dirty-chunk pass, not a full one,
+  as DS-11's ticked path already does), so its cost is one neighbourhood's at any district count.
+  Alternatively, let the adopt only mark the chunks and leave the detection to the next ticked pass;
+  then the command cannot report the new district count at once.

@@ -188,7 +188,34 @@ pub struct TrainCall {
     pub district: DistrictId,
     /// The station's district is unloaded: the engine decides the exchange (I15).
     pub simulated: bool,
+    /// When `carriages` was read (choice SG30): the station's interfaces may dock before
+    /// `arriveAt`, so a loaded call's cargo is the one from before they could.
+    pub cargo_from: CargoFrom,
     pub carriages: Vec<Carriage>,
+}
+
+/// When an arrival's cargo was read (IND_TRAIN_ARRIVED flags, choice SG30).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CargoFrom {
+    /// At the start of `arriveAt`: right for a simulated call; for a loaded one, the station's
+    /// interfaces may already have moved goods (the train was not seen approaching).
+    #[default]
+    Arrival,
+    /// As the train came within its own length (plus a margin) of the station, before any of
+    /// the station's interfaces could dock.
+    Approach,
+    /// At the train's departure from its previous district station, which named this one.
+    Departure,
+}
+
+/// The inventories a station's Portable Storage Interfaces serve (IND_STATION_PORTS, choice
+/// SG32): a simulated call books against these only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StationPorts {
+    pub station: StationId,
+    pub district: DistrictId,
+    /// District inventory indices, ascending.
+    pub inventories: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -470,6 +497,7 @@ pub enum Obs {
     TrainDeparted(TrainDeparture),
     Station(StationDecl),
     Package(PackageEvent),
+    StationPorts(StationPorts),
     ReconcileResult(ReconcileResult),
     CarriageResult(CarriageResult),
     SpawnSample(SpawnSample),

@@ -89,3 +89,17 @@ cargo run --release -p rtsim-cli -- lines ~/mic-stress-worlds/runs/<tag>-B-on/wo
 
 It lists each line edge (from and to station, trips, mean travel ticks, cargo per trip) and each
 district's exchange rules (what a station unloads and loads).
+Each rule also shows the station's ports (the district inventories its interfaces reach), its recent
+loaded calls' amounts and the cap a simulated load takes (choices SG32 and SG34).
+
+To check where simulated calls took and put their goods, compare the saved worlds' chests and port
+vaults, the off arm first (needs nbtlib, see the script):
+
+```
+python3 -I tools/stress-worlds/stock.py ~/mic-stress-worlds/synthetic/<name>/stressgen.json \
+    ~/mic-stress-worlds/runs/<tag>-C-off/world ~/mic-stress-worlds/runs/<tag>-A-on/world
+```
+
+A factory chest should change only by its own machines' replay (the same amount for every factory
+of a kind); the stations' supply and sink vaults take the simulated calls
+(docs/stress-worlds-results.md 10.8).
