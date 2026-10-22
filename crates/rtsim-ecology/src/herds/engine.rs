@@ -63,6 +63,8 @@ const SYS_BIRTH: SystemId = SystemId::named("herds.birth");
 const SYS_STARVE: SystemId = SystemId::named("herds.starve");
 const SYS_PLACE: SystemId = SystemId::named("herds.place");
 const SYS_STAGGER: SystemId = SystemId::named("herds.stagger");
+const SYS_DISPERSE: SystemId = SystemId::named("herds.disperse");
+const SYS_FRONTIER: SystemId = SystemId::named("herds.frontier");
 
 /// Leg owners (opaque to the index): bit 60 marks a herd module leg, apart from a player's
 /// interest area (bit 63, rtsim-world and the dragons), a dragon (62) and a ship (61). Under it,
@@ -126,6 +128,17 @@ pub struct HerdStats {
     pub predations: u64,
     pub duplicate_ops: u64,
     pub late_records: u64,
+    /// Ranges whose last animal died or left (each then waits for its frontier founding).
+    pub vacated: u64,
+    /// Empty ranges founded again by newcomers from beyond (EQUILIBRIUM.md §2.4.2).
+    pub frontier_foundings: u64,
+    /// Frontier foundings put off a sub-season because a player stood near.
+    pub frontier_postponed: u64,
+    /// Springs in which a herd sent some of its adults to thin neighbours, and the animals sent.
+    pub dispersals: u64,
+    pub dispersed: u64,
+    /// Empty ranges founded again by dispersers from a neighbour.
+    pub recolonised: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -318,47 +331,88 @@ pub fn region_key(r: (u16, i64, i64)) -> u64 {
     cell_key(r.0, r.1, r.2)
 }
 
-/// The herds whose routes cover one region, by handle index, in order.
+/// One region's row of the region index: the herds whose routes cover it, and the herds whose
+/// range it is (EQUILIBRIUM.md §2.4.2: one in a world-model world; a synthetic world may found
+/// two in one region), each by handle index, in order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RegionHerds(pub Vec<u32>);
+pub struct RegionHerds {
+    pub routes: Vec<u32>,
+    pub ranges: Vec<u32>,
+}
+
+impl RegionHerds {
+    fn is_empty(&self) -> bool {
+        self.routes.is_empty() && self.ranges.is_empty()
+    }
+}
+
+fn put_indices(w: &mut Writer, v: &[u32]) {
+    w.var_u64(v.len() as u64);
+    let mut last = 0u32;
+    for &i in v {
+        w.var_u64(u64::from(i - last));
+        last = i;
+    }
+}
+
+fn get_indices(r: &mut Reader<'_>) -> codec::Result<Vec<u32>> {
+    let n = r.len_prefix(1)?;
+    let mut out = Vec::with_capacity(n);
+    let mut last = 0u64;
+    for k in 0..n {
+        let d = r.var_u64()?;
+        if k > 0 && d == 0 {
+            return Err(codec::CodecError::Invalid(
+                "region herds out of order".into(),
+            ));
+        }
+        last += d;
+        out.push(
+            u32::try_from(last)
+                .map_err(|_| codec::CodecError::Invalid("herd index over u32".into()))?,
+        );
+    }
+    Ok(out)
+}
+
+/// Inserts `i` into a sorted list (once).
+fn add_sorted(v: &mut Vec<u32>, i: u32) {
+    if let Err(p) = v.binary_search(&i) {
+        v.insert(p, i);
+    }
+}
 
 impl Encode for RegionHerds {
     fn encode(&self, w: &mut Writer) {
-        w.var_u64(self.0.len() as u64);
-        let mut last = 0u32;
-        for &i in &self.0 {
-            w.var_u64(u64::from(i - last));
-            last = i;
-        }
+        put_indices(w, &self.routes);
+        put_indices(w, &self.ranges);
     }
 }
 
 impl Decode for RegionHerds {
     fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
-        let n = r.len_prefix(1)?;
-        let mut out = Vec::with_capacity(n);
-        let mut last = 0u64;
-        for k in 0..n {
-            let d = r.var_u64()?;
-            if k > 0 && d == 0 {
-                return Err(codec::CodecError::Invalid(
-                    "region herds out of order".into(),
-                ));
-            }
-            last += d;
-            out.push(
-                u32::try_from(last)
-                    .map_err(|_| codec::CodecError::Invalid("herd index over u32".into()))?,
-            );
-        }
-        Ok(RegionHerds(out))
+        Ok(RegionHerds {
+            routes: get_indices(r)?,
+            ranges: get_indices(r)?,
+        })
     }
 }
 
 impl rtsim_kernel::rows::Row for RegionHerds {
     fn heap_bytes(&self) -> usize {
-        self.0.capacity() * 4
+        (self.routes.capacity() + self.ranges.capacity()) * 4
     }
+}
+
+/// The range (frame, region x, region z) of a canonical block position.
+pub fn range_of(frame: u16, pos: (i32, i32)) -> (u16, i32, i32) {
+    let r = REGION_BLOCKS as i32;
+    (frame, pos.0.div_euclid(r), pos.1.div_euclid(r))
+}
+
+/// A range's row key in the region index.
+fn range_key(r: (u16, i32, i32)) -> u64 {
+    region_key((r.0, i64::from(r.1), i64::from(r.2)))
 }
 
 /// A herd's archive id: its handle's plain bits, without the leg index's owner namespace.
@@ -549,16 +603,22 @@ impl Herds {
         out
     }
 
-    /// The census (EQUILIBRIUM.md S1) now: `herd.range`, one site per herd row, K its founding
-    /// count, its members the animals alive (an extinct herd is an empty site); renewals are the
-    /// yearly calvings.
+    /// The census (EQUILIBRIUM.md S1) now: `herd.range`, one site per herd row, K the range's,
+    /// its members the animals alive (an empty range is an empty site); renewals are the yearly
+    /// calvings, the frontier foundings and the ranges dispersers founded again.
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
         let mut c = rtsim_kernel::census::KindCensus::new("herd.range");
         for (h, x) in self.herds.iter() {
-            c.site(self.count(h, self.now), x.ledger.founded, false, 0.0);
+            c.site(self.count(h, self.now), x.k, false, 0.0);
         }
-        c.renewals = self.stats.breedings;
+        c.renewals = self.stats.breedings + self.stats.frontier_foundings + self.stats.recolonised;
         vec![c]
+    }
+
+    /// The refuge of a range of K `k` (EQUILIBRIUM.md §3.4): predators never take a herd below
+    /// it.
+    pub fn refuge(&self, k: u64) -> u64 {
+        ((self.tun.refuge_share * k as f64).round() as u64).max(self.tun.refuge_min)
     }
 
     /// Every herd's ledger, summed per species.
@@ -619,7 +679,8 @@ impl Herds {
     // ---- herds ---------------------------------------------------------------------------------
 
     /// Adds a herd at `at` with a stable age pyramid (founders), and books its first decision at
-    /// once.
+    /// once. Its count is its range's K (EQUILIBRIUM.md §2.4.2), and its range is the region of
+    /// `pos`.
     pub fn add_herd(&mut self, n: NewHerd, at: Tick) -> HerdId {
         let seed = match n.seed {
             Some(s) => s,
@@ -674,16 +735,21 @@ impl Herds {
             classes.push(Class::new(next, c as u32, day - a, day, c as u32));
             next += c;
         }
+        let home = self.topo(n.frame).canonical_i32(n.pos.0, n.pos.1);
         let herd = Herd {
             name: n.name,
             species: n.species,
             seed,
             frame: n.frame,
+            k: n.count,
+            range: range_of(n.frame, home),
+            home,
+            vacant: None,
             classes,
             next_index: next,
             condition: [800; 3],
             satisfaction: 1000,
-            route: Route::stay(self.topo(n.frame).canonical_i32(n.pos.0, n.pos.1), at, at),
+            route: Route::stay(home, at, at),
             reach: 0,
             plan: 0,
             bred_year: Subs::year(subs.index(at)),
@@ -702,6 +768,7 @@ impl Herds {
             regions: Vec::new(),
         };
         let id = self.herds.insert(herd);
+        self.index_range(id);
         self.herds[id].next_decide = at;
         self.schedule(at, Ev::Decide { h: id });
         let start = self.herds[id].route.start();
@@ -736,13 +803,11 @@ impl Herds {
 
     fn handle(&mut self, legs: &mut LegIndex, at: Tick, ev: Ev) {
         match ev {
-            Ev::Decide { h } => {
-                if self.herds.get(h).is_some_and(|x| x.next_decide == at) {
-                    self.decide(legs, h, at);
-                } else {
-                    self.stats.stale += 1;
-                }
-            }
+            Ev::Decide { h } => match self.herds.get(h) {
+                Some(x) if x.next_decide == at && x.vacant.is_some() => self.frontier(legs, h, at),
+                Some(x) if x.next_decide == at => self.decide(legs, h, at),
+                _ => self.stats.stale += 1,
+            },
             Ev::Seen { h, player, meeting } => self.seen(legs, h, player, meeting, at),
             Ev::Check { h, epoch } => self.check_group(legs, h, epoch, at),
             Ev::Year => {
@@ -769,6 +834,7 @@ impl Herds {
         let (in_year, year) = (Subs::in_year(n), Subs::year(n));
         if sp.breeds_in(in_year) && self.herds[h].bred_year != year {
             self.breed(h, at, year);
+            self.disperse(h, at, year);
         }
         // Classes with nobody left go (their deaths committed first), except one holding a
         // member embodied right now: it stays until the capture.
@@ -798,8 +864,10 @@ impl Herds {
             let end = self.topo(self.herds[h].frame).canonical_i32(end.0, end.1);
             let x = self.herds.get_mut(h).expect("live");
             x.route = Route::stay(end, at, at);
-            x.next_decide = Tick(u64::MAX);
+            x.vacant = Some(at);
+            self.stats.vacated += 1;
             self.set_regions(h, Vec::new());
+            self.book_frontier(h, at);
             let frame = self.herds[h].frame;
             self.tape
                 .event(
@@ -922,10 +990,10 @@ impl Herds {
             let k = region_key(r);
             let empty = match self.regions.get_mut(k) {
                 Some(s) => {
-                    if let Ok(p) = s.0.binary_search(&i) {
-                        s.0.remove(p);
+                    if let Ok(p) = s.routes.binary_search(&i) {
+                        s.routes.remove(p);
                     }
-                    s.0.is_empty()
+                    s.is_empty()
                 }
                 None => false,
             };
@@ -936,26 +1004,56 @@ impl Herds {
         for r in &list {
             let k = region_key(*r);
             match self.regions.get_mut(k) {
-                Some(s) => {
-                    if let Err(p) = s.0.binary_search(&i) {
-                        s.0.insert(p, i);
-                    }
-                }
+                Some(s) => add_sorted(&mut s.routes, i),
                 None => {
-                    self.regions.insert(k, RegionHerds(vec![i]));
+                    self.regions.insert(
+                        k,
+                        RegionHerds {
+                            routes: vec![i],
+                            ranges: Vec::new(),
+                        },
+                    );
                 }
             }
         }
         self.herds.get_mut(h).expect("live").regions = list;
     }
 
+    /// Indexes the herd under its range (once, at its founding: a range keeps its row).
+    fn index_range(&mut self, h: HerdId) {
+        let k = range_key(self.herds[h].range);
+        let i = h.index();
+        match self.regions.get_mut(k) {
+            Some(s) => add_sorted(&mut s.ranges, i),
+            None => {
+                self.regions.insert(
+                    k,
+                    RegionHerds {
+                        routes: Vec::new(),
+                        ranges: vec![i],
+                    },
+                );
+            }
+        }
+    }
+
+    /// The herd rows of range (frame, region x, region z), alive or empty: the world model's
+    /// guard against founding a range twice (EQUILIBRIUM.md §2.4.2), and dispersal's neighbours.
+    pub fn range_herds(&self, range: (u16, i32, i32)) -> Vec<HerdId> {
+        self.regions
+            .get(range_key(range))
+            .map(|s| s.ranges.iter().map(|&i| herd_at(i)).collect())
+            .unwrap_or_default()
+    }
+
     /// Recomputes every herd's regions from its route (a new topology): a whole-table pass.
     pub(crate) fn rebuild_regions(&mut self) {
         self.regions.clear();
         for h in self.herds.handles() {
+            self.index_range(h);
             let x = &self.herds[h];
-            // Extinct, or not planned yet (a route is indexed when it is planned).
-            let list = if x.next_decide == Tick(u64::MAX) || x.reach == 0 {
+            // Empty, or not planned yet (a route is indexed when it is planned).
+            let list = if x.vacant.is_some() || x.reach == 0 {
                 Vec::new()
             } else {
                 route_regions(&x.route, x.frame, x.reach, self.topo.of(x.frame))
@@ -971,17 +1069,25 @@ impl Herds {
     /// The region index from the herds' own lists (a whole-table pass: a blob load).
     pub(crate) fn index_regions(&mut self) {
         self.regions.clear();
-        let mut pairs: Vec<(u64, u32)> = Vec::new();
+        // (region key, 0 route or 1 range, herd index)
+        let mut pairs: Vec<(u64, u8, u32)> = Vec::new();
         self.herds.rows().for_each(|k, x| {
             for r in &x.regions {
-                pairs.push((region_key(*r), k as u32));
+                pairs.push((region_key(*r), 0, k as u32));
             }
+            pairs.push((range_key(x.range), 1, k as u32));
         });
         pairs.sort_unstable();
         pairs.dedup();
         for chunk in pairs.chunk_by(|a, b| a.0 == b.0) {
-            let list = chunk.iter().map(|p| p.1).collect();
-            self.regions.insert(chunk[0].0, RegionHerds(list));
+            let pick = |t: u8| chunk.iter().filter(|p| p.1 == t).map(|p| p.2).collect();
+            self.regions.insert(
+                chunk[0].0,
+                RegionHerds {
+                    routes: pick(0),
+                    ranges: pick(1),
+                },
+            );
         }
     }
 
@@ -1111,13 +1217,19 @@ impl Herds {
         }
     }
 
-    /// Births: one binomial draw on the adults alive, at the condition's share of fertility.
+    /// Births: one binomial draw on the adults alive, at the condition's share of fertility and
+    /// the density term `1 / (1 + A/M)` toward the range's K (EQUILIBRIUM.md §2.4.2, §3.2).
     /// Every class's natural deaths are committed first (the yearly anchor).
     fn breed(&mut self, h: HerdId, at: Tick, year: i64) {
         let yd = self.year_days();
         let day = day_of(at);
         let world = self.seed;
         let sp = self.sp(h).clone();
+        let m_per_k = if self.tun.density_term {
+            sp.bh_m_per_k(yd)
+        } else {
+            None
+        };
         let x = self.herds.get_mut(h).expect("live");
         let mut died = 0u64;
         for c in x.classes.iter_mut() {
@@ -1131,8 +1243,12 @@ impl Herds {
             .map(|c| u64::from(c.alive))
             .sum();
         let cond = f64::from(x.condition[Cohort::Adult.index()]) / 1000.0;
+        let density = match m_per_k {
+            Some(r) if x.k > 0 => 1.0 / (1.0 + adults as f64 / (r * x.k as f64)),
+            _ => 1.0,
+        };
         let litters = sp.fertility.ceil().max(1.0);
-        let p = (sp.fertility * cond / litters).clamp(0.0, 1.0);
+        let p = (sp.fertility * cond * density / litters).clamp(0.0, 1.0);
         let births = StreamKey::new(world, SYS_BIRTH, x.seed)
             .slot(year as u64)
             .binomial(adults * litters as u64, p);
@@ -1155,10 +1271,375 @@ impl Herds {
             "births",
             Some(h),
             format!(
-                "{births} born to {adults} adults (condition {:.0}%)",
-                cond * 100.0
+                "{births} born to {adults} adults (condition {:.0}%, density {:.2})",
+                cond * 100.0,
+                density
             ),
         );
+    }
+
+    /// Takes up to `n` latent members (alive and never seen) out of herd `h`'s classes at `day`,
+    /// in proportion to each class's latent members times `weight` of its cohort (largest
+    /// remainder). Every touched class is re-anchored first (its deaths committed). Returns what
+    /// each class gave, by class index, and the total.
+    fn take_latent(
+        &mut self,
+        h: HerdId,
+        day: i64,
+        n: u64,
+        weight: impl Fn(Cohort) -> u64,
+    ) -> (Vec<(usize, u64)>, u64) {
+        let yd = self.year_days();
+        let sp = self.sp(h).clone();
+        let x = self.herds.get_mut(h).expect("live");
+        let avail: Vec<u64> = x
+            .classes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let alive = u64::from(c.alive_on(&sp, yd, x.seed, day));
+                let seen = x.seen_in(i).count() as u64;
+                alive.saturating_sub(seen)
+            })
+            .collect();
+        let wt: Vec<u64> = x
+            .classes
+            .iter()
+            .zip(&avail)
+            .map(|(c, a)| c.cohort_on(&sp, day).map_or(0, |k| a * weight(k)))
+            .collect();
+        let wsum: u64 = wt.iter().sum();
+        if wsum == 0 || n == 0 {
+            return (Vec::new(), 0);
+        }
+        let n = n.min(
+            avail
+                .iter()
+                .zip(&wt)
+                .filter(|(_, w)| **w > 0)
+                .map(|(a, _)| *a)
+                .sum(),
+        );
+        let mut take: Vec<(u64, u64, usize)> = wt
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let q = u128::from(n) * u128::from(w);
+                (
+                    ((q / u128::from(wsum)) as u64).min(avail[i]),
+                    (q % u128::from(wsum)) as u64,
+                    i,
+                )
+            })
+            .collect();
+        let mut given: u64 = take.iter().map(|t| t.0).sum();
+        let mut order: Vec<usize> = (0..take.len()).collect();
+        order.sort_by(|&a, &b| take[b].1.cmp(&take[a].1).then(a.cmp(&b)));
+        while given < n {
+            let before = given;
+            for &i in &order {
+                if given >= n {
+                    break;
+                }
+                if take[i].0 < avail[i] && wt[i] > 0 {
+                    take[i].0 += 1;
+                    given += 1;
+                }
+            }
+            if given == before {
+                break;
+            }
+        }
+        let mut died = 0u64;
+        let mut out = Vec::new();
+        for (k, _, i) in take {
+            if k == 0 {
+                continue;
+            }
+            let c = &mut x.classes[i];
+            died += u64::from(c.reanchor(&sp, yd, x.seed, day));
+            c.alive -= (k as u32).min(c.alive);
+            out.push((i, k));
+        }
+        x.ledger.died += died;
+        (out, given)
+    }
+
+    /// Spring dispersal (EQUILIBRIUM.md §2.4.2), at the breeding decision: a herd above
+    /// `donor_above` of its K sends `disperse_share` of its latent adults (one binomial draw) to
+    /// the 4-neighbouring ranges below `taker_below` of theirs, split evenly. A neighbour takes
+    /// them if it is empty (it becomes the donor's species) or of the same species; the
+    /// dispersers keep their ages.
+    fn disperse(&mut self, h: HerdId, at: Tick, year: i64) {
+        let t = &self.tun;
+        if t.disperse_share <= 0.0 {
+            return;
+        }
+        let (share, donor_above, taker_below) = (t.disperse_share, t.donor_above, t.taker_below);
+        let x = &self.herds[h];
+        let alive = self.count(h, at);
+        if (alive as f64) <= donor_above * x.k as f64 {
+            return;
+        }
+        let (species, frame, range, seed) = (x.species, x.frame, x.range, x.seed);
+        // The neighbours, across seams: the range centres' canonical regions.
+        let rb = REGION_BLOCKS as i32;
+        let centre = (range.1 * rb + rb / 2, range.2 * rb + rb / 2);
+        let mut takers: Vec<HerdId> = Vec::new();
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let c = self
+                .topo(frame)
+                .canonical_i32(centre.0 + dx * rb, centre.1 + dz * rb);
+            for g in self.range_herds(range_of(frame, c)) {
+                if g == h || takers.contains(&g) {
+                    continue;
+                }
+                let y = &self.herds[g];
+                let thin = (self.count(g, at) as f64) < taker_below * y.k as f64;
+                if thin && (y.vacant.is_some() || y.species == species) {
+                    takers.push(g);
+                }
+            }
+        }
+        if takers.is_empty() {
+            return;
+        }
+        let day = day_of(at);
+        let adults = self.cohorts(h, at)[Cohort::Adult.index()];
+        let latent_adults = adults.saturating_sub(self.herds[h].seen.len() as u64);
+        let go = StreamKey::new(self.seed, SYS_DISPERSE, seed)
+            .slot(year as u64)
+            .binomial(latent_adults, share);
+        if go == 0 {
+            return;
+        }
+        let (gave, sent) = self.take_latent(h, day, go, |c| u64::from(c == Cohort::Adult));
+        if sent == 0 {
+            return;
+        }
+        // Birth days of what left, in class order: each taker takes the next `quota` of them.
+        let mut leaving: Vec<(i64, u64)> = gave
+            .iter()
+            .map(|&(i, k)| (self.herds[h].classes[i].birth_day, k))
+            .collect();
+        let condition = self.herds[h].condition;
+        self.herds.get_mut(h).expect("live").ledger.left += sent;
+        self.stats.dispersals += 1;
+        self.stats.dispersed += sent;
+        let n = takers.len() as u64;
+        for (j, g) in takers.into_iter().enumerate() {
+            let quota = sent / n + u64::from((j as u64) < sent % n);
+            let mut got: Vec<(i64, u64)> = Vec::new();
+            let mut need = quota;
+            while need > 0 {
+                let Some(first) = leaving.first_mut() else {
+                    break;
+                };
+                let k = first.1.min(need);
+                got.push((first.0, k));
+                first.1 -= k;
+                need -= k;
+                if first.1 == 0 {
+                    leaving.remove(0);
+                }
+            }
+            self.arrive(g, &got, species, condition, at, year);
+        }
+        self.note(
+            at,
+            "disperse",
+            Some(h),
+            format!("{sent} adults left for thin neighbours"),
+        );
+    }
+
+    /// Dispersers reach range `g`: one class per birth day, booked as arrived. An empty range
+    /// takes their species, is scheduled to decide and does not breed again this year.
+    fn arrive(
+        &mut self,
+        g: HerdId,
+        got: &[(i64, u64)],
+        species: HerdSpecies,
+        condition: [u16; 3],
+        at: Tick,
+        year: i64,
+    ) {
+        let total: u64 = got.iter().map(|c| c.1).sum();
+        if total == 0 {
+            return;
+        }
+        let day = day_of(at);
+        let y = self.herds.get_mut(g).expect("live");
+        for &(birth, k) in got {
+            y.classes
+                .push(Class::new(y.next_index, k as u32, birth, day, k as u32));
+            y.next_index += k;
+        }
+        y.ledger.arrived += total;
+        if y.vacant.take().is_none() {
+            return;
+        }
+        y.species = species;
+        y.condition = condition;
+        y.satisfaction = 1000;
+        y.bred_year = year;
+        y.decided = at;
+        y.route = Route::stay(y.home, at, at);
+        let (frame, home) = (y.frame, y.home);
+        let next = self.decide_at(g, at + 1);
+        self.herds.get_mut(g).expect("live").next_decide = next;
+        self.schedule(next, Ev::Decide { h: g });
+        self.stats.recolonised += 1;
+        self.tape.event(
+            kinds::HERDS_FOUNDED,
+            At::new(at.0, u32::from(frame), home.0, home.1),
+            hid(g),
+            0,
+            total as i64,
+        );
+        self.note(
+            at,
+            "recolonise",
+            Some(g),
+            format!("{total} {} came from a neighbour", species.name()),
+        );
+    }
+
+    /// Books an empty range's frontier founding (EQUILIBRIUM.md §2.4.2): one exponential wait at
+    /// `frontier_per_year` a range-year, drawn from the moment it emptied. No rate: never.
+    fn book_frontier(&mut self, h: HerdId, at: Tick) {
+        let rate = self.tun.frontier_per_year;
+        let x = self.herds.get_mut(h).expect("live");
+        if rate <= 0.0 {
+            x.next_decide = Tick(u64::MAX);
+            return;
+        }
+        let u = StreamKey::new(self.seed, SYS_FRONTIER, x.seed)
+            .slot(at.0)
+            .next_f64_open();
+        let year_ticks = self.subs().year_ticks() as f64;
+        let wait = (-u.ln() / rate * year_ticks).min(1e15) as u64;
+        let when = at + wait.max(1);
+        let x = self.herds.get_mut(h).expect("live");
+        x.next_decide = when;
+        self.schedule(when, Ev::Decide { h });
+    }
+
+    /// An empty range's frontier founding is due: `max(frontier_min, frontier_share x K)` young
+    /// adults of its species arrive, on the side of its home facing the nearest live herd within
+    /// `frontier_search` ranges (at the home itself if none), unless a player stands near, which
+    /// puts it off to the next sub-season.
+    fn frontier(&mut self, legs: &mut LegIndex, h: HerdId, at: Tick) {
+        let x = &self.herds[h];
+        let (frame, home, range, k, species) = (x.frame, x.home, x.range, x.k, x.species);
+        let n = ((self.tun.frontier_share * k as f64).round() as u64).max(self.tun.frontier_min);
+        let sp = self.tun.species(species).clone();
+        // Where they come in.
+        let mut from: Option<(f64, (i64, i64))> = None;
+        let topo = self.topo(frame);
+        let hp = (i64::from(home.0), i64::from(home.1));
+        let rb = REGION_BLOCKS as i32;
+        let centre = (range.1 * rb + rb / 2, range.2 * rb + rb / 2);
+        'rings: for ring in 1..=self.tun.frontier_search.max(0) {
+            for dx in -ring..=ring {
+                for dz in -ring..=ring {
+                    if dx.abs().max(dz.abs()) != ring {
+                        continue;
+                    }
+                    let c = topo.canonical_i32(centre.0 + dx * rb, centre.1 + dz * rb);
+                    for g in self.range_herds(range_of(frame, c)) {
+                        let y = &self.herds[g];
+                        if y.vacant.is_some() || self.count(g, at) == 0 {
+                            continue;
+                        }
+                        let p = self.at_pos(y, at);
+                        let d = dist(topo, hp, p);
+                        if from.is_none_or(|(b, _)| d < b) {
+                            from = Some((d, p));
+                        }
+                    }
+                }
+            }
+            if from.is_some() {
+                break 'rings;
+            }
+        }
+        let mut arrive = home;
+        if let Some((d, p)) = from
+            && d > 1.0
+        {
+            let step = (f64::from(rb) * 3.0 / 8.0).min(d);
+            let (vx, vz) = (p.0 - hp.0, p.1 - hp.1);
+            let (ux, uz) = (vx as f64 / d, vz as f64 / d);
+            let q = topo.canonical(
+                hp.0 + (ux * step).round() as i64,
+                hp.1 + (uz * step).round() as i64,
+            );
+            let cell = cell_of(q.0, q.1);
+            if self.climate.terrain(frame, cell.0, cell.1).is_finite() {
+                arrive = (q.0 as i32, q.1 as i32);
+            }
+        }
+        // Not in sight of a player: wanderers walk in, they do not appear.
+        let r = f64::from(self.tun.view_radius + self.tun.hysteresis + sp.footprint_radius(n));
+        let ap = (i64::from(arrive.0), i64::from(arrive.1));
+        let watched = self.players.iter().any(|p| {
+            p.pos.is_some_and(|(pos, _)| {
+                pos.frame == frame && dist(topo, ap, (i64::from(pos.x), i64::from(pos.z))) < r
+            })
+        });
+        if watched {
+            let next = self.decide_at(h, at + 1);
+            self.herds.get_mut(h).expect("live").next_decide = next;
+            self.schedule(next, Ev::Decide { h });
+            self.stats.frontier_postponed += 1;
+            return;
+        }
+        let day = day_of(at);
+        let subs = self.subs();
+        let year = Subs::year(subs.index(at));
+        // Young adults: born in the last breeding season but one before now.
+        let born_sub = u32::from(sp.breeding_sub_seasons.first().copied().unwrap_or(0));
+        let since_sub = (Subs::in_year(subs.index(at)) + 12 - born_sub) % 12;
+        let phase = (i64::from(since_sub) * subs.len as i64
+            + (at.0 as i64 - subs.start(subs.index(at)).0 as i64))
+            / TICKS_PER_DAY as i64;
+        let age = i64::from(sp.maturity_days) + phase;
+        let x = self.herds.get_mut(h).expect("live");
+        x.classes
+            .push(Class::new(x.next_index, n as u32, day - age, day, n as u32));
+        x.next_index += n;
+        x.ledger.founded += n;
+        x.vacant = None;
+        x.condition = [800; 3];
+        x.satisfaction = 1000;
+        x.bred_year = year;
+        x.decided = at;
+        x.route = Route::stay(arrive, at, at);
+        self.stats.frontier_foundings += 1;
+        self.tape.event(
+            kinds::HERDS_FOUNDED,
+            At::new(at.0, u32::from(frame), arrive.0, arrive.1),
+            hid(h),
+            0,
+            n as i64,
+        );
+        self.note(
+            at,
+            "frontier",
+            Some(h),
+            format!("{n} {} came from beyond", species.name()),
+        );
+        self.decide(legs, h, at);
+    }
+
+    /// Every latent member of herd `h` dies at `at`, booked as killed (a test and tool hook: the
+    /// world wipe of EQUILIBRIUM.md §3.6). Members a player has seen stay. The range empties at
+    /// its next decision.
+    pub fn cull(&mut self, h: HerdId, at: Tick) -> u64 {
+        let (_, n) = self.take_latent(h, day_of(at), u64::MAX, |_| 1);
+        self.herds.get_mut(h).expect("live").ledger.killed += n;
+        n
     }
 
     // ---- players -------------------------------------------------------------------------------
@@ -1223,7 +1704,7 @@ impl Herds {
         let mut near = BTreeSet::new();
         for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
             if let Some(s) = self.regions.get(region_key((pos.frame, rx, rz))) {
-                near.extend(s.0.iter().map(|i| herd_at(*i)));
+                near.extend(s.routes.iter().map(|i| herd_at(*i)));
             }
         }
         for h in near {
@@ -1910,7 +2391,7 @@ impl Herds {
         let mut cands = BTreeSet::new();
         for (rx, rz) in self.regions_near(frame, x, z, range) {
             if let Some(s) = self.regions.get(region_key((frame, rx, rz))) {
-                cands.extend(s.0.iter().map(|i| herd_at(*i)));
+                cands.extend(s.routes.iter().map(|i| herd_at(*i)));
             }
         }
         let followed: BTreeSet<HerdId> = self
@@ -1935,7 +2416,7 @@ impl Herds {
             let Some(hx) = self.herds.get(h) else {
                 continue;
             };
-            if hx.frame != frame || hx.next_decide == Tick(u64::MAX) {
+            if hx.frame != frame || hx.vacant.is_some() {
                 continue;
             }
             let f = followed.contains(&h);
@@ -1949,7 +2430,10 @@ impl Herds {
                 continue;
             }
             let alive = self.count(h, at);
-            let available = alive.saturating_sub(hx.embodied_count());
+            // Nothing below the refuge (EQUILIBRIUM.md §3.4): a herd at it is not worth a hunt.
+            let available = alive
+                .saturating_sub(hx.embodied_count())
+                .min(alive.saturating_sub(self.refuge(hx.k)));
             if available == 0 {
                 continue;
             }
@@ -1998,7 +2482,9 @@ impl Herds {
         let want = (i64::from(want_food.max(0)) + i64::from(food_each) - 1) / i64::from(food_each);
         let cap = (alive * u64::from(self.tun.predation_share_milli) / 1000).max(1);
         let latent = alive.saturating_sub(hx.embodied_count());
-        let n = (want as u64).min(cap).min(latent);
+        // Never below the refuge (EQUILIBRIUM.md §3.4): no herd is eaten out.
+        let above = alive.saturating_sub(self.refuge(hx.k));
+        let n = (want as u64).min(cap).min(latent).min(above);
         if n == 0 {
             return Predation::default();
         }
@@ -2120,11 +2606,18 @@ impl Herds {
 
     /// Conservation and identity invariants at `at`: per herd, the classes hold exactly what the
     /// ledger says entered and left (integers), indices are dense and monotonic, the seen and
-    /// dead sets never overlap, and embodied members are seen.
+    /// dead sets never overlap, embodied members are seen, and an empty range holds nothing;
+    /// over the world, every disperser that left a range arrived in another.
     pub fn check(&self, at: Tick) -> Result<(), String> {
         let yd = self.year_days();
         let day = day_of(at);
+        let (mut arrived, mut left) = (0u64, 0u64);
         for (h, x) in self.herds.iter() {
+            arrived += x.ledger.arrived;
+            left += x.ledger.left;
+            if x.vacant.is_some() && x.classes.iter().any(|c| c.alive > 0) {
+                return Err(format!("herd {}: an empty range holds animals", x.name));
+            }
             let sp = self.tun.species(x.species);
             let anchors: i128 = x.classes.iter().map(|c| i128::from(c.alive)).sum();
             if anchors != x.ledger.expected_at_anchors() {
@@ -2142,12 +2635,11 @@ impl Herds {
             if u128::from(alive) > anchors as u128 {
                 return Err(format!("herd {} grew between events", x.name));
             }
-            if x.ledger.founded + x.ledger.born != x.next_index {
+            let entered = x.ledger.founded + x.ledger.born + x.ledger.arrived;
+            if entered != x.next_index {
                 return Err(format!(
-                    "herd {}: {} founded and born but next index {}",
-                    x.name,
-                    x.ledger.founded + x.ledger.born,
-                    x.next_index
+                    "herd {}: {entered} founded, born and arrived but next index {}",
+                    x.name, x.next_index
                 ));
             }
             for w in x.classes.windows(2) {
@@ -2164,6 +2656,9 @@ impl Herds {
                 return Err(format!("herd {}: embodied member {k} is not seen", x.name));
             }
             let _ = h;
+        }
+        if arrived != left {
+            return Err(format!("{left} dispersers left but {arrived} arrived"));
         }
         Ok(())
     }
@@ -2237,7 +2732,7 @@ impl Herds {
         let mut near = BTreeSet::new();
         for (rx, rz) in self.regions_near(pos.frame, x, z, reach) {
             if let Some(s) = self.regions.get(region_key((pos.frame, rx, rz))) {
-                near.extend(s.0.iter().map(|i| herd_at(*i)));
+                near.extend(s.routes.iter().map(|i| herd_at(*i)));
             }
         }
         for h in near {
