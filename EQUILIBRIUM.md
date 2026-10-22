@@ -530,6 +530,12 @@ as today (Y20).
 - **What the player sees:** sinking a haven's ships quiets its sea for a few game months, not for ever: in the model half its slots are back in 48 days
   and 90% in 72 (96 against the same seed left alone).
 - **Body:** no ships plugin exists; puppets when one does. **Cost:** one float per haven.
+- **Built** (S8, 2026-10-22; choices T32 to T38 in docs/overnight-choices-ships.md): as above, plus a
+  refit in port (a pirate mends its hull and makes up its crew from the pool before each decision,
+  the empty slots' crews kept back). On the synthetic coast, seeds 1 to 30: after a kill-all half the
+  slots are back in 23.5 days and all in 52.5 (medians; the model's 48 and 72 on its 24-day grid), and
+  unattended havens keep every slot manned for a thousand years (1.00, above the band: with nobody
+  watching, pirates never fight a ship, T37).
 
 #### 2.4.7 Frostmaw and Umvuthana (MOWZIE)
 
@@ -1050,7 +1056,7 @@ GameTest lock.
 | S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census | GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsMissingNotDead` | S4 (EQ-2 a, decided) |
 | S6 | Villages and Ribbits (EQ-1): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn | `kill_all_villagers` (settlers in 32 days, 90% within 600), `village_pop_follows_census_down`, `kill_all_ribbits` (90% within 300), `sim_quiet_stays_quiet_with_settlers`; GameTests `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage` | S1 (EQ-1 a, decided) |
 | S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds` | S0 |
-| S8 | Ships: hires and cap, refit pressure, EV lanes | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band) | S0 |
+| S8 | Ships: hires and cap, refit pressure, EV lanes. **Built 2026-10-22** (`crates/rtsim-ships/src/engine.rs`, docs/overnight-choices-ships.md T32 to T38) | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band; the engine holds the floor and sits at 1.00, T37) (`crates/rtsim-ships/tests/equilibrium.rs`) | S0 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
 | S10 | Oil nests on the shared rule (with OG-9e's build). **Built 2026-10-22** (`crates/rtsim-ecology/src/nest.rs`, docs/choices-oilgate.md OGC70 onward) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` (`crates/rtsim-ecology/tests/nests.rs`) | S0, OG-9e |
 | S11 | The long-horizon suite | `long_horizon_stability_with_kills` (every module, 60 game years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind above in one place, `who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal events per day flat; nightly; its length is the engine's speed, about 45 minutes if the host runs 100 game days a second) | all |
