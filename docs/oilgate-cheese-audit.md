@@ -259,6 +259,8 @@ times, saved with it.
 
 **F8. Danger where the oil is** (F1, and bar 2's first window). §3's recommendation (a). Ben. Before
 trusting field flights or In Control at night, run OGC35's probe by night, as §4.8 already asks (F2).
+**Built** (OGB-6, OGC46 to OGC48): field flights on at the built draw, the fire dragon out of the
+pack's In Control files (blazes kept), OG-10's pass condition retired; the night run is OGC48.
 
 **F9. A watched raid does the bounded damage too, as P28 decided** (C5, F4). Ben decided P28 as
 "bounded damage too"; the build followed R19, the earlier recommendation, so a watched raid on a
