@@ -10,7 +10,8 @@ Research only. Nothing was built, run or added to the pack. **V** means read in 
 
 Sources: the pack's DH jar (`DistantHorizons-3.3.1-1.21.1-fabric-neoforge.jar`, API 7.1.0, network protocol
 16) read with `javap`, its shaders read as text; Create 6.0.10 and Sable 2.0.5 read with `javap`; this
-repository's code; a web search for prior art (section 9). No jar was executed.
+repository's code; a web search for prior art, DH's changelogs and source, and Iris's source (section 9).
+No jar was executed.
 
 ## 1. Short answer
 
@@ -31,8 +32,8 @@ flipbook, or is rebuilt when its heading changes.
 already sends every train's carriage positions to any client that asks. No server change, no sim change.
 
 **What you decide (section 15.1):** whether the server may stream sim state to opted-in clients (PLAN §4.10
-says no today); how I18 reads for a far view; fixing the Chunky trap so clients have far terrain at all;
-whether raids leave real scars.
+says no today); how I18 reads for a far view; moving to DH 3.3.3 so clients have far terrain at all (the
+Chunky trap); whether raids leave real scars.
 
 **Limits worth knowing up front:**
 
@@ -67,6 +68,10 @@ whether raids leave real scars.
   client module's renderer for `DhClientLevel` (multiplayer) and `DhClientServerLevel` (single player).
 - **Groups die with the level.** `ClientLevelModule.close()` closes the generic renderer, so a mod re-adds
   its groups on every `DhApiLevelLoadEvent` and drops its handles on `DhApiLevelUnloadEvent`.
+- **The safest route to the register** is the render parameter: `DhApiRenderParam.clientLevelWrapper` (API
+  5.1.0 and newer) reaches the controller every frame (6.4), so it always names the level being drawn. The
+  Javadoc says the level load event may fire before the player is in, and `getSinglePlayerLevel()` is null
+  in multiplayer.
 
 ### 3.2 Boxes and groups
 
@@ -256,8 +261,8 @@ query gives the far ground height where fire and smoke should sit.
   sources, and the solution is not sent to Java or saved.
 - **What Create gives while loaded (V, `javap`):** `WindmillBearingBlockEntity` (`getGeneratedSpeed()`,
   `lastGeneratedSpeed`), `MechanicalBearingBlockEntity` (`getMovedContraption()`, `getInterpolatedAngle(float)`,
-  `getAngularSpeed()`, `isRunning()`), `BearingContraption` (`getSailBlocks()`, `getFacing()`). The
-  contraption's block map accessor is U.
+  `getAngularSpeed()`, `isRunning()`), `BearingContraption` (`getSailBlocks()`, `getFacing()`), and `Contraption.getBlocks()` (local position to
+  `StructureBlockInfo`). The bearing's contraption entity is tracked up to 20 chunks away (`AllEntityTypes`).
 - **What is missing:** a capture. The Create plugin reads the sail shape, axis and speed while the windmill is
   loaded and keeps them in a Java-side cache file. Under UR-1 that cache is disposable: delete it and the next
   load rebuilds it. The sim never holds the only copy.
@@ -330,8 +335,9 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
   beacon culler) applies the second test; the first is checked per frame by the controller, which is cheap.
 - **Dragon seam:** the engine spawns the real dragon on its leg at the edge plus 32 blocks, so the proxy should
   be where the entity appears. A small jump is possible if the spawn point differs from the leg (U).
-- **Train seam:** Create's carriage entity tracking range decides where the real one appears; the proxy stays
-  until it does.
+- **Train seam:** Create registers `carriage_contraption` with a tracking range of 15 chunks (V,
+  `AllEntityTypes`), cut down by the server's view distance as for any entity. The proxy stays until the real
+  carriage appears.
 
 ## 6. Server to client
 
@@ -432,8 +438,13 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
 
 - **The pack has no Iris or Oculus** (V: `pack/mods`), so the built-in shader applies: material is ignored,
   light is the lightmap, colour is what we pick.
-- **With Iris and a DH-aware shader pack**, the pack's own program can replace DH's for generic objects. See
-  section 9 for what is known about shader packs and generic objects.
+- **With Iris and a DH-aware shader pack** (read from Iris source, `iris/compat/dh/`, branch
+  `multiloader-new`): Iris binds the generic render events and swaps in the pack's `dh_generic` program, or
+  its `dh_terrain` program when the pack has no `dh_generic`. Complementary Reimagined and Photon ship only
+  `dh_terrain` and `dh_water`, so boxes would be shaded like far terrain. Iris cancels only groups named
+  "Clouds", and only when the pack asks; our groups are never filtered. Under a shader pack the material
+  byte matters (ILLUMINATED for fire, so it can glow), and whether the pack honours our per-group light
+  and alpha is U. Iris 1.11.2 and older were marked incompatible with DH on 2026-09-28.
 - **Generic rendering off** (`IDhApiGenericRenderingConfig.renderingEnabled()` false): nothing draws. The
   plugin does not subscribe and writes one line in the log and its config screen. It does not flip the
   setting for the player.
@@ -445,21 +456,82 @@ in render distance. **Proxies draw only what moves or burns, and only where vani
 
 ## 9. Prior art, and which DH to target
 
-PENDING: web agent findings.
+### 9.1 Who else draws moving things in DH
+
+- **LOD Entity Rendering** (Steveplays; https://modrinth.com/mod/lodentityrendering,
+  https://github.com/steves-underwater-paradise/lodentityrendering; LGPL-3.0; MC 1.20.1 only, last update
+  2024-12-31, built on API 4.0.0). The only confirmed user of the box API. It draws every server entity as one
+  `createForSingleBox` box in the average colour of its texture, and moves it with `setOriginBlockPos`. The
+  server sends every entity's position to every player every tick, with no distance limit and no throttle,
+  and it finds the register through `worldProxy.getSinglePlayerLevel()`, which the Javadoc says is null in
+  multiplayer. **Lessons:** moving boxes work; filter and throttle on the server; get the register from the
+  render parameter or the level load event, never from the single-player level.
+- **SeeU** (https://modrinth.com/mod/seeu, https://github.com/cat4blep/SeeU; MC 1.21 and newer; own licence)
+  and **SeeU Extra** (https://modrinth.com/mod/seeu-extra; MIT) show far players and chosen entities as
+  client-side stand-ins with their own server sender. DH is only the terrain under them; use of the box API
+  is U.
+- **Separate Sable Render Distance, SSRD** (https://modrinth.com/mod/ssrd; 1.21.1 NeoForge; All Rights
+  Reserved). The only mod found that shows Sable ships far out. It does not draw boxes: it mixes into Sable,
+  Sodium and entity tracking to stretch Sable's own range, and patches DH's depth. DH 3.3.2's switch to
+  reverse-Z depth broke SSRD 1.8.6 and older. **Lesson:** stretching real tracking sends full ship data to
+  far players; a silhouette is far cheaper (section 4.3). Not in the pack.
+- **Valkyrien Skies issue 1300** (https://github.com/ValkyrienSkies/Valkyrien-Skies-2/issues/1300, open, no
+  replies) proposes ship bounding boxes as a `RenderableBoxGroup`, the idea of section 4.3. It also notes that
+  near the edge of vanilla range, LODs can cover vanilla objects when no shader pack is on. That is a seam to
+  watch in the hand-over (section 5, U).
+- **Not found:** any mod drawing Create trains, windmills or dragons through DH. Nothing to reuse beyond the
+  API itself.
+- **The API example:** https://gitlab.com/distant-horizons-team/distant-horizons-api-example (MIT; API
+  4.0.0, dated). `GenericRendering.registerForLevel` runs from a `DhApiLevelLoadEvent` handler; it builds
+  boxes, sets light, adds groups, and animates through `setPreRenderFunc` with `setOriginBlockPos`. It
+  matches section 3. Which threads may call `add` and `remove` is not documented (U); doing it on the render
+  thread inside the controller is safe by construction.
+
+### 9.2 API changes since 3.3.1, and the version to target
+
+| API | Shipped in | Change that matters here |
+|---|---|---|
+| 3.0.0 | DH 2.2.0 (2024-08) | the box API, the generic-rendering config and events |
+| 4.0.0 | 2025-03 | level load and unload events |
+| 4.1.0 | 2025-10 | `remove(obj)` and `remove(index)` on groups |
+| 5.1.0 | 2025-12 | `DhApiRenderParam.clientLevelWrapper` |
+| 7.1.0 | DH 3.3.0 and 3.3.1 (2026-09) | texture config; **this pack** |
+| 7.2.0 | DH 3.3.2 and 3.3.3 (2026-09) | depth direction and range getters (reverse-Z depth) |
+| 7.3.0 | unreleased main (3.3.5-dev) | hot-swappable render definitions, `getRenderBoxList()` |
+
+Sources: https://api.modrinth.com/v2/project/distanthorizonsapi/version and the Javadoc at
+https://distant-horizons-team.gitlab.io/distant-horizons/.
+
+- **No version adds rotation, textures or per-box transforms**, including unreleased 7.3.0. Flipbooks stay the
+  answer.
+- **Nothing we need is newer than 5.1.0.** The plugin can compile against the pack's 3.3.1 jar.
+- **For 1.21.1, the only DH after 3.3.1 is 3.3.3** (2026-09-29; 3.3.4 is MC 26.3 only). It fixes the Chunky
+  trap (section 10). It also brings 3.3.2's reverse-Z depth, which does not touch the box API (the shader
+  gets DH's matrices), and it bumps DH's config version, which resets DH's config file. The pack ships no DH
+  config, so nothing is lost.
+- **Recommendation: move the pack to DH 3.3.3** and declare `[3.3.1,)` in `mic_rtsim_dh`. Whether 3.3.3
+  breaks any other mod in the pack is U until it is tried.
 
 ## 10. The Chunky trap
 
-- **What happens (from a 2026-10-20 investigation of DH's code):** DH 3.3.2 and older, at client start, set
-  `generatorPlan = DISABLED` whenever `org.popcraft.chunky.api.ChunkyAPI` is on the class path, and log
-  "Partially Incompatible Distant Horizons mod detected: [Chunky]". The config file and screen still show the
-  old plan. The client then asks for no far terrain, in single player or from a server. DH 3.3.3 only pauses
-  generation while Chunky is generating.
+- **What happens (V, DH source at tags 3.3.0 to 3.3.2, `common/.../AbstractModInitializer.java`,
+  `logIncompatibilityWarnings`, called only from `onInitializeClient()`):** if
+  `Class.forName("org.popcraft.chunky.api.ChunkyAPI")` succeeds, DH sets `generatorPlan` to `DISABLED` and
+  `disableUnchangedChunkCheck` to true on its API layer, and logs "Partially Incompatible Distant Horizons mod
+  detected: [Chunky]". The config file and screen still show the old plan. The client then asks for no far
+  terrain, in single player or from a server. A dedicated server with Chunky is untouched. LODs from chunks
+  the client itself loads probably still build (U).
+- **The fix:** DH 3.3.3, changelog "Only disable DH world gen when Chunky world gen is active"
+  (`AbstractChunkyAccessor` listens to Chunky's progress event and re-enables after 2 s of silence). Sources:
+  https://gitlab.com/distant-horizons-team/distant-horizons/-/blob/3.3.2/common/src/main/java/com/seibel/distanthorizons/common/AbstractModInitializer.java,
+  https://gitlab.com/distant-horizons-team/distant-horizons-core/-/commit/ff7d366f,
+  https://gitlab.com/distant-horizons-team/distant-horizons/-/issues/1072.
 - **This pack:** DH 3.3.1 and Chunky 1.4.23, both `side = "both"` (V: `pack/mods/distanthorizons.pw.toml`,
   `pack/mods/chunky.pw.toml`). So every client has Chunky, and far terrain is probably missing for everyone
   except where they have walked (U for this exact pack; the mechanism is V).
 - **Why it matters here:** a far view of trains and dragons over a void is worse than no far view.
-- **Fixes, either works:** Chunky `side = "server"` (it is a pregeneration tool; single-player worlds lose
-  `/chunky`), or DH 3.3.3 or newer. See decision 3.
+- **Fixes, either works:** DH 3.3.3 (section 9.2), or Chunky `side = "server"` (it is a pregeneration tool;
+  single-player worlds would lose `/chunky`). See decision 3.
 
 ## 11. Reuse versus custom
 
@@ -492,11 +564,11 @@ You stand on your base's roof at dusk with vanilla render distance 12 and DH at 
   peak where you know a lair is. It folds up there. At night it is a dark lump against the stars.
 - **South, toward the village,** a column of dark puffs starts to rise, with orange specks glowing under it.
   A raid has just resolved there. The specks flicker for a while and go out; the smoke thins later. When you
-  ride down, the market is poorer and the villagers fewer, but no house is burned (unless decision 4 says
+  ride down, the market is poorer, but no house is burned (unless decision 4 says
   otherwise).
 - **West, 1,500 blocks away,** your friend's airship lifts off their base: a blocky silhouette that slides
-  across the sky and turns in steps. When it comes within 320 blocks it becomes the real ship, without a
-  jump.
+  across the sky and turns in steps. When it comes within 320 blocks the real ship takes its place, ideally
+  without a visible jump.
 - **Later, when your own district is raided while you are away,** you see the smoke from your roof at the
   other base. When you go there, the broken machines are already missing, because the chunk's reconcile ran
   when you arrived.
@@ -505,7 +577,7 @@ You stand on your base's roof at dusk with vanilla render distance 12 and DH at 
 
 Each phase ends with something you can look at in game.
 
-0. **Far terrain first.** Apply decision 3 (Chunky server-only, or a newer DH) and check that a client sees
+0. **Far terrain first.** Apply decision 3 (DH 3.3.3, or Chunky server-only) and check that a client sees
    far terrain in multiplayer. Without it nothing below looks right.
 1. **Trains, first visible slice.** Builds:
    - in core, the client-side far-object registry (no DH, no Create);
@@ -537,10 +609,11 @@ Each phase ends with something you can look at in game.
 | **DH API:** factory, group and box methods; one-colon name rule; defaults; register only on client levels (`DhServerLevel` returns null); groups closed with the level | Exact frame cost per group and per box on a weak PC |
 | **DH shader:** no rotation; material unused; light from the lightmap per group; alpha kept, blending on | Whether translucent boxes look right (depth writes, draw order) |
 | **DH renderer:** pre-render runs before the active check; no culling; near plane at most 7.5 blocks; skipped on macOS; config switch | That vanilla geometry hides a near proxy (reasoned from draw order and the beacon culler) |
-| **Create:** `TrainMapSync` packet contents, rates, requester cache, client map, no config gate; windmill bearing accessors | Create's carriage entity tracking range; the contraption block-map accessor |
+| **Create:** `TrainMapSync` packet contents, rates, requester cache, client map, no config gate; windmill bearing and contraption accessors; carriage tracking 15 chunks, bearing contraption 20 | That carriage proxies meet the real carriage without a visible jump |
 | **Sable:** 320-block tracking default, sync packets, `HoldingSubLevel` freeze | Accessors for a held ship's pose and bounds; whether plot chunks appear in DH terrain |
 | **Sim:** dragon legs and constants; conflict events and damage; no fire placed; ship timetables; glass box solution not exported | Ice and Fire draw size per stage; whether train raid records carry a position |
-| **Pack:** DH 3.3.1 and Chunky both `side = "both"`; no Iris; no Sable config | That this pack's clients really have no far terrain today |
+| **Iris source:** generic program swap, `dh_terrain` fallback, only "Clouds" cancelled | How a given shader pack lights and blends our boxes |
+| **Pack:** DH 3.3.1 and Chunky both `side = "both"`; no Iris, no SSRD; no Sable config. **DH source:** the Chunky disable at 3.3.0 to 3.3.2 and its 3.3.3 fix | That this pack's clients really have no far terrain today |
 
 ## 15. For Ben
 
@@ -557,9 +630,10 @@ Each phase ends with something you can look at in game.
    you could not see from there." Under that reading windmills may stop when the sim says their machines
    were destroyed. Alternative: windmills always spin at their last real speed, and only war events (which
    you asked for by name) show sim state. *A design rule you wrote, so yours.*
-3. **Give clients far terrain (the Chunky trap).** Recommended: Chunky `side = "server"` in the pack now, and
-   move DH to 3.3.3 or newer when it has been tried in the pack. Alternative: the DH update alone. *Changes
-   what players download, so yours; easy to undo.*
+3. **Give clients far terrain (the Chunky trap).** Recommended: move the pack to DH 3.3.3, the only newer
+   1.21.1 build, which fixes the trap at its source and keeps `/chunky` in single player (section 9.2).
+   Alternative: keep DH 3.3.1 and make Chunky `side = "server"`. *Changes what players download, so yours;
+   easy to undo.*
 4. **Do raids leave scars?** Recommended: no. Smoke and fire are shown while and after a raid resolves; the
    only lasting marks stay what the reconcile does now (machines broken, stores taken), and villages show
    none. Alternative: the reconcile also swaps some surface blocks of a raided district or village for burnt
@@ -576,7 +650,10 @@ Each phase ends with something you can look at in game.
 - **Rotation by flipbooks and heading re-cuts,** not by overriding DH's shader.
 - **Hand-over:** entity presence first, loaded chunks second, with a slow sweep like DH's beacons.
 - **One controller per level** in `DhApiBeforeGenericRenderSetupEvent`; groups carry no lambdas.
-- **Compile against the pack's DH 3.3.1 jar** (API 7.1.0); declare 3.3.1 and newer.
+- **Compile against the pack's DH 3.3.1 jar** (API 7.1.0; nothing we use is newer than 5.1.0); declare
+  3.3.1 and newer.
+- **Get the register from `DhApiRenderParam.clientLevelWrapper`** in the controller, not from
+  `getSinglePlayerLevel()`, which LOD Entity Rendering uses and which is null in multiplayer.
 - **Tier numbers** in section 7 are estimates to be replaced by phase 1 measurements.
 - **NPC ships are not drawn** until P8 gives them bodies.
 - **Windmills spin at the last real speed** until decision 2.
