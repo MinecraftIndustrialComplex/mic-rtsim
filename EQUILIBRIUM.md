@@ -531,11 +531,14 @@ for it). §2.6 lists exactly what MOWZIE.md must change to match.
 - **Umvuthana grove:** K = the census count at first load (5 to 9). Warriors refill one at a time,
   each after `min(96, 6 x 2^P)` days, with `P += killed/K`; from the grove's edge farthest from any
   player when loaded (WalkIn), or at the next load (OnLoad).
-- **The Umvuthi (Heir):** after the later of MOWZIE's cowed time and `min(192, 24 x 2^P_chief)` days,
-  one warrior takes up the mask: at the next unwatched load the plugin removes one warrior body and
-  places the Umvuthi at the fire pit, as MOWZIE §4.6 already places a new chief (finalized as a
-  structure spawn, restricted to the pit). The grove's count falls by one. A grove with no warrior
-  waits for one first.
+- **The Umvuthi (Heir):** after the later of MOWZIE's cowed time and `min(192, 6 x 2^P_chief)` days
+  (MZ-14 (a), Ben, 2026-10-21: the Frostmaw's base of 6, EQ-4 (b)), one warrior takes up the mask: at
+  the next unwatched load the plugin removes one warrior body and places the Umvuthi on its throne, 18
+  blocks from the fire pit (`UmvuthanaGrovePieces.java:276-288`), at the throne spot and direction the
+  census recorded, as MOWZIE §4.6 already places a new chief (finalized as a structure spawn,
+  restricted to the throne spot). The grove's count falls by one. A grove with no warrior waits for
+  one first. The heir comes 12 days after a first kill, and a grove farmed without pause gives about
+  1.8 Sol Visages a game year, the den's rate (MOWZIE.md, "Loot supply").
 - **Raptors:** MOWZIE's raptor packs take a district's vanilla animals (owed hunts, MZ-8) and a
   village's livestock goods (plunder), never the sim's herds. Vanilla animals are outside the sim (Y20)
   and goods are the market's, so the herd balance needs nothing from them. If a later plan lets parties
@@ -637,10 +640,11 @@ the dead left behind, the living away and the rest, which item 11 builds on.
    days) becomes one warrior at a time, each after `min(96, 6 x 2^P)` days, `P += killed/K`. War-party
    losses refill by the same rule (it is one pool).
 3. **§4.5, §4.6 and §4.10, the Umvuthi:** "6 days, scaled by boldness, after the cowed time" becomes an
-   Heir: after the later of the cowed time and `min(192, 24 x 2^P_chief)` days, a warrior of the grove
-   takes up the mask. §4.6's placement stays (HOME_SPAWN with the chief flag at the first unwatched
-   load, at the fire pit, finalized as a structure spawn) and gains one thing: at that load the plugin
-   removes one warrior body, and the grove's count falls by one. None while the grove has no warrior.
+   Heir: after the later of the cowed time and `min(192, 6 x 2^P_chief)` days (MZ-14 (a), Ben,
+   2026-10-21), a warrior of the grove takes up the mask. §4.6's placement stays (HOME_SPAWN with the
+   chief flag at the first unwatched load, on its throne at the throne spot, 18 blocks from the fire
+   pit, finalized as a structure spawn) and gains one thing: at that load the plugin removes one
+   warrior body, and the grove's count falls by one. None while the grove has no warrior.
 4. **Every place that states the six-day refill or the fractional pool:** ledger 6 (the pool refilling
    while pool plus away is under the cap), §4.2's body bullet ("ready six days later"), walkthrough A
    step 8 ("Six days later a new Frostmaw", "Killing buys a week"), walkthrough D (the pool at 0.4 on
@@ -673,8 +677,9 @@ the dead left behind, the living away and the rest, which item 11 builds on.
     still away or has died since"), clamped to the bodies the census finds (a world that ran without
     rtsim may have lost them already).
 12. **§4.10 item 5 and §7, tests:** `sim mowzie` reports in the `sim census` format (§4, slice S1), and
-    the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, at most
-    1.1 a year), and the GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`,
+    the plan adds `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form` (60 years, about
+    1.8 a year: §3.3's 1.79 closed form, the figure MOWZIE.md's "Loot supply" states for a den and,
+    under MZ-14 (a), for a grove's Sol Visages), and the GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`,
     `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss` and
     `anUmvuthiHeirTakesAWarrior`.
 13. **§4.10's "what this plan needs" list** is answered: caps (1 per den, the census per grove, no

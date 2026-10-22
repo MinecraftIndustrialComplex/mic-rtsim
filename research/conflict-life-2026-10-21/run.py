@@ -2,13 +2,14 @@
 """Runs the conflict-life model over many seeded worlds and writes results/results.json,
 results/stories.md and results/summary.md.
 
-    nice -n 10 python3 run.py --jobs 4            # everything, about 10 minutes
+    nice -n 10 python3 run.py --jobs 4            # everything, about 5 minutes on 4 jobs
     nice -n 10 python3 run.py --quick             # 8 seeds, 20 years
 
 Metrics (CONFLICT-LIFE.md section 3):
-  fights per world-year     war parties that fight: raids, invasions, bands, ambushes, plunders
+  fights per world-year     war parties that fight: raids, invasions, bands, ambushes, plunders,
+                            skirmishes
   losing raids              share of those fights the attacker lost, and lost fights per world-year
-  extinction                a camp held at one member or none for 96 days or more
+  extinction                a camp held at one member or none for 96 days running
   runaway                   an endless war: one pair of factions (either way round) fighting with no
                             96-day gap for five years running; or a surge: a world whose last decade
                             has more than twice the fights of its second
@@ -225,38 +226,48 @@ def one(args):
     return st
 
 
+KEEP = set(FIGHT) | {"demand", "succession", "dragon", "killed", "robbed", "fight", "truce", "arrive", "hunted",
+                     "ground_lost", "hunt", "warn", "clash", "guards"}
+
+
 def stories(name, mode, seed, days, limit=40):
     sc = scenarios(days)[name]
     w = model.World(sc, mode, seed).run()
     lines = []
-    seasons = ("spring", "summer", "autumn", "winter")
-    keep = set(FIGHT) | {"demand", "succession", "dragon", "killed", "robbed", "fight", "truce", "arrive", "hunted",
-                         "ground_lost", "hunt", "warn", "clash"}
     for e in w.events:
-        if e["act"] not in keep:
+        txt = fmt(w, e)
+        if txt is None:
             continue
-        y, d = divmod(e["t"], YEAR)
-        f = w.factions[e["f"]]
-        head = f"Y{y + 1} d{d + 1} ({seasons[d // 24]}) {f.name}"
-        x = w.tname(e["tgt"]) if e["tgt"] else ""
-        a = e["act"]
-        if a in FIGHT:
-            res = "won" if e.get("win") else "lost"
-            txt = f"{head}: {a} on {x} by {e.get('size', 0):.0f} ({e.get('speaker', '')}); {res}, {e.get('dead', 0):.0f} dead"
-            if e.get("loot"):
-                txt += f", {e['loot']:.0f} taken"
-            txt += f". Why: {e['reason']}."
-        elif a == "demand":
-            ans = "paid" if e.get("paid") else ("killed the envoy" if e.get("envoy_killed") else "refused")
-            txt = f"{head}: envoy to {x} asking {e['T']:.0f} ({e.get('speaker', '')}); {ans}. Why: {e['reason']}."
-        elif a == "truce":
-            txt = f"{head}: {e['reason']}; {'accepted' if e.get('accepted') else 'rejected'}."
-        else:
-            txt = f"{head}: {e['reason']}."
         lines.append(txt)
         if len(lines) >= limit:
             break
     return lines
+
+
+def fmt(w, e):
+    """One event as a line of story, or None for the kinds a story leaves out."""
+    seasons = ("spring", "summer", "autumn", "winter")
+    if e["act"] not in KEEP:
+        return None
+    y, d = divmod(int(e["t"]), YEAR)
+    f = w.factions[e["f"]]
+    head = f"Y{y + 1} d{d + 1} ({seasons[d // 24]}) {f.name}"
+    x = w.tname(e["tgt"]) if e["tgt"] else ""
+    a = e["act"]
+    if a in FIGHT:
+        res = "won" if e.get("win") else "lost"
+        txt = f"{head}: {a} on {x} by {e.get('size', 0):.0f} ({e.get('speaker', '')}); {res}, {e.get('dead', 0):.0f} dead"
+        if e.get("loot"):
+            txt += f", {e['loot']:.0f} taken"
+        txt += f". Why: {e['reason']}."
+    elif a == "demand":
+        ans = "paid" if e.get("paid") else ("killed the envoy" if e.get("envoy_killed") else "refused")
+        txt = f"{head}: envoy to {x} asking {e['T']:.0f} ({e.get('speaker', '')}); {ans}. Why: {e['reason']}."
+    elif a == "truce":
+        txt = f"{head}: {e['reason']}; {'accepted' if e.get('accepted') else 'rejected'}."
+    else:
+        txt = f"{head}: {e['reason']}."
+    return txt
 
 
 # ------------------------------------------------------------------------------------------ summaries
