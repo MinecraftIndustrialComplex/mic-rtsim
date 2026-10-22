@@ -26,6 +26,7 @@ use rtsim_ecology::infra::{
     DistrictIndex, DistrictSignals, DistrictSite, IndustryLink, Infrastructure, NoInfrastructure,
     RaidOutcome,
 };
+use rtsim_ecology::oil::Near;
 use rtsim_ecology::prey::Item;
 use rtsim_ecology::species::{Gender, Species};
 use rtsim_ecology::synth::{self, FakeIaf, Reaction};
@@ -118,6 +119,9 @@ fn materializations(cmds: &[Cmd]) -> Vec<boundary::Materialize> {
 #[derive(Clone, Default)]
 struct Tanks {
     sites: Vec<DistrictSite>,
+    /// Each site's chunks, for the fields' watch (OGC52); a site with none is one chunk at its
+    /// position.
+    chunks: Vec<Vec<(i32, i32)>>,
     signals: DistrictSignals,
     raids: Vec<(DistrictId, f64, i64)>,
 }
@@ -134,6 +138,7 @@ impl Tanks {
                     loaded: watched,
                 })
                 .collect(),
+            chunks: Vec::new(),
             signals,
             raids: Vec::new(),
         }
@@ -150,6 +155,30 @@ impl Infrastructure for Tanks {
                 s.pos.frame == frame && dx * dx + dz * dz <= r * r
             })
             .collect()
+    }
+
+    fn districts_where(
+        &mut self,
+        near: &mut dyn FnMut(u16, i64, i64) -> Option<Near>,
+    ) -> Vec<(DistrictSite, Near)> {
+        let mut out = Vec::new();
+        for (i, s) in self.sites.iter().enumerate() {
+            let points: Vec<(i32, i32)> = match self.chunks.get(i) {
+                Some(c) if !c.is_empty() => {
+                    c.iter().map(|&(x, z)| (x * 16 + 8, z * 16 + 8)).collect()
+                }
+                _ => vec![(s.pos.x, s.pos.z)],
+            };
+            for (x, z) in points {
+                if let Some(n) = near(s.pos.frame, i64::from(x), i64::from(z)) {
+                    let mut site = *s;
+                    site.pos = Pos::new(s.pos.frame, x, z);
+                    out.push((site, n));
+                    break;
+                }
+            }
+        }
+        out
     }
 
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
@@ -309,8 +338,54 @@ fn a_drilling_district_draws_a_grudge_raid() {
     assert!(worst <= d.tun.grudge_below, "sentiment {worst}");
 }
 
-/// A watched district's tanks draw a low dragon that arrives unseen in person, carrying its
-/// reserve, the day it is first sensed. The player stands south-west of the district: within two
+/// A watched district with no player near (the oil audit's F9, OGC57): the grudge raid resolves
+/// through the threat interface as an unwatched one does, and nobody is there to meet, so the
+/// dragon does not come in person and the raid burns its oil as any abstract raid does.
+#[test]
+fn a_watched_district_with_nobody_near_is_raided_abstractly() {
+    let (mut w, _) = synth::world(13);
+    let mut d = Dragons::new(13, quick_oil(300), Tick::ZERO);
+    d.log_enabled = true;
+    let l = fire_lair(&mut w, &mut d, 4, 1800, 2500);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), Tick(0));
+    d.ingest(&mut w, &mut NoInfrastructure, &field(21, 81, 3), Tick(0));
+    let mut tanks = Tanks::at(
+        &[(7, 310, 1300, true)],
+        DistrictSignals {
+            oil_sample: true,
+            polluted: true,
+            fuel_mb: 0,
+        },
+    );
+    let mut cmds = Vec::new();
+    let mut t = Tick(0);
+    while t.0 < 8 * TICKS_PER_DAY {
+        t += 500;
+        d.run_until(&mut w, &mut tanks, t);
+        cmds.extend(d.take_commands());
+    }
+    let s = d.stats;
+    assert!(s.district_target_raids >= 1, "{s:?}");
+    assert!(!tanks.raids.is_empty());
+    assert!(tanks.raids.iter().all(|r| r.0 == DistrictId(7)));
+    assert!(
+        materializations(&cmds)
+            .iter()
+            .all(|m| dragon_of(m.agent) != Some(x)),
+        "nobody to meet: it never came in person"
+    );
+    assert!(
+        d.log
+            .iter()
+            .any(|e| e.kind == "raid" && e.what.contains("watched, nobody near: abstract only")),
+        "the raid was booked abstractly"
+    );
+    d.check(&w, None).unwrap();
+}
+
+/// A watched district's tanks draw a low dragon that arrives unseen in person the day it is first
+/// sensed. Since the oil audit's F9 (choices-oilgate.md OGC56, OGC57) the tanks are raided in
+/// sight as it arrives: it drinks, and comes with what it drank. The player stands south-west of the district: within two
 /// view radii (320 blocks) of it, but beyond view (160) of the field's north-east chunk (376,
 /// 1336), where the dragon from the north-east lands. The player lives there (P26's home
 /// counter), so the Encroachment is theirs too: the dragon comes hostile, at them.
@@ -343,7 +418,7 @@ fn a_watched_tank_draws_the_dragon_in_person() {
         .collect();
     let m = ms.first().expect("it came to the tanks in person");
     assert!(m.flags & boundary::MAT_OIL != 0, "{m:?}");
-    assert!(m.oil <= d.tun.oil.refuel_below, "low: {}", m.oil);
+    assert!(m.oil > d.tun.oil.refuel_below, "it drank first: {}", m.oil);
     assert!(
         (m.pos.0 - 310.0).abs() < 1.0 && (m.pos.2 - 1300.0).abs() < 1.0,
         "at the tanks: {:?}",
@@ -352,8 +427,236 @@ fn a_watched_tank_draws_the_dragon_in_person() {
     assert_eq!(d.stats.encroachments, 1);
     assert!(m.flags & boundary::MAT_HOSTILE != 0, "{m:?}");
     assert_eq!(m.target_player, PLAYER);
-    // In person, nothing was raided abstractly.
-    assert!(tanks.raids.is_empty(), "{:?}", tanks.raids);
+    // One raid, in sight, at the tanks; it drank from them.
+    assert_eq!(tanks.raids.len(), 1, "{:?}", tanks.raids);
+    assert_eq!(tanks.raids[0].0, DistrictId(7));
+    assert!(d.stats.oil_drunk_mb > 0, "{:?}", d.stats);
+}
+
+// ---- The oil audit's F2: the field watches its own ground (OGC52, OGC53) ----------------------
+
+/// A field 70 chunks long by 3 wide from chunk (0, 0): blocks 0 to 1,119 east, 0 to 47 south.
+fn long_field() -> Obs {
+    Obs::OilChunks(OilChunks {
+        dimension: 0,
+        source: boundary::OIL_SOURCE_DEEP_TIME,
+        chunks: (0..70)
+            .flat_map(|cx| (0..3).map(move |cz| (cx, cz)))
+            .map(|(cx, cz)| OilChunkRec {
+                cx,
+                cz,
+                amount: 1,
+                flags: 0,
+            })
+            .collect(),
+    })
+}
+
+/// Runs the long field with its fire lair at (`lair_x`, 24) and a dragon that never runs low: a
+/// district starts drilling at the field's east end half a day in. Returns the Encroachments at
+/// each half day to a day and a half, the refuels, and where the dragon would drink.
+fn watched_ground(lair_x: i32) -> (Vec<u64>, u64, Option<Near>) {
+    let (mut w, _) = synth::world(21);
+    let mut d = Dragons::new(21, quick_oil(1 << 40), Tick::ZERO);
+    let l = fire_lair(&mut w, &mut d, 4, lair_x, 24);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), Tick(0));
+    d.ingest(&mut w, &mut NoInfrastructure, &long_field(), Tick(0));
+    assert!(d.oil_gated(x));
+    let drink = d.oil.near(
+        rtsim_space::topology::all_flat().of(0),
+        0,
+        i64::from(lair_x),
+        24,
+        i64::from(d.tun.oil.lair_reach) * 4,
+    );
+    let mut tanks = Tanks::default();
+    tanks.signals = DistrictSignals {
+        oil_sample: true,
+        polluted: false,
+        fuel_mb: 0,
+    };
+    let mut by_half_day = Vec::new();
+    let mut t = Tick(0);
+    for half in 1..=3u64 {
+        if half == 2 {
+            // A pumpjack at the east end: its chunks lie on the field's last few chunks.
+            tanks.sites.push(DistrictSite {
+                id: DistrictId(9),
+                pos: Pos::new(0, 1_080, 24),
+                watched: false,
+                loaded: false,
+            });
+            tanks.chunks.push(vec![(66, 1), (67, 1), (68, 1)]);
+        }
+        while t.0 < half * TICKS_PER_DAY / 2 {
+            t += 500;
+            d.run_until(&mut w, &mut tanks, t);
+        }
+        by_half_day.push(d.stats.encroachments);
+    }
+    d.check(&w, None).unwrap();
+    (by_half_day, d.stats.refuels, drink)
+}
+
+/// The oil audit's F2 test: a drilling district 1,000 blocks from where the field's dragon drinks,
+/// but on the field, is sensed within a day of starting, with no flight; with no fire lair in
+/// reach of its part of the field, nobody senses it.
+#[test]
+fn a_district_drilling_far_along_the_field_is_sensed_within_a_day() {
+    let (seen, refuels, drink) = watched_ground(-300);
+    let drink = drink.expect("the lair drinks at the field's west end");
+    assert!(
+        f64::from(1_080 - drink.x).hypot(f64::from(24 - drink.z)) >= 1_000.0,
+        "the district is 1,000 blocks from the drink spot: {drink:?}"
+    );
+    assert_eq!(refuels, 0, "no flight to the field");
+    assert_eq!(seen[0], 0, "nothing drills before half a day");
+    assert_eq!(seen[2], 1, "sensed once within a day of drilling: {seen:?}");
+    // The lair 2,000 blocks west of the field: out of reach of the district's end of it.
+    let (seen, _, _) = watched_ground(-2_000);
+    assert_eq!(seen[2], 0, "no fire lair in reach, nobody: {seen:?}");
+}
+
+// ---- The oil audit's F7: the dragons name the builders (OGC54, OGC55) --------------------------
+
+/// The oil audit's F7 test, through the industry engine: a pumpjack district at the long field's
+/// east end, built by a player who lives 5,000 blocks away. When the field's lair is first manned
+/// (day 11), its dragon's watch names that builder, and the grudge is theirs. A builder whose last
+/// edit is older than `grudge_window_days`, and a player who lives as far away and never built
+/// there, are not named.
+#[test]
+fn a_far_away_builder_of_a_drilling_district_gets_the_grudge() {
+    use rtsim_industry::ids::{BlockPos, ChunkPos};
+    use rtsim_industry::obs::{
+        DepositPluginId, DepositSample, DistrictDecl, EditKind, Obs as IObs, SweepEnd, Timed,
+    };
+    const BUILDER: (u64, u64) = (7, 8);
+    const OLD: (u64, u64) = (9, 10);
+    const BYSTANDER: (u64, u64) = (11, 12);
+    let day = |n: u64| Tick(n * TICKS_PER_DAY);
+    let mut ind = rtsim_industry::engine::Engine::new(
+        21,
+        rtsim_industry::tunables::Tunables::default(),
+        Tick(0),
+    );
+    let pump = DistrictId(9);
+    let feed = |e: &mut rtsim_industry::engine::Engine, at: Tick, obs: IObs| {
+        e.ingest(&Timed { at, obs });
+    };
+    feed(
+        &mut ind,
+        Tick(0),
+        IObs::District(DistrictDecl {
+            district: pump,
+            revision: 1,
+            dim: 0,
+            name: 1,
+            not_learnable: None,
+            inventory_count: 0,
+        }),
+    );
+    feed(
+        &mut ind,
+        Tick(0),
+        IObs::DistrictChunks {
+            district: pump,
+            revision: 1,
+            part: 0,
+            chunks: vec![(66, 1), (67, 1), (68, 1)],
+        },
+    );
+    // Its pumpjack's deposit sample: the district drills.
+    feed(
+        &mut ind,
+        Tick(10),
+        IObs::DepositSample(DepositSample {
+            district: pump,
+            good: DIESEL,
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos {
+                dim: 0,
+                x: 67,
+                z: 1,
+            },
+            remaining: 100_000,
+            infinite: false,
+            sweep: 1,
+        }),
+    );
+    feed(
+        &mut ind,
+        Tick(10),
+        IObs::SweepEnd(SweepEnd {
+            district: pump,
+            sweep: 1,
+            records: 1,
+            inventories: 0,
+            live: false,
+            creative: false,
+            overstressed: false,
+        }),
+    );
+    let edit = |e: &mut rtsim_industry::engine::Engine, at: Tick, player| {
+        e.ingest(&Timed {
+            at,
+            obs: IObs::Edit {
+                district: pump,
+                kind: EditKind::Placed,
+                player,
+                pos: BlockPos {
+                    x: 1_075,
+                    y: 64,
+                    z: 24,
+                },
+            },
+        });
+    };
+    edit(&mut ind, Tick(100), OLD);
+
+    let (mut w, _) = synth::world(21);
+    let mut d = Dragons::new(21, quick_oil(1 << 40), Tick::ZERO);
+    d.ingest(&mut w, &mut NoInfrastructure, &long_field(), Tick(0));
+    let far = Pos::new(0, 5_000, 5_000);
+    let players = [BUILDER, OLD, BYSTANDER].map(|u| d.player(&mut w, u));
+    for &p in &players {
+        d.homes.add_stay(p, far, Tick(0), day(12));
+    }
+    let mut index = DistrictIndex::default();
+    let mut t = Tick(0);
+    let mut run = |d: &mut Dragons, w: &mut World, ind: &mut rtsim_industry::engine::Engine, to| {
+        while t < to {
+            t += 1_000;
+            let mut link = IndustryLink {
+                engine: ind,
+                index: &mut index,
+            };
+            d.run_until(w, &mut link, t);
+        }
+    };
+    // Ten days and more with no fire lair: nobody watches.
+    run(&mut d, &mut w, &mut ind, day(11));
+    assert_eq!(d.stats.encroachments, 0);
+    edit(&mut ind, day(11), BUILDER);
+    let l = fire_lair(&mut w, &mut d, 4, -300, 24);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), day(11));
+    run(&mut d, &mut w, &mut ind, day(12) + 1_000);
+    assert_eq!(d.stats.encroachments, 1, "{:?}", d.stats);
+    assert_eq!(d.stats.refuels, 0, "no flight to the field");
+    let me = d.dragon(x).unwrap().actor;
+    let [builder, old, bystander] = players;
+    let feel = |p| w.knowledge.sentiment(me, p, t);
+    assert!(
+        feel(builder) <= d.tun.grudge_below,
+        "the builder is named and hated: {}",
+        feel(builder)
+    );
+    assert_eq!(feel(old), 0, "an edit older than the window is forgotten");
+    assert_eq!(
+        feel(bystander),
+        0,
+        "living far away and not building is no offence"
+    );
+    d.check(&w, None).unwrap();
 }
 
 // ---- OG-13: the dry fight ----------------------------------------------------------------------

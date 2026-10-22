@@ -150,17 +150,20 @@ districts within `sense_reach` 400 blocks of it. The report's severity is (1 + 2
 has an oil sample + 1 if its fuel stock is at least `fuel_signal_mb` 1,000 + 1 if it pollutes)
 severity units, at most 255.
 The encroachers are the district's group actor and the players whose homes lie within the home
-radius of it.
+radius of it. Since the cheese audit: a district is near by any of its chunks (OGC50), the field
+watches its own ground once a day (OGC52, OGC53), and the district's recent builders are named too
+(OGC55).
 
 **OGC17. A grudge raids the district through the threat interface.** A dragon whose sentiment toward
 a district falls below `grudge_below` raids it as a District target: watched, a real fight there;
-unwatched, resolved by the industry engine (a drinking raid when the dragon is low).
+unwatched, resolved by the industry engine (a drinking raid when the dragon is low). Since OGC56 a
+watched district is resolved by the industry engine too, and the real fight comes on top.
 
 ## Saves and the bench
 
 **OGC23. New save magic, no migration.** The dragon pages are RTD4 and the dragons' meta RTN4 (RTD3 and RTN3 were the money sink's tribute, merged first), with
 the reserve, the visitor field and the oil index; nothing reads the old format (no backward
-compatibility before release).
+compatibility before release). Now RTD5 and RTN5 (OGC58).
 
 **OGC26. The `dragons_oil` scale sweep.** `bench scale --only dragons_oil`: the dragons sweep with a
 3 x 3 field per 8 villages known at t 0, under the same contracts (CPU per unit flat, heap slope
@@ -329,6 +332,101 @@ early, but both runs fail the same two measures. Field flights stay off (For Ben
 ticks; hover fire none. The dry fight: 15 points went in 31 ticks (15 events); for 300 ticks after,
 no fire got through and none hit the player; the first bite or claw came 301 ticks after the reserve
 ran out; the engine got 2 DRAGON_BREATHS records for the 15 breaths.
+
+## The audit's fixes: sensing, builders and watched raids (F2, F3, F7, F9)
+
+The oil cheese audit (`docs/oilgate-cheese-audit.md` §4) named the smallest set of fixes. These four
+are engine code in `rtsim-ecology` and `rtsim-industry`; F1, F4 and F5 are built apart (OGC60 and
+up).
+
+**OGC50. The chunk test (F3).** `Infrastructure::districts_reaching(frame, x, z, r)`: the districts
+with any chunk whose centre lies within `r` blocks of (x, z), each sited at its chunk centre nearest
+(x, z) (a tie, the lower chunk), in id order. `sense` uses it instead of the centre test
+(`districts_near`, kept as the trait's default and for callers that want centres). The industry
+link's `DistrictIndex` keeps a cell map of every district chunk beside the centres' map, and
+rebuilds both when the industry engine's `districts_rev` moves: a district declared, its chunks
+changed, or removed. Before, it rebuilt only when the number of districts changed, so a district
+that grew was looked up where it used to be. `districts_rev` is drawn from one counter for the
+whole process, starting at 1 and never saved, so an engine restored from a save never shares a
+value with an index built against another engine. Closes B2 and C3's joined districts. Unit tests
+(`infra.rs`): a well joined to a base 3,000 blocks away is sensed at the well's chunk; the index sees
+a district that grew.
+
+**OGC51. Raids find districts by chunk too.** Home raids (`raid_home`, within `HOME_RADIUS` 512
+blocks), District raids and `home_districts` use the chunk test as well. Joining a far well to a
+base no longer carries the base's centre out of reach of its owner's home raids, and a watched
+fight's site is the district's chunk nearest the home or the drink spot, where the dragon
+materializes.
+
+**OGC52. The fields' daily watch, one event for the world (F2).** One `Ev::OilWatch`, booked when
+the gate opens (OGC12) and then once a game day. It asks the infrastructure, district by district
+and chunk by chunk (`Infrastructure::districts_where`), for the first chunk centre within
+`sense_reach` 400 blocks of any oil chunk (`OilIndex::near`), and each such district is sensed
+through `sense_site`, as at a drink spot, with the severity and the once-a-day rule of OGC16. One
+event a day for every field, not one a field: the cost is one pass over the districts' chunks a day.
+The audit's other trigger, at once on a district's first deposit sample, is not built: the ecology
+engine sees no event for a deposit sample (it reads `oil_sample` as a signal), and the daily watch
+reaches a drilling district within a day. The event is saved (tag 16), so the dragons' format moves
+(OGC58). Unit test (`oilgate.rs`): a district drilling 1,000 blocks along a field from the drink
+spot is sensed within a day.
+
+**OGC53. Who watches.** Of the fire lairs within `lair_reach` 1,500 blocks of the oil chunk the
+district is nearest to (measured as OG-7's `check_lair` measures), the nearest with a live fire
+dragon in it (a tie, the lower lair); that lair's first such occupant senses the district. A vacant
+lair is passed over for the next in reach. No fire lair in reach, nobody senses it, until OG-7
+places one when a player comes near. The watch shares the dragon's once-a-day rule: a district its
+watcher sensed at a drink spot that day is not sensed again by the watch, and the other way round.
+No flight is booked; the dragon knows its ground.
+
+**OGC54. A district keeps its builders (F7).** The industry engine now keeps the player of each
+`IND_EDIT` on the district: `District::editors`, the last 8 (`EDITORS_KEPT`) distinct players with
+the tick of each one's latest edit, oldest first. Placed, Broken and Configured count; Command
+(`/rtsim district rename | merge | split | exclude`) does not, since an admin's command is not
+building. Saved with the district, so its page now starts with a magic, "IDS2" (OGC58).
+
+**OGC55. The builders are named.** `sense` names, besides the district and the players whose home
+is within `HOME_RADIUS` 512 blocks of the district's site (P26), the builders whose latest edit
+there falls within `grudge_window_days` (PLACEHOLDER 10) before the sensing, wherever they live.
+Each is registered as a player actor if new; a player named both ways gets one report. A remote
+well's builder then carries the grudge home: hunted at home and on sight. Unit test
+(`oilgate.rs`): a builder who lives far from a drilling district gets the grudge; a builder from
+before the window and a bystander do not.
+
+**OGC56. A watched raid books its bounded damage at once (F9, P28 as Ben decided it).** A dragon's
+raid on a watched district now also resolves through the threat interface, blocks and theft, under
+the same caps, cooldown and observed floor as an unwatched one, and the dragon materializes there
+for the real fight as before. Industry: `Engine::threat_in_sight`; the attack's note says
+"(watched, a real fight too)". `threat_drinking` still skips a watched district for its other
+callers (the industry's own pressure threats). Ecology: `Infrastructure::raid_in_sight`. Ice and
+Fire griefing stays off, so the real dragon breaks nothing; the bounded damage is the raid's.
+
+The audit wrote "after the real fight"; this resolves it at once, when the raid is decided, before
+the dragon materializes. Why:
+- It is deterministic, from the same inputs as an unwatched raid, so watched and unwatched agree
+  exactly (P28's own words) and the test can say so.
+- A real fight ends many ways: the dragon killed, driven off or left alone, the player gone, the
+  server stopped. Booking after it would need a saved pending raid and a hook for each ending.
+- The outcome already weighs the turrets and the floor of comparable observed fights; its passes
+  stand for the first strikes as the dragon arrives.
+
+Unit test (`dragons.rs`): a raid on a watched district books the same outcome and destroyed blocks
+as the same raid on it unwatched, and the dragon materializes.
+
+**OGC57. In person, the dragon's own costs are the real fight's.** When the dragon comes in person
+(a home raid on the hated player, always; a District raid or a refuel at the tanks, when a player
+was last seen within two view radii, 320 blocks), the raid neither burns its oil nor wounds it: the
+real breaths cost points (DRAGON_BREATHS) and the real blows wound it (DRAGON_HURT). Its theft,
+drink, ledger (eaten, burnt, hoarded), dry count and hunt record count as for an unwatched raid. A
+watched district with nobody near is raided through `raid_in_sight` too (the industry engine would
+skip it otherwise); no fight follows, so it burns and wounds as any abstract raid. At the tanks a
+watched district still draws a low dragon once a day only (the day it is first sensed); that day it
+now drinks as it arrives and comes with what it drank. Tests (`oilgate.rs`, `review3.rs`): the
+watched tank, a watched district with nobody near, and a home raid that eats at both districts.
+
+**OGC58. Saves, no migration.** The dragon pages are RTD5 and the dragons' meta RTN5 (the daily
+watch's event); an industry district page starts with "IDS2" (its builders). Nothing reads the old
+formats (no backward compatibility before release). `rtsim-view`'s fixtures are regenerated from
+fresh GameTest runs.
 
 ## The seam for the underground half (OG-9b to OG-9d, not built)
 

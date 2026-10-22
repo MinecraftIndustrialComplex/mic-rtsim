@@ -44,8 +44,8 @@ use crate::ids::{
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    BlockFlags, Carriage, CarriageResult, Conditions, Direction, LoadState, NotLearnable, Obs,
-    PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
+    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -308,6 +308,16 @@ pub struct Engine {
     /// Districts declared while the tape was on that have no chunks yet: their "found" row waits
     /// for the first chunks, which give it a place. Not saved.
     undetected: BTreeSet<DistrictId>,
+    /// Changes whenever a district comes, goes or changes its chunks (the oil gate's
+    /// `DistrictIndex` rebuilds on it, choices-oilgate.md OGC50). Drawn from a process-wide
+    /// sequence, so no two engines, a restored one included, ever share a value. Not saved.
+    districts_rev: u64,
+}
+
+/// The next value of [`Engine::districts_rev`]; 0 is never handed out.
+fn next_districts_rev() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Engine {
@@ -353,7 +363,14 @@ impl Engine {
             sent_this_session: BTreeSet::new(),
             tape: Tape::new(),
             undetected: BTreeSet::new(),
+            districts_rev: next_districts_rev(),
         }
+    }
+
+    /// A value that changes whenever a district comes, goes or changes its chunks, and differs
+    /// between engines: a cache of district chunks is current while it matches.
+    pub fn districts_rev(&self) -> u64 {
+        self.districts_rev
     }
 
     fn note(&mut self, d: DistrictId, at: Tick, what: String) {
@@ -675,6 +692,8 @@ impl Engine {
                 }
             }
             Obs::District(decl) => {
+                // A new revision clears the chunks; the dimension may change.
+                self.districts_rev = next_districts_rev();
                 let dist = self
                     .districts
                     .entry(decl.district)
@@ -742,6 +761,7 @@ impl Engine {
                 let dist = self.district_mut(*district);
                 if dist.revision == *revision {
                     dist.chunks.extend(chunks.iter().copied());
+                    self.districts_rev = next_districts_rev();
                     self.detected(*district, at);
                 }
             }
@@ -776,14 +796,25 @@ impl Engine {
                 if self.districts.contains_key(district) {
                     self.stop_sim(*district, at);
                     self.districts.remove(district);
+                    self.districts_rev = next_districts_rev();
                 }
                 self.glass.remove(*district);
             }
-            Obs::Edit { district, .. } => {
+            Obs::Edit {
+                district,
+                kind,
+                player,
+                ..
+            } => {
                 // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
                 // what its starvation episodes showed may no longer hold (I6). A replay of its
                 // unloaded part stops (I7: stale freezes).
                 let dist = self.district_mut(*district);
+                // A block placed or broken, or a machine configured, makes the player one of its
+                // builders (the oil gate's dragons name them, choices-oilgate.md OGC54).
+                if *kind != EditKind::Command {
+                    dist.note_editor(*player, at);
+                }
                 dist.learner.discard();
                 dist.learner.coupling.reset();
                 let went_stale = dist.phase == Phase::Learned;
@@ -914,6 +945,9 @@ impl Engine {
     }
 
     fn district_mut(&mut self, d: DistrictId) -> &mut District {
+        if !self.districts.contains_key(&d) {
+            self.districts_rev = next_districts_rev();
+        }
         self.districts.entry(d).or_insert_with(|| District::new(d))
     }
 
@@ -3042,7 +3076,7 @@ impl Engine {
             loads: None,
             at,
         };
-        self.attack_district(&t, &[], 0);
+        self.attack_district(&t, &[], 0, false);
         // The next one, for this class only (the stamp is shared, so reschedule all classes).
         self.schedule_pressure(d, at + 1);
     }
@@ -3080,16 +3114,28 @@ impl Engine {
     /// surviving share), from the district's boundary stock. What they take is theft like any
     /// other: it leaves the stock and enters `books.stolen` and the attack's report.
     pub fn threat_drinking(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+        self.threat_with(t, fuels, room, false);
+    }
+
+    /// An attack whose attackers the players also meet in person (P28 as Ben decided it, "bounded
+    /// damage too"; choices-oilgate.md OGC56): a watched district resolves abstractly as an
+    /// unwatched one does, blocks and theft under the same caps and cooldown, while the real
+    /// fight goes on. Otherwise [`Engine::threat_drinking`].
+    pub fn threat_in_sight(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+        self.threat_with(t, fuels, room, true);
+    }
+
+    fn threat_with(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let at = t.at.max(self.now);
         self.advance_to(at);
         let t = Threat { at, ..*t };
         match t.target {
-            ThreatTarget::District(_) => self.attack_district(&t, fuels, room),
+            ThreatTarget::District(_) => self.attack_district(&t, fuels, room, in_sight),
             ThreatTarget::Train(train) => self.attack_train(&t, train),
         }
     }
 
-    fn attack_district(&mut self, t: &Threat, fuels: &[Good], room: i64) {
+    fn attack_district(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let ThreatTarget::District(d) = t.target else {
             return;
         };
@@ -3111,8 +3157,10 @@ impl Engine {
             skipped: None,
         };
         // Watched fights are real (§13.1). Unwatched ones resolve abstractly, whether or not the
-        // chunks are loaded (C18).
-        if dist.watched {
+        // chunks are loaded (C18); so does a watched one whose attackers come in person too
+        // (`in_sight`, OGC56).
+        let watched = dist.watched;
+        if watched && !in_sight {
             report.skipped = Some("watched");
         } else if at < dist.defence.cooldown_until[t.class.index()] {
             report.skipped = Some("cooldown");
@@ -3268,10 +3316,15 @@ impl Engine {
             }
         }
         let what = format!(
-            "{:?} {:?} x{}: survived {:.2}{}{}, stole {}, destroyed {}{}",
+            "{:?} {:?} x{}{}: survived {:.2}{}{}, stole {}, destroyed {}{}",
             t.source,
             t.class,
             t.count,
+            if watched {
+                " (watched, a real fight too)"
+            } else {
+                ""
+            },
             outcome.survived,
             if outcome.untested {
                 " (untested defences)"
