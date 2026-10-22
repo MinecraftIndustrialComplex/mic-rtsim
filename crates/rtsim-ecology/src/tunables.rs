@@ -132,8 +132,8 @@ pub struct DragonTunables {
     pub fed_tau_days: f32,
     /// What the arrival gate reads for an empty lair (§2.4.1 and §3.4): the share of its need a
     /// newcomer would catch there, `W / (W + gate_half)`, where W is `gate_village` with a
-    /// village in the newcomer's territory (`gate_wild` without) plus `(N - R)^2 / K` for each
-    /// herd in it. TUNABLE, 300, 30 and 200 (the model's).
+    /// village in the nine regions around the lair (`gate_wild` without) plus `(N - R)^2 / K`
+    /// for each herd in them. TUNABLE, 300, 30 and 200 (the model's).
     pub gate_village: f64,
     pub gate_wild: f64,
     pub gate_half: f64,
