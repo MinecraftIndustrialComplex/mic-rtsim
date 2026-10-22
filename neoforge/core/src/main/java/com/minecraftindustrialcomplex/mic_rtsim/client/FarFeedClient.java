@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.client;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarPayloads;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarWire;
@@ -80,6 +81,11 @@ public final class FarFeedClient {
         return new long[]{messages, bytes, records, malformed};
     }
 
+    /** Times the flown legs were timed again to the server's clock (FarFeedReceiver#clock). */
+    public static long retimes() {
+        return RECEIVER.retimes;
+    }
+
     /** Objects the feed holds now. */
     public static int held() {
         return RECEIVER.held();
@@ -112,6 +118,7 @@ public final class FarFeedClient {
             forget();
             sentOn = conn;
         }
+        RECEIVER.clock(FarClock.ticks() - mc.level.getGameTime());
         if (!conn.hasChannel(FarPayloads.Subscribe.TYPE))
             return;
         Want target = merged();

@@ -114,4 +114,19 @@ class FarFeedReceiverTest {
                 new FarWire.Real(3, 9));
         assertNull(mover());
     }
+
+    @Test
+    void aLegKeepsToTheServersClockWhenItRunsSlow() {
+        long g0 = 5_000;
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 0, 0, 2, 0x808080),
+                new FarWire.Leg(0, FarState.FLY.wire, 100, 0, 0, 200, 0, g0, g0 + 200, 0));
+        // 100 client ticks pass while the server's clock, as vanilla syncs it, moves 80
+        advance(100);
+        receiver.clock(FarClock.ticks() - (g0 + 80));
+        assertEquals(1, receiver.retimes);
+        assertEquals(80.5, centreX(mover(), FarClock.ticks()), 1e-6, "where the server's clock has it");
+        // A wobble under two ticks does not time it again
+        receiver.clock(FarClock.ticks() - (g0 + 81));
+        assertEquals(1, receiver.retimes);
+    }
 }
