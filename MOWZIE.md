@@ -1951,13 +1951,15 @@ one body of a band that a client draws beyond 128 blocks (below).
   the edge, as members past the spawn quota do (CL-D35), and holds one chunk inside the edge until the
   band leaves its stop, so none stays out for the whole fight, and none is placed twice unless the
   player moves more than a chunk away. A pending stack is tested only when a chunk it waits on changes
-  or its place moves into another chunk (ledger 25). An envoy is one group: it spawns at one point. -
-  **The chief's stack** at every embodiment (ledger 4, §4.5).  **What a player sees, and the seams.** -
-  **The far view** draws the column from the record: about 1 km, which at 0.02 blocks a tick is about
+  or its place moves into another chunk (ledger 25). An envoy is one group: it spawns at one point.
+- **The chief's stack** at every embodiment (ledger 4, §4.5).
+
+**What a player sees, and the seams.**
+- **The far view** draws the column from the record: about 1 km, which at 0.02 blocks a tick is about
   two Minecraft days of warning (the DH note's §4.6). Its proxy should hide only once the client has the
   puppets: the note's other test, the band's chunk loaded on the client, would hide it in the ring
-  between the client's loaded chunks and the entity-ticking edge, where it has no bodies yet. -
-  **Meeting the band.** A band is met where its route comes within 160 blocks of a player
+  between the client's loaded chunks and the entity-ticking edge, where it has no bodies yet.
+- **Meeting the band.** A band is met where its route comes within 160 blocks of a player
   (`view_radius`, `tunables.rs:91`). Entities tick in the chunks within the simulation distance s of the
   player's chunk, counted in chunks along each axis (`DistanceManager.java:252-253`), so the edge is 16s
   to 16s + 16 blocks off along an axis and up to about 1.4 times that on a diagonal: 160 to 176 blocks

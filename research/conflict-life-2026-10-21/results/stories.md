@@ -24,26 +24,26 @@
 - Y3 d17 (spring) the Grey Outpost: Ashpit's hunters killed 2 of the Grey Outpost's at the border.
 - Y3 d22 (spring) the Grey Outpost: invasion on Ashpit by 23 (Talv (chief)); won, 13 dead, 75 taken. Why: empty stores; and loot.
 - Y3 d22 (spring) the Grey Outpost: Talv fell leading the attack on Ashpit; Orren leads now.
-- Y3 d24 (spring) Ashpit: Grukk howled at the Grey Outpost.
+- Y3 d24 (spring) Ashpit: Grukk sent to Mudhollow to swear against the Grey Outpost (Grukk (chief)); refused.
+- Y3 d25 (summer) Ashpit: Lugg howled at the Grey Outpost.
 - Y3 d29 (summer) Mudhollow: the Grey Outpost's hunters killed 1 of Mudhollow's at the border.
+- Y3 d31 (summer) Mudhollow: Skarl sent to Ashpit to swear against the Grey Outpost (Skarl (war)); sworn.
 - Y3 d37 (summer) Crowsnest: Harl died of a fever; Fenn leads now.
-- Y3 d43 (summer) the Grey Outpost: Orren showed a war band to Ashpit.
-- Y3 d47 (summer) Ashpit: Grukk died in a hunting accident; Lugg leads now.
-- Y3 d62 (autumn) Ashpit: a dragon struck Ashpit.
-- Y3 d70 (autumn) the Grey Outpost: Orren showed a war band to Ashpit.
-- Y3 d76 (winter) Crowsnest: a dragon struck Crowsnest.
-- Y3 d79 (winter) the Grey Outpost: band on Oakford by 8 (Orren (chief)); won, 3 dead, 40 taken. Why: the new war leader must prove himself; and loot.
-- Y3 d82 (winter) Ashpit: Lugg was deposed; Nub leads now.
-- Y3 d83 (winter) Crowsnest: invasion on Oakford by 20 (Wenna (elder)); won, 4 dead, 52 taken. Why: loot; and winter hunger.
-- Y3 d85 (winter) the Grey Outpost: Ashpit's hunters killed 2 of the Grey Outpost's at the border.
-- Y3 d87 (winter) Ashpit: invasion on Oakford by 26 (Skarl (war)); won, 3 dead, 4 taken. Why: loot; and winter hunger.
-- Y3 d88 (winter) the Grey Outpost: Orren was deposed; Captain Hesk leads now.
-- Y4 d12 (spring) Mudhollow: invasion on Lowmarsh by 26 (Skarl (war)); won, 3 dead, 102 taken. Why: loot.
-- Y4 d19 (spring) Mudhollow: a dragon struck Mudhollow.
-- Y4 d28 (summer) Crowsnest: Fenn died of age; Black Tam leads now.
-- Y4 d29 (summer) the Grey Outpost: Captain Hesk was deposed; Captain Vask leads now.
-- Y4 d37 (summer) Ashpit: ambush on a caravan by 8 (Mott (elder)); won, 3 dead, 34 taken. Why: a caravan came by; loot.
-- Y4 d49 (autumn) Ashpit: Nub was killed in a quarrel; Skarl leads now.
+- Y3 d47 (summer) Ashpit: Grukk was deposed; Lugg leads now.
+- Y3 d56 (autumn) the Grey Outpost: Isk showed a war band to Ashpit.
+- Y3 d63 (autumn) the Grey Outpost: Mudhollow's hunters killed 1 of the Grey Outpost's at the border.
+- Y3 d73 (winter) Mudhollow: a dragon struck Mudhollow.
+- Y3 d79 (winter) Crowsnest: the Grey Outpost's hunters killed 1 of Crowsnest's at the border.
+- Y3 d82 (winter) Ashpit: band on Oakford by 8 (Lugg (chief)); won, 4 dead, 26 taken. Why: loot; and restless warriors.
+- Y3 d88 (winter) the Grey Outpost: Orren died of a fever; Captain Hesk leads now.
+- Y3 d89 (winter) Ashpit: Ashpit lost its hunting ground.
+- Y3 d94 (winter) Mudhollow: invasion on Lowmarsh by 26 (Skarl (war)); won, 3 dead, 88 taken. Why: winter hunger.
+- Y4 d10 (spring) the Grey Outpost: raid on Lowmarsh by 12 (Isk (elder)); won, 3 dead, 12 taken. Why: loot; and the new war leader must prove himself.
+- Y4 d20 (spring) Crowsnest: raid on Oakford by 10 (Old Cass (war)); won, 4 dead, 67 taken. Why: loot.
+- Y4 d23 (spring) the Grey Outpost: the Grey Outpost lost its hunting ground.
+- Y4 d32 (summer) Crowsnest: Fenn died in a hunting accident; Old Cass leads now.
+- Y4 d32 (summer) Ashpit: invasion on Oakford by 26 (Lugg (chief)); won, 3 dead, 43 taken. Why: empty stores; and loot.
+- Y4 d43 (summer) Ashpit: the pact of Ashpit and Mudhollow against the Grey Outpost ended (lapsed).
 
 ### seed 2
 
@@ -84,9 +84,9 @@
 - Y3 d51 (autumn) Crowsnest: Old Cass offered the Grey Outpost a truce; accepted.
 - Y3 d53 (autumn) the Grey Outpost: Crowsnest's hunters killed 1 of the Grey Outpost's at the border.
 - Y3 d54 (autumn) the Grey Outpost: invasion on Ashpit by 23 (Dorn (elder)); won, 13 dead, 75 taken. Why: empty stores; and loot.
-- Y3 d64 (autumn) Mudhollow: the Grey Outpost's hunters killed 1 of Mudhollow's at the border.
-- Y3 d64 (autumn) Ashpit: Mott offered the Grey Outpost a truce; accepted.
-- Y3 d64 (autumn) the Sun Grove: hungry, the raptors hunted Lowmarsh's animals.
+- Y3 d60 (autumn) Ashpit: Nub sent to Mudhollow to swear against the Grey Outpost (Nub (war)); sworn.
+- Y3 d64 (autumn) Crowsnest: Ashpit's hunters killed 1 of Crowsnest's at the border.
+- Y3 d64 (autumn) Ashpit: Nub offered the Grey Outpost a truce; accepted.
 
 ### ladder seed 1
 
