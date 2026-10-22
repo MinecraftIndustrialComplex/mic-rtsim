@@ -1099,14 +1099,14 @@ the horse and every other animal mount (MZ-16, 2026-10-22): "Given the current m
   `EntityUmvuthana.java:984-1035`, belongs to `EntityUmvuthana`, which the Umvuthi is not); and any
   animal mount (MZ-16, Ben).
 - **Who leads.** The Invasion only (`chief_leads`, ledger 4): an envoy, scouts, a raid and plunder go
-  without it. It goes whether its grove is in or out when the muster ends, and not while its heir
-  waits for a body (§4.10). It holds no unit and counts in no quota or wave; now that it goes to the
-  fight, its strength (5.0, §4.13) counts in the band's, as the conflict-life design has it
-  (CONFLICT-LIFE.md §2.7). An Invasion is 8 units (16 bodies: 6 warriors and 2 packs of 5), under the
-  spawn quota of 16 units (`tunables.rs:94`), so a Mowzie band is never cut down when it is met
-  (§4.16). A joint attack shares one quota for both contingents (CONFLICT-LIFE.md §2.16, CL-D49): an
-  invasion beside a goblin band shows its share at first, at least one stack, and walks the rest in
-  from the ticking edge as the quota frees.
+  without it. It goes whether its grove is in or out when the muster ends, and not while its heir waits
+  for a body (§4.10). It holds no unit and counts in no quota or wave; now that it goes to the fight,
+  its strength (5.0, §4.13) counts in the band's, as the conflict-life design has it (CONFLICT-LIFE.md
+  §2.7). An Invasion is 8 units (16 bodies: 6 warriors and 2 packs of 5), under the spawn quota of 16
+  units (`tunables.rs:94`), so a Mowzie band is never cut down when it is met (§4.16). A joint attack
+  shares one quota of 16 bodies for both contingents, a pack counting as its 5 (CONFLICT-LIFE.md §2.16,
+  CL-D49): an invasion beside a goblin band shows its share at first, at least one stack, and walks the
+  rest in from the ticking edge as the quota frees.
 - **Leaving a grove that is in.** At the muster's end the set-out line covers its slot too (§4.9). If
   the band is seen as it sets out, its throne body is handed to its puppet where it sits, the puppet
   facing the quarter of its route out (a hand-off is a new body, so it turns as it is replaced), and
@@ -1790,13 +1790,17 @@ near 52.
 - **With each other:** none. Snow and savanna do not meet; neither culture hates the other.
 - **Alliances** (CONFLICT-LIFE.md §2.16, CL-5 (b)). The Frostmaw never swears: a council of one has no
   one to swear with. The grove may swear with a camp that also quarrels with a player, most often a
-  goblin camp (both hate humans), and the measured fortress world has it about once in 450 world-years.
+  goblin camp (both hate humans): in the measured fortress world a grove and Mudhollow swore against
+  Ben about once in 270 world-years (12 pacts in 64 worlds of 50 years).
   Its raid can be called; its invasion goes only on the Umvuthi's own wounded pride (§4.5), which no
   ally counts on, and then with the Umvuthi aloft at the rear of its own column. A goblin band and the
   masked warriors of one joint attack do not turn on each other: the ConflictBridge cancels a change of
-  target to a body of the same attack (`LivingChangeTargetEvent`; CONFLICT-LIFE.md CL-D50), which the
-  Umvuthana's target goals go through (`EntityUmvuthanaMinion.java:131-151`, UNVERIFIED for every goal;
-  the conflict-life GameTest 5 checks them).
+  target to a body of the same attack (`LivingChangeTargetEvent`; CONFLICT-LIFE.md CL-D50). The
+  Mowzie bodies retarget through `setTarget`, which fires it (verified in the jar):
+  `UmvuthanaHurtByTargetAI.canContinueToUse` ends in `this.mob.setTarget(livingentity)`, a follower
+  raptor takes its leader's target with `setTarget` (`EntityUmvuthanaFollowerToRaptor:48`), the
+  Umvuthi hands its target on with `setTarget` (`EntityUmvuthi:1093`), and none overrides
+  `isAlliedTo`. The conflict-life GameTest 5 runs on them.
 - **Iron golems** attack every body in this plan but the envoy party (§4.5): vanilla's golem targets
   any `Enemy` but a creeper (`IronGolem.java:78`), and the Frostmaw (`EntityFrostmaw.java:152`), the
   Umvuthi (`EntityUmvuthi.java:209`), the warrior and crane (`EntityUmvuthanaMinion.java:105`), the
