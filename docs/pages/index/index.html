@@ -74,6 +74,10 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 <section id="pages" data-ss-id="pages" data-ss-section>
   <h2 data-ss-id="pages-h">Pages</h2>
   <ul class="pages" data-ss-id="page-list">
+    <li data-ss-id="page-test-worlds">
+      <a href="https://spacesheep.dev/@benmac/rtsim-create-test-worlds">Big Create Test Worlds</a><span class="date">21 Oct</span>
+      <span class="what">Updated with the TBSMP result: rtsim runs on TBSMP Season 2's own pack with all 11 dimensions, at about 0.6 ms a tick, after three small fixes for Create addons MIC lacks. No decisions.</span>
+    </li>
     <li data-ss-id="page-oil-gate">
       <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate">Dragons Guard Oil</a><span class="date">21 Oct</span>
       <span class="what">The oil gate's dragon half, built: fire dragons need oil to breathe fire, nest near the fields and raid the districts that work them, and a dry one fights with bite and claws. The gate's own arrivals stay off after failing the danger test at site 1. 5 questions.</span>
@@ -88,7 +92,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
     </li>
     <li data-ss-id="page-mowzie">
       <a href="https://spacesheep.dev/@benmac/rtsim-mowzie">Mowzie's Mobs Factions</a><span class="date">21 Oct</span>
-      <span class="what">A Frostmaw that comes to hate your railway and robs its trains, and an Umvuthana tribe that sends an envoy for gold. Both come back after you kill them and survive an uninstall. 7 decisions.</span>
+      <span class="what">A Frostmaw that comes to hate your railway and robs its trains, and an Umvuthana tribe that sends an envoy for gold. Both come back after you kill them and survive an uninstall. After the seventh check its camp-body sync is being rewritten. 7 decisions.</span>
     </li>
     <li data-ss-id="page-gregtech">
       <a href="https://spacesheep.dev/@benmac/rtsim-gregtech-lag">rtsim and GregTech Lag</a><span class="date">21 Oct</span>
@@ -97,10 +101,6 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
     <li data-ss-id="page-any-pack">
       <a href="https://spacesheep.dev/@benmac/rtsim-any-pack">rtsim on Any Pack</a><span class="date">21 Oct</span>
       <span class="what">Already runs non-Create factories with no plugin; the four small fixes for other packs, the top gaps, the plan in slices, and 4 decisions.</span>
-    </li>
-    <li data-ss-id="page-test-worlds">
-      <a href="https://spacesheep.dev/@benmac/rtsim-create-test-worlds">Big Create Test Worlds</a><span class="date">21 Oct</span>
-      <span class="what">One public SMP world is big enough: TBSMP Season 2 (2.10M chunks, 138k Create machines), now queued as the next stress world.</span>
     </li>
     <li data-ss-id="page-create-addon">
       <a href="https://spacesheep.dev/@benmac/rtsim-create-addon">Standalone Create addon</a><span class="date">21 Oct</span>
@@ -119,11 +119,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
       <span class="what">What the world sim holds at each scale, from one chunk to a galaxy, and the trick that keeps each scale affordable.</span>
     </li>
   </ul>
-  <p class="coming" data-ss-id="pages-coming">Coming: the seventh check's verdict on the Mowzie's Mobs plan, now running.</p>
+  <p class="coming" data-ss-id="pages-coming">Coming: the Mowzie's Mobs plan once its camp-body sync is rewritten as one reconciler.</p>
 </section>
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
-  <h2 data-ss-id="waiting-h">Waiting on you: 7 groups need an answer, 28 choices stand unless you object</h2>
+  <h2 data-ss-id="waiting-h">Waiting on you: 7 groups need an answer, 30 choices stand unless you object</h2>
 
   <ul class="wait" data-ss-id="wait-list">
     <li data-ss-id="wait-anypack">
@@ -196,6 +196,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
       <li>Golems are bought only under threat (MSC5).</li>
       <li>Tribute stays a quarter of the purse a season (MS-5, placeholder).</li>
       <li>A golem adds 5 fear against a village's 15 (MSC51, placeholder).</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-tbsmp">
+    <summary>TBSMP compat: 2 (docs/stress-tbsmp-results.md)</summary>
+    <ul>
+      <li>Slice and Dice's slicer stays unmodelled until a MIC pack carries it.</li>
+      <li>The Carry On plugin accepts Carry On 2.2.2 and later (5059d6c).</li>
     </ul>
   </details>
 

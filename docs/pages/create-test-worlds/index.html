@@ -82,60 +82,233 @@ details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; 
 summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
 details ul { font-size: 15.5px; color: var(--muted); }
 footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+:root { --old: #8a8a93; --new: #2a78d6; }
+td.num, th.num { white-space: nowrap; }
+tr.group th { color: var(--ink); font-size: 15.5px; padding-top: 18px; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 6px; text-align: left; white-space: normal; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 600; }
+}
+.bars { margin: 14px 0 6px; display: grid; gap: 14px; }
+.bar { display: grid; grid-template-columns: minmax(9em, 14em) 1fr; gap: 4px 14px; align-items: center; font-size: 15.5px; }
+.bar .lbl { line-height: 1.35; font-weight: 600; }
+.bar .lbl small { font-weight: 400; color: var(--muted); font-size: 14px; }
+.bar .tracks { display: grid; gap: 4px; }
+.bar .track { display: flex; align-items: center; gap: 8px; }
+.bar .fill { height: 12px; border-radius: 0 4px 4px 0; flex: none; width: calc((100% - 9em) * var(--w)); min-width: 3px; }
+.bar .fill.old { background: var(--old); }
+.bar .fill.new { background: var(--new); }
+.bar .v { font-variant-numeric: tabular-nums; font-size: 14.5px; white-space: nowrap; }
+.bar .v.old { color: var(--muted); }
+@media (max-width: 560px) {
+  .bar { grid-template-columns: 1fr; }
+}
+.key { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 15px; color: var(--muted); margin: 6px 0 0; }
+.key .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.sw.old { background: var(--old); }
+.sw.new { background: var(--new); }
+.ask { margin: 0 0 14px; color: var(--ink); font-size: 17px; max-width: 38em; }
+@media (max-width: 600px) {
+  table.nums { font-size: 14px; }
+  table.nums th { font-size: 14px; white-space: normal; }
+  table.nums th, table.nums td { padding: 8px 8px 8px 0; }
+  table.nums td:first-child { font-weight: 600; }
+}
 </style>
 </head>
 <body>
 
 <nav class="top" data-ss-react="off">
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
-  <a href="#catches">Catches</a>
+  <a href="#pack">Pack</a>
+  <a href="#rtsim">rtsim</a>
+  <a href="#cost">Cost</a>
+  <a href="#compat">Compat</a>
+  <a href="#ds10">DS-10</a>
   <a href="#decided">Decided</a>
-  <a href="#ranked">All worlds</a>
-  <a href="#searched">Searched</a>
-  <a href="#gated">Gated</a>
+  <a href="#ranked">Survey</a>
 </nav>
 
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">One public SMP world is big enough: TBSMP Season 2, on archive.org</h1>
-  <p class="dek" data-ss-id="dek">From two surveys on 21 October 2026: seven worlds this morning, an SMP search this afternoon. These worlds are for private local testing only; no world files are on this page.</p>
-  <p class="lead" data-ss-id="lead"><strong>TBSMP Season 2</strong> (The Broken Script SMP) is public on <a href="https://archive.org/details/world_202606">archive.org</a> with no login: an 8.67 GB zip that unpacks to a 13.5 GB world. It runs Minecraft 1.21.1 on NeoForge with Create 6.0.6 and 144 mods, and 1,041 players joined it over its life. It is the only public world found that is both a multiplayer SMP and a Create 6 world, and it is far bigger than any other in chunks, track and Create machines. Only the rail counts lose: PR #9513 has more trains and stations, Alvedon more stations and signals.</p>
+  <h1 data-ss-id="headline">rtsim runs on TBSMP's own pack: all 11 dimensions, about 0.6 ms a tick, and three small fixes for Create addons MIC lacks</h1>
+  <p class="ask" data-ss-id="ask"><strong>You asked:</strong> "can you not just grab their pack and add in the rtsim mod for it w/ compatability for any of the create mods they have that we don't". Yes, and it is done.</p>
+  <p class="dek" data-ss-id="dek">Merged on mic-rtsim main as 88b3e3b (docs/stress-tbsmp-results.md), 21 October 2026. The world and its jars stay on the laptop for private testing; no world files are on this page. The survey that picked this world is further down.</p>
+  <p class="lead" data-ss-id="lead">TBSMP Season 2's pack was rebuilt from the versions its world records, and the world boots on it with every dimension. mic-rtsim was then added and run beside the same world without it. rtsim logged no error or warning in 3 runs, and a profiled run puts it at about 0.57 ms a tick, mostly reading inventories. Three Create addons MIC lacks needed one small change each, with no new block, item or entity. The world loses one mod, Create Egg Production.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-mods"><div class="n">142</div><div class="t">mods rebuilt at the world's own versions</div></div>
+    <div class="tile" data-ss-id="kpi-dims"><div class="n">11 <small>of 11</small></div><div class="t">dimensions load; on MIC's pack only 2 would</div></div>
+    <div class="tile" data-ss-id="kpi-errors"><div class="n">0</div><div class="t">rtsim errors or warnings in 3 runs</div></div>
+    <div class="tile" data-ss-id="kpi-cost"><div class="n">0.57 <small>ms</small></div><div class="t">a tick for rtsim, 1.13% of the server thread</div></div>
+    <div class="tile" data-ss-id="kpi-compat"><div class="n">3</div><div class="t">compat changes; no new blocks, items or entities</div></div>
+  </div>
+</header>
+
+<section id="pack" data-ss-id="pack" data-ss-section>
+  <h2 data-ss-id="pack-h">The pack: rebuilt at the world's versions, then moved to Create 6.0.10 for rtsim</h2>
+  <ul data-ss-id="pack-list">
+    <li><strong>142 mods at the exact versions the save records:</strong> 119 from Modrinth, 8 from CurseForge and 15 that ship inside other jars, as a packwiz pack. On that pack (NeoForge 21.1.188, Create 6.0.6) the world boots clean.</li>
+    <li><strong>rtsim targets Create 6.0.10,</strong> so the test instance moved to NeoForge 21.1.249 and Create 6.0.10, and 11 jars moved with it. A new link check read every jar for calls into parts of Create and NeoForge that are gone; each moved jar is the first version that passes it, not the newest.</li>
+    <li><strong>What broke was the pack's, not rtsim's.</strong> Five Create addons called parts Create 6.0.7 removed: Garnished crashed the server on the first fan with a freezing recipe. Moonlight broke on the newer NeoForge. Two mods bind fixed ports, so a second server on the laptop failed; the test harness now gives each server its own port and ends one that hangs at stop.</li>
+  </ul>
+  <h3 data-ss-id="loses-h">What the world loses</h3>
+  <ul data-ss-id="loses-list">
+    <li><strong>Create Egg Production,</strong> which has no build for Create 6.0.7 and later. Its 40 egg collectors and 7 incubators load as air.</li>
+    <li><strong>Supplementaries keeps a known GUI break</strong> on the newer Moonlight. Only a player opening one of its single-player GUI blocks, or a recipe display, reaches it; a server with nobody on never does. It stays at the world's version.</li>
+  </ul>
+</section>
+
+<section id="rtsim" data-ss-id="rtsim" data-ss-section>
+  <h2 data-ss-id="rtsim-h">What rtsim saw: 6 districts holding 1,142 inventories, and a train it followed while unloaded</h2>
+  <p data-ss-id="rtsim-intro">The run held four areas loaded, 12 by 12 chunks each, and adopted a district at each centre: two overworld bases, the densest base in The Broken Script's day_b dimension, and one in the CoD mod's entropy dimension.</p>
+  <div class="scroll" data-ss-id="districts-wrap">
+  <table class="stack" data-ss-id="districts-table">
+    <thead><tr><th>Area</th><th>Dimension</th><th class="num">Districts</th><th class="num">Chunks</th><th class="num">Inventories</th></tr></thead>
+    <tbody>
+      <tr><td>Overworld base at 3216, 1232</td><td data-label="Dimension">Overworld</td><td class="num" data-label="Districts">2</td><td class="num" data-label="Chunks">22 + 6</td><td class="num" data-label="Inventories">176 + 55</td></tr>
+      <tr><td>Overworld base at 3552, -1904</td><td data-label="Dimension">Overworld</td><td class="num" data-label="Districts">2</td><td class="num" data-label="Chunks">32 + 1</td><td class="num" data-label="Inventories">239 + 1</td></tr>
+      <tr><td>day_b base</td><td data-label="Dimension">The Broken Script: day_b</td><td class="num" data-label="Districts">1</td><td class="num" data-label="Chunks">84</td><td class="num" data-label="Inventories">635, and 1 station</td></tr>
+      <tr><td>entropy base</td><td data-label="Dimension">CoD mod: entropy</td><td class="num" data-label="Districts">1</td><td class="num" data-label="Chunks">29</td><td class="num" data-label="Inventories">36</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <ul data-ss-id="rtsim-list">
+    <li><strong>Trains:</strong> the world has 55 trains and 101 stations in 5 dimensions. The one scheduled train that calls inside a district, day_b's, was seen arriving 12 times, 2 of them while its district was unloaded and simulated, and leaving 12 times.</li>
+    <li><strong>Glass box:</strong> the two small overworld districts passed their check. The three larger ones recompiled after the reload and were partway into a new check at the end. The day_b district (1,787 nodes, compiled in 366 ms) never went live: 2 of its 84 chunks lay outside the loaded area.</li>
+    <li><strong>Viewer:</strong> <a href="http://127.0.0.1:8745/">http://127.0.0.1:8745/</a> shows the rtsim world after the run. It works on the laptop only.</li>
+  </ul>
+</section>
+
+<section id="cost" data-ss-id="cost" data-ss-section>
+  <h2 data-ss-id="cost-h">Cost: about 0.57 ms a tick, mostly inventory sweeps; the side-by-side gap is mostly two servers differing</h2>
+  <p class="label" data-ss-id="spark-label">Share of the server thread in a spark profile, 120 s of the busy window, one rtsim server alone</p>
+  <div class="bars" data-ss-id="spark-bars">
+    <div class="bar"><span class="lbl">All of rtsim <small>about 0.57 ms a tick</small></span><span class="track"><span class="fill new" style="--w:1"></span><span class="v">1.13%</span></span></div>
+    <div class="bar"><span class="lbl">Inventory sweeps</span><span class="track"><span class="fill new" style="--w:0.637"></span><span class="v">0.72%</span></span></div>
+    <div class="bar"><span class="lbl">Glass box</span><span class="track"><span class="fill new" style="--w:0.195"></span><span class="v">0.22%</span></span></div>
+    <div class="bar"><span class="lbl">Create plugin</span><span class="track"><span class="fill new" style="--w:0.133"></span><span class="v">0.15%</span></span></div>
+    <div class="bar"><span class="lbl">District detection</span><span class="track"><span class="fill new" style="--w:0.097"></span><span class="v">0.11%</span></span></div>
+  </div>
+  <p class="cap" data-ss-id="spark-cap">Everything else in rtsim was under 0.05% each. For scale, Create's own frames took 52.9% of the thread. The profiled run's MSPT was below the side-by-side run's rtsim-off server in every window (busy 40.83 against 42.18), at a similar machine load.</p>
+
+  <h3 data-ss-id="ab-h">With and without rtsim, side by side</h3>
+  <div class="scroll" data-ss-id="ab-wrap">
+  <table class="nums" data-ss-id="ab-table">
+    <thead><tr><th>Window</th><th class="num">Off: mean</th><th class="num">Off: p95</th><th class="num">On: mean</th><th class="num">On: p95</th><th class="num">On minus off</th></tr></thead>
+    <tbody>
+      <tr><td>Idle</td><td class="num" data-label="Off: mean">12.68</td><td class="num" data-label="Off: p95">18.45</td><td class="num" data-label="On: mean">11.57</td><td class="num" data-label="On: p95">16.12</td><td class="num" data-label="On minus off">-1.11</td></tr>
+      <tr><td>Busy</td><td class="num" data-label="Off: mean">42.18</td><td class="num" data-label="Off: p95">48.94</td><td class="num" data-label="On: mean">44.47</td><td class="num" data-label="On: p95">52.57</td><td class="num" data-label="On minus off">+2.29</td></tr>
+      <tr><td>Unloaded</td><td class="num" data-label="Off: mean">5.60</td><td class="num" data-label="Off: p95">6.00</td><td class="num" data-label="On: mean">6.30</td><td class="num" data-label="On: p95">7.25</td><td class="num" data-label="On minus off">+0.70</td></tr>
+      <tr><td>Reloaded</td><td class="num" data-label="Off: mean">40.52</td><td class="num" data-label="Off: p95">42.92</td><td class="num" data-label="On: mean">45.03</td><td class="num" data-label="On: p95">48.74</td><td class="num" data-label="On minus off">+4.51</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="ab-cap">MSPT: the mean and p95 of 5-second samples in each window. Both servers held 20 TPS in every window, at a machine load of about 9.</p>
+
+  <div class="box" data-ss-id="ab-caveat">
+    <p><strong>Most of that gap is two servers differing, not rtsim.</strong> Two controls ran the same scene with rtsim off on both servers. Other agents were loading the laptop 2 to 6 times as hard then, and two identical servers differed by up to 12 MSPT in a window. So the controls do not bound the noise at the side-by-side run's load, and a third run profiled rtsim directly: the 0.57 ms above.</p>
+  </div>
+  <div class="scroll" data-ss-id="noise-wrap">
+  <table class="nums" data-ss-id="noise-table">
+    <thead><tr><th>Window</th><th class="num">rtsim on minus off</th><th class="num">Control 1</th><th class="num">Control 2</th></tr></thead>
+    <tbody>
+      <tr><td>Idle</td><td class="num" data-label="rtsim on minus off">-1.11</td><td class="num" data-label="Control 1: identical servers">+2.40</td><td class="num" data-label="Control 2: identical servers">-1.04</td></tr>
+      <tr><td>Busy</td><td class="num" data-label="rtsim on minus off">+2.29</td><td class="num" data-label="Control 1: identical servers">+0.27</td><td class="num" data-label="Control 2: identical servers">+8.41</td></tr>
+      <tr><td>Unloaded</td><td class="num" data-label="rtsim on minus off">+0.70</td><td class="num" data-label="Control 1: identical servers">-3.94</td><td class="num" data-label="Control 2: identical servers">+0.44</td></tr>
+      <tr><td>Reloaded</td><td class="num" data-label="rtsim on minus off">+4.51</td><td class="num" data-label="Control 1: identical servers">+5.88</td><td class="num" data-label="Control 2: identical servers">+12.06</td></tr>
+      <tr><td>Machine load</td><td class="num" data-label="rtsim on minus off">about 9</td><td class="num" data-label="Control 1: identical servers">18 to 46</td><td class="num" data-label="Control 2: identical servers">27 to 57</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="noise-cap">MSPT, second server minus first, per window mean. Each control ran two identical servers with rtsim off. Under load the controls dropped to 17 TPS when busy and 8 to 10 when reloaded.</p>
+
+  <div class="tiles" data-ss-id="mem-tiles">
+    <div class="tile" data-ss-id="mem-heap"><div class="n">2,491 <small>MB</small></div><div class="t">heap after a full GC with rtsim, against 2,474 without</div></div>
+    <div class="tile" data-ss-id="mem-save"><div class="n">2.08 <small>s</small></div><div class="t">for a full save with rtsim, against 1.97 without</div></div>
+    <div class="tile" data-ss-id="mem-dir"><div class="n">138 <small>kB</small></div><div class="t">rtsim's own save on this world</div></div>
+  </div>
+</section>
+
+<section id="compat" data-ss-id="compat" data-ss-section>
+  <h2 data-ss-id="compat-h">Compat: three small changes for Create addons MIC lacks</h2>
+  <div class="scroll" data-ss-id="compat-wrap">
+  <table class="stack" data-ss-id="compat-table">
+    <thead><tr><th>Addon</th><th>In the world</th><th>What was wrong</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td>Create Encased</td><td data-label="In the world">12,098 block entities, among them 391 depots, 176 presses and 105 mixers</td><td data-label="What was wrong">Its press, mixer and depot build on Create's, but rtsim modelled them as unknown machines</td><td data-label="Change">Modelled like Create's: a block entity built on a Create class takes that class's model (19aaf5c, with a GameTest)</td></tr>
+      <tr><td>Garnished</td><td data-label="In the world">Fan recipes: freezing and dye blowing</td><td data-label="What was wrong">Named as blasting</td><td data-label="Change">Named by their own type (084c3de, with a GameTest)</td></tr>
+      <tr><td>Sophisticated Storage</td><td data-label="In the world">3,737 chests, 1,035 barrels, 129 limited barrels</td><td data-label="What was wrong">Its chests and barrels already counted as storage; its limited barrels and shulker boxes did not</td><td data-label="Change">Both count as district storage (54bc16c)</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="cap" data-ss-id="compat-cap">Each change is a tag or a model rule in the existing Create plugin. No new plugin, block, item or entity.</p>
+  <ul data-ss-id="compat-rest">
+    <li><strong>Not modelled: Slice and Dice's slicer</strong> (36 in the world, 5 in the adopted areas). Items under it pass through the model unprocessed, and what it makes reaches rtsim only through the catch-all node for machines rtsim does not model. It stays that way until a MIC pack carries it.</li>
+    <li><strong>Needed nothing:</strong> Some Assembly Required and Create Food use Create's own recipe types; Create: Framed and Rechiseled: Create are decorative or too few to matter; Lootr's chests already count as storage.</li>
+  </ul>
+</section>
+
+<section id="ds10" data-ss-id="ds10" data-ss-section>
+  <h2 data-ss-id="ds10-h">DS-10 on TBSMP: a quarter of the seeds, and a station gap now being fixed</h2>
+  <p data-ss-id="ds10-intro">DS-10 lets only machines start a district. It is on fix/district-seeds, not yet merged, so it ran once on a build with it merged in.</p>
+  <p class="label" data-ss-id="ds10-label">Blocks that started a district, in the four adopted areas</p>
+  <div class="bars" data-ss-id="ds10-bars">
+    <div class="bar"><span class="lbl">Main's rule</span><span class="track"><span class="fill old" style="--w:1"></span><span class="v old">17,789</span></span></div>
+    <div class="bar"><span class="lbl">DS-10</span><span class="track"><span class="fill new" style="--w:0.256"></span><span class="v">4,555</span></span></div>
+  </div>
+  <div class="scroll" data-ss-id="ds10-wrap">
+  <table class="stack" data-ss-id="ds10-table">
+    <thead><tr><th></th><th>Main's rule</th><th>DS-10</th></tr></thead>
+    <tbody>
+      <tr><td>Districts</td><td data-label="Main's rule">6</td><td data-label="DS-10">5: the district that held only storage is gone</td></tr>
+      <tr><td>day_b district</td><td data-label="Main's rule">84 chunks, 635 inventories, 1 station</td><td data-label="DS-10">69 chunks, 442 inventories, no station</td></tr>
+      <tr><td>Train arrivals seen</td><td data-label="Main's rule">12</td><td data-label="DS-10">0</td></tr>
+      <tr><td>District detection</td><td data-label="Main's rule">237 ms in 7 runs</td><td data-label="DS-10">136 ms in 7 runs</td></tr>
+      <tr><td>Inventory sweeps</td><td data-label="Main's rule">3.92 s</td><td data-label="DS-10">3.21 s</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="box" data-ss-id="ds10-gap">
+    <p><strong>The station gap.</strong> day_b's station sits in a chunk with no machine, so under DS-10 that chunk dropped out of the district, and rtsim stopped seeing the train that called there 12 times. It is being fixed in DS-10: a station joins the district next to it but never starts one, so a lone station on a line stays out.</p>
+  </div>
+  <p data-ss-id="ds10-tags">For this run, Sophisticated Storage's controller, link and I/O blocks were added to DS-10's list of blocks that never start a district. The report recommends adding them for real when DS-10 lands.</p>
+</section>
+
+<section id="decided" data-ss-id="decided" data-ss-section>
+  <h2 data-ss-id="decided-h">Decided without asking: nothing here needs you, and each can be undone</h2>
+  <ul data-ss-id="decided-list">
+    <li><strong>Slice and Dice's slicer stays unmodelled</strong> until a MIC pack carries it.</li>
+    <li><strong>mic-rtsim's Carry On plugin now accepts Carry On 2.2.2 and later</strong> (5059d6c; it required 2.2.6). TBSMP runs 2.2.2.11, which has the same pickup event, and the plugin ran on it with no error.</li>
+    <li>The test instance runs NeoForge 21.1.249 and Create 6.0.10; the packwiz pack keeps the world's own versions.</li>
+    <li>Create Egg Production stays out of the test instance, and Supplementaries stays with its GUI break.</li>
+    <li>alltheleaks 0.1.17 stands in for 0.1.16, which was never published.</li>
+    <li>The CoD mod's fixed port is not remapped: paired runs are symmetric, and the harness ends a server that hangs at stop.</li>
+    <li>Compat went into the existing plugin as tags and model rules, not a new plugin.</li>
+    <li>A second control and a profiled run were added because the first control ran under heavy load.</li>
+  </ul>
+</section>
+
+<section id="ranked" data-ss-id="ranked" data-ss-section>
+  <h2 data-ss-id="ranked-h">How TBSMP was found: thirteen worlds, five used, the rest too small or too lossy</h2>
+  <p data-ss-id="world-lead"><strong>TBSMP Season 2</strong> (The Broken Script SMP) is public on <a href="https://archive.org/details/world_202606">archive.org</a> with no login: an 8.67 GB zip that unpacks to a 13.5 GB world. It runs Minecraft 1.21.1 on NeoForge with Create 6.0.6, and 1,041 players joined it over its life. It is the only public world found that is both a multiplayer SMP and a Create 6 world, and it is far bigger than any other in chunks, track and Create machines. On MIC's own pack only its overworld and nether would load, since 9 of its 11 dimensions come from mods MIC lacks; that is why it ran on its own pack.</p>
+  <div class="tiles" data-ss-id="world-tiles">
     <div class="tile" data-ss-id="kpi-chunks"><div class="n">2.10M</div><div class="t">chunks in 11 dimensions</div></div>
     <div class="tile" data-ss-id="kpi-be"><div class="n">138k</div><div class="t">Create block entities, of 3.45M in all</div></div>
     <div class="tile" data-ss-id="kpi-trains"><div class="n">55 <small>/ 101</small></div><div class="t">trains / stations, on 140 km of track</div></div>
     <div class="tile" data-ss-id="kpi-logistics"><div class="n">591 <small>/ 450</small></div><div class="t">packagers / package frogports</div></div>
     <div class="tile" data-ss-id="kpi-vaults"><div class="n">9,193</div><div class="t">item vaults, and 1,339 mechanical crafters</div></div>
   </div>
-</header>
-
-<section id="catches" data-ss-id="catches" data-ss-section>
-  <h2 data-ss-id="catches-h">Only its overworld and nether load on our pack</h2>
-  <ul data-ss-id="catches-list">
-    <li><strong>9 of its 11 dimensions</strong> come from mods we lack (The Broken Script, a CoD-style dimension mod, and three old copies). Keeping the overworld and nether leaves about 0.66M block entities, about 113.6k of them Create.</li>
-    <li><strong>Where the trains are is unknown.</strong> The audit read the track file but not which dimension each train sits in, so the 55 may not all survive the cut.</li>
-    <li><strong>Most of the overworld is not Create.</strong> Of its 633,008 block entities, 263,395 are FramedBlocks, 160,393 vanilla and 33,421 Lootr. Blocks from mods we lack become air; Create blocks survive.</li>
-    <li><strong>Four patch releases behind:</strong> Create 6.0.6, against the pack's 6.0.10.</li>
-  </ul>
-</section>
-
-<section id="decided" data-ss-id="decided" data-ss-section>
-  <h2 data-ss-id="decided-h">Decided: it becomes the next stress world</h2>
-  <div class="box" data-ss-id="decided-box">
-    <p data-ss-id="decided-p">Its overworld and nether get imported onto the pack (Create 6.0.6 to 6.0.10) and run with and without rtsim, in pairs, like the earlier stress runs. It is queued behind today's builds. This can be undone, so it is not a question for you.</p>
-  </div>
-  <p data-ss-id="decided-why">It answers part of what the generator was for (ST2): 112k Create block entities and 8,222 vaults in one overworld is real player-built industry, not a synthetic lattice.</p>
-</section>
-
-<section id="ranked" data-ss-id="ranked" data-ss-section>
-  <h2 data-ss-id="ranked-h">Thirteen worlds found: four used, one queued, the rest too small or too lossy</h2>
-  <p data-ss-id="ranked-intro">Ranked by stress value for rtsim, weighed against the cost of putting each on the pack (1.21.1, NeoForge 21.1.249, Create 6.0.10).</p>
+  <p data-ss-id="ranked-intro">The thirteen worlds found, ranked by stress value for rtsim, weighed against the cost of putting each on the pack (1.21.1, NeoForge 21.1.249, Create 6.0.10).</p>
   <div class="scroll" data-ss-id="ranked-wrap">
   <table class="wide" data-ss-id="ranked-table">
     <thead><tr><th>World</th><th>Versions</th><th class="num">Size</th><th class="num">Trains / stations</th><th class="num">Track</th><th class="num">Create BEs</th><th>Upgrade cost</th><th>Status</th></tr></thead>
     <tbody>
-      <tr><td><strong>TBSMP Season 2</strong><span class="src">archive.org</span></td><td>1.21.1 NeoForge, Create 6.0.6, 144 mods</td><td class="num">13.5 GB</td><td class="num">55 / 101</td><td class="num">140.4 km</td><td class="num">138,125</td><td>Medium: 9 dimensions and foreign blocks dropped</td><td class="state">Audited; stress run queued</td></tr>
+      <tr><td><strong>TBSMP Season 2</strong><span class="src">archive.org</span></td><td>1.21.1 NeoForge, Create 6.0.6, 142 mods</td><td class="num">13.5 GB</td><td class="num">55 / 101</td><td class="num">140.4 km</td><td class="num">138,125</td><td>Run on its own pack: 11 jars moved, one mod lost</td><td class="state used">Used, with rtsim (88b3e3b)</td></tr>
       <tr><td><strong>Create PR #9513</strong> train-collision test<span class="src">GitHub PR attachment</span></td><td>1.21.1 NeoForge, 6.0.9</td><td class="num">42 MB</td><td class="num">180 / 181</td><td class="num">15.3 km</td><td class="num">1,107</td><td>None</td><td class="state used">Used in stress runs</td></tr>
       <tr><td><strong>Swedish Panda "Alvedon"</strong> metro<span class="src">Dropbox, from YouTube</span></td><td>1.19.2 Forge, 0.5.1.i, 45 mods</td><td class="num">705 MB</td><td class="num">57 / 150</td><td class="num">130.7 km</td><td class="num">43,183</td><td>Heavy: 68% of block entities lost, Steam 'n' Rails track remapped</td><td class="state used">Used in stress runs</td></tr>
       <tr><td><strong>Mysda "This is Create"</strong><span class="src">Mediafire, from YouTube</span></td><td>1.21.1 NeoForge, 6.0.4</td><td class="num">59 MB</td><td class="num">3 / 6</td><td class="num">1.5 km</td><td class="num">5,488</td><td>None</td><td class="state used">Used in stress runs</td></tr>
@@ -152,7 +325,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </table>
   </div>
   <p class="cap" data-ss-id="ranked-cap">"Tiny" and "a handful" come from the zipped size of each world's Create track file, read remotely without downloading the world.</p>
-  <p data-ss-id="ranked-runs">The four used worlds showed (docs/stress-worlds-results.md): rtsim at 0.2 to 0.5% of the server thread, four bugs fixed, the glass box passing on Mysda's 2,779-node factory, and station learning on Alvedon's metro.</p>
+  <p data-ss-id="ranked-runs">The other four used worlds showed (docs/stress-worlds-results.md): rtsim at 0.2 to 0.5% of the server thread, four bugs fixed, the glass box passing on Mysda's 2,779-node factory, and station learning on Alvedon's metro.</p>
 </section>
 
 <section id="searched" data-ss-id="searched" data-ss-section>
@@ -192,16 +365,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
-    <li>mic-rtsim main at d8fdaea: research/stress-worlds-smp-2026-10-21.md (sections 1 to 6) and research/stress-worlds-2026-10-21.md (sections 1 to 8); audit numbers from research/stress-worlds-2026-10-21-data/audits/ (audit_world.py over every region file, 0 read errors).</li>
-    <li>docs/stress-worlds-results.md sections 1, 4 and 5, for the four worlds used in stress runs.</li>
-    <li>DECISIONS.md rows ST1 and ST2.</li>
+    <li>mic-rtsim main at 88b3e3b: docs/stress-tbsmp-results.md, sections 1 to 11 (the pack rebuild and bump, method, the side-by-side run and both controls, the spark profile, districts, trains, addon compat, DS-10, what broke, the viewer, choices and open questions). The pack manifest is research/stress-worlds-2026-10-21-data/tbsmp/pack-manifest.json.</li>
+    <li>Commits: 19aaf5c (Create Encased), 084c3de (Garnished), 54bc16c (Sophisticated Storage), 5059d6c (Carry On range).</li>
+    <li>The survey, at d8fdaea: research/stress-worlds-smp-2026-10-21.md (sections 1 to 6) and research/stress-worlds-2026-10-21.md (sections 1 to 8); audit numbers from research/stress-worlds-2026-10-21-data/audits/ (audit_world.py over every region file, 0 read errors).</li>
+    <li>docs/stress-worlds-results.md sections 1, 4 and 5, for the four earlier worlds used in stress runs. DECISIONS.md rows ST1 and ST2.</li>
     <li>TBSMP Season 2: archive.org/details/world_202606 (uploaded by a season 2 player, dated 2025-12-18). Create PR #9513: github.com/Creators-of-Create/Create/pull/9513.</li>
   </ul>
 </details>
 
 </main>
 
-<footer data-ss-react="off">Built for Ben from the mic-rtsim research notes on 21 October 2026. Private page.</footer>
+<footer data-ss-react="off">Built for Ben from the mic-rtsim research notes and stress results on 21 October 2026. Private page.</footer>
 
 </body>
 </html>
