@@ -14,14 +14,17 @@ import java.util.Locale;
 public record GlassReport(int compile, int rounds, boolean converged, int nodes, int edges, double solveMicros,
                           long windowStart, long windowTicksDone, long windowTicksTarget, int windowsCompleted,
                           int verdict, int strikes, int solves, int demoted, long latency, Checksum checksum,
-                          List<Good> goods) {
+                          Replay replay, List<Good> goods) {
 
     /** How a good is judged. */
     public static final int EXACT = 0, BOUNDED = 1, UNBOUNDED = 2;
     /** A window's verdict. */
     public static final int NONE = 0, PASS = 1, FAIL = 2;
 
-    public static final int HEADER = 33, GOOD_STRIDE = 16;
+    public static final int HEADER = 41, GOOD_STRIDE = 16;
+
+    /** What replays the district ({@code glass::report::replay_model}). */
+    public static final int REPLAY_NONE = 0, REPLAY_BLACK_BOX = 1, REPLAY_GLASS = 2;
 
     /** Why a window was thrown away or a sweep not counted ({@code glass::report::discard}); index = reason. */
     public static final String[] DISCARDS = {"none", "no sweep", "dropped records", "not live", "edit", "revision",
@@ -68,6 +71,32 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
 
         private static String reason(int r) {
             return r >= 0 && r < DISCARDS.length ? DISCARDS[r] : "reason " + r;
+        }
+    }
+
+    /**
+     * The district's replay while unloaded (header slots 33 to 40, G2): which model replays it
+     * ({@link #REPLAY_NONE}, {@link #REPLAY_BLACK_BOX}, {@link #REPLAY_GLASS}), the tick its replay started
+     * (-1 none), the regimes entered and breakpoints handled since the compile, regimes that fell back to
+     * the black box as oscillating, cut edges between live and simulated nodes, whether a window of the
+     * compile passed (G-B4), and goods the residual replays as learned sources.
+     */
+    public record Replay(int model, long since, int regimes, int breakpoints, int oscillations, int cutEdges,
+                         boolean eligible, int learnedSources) {
+
+        public String modelName() {
+            return switch (model) {
+                case REPLAY_NONE -> "none";
+                case REPLAY_BLACK_BOX -> "black box";
+                case REPLAY_GLASS -> "glass";
+                default -> "model " + model;
+            };
+        }
+
+        public String summary() {
+            return String.format(Locale.ROOT, "replay %s%s, %s, %d regimes, %d breakpoints, %d oscillations, %d cut edges, %d learned sources",
+                    modelName(), since < 0 ? "" : " since " + since, eligible ? "eligible" : "not eligible", regimes, breakpoints,
+                    oscillations, cutEdges, learnedSources);
         }
     }
 
@@ -131,8 +160,10 @@ public record GlassReport(int compile, int rounds, boolean converged, int nodes,
             discards[i] = (long) v[26 + i];
         Checksum c = new Checksum((long) v[16], (long) v[17], (int) v[18], (int) v[19], (int) v[20], (long) v[21],
                 (int) v[22], (long) v[23], (long) v[24], (int) v[25], discards);
+        Replay rp = new Replay((int) v[33], (long) v[34], (int) v[35], (int) v[36], (int) v[37], (int) v[38], v[39] != 0,
+                (int) v[40]);
         return new GlassReport((int) v[0], (int) v[1], v[2] != 0, (int) v[3], (int) v[4], v[5], (long) v[6], (long) v[7],
-                (long) v[8], (int) v[9], (int) v[10], (int) v[11], (int) v[13], (int) v[14], (long) v[15], c,
+                (long) v[8], (int) v[9], (int) v[10], (int) v[11], (int) v[13], (int) v[14], (long) v[15], c, rp,
                 List.copyOf(goods));
     }
 

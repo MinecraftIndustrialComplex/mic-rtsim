@@ -31,6 +31,9 @@ rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
 # The world model (docs/boundary.md §10).
 rtsim-space.workspace = true
+# The viewer's part format and every module's layers, for the view tap (VIEWER.md §5.2).
+rtsim-parts.workspace = true
+rtsim-layers.workspace = true
 mic-native-rt.workspace = true
 jni.workspace = true
 
@@ -41,3 +44,5 @@ proptest.workspace = true
 mic-native-host.workspace = true
 # The fake Java side the tests drive the engine with, shared with the headless host.
 rtsim-host = { path = "../rtsim-host" }
+# The view tap test checks each part's CRC.
+crc32fast.workspace = true

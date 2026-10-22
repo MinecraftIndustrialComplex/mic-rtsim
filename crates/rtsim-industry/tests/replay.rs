@@ -47,8 +47,11 @@ fn boxed(
             requires: requires.map(d),
             latency,
             enabled: true,
+            deadline: None,
+            min_run: 0,
         }],
         space: None,
+        bounds: Vec::new(),
     }
 }
 
@@ -72,6 +75,8 @@ fn coupled() -> MemberSpec {
         requires: None,
         latency: 0,
         enabled: true,
+        deadline: None,
+        min_run: 0,
     });
     a.procs.push(ProcSpec {
         id: 0x100,
@@ -85,6 +90,8 @@ fn coupled() -> MemberSpec {
         requires: None,
         latency: 0,
         enabled: true,
+        deadline: None,
+        min_run: 0,
     });
     a
 }

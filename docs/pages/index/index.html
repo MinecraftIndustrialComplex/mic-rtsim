@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mic-rtsim for Ben</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, footer {
+  max-width: 820px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(30px, 5vw, 42px); margin: 40px 0 8px; letter-spacing: -0.01em; }
+h2 { font-size: clamp(22px, 3vw, 26px); margin: 0 0 12px; }
+h3 { font-size: 18px; margin: 20px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+a { color: var(--accent); }
+.dek { color: var(--muted); font-size: 16.5px; }
+section { padding: 30px 0 8px; border-top: 1px solid var(--line); margin-top: 26px; }
+.pages { list-style: none; padding: 0; margin: 0; }
+.pages li { max-width: none; padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 2px 16px; }
+.pages li:last-child { border-bottom: 0; }
+.pages a { font-weight: 600; font-size: 19px; text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.pages a:hover, .pages a:focus { text-decoration: underline; }
+.pages .date { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; align-self: center; }
+.pages .what { grid-column: 1 / -1; color: var(--ink); font-size: 16.5px; max-width: 40em; }
+.pages .new { font-size: 14px; color: var(--accent); font-weight: 600; margin-left: 8px; }
+.coming { color: var(--muted); font-size: 16px; margin-top: 10px; }
+.wait { list-style: none; padding: 0; margin: 0; }
+.wait > li { max-width: none; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 6px; margin-bottom: 10px; }
+.wait .head { font-weight: 600; margin-bottom: 4px; }
+.wait .count { font-variant-numeric: tabular-nums; }
+.wait p { font-size: 16.5px; margin-bottom: 8px; }
+.wait ul { font-size: 16px; padding-left: 1.2em; margin: 4px 0 10px; }
+.wait ul li { margin-bottom: 4px; }
+details { border-top: 1px solid var(--line); padding: 10px 0; }
+details:last-of-type { border-bottom: 1px solid var(--line); }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; }
+details ul { font-size: 16px; padding-left: 1.2em; margin: 4px 0 12px; }
+details li { margin-bottom: 5px; }
+.muted { color: var(--muted); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 0.86em; background: #ffffff; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+<main>
+
+<header data-ss-id="hub-header">
+  <h1 data-ss-id="hub-title">mic-rtsim for Ben</h1>
+  <p class="dek" data-ss-id="hub-dek">Every page about mic-rtsim, newest first, and what is waiting on you. Updated 21 October 2026.</p>
+</header>
+
+<section id="pages" data-ss-id="pages" data-ss-section>
+  <h2 data-ss-id="pages-h">Pages</h2>
+  <ul class="pages" data-ss-id="page-list">
+    <li data-ss-id="page-test-worlds">
+      <a href="https://spacesheep.dev/@benmac/rtsim-create-test-worlds">Big Create Test Worlds</a><span class="date">21 Oct</span>
+      <span class="what">Updated with the TBSMP result: rtsim runs on TBSMP Season 2's own pack with all 11 dimensions, at about 0.6 ms a tick, after three small fixes for Create addons MIC lacks. No decisions.</span>
+    </li>
+    <li data-ss-id="page-oil-gate">
+      <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate">Dragons Guard Oil</a><span class="date">21 Oct</span>
+      <span class="what">The oil gate's dragon half, built: fire dragons need oil to breathe fire, nest near the fields and raid the districts that work them, and a dry one fights with bite and claws. The gate's own arrivals stay off after failing the danger test at site 1. 5 questions.</span>
+    </li>
+    <li data-ss-id="page-viewer">
+      <a href="https://spacesheep.dev/@benmac/rtsim-viewer">The New Viewer</a><span class="date">21 Oct</span>
+      <span class="what">The redesigned map before and after: Create's own track, trains drawn as their cars, factories you can read and no furnace clutter, with the ports to open on the laptop. 6 things still open, none waiting on you.</span>
+    </li>
+    <li data-ss-id="page-equilibrium">
+      <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium">Population Equilibrium</a><span class="date">21 Oct</span>
+      <span class="what">How every kind comes back after you wipe it out, slower each time you farm it: about one boss a year from a camped site, herds that never die out, factions that raid only when it pays, and a world that holds steady for ten real years alone. 6 decisions.</span>
+    </li>
+    <li data-ss-id="page-mowzie">
+      <a href="https://spacesheep.dev/@benmac/rtsim-mowzie">Mowzie's Mobs Factions</a><span class="date">21 Oct</span>
+      <span class="what">A Frostmaw that comes to hate your railway and robs its trains, and an Umvuthana tribe that sends an envoy for gold. Both come back after you kill them and survive an uninstall. After the seventh check its camp-body sync is being rewritten. 7 decisions.</span>
+    </li>
+    <li data-ss-id="page-gregtech">
+      <a href="https://spacesheep.dev/@benmac/rtsim-gregtech-lag">rtsim and GregTech Lag</a><span class="date">21 Oct</span>
+      <span class="what">Mostly no: the famous lag is in the loaded base, and GregTech is fixing its causes upstream. rtsim fits only bases kept chunk-loaded for output. No decisions.</span>
+    </li>
+    <li data-ss-id="page-any-pack">
+      <a href="https://spacesheep.dev/@benmac/rtsim-any-pack">rtsim on Any Pack</a><span class="date">21 Oct</span>
+      <span class="what">Already runs non-Create factories with no plugin; the four small fixes for other packs, the top gaps, the plan in slices, and 4 decisions.</span>
+    </li>
+    <li data-ss-id="page-create-addon">
+      <a href="https://spacesheep.dev/@benmac/rtsim-create-addon">Standalone Create addon</a><span class="date">21 Oct</span>
+      <span class="what">Easy to package, not ready to ship: what releasing the native library and the factory sim as a Create addon involves, and 4 decisions.</span>
+    </li>
+    <li data-ss-id="page-briefing">
+      <a href="https://spacesheep.dev/@benmac/oil-coin-ships-and-map">Oil, Coin, Ships and Map</a><span class="date">20 Oct</span>
+      <span class="what">The oil gate, the money sink, player ship voyages and the viewer. You approved every recommendation (BR-ALL).</span>
+    </li>
+    <li data-ss-id="page-glassbox">
+      <a href="https://spacesheep.dev/@benmac/rtsim-glass-box">Glass Box Factories</a><span class="date">20 Oct</span>
+      <span class="what">How rtsim compiles a distant Create factory into a model it replays exactly, checked against what it measured.</span>
+    </li>
+    <li data-ss-id="page-scale">
+      <a href="https://spacesheep.dev/@benmac/rtsim-scale-ladder">rtsim Scale Ladder</a><span class="date">19 Oct</span>
+      <span class="what">What the world sim holds at each scale, from one chunk to a galaxy, and the trick that keeps each scale affordable.</span>
+    </li>
+  </ul>
+  <p class="coming" data-ss-id="pages-coming">Coming: the Mowzie's Mobs plan once its camp-body sync is rewritten as one reconciler.</p>
+</section>
+
+<section id="waiting" data-ss-id="waiting" data-ss-section>
+  <h2 data-ss-id="waiting-h">Waiting on you: 7 groups need an answer, 30 choices stand unless you object</h2>
+
+  <ul class="wait" data-ss-id="wait-list">
+    <li data-ss-id="wait-anypack">
+      <div class="head"><span class="count">4</span> decisions on rtsim for any pack</div>
+      <p>Whether "any pack" is a goal, how storage networks and wireless links are modelled, the machine model for non-Create mods, and the release shape. G0 to G3 get built either way: G1 and G2 fix MIC, G0 serves the addon. <a href="https://spacesheep.dev/@benmac/rtsim-any-pack#decide">Recommendations on the page</a>.</p>
+    </li>
+    <li data-ss-id="wait-addon">
+      <div class="head"><span class="count">4</span> decisions on the standalone Create addon</div>
+      <p>What goes public, the license, the name, and when. <a href="https://spacesheep.dev/@benmac/rtsim-create-addon#decide">Recommendations on the page</a>.</p>
+    </li>
+    <li data-ss-id="wait-mowzie">
+      <div class="head"><span class="count">7</span> decisions on the Mowzie's Mobs plan</div>
+      <p>Where the conflict module's Java half lives (MZ-1, which blocks every conflict plugin), what comes back after a boss dies and which Mowzie's items stay (MZ-4), what an ambush does to a train (MZ-5), whom a line's grudge falls on (MZ-13), the grove's people (MZ-11), which bosses leave home (MZ-3) and the tribute (MZ-6). Nothing is built. <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#decide">Recommendations on the page</a>.</p>
+    </li>
+    <li data-ss-id="wait-equilibrium">
+      <div class="head"><span class="count">6</span> decisions on population equilibrium and renewal</div>
+      <p>How an emptied village comes back (EQ-1, which reopens your "no villagers for now"), whether a roosting dragon is a saved vanilla mob (EQ-2, which reopens P3), where the site ledger lives in the world save (EQ-3), how fast a killed Frostmaw returns (EQ-4, the delay MZ-4 defers to), when factions fight (EQ-5) and whether one renewal rule binds every kind (EQ-6). Nothing is built. <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium#decide">Recommendations on the page</a>.</p>
+    </li>
+    <li data-ss-id="wait-oilgate">
+      <div class="head"><span class="count">5</span> questions on the oil gate's dragon half</div>
+      <p>What makes the gate's own dragon flights dangerous enough to switch on (Q1: a bigger draw and a re-measure over 5 runs a site), the fuel reserve's size (Q2: 600 rather than today's 100, which lasts about three streams), whether drinking stays free of the theft cap (Q3), whether a lost visitor's visit ends (Q4) and a cheap biome check before the oil lookup on new chunks (Q5). It is built and runs on today's settings until you answer. <a href="https://spacesheep.dev/@benmac/rtsim-oil-gate#decide">Recommendations on the page</a>.</p>
+    </li>
+    <li data-ss-id="wait-stress">
+      <div class="head"><span class="count">4</span> stress-world follow-ups, recommended but not built</div>
+      <ul>
+        <li>Server heap for big Create worlds: <code>-Xms</code> equal to <code>-Xmx</code>, at least 8 GB.</li>
+        <li>Tell players not to bring 1.19.2 worlds, which lose item data on upgrade.</li>
+        <li>Put cargo trains in the synthetic stress generator (station learning has only seen a passenger metro).</li>
+        <li>Spread the 5-minute district rescan over several ticks.</li>
+      </ul>
+    </li>
+    <li data-ss-id="wait-deploy">
+      <div class="head"><span class="count">9</span> deploy items (DR1 to DR9), on hold under DR-0</div>
+      <p>They come back when you restart the server deploy. DR1, an Ice and Fire crash, blocks it; the others are heap, watchdog, deploy order, pack scripts and the glass box setting on the host.</p>
+    </li>
+    <li data-ss-id="wait-tp19">
+      <div class="head">Low priority: TP19</div>
+      <p>Should Deep Time get a public layout API? It overlaps the addon's deeptime-format question.</p>
+    </li>
+  </ul>
+
+  <h3 data-ss-id="stand-h">Built on my recommendation; each stands unless you object</h3>
+
+  <details data-ss-id="stand-g2">
+    <summary>Glass box replay G2: 13 (branch feat/glassbox-g2)</summary>
+    <ul>
+      <li>1. Package routing by address: model addresses in G3.</li>
+      <li>3. Over-fed loops with P at most 2: keep predicting a stall (G2-38).</li>
+      <li>4. About a tick lost per breakpoint: keep, it stays below the control (G2-12, G2-20).</li>
+      <li>5. The start hold repeats its latency on each unload: keep (G2-6).</li>
+      <li>6. Parts sharing a hub: keep the hub envelope (G2-22).</li>
+      <li>7. Fallback when nothing was learned: freeze (G2-7).</li>
+      <li>8. Hold a whole node on moving frames: keep (G2-6).</li>
+      <li>9. A dead factory stays eligible.</li>
+      <li>10. Recompile churn on package loops: fix volatile properties one at a time.</li>
+      <li>11. Exit test verdict on the native engine; the stub is a smoke check.</li>
+      <li>12. Large bases bounded, not solved: keep, add a convergence accelerator (G2-58).</li>
+      <li>13. Loaded but non-ticking chunks: a G3 Java check of those chunks.</li>
+      <li>14. A chunk counts as ticking only with entities loaded and <code>isPositionTicking</code>.</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-sink">
+    <summary>Money sink: 7 (docs/choices-money-sink.md)</summary>
+    <ul>
+      <li>Work prices stay placeholders (a lamp costs 0.08 coin) until priced by the recipe graph (MSC3).</li>
+      <li>Caps count census residents, not houses (MSC4).</li>
+      <li>A broken work is never rebought.</li>
+      <li>One work in flight per village (MSC13).</li>
+      <li>Golems are bought only under threat (MSC5).</li>
+      <li>Tribute stays a quarter of the purse a season (MS-5, placeholder).</li>
+      <li>A golem adds 5 fear against a village's 15 (MSC51, placeholder).</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-tbsmp">
+    <summary>TBSMP compat: 2 (docs/stress-tbsmp-results.md)</summary>
+    <ul>
+      <li>Slice and Dice's slicer stays unmodelled until a MIC pack carries it.</li>
+      <li>The Carry On plugin accepts Carry On 2.2.2 and later (5059d6c).</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-journal">
+    <summary>Journal barrier: 4 (docs/choices-journal-barrier.md)</summary>
+    <ul>
+      <li>Keep the 10 s wait and the 3 held saves (JB4).</li>
+      <li>The C2ME path stays untested on a real C2ME world; watch the log at first start (JB3).</li>
+      <li>No early retry of a held journal write; the next autosave takes it (JB6).</li>
+      <li>Fsync the noted region files when DSYNC is off (JB3).</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-repair">
+    <summary>Repair: 2 (docs/choices-repair.md)</summary>
+    <ul>
+      <li>Repair schematics drop at the damage rather than going to the district owner (R15).</li>
+      <li>Belts print only with "Replace Block Entities"; a Schematicannon mixin only if belts break often (R17).</li>
+    </ul>
+  </details>
+
+  <details data-ss-id="stand-legpurge">
+    <summary>Leg purge: 2 (docs/choices-leg-purge.md)</summary>
+    <ul>
+      <li>The world's meta page stays written whole each snapshot until about 1,000 nodes (LP11).</li>
+      <li>Pressure saves wait while a save awaits WORLD_SAVED (LP12).</li>
+    </ul>
+  </details>
+</section>
+
+</main>
+<footer data-ss-react="off">Private pages for Ben, built from the mic-rtsim repos. Each page lists its sources at the end.</footer>
+</body>
+</html>

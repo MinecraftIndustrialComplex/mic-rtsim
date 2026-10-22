@@ -9,6 +9,8 @@
 //! - [`homes`]: a player's home from a decaying counter (P26's recommendation).
 //! - [`index`]: a static spatial index of prey (villages and roads).
 //! - [`infra`]: player infrastructure as prey, through the industry threat interface.
+//! - [`oil`]: the oil gate (OILGATE.md): the oil field index, the dragons' oil reserve, field
+//!   flights, refuelling and sensing industry near oil.
 //! - [`boundary`]: the records the Ice and Fire plugin speaks (docs/boundary.md §6) and their
 //!   codec.
 //! - [`engine`]: [`engine::Dragons`], every dragon's life as events on one timing wheel.
@@ -33,6 +35,7 @@ pub mod herds;
 pub mod homes;
 pub mod index;
 pub mod infra;
+pub mod oil;
 mod persist;
 pub mod prey;
 pub mod species;

@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
@@ -168,6 +169,71 @@ public final class IndustryGameTests {
                     record("aDistrictIsDetectedAcrossShaftsAndNamed", "after split", d + " and " + split + ", not learnable " + d.notLearnable);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * I7, I8: the engine knows a district chunk is loaded only from IND_CHUNK_LOADED. A district made in chunks
+     * that are already loaded (their ChunkEvent.Load came before the district) reports each of them after its
+     * declaration, and one that grows reports the chunk it gained, once: the chunks with an IND_CHUNK_LOADED
+     * since the test began are Java's loaded set after the detection and after the change. Without them a
+     * partly loaded district (one chunk not ticking) replayed its running chunks too, and its reconciles waited
+     * for a load that never came (the G2 exit test's partial variant).
+     */
+    @GameTest(template = YARD, batch = "industry_24", timeoutTicks = 400)
+    public static void aDistrictMadeInLoadedChunksReportsThemLoaded(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        long start = helper.getLevel().getGameTime();
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx - 1, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        BlockState shaft = block("create:shaft").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X);
+        for (int x = bx; x <= bx + 3; x++)
+            set(helper, new BlockPos(x, y, z), shaft);
+        playerPlaced(helper, chestPos);
+        long[] id = {0};
+        BlockPos far = new BlockPos(bx + 16, y, z);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, chestPos);
+                    check("the chest's chunk is in a district", d != null);
+                    check("the district has the two chunks the shaft touches, not " + d.chunks.size(), d.chunks.size() == 2);
+                    id[0] = d.id;
+                    checkLoadedReported(d, start, 2);
+                })
+                .thenExecute(() -> {
+                    record("aDistrictMadeInLoadedChunksReportsThemLoaded", "detected", ind().district(id[0]) + ", loads "
+                            + loadsReported(id[0], start));
+                    for (int x = bx + 4; x <= bx + 16; x++)
+                        set(helper, new BlockPos(x, y, z), shaft);
+                    ind().districts().rescanNow(helper.getLevel());
+                })
+                .thenWaitUntil(() -> {
+                    District d = ind().district(id[0]);
+                    check("the district grew to three chunks, not " + d.chunks.size(), d.chunks.size() == 3 && d.chunks.contains(chunk(far)));
+                    checkLoadedReported(d, start, 3);
+                    record("aDistrictMadeInLoadedChunksReportsThemLoaded", "grown", d + ", loads " + loadsReported(d.id, start));
+                })
+                .thenSucceed();
+    }
+
+    /** The district's IND_CHUNK_LOADED since {@code from}: chunk to how many times it was reported. */
+    private static Map<Long, Integer> loadsReported(long district, long from) {
+        Map<Long, Integer> out = new HashMap<>();
+        for (ByteBuffer r : received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, district))
+            if (r.getLong(Obs.GAME_TIME) >= from)
+                out.merge(ChunkPos.asLong(r.getInt(IndRecords.ChunkLoaded.X), r.getInt(IndRecords.ChunkLoaded.Z)), 1, Integer::sum);
+        return out;
+    }
+
+    /** Every chunk of {@code d} is loaded (Java's set), each reported loaded exactly once since {@code from}. */
+    private static void checkLoadedReported(District d, long from, int chunks) {
+        check("Java counts " + chunks + " loaded chunks, not " + ind().districts().loadedChunks(d), ind().districts().loadedChunks(d) == chunks);
+        Map<Long, Integer> loads = loadsReported(d.id, from);
+        for (long c : d.chunks)
+            check("chunk " + new ChunkPos(c) + " of the district was reported loaded once, not " + loads.getOrDefault(c, 0) + " times",
+                    loads.getOrDefault(c, 0) == 1);
+        check("only the district's chunks were reported loaded: " + loads.keySet(), d.chunks.containsAll(loads.keySet()));
     }
 
     /**
@@ -946,6 +1012,8 @@ public final class IndustryGameTests {
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         playerPlaced(helper, vaultPos);
         long[] id = {0};
+        long[] through = {0};
+        int[] stateAtMark = {0};
         Object[] mark = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -953,9 +1021,17 @@ public final class IndustryGameTests {
                     check("district", d != null);
                     id[0] = d.id;
                 })
-                .thenWaitUntil(() -> check("its load state went to the engine", ind().district(id[0]).loadState() >= 0))
+                .thenWaitUntil(() -> check("Java worked out its load state", ind().district(id[0]).loadState() >= 0))
+                // Java journals the district and its load state in the tick it notices them, and the engine
+                // receives them only at a later publish (the native engine a step later still): the mark must
+                // come after the engine has everything journaled so far, or this district's own first records
+                // land after it.
+                .thenExecute(() -> through[0] = RtsimSession.current().boundary().journal().nextObsSeq() - 1)
+                .thenWaitUntil(() -> check("the engine received everything journaled through " + through[0],
+                        engine().maxObsSeq() >= through[0] && receivedThrough(through[0])))
                 .thenExecute(() -> {
                     mark[0] = lastReceived();
+                    stateAtMark[0] = ind().district(id[0]).loadState();
                     ind().diagnostics().warn(id[0], "test", "a test warning");
                     District d = ind().district(id[0]);
                     StringBuilder sb = new StringBuilder();
@@ -998,10 +1074,19 @@ public final class IndustryGameTests {
                 // send its own load state meanwhile.
                 .thenExecute(() -> {
                     int sent = sentSince(mark[0], id[0]);
-                    check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since)",
-                            sent == 0);
+                    check("producing the output sent the engine nothing for the district (" + sent + " load state or district records since;"
+                            + " load state " + stateAtMark[0] + " at the mark, " + ind().district(id[0]).loadState() + " now)", sent == 0);
                 })
                 .thenSucceed();
+    }
+
+    /** True once the engine's received log holds a record at or past {@code seq} (it arrives in sequence order). */
+    private static boolean receivedThrough(long seq) {
+        var all = engine().received();
+        for (int i = all.size() - 1; i >= 0; i--)
+            if (all.get(i).obsSeq() >= seq)
+                return true;
+        return false;
     }
 
     /** The newest record in the engine's received log, of any kind; null when it is empty. */

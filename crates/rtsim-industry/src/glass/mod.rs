@@ -22,6 +22,7 @@ pub mod graph;
 pub mod lp;
 pub mod q;
 pub mod records;
+pub mod replay;
 pub mod report;
 pub mod solve;
 pub mod store;
@@ -57,6 +58,9 @@ pub struct GlassStats {
     pub probe_sets_sent: u64,
     pub demotions: u64,
     pub probe_samples: u64,
+    /// Glass replays started, and those that fell back to the black box (§4.5).
+    pub replays: u64,
+    pub fallbacks: u64,
 }
 
 /// The glass box's state across districts.
@@ -119,6 +123,8 @@ impl Glass {
                                 }
                                 dg.compiled = Some(comp);
                                 dg.not_compilable = None;
+                                // A new compile gets its own chance at the glass replay (§4.5).
+                                dg.fallback = None;
                                 self.stats.compiles_accepted += 1;
                             }
                             Err(_) => self.stats.compiles_invalid += 1,
@@ -214,6 +220,11 @@ impl Glass {
         }
         if let Some(c) = dg.compiled.as_mut() {
             c.discard(at, tun);
+            // An edit: the compile no longer matches the blocks until a window passes again or
+            // Java recompiles (G-B3, G-B4); no glass replay meanwhile.
+            if reason == discard::EDIT {
+                c.edited = true;
+            }
         }
     }
 

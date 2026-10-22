@@ -104,7 +104,7 @@ pub(super) struct Link {
     pub(super) engine: Industry,
     /// Java's names for the dictionaries industry records use, per world: dimension, GOOD, NAME
     /// and BLOCK_STATE (Java resends them at every session start, before any record using them).
-    java_names: HashMap<(u32, u32), String>,
+    pub(super) java_names: HashMap<(u32, u32), String>,
     /// The GOOD, NAME and BLOCK_STATE ids sent as DICT commands this session. The engine's ids for
     /// these kinds are Java's own (F2), so they need no table of their own.
     dict_sent: HashSet<(u32, u32)>,
@@ -966,6 +966,84 @@ impl Engine {
             .report(DistrictId(district))
             .map(|r| r.to_f64s())
     }
+
+    /// The industry engine's own log lines about `district` from tick `from` on, oldest first,
+    /// one `"<tick> <words>"` per line (replay starts, breakpoints, "glass replay falls back: ..."):
+    /// the G2 exit GameTests log why a district replayed the way it did. Empty unless the engine
+    /// keeps its log (test sessions). Between steps.
+    pub fn industry_notes(&self, district: u64, from: u64) -> Vec<String> {
+        let st = lock(&self.state);
+        notes(&st.industry.engine, district, from)
+    }
+
+    /// One district's threat state for tests (the roof gate, OG-11), flat: whether the engine
+    /// has it (1 or 0), watched, presence (0 unloaded, 1 partial, 2 live), loaded chunks, exposed
+    /// blocks and the roofless ones, blocks waiting to be destroyed, attack reports; then the last
+    /// report's tick, skipped (0 no, 1 watched, 2 cooldown, 3 other), strength through, defender,
+    /// survived, survivors and blocks destroyed; then the engine's threats taken, attacks and
+    /// attacks skipped; then the link's commands queued and kept, written, dropped, failed by
+    /// Java, the front command's name waits, and the module switch (1 on). Between steps.
+    pub fn industry_threat_probe(&self, district: u64) -> Vec<f64> {
+        use rtsim_industry::district::Presence;
+        use rtsim_industry::obs::BlockFlags;
+        let st = lock(&self.state);
+        let l = &st.industry;
+        let mut v = vec![0.0; 25];
+        if let Some(d) = l.engine.district(DistrictId(district)) {
+            let exposed = &d.defence.exposed;
+            v[0] = 1.0;
+            v[1] = if d.watched { 1.0 } else { 0.0 };
+            v[2] = match d.presence {
+                Presence::Unloaded => 0.0,
+                Presence::Partial => 1.0,
+                Presence::Live => 2.0,
+            };
+            v[3] = d.loaded_chunks.len() as f64;
+            v[4] = exposed.len() as f64;
+            v[5] = exposed
+                .iter()
+                .filter(|b| b.flags & BlockFlags::ROOFLESS != 0)
+                .count() as f64;
+            v[6] = d.destroy_pending.values().map(Vec::len).sum::<usize>() as f64;
+            v[7] = d.attacks.len() as f64;
+            if let Some(a) = d.attacks.back() {
+                v[8] = a.at.0 as f64;
+                v[9] = match a.skipped {
+                    None => 0.0,
+                    Some("watched") => 1.0,
+                    Some("cooldown") => 2.0,
+                    Some(_) => 3.0,
+                };
+                if let Some(o) = a.outcome {
+                    v[10] = o.through;
+                    v[11] = o.defender;
+                    v[12] = o.survived;
+                }
+                v[13] = f64::from(a.survivors);
+                v[14] = f64::from(a.destroyed);
+            }
+        }
+        v[15] = l.stats.threats as f64;
+        v[16] = l.engine.stats.attacks as f64;
+        v[17] = l.engine.stats.attacks_skipped as f64;
+        v[18] = l.queue.len() as f64;
+        v[19] = l.outbox.len() as f64;
+        v[20] = l.stats.commands_written as f64;
+        v[21] = l.stats.dropped as f64;
+        v[22] = l.stats.results_failed as f64;
+        v[23] = f64::from(l.name_waits);
+        v[24] = if l.enabled { 1.0 } else { 0.0 };
+        v
+    }
+}
+
+fn notes(engine: &Industry, district: u64, from: u64) -> Vec<String> {
+    engine
+        .log
+        .iter()
+        .filter(|e| e.district == district && e.tick >= from)
+        .map(|e| format!("{} {}", e.tick, e.what))
+        .collect()
 }
 
 /// The glass check offline, for the stub engine's GameTests (choice GB80): a fresh industry engine
@@ -974,7 +1052,58 @@ impl Engine {
 /// the link does, and returns `district`'s report as [`Engine::glass_report`] would. The engine
 /// is deterministic, so the stub's run is checked by the same code as the native one.
 pub fn glass_offline(stream: &[u8], district: u64) -> Result<Option<Vec<f64>>, String> {
+    // Commands go nowhere offline: nothing applies them, as in G1 nothing changes the world.
+    let engine = offline(stream, |_| {})?;
+    Ok(engine
+        .glass
+        .report(DistrictId(district))
+        .map(|r| r.to_f64s()))
+}
+
+/// The replay offline, for the stub engine's G2 exit GameTests: the engine of [`glass_offline`]
+/// over the same `stream`, and every IND_CHUNK_RECONCILE it would have sent `district`, once per
+/// op id (a pending reconcile is resent at the chunk's next load with its op id), as flat triples
+/// `(inventory, good, delta)`: the inventory's index in the district, the good's dictionary id
+/// and the signed count. Nothing applies them offline, so the engine keeps every one pending; the
+/// world's IND_RECONCILE_RESULTs in the stream close them as on the native engine. After the last
+/// record the engine steps one tick, so a reconcile planned for the step after a chunk's load
+/// (coverage settles once a tick's records are in, I7) is not missed.
+pub fn glass_replay_offline(stream: &[u8], district: u64) -> Result<Vec<i64>, String> {
+    let d = DistrictId(district);
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut take = |cmds: Vec<Cmd>| {
+        for c in cmds {
+            if let Cmd::ChunkReconcile(r) = c
+                && r.district == d
+                && seen.insert(r.op)
+            {
+                for x in &r.deltas {
+                    out.extend([i64::from(x.inventory), i64::from(x.good.0), x.delta]);
+                }
+            }
+        }
+    };
+    let mut engine = offline(stream, &mut take)?;
+    let next = engine.now() + 1;
+    engine.advance_to(next);
+    take(engine.drain_commands());
+    Ok(out)
+}
+
+/// The engine log offline: [`Engine::industry_notes`] of the engine of [`glass_offline`] over
+/// `stream`, for the stub engine's G2 exit GameTests.
+pub fn glass_notes_offline(stream: &[u8], district: u64, from: u64) -> Result<Vec<String>, String> {
+    let engine = offline(stream, |_| {})?;
+    Ok(notes(&engine, district, from))
+}
+
+/// The record loop of [`glass_offline`] and [`glass_replay_offline`]: a fresh engine ingests every
+/// industry record of `stream` and `each` gets the commands drained after each one. The engine
+/// keeps its log, as in a test session ([`glass_notes_offline`]); the log changes nothing else.
+fn offline(stream: &[u8], mut each: impl FnMut(Vec<Cmd>)) -> Result<Industry, String> {
     let mut engine = Industry::new(0, Tunables::default(), Tick::ZERO);
+    engine.log_enabled = true;
     let mut started = false;
     let mut at = 0;
     while at < stream.len() {
@@ -1020,13 +1149,9 @@ pub fn glass_offline(stream: &[u8], district: u64) -> Result<Option<Vec<f64>>, S
             engine.advance_to(t.at);
         }
         engine.ingest(&t);
-        // Commands go nowhere offline: nothing applies them, as in G1 nothing changes the world.
-        engine.drain_commands();
+        each(engine.drain_commands());
     }
-    Ok(engine
-        .glass
-        .report(DistrictId(district))
-        .map(|r| r.to_f64s()))
+    Ok(engine)
 }
 
 // ---- tests ----------------------------------------------------------------------------------
@@ -1065,6 +1190,12 @@ mod tests {
         stream.extend_from_slice(&[0x01, 0x00, 0x08, 0x00, 0, 0, 0, 0]);
         assert_eq!(glass_offline(&stream, 5), Ok(None));
         assert!(glass_offline(&stream[..stream.len() - 3], 5).is_err());
+        // The replay offline reads the same loop: no district, no reconcile (tests/industry.rs runs
+        // a mill through it).
+        assert_eq!(glass_replay_offline(&stream, 5), Ok(Vec::new()));
+        assert!(glass_replay_offline(&stream[..stream.len() - 3], 5).is_err());
+        assert_eq!(glass_notes_offline(&stream, 5, 0), Ok(Vec::new()));
+        assert!(glass_notes_offline(&stream[..stream.len() - 3], 5, 0).is_err());
     }
 
     #[test]

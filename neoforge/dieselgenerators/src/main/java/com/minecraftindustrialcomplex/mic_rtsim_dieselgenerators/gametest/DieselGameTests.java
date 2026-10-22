@@ -5,9 +5,22 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.api.OilSource;
+import com.minecraftindustrialcomplex.mic_rtsim.oil.OilSources;
+import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.CdgOilSource;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.DieselOilPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.MicRtsimDieselGenerators;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.BiomeManager;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
+import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.level.ChunkPos;
@@ -80,4 +93,107 @@ public final class DieselGameTests {
                 .thenExecute(() -> check("still 4,998,766", OilChunksSavedData.getChunkOilAmount(helper.getLevel(), cp) == 4_998_766))
                 .thenSucceed();
     }
+
+    /**
+     * The oil gate's sampler on Diesel's own method (OILGATE.md §4.1, §7 test 4): the core's oil source for
+     * the level is this plugin's ({@code getBaseOilAmount}, source 2), and what one sample costs on chunks
+     * in memory and on chunks never generated. An ungenerated chunk answers as it does once generated (a
+     * survey ahead of generation and the new-chunk sample agree). The GameTest world's flat preset has one
+     * fixed biome, so its ungenerated samples are a floor; the 12,800 uncached lookups a real overworld pays
+     * are timed on vanilla's overworld multi-noise source for the same seed (what {@code ServerLevel.getBiome}
+     * reads for a chunk not in memory).
+     */
+    @GameTest(template = "yard", batch = "diesel_oil_bench", timeoutTicks = 1200)
+    public static void oilSamplesCostLittleOnGeneratedChunks(GameTestHelper helper) {
+        String test = "oilSamplesCostLittleOnGeneratedChunks";
+        ServerLevel level = helper.getLevel();
+        OilSource src = OilSources.forLevel(level);
+        check("the level's oil source is Diesel's (" + (src == null ? "none" : src.name()) + ")", src instanceof CdgOilSource && src.source() == OilSource.CDG);
+        ChunkPos here = new ChunkPos(helper.absolutePos(BlockPos.ZERO));
+        java.util.Random rnd = new java.util.Random();
+        int ox = 200_000 + rnd.nextInt(400_000), oz = 200_000 + rnd.nextInt(400_000);
+        long[] gen = new long[3], ungen = new long[3], noise = new long[3]; // samples, nanos, max
+        List<ChunkPos> far = new java.util.ArrayList<>();
+        for (int i = 0; i < 48; i++)
+            far.add(new ChunkPos(ox + 3 * i, oz));
+        int[] farAmount = new int[far.size()];
+        int[] cursor = {0}, withOil = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    for (int dx = -3; dx <= 3; dx++)
+                        for (int dz = -3; dz <= 3; dz++) {
+                            ChunkPos p = new ChunkPos(here.x + dx, here.z + dz);
+                            if (level.getChunkSource().getChunk(p.x, p.z, ChunkStatus.BIOMES, false) == null)
+                                continue;
+                            long t0 = System.nanoTime();
+                            int a = src.baseOil(level, p);
+                            time(gen, System.nanoTime() - t0);
+                            check("the same as getBaseOilAmount", a == OilChunksSavedData.getBaseOilAmount(level, p));
+                            if (a > 0)
+                                withOil[0]++;
+                        }
+                    check("chunks in memory sampled (" + gen[0] + ")", gen[0] >= 9);
+                })
+                .thenExecuteFor(far.size() / 4 + 1, () -> {
+                    for (int k = 0; k < 4 && cursor[0] < far.size(); k++, cursor[0]++) {
+                        ChunkPos p = far.get(cursor[0]);
+                        check("never generated", level.getChunkSource().getChunk(p.x, p.z, ChunkStatus.BIOMES, false) == null);
+                        long t0 = System.nanoTime();
+                        farAmount[cursor[0]] = src.baseOil(level, p);
+                        time(ungen, System.nanoTime() - t0);
+                    }
+                })
+                .thenExecute(() -> {
+                    check("every far chunk sampled", ungen[0] == far.size());
+                    int agree = 0;
+                    for (int i = 0; i < 6; i++) {
+                        ChunkPos p = far.get(i * 7);
+                        level.getChunk(p.x, p.z); // generates it now
+                        int after = src.baseOil(level, p);
+                        check("chunk " + p + " answers " + farAmount[i * 7] + " before it generates and " + after + " after", after == farAmount[i * 7]);
+                        agree++;
+                    }
+                    // What a real overworld's ungenerated chunk costs: vanilla's overworld multi-noise biomes for this seed,
+                    // through BiomeManager as ServerLevel.getBiome reads them for a chunk not in memory, at CDG's 12,800 points.
+                    var reg = level.registryAccess();
+                    MultiNoiseBiomeSource biomes = MultiNoiseBiomeSource.createFromPreset(
+                            reg.registryOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getHolderOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+                    RandomState state = RandomState.create(reg.asGetterLookup(), NoiseGeneratorSettings.OVERWORLD, level.getSeed());
+                    BiomeManager manager = new BiomeManager((x, y, z) -> biomes.getNoiseBiome(x, y, z, state.sampler()), BiomeManager.obfuscateSeed(level.getSeed()));
+                    BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+                    int distinct = 0;
+                    for (int i = 0; i < 8; i++) {
+                        ChunkPos p = far.get(far.size() - 1 - i);
+                        List<Holder<Biome>> seen = new java.util.ArrayList<>();
+                        long t0 = System.nanoTime();
+                        for (int x = p.getMinBlockX(); x <= p.getMaxBlockX(); x++)
+                            for (int y = 60; y < 110; y++)
+                                for (int z = p.getMinBlockZ(); z <= p.getMaxBlockZ(); z++) {
+                                    Holder<Biome> b = manager.getBiome(m.set(x, y, z));
+                                    if (!seen.contains(b))
+                                        seen.add(b);
+                                }
+                        time(noise, System.nanoTime() - t0);
+                        distinct += seen.size();
+                    }
+                    record(test, "source", src.name() + " (source " + src.source() + "), " + withOil[0] + " of " + gen[0] + " chunks in memory hold oil");
+                    record(test, "in memory", gen[0] + " samples: mean " + us(gen) + " us, max " + gen[2] / 1000 + " us");
+                    record(test, "never generated (flat preset, one biome)", ungen[0] + " samples: mean " + us(ungen) + " us, max " + ungen[2] / 1000 + " us");
+                    record(test, "a real overworld's uncached biomes", noise[0] + " chunks x 12,800 lookups on vanilla's overworld multi-noise source: mean "
+                            + us(noise) + " us a chunk, max " + noise[2] / 1000 + " us (" + distinct / Math.max(1, noise[0]) + " biomes a chunk)");
+                    record(test, "agree", agree + " chunks give the same oil before and after they generate");
+                })
+                .thenSucceed();
+    }
+
+    private static void time(long[] t, long nanos) {
+        t[0]++;
+        t[1] += nanos;
+        t[2] = Math.max(t[2], nanos);
+    }
+
+    private static String us(long[] t) {
+        return t[0] == 0 ? "-" : String.format("%.1f", t[1] / 1000.0 / t[0]);
+    }
 }
+

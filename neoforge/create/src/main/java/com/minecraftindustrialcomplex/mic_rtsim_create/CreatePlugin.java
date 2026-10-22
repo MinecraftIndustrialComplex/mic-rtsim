@@ -64,12 +64,14 @@ import java.util.function.Consumer;
  *   <li><b>Industrial</b>: kinetics, pipes, chutes, funnels, tunnels and the logistics blocks, so shafts,
  *       cogs, belts, pipes and chutes join the chunks they touch into one district (I2, §8.5);
  *       decoration (copycats, clipboards, signals, curved tracks) is not;</li>
- *   <li><b>links</b>: chain conveyor connections, which span gaps;</li>
+ *   <li><b>links</b>: chain conveyor connections, which span gaps, and a fan's air current, from the fan to
+ *       the belts and depots it reaches and from those to the fans that reach them ({@link FanLinks}, G2-73);</li>
  *   <li><b>canonical inventories</b>: a vault's or tank's controller ({@code IMultiBlockEntityContainer});</li>
  *   <li><b>boundary inventories</b>: the inventory behind each packager ({@code targetInventory}, I3), and
  *       postboxes and frogports, whose packages are counted by their contents;</li>
  *   <li><b>stations</b>: a district is named after its first station ({@code GlobalStation.name});</li>
- *   <li><b>crossings</b>: rotation or a belt, chute or pipe across a district boundary (§6 case 1);</li>
+ *   <li><b>crossings</b>: rotation or a belt, chute or pipe across a district boundary (§6 case 1), and a
+ *       fan's current across it (a conveyor's code, G2-75);</li>
  *   <li><b>sweep flags</b>: a creative motor or crate (creative), an overstressed network.</li>
  * </ul>
  * Every member read here is in PATCHES.md (P7).
@@ -121,6 +123,15 @@ public final class CreatePlugin implements IndustryPlugin {
                     || be instanceof FlapDisplayBlockEntity || be instanceof BacktankBlockEntity
                     || isSource(be) || isMover(be));
         return be instanceof PackagerBlockEntity;
+    }
+
+    /**
+     * Links between chunks: a fan's blown stream (FanLinks). A chain conveyor is not one (SEC-1): it carries
+     * packages between districts, it does not join them.
+     */
+    @Override
+    public void links(BlockEntity be, Consumer<BlockPos> out) {
+        FanLinks.links(be, out);
     }
 
     /**
@@ -189,6 +200,10 @@ public final class CreatePlugin implements IndustryPlugin {
 
     @Override
     public int crossing(BlockEntity a, BlockEntity b) {
+        // a fan's current works items on the other side, as a belt carries them; a fan and a belt are both
+        // kinetic, but no rotation crosses there
+        if (FanLinks.blows(a, b) || FanLinks.blows(b, a))
+            return IndRecords.NotLearnable.CONVEYOR_CROSSES;
         if (a instanceof KineticBlockEntity && b instanceof KineticBlockEntity)
             return IndRecords.NotLearnable.ROTATION_CROSSES;
         if (conveyor(a) && conveyor(b))

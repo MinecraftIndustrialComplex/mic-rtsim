@@ -1509,6 +1509,19 @@ fn the_inverted_flag_is_display_only() {
 /// golden sheets from n11 through n1 and n12 (one per 64 ticks) onto the loop at n18: the only way a
 /// sheet reaches the host is round the loop. `perm[id]` is node `id`'s index in the records.
 fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
+    precision_mechanisms_fed(perm, 9, 64)
+}
+
+/// Corpus 6's compile with the andesite funnel moving a sheet per `funnel` ticks onto a feeder belt
+/// that takes an entry per `feeder` ticks (64 at 8 RPM, 8 at 64 RPM).
+fn precision_mechanisms_fed(perm: &[u32; 19], funnel: u32, feeder: u32) -> (Graph, [u32; 5]) {
+    let (b, stores) = precision_builder(perm, funnel, feeder);
+    (b.graph(), stores)
+}
+
+/// [`precision_mechanisms_fed`]'s builder: the stores are inventories 0 (cogs, zinc here), 1
+/// (golden sheets), 2 (nuggets, coal), 3 (large cogs, copper) and 4 (the output).
+fn precision_builder(perm: &[u32; 19], funnel: u32, feeder: u32) -> (B, [u32; 5]) {
     let mut b = B::default();
     let r = b.recipe(
         &[(SHEET, 1), (COAL, 5), (ZINC, 5), (COPPER, 5)],
@@ -1541,7 +1554,7 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
                 NodeKind::Mover,
                 model::FUNNEL_ANDESITE,
                 0,
-                vec![shared(1, 9)],
+                vec![shared(1, funnel)],
             ),
             2..=4 => b.node(NodeKind::Mover, model::CHUTE, 0, vec![shared(16, 7)]),
             5 => b.node(
@@ -1560,7 +1573,7 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
             9 => b.store(0),
             10 => b.store(3),
             11 => b.store(1),
-            12 => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 64)]),
+            12 => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, feeder)]),
             13 => b.store(2),
             _ => b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]),
         };
@@ -1579,17 +1592,23 @@ fn precision_mechanisms(perm: &[u32; 19]) -> (Graph, [u32; 5]) {
     b.edge(n(1), n(12));
     b.edge_k(EdgeKind::Chute, n(13), n(3), &[]);
     b.edge_k(EdgeKind::Chute, n(3), n(5), &[]);
-    b.edge_k(EdgeKind::Belt, n(15), n(5), &[]);
-    b.edge_k(EdgeKind::Belt, n(5), n(6), &[]);
-    b.edge_k(EdgeKind::Belt, n(6), n(7), &[]);
+    // A belt's own links are THROUGH (the chain along belt A, and C's from its start to the
+    // feeder's segment); a belt's end into the next belt, and the feeder's, are insertions.
+    let through = |b: &mut B, from: u32, to: u32| {
+        let e = b.edge_k(EdgeKind::Belt, from, to, &[]);
+        b.edges[e as usize].flags |= edge_flags::THROUGH;
+    };
+    through(&mut b, n(15), n(5));
+    through(&mut b, n(5), n(6));
+    through(&mut b, n(6), n(7));
     b.edge_k(EdgeKind::Belt, n(7), n(14), &[]);
     b.edge_k(EdgeKind::Belt, n(17), n(15), &[]);
     b.edge(n(14), n(0));
     b.edge_k(EdgeKind::Belt, n(14), n(16), &[]);
-    b.edge_k(EdgeKind::Belt, n(16), n(18), &[]);
+    through(&mut b, n(16), n(18));
     b.edge_k(EdgeKind::Belt, n(18), n(17), &[]);
     b.edge_k(EdgeKind::Belt, n(12), n(18), &[]);
-    (b.graph(), [n(11), n(9), n(10), n(13), n(8)])
+    (b, [n(11), n(9), n(10), n(13), n(8)])
 }
 
 #[test]
@@ -1628,6 +1647,402 @@ fn a_loop_carries_its_back_edge_from_round_to_round_in_any_node_order() {
         let sigma = (POISSON_SLOPE_FACTOR * brass.var_rate * 2400.0).sqrt() / 2400.0 * MIN;
         assert!((1.3..1.4).contains(&sigma), "{sigma}");
     }
+}
+
+/// Corpus 6's held goods: sheets, the three parts (zinc, copper, coal stand in for them).
+fn precision_regime(g: &Graph, [sheets, cogs, large, nug, _]: [u32; 5]) -> Regime {
+    regime(
+        g,
+        &[
+            (sheets, &[SHEET]),
+            (cogs, &[ZINC]),
+            (large, &[COPPER]),
+            (nug, &[COAL]),
+        ],
+    )
+}
+
+#[test]
+fn an_overfed_sequenced_loop_stalls() {
+    // The feeder at 64 RPM (an entry per 8 ticks) under the andesite funnel's sheet per 9 ticks:
+    // f = 1/9 a tick against the host's mu = 1/30 (GB72). Every belt slot fills and nothing
+    // leaves: L is 0 for every good of the loop, U still the capacity.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    let reversed: [u32; 19] = std::array::from_fn(|i| 18 - i as u32);
+    let rotated: [u32; 19] = std::array::from_fn(|i| ((i + 7) % 19) as u32);
+    for perm in [identity, reversed, rotated] {
+        let (g, stores) = precision_mechanisms_fed(&perm, 9, 8);
+        let rg = precision_regime(&g, stores);
+        let s = run(&g, &rg);
+        assert!(s.converged, "{perm:?}: {} rounds", s.rounds);
+        for good in [BRASS, SHEET, ZINC, COPPER, COAL] {
+            let b = bound(&s, good);
+            assert_eq!((b.in_l, b.out_l), (Q::ZERO, Q::ZERO), "{perm:?} {good:?}");
+            assert_eq!(b.class, class::BOUNDED, "{perm:?} {good:?}");
+        }
+        // U keeps the loop's capacity, 4/5 of a product per 30 ticks: the pass-through deployers
+        // carry it in the LP too (GB72).
+        let brass = bound(&s, BRASS);
+        assert!(brass.in_u >= Q::new(2, 75), "{perm:?}: U {:?}", brass.in_u);
+        assert_eq!(brass.var_rate, 0.0);
+        // Switched off (the old section 3.4): the loop settles at the host's capacity, a
+        // sheet per 30 ticks, the funnel held back to it.
+        let old = solve::solve_with(&g, &rg, &GlassTunables::default(), true, false);
+        assert!(old.converged);
+        assert_eq!(bound(&old, BRASS).in_l, Q::new(2, 75), "{perm:?}");
+        assert_eq!(bound(&old, SHEET).out_l, Q::new(1, 30), "{perm:?}");
+    }
+}
+
+#[test]
+fn a_sequenced_loop_fed_at_its_machines_rate_runs() {
+    // f = mu = 1/30 (a funnel a sheet per 30 ticks): the population does not grow, the loop runs
+    // at the feed (GB72, f > mu only stalls). 1/31 runs below it, as corpus 6's 1/64 does.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    for (funnel, brass) in [(30, Q::new(2, 75)), (31, Q::new(4, 155))] {
+        let (g, stores) = precision_mechanisms_fed(&identity, funnel, 8);
+        let s = run(&g, &precision_regime(&g, stores));
+        assert!(s.converged);
+        assert_eq!(bound(&s, BRASS).in_l, brass, "funnel {funnel}");
+        assert_eq!(bound(&s, SHEET).out_l, Q::new(1, i64::from(funnel)));
+    }
+}
+
+/// A belt segment M2 where the through traffic from M1 (zinc, `zinc` an entry a tick into M1)
+/// meets a side insertion (copper, `copper` a tick): M2 takes an entry per 4 ticks.
+fn belt_merge(zinc: u32, copper: u32) -> (Graph, Regime) {
+    let mut b = B::default();
+    let zs = b.store(0);
+    let cs = b.store(2);
+    let out = b.store(1);
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let fz = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_BRASS,
+        0,
+        vec![shared(1, zinc)],
+    );
+    let fc = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_BRASS,
+        0,
+        vec![shared(1, copper)],
+    );
+    let m1 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 4)]);
+    let m2 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(1, 4)]);
+    b.edge(zs, fz);
+    b.edge(fz, m1);
+    // The belt's own link comes first by index: the rule, not the index, puts it last.
+    let link = b.edge_k(EdgeKind::Belt, m1, m2, &[]);
+    b.edges[link as usize].flags |= edge_flags::THROUGH;
+    b.edge(cs, fc);
+    b.edge(fc, m2);
+    b.edge(m2, out);
+    let g = b.graph();
+    let rg = regime(&g, &[(zs, &[ZINC]), (cs, &[COPPER])]);
+    (g, rg)
+}
+
+#[test]
+fn a_side_insertion_goes_before_the_through_traffic() {
+    // Saturated: the insertion brings 1/8 and takes it, the through traffic gets the 1/8 left of
+    // the segment's 1/4 (canInsertAtFromSide never waits for passing items). Which gaps each gets
+    // at saturation is timing: bounded (GB72).
+    let (g, rg) = belt_merge(2, 8);
+    let s = run(&g, &rg);
+    assert!(s.converged);
+    let (zinc, copper) = (bound(&s, ZINC), bound(&s, COPPER));
+    assert_eq!((zinc.in_l, copper.in_l), (Q::new(1, 8), Q::new(1, 8)));
+    assert_eq!((zinc.class, copper.class), (class::BOUNDED, class::BOUNDED));
+    assert_eq!(zinc.why.0, why::SHARED_CAPACITY);
+    assert!(zinc.in_u >= Q::new(1, 4) && copper.in_u >= Q::new(1, 8));
+    // Switched off (the old section 3.3): the main line first, nothing left for the side.
+    let old = solve::solve_with(&g, &rg, &GlassTunables::default(), false, true);
+    assert_eq!(bound(&old, ZINC).in_l, Q::new(1, 4));
+    assert_eq!(bound(&old, COPPER).in_l, Q::ZERO);
+}
+
+#[test]
+fn a_belt_merge_below_its_capacity_is_exact() {
+    // 1/16 through and 1/8 inserted fit in 1/4: both flow in full, in either order.
+    let (g, rg) = belt_merge(16, 8);
+    for first in [true, false] {
+        let s = solve::solve_with(&g, &rg, &GlassTunables::default(), first, true);
+        let (zinc, copper) = (bound(&s, ZINC), bound(&s, COPPER));
+        assert_eq!((zinc.in_l, copper.in_l), (Q::new(1, 16), Q::new(1, 8)));
+        assert_eq!((zinc.class, copper.class), (class::EXACT, class::EXACT));
+    }
+}
+
+// ---- a large base (the OmegaSrv rehearsal, docs/deploy-rehearsal-omegasrv.md 6.7) ------------------
+
+/// A base shaped like the rehearsal's main one (1,258 nodes, 1,790 edges, 138 multi-input
+/// machines): `cells` overflow loops, each a store feeding a belt loop through a funnel, a tunnel
+/// on the loop that gives a press what it takes and sends the rest round again, and the press's
+/// output funnelled into its own store. Each cell has its own goods, and its feed runs a little
+/// above its press, so the loop fills a little each round (`feed` ticks per item against the
+/// press's 10).
+fn base_shaped(cells: u32, feed: u32) -> B {
+    let mut b = B::default();
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    for c in 0..cells {
+        let (a, o) = (Good(100 + 2 * c), Good(101 + 2 * c));
+        let input = b.store(2 * c);
+        let out = b.store(2 * c + 1);
+        let r = b.recipe(&[(a, 1)], &[(o, 1)]);
+        let f_in = b.node(
+            NodeKind::Mover,
+            model::FUNNEL_ANDESITE,
+            0,
+            vec![shared(1, feed)],
+        );
+        let l1 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]);
+        let j = b.junction(rule::PREFER_FIRST);
+        let l2 = b.node(NodeKind::Mover, model::BELT, 0, vec![shared(64, 2)]);
+        let p = b.machine(model::PRESS, r, 1, 10);
+        let f_out = b.node(
+            NodeKind::Mover,
+            model::FUNNEL_ANDESITE,
+            0,
+            vec![shared(1, 2)],
+        );
+        b.edge(input, f_in);
+        b.edge(f_in, l1);
+        b.edge(l1, j);
+        b.edge(j, p);
+        b.edge(j, l2);
+        b.edge(l2, l1);
+        b.edge(p, f_out);
+        b.edge(f_out, out);
+    }
+    b
+}
+
+fn base_regime(b: &B, g: &Graph, cells: u32) -> Regime {
+    let held: Vec<(u32, Vec<Good>)> = (0..cells)
+        .map(|c| {
+            let v = b
+                .nodes
+                .iter()
+                .position(|n| n.inventory == Some(2 * c))
+                .expect("store") as u32;
+            (v, vec![Good(100 + 2 * c)])
+        })
+        .collect();
+    let held: Vec<(u32, &[Good])> = held.iter().map(|(v, g)| (*v, g.as_slice())).collect();
+    regime(g, &held)
+}
+
+/// A plain line beside the base, its own part: a store of good 900 (inventory 900), a funnel an item
+/// per 20 ticks, a press, a funnel, a store (inventory 901) for good 901. Returns the input store.
+fn add_line(b: &mut B) -> u32 {
+    let shared = |batch: u32, ticks: u32| RateEntry {
+        flags: rate_flags::SHARED,
+        ..entry(None, batch, ticks)
+    };
+    let input = b.store(900);
+    let out = b.store(901);
+    let r = b.recipe(&[(Good(900), 1)], &[(Good(901), 1)]);
+    let f_in = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_ANDESITE,
+        0,
+        vec![shared(1, 20)],
+    );
+    let p = b.machine(model::PRESS, r, 1, 10);
+    let f_out = b.node(
+        NodeKind::Mover,
+        model::FUNNEL_ANDESITE,
+        0,
+        vec![shared(1, 2)],
+    );
+    b.edge(input, f_in);
+    b.edge(f_in, p);
+    b.edge(p, f_out);
+    b.edge(f_out, out);
+    input
+}
+
+#[test]
+fn a_base_sized_solve_stops_within_its_work() {
+    // The rehearsal's main base ran every solve to its 278-round cap, 2.4 to 5.4 s inside the
+    // engine's step (docs/deploy-rehearsal-omegasrv.md 6.7, DR9). Its shape here: 138 over-fed
+    // loops, each needing 8,614 rounds to settle (its belt fills at 1/90 an item a round, then
+    // the funnel is squeezed back to the press). The solve stops at `glass.solveWorkMax`, a count
+    // and not a clock (choice G2-58), and every part, still moving, has L = 0 and is bounded
+    // (choice G2-60): at or below the 1/10 a tick each press runs at.
+    let cells = 138;
+    let b = base_shaped(cells, 9);
+    let g = b.graph();
+    let rg = base_regime(&b, &g, cells);
+    let tun = GlassTunables::default();
+    let per = solve::Solver::new(&g, &rg, &tun).round_work();
+    let s = solve::solve(&g, &rg, &tun);
+    assert_eq!(g.multi_input, cells);
+    assert!(!s.converged && s.starved);
+    assert_eq!(s.work, u64::from(s.rounds) * per);
+    assert!(s.work <= tun.solve_work_max && s.work + per > tun.solve_work_max);
+    assert!(s.rounds < tun.rounds_per_multi_input * cells + tun.rounds_base);
+    assert!(s.lp_work <= tun.lp_work_max);
+    for c in 0..cells {
+        let (a, o) = (bound(&s, Good(100 + 2 * c)), bound(&s, Good(101 + 2 * c)));
+        assert_eq!((a.class, o.class), (class::BOUNDED, class::BOUNDED));
+        assert_eq!((a.out_l, o.in_l), (Q::ZERO, Q::ZERO), "cell {c}");
+        assert!(
+            a.out_u >= Q::new(1, 10) && o.in_u >= Q::new(1, 10),
+            "cell {c}"
+        );
+    }
+    // One cell, given the rounds: the fixed point the bounds hold.
+    let one = base_shaped(1, 9);
+    let g1 = one.graph();
+    let rg1 = base_regime(&one, &g1, 1);
+    let all = GlassTunables {
+        rounds_base: 20_000,
+        solve_work_max: u64::MAX / 4,
+        ..GlassTunables::default()
+    };
+    let full = solve::solve(&g1, &rg1, &all);
+    assert!(full.converged && !full.starved, "{} rounds", full.rounds);
+    assert_eq!(full.rounds, 8_614);
+    assert_eq!(bound(&full, Good(100)).out_l, Q::new(1, 10));
+    assert_eq!(bound(&full, Good(101)).in_l, Q::new(1, 10));
+}
+
+#[test]
+fn a_base_with_more_lps_than_its_work_keeps_the_linear_bound_for_the_rest() {
+    // 400 cells: 1,600 goods and directions to bound, each a small LP that costs its set-up
+    // (`LP_WORK_FIXED`, choice G2-62). The LP work stops them part way; the goods past it keep
+    // the linear bound, which is above the LP's and never below L.
+    let cells = 400;
+    let b = base_shaped(cells, 9);
+    let g = b.graph();
+    let rg = base_regime(&b, &g, cells);
+    let tun = GlassTunables::default();
+    let s = solve::solve(&g, &rg, &tun);
+    let all = solve::solve(
+        &g,
+        &rg,
+        &GlassTunables {
+            lp_work_max: u64::MAX / 4,
+            ..GlassTunables::default()
+        },
+    );
+    assert!(s.lp_work <= tun.lp_work_max);
+    assert!(s.lp_skipped > 0 && all.lp_skipped == 0, "{}", s.lp_skipped);
+    assert!(s.lp_solves < all.lp_solves);
+    assert_eq!((s.rounds, s.work), (all.rounds, all.work));
+    for c in 0..cells {
+        for good in [Good(100 + 2 * c), Good(101 + 2 * c)] {
+            let (a, f) = (bound(&s, good), bound(&all, good));
+            assert_eq!((a.class, a.in_l, a.out_l), (f.class, f.in_l, f.out_l));
+            assert!(a.in_u >= f.in_u && a.out_u >= f.out_u, "cell {c}");
+        }
+    }
+}
+
+/// `cargo test --release -p rtsim-industry --lib base_solve_cpu -- --ignored --nocapture`: the
+/// base-shaped solve's CPU with the work budget and without it (the rounds cap alone, as before
+/// choice G2-58), 5 runs each, side by side.
+#[test]
+#[ignore]
+fn base_solve_cpu() {
+    let unbounded = GlassTunables {
+        solve_work_max: u64::MAX / 4,
+        lp_work_max: u64::MAX / 4,
+        ..GlassTunables::default()
+    };
+    for cells in [10u32, 138, 400] {
+        let b = base_shaped(cells, 9);
+        let g = b.graph();
+        let rg = base_regime(&b, &g, cells);
+        let mut rows = Vec::new();
+        for (name, tun) in [
+            ("budget", GlassTunables::default()),
+            ("cap only", unbounded.clone()),
+        ] {
+            let mut t = Vec::new();
+            let mut sol = Solution::default();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                sol = solve::solve(&g, &rg, &tun);
+                t.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            t.sort_by(f64::total_cmp);
+            rows.push(format!(
+                "{name}: median {:.2} ms (min {:.2}, max {:.2}), rounds {}, work {}, lp work {}",
+                t[2], t[0], t[4], sol.rounds, sol.work, sol.lp_work
+            ));
+        }
+        println!(
+            "cells {cells} ({} nodes): {}",
+            g.nodes.len(),
+            rows.join("; ")
+        );
+    }
+}
+
+#[test]
+fn an_unconverged_solve_bounds_only_the_parts_still_moving() {
+    // A line beside an over-fed loop: the loop stops at `glass.solveRoundsMax` (4 rounds) still
+    // filling, the line settled in its first. The line keeps its exact L; the loop's part is
+    // bounded at L = 0 (choice G2-60).
+    let mut b = base_shaped(1, 9);
+    let input = add_line(&mut b);
+    let g = b.graph();
+    let mut rg = base_regime(&b, &g, 1);
+    rg.held[input as usize] = vec![Good(900)];
+    let s = run(&g, &rg);
+    assert!(!s.converged && !s.starved);
+    assert_eq!(s.rounds, 4);
+    let (lin, lout) = (bound(&s, Good(900)), bound(&s, Good(901)));
+    assert_eq!((lin.class, lout.class), (class::EXACT, class::EXACT));
+    assert_eq!((lin.out_l, lout.in_l), (Q::new(1, 20), Q::new(1, 20)));
+    let (a, o) = (bound(&s, Good(100)), bound(&s, Good(101)));
+    assert_eq!((a.class, o.class), (class::BOUNDED, class::BOUNDED));
+    assert_eq!((a.out_l, o.in_l), (Q::ZERO, Q::ZERO));
+    // The line alone: the same bounds.
+    let mut alone = B::default();
+    let input = add_line(&mut alone);
+    let g2 = alone.graph();
+    let rg2 = regime(&g2, &[(input, &[Good(900)])]);
+    let s2 = run(&g2, &rg2);
+    assert!(s2.converged);
+    assert_eq!(bound(&s2, Good(900)), lin);
+    assert_eq!(bound(&s2, Good(901)), lout);
+}
+
+#[test]
+fn an_overfed_loop_probe_out_of_work_leaves_its_part_unsettled() {
+    // GB72's stall check runs a probe solve once L settles. With work for L's rounds and none
+    // for the probe, whether the loop jams is not known: the solve is not converged and the
+    // loop's part has L = 0 (choice G2-60), where the full solve finds the jam (L = 0) too.
+    let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+    let (g, stores) = precision_mechanisms_fed(&identity, 9, 8);
+    let rg = precision_regime(&g, stores);
+    let free = solve::solve_with(&g, &rg, &GlassTunables::default(), true, false);
+    assert!(free.converged);
+    let tun = GlassTunables {
+        solve_work_max: free.work,
+        ..GlassTunables::default()
+    };
+    let s = solve::solve(&g, &rg, &tun);
+    assert!(!s.converged && s.starved);
+    assert_eq!(s.rounds, free.rounds);
+    for good in [BRASS, SHEET, ZINC, COPPER, COAL] {
+        let b = bound(&s, good);
+        assert_eq!((b.in_l, b.out_l), (Q::ZERO, Q::ZERO), "{good:?}");
+        assert_eq!(b.class, class::BOUNDED, "{good:?}");
+    }
+    // With the work: the jam itself.
+    let full = run(&g, &rg);
+    assert!(full.converged && full.work > free.work);
 }
 
 // ---- the graph store (F5) and the engine path -------------------------------------------------------
@@ -1971,8 +2386,9 @@ mod engine_path {
 
 // ---- U is never below L (G-B15) ----------------------------------------------------------------------
 
-/// A random DAG of junctions, movers, buffers and machines between an input store and an output
-/// store.
+/// A random DAG of junctions, movers, buffers, machines and belts between an input store and an
+/// output store. A belt's edges from earlier middle nodes are its through traffic (THROUGH) unless
+/// filtered, so belts see side insertions (from the input store) merging into them (GB72).
 fn random_dag(
     kinds: &[(u8, u8, u8)],
     edges: &[(usize, usize, bool)],
@@ -1997,7 +2413,7 @@ fn random_dag(
     let mut mid = Vec::new();
     for &(k, a, t) in kinds {
         let ticks = 1 + u32::from(t % 40);
-        let v = match k % 4 {
+        let v = match k % 5 {
             0 => b.junction(rules[a as usize % rules.len()]),
             1 => b.node(
                 NodeKind::Mover,
@@ -2009,6 +2425,15 @@ fn random_dag(
                 }],
             ),
             2 => b.node(NodeKind::Buffer, model::DEPOT, 0, Vec::new()),
+            4 => b.node(
+                NodeKind::Mover,
+                model::BELT,
+                0,
+                vec![RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 1 + u32::from(a % 4), ticks)
+                }],
+            ),
             _ => {
                 let m = b.machine(model::PRESS, rs[a as usize % 3], 1, ticks);
                 if a % 2 == 0 {
@@ -2036,7 +2461,10 @@ fn random_dag(
             if filt {
                 b.edge_k(EdgeKind::Adjacency, mid[a], mid[c], &[BRASS]);
             } else {
-                b.edge(mid[a], mid[c]);
+                let e = b.edge(mid[a], mid[c]);
+                if b.nodes[mid[c] as usize].model == model::BELT {
+                    b.edges[e as usize].flags |= edge_flags::THROUGH;
+                }
             }
         }
     }
@@ -2055,7 +2483,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
     #[test]
     fn u_is_never_below_l_on_random_dags(
-        kinds in prop::collection::vec((0u8..8, 0u8..16, 0u8..64), 1..10),
+        kinds in prop::collection::vec((0u8..10, 0u8..16, 0u8..64), 1..10),
         edges in prop::collection::vec((0usize..10, 0usize..10, any::<bool>()), 0..16),
         held in prop::array::uniform3(any::<bool>()),
     ) {
@@ -2063,13 +2491,9 @@ proptest! {
         let s = run(&g, &rg);
         for b in &s.goods {
             prop_assert!(b.in_u >= b.in_l && b.out_u >= b.out_l);
-            // Stopped at `glass.solveRoundsMax`, L is not a fixed point (its flows need not fit the
-            // capacities: five parallel edges into one funnel take more rounds) and only the guard
-            // above holds.
-            if !s.converged {
-                continue;
-            }
-            // The guards aside, the relaxation and the LP must contain L's flow.
+            // Stopped at `glass.solveRoundsMax`, the parts still moving have L = 0 and the rest
+            // are at their fixed point (choice G2-60): the relaxation and the LP must contain L's
+            // flow either way.
             prop_assert!(b.in_u_lin >= b.in_l, "linear in {:?} < L {:?}", b.in_u_lin, b.in_l);
             prop_assert!(b.out_u_lin >= b.out_l, "linear out {:?} < L {:?}", b.out_u_lin, b.out_l);
             let l_in = b.in_l.to_f64();
@@ -2079,6 +2503,1536 @@ proptest! {
             }
             if let Some(x) = b.out_u_lp {
                 prop_assert!(x >= l_out - 1e-9 * (1.0 + l_out), "LP out {x} < L {l_out}");
+            }
+        }
+        // Conservation: every mover, junction and buffer passes on what it takes (a belt merge
+        // included, GB72); unconverged, a part still moving takes and passes nothing.
+        {
+            for (v, node) in g.nodes.iter().enumerate() {
+                if !matches!(node.kind, NodeKind::Mover | NodeKind::Junction | NodeKind::Buffer) {
+                    continue;
+                }
+                let flow = |into: bool| -> f64 {
+                    g.edges
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| if into { e.to } else { e.from } as usize == v)
+                        .map(|(i, _)| s.edge_flow[i])
+                        .sum()
+                };
+                let (i, o) = (flow(true), flow(false));
+                prop_assert!((i - o).abs() <= 1e-9 * (1.0 + i), "node {v}: in {i} out {o}");
+            }
+        }
+    }
+}
+
+proptest! {
+    /// A solve cut short by its work (one round) never has an L above the full solve's: the parts
+    /// that settled are at the same fixed point, the rest at 0 (choices G2-58, G2-60); and U
+    /// stays above the full L.
+    #[test]
+    fn a_solve_out_of_work_is_never_above_the_full_one(
+        kinds in prop::collection::vec((0u8..10, 0u8..16, 0u8..64), 1..10),
+        edges in prop::collection::vec((0usize..10, 0usize..10, any::<bool>()), 0..16),
+        held in prop::array::uniform3(any::<bool>()),
+    ) {
+        let (g, rg) = random_dag(&kinds, &edges, &held);
+        let full = run(&g, &rg);
+        prop_assume!(full.converged);
+        let short = GlassTunables { solve_work_max: 1, ..GlassTunables::default() };
+        let s = solve::solve(&g, &rg, &short);
+        prop_assert_eq!(s.rounds, 1);
+        prop_assert!(s.converged || s.starved || full.rounds == 1);
+        for b in &s.goods {
+            let f = full.goods.iter().find(|x| x.good == b.good).expect("same goods");
+            prop_assert!(b.in_l <= f.in_l, "{:?}: in L {:?} above {:?}", b.good, b.in_l, f.in_l);
+            prop_assert!(b.out_l <= f.out_l, "{:?}: out L {:?} above {:?}", b.good, b.out_l, f.out_l);
+            prop_assert!(b.in_u >= f.in_l && b.out_u >= f.out_l, "{:?}: U below the full L", b.good);
+            if !s.converged {
+                prop_assert!(b.class >= f.class || b.in_l == f.in_l && b.out_l == f.out_l);
+            }
+        }
+    }
+}
+
+// ---- the glass replay (G2, GLASSBOX.md §4) -------------------------------------------------------
+
+mod replay_path {
+    use super::*;
+    use crate::cmd::Cmd;
+    use crate::engine::Engine;
+    use crate::glass::check::WindowResult;
+    use crate::glass::report::replay_model;
+    use crate::obs::{DistrictDecl, EditKind, LoadState, Obs, SweepEnd, Timed};
+    use crate::tunables::Tunables;
+
+    fn at(t: u64, obs: Obs) -> Timed {
+        Timed { at: Tick(t), obs }
+    }
+
+    fn feed(e: &mut Engine, t: &Timed) -> Vec<Cmd> {
+        if t.at > e.now() {
+            e.advance_to(t.at);
+        }
+        e.ingest(t);
+        e.drain_commands()
+    }
+
+    /// The district, its inventories (live) and the compile at 0.
+    fn setup(b: &B, invs: u32) -> Vec<Timed> {
+        let mut out = vec![at(
+            0,
+            Obs::District(DistrictDecl {
+                district: D,
+                revision: 1,
+                dim: 0,
+                name: 0,
+                not_learnable: None,
+                inventory_count: invs,
+            }),
+        )];
+        for i in 0..invs {
+            out.push(at(0, Obs::Inventory(inventory(i, &[]).decl)));
+        }
+        out.push(load_state(0, LoadState::Live));
+        for r in b.records(1) {
+            out.push(at(0, Obs::Glass(r)));
+        }
+        out
+    }
+
+    /// One live sweep at `t` of every inventory's contents.
+    fn sweep(out: &mut Vec<Timed>, k: u32, t: u64, contents: &[&[(Good, i64)]]) {
+        for (i, c) in contents.iter().enumerate() {
+            out.push(at(
+                t,
+                Obs::StockSample {
+                    district: D,
+                    inventory: i as u32,
+                    sweep: k,
+                    goods: GoodVec::from_pairs(c.iter().copied()),
+                },
+            ));
+        }
+        out.push(at(
+            t,
+            Obs::SweepEnd(SweepEnd {
+                district: D,
+                sweep: k,
+                records: contents.len() as u32,
+                inventories: contents.len() as u32,
+                live: true,
+                creative: false,
+                overstressed: false,
+            }),
+        ));
+    }
+
+    fn load_state(t: u64, state: LoadState) -> Timed {
+        at(
+            t,
+            Obs::LoadState {
+                district: D,
+                state,
+                ticking_chunks: u32::from(state == LoadState::Live),
+                total_chunks: 1,
+            },
+        )
+    }
+
+    fn engine() -> Engine {
+        let mut e = Engine::new(0, Tunables::default(), Tick::ZERO);
+        for (g, info) in goods() {
+            e.define_good(g, info);
+        }
+        e.session_start(Tick(0));
+        e
+    }
+
+    /// Marks the compile as passed (a window with nothing to learn): the replay's own mechanics,
+    /// without driving a window that matches every regime.
+    fn pass(e: &mut Engine) {
+        let c = e
+            .glass
+            .districts
+            .get_mut(&D)
+            .and_then(|g| g.compiled.as_mut())
+            .expect("a compile");
+        c.passed = Some(WindowResult {
+            start: Tick(0),
+            ticks: 1,
+            verdict: verdict::PASS,
+            goods: Vec::new(),
+            stores: Vec::new(),
+        });
+        c.edited = false;
+    }
+
+    fn deltas(cmds: &[Cmd]) -> BTreeMap<(u32, Good), i64> {
+        let mut out = BTreeMap::new();
+        for c in cmds {
+            if let Cmd::ChunkReconcile(r) = c {
+                for d in &r.deltas {
+                    *out.entry((d.inventory, d.good)).or_default() += d.delta;
+                }
+            }
+        }
+        out
+    }
+
+    /// A press that passed its window replays on the glass model while away, stops when its brass
+    /// runs out, and the load lands each store's change in that store.
+    #[test]
+    fn a_passed_compile_replays_its_press_until_the_brass_runs_out() {
+        let (b, _) = press_line();
+        let mut s = setup(&b, 2);
+        // The press makes a sheet per 10 ticks, as compiled: the window from 1,200 passes.
+        for k in 1..=35u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 1000 - m)], &[(SHEET, m)]]);
+        }
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        let r = e.glass.report(D).expect("a compile");
+        assert!(r.replay.eligible, "a window passed: {:?}", r.verdict);
+        // 650 brass and 350 sheets at 3,500, when the district unloads.
+        feed(&mut e, &load_state(3500, LoadState::Unloaded));
+        e.advance_to(Tick(3501));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(r.replay.model, replay_model::GLASS);
+        assert_eq!(r.replay.since, Some(3500));
+        // 3,000 ticks later: 300 more sheets, never more. The press is held a cycle (the item it
+        // held at the unload is still in it, G2-6), a brass may be in it, and a unit either way
+        // goes to the rates' rounding.
+        e.advance_to(Tick(6500));
+        let st = e.sim_stock(D).expect("replaying");
+        assert!((648..=650).contains(&st.get(SHEET)), "{st:?}");
+        assert!((349..=351).contains(&st.get(BRASS)), "{st:?}");
+        // Long after the brass ran out, the press stopped where the brass did.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        assert!((999..=1000).contains(&st.get(SHEET)), "{st:?}");
+        let r = e.glass.report(D).expect("a compile");
+        assert!(r.replay.breakpoints >= 1);
+        assert_eq!(r.replay.oscillations, 0);
+        // Back: each store's change lands in its own store.
+        let mut cmds = feed(&mut e, &load_state(20_000, LoadState::Live));
+        cmds.extend(feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: BlockPos::default().chunk(0),
+                    applied_epoch: 0,
+                },
+            ),
+        ));
+        let d = deltas(&cmds);
+        assert_eq!(d.get(&(0, BRASS)), Some(&-650), "{d:?}");
+        let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((649..=650).contains(&made), "{d:?}");
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(r.replay.model, replay_model::NONE);
+        e.check_books().expect("books");
+    }
+
+    /// A package written into the brass store's offline buffer while away is the world's own
+    /// change: the press uses it, and the load writes the store's change once (choice G2-14).
+    #[test]
+    fn a_package_into_a_replaying_store_feeds_it_and_is_written_once() {
+        use crate::obs::{Direction, PackageEvent};
+        let (b, _) = press_line();
+        let mut s = setup(&b, 2);
+        for k in 1..=35u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 1000 - m)], &[(SHEET, m)]]);
+        }
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        feed(&mut e, &load_state(3500, LoadState::Unloaded));
+        e.advance_to(Tick(4000));
+        assert_eq!(model(&e), replay_model::GLASS);
+        feed(
+            &mut e,
+            &at(
+                4000,
+                Obs::Package(PackageEvent {
+                    district: D,
+                    inventory: 0,
+                    direction: Direction::In,
+                    address: 0,
+                    packages: 1,
+                    op: None,
+                    goods: GoodVec::from_pairs([(BRASS, 64)]),
+                }),
+            ),
+        );
+        assert_eq!(model(&e), replay_model::GLASS);
+        // 650 + 64 brass at a sheet per 10 ticks: gone by about 11,000.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        assert!((1063..=1064).contains(&st.get(SHEET)), "{st:?}");
+        let mut cmds = feed(&mut e, &load_state(20_000, LoadState::Live));
+        cmds.extend(feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: BlockPos::default().chunk(0),
+                    applied_epoch: 0,
+                },
+            ),
+        ));
+        // The world holds the 650 and the package: the load takes all 714 and adds the sheets.
+        let d = deltas(&cmds);
+        assert_eq!(d.get(&(0, BRASS)), Some(&-714), "{d:?}");
+        let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((713..=714).contains(&made), "{d:?}");
+        e.check_books().expect("books");
+    }
+
+    fn model(e: &Engine) -> u32 {
+        e.glass.report(D).map_or(0, |r| r.replay.model)
+    }
+
+    /// No window passed yet: the compiled district freezes while away (G-B4), with no replay.
+    #[test]
+    fn a_compile_with_no_passed_window_freezes_while_away() {
+        let (b, _) = press_line();
+        let mut s = setup(&b, 2);
+        for k in 1..=10u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 1000 - m)], &[(SHEET, m)]]);
+        }
+        s.push(load_state(1000, LoadState::Unloaded));
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        e.advance_to(Tick(5000));
+        assert!(e.sim_stock(D).is_none());
+        let r = e.glass.report(D).expect("a compile");
+        assert!(!r.replay.eligible);
+        assert_eq!(r.replay.model, replay_model::NONE);
+    }
+
+    /// Brass to a press to a store of sheets a consumer drains (1 per 20 ticks); a threshold switch
+    /// on the sheets stops the press at 100 and restarts it at 20.
+    fn switched_line() -> B {
+        switched_line_with(10, 20, 100, 20)
+    }
+
+    /// The switched line with a press of `press` ticks, a consumer of `consume` ticks, and the
+    /// switch on at `hi` sheets and off at `lo`.
+    fn switched_line_with(press: u32, consume: u32, hi: i64, lo: i64) -> B {
+        let (mut b, p) = press_line();
+        b.nodes[p as usize].rates[0].ticks_num = press;
+        let coal = b.store(2);
+        let burn = b.recipe(&[(SHEET, 1)], &[(COAL, 1)]);
+        let m = b.machine(model::PRESS, burn, 1, consume);
+        b.edge(1, m);
+        b.edge(m, coal);
+        let ctl = b.node(NodeKind::Controller, model::THRESHOLD_SWITCH, 0, Vec::new());
+        b.nodes[ctl as usize].params = [hi, lo, 0, 80];
+        b.edge_k(EdgeKind::Observe, 1, ctl, &[]);
+        let e = b.edge_k(EdgeKind::Control, ctl, p, &[]);
+        b.edges[e as usize].param = CONTROL_STOP_WHEN_ON;
+        b
+    }
+
+    /// The switched line tick by tick, as Create runs it: (brass used, coal made) after `ticks`.
+    fn switched_reference(sheets0: i64, ticks: u64) -> (i64, i64) {
+        let r = switched_reference_lat((10, 20, 100, 20), sheets0, ticks, 0);
+        (r.0, r.1)
+    }
+
+    /// The switch cycles the sheets between 20 and 100 with a period of about 3,200 ticks. The
+    /// replay finds the cycle and runs it in closed form: a few breakpoints for a hundred periods,
+    /// and never more brass pressed than the tick-by-tick reference.
+    #[test]
+    fn a_threshold_switch_cycle_runs_in_closed_form_and_never_above_the_control() {
+        let b = switched_line();
+        let mut s = setup(&b, 3);
+        sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        let span = 320_000;
+        // Conservation on the way: nothing made from nothing, at most a few units in machines.
+        for t in (200..200 + span).step_by(397) {
+            e.advance_to(Tick(t));
+            let st = e.sim_stock(D).expect("replaying");
+            let sum = st.get(BRASS) + st.get(SHEET) + st.get(COAL);
+            assert!((100_080 - 16..=100_080).contains(&sum), "at {t}: {st:?}");
+        }
+        e.advance_to(Tick(200 + span));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert!(
+            r.replay.breakpoints < 40,
+            "a hundred periods in {} breakpoints",
+            r.replay.breakpoints
+        );
+        assert!(
+            e.glass.districts[&D]
+                .replay
+                .as_ref()
+                .is_some_and(|x| x.counts().cycles >= 1)
+        );
+        let st = e.sim_stock(D).expect("replaying");
+        let used = 100_000 - st.get(BRASS);
+        let coal = st.get(COAL);
+        let (ref_used, ref_coal) = switched_reference(80, span);
+        // The consumer never runs above the control: what it made is at most what Create made, and
+        // the item in its cycle (Create counts it when the cycle ends, the replay's continuous
+        // output as it goes: choice G2-21).
+        assert!(coal <= ref_coal + 1, "made {coal}, reference {ref_coal}");
+        assert!(
+            coal as f64 >= ref_coal as f64 * 0.99,
+            "made {coal}, reference {ref_coal}"
+        );
+        // The controller's bound (§4.3): over time the press feeds what the consumer takes, plus
+        // at most the switch's band in the store. Within 1% of Create's own count.
+        assert!(used <= coal + (100 - 80) + 2, "pressed {used}, made {coal}");
+        assert!(
+            (used - ref_used).abs() as f64 <= ref_used as f64 * 0.01,
+            "pressed {used}, reference {ref_used}"
+        );
+        e.check_books().expect("books");
+    }
+
+    /// An edit while away freezes the glass replay: the compile no longer matches the blocks.
+    #[test]
+    fn an_edit_stops_the_glass_replay() {
+        let b = switched_line();
+        let mut s = setup(&b, 3);
+        sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(1000));
+        assert!(e.sim_stock(D).is_some());
+        feed(
+            &mut e,
+            &at(
+                1000,
+                Obs::Edit {
+                    district: D,
+                    kind: EditKind::Broken,
+                    player: (0, 0),
+                    pos: BlockPos::default(),
+                },
+            ),
+        );
+        e.advance_to(Tick(1001));
+        assert!(e.sim_stock(D).is_none(), "frozen after the edit");
+        assert!(!e.glass.report(D).expect("a compile").replay.eligible);
+    }
+
+    /// The same records give the same replay whoever reads it when (the composition rule, O4):
+    /// reading the stock at many ticks on the way changes nothing at the end.
+    #[test]
+    fn reads_on_the_way_do_not_change_the_replay() {
+        let run = |reads: &[u64]| {
+            let b = switched_line();
+            let mut s = setup(&b, 3);
+            sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            pass(&mut e);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            for &t in reads {
+                e.advance_to(Tick(t));
+                e.sim_stock(D);
+            }
+            e.advance_to(Tick(50_000));
+            (
+                e.sim_stock(D),
+                e.glass.report(D).map(|r| r.replay.breakpoints),
+            )
+        };
+        let a = run(&[]);
+        let b = run(&[333, 1601, 1777, 3210, 9999, 17_003, 32_100, 40_000]);
+        assert_eq!(a, b);
+    }
+
+    /// A blaze burner on 1,593 ticks of burn takes coal from the mixer's input store (one per
+    /// 1,600 ticks once its burn falls to 500) while away: its phases are the replay's timers, the
+    /// coal runs out, the burner goes out 500 ticks later, and the mixer stops there. Create's
+    /// count: lit to 1,593 + 16 x 1,600 = 27,193, a craft of 2 brass per 17 ticks.
+    #[test]
+    fn a_heater_burns_its_coal_while_away_then_goes_out_and_the_mixer_stops() {
+        let b = burning_mixer([1593, i64::from(heat::KINDLED), 1600, 500], true);
+        let mut s = setup(&b, 2);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[&[(ZINC, 10_000), (COPPER, 10_000), (COAL, 16)], &[]],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        let crafts = |t: u64| 2 * (t.min(27_193) / 17 - 200 / 17) as i64;
+        let mut seen = Vec::new();
+        for t in [1_000u64, 20_000, 26_000, 30_000, 60_000] {
+            e.advance_to(Tick(t));
+            let st = e.sim_stock(D).expect("replaying");
+            seen.push((t, st.get(BRASS), st.get(COAL), st.get(ZINC)));
+        }
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        for &(t, brass, coal, zinc) in &seen {
+            // Never above Create, at most a craft and a tick per breakpoint below.
+            let c = crafts(t);
+            assert!(
+                brass <= c + 1 && brass >= c - 6,
+                "at {t}: {brass} vs {c}: {seen:?}"
+            );
+            // Coal: one when the burn reaches 500 at 1,093, then one per 1,600 ticks.
+            let took = (t.saturating_sub(1093).div_ceil(1600) as i64).min(16);
+            assert!(
+                (coal - (16 - took)).abs() <= 1,
+                "at {t}: {coal} coal: {seen:?}"
+            );
+            // The recipe: a zinc per 2 brass, nothing made from nothing.
+            assert!(
+                zinc + brass / 2 <= 10_000 && zinc + brass / 2 >= 9_998,
+                "{seen:?}"
+            );
+        }
+        // Out by 27,193: the mixer made nothing more.
+        assert_eq!(seen[3].1, seen[4].1, "{seen:?}");
+        assert_eq!(seen[4].2, 0, "{seen:?}");
+        assert!(r.replay.breakpoints >= 3, "{}", r.replay.breakpoints);
+        e.check_books().expect("books");
+    }
+
+    /// The switched line with the press's output on a belt `lat` ticks long, tick by tick as
+    /// Create runs it: (brass used, coal made, the fewest sheets the store held, switch flips).
+    /// Each machine takes an item when it is idle and has one, and gives its output a cycle later
+    /// (a press on a belt starts when an item reaches it); the switch stops the press taking.
+    fn switched_reference_lat(
+        line: (u64, u64, i64, i64),
+        sheets0: i64,
+        ticks: u64,
+        lat: u64,
+    ) -> (i64, i64, i64, i64) {
+        let (press, consume, hi, lo) = line;
+        let (mut sheets, mut used, mut coal, mut flips) = (sheets0, 0i64, 0i64, 0i64);
+        let mut on = sheets0 >= hi;
+        let mut belt = std::collections::VecDeque::new();
+        let mut least = sheets0;
+        // Ticks left of each machine's cycle (None: idle).
+        let (mut p, mut c): (Option<u64>, Option<u64>) = (None, None);
+        for t in 1..=ticks {
+            if let Some(r) = p {
+                p = (r > 1).then(|| r - 1);
+                if r == 1 {
+                    belt.push_back(t + lat);
+                }
+            }
+            if p.is_none() && !on {
+                used += 1;
+                p = Some(press);
+            }
+            while belt.front().is_some_and(|&a| a <= t) {
+                belt.pop_front();
+                sheets += 1;
+            }
+            if let Some(r) = c {
+                c = (r > 1).then(|| r - 1);
+                if r == 1 {
+                    coal += 1;
+                }
+            }
+            if c.is_none() && sheets > 0 {
+                sheets -= 1;
+                c = Some(consume);
+            }
+            least = least.min(sheets);
+            let next = if sheets >= hi {
+                true
+            } else if sheets <= lo {
+                false
+            } else {
+                on
+            };
+            flips += i64::from(next != on);
+            on = next;
+        }
+        (used, coal, least, flips)
+    }
+
+    /// Latency (§4.4): the press's output reaches the store over a 300-tick belt. A rise waits
+    /// the latency (the lower rate runs meanwhile), so after the switch restarts the press the
+    /// store keeps draining for 300 ticks, to about 5 sheets, as in Create; a fall is at once, so
+    /// the replay never runs ahead of the control.
+    #[test]
+    fn a_rise_waits_the_path_latency_and_the_replay_stays_under_the_control() {
+        let run = |lat: u32| {
+            let mut b = switched_line();
+            b.edges[1].latency = lat;
+            let mut s = setup(&b, 3);
+            sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            pass(&mut e);
+            assert_eq!(
+                e.glass.districts[&D]
+                    .compiled
+                    .as_ref()
+                    .map(|c| c.graph.longest_latency),
+                Some(u64::from(lat))
+            );
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            let span = 100_000u64;
+            let mut least = i64::MAX;
+            for t in (200..200 + span).step_by(7) {
+                e.advance_to(Tick(t));
+                let st = e.sim_stock(D).expect("replaying");
+                let sum = st.get(BRASS) + st.get(SHEET) + st.get(COAL);
+                assert!((100_080 - 16..=100_080).contains(&sum), "at {t}: {st:?}");
+                least = least.min(st.get(SHEET));
+            }
+            e.advance_to(Tick(200 + span));
+            let r = e.glass.report(D).expect("a compile");
+            assert_eq!(
+                r.replay.model,
+                replay_model::GLASS,
+                "{:?}",
+                e.glass.districts[&D].fallback
+            );
+            e.check_books().expect("books");
+            let st = e.sim_stock(D).expect("replaying");
+            (
+                100_000 - st.get(BRASS),
+                st.get(COAL),
+                least,
+                r.replay.breakpoints,
+            )
+        };
+        let span = 100_000;
+        let (used, coal, least, bps) = run(300);
+        let (ref_used, ref_coal, ref_least, _) =
+            switched_reference_lat((10, 20, 100, 20), 80, span, 300);
+        // Never above the control (the item in the consumer's cycle aside, G2-21).
+        assert!(coal <= ref_coal + 1, "made {coal}, reference {ref_coal}");
+        assert!(
+            coal as f64 >= ref_coal as f64 * 0.99,
+            "made {coal}, reference {ref_coal}"
+        );
+        // The press feeds what is taken, plus the switch's band (Create's belt overshoots the
+        // top, the replay's does not, so the two press in different phases).
+        assert!(used <= coal + 20 + 2, "pressed {used}, made {coal}");
+        assert!(
+            (used - ref_used).abs() as f64 <= ref_used as f64 * 0.01 + 40.0,
+            "pressed {used}, reference {ref_used}"
+        );
+        // The store drains through the latency as in Create: down to about 5 sheets.
+        assert!(
+            (ref_least - 2..=ref_least + 2).contains(&least),
+            "{least} vs {ref_least}"
+        );
+        // Without the belt it turns at 20.
+        let (_, _, least0, bps0) = run(0);
+        assert!(least0 >= 18, "{least0}");
+        assert!(bps < 200 && bps0 < 200, "{bps} {bps0} breakpoints");
+    }
+
+    /// A partial load (I7, G-B6): the brass store's chunk runs, the press and the sheet store's do
+    /// not. The cut edge from the live store carries brass from the district's stock across, the
+    /// simulated press makes sheets in its store, and the reload lands both sides.
+    #[test]
+    fn a_partial_load_carries_the_cut_edge_from_the_live_store() {
+        let (mut b, p) = press_line();
+        let far = BlockPos::new(32, 64, 0);
+        b.nodes[p as usize].pos = far;
+        b.nodes[1].pos = far;
+        let mut s = setup(&b, 2);
+        for t in &mut s {
+            if let Obs::Inventory(decl) = &mut t.obs
+                && decl.index == 1
+            {
+                decl.pos = far;
+            }
+        }
+        let near = BlockPos::default().chunk(0);
+        let away = far.chunk(0);
+        for c in [near, away] {
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::ChunkUnloaded {
+                    district: D,
+                    chunk: away,
+                },
+            ),
+        );
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::LoadState {
+                    district: D,
+                    state: LoadState::Partial,
+                    ticking_chunks: 1,
+                    total_chunks: 2,
+                },
+            ),
+        );
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.cut_edges, 1);
+        // A sheet per 10 ticks across the cut, never more; the district's stock pays the brass.
+        e.advance_to(Tick(3200));
+        let st = e.sim_stock(D).expect("replaying");
+        // A cycle's hold at the start (G2-6), and a unit either way to the rates' rounding (a rise
+        // rounds down, a fall away from zero).
+        assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+        assert!(
+            (998..=1000).contains(&(st.get(BRASS) + st.get(SHEET))),
+            "{st:?}"
+        );
+        // The live store held 1,000: the press stops when the cut has carried them all.
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        assert!((999..=1000).contains(&st.get(SHEET)), "{st:?}");
+        e.check_books().expect("books");
+        // Back: the sheets land in their store, the brass leaves the live one (the last brass is
+        // in the press, as in the whole-district replay).
+        let mut cmds = feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: away,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+        cmds.extend(feed(&mut e, &load_state(20_000, LoadState::Live)));
+        e.advance_to(Tick(20_001));
+        cmds.extend(e.drain_commands());
+        let d = deltas(&cmds);
+        let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((999..=1000).contains(&made), "{d:?}");
+        assert_eq!(d.get(&(0, BRASS)), Some(&-1000), "{d:?}");
+        e.check_books().expect("books");
+    }
+
+    /// A partial load with the cut the other way (I7, G-B6): the brass store and the press are
+    /// simulated, the sheet store runs and has room for 312 sheets (8 slots, 200 sheets). A fully
+    /// loaded factory stops pressing once the store is full, so the replay may carry at most that
+    /// room across the cut (G-B2's ceiling), and the reload owes nothing more. Before choice G2-66
+    /// the live store's room was a flag from the compile's regime, not an amount: one with any
+    /// room took every sheet, so the press pressed all 1,000 brass into the cut's `Stock` and the
+    /// reload owed what did not fit (the straddle smoke's water in the m7 exit runs too).
+    #[test]
+    fn a_cut_into_a_live_store_carries_no_more_than_its_room() {
+        let (mut b, p) = press_line();
+        let far = BlockPos::new(32, 64, 0);
+        b.nodes[p as usize].pos = far;
+        b.nodes[0].pos = far;
+        let mut s = setup(&b, 2);
+        for t in &mut s {
+            if let Obs::Inventory(decl) = &mut t.obs {
+                if decl.index == 0 {
+                    decl.pos = far;
+                } else {
+                    decl.item_slots = 8;
+                }
+            }
+        }
+        let near = BlockPos::default().chunk(0);
+        let away = far.chunk(0);
+        for c in [near, away] {
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[(SHEET, 200)]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::ChunkUnloaded {
+                    district: D,
+                    chunk: away,
+                },
+            ),
+        );
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::LoadState {
+                    district: D,
+                    state: LoadState::Partial,
+                    ticking_chunks: 1,
+                    total_chunks: 2,
+                },
+            ),
+        );
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.cut_edges, 1);
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        let pressed = 1000 - st.get(BRASS);
+        // The room fills (the seal is not the store reading full at once).
+        assert!(
+            (300..=312 + 1).contains(&pressed),
+            "pressed {pressed} into 312 of room: {st:?}"
+        );
+        let mut cmds = feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: away,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+        cmds.extend(feed(&mut e, &load_state(20_000, LoadState::Live)));
+        e.advance_to(Tick(20_001));
+        cmds.extend(e.drain_commands());
+        let d = deltas(&cmds);
+        let landed = d.get(&(1, SHEET)).copied().unwrap_or(0);
+        assert!((300..=312).contains(&landed), "pressed {pressed}: {d:?}");
+        let owed = e.district(D).expect("known").owed.get(SHEET);
+        assert_eq!(owed, 0, "the district owes {owed} sheets");
+        e.check_books().expect("books");
+    }
+
+    /// The cut into a live mover (choice G2-66): the press is simulated, the chute it pushes into
+    /// and the sheet store run. A chute holds nothing a reload could place, so its room is 0: the
+    /// cut good seals at once, the press stays off while away, the brass stays, and the reload
+    /// lands and owes nothing.
+    #[test]
+    fn a_cut_into_a_live_mover_carries_nothing() {
+        let mut b = B::default();
+        let input = b.store(0);
+        let out = b.store(1);
+        let press = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+        let p = b.machine(model::PRESS, press, 1, 10);
+        let chute = b.node(
+            NodeKind::Mover,
+            model::CHUTE,
+            0,
+            vec![RateEntry {
+                flags: rate_flags::SHARED,
+                ..entry(None, 16, 7)
+            }],
+        );
+        b.edge(input, p);
+        b.edge_k(EdgeKind::Chute, p, chute, &[]);
+        b.edge_k(EdgeKind::Chute, chute, out, &[]);
+        b.window = 2000;
+        let far = BlockPos::new(32, 64, 0);
+        b.nodes[p as usize].pos = far;
+        b.nodes[input as usize].pos = far;
+        let mut s = setup(&b, 2);
+        for t in &mut s {
+            if let Obs::Inventory(decl) = &mut t.obs {
+                if decl.index == 0 {
+                    decl.pos = far;
+                } else {
+                    decl.item_slots = 8;
+                }
+            }
+        }
+        let near = BlockPos::default().chunk(0);
+        let away = far.chunk(0);
+        for c in [near, away] {
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: c,
+                    applied_epoch: 0,
+                },
+            ));
+        }
+        sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[(SHEET, 200)]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::ChunkUnloaded {
+                    district: D,
+                    chunk: away,
+                },
+            ),
+        );
+        feed(
+            &mut e,
+            &at(
+                200,
+                Obs::LoadState {
+                    district: D,
+                    state: LoadState::Partial,
+                    ticking_chunks: 1,
+                    total_chunks: 2,
+                },
+            ),
+        );
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.cut_edges, 1);
+        e.advance_to(Tick(20_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 1000, "pressed into a chute: {st:?}");
+        let mut cmds = feed(
+            &mut e,
+            &at(
+                20_000,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: away,
+                    applied_epoch: 0,
+                },
+            ),
+        );
+        cmds.extend(feed(&mut e, &load_state(20_000, LoadState::Live)));
+        e.advance_to(Tick(20_001));
+        cmds.extend(e.drain_commands());
+        let d = deltas(&cmds);
+        assert_eq!(d.get(&(1, SHEET)).copied().unwrap_or(0), 0, "{d:?}");
+        assert_eq!(e.district(D).expect("known").owed.get(SHEET), 0);
+        e.check_books().expect("books");
+    }
+
+    /// The residual node (G-B13, I9): a black box between the brass and the sheets is measured
+    /// at a sheet per 10 ticks for a brass. Its window passes, and the replay runs what it
+    /// measured (shaded by the checksum's z, never above) while the factory is as it saw it:
+    /// once the brass runs out the sheets stop too.
+    #[test]
+    fn the_residual_replays_a_black_box_while_its_stores_hold() {
+        let mut b = B::default();
+        let input = b.store(0);
+        let out = b.store(1);
+        let bb = b.node(NodeKind::BlackBox, model::BLACK_BOX, 0, Vec::new());
+        b.edge(input, bb);
+        b.edge_k(EdgeKind::Adjacency, bb, out, &[SHEET]);
+        b.window = 2000;
+        let mut s = setup(&b, 2);
+        for k in 1..=35u32 {
+            let t = u64::from(k) * 100;
+            let m = (t / 10) as i64;
+            sweep(&mut s, k, t, &[&[(BRASS, 2000 - m)], &[(SHEET, m)]]);
+        }
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        let r = e.glass.report(D).expect("a compile");
+        assert!(r.replay.eligible, "a window passed: {:?}", r.verdict);
+        feed(&mut e, &load_state(3500, LoadState::Unloaded));
+        e.advance_to(Tick(3501));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.learned_sources, 1);
+        e.advance_to(Tick(6500));
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(SHEET) - 350;
+        let used = 1650 - st.get(BRASS);
+        assert!((270..=300).contains(&made), "{st:?}");
+        assert!((270..=301).contains(&used), "{st:?}");
+        // The brass runs out near 20,000: the residual stops with it.
+        e.advance_to(Tick(40_000));
+        let st = e.sim_stock(D).expect("replaying");
+        assert_eq!(st.get(BRASS), 0, "{st:?}");
+        let end = st.get(SHEET);
+        assert!(end <= 2000, "{st:?}");
+        e.advance_to(Tick(60_000));
+        assert_eq!(e.sim_stock(D).expect("replaying").get(SHEET), end);
+        e.check_books().expect("books");
+    }
+
+    /// A bounded good measured inside its window [L, U] is calibrated, not a residual (GLASSBOX.md
+    /// §5.3, choice G2-57): a residual there books the output from nothing (the exit run's
+    /// package_loop made clay balls from no clay, the clay's own window being too narrow to take
+    /// any). Only a production above U is a learned source, by its excess over U.
+    #[test]
+    fn a_bounded_good_inside_its_window_takes_no_residual() {
+        let bounded = |good, measured: f64, predicted: f64, (lo, hi): (f64, f64)| {
+            crate::glass::check::GoodResult {
+                good,
+                class: class::BOUNDED,
+                why: (0, 0),
+                in_l: 0.0,
+                in_u: 0.0,
+                out_l: 0.0,
+                out_u: 0.0,
+                predicted,
+                lo,
+                hi,
+                measured,
+                sigma: 0.0,
+                q: 1.0,
+                verdict: verdict::PASS,
+                samples: 20,
+            }
+        };
+        // Sheets measured at 0.15 a tick (inside [0.1, 0.2]) and at 0.3 (0.1 above U).
+        for (measured, learned) in [(0.15, 0u32), (0.3, 1)] {
+            let (b, _) = press_line();
+            let mut s = setup(&b, 2);
+            sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[]]);
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            pass(&mut e);
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            let w = c.passed.as_mut().expect("passed");
+            w.goods = vec![
+                bounded(BRASS, -0.1, -0.1, (-0.1, 0.0)),
+                bounded(SHEET, measured, 0.1, (0.1, 0.2)),
+            ];
+            w.stores = vec![(0, BRASS, -0.1, -0.1), (1, SHEET, measured, 0.1)];
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            let r = e.glass.report(D).expect("a compile");
+            assert_eq!(r.replay.model, replay_model::GLASS, "measured {measured}");
+            assert_eq!(r.replay.learned_sources, learned, "measured {measured}");
+            e.advance_to(Tick(3200));
+            let st = e.sim_stock(D).expect("replaying");
+            let made = st.get(SHEET);
+            let used = 1000 - st.get(BRASS);
+            // The press makes a sheet a brass: the calibrated good makes nothing beside it.
+            assert!((295..=300).contains(&used), "measured {measured}: {st:?}");
+            if learned == 0 {
+                assert!(made <= used, "measured {measured}: {st:?}");
+            } else {
+                // The learned source adds its excess over U, 0.1 a tick, and no more.
+                assert!(
+                    (made - used - 300).abs() <= 2,
+                    "measured {measured}: {st:?}"
+                );
+            }
+            e.check_books().expect("books");
+        }
+    }
+
+    /// Corpus 6, precision_mechanisms (the exit run's loop factory): the host's only sheet supply
+    /// is round the belt loop. Replayed while away it makes what the solve gives, 4/5 of a
+    /// mechanism per sheet at a sheet per 64 ticks, never above it.
+    #[test]
+    fn a_sequenced_loop_replays_its_mechanisms_while_away() {
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (b, _) = precision_builder(&identity, 9, 64);
+        let mut s = setup(&b, 5);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 1000)],
+                &[(SHEET, 1000)],
+                &[(COAL, 1000)],
+                &[(COPPER, 1000)],
+                &[],
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(201));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        // 6,400 ticks: 100 sheets, 80 mechanisms, less the start's hold of 113 ticks (the
+        // funnel, the feeder, and the whole loop as a bound). Each hold coming due is a
+        // breakpoint, and none is an oscillation: holds key on what the regime could run, so the
+        // host's other inputs are not held again when the sheets' hold comes due.
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        let st = e
+            .sim_stock(D)
+            .unwrap_or_else(|| panic!("{r:?} {:?}", e.glass.districts[&D].fallback));
+        let made = st.get(BRASS);
+        assert!((77..=79).contains(&made), "{st:?}");
+        // A sheet in 4/75 comes back; 5 parts a product, a zinc in 30 back.
+        let rounds = 1000 - st.get(SHEET);
+        assert!((92..=94).contains(&rounds), "{st:?}");
+        assert!((487..=490).contains(&(1000 - st.get(ZINC))), "{st:?}");
+        assert_eq!(r.replay.oscillations, 0);
+        assert!(r.replay.breakpoints <= 8, "{:?}", r.replay);
+        e.check_books().expect("books");
+    }
+
+    /// [`precision_builder`]'s line with chests of 27 slots, the output one already holding
+    /// mechanisms and a stack's worth of `kinds` other goods: what the exit run's
+    /// precision_mechanisms held when it unloaded.
+    fn precision_in_chests(kinds: i64) -> (Engine, [u32; 5]) {
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (mut b, stores) = precision_builder(&identity, 9, 64);
+        for v in stores {
+            b.nodes[v as usize].capacity = 27;
+        }
+        let mut s = setup(&b, 5);
+        let mut out = vec![(BRASS, 39)];
+        out.extend(
+            [(WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)]
+                .iter()
+                .take(kinds as usize),
+        );
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 688)],
+                &[(SHEET, 202)],
+                &[(COAL, 688)],
+                &[(COPPER, 688)],
+                &out,
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        (e, stores)
+    }
+
+    /// The exit run's precision_mechanisms took 688 of each part and made nothing: the output
+    /// chest's free slots were split by rate, a byproduct's share floored to no slot, and the
+    /// chest read full at the unload. Each good arriving now has a slot before the rest is split
+    /// by rate (choice G2-26), so the line makes what it does in an empty chest.
+    #[test]
+    fn a_sequenced_loop_replays_into_a_chest_with_free_slots() {
+        let (mut e, _) = precision_in_chests(3);
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        let st = e.sim_stock(D).expect("replaying");
+        // 6,400 ticks less the start's hold: about 78 mechanisms, 5 parts a sequence.
+        let made = st.get(BRASS) - 39;
+        assert!((77..=79).contains(&made), "{st:?}");
+        assert!((487..=490).contains(&(688 - st.get(ZINC))), "{st:?}");
+        assert!((490..=493).contains(&(688 - st.get(COAL))), "{st:?}");
+        e.check_books().expect("books");
+    }
+
+    /// A loop whose only exit is a full chest jams: what it makes circles until the belts are
+    /// full. The solve has no fixed point there (the loop's population grows round by round), and
+    /// a replay booked on an unsettled solve took parts it never delivered. It falls back instead
+    /// (choice G2-27), and takes nothing.
+    #[test]
+    fn a_sequenced_loop_into_a_full_chest_takes_nothing() {
+        // 27 slots: the 39 mechanisms' one, 26 kinds of a stack each... the builder's goods give
+        // four, so a chest of 5 slots stands in.
+        let identity: [u32; 19] = std::array::from_fn(|i| i as u32);
+        let (mut b, stores) = precision_builder(&identity, 9, 64);
+        b.nodes[stores[4] as usize].capacity = 5;
+        let mut s = setup(&b, 5);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[
+                &[(ZINC, 688)],
+                &[(SHEET, 202)],
+                &[(COAL, 688)],
+                &[(COPPER, 688)],
+                &[(BRASS, 64), (WOOL, 64), (ORE, 64), (CRUSHED, 64), (XP, 64)],
+            ],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(6600));
+        let r = e.glass.report(D).expect("a compile");
+        assert_ne!(r.replay.model, replay_model::GLASS, "{:?}", r.replay);
+        if let Some(st) = e.sim_stock(D) {
+            for (g, was) in [
+                (ZINC, 688),
+                (SHEET, 202),
+                (COAL, 688),
+                (COPPER, 688),
+                (BRASS, 64),
+            ] {
+                assert_eq!(st.get(g), was, "{st:?}");
+            }
+        }
+        e.check_books().expect("books");
+    }
+
+    /// Corpus 3, arm_burners_depots as the exit run compiled it: two fan-blasted depots, each fed
+    /// ore by a chute, each heated by a blaze burner; one arm feeds the burners coal from a smart
+    /// chute and carries what the depots make to a chest. The arm closes a loop through the heat
+    /// edges. Inventories: 0 the output chest, 1 and 3 the ore, 2 the coal.
+    fn arm_depots() -> B {
+        let mut b = B::default();
+        let out = b.store(0);
+        b.nodes[out as usize].capacity = 54;
+        let ore1 = b.store(1);
+        let coal = b.store(2);
+        let ore3 = b.store(3);
+        for v in [ore1, coal, ore3] {
+            b.nodes[v as usize].capacity = 27;
+        }
+        let blast = b.recipe(&[(ORE, 1)], &[(CRUSHED, 1)]);
+        b.recipes[blast as usize].recipe_type = recipe_type::BLASTING;
+        b.recipes[blast as usize].heat = heat::NEEDS_HEATED;
+        let fuel = b.recipe(&[(COAL, 1)], &[]);
+        b.recipes[fuel as usize].recipe_type = recipe_type::FUEL;
+        b.recipes[fuel as usize].heat = heat::KINDLED;
+        let shared = |batch, num, den| RateEntry {
+            level: 0,
+            recipe: None,
+            batch,
+            ticks_num: num,
+            ticks_den: den,
+            flags: rate_flags::SHARED,
+        };
+        let mut heaters = Vec::new();
+        for left in [1582, 782] {
+            let h = b.node(
+                NodeKind::Heater,
+                model::BLAZE_BURNER,
+                0,
+                vec![entry(Some(fuel), 1, 1600)],
+            );
+            b.nodes[h as usize].params = [left, i64::from(heat::KINDLED), 1600, 500];
+            heaters.push(h);
+        }
+        let mut depots = Vec::new();
+        for _ in 0..2 {
+            let m = b.node(
+                NodeKind::Machine,
+                model::FAN_ZONE,
+                node_flags::PASS_THROUGH,
+                vec![RateEntry {
+                    ticks_num: 319,
+                    ticks_den: 2,
+                    ..entry(Some(blast), 16, 0)
+                }],
+            );
+            depots.push(m);
+        }
+        let smart = b.node(
+            NodeKind::Mover,
+            model::SMART_CHUTE,
+            0,
+            vec![shared(1, 7, 1)],
+        );
+        let arm = b.node(
+            NodeKind::Mover,
+            model::ARM,
+            node_flags::BOUNDED,
+            vec![shared(64, 110, 7)],
+        );
+        b.nodes[arm as usize].rule = rule::PREFER_FIRST;
+        let ordered = |b: &mut B, kind, from, to, order, filter: &[Good]| {
+            let e = b.edge_k(kind, from, to, filter);
+            b.edges[e as usize].order = order;
+            e
+        };
+        for (ore, depot) in [(ore1, depots[0]), (ore3, depots[1])] {
+            let chute = b.node(NodeKind::Mover, model::CHUTE, 0, vec![shared(16, 7, 1)]);
+            ordered(&mut b, EdgeKind::Chute, ore, chute, 0, &[]);
+            ordered(&mut b, EdgeKind::Chute, chute, depot, 0, &[]);
+        }
+        ordered(&mut b, EdgeKind::Chute, coal, smart, 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, smart, arm, 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, depots[0], arm, 1, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, depots[1], arm, 2, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, heaters[0], 0, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, heaters[1], 1, &[]);
+        ordered(&mut b, EdgeKind::ArmReach, arm, out, 2, &[CRUSHED]);
+        for (h, m) in heaters.iter().zip(&depots) {
+            let e = ordered(&mut b, EdgeKind::Heat, *h, *m, 0, &[]);
+            b.edges[e as usize].param = 3;
+        }
+        b
+    }
+
+    /// The exit run's arm_burners_depots made a fifth of the control while away. Two causes: the
+    /// path latency counted each burner's 1,600 ticks per coal as a transit (a start hold of
+    /// 3,500 ticks, in which the unfed burners went out), and the solve's first round read a
+    /// burner later in the order as unlit, capping its depot's input at nothing for good
+    /// (choices G2-23, G2-24). Replayed here, both depots blast at their rate once the holds
+    /// are over: the start's and each burner's first take of coal, when the arm's flow rises and
+    /// the whole arm waits the loop's bound.
+    #[test]
+    fn an_arm_fed_pair_of_heated_depots_replays_at_its_rate() {
+        let b = arm_depots();
+        let mut s = setup(&b, 4);
+        sweep(
+            &mut s,
+            1,
+            100,
+            &[&[], &[(ORE, 1200)], &[(COAL, 58)], &[(ORE, 1200)]],
+        );
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        let c = e.glass.districts[&D].compiled.as_ref().expect("compiled");
+        assert_eq!(bound(&c.sol, CRUSHED).in_l, Q::new(2 * 16 * 2, 319));
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        e.advance_to(Tick(2200));
+        let early = e.sim_stock(D).expect("replaying").get(CRUSHED);
+        let span = 6000u64;
+        e.advance_to(Tick(200 + span));
+        let r = e.glass.report(D).expect("a compile");
+        assert_eq!(
+            r.replay.model,
+            replay_model::GLASS,
+            "{:?}",
+            e.glass.districts[&D].fallback
+        );
+        assert_eq!(r.replay.oscillations, 0);
+        let st = e.sim_stock(D).expect("replaying");
+        let made = st.get(CRUSHED);
+        let rate = 2.0 * 16.0 / 159.5;
+        assert!(made as f64 <= rate * span as f64 + 2.0, "{st:?}");
+        assert!(made as f64 >= 0.85 * rate * span as f64, "{st:?}");
+        // Past the holds, at the rate.
+        let late = (made - early) as f64;
+        assert!((late - rate * 4000.0).abs() <= 3.0, "{late}");
+        // What is taken and not yet made sits on the depots and in the arm's hand.
+        let wip = 1200 * 2 - st.get(ORE) - made;
+        assert!((0..=2 * 16 + 2).contains(&wip), "{wip}");
+        e.check_books().expect("books");
+    }
+
+    /// One switched line (its press's output on a belt `lat` ticks long) replayed from its unload
+    /// at 200 to `200 + span`, reading the stock at `reads` (sorted, inside the span): the stocks
+    /// read, then the final stock and report.
+    fn switched_run(
+        line: (u32, u32, i64, i64),
+        lat: u32,
+        s0: i64,
+        span: u64,
+        reads: &[u64],
+    ) -> (Vec<(u64, GoodVec)>, GoodVec, u32, u32, bool) {
+        let (press, consume, hi, lo) = line;
+        let mut b = switched_line_with(press, consume, hi, lo);
+        b.edges[1].latency = lat;
+        let mut s = setup(&b, 3);
+        sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, s0)], &[]]);
+        let mut e = engine();
+        for t in &s {
+            feed(&mut e, t);
+        }
+        pass(&mut e);
+        feed(&mut e, &load_state(200, LoadState::Unloaded));
+        let mut seen = Vec::new();
+        for &t in reads {
+            e.advance_to(Tick(200 + t));
+            seen.push((t, e.sim_stock(D).unwrap_or_default()));
+        }
+        e.advance_to(Tick(200 + span));
+        let st = e.sim_stock(D).unwrap_or_default();
+        let r = e.glass.report(D).expect("a compile");
+        let books = e.check_books().is_ok();
+        (seen, st, r.replay.breakpoints, r.replay.model, books)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        /// Switched lines of every shape (G2 property tests, GLASSBOX.md §11.3), half of them with
+        /// the press's output on a belt: goods are conserved (nothing made from nothing, a few
+        /// units at most lost to machines and time shifts), reads on the way change nothing (the
+        /// composition rule with periodic edges), and the controlled line never runs above the
+        /// tick-by-tick control.
+        #[test]
+        fn switched_lines_conserve_compose_and_stay_under_the_control(
+            press in 4u32..=30,
+            slow in 11u32..=40,
+            hi in 30i64..=200,
+            band in 5i64..=60,
+            s0f in 0.0f64..=1.2,
+            span in 20_000u64..=200_000,
+            lat in prop_oneof![Just(0u32), 1u32..=400],
+            mut reads in prop::collection::vec(1u64..=200_000, 0..6),
+        ) {
+            // The consumer slower than the press (a tenth to four times slower), so the switch
+            // cycles; the band inside the levels.
+            let consume = press * slow / 10;
+            let lo = (hi - band).max(1);
+            let s0 = (hi as f64 * s0f) as i64;
+            reads.retain(|&t| t < span);
+            reads.sort_unstable();
+            let line = (press, consume, hi, lo);
+            let (seen, st, bps, model, books) = switched_run(line, lat, s0, span, &reads);
+            prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
+            prop_assert!(books, "books");
+            let (ref_used, ref_coal, _, flips) = switched_reference_lat(
+                (u64::from(press), u64::from(consume), hi, lo),
+                s0,
+                span,
+                u64::from(lat),
+            );
+            // Conservation: never more than there was; at most a unit per switch flip (a time
+            // shift's rounding, G2-12) and a few in machines less. The latency rule holds nodes
+            // off, so it loses nothing (G2-6).
+            let total = 100_000 + s0;
+            let b = hi - lo;
+            let periods = 2 * span as i64 / ((b - 2).max(1) * i64::from(consume)) + 2;
+            let slack = 4 + if lat == 0 { flips } else { periods };
+            for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
+                let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
+                prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
+                prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
+            }
+            // The composition rule: the same run without reads ends the same.
+            let (_, st2, bps2, _, _) = switched_run(line, lat, s0, span, &[]);
+            prop_assert_eq!(&st, &st2);
+            prop_assert_eq!(bps, bps2);
+            // Never above the control: the consumer made at most what Create made (and the item
+            // in its cycle, G2-21), and the press pressed at most what was taken plus the room
+            // left to the switch's top.
+            let used = 100_000 - st.get(BRASS);
+            let coal = st.get(COAL);
+            prop_assert!(coal <= ref_coal + 1, "made {} above {}", coal, ref_coal);
+            prop_assert!(
+                used <= coal + (hi - s0).max(0) + 2,
+                "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
+            );
+            // And not far below it. A switch's breakpoint costs its regime under a tick (choice
+            // G2-12), and the replay's switch flips a tick before Create's at each threshold
+            // (G2-20), so it flips more often, by its band over the band less two. With a belt
+            // the replay's cycle is shorter than Create's (it stops at the top, Create's belt
+            // still delivers), so it is held only where the consumer never runs dry.
+            if lat == 0 {
+                let lost_ticks = flips * b / (b - 2).max(1) + 4;
+                prop_assert!(
+                    coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
+                    "made {}, reference {} ({} flips)", coal, ref_coal, flips
+                );
+                prop_assert!(
+                    (used - ref_used).abs()
+                        <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
+                    "pressed {}, reference {}", used, ref_used
+                );
+            } else if lo > i64::from(lat) / i64::from(consume) + 3 && s0 > i64::from(lat) / i64::from(consume) + 3 {
+                prop_assert!(
+                    coal >= ref_coal - periods / i64::from(consume) - 2,
+                    "made {}, reference {} (belt {})", coal, ref_coal, lat
+                );
             }
         }
     }
