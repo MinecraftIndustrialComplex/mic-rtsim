@@ -726,6 +726,27 @@ impl World {
         self.now
     }
 
+    /// The census (EQUILIBRIUM.md S1) now: `village.human` and `village.ribbit`, one site per
+    /// adopted village, its members the sim's population. No K yet (beds come with slice S6), so a
+    /// village counts full or empty; human villages book no renewals yet, a ribbit village's are
+    /// the houses it booked.
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        use rtsim_kernel::census::KindCensus;
+        let mut out = [
+            KindCensus::new("village.human"),
+            KindCensus::new("village.ribbit"),
+        ];
+        for n in &self.nodes {
+            let rtsim_settle::NodeKind::Village(c) = n.kind else {
+                continue;
+            };
+            let pop = self.settlements.get(n.settlement).map_or(0, |s| s.pop);
+            out[c.index()].site(u64::from(pop), 0, false, 0.0);
+        }
+        out[rtsim_settle::Culture::Ribbit.index()].renewals = self.stats.houses;
+        out.to_vec()
+    }
+
     /// Entries in the world's own wheel (deliveries, wakes, arrivals, growth checks), for
     /// diagnostics.
     pub fn world_wheel_len(&self) -> usize {

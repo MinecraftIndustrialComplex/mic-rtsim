@@ -549,6 +549,18 @@ impl Herds {
         out
     }
 
+    /// The census (EQUILIBRIUM.md S1) now: `herd.range`, one site per herd row, K its founding
+    /// count, its members the animals alive (an extinct herd is an empty site); renewals are the
+    /// yearly calvings.
+    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+        let mut c = rtsim_kernel::census::KindCensus::new("herd.range");
+        for (h, x) in self.herds.iter() {
+            c.site(self.count(h, self.now), x.ledger.founded, false, 0.0);
+        }
+        c.renewals = self.stats.breedings;
+        vec![c]
+    }
+
     /// Every herd's ledger, summed per species.
     pub fn ledger(&self) -> [HerdLedger; HerdSpecies::COUNT] {
         let mut out = [HerdLedger::default(); HerdSpecies::COUNT];
