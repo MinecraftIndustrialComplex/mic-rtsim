@@ -1236,8 +1236,9 @@ public final class IndustryGameTests {
                     set(helper, p, vault);
                     blocks.add(p);
                 }
-        BlockPos single = new BlockPos(o.getX() + 20, y, o.getZ() + 20);
-        BlockPos chestPos = new BlockPos(o.getX() + 24, y, o.getZ() + 20);
+        // within 15 blocks of every vault block, so the three never sit two chunks apart (which would be two districts)
+        BlockPos single = new BlockPos(o.getX() + 14, y, o.getZ() + 14);
+        BlockPos chestPos = new BlockPos(o.getX() + 16, y, o.getZ() + 14);
         set(helper, single, vault);
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
         net.minecraft.world.item.Item[] kinds = {Items.IRON_INGOT, Items.GOLD_INGOT, Items.COPPER_INGOT, Items.COBBLESTONE, Items.DIRT,

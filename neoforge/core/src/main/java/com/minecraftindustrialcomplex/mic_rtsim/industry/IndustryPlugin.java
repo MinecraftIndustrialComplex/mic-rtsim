@@ -44,6 +44,16 @@ public interface IndustryPlugin {
         return isIndustrial(be) ? Boolean.TRUE : null;
     }
 
+    /**
+     * Whether this block entity <i>can become</i> a seed later without a player placing anything: the anchor of
+     * a contraption (a bearing, a piston, a pulley), which seeds only while the contraption it carries has
+     * working blocks. The core records such a block at placement and keeps it recorded while {@link #seed}
+     * says false; it counts only while {@link #seed} says true.
+     */
+    default boolean mayBecomeSeed(BlockEntity be) {
+        return false;
+    }
+
     /** Positions joined to this block entity beyond touching (chain conveyor connections, wires). */
     default void links(BlockEntity be, Consumer<BlockPos> out) {}
 

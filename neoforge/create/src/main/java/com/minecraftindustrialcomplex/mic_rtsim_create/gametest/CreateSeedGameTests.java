@@ -381,4 +381,92 @@ public final class CreateSeedGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * A bearing facing up with {@code top} in front of it (and, when {@code side} is given, a block beside that: it is not
+     * carried without glue). Returns the bearing's block entity.
+     */
+    private static com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity bearingRig(GameTestHelper helper,
+            BlockPos bearing, BlockState top, BlockState side) {
+        set(helper, bearing, block("create:mechanical_bearing").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.UP));
+        set(helper, bearing.above(), top);
+        if (side != null)
+            set(helper, bearing.above().east(), side);
+        // an unpowered bearing takes its contraption apart again on its next tick, so a creative motor drives it
+        set(helper, bearing.below(), block("create:creative_motor").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.UP));
+        playerPlacedBare(helper, bearing);
+        return (com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity) helper.getLevel().getBlockEntity(bearing);
+    }
+
+    /**
+     * A tree farm on a bearing: a saw in front of it (a contraption moves what is in front of the bearing; only glue or a chassis carries more). While it is assembled the saw is a contraption actor, not
+     * a block entity, and the bearing is all that is left in the world: it seeds a district. Taken apart again, the saw is
+     * back in the world, no player placed it, and the district goes.
+     */
+    @GameTest(template = YARD, batch = "create_seed_10", timeoutTicks = 600)
+    public static void aBearingFarmWithSawsMakesADistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos bearing = at(helper, 0, 6, 6);
+        var be = new com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    be[0] = bearingRig(helper, bearing, block("create:mechanical_saw").defaultBlockState(), null);
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a bearing that has not assembled anything makes no district", districtAt(helper, bearing) == null);
+                })
+                .thenWaitUntil(() -> check("the motor turns the bearing", be[0].getSpeed() != 0))
+                .thenExecute(() -> {
+                    be[0].assemble();
+                    check("the bearing runs", be[0].isRunning() && be[0].getMovedContraption() != null);
+                    check("the saw is an actor and no longer in the world", !be[0].getMovedContraption().getContraption().getActors().isEmpty()
+                            && !helper.getLevel().getBlockState(bearing.above()).is(block("create:mechanical_saw")));
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, bearing);
+                    check("the bearing's district (seeds " + seedsAt(helper, bearing) + ", seed() "
+                            + ind().districts().seed(helper.getLevel(), be[0], new java.util.HashMap<>()) + ", running " + be[0].isRunning()
+                            + ", moved " + be[0].getMovedContraption() + ", removed " + be[0].isRemoved() + ")", d != null);
+                    check("one seed, the bearing's: " + d.seeds(), d.seeds() == 1);
+                })
+                .thenExecute(() -> be[0].disassemble())
+                .thenWaitUntil(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("taken apart, the district dissolved", districtAt(helper, bearing) == null);
+                    check("the saw is back in the world", helper.getLevel().getBlockState(bearing.above()).is(block("create:mechanical_saw")));
+                })
+                .thenSucceed();
+    }
+
+    /** A door on a bearing carries no actors, and neither does a seat (a passive actor): no district. */
+    @GameTest(template = YARD, batch = "create_seed_11", timeoutTicks = 600)
+    public static void aBearingDoorMakesNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos door = at(helper, 0, 4, 4), seat = at(helper, 1, 4, 4);
+        var doorBe = new com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity[1];
+        var seatBe = new com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    doorBe[0] = bearingRig(helper, door, Blocks.OAK_PLANKS.defaultBlockState(), null);
+                    seatBe[0] = bearingRig(helper, seat, block("create:white_seat").defaultBlockState(), null);
+                })
+                .thenWaitUntil(() -> check("the motors turn both bearings", doorBe[0].getSpeed() != 0 && seatBe[0].getSpeed() != 0))
+                .thenExecute(() -> {
+                    doorBe[0].assemble();
+                    seatBe[0].assemble();
+                    check("both run", doorBe[0].isRunning() && seatBe[0].isRunning());
+                    check("the seat is an actor, the door has none", doorBe[0].getMovedContraption().getContraption().getActors().isEmpty()
+                            && !seatBe[0].getMovedContraption().getContraption().getActors().isEmpty());
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    check("both still run", doorBe[0].isRunning() && seatBe[0].isRunning());
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("no district at the door bearing", districtAt(helper, door) == null);
+                    check("no district at the seat bearing", districtAt(helper, seat) == null);
+                    record("aBearingDoorMakesNoDistrict", "districts", 0);
+                })
+                .thenSucceed();
+    }
 }
