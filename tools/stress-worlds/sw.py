@@ -401,10 +401,22 @@ class Server:
             self.cmd("stop")
         except Exception:
             pass
-        try:
-            self.proc.wait(timeout=900)
-        except subprocess.TimeoutExpired:
-            log(self.run, "did not stop in 900 s, SIGTERM")
+        # A crash during stop (TBSMP: codmod's API server binds a fixed port, so the second server of a
+        # pair has none and its ServerStoppingEvent handler throws) leaves the JVM up on mods' non-daemon
+        # threads after the worlds are saved. Record the crash and end the process a minute later.
+        crash_dir, crashed, deadline = f"{self.dir}/crash-reports", None, t + 900
+        while self.proc.poll() is None and time.time() < deadline:
+            time.sleep(2)
+            if crashed is None and os.path.isdir(crash_dir):
+                new = [f for f in os.listdir(crash_dir) if os.path.getmtime(f"{crash_dir}/{f}") >= t - 1]
+                if new:
+                    head = open(f"{crash_dir}/{sorted(new)[0]}", errors="replace").read().split("\n\n", 2)
+                    crashed = head[2].strip().splitlines()[0][:300] if len(head) > 2 else "crash report"
+                    self.res["stop_crash"] = crashed
+                    log(self.run, "crashed while stopping:", crashed)
+                    deadline = min(deadline, time.time() + 60)
+        if self.proc.poll() is None:
+            log(self.run, f"did not stop in {round(time.time() - t)} s, SIGTERM")
             self.proc.terminate()
             self.proc.wait(timeout=300)
         self.res["stop_s"] = time.time() - t
