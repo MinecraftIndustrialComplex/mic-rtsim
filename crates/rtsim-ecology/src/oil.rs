@@ -905,7 +905,7 @@ impl Dragons {
             if let Some((site, fresh)) = tank
                 && (!site.watched || fresh)
             {
-                let r = self.raid_sites(infra, d, vec![site], at);
+                let r = self.raid_sites(infra, d, vec![site], at, false);
                 self.feed(d, at, r.food, &[]);
                 if r.any {
                     let quarry = Quarry {
@@ -1158,7 +1158,7 @@ impl Dragons {
             .into_iter()
             .filter(|s| s.id == DistrictId(district))
             .collect();
-        let r = self.raid_sites(infra, d, sites, at);
+        let r = self.raid_sites(infra, d, sites, at, false);
         let watched = r.watched;
         self.feed(d, at, r.food, &[]);
         let quarry = Quarry {
