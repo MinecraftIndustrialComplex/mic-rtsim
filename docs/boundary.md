@@ -1077,12 +1077,18 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   the flights replace In Control's fire dragon, OGC46) and `placeLairs` (default true).
 - **Sends the player's y** in PLAYER (already there, §2.3): field flights roll only for players at or
   above y 15 (In Control's `minheight`).
-- **Keeps the oil nests** (OG-9e, OILGATE.md §4.6): on PLACE_NEST, on the chunk's first load, it
-  carves a chamber `depth` blocks under the surface in natural ground, sets a spawner heart in it and
-  answers NEST_FOUND. NEST_RENEW owes worms (Ice and Fire's Death Worms, sized by the stage), placed in
-  the chamber at the heart's next load with no player within 128 blocks; NEST_CENSUS follows. A worm's
-  death is NEST_LOSS, the heart's NEST_HEART. NEST_SORTIE sends the nest's loaded worms up under the
-  raided column for `timeoutTicks`; a worm stops under a block tagged `#mic_rtsim:armoured_floor`.
+- **Keeps the oil nests** (OG-9e, OILGATE.md §4.6, OGC84 onward): a PLACE_NEST waits in the saved
+  state until its chunk is loaded, then carves a 9 by 9 chamber whose sand floor lies `depth` blocks
+  under the chunk's ocean-floor heightmap, only where the chamber and its shell are natural ground with
+  no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
+  answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
+  placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
+  Death Worms, sized by the stage), placed on the chamber floor when the heart's chunk ticks entities
+  with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
+  chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
+  NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up
+  it; a worm stops under a block tagged `#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` and
+  glides home, else it surfaces, fights until `timeoutTicks` and glides home.
 
 **What the engine does with them:**
 - **The gate opens** on the first oil chunk it knows (OGC12): before that, no dragon is held to oil
