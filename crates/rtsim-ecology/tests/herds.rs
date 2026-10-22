@@ -730,7 +730,7 @@ fn events_of(h: &Herds, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Event> 
 
 /// The herds' archive rows (VIEWER.md §10.1): the valley's six founded herds, two years of
 /// routes as one leg per straight piece, and the starvation of an overgrazed winter; then a herd
-/// of two that predators eat to the last.
+/// of ten that a predator eats down to its refuge (EQUILIBRIUM.md §3.4) and a wipe ends.
 #[test]
 fn the_archive_records_the_herds() {
     use rtsim_archive::record::{kinds_on, rows_on};
@@ -798,7 +798,8 @@ fn the_archive_records_the_herds() {
             .all(|e| e.magnitude > 0 && e.subject.value != 0)
     );
 
-    // A herd of two, eaten to the last by a predator the engine only knows by its number.
+    // A herd of ten, eaten down to its refuge by a predator the engine only knows by its number,
+    // then wiped out.
     let mut h = Herds::new(
         4,
         HerdTunables::default(),
@@ -812,7 +813,7 @@ fn the_archive_records_the_herds() {
             species: rtsim_ecology::herds::HerdSpecies::Goat,
             frame: 0,
             pos: (300, 1_700),
-            count: 2,
+            count: 10,
             seed: Some(6),
         },
         Tick::ZERO,
@@ -822,14 +823,22 @@ fn the_archive_records_the_herds() {
     h.run_until(&mut index, at);
     const WOLF: u64 = 0x1_0000_0007;
     let (px, pz) = h.position(few, at);
-    for _ in 0..2 {
+    let refuge = h.refuge(10);
+    assert_eq!(refuge, 8);
+    let start = h.count(few, at);
+    assert!(start > refuge, "{start}");
+    for _ in refuge..start {
         let p = h.predate(few, px, pz, at, 100, WOLF);
         assert_eq!(p.animals, 1);
     }
+    assert_eq!(h.count(few, at), refuge);
+    assert_eq!(h.predate(few, px, pz, at, 100, WOLF).animals, 0);
+    assert!(h.prey_near(0, px, pz, 500, at, WOLF).is_empty());
+    assert_eq!(h.cull(few, at), refuge);
     h.run_until(&mut index, Tick::from_days(10));
     assert_eq!(h.count(few, h.now()), 0);
     let preds = events_of(&h, kinds::HERDS_PREDATION);
-    assert_eq!(preds.len(), 2);
+    assert_eq!(preds.len() as u64, start - refuge);
     for e in &preds {
         assert_eq!((e.subject.value, e.object.value), (few.to_bits(), WOLF));
         assert_eq!((e.tick, e.magnitude), (at.0, 1));
