@@ -2581,6 +2581,11 @@ mod replay_path {
 
     /// The district, its inventories (live) and the compile at 0.
     fn setup(b: &B, invs: u32) -> Vec<Timed> {
+        setup_n(b, invs, 1)
+    }
+
+    /// [`setup`] with the compile numbered `compile`.
+    fn setup_n(b: &B, invs: u32, compile: u32) -> Vec<Timed> {
         let mut out = vec![at(
             0,
             Obs::District(DistrictDecl {
@@ -2596,7 +2601,7 @@ mod replay_path {
             out.push(at(0, Obs::Inventory(inventory(i, &[]).decl)));
         }
         out.push(load_state(0, LoadState::Live));
-        for r in b.records(1) {
+        for r in b.records(compile) {
             out.push(at(0, Obs::Glass(r)));
         }
         out
@@ -4034,6 +4039,488 @@ mod replay_path {
                     "made {}, reference {} (belt {})", coal, ref_coal, lat
                 );
             }
+        }
+    }
+
+    /// The glass box's pages (G2-9, `glass::page`): a district saved and restored in the middle
+    /// of its glass replay replays exactly as one that never stopped, page for page.
+    mod paging {
+        use super::*;
+        use crate::glass::page::{GLASS_MAGIC, district_page, read_district_page};
+        use crate::persist::GLASS_TABLE;
+        use rtsim_kernel::page::PageKey;
+
+        type Pages = Vec<(PageKey, Vec<u8>)>;
+
+        /// What a run does after its start: advance to a tick, or feed a record.
+        enum Act {
+            To(u64),
+            Feed(Timed),
+        }
+        use Act::{Feed, To};
+
+        /// The engine through a save and a restore; the restored engine saves the same pages.
+        fn round_trip(e: &Engine) -> Engine {
+            let pages = e.snapshot();
+            assert!(
+                pages.iter().any(|(k, _)| k.table() == GLASS_TABLE),
+                "a glass page"
+            );
+            let r = Engine::restore(pages.clone(), Tunables::default()).expect("restore");
+            assert!(
+                r.snapshot() == pages,
+                "a restored engine saves what it was restored from"
+            );
+            r
+        }
+
+        /// Runs `acts` on the engine `start` makes, restoring it from its pages before each act
+        /// whose index is in `cuts`: its pages at the end, every command on the way, and its
+        /// replay model at each act.
+        fn run(
+            start: &dyn Fn() -> Engine,
+            acts: &[Act],
+            cuts: &[usize],
+        ) -> (Pages, Vec<Cmd>, Vec<u32>) {
+            let mut e = start();
+            let mut cmds = e.drain_commands();
+            let mut models = Vec::new();
+            for (i, a) in acts.iter().enumerate() {
+                if cuts.contains(&i) {
+                    e = round_trip(&e);
+                }
+                match a {
+                    To(t) => e.advance_to(Tick(*t)),
+                    Feed(t) => cmds.extend(feed(&mut e, t)),
+                }
+                cmds.extend(e.drain_commands());
+                models.push(model(&e));
+            }
+            e.check_books().expect("books");
+            (e.snapshot(), cmds, models)
+        }
+
+        /// The run whole, and cut before each act in turn and before all of them at once.
+        fn exact(start: &dyn Fn() -> Engine, acts: &[Act]) -> Vec<u32> {
+            let whole = run(start, acts, &[]);
+            assert!(
+                whole.2.contains(&replay_model::GLASS),
+                "a glass replay: {:?}",
+                whole.2
+            );
+            let every: Vec<usize> = (0..acts.len()).collect();
+            for cuts in every.iter().map(|&i| vec![i]).chain([every.clone()]) {
+                let cut = run(start, acts, &cuts);
+                assert_eq!(cut.2, whole.2, "models, cut at {cuts:?}");
+                assert!(cut.1 == whole.1, "commands, cut at {cuts:?}");
+                assert_eq!(cut.0.len(), whole.0.len(), "pages, cut at {cuts:?}");
+                for (a, b) in cut.0.iter().zip(&whole.0) {
+                    assert!(a == b, "page {:#x}, cut at {cuts:?}", a.0.0);
+                }
+            }
+            whole.2
+        }
+
+        fn press() -> Engine {
+            let (b, _) = press_line();
+            let mut s = setup_n(&b, 2, 5);
+            for k in 1..=35u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(&mut s, k, t, &[&[(BRASS, 1000 - m)], &[(SHEET, m)]]);
+            }
+            s.push(load_state(3500, LoadState::Unloaded));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            e
+        }
+
+        fn back(t: u64) -> [Act; 2] {
+            [
+                Feed(load_state(t, LoadState::Live)),
+                Feed(at(
+                    t,
+                    Obs::ChunkLoaded {
+                        district: D,
+                        chunk: BlockPos::default().chunk(0),
+                        applied_epoch: 0,
+                    },
+                )),
+            ]
+        }
+
+        #[test]
+        fn a_restored_press_replays_as_one_that_never_stopped() {
+            let mut acts = vec![
+                To(3501),
+                To(4000),
+                To(6500),
+                To(9000),
+                To(12_000),
+                To(20_000),
+            ];
+            acts.extend(back(20_000));
+            let models = exact(&press, &acts);
+            assert_eq!(models[5], replay_model::GLASS);
+        }
+
+        /// Cut while the replay looks for its cycle, inside a cycle run in closed form, and
+        /// between: the marks and the running cycle are paged.
+        #[test]
+        fn a_restored_switch_cycle_replays_as_one_that_never_stopped() {
+            let start = || {
+                let b = switched_line();
+                let mut s = setup(&b, 3);
+                sweep(&mut s, 1, 100, &[&[(BRASS, 100_000)], &[(SHEET, 80)], &[]]);
+                let mut e = engine();
+                for t in &s {
+                    feed(&mut e, t);
+                }
+                pass(&mut e);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e
+            };
+            let acts = [
+                To(1_000),
+                To(3_333),
+                To(7_001),
+                To(40_000),
+                To(100_003),
+                To(200_000),
+                To(320_200),
+            ];
+            exact(&start, &acts);
+            let e = run(&start, &acts, &[4]);
+            let cycles = Engine::restore(e.0, Tunables::default())
+                .expect("restore")
+                .glass
+                .districts[&D]
+                .replay
+                .as_ref()
+                .map(|r| r.counts().cycles);
+            assert!(cycles.is_some_and(|c| c >= 1), "{cycles:?}");
+        }
+
+        /// A heater's burn left is the replay's regime state.
+        #[test]
+        fn a_restored_heater_burns_as_one_that_never_stopped() {
+            let start = || {
+                let b = burning_mixer([1593, i64::from(heat::KINDLED), 1600, 500], true);
+                let mut s = setup(&b, 2);
+                sweep(
+                    &mut s,
+                    1,
+                    100,
+                    &[&[(ZINC, 10_000), (COPPER, 10_000), (COAL, 16)], &[]],
+                );
+                let mut e = engine();
+                for t in &s {
+                    feed(&mut e, t);
+                }
+                pass(&mut e);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e
+            };
+            exact(
+                &start,
+                &[
+                    To(1_000),
+                    To(1_094),
+                    To(20_000),
+                    To(26_000),
+                    To(30_000),
+                    To(60_000),
+                ],
+            );
+        }
+
+        /// A partial load: the cut edge from the live store is paged with the replay.
+        #[test]
+        fn a_restored_partial_load_carries_its_cut_as_one_that_never_stopped() {
+            let far = BlockPos::new(32, 64, 0);
+            let away = far.chunk(0);
+            let start = || {
+                let (mut b, p) = press_line();
+                b.nodes[p as usize].pos = far;
+                b.nodes[1].pos = far;
+                let mut s = setup(&b, 2);
+                for t in &mut s {
+                    if let Obs::Inventory(decl) = &mut t.obs
+                        && decl.index == 1
+                    {
+                        decl.pos = far;
+                    }
+                }
+                for c in [BlockPos::default().chunk(0), away] {
+                    s.push(at(
+                        0,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: c,
+                            applied_epoch: 0,
+                        },
+                    ));
+                }
+                sweep(&mut s, 1, 100, &[&[(BRASS, 1000)], &[]]);
+                let mut e = engine();
+                for t in &s {
+                    feed(&mut e, t);
+                }
+                pass(&mut e);
+                feed(
+                    &mut e,
+                    &at(
+                        200,
+                        Obs::ChunkUnloaded {
+                            district: D,
+                            chunk: away,
+                        },
+                    ),
+                );
+                feed(
+                    &mut e,
+                    &at(
+                        200,
+                        Obs::LoadState {
+                            district: D,
+                            state: LoadState::Partial,
+                            ticking_chunks: 1,
+                            total_chunks: 2,
+                        },
+                    ),
+                );
+                e
+            };
+            exact(
+                &start,
+                &[
+                    To(201),
+                    To(3200),
+                    To(20_000),
+                    Feed(at(
+                        20_000,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: away,
+                            applied_epoch: 0,
+                        },
+                    )),
+                    Feed(load_state(20_000, LoadState::Live)),
+                    To(20_001),
+                ],
+            );
+        }
+
+        /// The residual's learned source is paged with the replay.
+        #[test]
+        fn a_restored_residual_replays_as_one_that_never_stopped() {
+            let start = || {
+                let mut b = B::default();
+                let input = b.store(0);
+                let out = b.store(1);
+                let bb = b.node(NodeKind::BlackBox, model::BLACK_BOX, 0, Vec::new());
+                b.edge(input, bb);
+                b.edge_k(EdgeKind::Adjacency, bb, out, &[SHEET]);
+                b.window = 2000;
+                let mut s = setup(&b, 2);
+                for k in 1..=35u32 {
+                    let t = u64::from(k) * 100;
+                    let m = (t / 10) as i64;
+                    sweep(&mut s, k, t, &[&[(BRASS, 2000 - m)], &[(SHEET, m)]]);
+                }
+                s.push(load_state(3500, LoadState::Unloaded));
+                let mut e = engine();
+                for t in &s {
+                    feed(&mut e, t);
+                }
+                e
+            };
+            exact(&start, &[To(3501), To(6500), To(40_000), To(60_000)]);
+        }
+
+        /// A real restart: the pages, then a session start. Java numbers the new session's
+        /// compiles from 1, so the press's compile 5 is followed by a compile 1.
+        fn restart(e: &Engine, at_: u64) -> Engine {
+            let mut r = round_trip(e);
+            r.session_start(Tick(at_));
+            r
+        }
+
+        /// The press replays across a restart as it would across a session start without one;
+        /// back, the same factory compiled anew keeps its passed window under its new number, so
+        /// the next time away is a glass replay again at once.
+        #[test]
+        fn a_restart_keeps_the_replay_and_the_same_factory_keeps_its_window() {
+            let (b, _) = press_line();
+            let mut whole = press();
+            whole.advance_to(Tick(6000));
+            let mut cut = restart(&whole, 6000);
+            whole.session_start(Tick(6000));
+            for e in [&mut whole, &mut cut] {
+                e.advance_to(Tick(8000));
+                assert_eq!(model(e), replay_model::GLASS);
+            }
+            assert!(
+                cut.snapshot() == whole.snapshot(),
+                "a restart is a session start"
+            );
+            let e = &mut cut;
+            for a in back(8000) {
+                let Feed(t) = a else { unreachable!() };
+                feed(e, &t);
+            }
+            assert_eq!(model(e), replay_model::NONE);
+            for r in b.records(1) {
+                feed(e, &at(8050, Obs::Glass(r)));
+            }
+            let dg = &e.glass.districts[&D];
+            let c = dg.compiled.as_ref().expect("a compile");
+            assert_eq!(c.graph.end.compile, 1);
+            assert!(c.passed.is_some(), "the passed window is kept");
+            assert!(!dg.numbers_reset);
+            assert_eq!(e.glass.stats.compiles_kept, 1);
+            assert_eq!(e.glass.stats.compiles_accepted, 1);
+            assert_eq!(e.glass.stats.compiles_stale, 0);
+            // A resend of it is ignored, as any resend of the compile held.
+            let mut resend = b.records(1);
+            if let Some(GlassObs::End(end)) = resend.last_mut() {
+                end.flags |= end_flags::RESEND;
+            }
+            for r in resend {
+                feed(e, &at(8060, Obs::Glass(r)));
+            }
+            assert_eq!(e.glass.stats.resends_ignored, 1);
+            feed(e, &load_state(8100, LoadState::Unloaded));
+            e.advance_to(Tick(8200));
+            assert_eq!(model(e), replay_model::GLASS);
+            assert_eq!(
+                e.glass.districts[&D].replay.as_ref().map(|r| r.compile()),
+                Some(1)
+            );
+            e.advance_to(Tick(30_000));
+            assert_eq!(e.sim_stock(D).expect("replaying").get(BRASS), 0);
+            e.check_books().expect("books");
+        }
+
+        /// After a restart, a compile of another factory (numbered 1, below the compile held) is
+        /// recompiled, not ignored as stale: its window has not passed, so the press freezes.
+        #[test]
+        fn a_different_compile_after_a_restart_is_recompiled() {
+            let (mut b, p) = press_line();
+            b.nodes[p as usize].rates[0].ticks_num = 20;
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let mut e = restart(&e, 6000);
+            for a in back(8000) {
+                let Feed(t) = a else { unreachable!() };
+                feed(&mut e, &t);
+            }
+            for r in b.records(1) {
+                feed(&mut e, &at(8050, Obs::Glass(r)));
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+            assert_eq!(c.graph.end.compile, 1);
+            assert!(c.passed.is_none());
+            assert_eq!(e.glass.stats.compiles_kept, 0);
+            assert_eq!(e.glass.stats.compiles_accepted, 2);
+            feed(&mut e, &load_state(8100, LoadState::Unloaded));
+            e.advance_to(Tick(9000));
+            assert_eq!(model(&e), replay_model::NONE);
+            assert!(e.sim_stock(D).is_none(), "frozen until a window passes");
+        }
+
+        /// An edit after a restore stops the restored replay, as it stops one that never stopped.
+        #[test]
+        fn an_edit_after_a_restore_stops_the_glass_replay() {
+            let mut e = press();
+            e.advance_to(Tick(5000));
+            let mut e = round_trip(&e);
+            assert_eq!(model(&e), replay_model::GLASS);
+            feed(
+                &mut e,
+                &at(
+                    5000,
+                    Obs::Edit {
+                        district: D,
+                        kind: EditKind::Broken,
+                        player: (0, 0),
+                        pos: BlockPos::default(),
+                    },
+                ),
+            );
+            e.advance_to(Tick(5001));
+            assert!(e.sim_stock(D).is_none(), "frozen after the edit");
+            assert!(!e.glass.report(D).expect("a compile").replay.eligible);
+        }
+
+        /// A glass page cut short anywhere, with a byte too many, or of another format, is an
+        /// error, never a panic, and the engine's restore fails with it.
+        #[test]
+        fn a_corrupt_or_short_glass_page_is_refused() {
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let pages = e.snapshot();
+            let (gk, gb) = pages
+                .iter()
+                .find(|(k, _)| k.table() == GLASS_TABLE)
+                .cloned()
+                .expect("a glass page");
+            assert_eq!(gk.id(), D.0);
+            assert!(gb == district_page(&e.glass.districts[&D]));
+            read_district_page(&gb).expect("the page itself");
+            for n in 0..gb.len() {
+                assert!(read_district_page(&gb[..n]).is_err(), "cut at {n}");
+            }
+            let mut long = gb.clone();
+            long.push(0);
+            assert!(read_district_page(&long).is_err());
+            let mut other = gb.clone();
+            other[..4].copy_from_slice(&(GLASS_MAGIC + 1).to_le_bytes());
+            assert!(read_district_page(&other).is_err());
+            for bad in [
+                Vec::new(),
+                gb[..gb.len() / 2].to_vec(),
+                gb[..gb.len() - 1].to_vec(),
+                other,
+            ] {
+                let mut p = pages.clone();
+                for (k, b) in &mut p {
+                    if *k == gk {
+                        *b = bad.clone();
+                    }
+                }
+                assert!(Engine::restore(p, Tunables::default()).is_err());
+            }
+        }
+
+        /// The page of a replay of another compile's nodes is refused.
+        #[test]
+        fn a_glass_page_whose_replay_is_not_its_compiles_is_refused() {
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let mut dg = e.glass.districts[&D].clone();
+            dg.compiled.as_mut().expect("a compile").graph = switched_line().graph();
+            assert!(read_district_page(&district_page(&dg)).is_err());
+        }
+
+        /// Without its glass page (rtsim-view's inspect restores one district alone), a glass span
+        /// goes on by the black box or freezes, its books whole.
+        #[test]
+        fn a_glass_span_restored_without_its_glass_page_goes_on() {
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let pages: Pages = e
+                .snapshot()
+                .into_iter()
+                .filter(|(k, _)| k.table() != GLASS_TABLE)
+                .collect();
+            let mut r = Engine::restore(pages, Tunables::default()).expect("restore");
+            assert!(r.glass.districts.is_empty());
+            r.advance_to(Tick(8000));
+            assert_eq!(model(&r), 0);
+            r.check_books().expect("books");
         }
     }
 }
