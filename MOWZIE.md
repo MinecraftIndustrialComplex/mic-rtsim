@@ -372,11 +372,13 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     ability timers and `lastHurtByPlayer` through an accessor mixin; the same agent and stack; deaths
     keyed on the new UUID; its direction set to the quarter facing the target before its first tick;
     the old body removed under the bridge's `removing` flag before the new one is added, and the stack
-    pending with that state if the add is cancelled), `restrictTo` there; remounting once the attack
-    flag has dropped and it has had no target for 200 ticks; a dying chief's loot dropped if its puppet
-    is taken back; laying out a band met on the march as a column along its route, the chief at its
-    rear; the hand-back of a homecoming band's puppets to tagged vanilla bodies, the Umvuthi's at its
-    throne. About 500.
+    pending with that state if the add is cancelled; no swap for a body removed, dead or dying, or at a
+    dismount while its stack is under the bridge's `removing` flag, which the bridge sets on every
+    member of a stack before it removes any), `restrictTo` there; remounting once the attack flag has
+    dropped and it has had no target for 200 ticks; a dying chief's loot dropped if its puppet is taken
+    back; laying out a band met on the march as a column along its route, the chief at its rear; the
+    hand-back of a homecoming band's puppets to tagged vanilla bodies, the Umvuthi's at its throne.
+    About 500.
 25. **One group per stack, in the ConflictBridge** (MZ-17: capture per stack, amends C25, provisional
     (a), awaiting Ben; §4.16). The ConflictBridge is a session plugin, as `HerdBridge` is, and keeps
     its own groups as HerdBridge does (`HerdBridge.java:70`, its `byAgent` map at `243`), not the
@@ -972,14 +974,15 @@ and back, where a player can see it, and the far view can draw it the whole way 
     a dismount it does show: a client already tracking the body keeps snapping it to the facing it had
     at its first tick on that client, and its head, turned on its target, twists up to 140 degrees from
     it. So at any dismount away from home, the plugin's own or another's (Carry On ejecting it, a
-    command), once its active ability has ended, the plugin swaps the puppet in place for a fresh
-    puppet body: the same agent and stack, the old body's whole state (below), and its direction set to
-    the quarter facing its target before its first tick, so every client starts it with that facing
-    (ledger 24). A swap is a hand-off, which Rule U lets through (below). The plugin also sets the
-    direction at its spawn, and none at a waypoint, where a rider's own facing does not show. Rejected:
-    a `tick` mixin on clients, which would make mic-rtsim a client mod with one required payload
-    channel (today the pack has no mic-rtsim on clients, and shipping `mic_native` to every client
-    would be Ben's call); and leaving the stale facing.
+    command), but not one that a removal or a death makes (below), once its active ability has ended,
+    the plugin swaps the puppet in place for a fresh puppet body: the same agent and stack, the old
+    body's whole state (below), and its direction set to the quarter facing its target before its first
+    tick, so every client starts it with that facing (ledger 24). A swap is a hand-off, which Rule U
+    lets through (below). The plugin also sets the direction at its spawn, and none at a waypoint,
+    where a rider's own facing does not show. Rejected: a `tick` mixin on clients, which would make
+    mic-rtsim a client mod with one required payload channel (today the pack has no mic-rtsim on
+    clients, and shipping `mic_native` to every client would be Ben's call); and leaving the stale
+    facing.
   - **The swap.** The fresh puppet takes the old body's whole state. The plugin loads the jar's own
     save of the old body into it (`saveWithoutId`, less its UUID): its health; its effects, Sunblock
     among them; its fire; its hurt time; its cooldowns (`MowzieEntity.java:544-551`); and its trade
@@ -999,7 +1002,19 @@ and back, where a player can see it, and the far view can draw it the whole way 
     rules), the stack goes pending with that state and comes in at its next ticking test (ledger 25). A
     client sees the boss bar go and come back; the boss music fades as the old body goes, and the new
     body's event 67 (`MowzieEntity.java:345-350`) takes it up again without restarting the track. Both
-    are harmless.
+    are harmless. No swap follows a dismount that a removal makes. `Entity.setRemoved` puts off the
+    passengers of any entity removed, and the entity itself when the removal destroys it, a kill or a
+    discard (`Entity.java:3647-3658`, `3891-3892`). So a take-back, a recall, an `edge_stop` seam or a
+    failed session's capture that removed the horse before its rider would have the swap add a fresh
+    puppet for a stack the bridge is turning abstract, a stray body; and a dying Umvuthi, removed as
+    killed at its death animation's end (`MowzieEntity.java:453-467`), would have a dead body's save
+    loaded into a fresh puppet, which could revive the chief or run its death and its loot a second
+    time. So the swap skips a body that is removed or dead or dying (`isDeadOrDying`, health 0,
+    `LivingEntity.java:1134-1136`), and any dismount while its stack is under the bridge's `removing`
+    flag, which the bridge sets on every member of a stack before it removes any. HerdBridge sets it
+    member by member as it discards each (`HerdBridge.java:796-803`), which would leave the rider
+    unflagged when its horse goes first. A live rider whose horse dies is put off with no removal of
+    its own and outside the flag, and that dismount swaps as any other does.
   - **Water.** A rider whose eyes are in water is put off a vehicle that `dismountsUnderwater`
     (`LivingEntity.java:452-454`; `Entity.java:2335-2336`), and `minecraft:horse` is in that tag. While
     a mob rides it, the horse's `FloatGoal` is off with its JUMP flag (`Mob.java:369-374`), so it would
@@ -2228,7 +2243,7 @@ warriors), with no grudges, and the tagged bodies, strays to the new books, fill
 | Orders at a camp that is in | per war party and refill | a set-out line at a muster's end, hand-back and spawn lines at a homecoming, a grove's refill (at most 2 a day): a few takes, hand-offs or spawns, each with a record on the body or a marker until acknowledged; the barrier saves the 1 to 4 entity chunks of a den (up to 25 of a grove) ahead of the journal's next write |
 | Notices | per feud | one pending bit, resent at session start |
 | Watched boss | while seen | one Frostmaw, or a band in waves of at most 16, plus on an Invasion an Umvuthi on its horse and its summons (under 4 Umvuthana within 50 blocks and 3 cranes within 40 of it, `EntityUmvuthi.java:469`, `488`) |
-| The ride | per riding Umvuthi, while its band has bodies | one navigation order for its horse a second; a water check a tick and, in water, one jump; a facing set at its spawn; a target check for the dismount; one swap of its puppet for a fresh one at each dismount away from home; a caster check per supernova hit; and the `tick` mixin's passenger check a tick, on the server only |
+| The ride | per riding Umvuthi, while its band has bodies | one navigation order for its horse a second; a water check a tick and, in water, one jump; a facing set at its spawn; a target check for the dismount; one swap of its puppet for a fresh one at each dismount away from home that no removal or death makes; a caster check per supernova hit; and the `tick` mixin's passenger check a tick, on the server only |
 | Chief's summons | per minion or crane a chief puppet summons | a tag and an entry in the ConflictBridge's groups before it joins (the mixin at `addFreshEntity`); nothing for any other join |
 | Trade memory | resident, per grove | 16 bytes a player who has paid its Umvuthi; one journaled CHIEF_PAID per first payment to an Umvuthi body |
 | Rule U holds | per held Umvuthi line, per tick | one nearest-player check against the body, and for a take or removal its target, for as long as a player stays; a spawn for at most 6,000 ticks |
@@ -2362,8 +2377,9 @@ mechanism, and the moving form runs if the fixture's train moves.
     supernova neither hurts nor burns its horse, while a fire it walks through burns it; a player's
     right-click on the horse does nothing, and a masked survival player's Carry On pickup of it neither
     ejects the Umvuthi nor takes the horse; a dismount the plugin did not order (`/ride ... dismount`)
-    ends in a swap too; with its horse killed it stays where it stands and despawns once Rule U lets
-    it.
+    ends in a swap too; killed while riding, it drops one Sol Visage at its death animation's end and
+    no fresh puppet appears; with its horse killed it is swapped, stays where it stands and despawns
+    once Rule U lets it.
 24. `theChiefsSummonsArePuppetsAndAreNotSaved`: the riding Umvuthi, dismounted and targeting a mock
     player, summons warriors and cranes; each is tagged and added to the ConflictBridge's groups before
     it joins and is admitted by the ConflictBridge at the core's join check, is in no unit or quota,
@@ -2407,9 +2423,10 @@ mechanism, and the moving form runs if the fixture's train moves.
     less those the raid killed, each lost once (6 warriors with 3 killed leave 3, not 0), while with
     the player 150 blocks off it starts a fight; and the four exceptions: at a simulation distance of
     8, a riding Umvuthi whose chunk stops ticking entities is taken back at once with a mock player 130
-    blocks off on an axis; a band whose route crosses an `edge_stop` seam is recalled at that segment
-    with a mock player beside it; a failed session captures every puppet; and a band that reaches home
-    with its grove out, a mock player 150 blocks from the throne at a view distance of 8, is recalled.
+    blocks off on an axis, and no fresh puppet appears, with either the horse or the rider removed
+    first; a band whose route crosses an `edge_stop` seam is recalled at that segment with a mock
+    player beside it; a failed session captures every puppet; and a band that reaches home with its
+    grove out, a mock player 150 blocks from the throne at a view distance of 8, is recalled.
 30. `anUmvuthiHeirTakesAWarrior`: after the wait, one reconcile removes the warrior farthest from the
     mock player, skipping one with a line in flight, and spawns the chief at the throne spot
     (`finalizeSpawn` as a structure spawn, restricted to the pit, the old direction, an empty trade
@@ -2564,7 +2581,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
 | Robbed Frostmaw | Kept persistent in its den, set at the steal | The steal should disarm it, not remove it; otherwise stealing and walking off farms a crystal at each refill without a fight. |
-| The ride | On an Invasion the Umvuthi rides a vanilla horse puppet at the rear of its column wherever the band has bodies; it dismounts within 32 blocks of the target with the attack flag, or on a target, and remounts once the attack flag has dropped and it has had no target for 200 ticks; the plugin swims its horse, keeps its own supernova off it, and swaps in a fresh puppet at each dismount away from home | §4.5 (MZ-15): the jar's Umvuthi cannot walk and has no walk animation, but a mob steers the mob it rides; a hidden advance would be the war seat again, and a glide would read as a bug. The mount is MZ-16, provisional (a). |
+| The ride | On an Invasion the Umvuthi rides a vanilla horse puppet at the rear of its column wherever the band has bodies; it dismounts within 32 blocks of the target with the attack flag, or on a target, and remounts once the attack flag has dropped and it has had no target for 200 ticks; the plugin swims its horse, keeps its own supernova off it, and swaps in a fresh puppet at each dismount away from home that no removal or death makes | §4.5 (MZ-15): the jar's Umvuthi cannot walk and has no walk animation, but a mob steers the mob it rides; a hidden advance would be the war seat again, and a glide would read as a bug. The mount is MZ-16, provisional (a). |
 | Chief stack | The riding Umvuthi is outside the party's units (no unit, quota or wave count), but its strength, 5.0, adds to its band's | §4.5: it goes to the fight and fights there, as CONFLICT-LIFE.md §2.7 also counts it. |
 | Seen coming | One record per change of a party's march, BAND_MARCH (the route with its ticks, phase, kind, counts, the chief's flags); its position is the route interpolated by time, which is `party_pos`; a band met on the march stands as a column from that position | §4.16 (MZ-15): the far view and the bodies read one source, so a box becomes bodies where it stands. |
 | Walk home | A band walking home has bodies where a player is, as one going out does, and is handed back at a camp that is in; its route home starts at `party_chart_pos`; an embodied band that arrives keeps its puppets; a stack outside the ticking edge waits pending until it is inside (MZ-17) | §4.16 (MZ-15): a march that vanished on its way home, or was spawned again at the fight, would break the picture Ben asked for; the folded position would send a band that crossed a seam a lap the wrong way. |
@@ -2575,7 +2592,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Throne spot | The Umvuthi's position and direction at the grove's first census; else the fire pit, direction 1 | §4.6: the jar places it 18 blocks from the pit, at a template marker the plugin can read only from the body. |
 | Two bodies | Deaths keyed on the body's UUID; a member's first death is its death; the other body drops nothing, takes no warriors with it, books nothing, and is removed | §4.5: `die` raises two death events for one body, so keying on the member would cancel the real Sol Visage; the rule keeps a visitor from a second Sol Visage. |
 | Heir in place | An heir whose old chief's body is still on the throne is seated in its place in one tick, a hand-off that waits only while that body is in a fight: a player its target, and a player's hit within the last 600 ticks (PLACEHOLDER) | §4.6: Rule U holds that body's removal while a player stays beside the grove, with no limit, and the heir would have waited on it for as long; a swap in a fight would refill its boss bar, and a target alone lasts while an unmasked player stays within 40 blocks. |
-| Facing after a dismount | At any dismount away from home, the plugin's or another's, once its active ability has ended, the plugin swaps the riding puppet in place for a fresh puppet (the same agent and stack and the old body's whole state: the jar's save less its UUID, `healthLost` and `invulnerableTime` set directly, and its ability timers and kill credit through an accessor mixin; the old body removed first, and a cancelled add leaving the stack pending) whose direction is set before its first tick; no client mod | §4.5: the jar snaps a body to the facing it had at its first tick on each client, so a client already tracking it would see it face the wrong way after a dismount; the ride itself draws right with no mixin. Rejected: mic-rtsim on every client with one required payload channel (Ben's call), or the stale facing. |
+| Facing after a dismount | At any dismount away from home, the plugin's or another's, but none for a body removed, dead or dying or a stack under the bridge's `removing` flag, once its active ability has ended, the plugin swaps the riding puppet in place for a fresh puppet (the same agent and stack and the old body's whole state: the jar's save less its UUID, `healthLost` and `invulnerableTime` set directly, and its ability timers and kill credit through an accessor mixin; the old body removed first, and a cancelled add leaving the stack pending) whose direction is set before its first tick; no client mod | §4.5: the jar snaps a body to the facing it had at its first tick on each client, so a client already tracking it would see it face the wrong way after a dismount; the ride itself draws right with no mixin. Rejected: mic-rtsim on every client with one required payload channel (Ben's call), or the stale facing. |
 | Water | The plugin presses the horse's jump in water, as `FloatGoal` does, and cancels drowning for a puppet Umvuthi | §4.5: a horse ridden by a mob sinks and drops its rider, which cannot leave a river bed. |
 | A dying chief | A chief puppet taken back during its death animation drops its loot first | §4.5: the jar drops it only at the 115-tick animation's end, so a stop in that window would lose the Sol Visage. |
 
