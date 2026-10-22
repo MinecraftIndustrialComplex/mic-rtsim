@@ -89,9 +89,11 @@ final class IndustryEvents {
     }
 
     private static void onServerTickPre(ServerTickEvent.Pre event) {
+        long t0 = System.nanoTime();
         Industry ind = IndustryApi.current();
         if (ind != null)
             ind.startOfTick();
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.TickCost.pre(System.nanoTime() - t0);
     }
 
     private static void onChunkUnload(ChunkEvent.Unload event) {

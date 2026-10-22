@@ -48,6 +48,31 @@
           };
         };
 
+        # A dev client (`nix develop .#client --command ./gradlew :dh:runClient` in neoforge/): Java and the
+        # libraries Minecraft's window, sound and input load at run time (as mic-fixes' shell has them).
+        devShells.client = let
+          clientLibs = with pkgs; [
+            libGL
+            xorg.libX11
+            xorg.libXext
+            xorg.libXcursor
+            xorg.libXrandr
+            xorg.libXi
+            xorg.libXxf86vm
+            libpulseaudio
+            openal
+            flite
+            udev
+          ];
+        in pkgs.mkShell {
+          nativeBuildInputs = [ java pkgs.git pkgs.util-linux ];
+          buildInputs = clientLibs;
+          env = {
+            JAVA_HOME = "${java.home}";
+            LD_LIBRARY_PATH = lib.makeLibraryPath clientLibs;
+          };
+        };
+
         checks.toolchain-channel = let
           toml = builtins.fromTOML (builtins.readFile ./rust-toolchain.toml);
         in
