@@ -409,6 +409,168 @@ proptest! {
     }
 }
 
+/// A 3 x 3 grid of herd ranges around spawn (`synth::ranges`), with the frontier at 4 a
+/// range-year so a short script sees an empty range founded again.
+fn ranges_rig(seed: u64) -> Rig {
+    let mut h = synth::ranges(seed, ranges_tunables(), Tick::ZERO, -1..=1, -1..=1);
+    h.log_enabled = true;
+    Rig {
+        legs: legs(),
+        h,
+        fake: FakeHerds::default(),
+    }
+}
+
+fn ranges_tunables() -> HerdTunables {
+    HerdTunables {
+        frontier_per_year: 4.0,
+        ..HerdTunables::default()
+    }
+}
+
+/// The ranges' scripts: the herd ops, plus a range wiped (every latent animal killed) and whole
+/// years passing, so ranges empty, are founded again and take dispersers.
+#[derive(Clone, Debug)]
+enum RangeOp {
+    Op(Op),
+    Cull(usize),
+    Years(u64),
+}
+
+fn range_op() -> impl Strategy<Value = RangeOp> {
+    prop_oneof![
+        2 => op().prop_map(RangeOp::Op),
+        2 => (0usize..9).prop_map(RangeOp::Cull),
+        2 => (1u64..3).prop_map(RangeOp::Years),
+    ]
+}
+
+fn apply_range(r: &mut Rig, o: &RangeOp, last: &mut Vec<(u64, u64, u64)>) {
+    let ids: Vec<HerdId> = r.h.herds.iter().map(|(h, _)| h).collect();
+    let now = r.h.now();
+    match o {
+        RangeOp::Op(o) => apply(r, o, last),
+        RangeOp::Cull(i) => {
+            r.h.cull(ids[i % ids.len()], now);
+        }
+        RangeOp::Years(n) => {
+            let year = r.h.subs().year_ticks();
+            r.run(now + n * year, 24_000, None);
+        }
+    }
+}
+
+/// Animals each row was founded with: its founding count, plus `max(frontier_min,
+/// frontier_share x K)` for each frontier founding in the log.
+fn founded_by_row(r: &Rig, start: &[(HerdId, String, u64)]) -> Vec<(HerdId, u64)> {
+    let t = &r.h.tun;
+    start
+        .iter()
+        .map(|(h, name, count)| {
+            let k = r.h.herd(*h).expect("a row").k;
+            let n = ((t.frontier_share * k as f64).round() as u64).max(t.frontier_min);
+            let frontiers =
+                r.h.log
+                    .iter()
+                    .filter(|l| l.kind == "frontier" && l.herd.as_deref() == Some(name.as_str()))
+                    .count() as u64;
+            (*h, count + frontiers * n)
+        })
+        .collect()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 12, ..ProptestConfig::default() })]
+
+    /// Founding is a booked source (EQUILIBRIUM.md §2.4.2): on a grid of ranges whose herds are
+    /// wiped and founded again, every animal is a founding's, a birth's or an arrival's, each
+    /// row's founded is its founding count plus its frontier foundings' groups, the world's
+    /// dispersers leave exactly as many as arrive, and conservation holds after every op.
+    #[test]
+    fn founding_and_dispersal_are_booked_sources(seed in 0u64..100, ops in prop::collection::vec(range_op(), 3..10)) {
+        let mut r = ranges_rig(seed);
+        let start: Vec<(HerdId, String, u64)> =
+            r.h.herds.iter().map(|(h, x)| (h, x.name.clone(), x.ledger.founded)).collect();
+        let mut last = Vec::new();
+        for o in &ops {
+            apply_range(&mut r, o, &mut last);
+            let now = r.h.now();
+            r.h.check(now).map_err(TestCaseError::fail)?;
+            let (mut arrived, mut left) = (0, 0);
+            for (_, x) in r.h.herds.iter() {
+                let l = x.ledger;
+                let alive: i128 = x.classes.iter().map(|c| i128::from(c.alive)).sum();
+                prop_assert_eq!(alive, l.expected_at_anchors());
+                prop_assert_eq!(l.founded + l.born + l.arrived, x.next_index);
+                prop_assert!(x.vacant.is_none() || r.h.count(r.h.by_name(&x.name).unwrap(), now) == 0);
+                arrived += l.arrived;
+                left += l.left;
+            }
+            prop_assert_eq!(arrived, left);
+            for (h, want) in founded_by_row(&r, &start) {
+                prop_assert_eq!(r.h.herd(h).unwrap().ledger.founded, want);
+            }
+        }
+    }
+
+    /// Restore with ranges emptying and refilling: the vacancy, the booked frontier founding
+    /// and the dispersers' classes survive a save exactly.
+    #[test]
+    fn a_restored_ranges_engine_continues_exactly(seed in 0u64..100, ops in prop::collection::vec(range_op(), 1..8), cut in 0usize..8) {
+        let mut a = ranges_rig(seed);
+        let mut last = Vec::new();
+        let cut = cut % ops.len();
+        for o in &ops[..cut] {
+            apply_range(&mut a, o, &mut last);
+        }
+        let bytes = a.h.save();
+        let mut b = Rig {
+            legs: LegIndex::from_bytes(&a.legs.to_bytes()).expect("legs load"),
+            h: Herds::load(ranges_tunables(), Box::new(Valley::default()), &bytes).expect("herds load"),
+            fake: a.fake.clone(),
+        };
+        prop_assert_eq!(b.h.state_hash(), a.h.state_hash());
+        prop_assert_eq!(b.h.save(), bytes);
+        let mut last_b = last.clone();
+        for o in &ops[cut..] {
+            apply_range(&mut a, o, &mut last);
+            apply_range(&mut b, o, &mut last_b);
+            prop_assert_eq!(b.h.state_hash(), a.h.state_hash(), "after {:?}", o);
+        }
+        prop_assert_eq!(&b.fake.history, &a.fake.history);
+    }
+
+    /// The refuge (EQUILIBRIUM.md §3.4): however hungry the predators and however often they
+    /// come, predation never takes a herd below `max(refuge_min, refuge_share x K)` (deaths of
+    /// age and hunger still can), and a herd at or below it is offered to no predator.
+    #[test]
+    fn predation_never_takes_a_herd_below_refuge(seed in 0u64..100, hunts in prop::collection::vec((0u64..400_000, 0usize..6, 1i32..1_000_000), 1..40)) {
+        let mut r = Rig::valley(seed);
+        let ids: Vec<HerdId> = r.h.herds.iter().map(|(h, _)| h).collect();
+        for (wait, i, food) in hunts {
+            let now = r.h.now();
+            r.run(now + wait, 50_000, None);
+            let now = r.h.now();
+            let h = ids[i % ids.len()];
+            let refuge = r.h.refuge(r.h.herd(h).unwrap().k);
+            // Many predators at once, as a lair's whole brood.
+            for p in 0..8u64 {
+                let before = r.h.count(h, now);
+                let pos = r.h.position(h, now);
+                r.h.predate(h, pos.0, pos.1, now, food, 100 + p);
+                let after = r.h.count(h, now);
+                prop_assert!(after >= before.min(refuge), "{} to {} below refuge {}", before, after, refuge);
+            }
+            let pos = r.h.position(h, now);
+            if r.h.count(h, now) <= refuge {
+                let offered = r.h.prey_near(0, pos.0, pos.1, 10_000, now, 100);
+                prop_assert!(offered.iter().all(|o| o.herd != h), "a herd at its refuge offered");
+            }
+            r.h.check(now).map_err(TestCaseError::fail)?;
+        }
+    }
+}
+
 fn tmpdir(tag: &str) -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -730,7 +892,7 @@ fn events_of(h: &Herds, kind: rtsim_archive::Kind) -> Vec<rtsim_archive::Event> 
 
 /// The herds' archive rows (VIEWER.md §10.1): the valley's six founded herds, two years of
 /// routes as one leg per straight piece, and the starvation of an overgrazed winter; then a herd
-/// of two that predators eat to the last.
+/// of ten that a predator eats down to its refuge (EQUILIBRIUM.md §3.4) and a wipe ends.
 #[test]
 fn the_archive_records_the_herds() {
     use rtsim_archive::record::{kinds_on, rows_on};
@@ -798,7 +960,8 @@ fn the_archive_records_the_herds() {
             .all(|e| e.magnitude > 0 && e.subject.value != 0)
     );
 
-    // A herd of two, eaten to the last by a predator the engine only knows by its number.
+    // A herd of ten, eaten down to its refuge by a predator the engine only knows by its number,
+    // then wiped out.
     let mut h = Herds::new(
         4,
         HerdTunables::default(),
@@ -812,7 +975,7 @@ fn the_archive_records_the_herds() {
             species: rtsim_ecology::herds::HerdSpecies::Goat,
             frame: 0,
             pos: (300, 1_700),
-            count: 2,
+            count: 10,
             seed: Some(6),
         },
         Tick::ZERO,
@@ -822,14 +985,22 @@ fn the_archive_records_the_herds() {
     h.run_until(&mut index, at);
     const WOLF: u64 = 0x1_0000_0007;
     let (px, pz) = h.position(few, at);
-    for _ in 0..2 {
+    let refuge = h.refuge(10);
+    assert_eq!(refuge, 8);
+    let start = h.count(few, at);
+    assert!(start > refuge, "{start}");
+    for _ in refuge..start {
         let p = h.predate(few, px, pz, at, 100, WOLF);
         assert_eq!(p.animals, 1);
     }
+    assert_eq!(h.count(few, at), refuge);
+    assert_eq!(h.predate(few, px, pz, at, 100, WOLF).animals, 0);
+    assert!(h.prey_near(0, px, pz, 500, at, WOLF).is_empty());
+    assert_eq!(h.cull(few, at), refuge);
     h.run_until(&mut index, Tick::from_days(10));
     assert_eq!(h.count(few, h.now()), 0);
     let preds = events_of(&h, kinds::HERDS_PREDATION);
-    assert_eq!(preds.len(), 2);
+    assert_eq!(preds.len() as u64, start - refuge);
     for e in &preds {
         assert_eq!((e.subject.value, e.object.value), (few.to_bits(), WOLF));
         assert_eq!((e.tick, e.magnitude), (at.0, 1));

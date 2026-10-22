@@ -43,10 +43,16 @@ pub struct GlassPoint {
     pub lp_tight: u32,
     /// The first solve's L for sheets, per tick (a sanity check: cells × the cell's rate).
     pub sheets_l: f64,
-    /// One save of the engine holding the compile (`glass_replay::save_cost`): every page's
-    /// bytes and the snapshot's CPU.
+    /// The first save after the compile, the save before it made before the compile's records
+    /// (`glass_replay::save_cost`, docs/choices-industry-dirty-pages.md): the bytes of the pages
+    /// it wrote and its CPU.
     pub save_bytes: u64,
     pub save_cpu_ns: f64,
+    pub save_pages: u64,
+    /// The save after that, with nothing changed between: the globals page alone.
+    pub next_save_bytes: u64,
+    pub next_save_cpu_ns: f64,
+    pub next_save_pages: u64,
 }
 
 fn head(index: u32) -> GraphHead {
@@ -361,6 +367,8 @@ pub fn point(nodes: u64, slack: bool) -> GlassPoint {
     let cells = (nodes / CELL).max(1) as u32;
     let records = factory(cells, slack);
     let mut e = engine(cells);
+    // The pages before the compile: what the save before it wrote.
+    e.save_changed();
     let timed: Vec<Timed> = records
         .into_iter()
         .map(|g| Timed {
@@ -386,7 +394,8 @@ pub fn point(nodes: u64, slack: bool) -> GlassPoint {
         .iter()
         .find(|g| g.good == SHEET.0)
         .map_or(0.0, |g| g.in_l);
-    let (save_bytes, save_cpu_ns) = super::glass_replay::save_cost(&e);
+    let save = super::glass_replay::save_cost(&mut e);
+    let next = super::glass_replay::save_cost(&mut e);
     GlassPoint {
         nodes: u64::from(r.nodes),
         edges: u64::from(r.edges),
@@ -398,8 +407,12 @@ pub fn point(nodes: u64, slack: bool) -> GlassPoint {
         lp_skipped: sol.lp_skipped,
         lp_tight: sol.lp_tight,
         sheets_l,
-        save_bytes,
-        save_cpu_ns,
+        save_bytes: save.bytes,
+        save_cpu_ns: save.cpu_ns,
+        save_pages: save.pages,
+        next_save_bytes: next.bytes,
+        next_save_cpu_ns: next.cpu_ns,
+        next_save_pages: next.pages,
     }
 }
 
