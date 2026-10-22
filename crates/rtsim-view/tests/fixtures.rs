@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! The save viewer on real saves (VIEWER.md §16, V1's exit test): GameTest worlds the mod wrote,
-//! each its `rtsim/` pages and `data/mic_rtsim_journal.dat`, copied as they were.
+//! each its `rtsim/` pages and `data/mic_rtsim_journal.dat`, copied as they were. The core save is
+//! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
+//! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit CORE_COMMIT
-//!   (the oil audit's F2, F3, F7 and F9 merged with main: the dragons' pages are RTD5 and RTN5, the
-//!   fields' daily watch; an industry district page starts with IDS2, its builders).
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit e939d11
+//!   (the oil audit's F2, F3, F7 and F9 merged with main 6928b4b: the dragons' pages are RTD5 and
+//!   RTN5, the fields' daily watch; an industry district page starts with IDS2, its builders).
 //!   Villages, roads, news, herds, a district; no caravan is on the road when the server stops
 //!   (the harness world draws caravans). A herd's route draws only when a herd is on the move at
 //!   the save, which depends on when the server stops: 6638edc's save had one, while both runs of
