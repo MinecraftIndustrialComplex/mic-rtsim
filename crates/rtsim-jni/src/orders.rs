@@ -77,6 +77,7 @@ pub const OP_CONFLICT_COMMAND: u16 = 29;
 pub const OP_WORKS_GRANT: u16 = 30;
 pub const OP_WORKS_RAID: u16 = 31;
 pub const OP_TRIBUTE_START: u16 = 32;
+pub const OP_NEST_DAY: u16 = 34;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -309,6 +310,9 @@ pub enum Order {
         village: u64,
         lair: u64,
     },
+    /// TEST: the oil nests' day (their watch period and the unit of their waits, OILGATE.md §4.6)
+    /// is this many ticks from now on; 0 restores the tunable's. Applied at the next step.
+    NestDay(u64),
 }
 
 impl Order {
@@ -324,6 +328,7 @@ impl Order {
                 | Order::WorksGrant { .. }
                 | Order::WorksRaid { .. }
                 | Order::TributeStart { .. }
+                | Order::NestDay(_)
         )
     }
 
@@ -342,6 +347,7 @@ impl Order {
                 | Order::WorksGrant { .. }
                 | Order::WorksRaid { .. }
                 | Order::TributeStart { .. }
+                | Order::NestDay(_)
         )
     }
 }
@@ -666,6 +672,7 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 village: c.u64()?,
                 lair: c.u64()?,
             },
+            OP_NEST_DAY => Order::NestDay(c.u64()?),
             OP_INDUSTRY_THREAT => {
                 let id = c.u64()?;
                 let source = *SOURCES
@@ -1106,6 +1113,11 @@ impl Encoder {
                 self.u64(*lair);
                 self.end(at);
             }
+            Order::NestDay(ticks) => {
+                let at = self.begin(OP_NEST_DAY);
+                self.u64(*ticks);
+                self.end(at);
+            }
             Order::IndustryThreat(t) => {
                 let at = self.begin(OP_INDUSTRY_THREAT);
                 self.u64(t.id);
@@ -1351,6 +1363,7 @@ mod tests {
                 village: 6,
                 lair: 0x1d_0000_0003,
             },
+            Order::NestDay(600),
             Order::IndustryThreat(Threat {
                 id: 5,
                 source: ThreatSource::Bandit,
