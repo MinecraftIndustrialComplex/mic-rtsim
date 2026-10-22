@@ -9,10 +9,14 @@ Metrics (CONFLICT-LIFE.md section 3):
   fights per world-year     war parties that fight: raids, invasions, bands, ambushes, plunders
   losing raids              share of those fights the attacker lost, and lost fights per world-year
   extinction                a camp held at one member or none for 96 days or more
-  runaway                   one attacker hitting one target 6 times inside 96 days (an endless war),
-                            or a world whose last decade has more than twice the fights of its second
+  runaway                   an endless war: one pair of factions (either way round) fighting with no
+                            96-day gap for five years running; or a surge: a world whose last decade
+                            has more than twice the fights of its second
+  permanent peace           a world with no camp-on-camp fight in the whole run
   peace                     a decade with no camp-on-camp fight, and a decade with no fight at all
   interval CV               spread of the days between one faction's fights (0 is a clock, 1 Poisson)
+  pair CV                   the same, between one attacker's fights on one target (the ladder's dwell
+                            is a clock here even where its plunder is Poisson)
   to the day                share of a faction's next acts whose kind, target and day (within 1)
                             a watcher could call from its last two acts
   culture spread            the same camp in the same world on different seeds: Jensen-Shannon
@@ -38,8 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model  # noqa: E402
 from model import YEAR, PlayerScript, Scenario  # noqa: E402
 
-FIGHT = ("raid", "invasion", "band", "ambush", "plunder")
-ACTS = ("raid", "invasion", "band", "ambush", "plunder", "demand", "warn", "scout", "truce", "hunt")
+FIGHT = ("raid", "invasion", "band", "ambush", "plunder", "skirmish")
+ACTS = ("raid", "invasion", "band", "ambush", "plunder", "skirmish", "demand", "warn", "scout", "truce", "hunt")
 MODES = ("ladder", "gate", "life")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 
@@ -91,16 +95,29 @@ def world_stats(w):
             cat["player"] += 1
         else:
             cat["train_or_caravan"] += 1
-    # endless war: one attacker, one target, 6 fights inside 96 days
+    # endless war: one pair of factions, either way round, with no 96-day gap for five years running
     endless = False
     by_pair = collections.defaultdict(list)
+    by_dir = collections.defaultdict(list)
     for e in fights:
-        by_pair[(e["f"], e["tgt"])].append(e["t"])
+        by_dir[(e["f"], e["tgt"])].append(e["t"])
+        if e["tgt"] in w.factions:
+            by_pair[tuple(sorted((e["f"], e["tgt"])))].append(e["t"])
     for ts in by_pair.values():
-        for i in range(len(ts) - 5):
-            if ts[i + 5] - ts[i] <= 96:
+        ts = sorted(ts)
+        start = ts[0]
+        for a, b in zip(ts, ts[1:]):
+            if b - a >= YEAR:
+                start = b
+            elif b - start >= 5 * YEAR:
                 endless = True
                 break
+    pair_cvs = []
+    for ts in by_dir.values():
+        if len(ts) >= 5:
+            gaps = np.diff(sorted(ts)).astype(float)
+            if gaps.mean() > 0:
+                pair_cvs.append(float(gaps.std() / gaps.mean()))
     dec = per_year[: (years // 10) * 10].reshape(-1, 10).sum(1) if years >= 20 else per_year
     ccdec = cc[: (years // 10) * 10].reshape(-1, 10).sum(1) if years >= 20 else cc
     surge = bool(len(dec) >= 3 and dec[-1] > 2 * max(dec[1], 1))
@@ -129,6 +146,8 @@ def world_stats(w):
     mix_by_f = {f: [sum(1 for e in es if e["act"] == a) for a in ACTS] for f, es in acts_by_f.items()}
     fights_by_f = {f: sum(1 for e in es if e["act"] in FIGHT) / years for f, es in acts_by_f.items()}
     motives = collections.Counter(e.get("motive", "rule") for e in fights)
+    drivers = collections.Counter(d for e in fights for d in e.get("drivers", ["rule"]))
+    loot_only = sum(1 for e in fights if e.get("drivers") == ["loot"])
     occasions = collections.Counter(e.get("occasion", "clock") for e in fights)
     out = {
         "fights_per_year": per_year.tolist(),
@@ -142,6 +161,10 @@ def world_stats(w):
         "extinct": extinct,
         "peace_decade_camp": bool(len(ccdec) and (ccdec == 0).any()),
         "peace_decade_all": bool(len(dec) and (dec == 0).any()),
+        "peace_forever": bool(cc.sum() == 0),
+        "pair_cv": pair_cvs,
+        "drivers": dict(drivers),
+        "loot_only": loot_only,
         "decades": dec.tolist(),
         "cv": cvs,
         "to_day_hits": hits,
@@ -152,6 +175,14 @@ def world_stats(w):
         "motives": dict(motives),
         "occasions": dict(occasions),
         "story": [(e["t"], e["f"], e["act"], e["tgt"]) for e in ev if e["act"] in ACTS and e["t"] < 10 * YEAR],
+        "by_player": {p: sum(1 for e in fights if e["tgt"] == p) / years for p in w.players},
+        "by_player_lost": {p: sum(e.get("dead", 0) for e in ev if e["tgt"] == p and e["act"] in FIGHT) / years
+                           for p in w.players},
+        "tribute_by_player": {p: sum(e.get("T", 0) for e in ev if e["tgt"] == p and e["act"] == "demand"
+                                     and e.get("paid")) / years for p in w.players},
+        "sittings_per_faction_year": getattr(w, "sittings", 0) / years / max(1, len(w.factions)),
+        "matters_per_sitting": getattr(w, "matters", 0) / max(1, getattr(w, "sittings", 0)),
+        "acts_per_faction_year": len([e for e in ev if e["act"] in ACTS]) / years / max(1, len(w.factions)),
     }
     if sc.duel:
         p = w.players["P:Ben"]
@@ -200,7 +231,7 @@ def stories(name, mode, seed, days, limit=40):
     lines = []
     seasons = ("spring", "summer", "autumn", "winter")
     keep = set(FIGHT) | {"demand", "succession", "dragon", "killed", "robbed", "fight", "truce", "arrive", "hunted",
-                         "ground_lost", "hunt", "warn"}
+                         "ground_lost", "hunt", "warn", "clash"}
     for e in w.events:
         if e["act"] not in keep:
             continue
@@ -278,6 +309,7 @@ def summarize(rows):
         fights = sum(r["fights"] for r in rs)
         lost = sum(r["lost"] for r in rs)
         cvs = [c for r in rs for c in r["cv"]]
+        pcvs = [c for r in rs for c in r["pair_cv"]]
         hits = sum(r["to_day_hits"] for r in rs)
         tot = sum(r["to_day_total"] for r in rs)
         # culture spread: the same faction slot across seeds
@@ -297,10 +329,12 @@ def summarize(rows):
         cat = collections.Counter()
         mot = collections.Counter()
         occ = collections.Counter()
+        drv = collections.Counter()
         for r in rs:
             cat.update(r["cat"])
             mot.update(r["motives"])
             occ.update(r["occasions"])
+            drv.update(r["drivers"])
         years = len(fy) / len(rs)
         row = {
             "worlds": len(rs),
@@ -316,6 +350,17 @@ def summarize(rows):
             "surge": float(np.mean([r["surge"] for r in rs])),
             "peace_decade_camp": float(np.mean([r["peace_decade_camp"] for r in rs])),
             "peace_decade_all": float(np.mean([r["peace_decade_all"] for r in rs])),
+            "peace_forever": float(np.mean([r["peace_forever"] for r in rs])),
+            "pair_cv": {"median": pct(pcvs, 50), "p10": pct(pcvs, 10), "p90": pct(pcvs, 90), "n": len(pcvs)},
+            "drivers": {k: v / max(1, fights) for k, v in drv.most_common()},
+            "loot_only": sum(r["loot_only"] for r in rs) / max(1, fights),
+            "by_player": {p: float(np.mean([r["by_player"][p] for r in rs])) for p in rs[0]["by_player"]},
+            "by_player_lost": {p: float(np.mean([r["by_player_lost"][p] for r in rs])) for p in rs[0]["by_player"]},
+            "tribute_by_player": {p: float(np.mean([r["tribute_by_player"][p] for r in rs]))
+                                  for p in rs[0]["by_player"]},
+            "sittings_per_faction_year": float(np.mean([r["sittings_per_faction_year"] for r in rs])),
+            "matters_per_sitting": float(np.mean([r["matters_per_sitting"] for r in rs])),
+            "acts_per_faction_year": float(np.mean([r["acts_per_faction_year"] for r in rs])),
             "decades_mean": np.mean([r["decades"] for r in rs], axis=0).tolist(),
             "interval_cv": {"median": pct(cvs, 50), "p10": pct(cvs, 10), "p90": pct(cvs, 90), "n": len(cvs)},
             "to_the_day": hits / tot if tot else float("nan"),
