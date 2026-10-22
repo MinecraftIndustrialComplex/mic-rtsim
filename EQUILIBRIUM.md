@@ -224,13 +224,20 @@ belonging to it, and a **pressure** P:
   - **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
     the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
     and the far view draws from about a kilometre away. So the 128-block rule does not apply to it: its
-    bodies are placed where its march puts them as they come inside the ticking area, the column's
-    head 133 to 160 blocks off at a simulation distance of 10 and 101 to 131 at 8, and nothing appears
-    that was not already walking toward the player. A party that reaches a watched target with no
-    bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its own
-    route: placed at the farthest ticking point on that route back from the target, it walks the rest,
-    instead of today's waves on the arc 112 blocks out. That point is past 128 blocks at a simulation
-    distance of 10; at 8 it can be as near as 113, the nearest a server that short allows.
+    bodies are placed where its march puts them as they come inside the entity-ticking area. For a
+    simulation distance of s chunks its edge is 16s to 16s + 16 blocks off along an axis and up to about
+    1.4 times that on a diagonal (`DistanceManager.java:252-253`): 160 to 176 blocks at 10, vanilla's
+    default, and 128 to 144 at 8. The column fills in stack by stack (a row of two warriors, a raptor
+    pack, the chief and its horse; MZ-17, provisional (a)), each stack the tick its last member comes
+    inside, so a raptor pack's nearest body can be a few blocks inside the edge. No warrior, raptor or
+    horse is drawn where it appears, at either distance: they walk into sight. The Umvuthi, the one body
+    drawn beyond 128 blocks (132), rides at the rear of the column; at 8 it can be seen to appear 128 to
+    132 blocks off along an axis, never nearer, and at 10 it appears beyond its draw distance. Nothing
+    appears that was not already walking toward the player. A party that reaches a watched target with
+    no bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its
+    own route: placed at the farthest ticking point on that route back from the target, it walks the
+    rest, instead of today's waves on the arc 112 blocks out. That point is at least 160 blocks off
+    along an axis at a simulation distance of 10, and at least 128 at 8.
 - **Bounds.** n never exceeds K. The sim never creates a site: sites are the structures the world
   generated (C22), or the herd ranges the world model sampled.
 - **The oil gate** (OILGATE.md on main) adds two dragon sources near oil fields, and they are its
@@ -1096,7 +1103,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | Settlers are a family from beyond the explored edge; no village gives any | Taking two from a donor would mean removing vanilla villagers the player may have traded with, cured or named (C2, A10); villagers carry no loot, so a frontier family mints nothing that matters. |
 | Growth inside a site (villagers breeding, a village's growth while unloaded, the Ribbit refill) and haven hires are not slowed by pressure | They are bounded by beds, houses and the crew cap and carry no boss loot; pressure throttles what comes from outside (settlers, migrants, newcomers, refits). |
 | Ribbit residents booked when they exist; refill before building | Today pop is booked before the house exists, and houses never empty; growth stays Ribbit houses only (M3/M4). |
-| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, 101 to 131 blocks off at a simulation distance of 8, having walked toward the player from about a kilometre in the far view; one that reaches a watched target bodiless walks in along its route from the ticking edge. |
+| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
 | Pirate crew pools capped at 18 and fed by hires at 0.25 a day; refit after `min(96, 4 x 2^P)`; a haven with no lane worth hunting rests | Today the pool has no source but captures, so fleets die out; the cap keeps a haven from hoarding crews; a haven that rests is the best response to strong lanes, and a lane's odds move with escorts and navy. |
 | Merchant and navy ships unchanged | They are the economy's carriers, not a population; their 2-day refill already works. |

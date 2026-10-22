@@ -513,13 +513,20 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   > **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
   > the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
   > and the far view draws from about a kilometre away. So the 128-block rule does not apply to it:
-  > its bodies are placed where its march puts them as they come inside the ticking area, the column's
-  > head 133 to 160 blocks off at a simulation distance of 10 and 101 to 131 at 8, and nothing appears
-  > that was not already walking toward the player. A party that reaches a watched target with no
-  > bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its own
-  > route: placed at the farthest ticking point on that route back from the target, it walks the rest,
-  > instead of today's waves on the arc 112 blocks out. That point is past 128 blocks at a simulation
-  > distance of 10; at 8 it can be as near as 113, the nearest a server that short allows.
+  > its bodies are placed where its march puts them as they come inside the entity-ticking area. For a
+  > simulation distance of s chunks its edge is 16s to 16s + 16 blocks off along an axis and up to about
+  > 1.4 times that on a diagonal (`DistanceManager.java:252-253`): 160 to 176 blocks at 10, vanilla's
+  > default, and 128 to 144 at 8. The column fills in stack by stack (a row of two warriors, a raptor
+  > pack, the chief and its horse; MZ-17, provisional (a)), each stack the tick its last member comes
+  > inside, so a raptor pack's nearest body can be a few blocks inside the edge. No warrior, raptor or
+  > horse is drawn where it appears, at either distance: they walk into sight. The Umvuthi, the one body
+  > drawn beyond 128 blocks (132), rides at the rear of the column; at 8 it can be seen to appear 128 to
+  > 132 blocks off along an axis, never nearer, and at 10 it appears beyond its draw distance. Nothing
+  > appears that was not already walking toward the player. A party that reaches a watched target with
+  > no bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its
+  > own route: placed at the farthest ticking point on that route back from the target, it walks the
+  > rest, instead of today's waves on the arc 112 blocks out. That point is at least 160 blocks off
+  > along an axis at a simulation distance of 10, and at least 128 at 8.
 
   The rule's other half stands: an arrival (a recruit, a new Frostmaw, a new Umvuthi) is never placed
   within 128 blocks of a player.
@@ -527,7 +534,7 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   bodies taken, and the party marches on; a living member away is counted with its party and not
   recalled; a party ends only at its own home or at its last death (EQUILIBRIUM.md §2.6 item 11, now
   rewritten to MZ-15). The model's walk home (2.9) is that march home.
-- **The Umvuthi rides with its band** (MOWZIE.md §4.5): its 5.0 is in the band's strength, 12.6 for a
+- **The Umvuthi rides with its band**, at the rear of the column (MOWZIE.md §4.5, §4.16): its 5.0 is in the band's strength, 12.6 for a
   full invasion, and missing from the grove's defence until it is home. If the band is destroyed, it
   falls with it, and the grove waits for an heir (2.10).
 - **The spawn quota does not shrink a band.** MOWZIE.md leaves this to the conflict engine: a band
@@ -1089,7 +1096,7 @@ GameTests, only where Java is involved:
 | CL-D30 | The railway's guards stay on 48 to 144 days; word they are gone reaches the camps after Exp(6) days; the watch on the line misses the guards half the time | with fixed guard spells and instant news, robberies resumed on a known day |
 | CL-D31 | No starvation: a camp out of stores is hungry, nothing more | renewal is EQUILIBRIUM.md's (Ben's scope); hunger only drives the council |
 | CL-D32 | The Umvuthi's heir waits the later of its cowed time and `min(192, 6 x 2^P)` days, and a warrior takes up the mask (the grove's count falls by one); warriors refill one at a time | MZ-14 (a) and EQUILIBRIUM.md §2.4.7 |
-| CL-D33 | The 128-block rule as EQUILIBRIUM.md §2.2 words it under MZ-15: a war party on the march is not an arrival; a bodiless party at a watched target walks in from the ticking edge | MZ-15 wins where it and this design disagree; at a simulation distance of 8 the column appears 101 to 131 blocks off, having walked from a kilometre in the far view |
+| CL-D33 | The 128-block rule as EQUILIBRIUM.md §2.2 words it under MZ-15: a war party on the march is not an arrival; a bodiless party at a watched target walks in from the ticking edge | MZ-15 wins where it and this design disagree; the column appears stack by stack at the entity-ticking edge, 128 to 144 blocks off along an axis at a simulation distance of 8 and 160 to 176 at 10, having walked from a kilometre in the far view; only the Umvuthi, at the rear, can be seen to appear, 128 to 132 blocks off at 8 |
 | CL-D34 | BAND_MARCH (0x880B) is the march record; no new record id; the reasons are fields on FACTION_NOTICE (0x8801) and ENVOY_MATERIALIZE (0x8802) | one march record for every party; no id to clash |
 | CL-D35 | The spawn quota does not shrink a band: members past it walk in from the ticking edge as it frees | the band the far view drew is the band that fights; `start_fight`'s waves already work this way |
 | CL-D36 | A defeat sets a floor under the guess (halving over 4 x pride_half), and a player's base blurs at a quarter of a camp's rate | without them a fortress was tested again as soon as the belief blurred |
