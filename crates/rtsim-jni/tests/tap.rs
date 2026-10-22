@@ -245,7 +245,6 @@ fn a_flush_encodes_everything_and_unchanged_parts_are_not_rewritten() {
 fn full_units_encode_whole_and_their_time_is_measured() {
     let dir = tmpdir("tap-full-units");
     let e = engine(&dir, 1 << 20);
-    write_lease(&dir, std::process::id(), Vec::new());
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = PHASE1;
     const N: u64 = 4_096;
@@ -264,6 +263,9 @@ fn full_units_encode_whole_and_their_time_is_measured() {
         }
     }
     j.idle();
+    // The lease starts after the setup: a loaded machine can take longer to build the world than
+    // the lease lives (LEASE_LIFE), and the flush looks at the lease first.
+    write_lease(&dir, std::process::id(), Vec::new());
     e.view_tap_flush().unwrap();
     e.stats.tap.reset_measurements();
     // A second flush, every unit warm: its counters are the encode alone.
