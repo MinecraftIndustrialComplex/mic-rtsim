@@ -1456,6 +1456,25 @@ p 0.10, not significant). The cause is not measured; probably a sworn camp calls
 and a camp with a sworn ally is a costlier target. As designed, a player almost never meets an
 alliance; warm, they are the hunter's standing problem. CL-7 asks which Ben wants.
 
+**One knob at a time** (`extra/knobs_an.py`; the same 64 seeds, each arm paired with the design; the
+paired difference a year and its sign test in brackets):
+
+| Arm | Ash: fights a year; loot a year | Ash: joint parties a year; pacts against him | Bea: fights a year | Ben: fights a year; joint parties, won |
+|---|---|---|---|---|
+| As designed | 0.322; 23.6 | 0.0034; 4 | 0.141 | 0.125; 0.0072, 0.0041 |
+| A pact's run doubled (`pact_days` 384) | 0.322 (0.000, p 0.87); 24.9 (+1.3, p 0.23) | 0.0025; 3 | 0.146 (+0.005, p 1) | 0.114 (-0.011, p 0.08); 0.0056, 0.0019 |
+| Sending costs 1 (`pact_effort`) | 0.327 (+0.005, p 0.69); 24.3 (+0.7, p 0.90) | 0.0069; 12 | 0.117 (-0.024, p 0.009) | 0.130; 0.0078, 0.0031 |
+| Kin worth 6 (`kin_pact`) | 0.342 (+0.021, p 0.14); 25.0 (+1.4, p 0.40) | 0.0031; 6 | 0.140 | 0.124; 0.0047, 0.0025 |
+| A hate costs 6 (`hate_pact`) | 0.334 (+0.013, p 0.29); 27.1 (+3.5, p 0.16) | 0.0144; 30 | 0.139 | 0.122; 0.0084, 0.0053 |
+| All four (warm) | 0.372 (+0.050, p 0.0002); 33.2 (+9.6, p 0.0001) | 0.0444; 72 | 0.129 (-0.012, p 0.37) | 0.127; 0.0112, 0.0044 |
+
+No single knob moves the hunter's fights or his loss significantly; the four compound. The hate weight
+is the strongest alone: it lets the Grey Outpost swear with Ashpit against him (30 pacts in 3,200
+world-years against 4) and makes joint parties at him four times as common, about once in 2,200 server
+hours. Cheaper sending lowered Bea's fights and her loss (p 0.009 and 0.004): with 24 comparisons in
+the table one such result is not unlikely by chance, and the cause is not measured (probably camps
+busier with each other). No knob moves the fortress.
+
 ---
 
 ## 5. Cost
@@ -1721,6 +1740,6 @@ for CL-5):
 | Id | Question | Options | Why it is yours |
 |---|---|---|---|
 | CL-6 | **May two sworn camps beat a strong base while its owner is away?** | (a) **Yes, rarely (Recommended):** a pact against a player is told to him when it is sworn, and its joint party fights as any party does. At the fortress, two camps sworn against Ben found him away and won 13 times in 3,200 world-years, about once in 250 (about 7,900 server hours; 3.6, 4.5). A win takes about 297 items (10 of the 13; 94 or 61 in the rest); 97% of the fights on him are still lost, and he loses about one item a year on average. A pact is the only way his walls ever fall: no single party wins there, even when he is away. (b) No: a player is never the foe of a pact; pacts are sworn only against camps and villages, and every fight on a fortress is lost, as in CL-4. | It changes CL-4's answer, "every one lost by the attackers", and lets walls fail while their owner is away. |
-| CL-7 | **How common should alliances be?** | (a) **As designed (Recommended):** rare. In the valley one pact about every seven years and a joint fight about every 28; nothing a player feels changes (4.5). The weights are TUNABLE, like every number here, and can be warmed later without a format change. (b) Warm (4.5): pacts run twice as long and cost less to send and to swear across a hate. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loss, and joint envoys about twenty times as often. | It decides whether an alliance is a rare story or a standing answer to a player who provokes. |
+| CL-7 | **How common should alliances be?** | (a) **As designed (Recommended):** rare. In the valley one pact about every seven years and a joint fight about every 28 (about 880 server hours), and a player almost never meets one: a joint party came at the fortress about once in 4,450 server hours, at the hunter about once in 9,300, and never at Bea, the farmer or the railway (4.5). Nothing a player feels changes. The weights are TUNABLE, like every number here, and can be warmed later without a format change. (b) Warm (4.5): pacts run twice as long (`pact_days` 384), sending costs 1 instead of 3, kin count 6 instead of 4, and a hated culture costs 6 instead of 10 to swear across. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loot taken, joint parties at him 13 times as often (about once in 720 server hours) and joint envoys about twenty times as often; the fortress and Bea barely move. (c) One knob, the hate weight at 6, nothing else: pacts against the hunter 30 in 3,200 world-years instead of 4, joint parties at him four times as often (about once in 2,200 server hours), 4% more fights and 15% more loot taken (neither significant); the fortress and Bea barely move. No other single knob moves the hunter (4.5). | It decides whether an alliance is a rare story or a standing answer to a player who provokes. CL-6 (b) would bar pacts against players and take most of (b)'s and (c)'s effect on players with it, so CL-6 and CL-7 are best asked together. |
 | CL-8 | **Can a player swear with a camp?** | (a) **Not in this build (Recommended):** pacts are between camps; a player deals with a camp by tribute, truce and feud, as now. (b) Yes: a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call a player can answer, a place to show it, and rules for his refusals and his betrayals. | It is a new mechanic players use, with its own interface. |
 | CL-9 | **Should players see pacts between camps?** | (a) **A notice to the players both camps reach (Recommended):** when they swear, when they march together and when one betrays the other (2.16, "Envoys and notices"); in the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance (4.5). (b) Nothing, as designed so far: a player learns of a pact only when it is sworn against him or its parties reach him. | It decides whether the valley's politics is news a player reads or history he never sees. |
