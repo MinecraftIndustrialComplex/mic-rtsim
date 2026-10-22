@@ -160,8 +160,14 @@ Sizes are estimates by analogy with code that exists; they are not measured.
    reconciles the engine's count with the vanilla bodies there: it keeps per kind the members away
    whose bodies stayed behind and the members dead whose bodies stayed behind, HOME_SPAWN removes
    only the dead ones' bodies and sends the deficit, and a camp loading while a member is away with
-   its body there recalls that member's party (`BAND_RECALL` with a new reason 7, the camp loaded;
-   today 1 to 6, `docs/boundary.md:1402`), unless a player is watching that party. About 180.
+   its body there ends that member's party through `home` (`engine.rs:3170`: survivors to the pool,
+   loot stocked), with no command to Java, unless the party is watched (§4.9). `recall`
+   (`engine.rs:3146-3167`) is not the tool: it only despawns a party's bodies in the world, and an
+   unwatched party has none, so the BAND_RECALL reasons stay 1 to 6 (`docs/boundary.md:1402`).
+   `home` runs today only from the party's own last event (`engine.rs:2425`), so the census also
+   cancels that event. When the party is watched, the plugin takes the member's body from the camp
+   and the engine clears its *body left behind* booking, so it comes home later as any member away
+   does. About 180.
 8. **Lying in wait** (§4.4): a war party at a position with no district waits out its patience
    (today it "finds nothing to raid", `engine.rs:2869-2878`), sends AMBUSH_SPOT, and rolls
    `ambush_milli` once per TRAIN_PASSED; a hit calls `attack_train` for that train id. The spot's
@@ -233,7 +239,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 
 No new blocks, items or entities.
 
-**Boundary records**: 12 new kinds, plus a new BAND_RECALL reason and a new DEMAND_SETTLED outcome
+**Boundary records**: 12 new kinds, plus a new DEMAND_SETTLED outcome
 (next to §9 of `docs/boundary.md`; field layouts are written with the code, and the kinds are provisional: taken when the code lands, after checking other branches for the same ids):
 
 | Kind | Name | Direction | What it carries |
@@ -562,8 +568,8 @@ player who finds a short train has heard why.
 real one at its spot, a puppet with `alwaysActive` set so it stays awake (`EntityFrostmaw.java:361-363`,
 `580`), restricted to its spot so its `MoveTowardsRestrictionGoal` holds it there (`208`). It targets
 players only (`284`).
-- **The swipe.** While it is watched the sampler samples trains within 64 blocks of it every tick.
-  When a carriage comes within 6.5 blocks, the plugin starts the jar's swipe
+- **The swipe.** While its puppet is in the world the sampler samples trains within 64 blocks of it
+  every tick. When a carriage comes within 6.5 blocks, the plugin starts the jar's swipe
   (`AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, SWIPE_ANIMATION)`, as the jar's AI does,
   `567`), turned toward the carriage. It is the jar's own area attack, so a rider within its arc is
   struck too (which entities it hits is settled by test 9). The cargo comes from the same TRAIN_PASSED
@@ -590,18 +596,24 @@ players only (`284`).
 
 **Its den while it is out.** If it left while the den was loaded, its body left with it (§4.9): a
 player who visits finds the ruin and no Frostmaw. If it left while the den was unloaded, its vanilla
-body is still in the saved den, and what the den's next load does depends on whether anyone is
-watching the Frostmaw by the line:
-- **Nobody is.** The body stays and the engine recalls the party: the Frostmaw has come home to
-  mind its den. So a player who visits the den ends a lurk early; the next raid comes `repeat_days`
-  after this return. Reason (UR-1): removing the body instead would leave the den empty while its
-  Frostmaw lives, and an uninstall then would empty it for good.
-- **A player is** (its puppet stands by the line). It stays out, and the plugin takes its body from
-  the den as when it leaves a loaded den, so it is never in two places. A rider coming along the
-  line usually meets this case: the puppet appears once the rider is within 160 blocks of the spot
-  (`view_radius`), before the den, about 145 blocks beyond the spot, comes within the 10 chunks of
-  vanilla's default view distance (the server's own setting is UNVERIFIED). This has the uninstall
-  exposure of any member away from a loaded camp, which §4.9 lists.
+body is still in the saved den, and what the den's next load does depends on whether the Frostmaw
+by the line is *watched* (§4.9: its puppet is in the world, or the player nearest the den is nearer
+the Frostmaw than the den):
+- **Not watched.** The body stays and the engine ends the party through `home` (`engine.rs:3170`),
+  as if it had walked in: the Frostmaw has come home to mind its den. So a player who visits the den
+  ends a lurk early; the next raid comes `repeat_days` after this return. Reason (UR-1): removing
+  the body instead would leave the den empty while its Frostmaw lives, and an uninstall then would
+  empty it for good.
+- **Watched.** It stays out, and the plugin takes its body from the den as when it leaves a loaded
+  den, so it is never in two places; from then on it is an ordinary member away, with no body left
+  behind. A rider coming along the line always meets this case, at any view distance: the spot is 5
+  blocks off the rail and the den about 145 blocks beyond it, so a rider on the line is always
+  nearer the spot than the den. Reason, over "watched means its puppet is in the world" alone: the
+  puppet appears once the rider is within 160 blocks of the spot (`view_radius`), when the den is
+  about 219 blocks away, so that test would hold only if the den loads after the puppet appears, that
+  is below about 14 chunks of view distance (the server's own setting is UNVERIFIED); "a player
+  within `view_radius` of the spot" is the same test. This has the uninstall exposure of any member
+  away from a loaded camp, which §4.9 lists.
 
 ### 4.5 The Umvuthana: a tribe
 
@@ -785,11 +797,21 @@ warriors. So:
 - **The census** (HOME_CENSUS; ledger 7), in three steps:
   1. **The dead left behind.** HOME_SPAWN removes one vanilla body of the kind for each member booked
      dead with its body left behind. So a Frostmaw killed by a line does not reappear in its den.
-  2. **The living away.** For each member booked away with its body here, the body stays and the
-     engine recalls that member's party (BAND_RECALL reason 7): the members are home. A party a
-     player is watching at that moment (its puppets are in the world) is not recalled: the plugin
-     takes its members' bodies from the camp, as when a party leaves a loaded camp. So no member is
-     in two places, and none that lives is removed from its camp while nobody sees it elsewhere.
+  2. **The living away.** For each member booked away with its body here, the census asks whether
+     its party is *watched*: its puppets are in the world, or the player nearest the camp is nearer
+     the party than the camp (by the player positions the engine already keeps for `watcher`,
+     `engine.rs:2836-2850`; with no player reported in the dimension, as under a chunk loader, it is
+     not watched).
+     - **Not watched:** the bodies stay and the engine ends the party through `home`
+       (`engine.rs:3170`): its survivors are back in the pool, its loot is stocked at the camp (a
+       Frostmaw carries none, ledger 10), and its pending event is cancelled. No command goes to Java: the party has no bodies in the world,
+       which is all `recall` (`engine.rs:3146-3167`) would despawn.
+     - **Watched:** the plugin takes the members' bodies from the camp, as when a party leaves a
+       loaded camp, and the engine clears their *body left behind* booking. They are then ordinary
+       members away: one that comes home to an unloaded camp is spawned by the next census, not
+       taken for dead by step 3.
+     So no member is in two places, and none that lives is taken from its camp unless a player is
+     nearer to it than to the camp.
   3. **The rest.** The vanilla bodies at home are compared with the engine's home count. Fewer than
      it expects, with none ordered: the missing ones died unseen (a despawn, a death the plugin
      missed, a warrior carried off with Carry On), and the pool loses them. Fewer because the pool
@@ -800,11 +822,12 @@ warriors. So:
 - **A reset** recreates each faction from FACTION_FOUND, which carries the census: a robbed den comes
   back robbed (the body's `has_crystal` is 0), a grove comes back with the warriors standing in it, a
   den found empty starts with an empty pool (§4.10).
-- **What an uninstall or reset loses:** members away from a loaded camp at that moment (puppets), and
-  the grudges, which are the sim's own. The other way round, a member that left an unloaded camp and
-  died away comes back with an uninstall if its camp has not loaded since (the census's first step
-  removes its body then), since its vanilla body was still in the saved camp: the jar's state wins,
-  which UR-1 allows.
+- **What an uninstall or reset loses:** members away whose bodies left their camp (they left it
+  loaded, or a census took their bodies for a watched party, step 2), and the grudges, which are
+  the sim's own. The other way round, a member that left an unloaded camp and died away comes back
+  with an uninstall if its camp has not loaded since (the census's first step removes its body
+  then), since its vanilla body was still in the saved camp: the jar's state wins, which UR-1
+  allows.
 - **Untested so far for any module:** the deploy rehearsal's uninstall had no puppets to check, as
   no player joined (`docs/deploy-rehearsal-omegasrv.md:461-462`); dragons carry the same gap. Test 4
   covers this plan's bodies.
@@ -938,8 +961,9 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
    train a day. Over the two days her two trains lose at most 256 ingots. When a robbed train pulls
    into Smelter, she hears the roar from the north. No track is cut.
 7. Day 9.5: she rides north. Rounding the ridge, she sees the Frostmaw beside the line, awake (it
-   appeared as she came within 160 blocks of its spot; when the den loads a little later, the plugin
-   takes the body left in it, §4.4). It
+   appeared as she came within 160 blocks of its spot; whenever the den loads, before or after that,
+   she is nearer the spot than the den, so the party is watched and the plugin takes the body left
+   in it, §4.4). It
    throws an ice ball well ahead of her train; it bursts beside her seat, she freezes, and she is
    pulled off the carriage. For 2.5 seconds she stands frozen in the snow next to the Frostmaw while
    her train runs on to Copper Halt. As the second carriage passed, it swiped; the carriage's chest is
@@ -965,8 +989,12 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
      line's meter decays as if she had stopped it. A halt station with no new track changes nothing:
      the range feels the track, not the stations.
    - **Defend the station.** If she changes nothing, the grievance passes 140 on day 15.2, just after
-     the repeat raid was sent (day 15.1); a feud climbs only with no party out, so when that raid is home,
-     on day 18.7, it comes to wait by Copper Halt, the station nearer its den. A Create Big Cannons autocannon on a Create Radars controller with
+     the repeat raid was sent (day 15.1); a feud climbs only with no party out, so when that raid is
+     home, on day 18.7, it comes to wait by Copper Halt, the station nearer its den. That order rests
+     on a 0.1-day margin: in 2 of 32 jittered runs, and always with perfectly regular trains (day
+     14.85 to 15.0 by the trains' phase), the grievance passes 140 before the repeat raid leaves, and
+     the Invasion comes then, on about day 15, instead of the repeat raid (§4.3 gives the same caveat
+     for its 24-leg row). A Create Big Cannons autocannon on a Create Radars controller with
      auto-target and auto-fire counts against every class (I21), and its shells hurt the Frostmaw
      without giving it anyone to turn on; a 2-block wall counts only once the crystal is gone; an iron
      golem counts as a guard.
@@ -1103,9 +1131,12 @@ mechanism, and the moving form runs if the fixture's train moves.
     hook for a den whose chunk is loaded but whose entities are not yet in (`areEntitiesLoaded`
     false), and asserts no HOME_CENSUS and no HOME_SPAWN; once they are in, the count is 1 with the
     crystal. A grove with one footprint chunk unloaded is skipped until that chunk loads.
-22. `aDenLoadingWhileItsFrostmawIsAwayKeepsTheBody`: unwatched, the body stays and the party is
-    recalled; watched, the plugin takes the body and the puppet stays; a member that died away has
-    its body removed; no Frostmaw is ever counted twice.
+22. `aDenLoadingWhileItsFrostmawIsAwayKeepsTheBody`: unwatched, the body stays, the party ends
+    through `home` and no BAND_RECALL is sent; watched (a mock player nearer the spot than the den,
+    with the puppet not yet spawned, and again with it spawned), the plugin takes the body, the party
+    stays out, and when it later comes home to the unloaded den the next census spawns it rather than
+    counting it dead; a member that died away has its body removed; no Frostmaw is ever counted
+    twice.
 
 **`rtsim-cli sim mowzie`** (a scenario beside `sim conflict`, `main.rs:81-85`), with runs:
 1. A line through a range, with the meter: notice, raid, repeat, invasion, at §4.3's first table;
@@ -1142,7 +1173,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Envoy party | While a demand is open: targeting stripped, golems kept off, every hit cancelled unless a player struck it; a party killed by anything else withdraws the demand | §4.5: golems and radar turrets would otherwise start a war the player never chose. |
 | Rail meter | One meter per (den, actor), tolerance once; a band plus a daily resync; line counts only for the focus | §4.3: a meter per line hid a trunk of light lines, and the band alone froze a rate up to 1 leg off. |
 | Census | Only once every chunk of the camp has its entities in | §4.9: a cold count books living bodies as dead and, six days later, dupes a Frostmaw and its crystal. |
-| Bodies away | Only a dead member's body is removed; a camp loading while a member is out keeps the body and recalls the party, unless a player is watching that party | §4.4, §4.9 (UR-1): a living member's den is never emptied unseen, and no member is in two places. |
+| Bodies away | Only a dead member's body is removed; a camp loading while a member is out keeps the body and ends the party through `home`, unless the party is watched: its puppets are in the world, or the player nearest the camp is nearer the party than the camp. Watched, the plugin takes the body and the booking is cleared | §4.4, §4.9 (UR-1): a living member's den is emptied only for a player nearer the member than the den, and no member is in two places. The nearer-player test lets a rider on the line meet a lurking Frostmaw at any view distance; a puppet-only test would need under about 14 chunks. |
 | Peaceful | No war parties leave | §4.12. |
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
