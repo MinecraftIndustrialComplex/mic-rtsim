@@ -18,14 +18,24 @@ import java.util.UUID;
  * What the far feed's messages say, as far registry movers ({@link FarFeedClient#SOURCE}): the objects by their
  * handles, each a leg on the far clock or a sample it moves to over the next second. Plain Java, apart from
  * {@link FarFeedClient}'s networking, so a unit test can play the hand-over through it.
+ *
+ * <p>A flown leg is timed in game time and drawn on the far clock (client ticks), so the two are tied by an
+ * offset: the far clock minus the client's game time, which vanilla keeps to the server's once a second.
+ * {@link #clock} follows it, and when it moves (a server below 20 ticks a second) every flown leg is timed
+ * again, so a dragon is where the server has it, not where a full-speed clock would put it.
  */
 final class FarFeedReceiver {
     /** Samples come a second apart; a mover takes this long to reach the next one. */
     static final double SAMPLE_TICKS = 20.0;
     /** A hunting dragon's circling speed, blocks a tick (10 m/s). PLACEHOLDER. */
     static final double HUNT_SPEED = 0.5;
+    /** The offset may wander this far, in ticks, before the legs are timed again. */
+    static final double RETIME_TICKS = 2.0;
 
     private final Map<Integer, Obj> objs = new HashMap<>();
+    /** Far clock minus game time, as the legs are timed; NaN until known. */
+    private double offset = Double.NaN;
+    long retimes;
 
     /** One object of the feed, by its handle. */
     private static final class Obj {
@@ -38,6 +48,9 @@ final class FarFeedReceiver {
         FarCircle circle;
         int entity = -1;
         double hx = 1.0, hz = 0.0;
+        /** A flown leg's start in game time, or Long.MIN_VALUE. */
+        long legT0 = Long.MIN_VALUE;
+        String dim;
         FarMover mover;
 
         /** The segment drawn at {@code now}, or null before the first position. */
@@ -50,6 +63,7 @@ final class FarFeedReceiver {
         }
 
         void rebuild(String dim) {
+            this.dim = dim;
             if (kind == null || prev == null)
                 return;
             mover = new FarMover(new FarKey(FarFeedClient.SOURCE, new UUID(id, 0L), 0), kind, dim, prev, cur, sampleTick, interval,
@@ -85,14 +99,42 @@ final class FarFeedReceiver {
         if ((m.flags() & FarWire.RESET) != 0)
             objs.clear();
         double now = FarClock.ticks();
+        if (Double.isNaN(offset))
+            offset = now - m.gameTime();
         for (FarWire.Rec r : m.recs())
             apply(r, m, now);
+        commit();
+        return m;
+    }
+
+    /**
+     * The far clock minus the client's game time now (once a tick): when it has moved {@link #RETIME_TICKS}
+     * from the one the legs are timed by, every flown leg is timed again by it.
+     */
+    void clock(double offsetNow) {
+        if (!Double.isNaN(offset) && Math.abs(offsetNow - offset) < RETIME_TICKS)
+            return;
+        offset = offsetNow;
+        boolean any = false;
+        for (Obj o : objs.values()) {
+            if (o.legT0 == Long.MIN_VALUE || o.mover == null)
+                continue;
+            o.sampleTick = o.legT0 + offset;
+            o.rebuild(o.dim);
+            any = true;
+        }
+        if (any) {
+            retimes++;
+            commit();
+        }
+    }
+
+    private void commit() {
         List<FarMover> out = new ArrayList<>(objs.size());
         for (Obj o : objs.values())
             if (o.mover != null)
                 out.add(o.mover);
         FarObjects.commit(FarFeedClient.SOURCE, out);
-        return m;
     }
 
     private void apply(FarWire.Rec r, FarWire.Message m, double now) {
@@ -119,7 +161,7 @@ final class FarFeedReceiver {
                 Obj o = objs.get(l.handle());
                 if (o == null)
                     return;
-                leg(o, l, m.gameTime(), now);
+                leg(o, l, now);
                 o.rebuild(m.dimension());
             }
             case FarWire.Sample s -> {
@@ -133,6 +175,7 @@ final class FarFeedReceiver {
                 o.sampleTick = now;
                 o.interval = SAMPLE_TICKS;
                 o.circle = null;
+                o.legT0 = Long.MIN_VALUE;
                 o.state = stateOf(s.state());
                 o.rebuild(m.dimension());
             }
@@ -151,19 +194,21 @@ final class FarFeedReceiver {
         return s == null || s == FarState.GONE ? FarState.MOVING : s;
     }
 
-    /** A leg as a mover on the far clock: game time {@code t} is {@code now + (t - gameTime)}. */
-    private static void leg(Obj o, FarWire.Leg l, long gameTime, double now) {
+    /** A leg as a mover on the far clock: game time {@code t} is far clock {@code t + offset}. */
+    private void leg(Obj o, FarWire.Leg l, double now) {
         FarState state = stateOf(l.state());
         double x0 = l.x0() + 0.5, z0 = l.z0() + 0.5, x1 = l.x1() + 0.5, z1 = l.z1() + 0.5, y = l.y();
         double[] before = o.drawnAt(now);
         o.state = state;
         o.circle = null;
+        o.legT0 = Long.MIN_VALUE;
         switch (state) {
             case FLY -> {
                 heading(o, x1 - x0, z1 - z0);
                 o.prev = seg(x0, y, z0, o.hx, o.hz);
                 o.cur = seg(x1, y, z1, o.hx, o.hz);
-                o.sampleTick = now + (l.t0() - gameTime);
+                o.legT0 = l.t0();
+                o.sampleTick = l.t0() + offset;
                 o.interval = Math.max(1.0, l.t1() - l.t0());
             }
             case HUNT -> {
