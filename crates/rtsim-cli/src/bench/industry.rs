@@ -641,7 +641,13 @@ pub fn run(opts: Options) -> i32 {
             } else {
                 format!(" fell back: {}", p.fallbacks.join(", "))
             };
-            let save = match (p.save_bytes, p.save_pages, p.globals_bytes, s.name, s.metric) {
+            let save = match (
+                p.save_bytes,
+                p.save_pages,
+                p.globals_bytes,
+                s.name,
+                s.metric,
+            ) {
                 (Some(b), Some(n), Some(g), "glass_regimes", _)
                 | (Some(b), Some(n), Some(g), "glass_quiet", "save_bytes") => {
                     format!(" save {b} B, {n} pages, globals {g} B")

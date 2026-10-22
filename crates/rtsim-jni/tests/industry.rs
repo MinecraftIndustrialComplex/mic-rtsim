@@ -1262,7 +1262,10 @@ fn industry_save(j: &mut Java) -> (u64, u64, u64) {
     j.mc_tick();
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while j.e.stats.saves_done.load(Acquire) == done {
-        assert!(std::time::Instant::now() < deadline, "the save never committed");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the save never committed"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     j.e.with_industry(|_, s| (s.save_pages, s.save_bytes, s.save_deleted))
@@ -1301,7 +1304,9 @@ fn a_quiet_industry_save_is_flat_in_the_district_count() {
         mills(&mut j, extra);
         j.mc_run_until(day(1.5));
         let first = industry_save(&mut j);
-        let replaying = industry(&j.e, |ie| ie.districts().filter(|d| d.sim.is_some()).count());
+        let replaying = industry(&j.e, |ie| {
+            ie.districts().filter(|d| d.sim.is_some()).count()
+        });
         assert_eq!(replaying as u64, 1 + extra, "every mill replays");
         let t = j.mc().t;
         j.mc_run_until(t + 400);
@@ -1314,7 +1319,10 @@ fn a_quiet_industry_save_is_flat_in_the_district_count() {
     eprintln!(
         "industry saves (pages, bytes, deleted): 1 mill {first_1:?} then {quiet_1:?}; 16 mills {first_16:?} then {quiet_16:?}"
     );
-    assert!(first_16.0 > first_1.0, "the first save writes every mill's pages");
+    assert!(
+        first_16.0 > first_1.0,
+        "the first save writes every mill's pages"
+    );
     assert_eq!(quiet_1.0, 2, "the globals page and the link's");
     assert_eq!(quiet_16.0, 2, "the globals page and the link's");
     assert_eq!((quiet_1.2, quiet_16.2), (0, 0));
@@ -1343,7 +1351,10 @@ fn a_removed_district_leaves_the_store_with_the_next_save() {
     j.e.close(false, Duration::from_secs(5)).unwrap();
     {
         let store = PageStore::open(&dir, Durability::NoSync).unwrap();
-        assert!(store.contains(PageKey::new(DISTRICT_TABLE, MILL.0)), "the mill stays");
+        assert!(
+            store.contains(PageKey::new(DISTRICT_TABLE, MILL.0)),
+            "the mill stays"
+        );
         assert!(!store.contains(PageKey::new(DISTRICT_TABLE, other.0)));
         assert!(!store.contains(PageKey::new(GLASS_TABLE, other.0)));
     }
@@ -1374,14 +1385,20 @@ fn a_failed_industry_save_is_written_again_by_the_next() {
     j.mc_tick();
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while j.e.stats_array()[15] == failures {
-        assert!(std::time::Instant::now() < deadline, "the save never failed");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the save never failed"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     let lost = j.e.with_industry(|_, s| s.save_pages);
     assert!(lost > 2, "the failed save had district pages: {lost}");
     // A tick from the failed save to the next: it writes the lost pages again.
     let (pages, _, _) = industry_save(&mut j);
-    assert!(pages >= lost, "the next save writes the lost pages again: {pages} of {lost}");
+    assert!(
+        pages >= lost,
+        "the next save writes the lost pages again: {pages} of {lost}"
+    );
     let saved = industry_pages(&j.e);
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(false, Duration::from_secs(5)).unwrap();
