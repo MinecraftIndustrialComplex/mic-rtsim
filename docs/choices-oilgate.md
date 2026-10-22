@@ -248,6 +248,12 @@ around an oil biome's edge and 25 at random, the cells must hold every biome CDG
 `BiomeManager`, and every chunk with an oil biome for CDG must pass the look. On the level, under the
 pack's rule (CDG's normal multiplier set to 0 for the check and put back), the source must answer what
 `getBaseOilAmount` does, chunk for chunk, and under CDG's own defaults the look must stand aside.
+First run (stub engine, 2026-10-21): 90 noise chunks, 55 with an oil biome for CDG, 35 skipped by the
+look, none passed without one; the look took 2.4 ms a chunk (with its early exit) against 128.6 ms for
+CDG's 12,800 points on the same uncached biomes. On the level 57 chunks agreed with `getBaseOilAmount`,
+but none took the skip: the flat preset's one biome is plains, which CDG's own tag (the GameTest
+server's; the pack replaces it with `#c:is_desert`) counts as oil, so the skip is checked only on the
+noise biomes. Under CDG's defaults (normal multiplier 1.3) the look stood aside.
 
 ## GameTests (OGC34, OGC36 to OGC40, OGC42)
 
