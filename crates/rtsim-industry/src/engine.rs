@@ -4495,6 +4495,15 @@ mod persist_impls {
                     GLOBAL_TABLE => global = Some(bytes),
                     DISTRICT_TABLE => {
                         let d: District = from_bytes(&bytes)?;
+                        // A save writes and deletes a district's page at its own key only (ID2):
+                        // one elsewhere would never be replaced or deleted.
+                        if d.id.0 != k.id() {
+                            return Err(CodecError::Invalid(format!(
+                                "district {} in the page of district {}",
+                                d.id.0,
+                                k.id()
+                            )));
+                        }
                         districts.insert(d.id, d);
                     }
                     CLUSTER_TABLE => {
