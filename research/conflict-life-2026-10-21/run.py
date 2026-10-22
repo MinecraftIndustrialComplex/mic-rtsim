@@ -33,6 +33,9 @@ Metrics (CONFLICT-LIFE.md section 4):
   guards lag                days from the railway taking its guards off to the next train robbed
   loot share                what each player lost a year (loot and tribute) as a share of his income
                             (480 a year)
+  alliances                 pacts offered and sworn, calls answered, refused and busy, joint fights on
+                            players and on camps and the share lost, betrayals, how pacts end and how
+                            long they run (section 2.16); each *_noally scenario is its same-seed control
 """
 from __future__ import annotations
 
@@ -44,7 +47,7 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 
@@ -55,6 +58,7 @@ from model import YEAR, PlayerScript, Scenario  # noqa: E402
 FIGHT = ("raid", "invasion", "band", "ambush", "plunder", "skirmish")
 ACTS = ("raid", "invasion", "band", "ambush", "plunder", "skirmish", "demand", "warn", "scout", "truce", "hunt")
 MODES = ("ladder", "gate", "life")
+NOALLY = ("alone", "fortress", "farmer", "railway", "multi")
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 
 
@@ -73,6 +77,9 @@ def scenarios(days):
                      hunts="G1"),
         PlayerScript("P:Bea", "weak", d=8, pays=True, sigma=1, reach=("G1", "R1"))], days=days)
     S["multi_nospill"] = Scenario("multi_nospill", S["multi"].players, blame_spill=0.0, days=days)
+    # the same worlds with alliances off: same seeds, same draws, the control for section 2.16
+    for n in NOALLY:
+        S[n + "_noally"] = replace(S[n], name=n + "_noally", life={"alliances": False})
     for kind, d, pays in (("fortress", 80, False), ("weak", 6, True), ("stubborn", 6, False), ("adaptive", 12, True)):
         S["duel_" + kind] = Scenario("duel_" + kind, [PlayerScript("P:Ben", kind, d=d, pays=pays, sigma=9,
                                                                    reach=("G1",), trips=False)],
@@ -220,8 +227,8 @@ def world_stats(w):
         "occasions": dict(occasions),
         "story": [(e["t"], e["f"], e["act"], e["tgt"]) for e in ev if e["act"] in ACTS and e["t"] < 10 * YEAR],
         "by_player": {p: sum(1 for e in fights if e["tgt"] == p) / years for p in w.players},
-        "by_player_lost": {p: sum(e.get("dead", 0) for e in ev if e["tgt"] == p and e["act"] in FIGHT) / years
-                           for p in w.players},
+        "by_player_lost": {p: sum(e.get("dead", 0) + e.get("ally_dead", 0) for e in ev
+                               if e["tgt"] == p and e["act"] in FIGHT) / years for p in w.players},
         "tribute_by_player": {p: sum(e.get("T", 0) for e in ev if e["tgt"] == p and e["act"] == "demand"
                                      and e.get("paid")) / years for p in w.players},
         "sittings_per_faction_year": getattr(w, "sittings", 0) / years / max(1, len(w.factions)),
@@ -234,6 +241,7 @@ def world_stats(w):
         "guards_lags": guards_lags,
         "sittings_by_culture": {k: float(np.mean(v)) for k, v in sit_by_c.items()},
         "touches_per_faction_day": getattr(w, "touches", 0) / sc.days / max(1, len(w.factions)),
+        "ally": ally_stats(w, fights, years),
     }
     if sc.duel:
         p = w.players["P:Ben"]
@@ -251,6 +259,33 @@ def world_stats(w):
         out["duel"] = {"war": wy.tolist(), "killed": killed.tolist(), "tribute": trib.tolist(), "d_end": p.d}
         out["duel"]["d_by_year"] = getattr(w, "d_by_year", [])
     return out
+
+
+def ally_stats(w, fights, years):
+    """Section 2.16's counts for one world."""
+    ev = w.events
+    pacts = [e for e in ev if e["act"] == "pact"]
+    calls = [e for e in ev if e["act"] == "call"]
+    ends = [e for e in ev if e["act"] == "pact_end"]
+    joint = [e for e in fights if e.get("ally")]
+    pairs = collections.Counter("-".join(sorted((e["f"], e["tgt"]))) + " vs " + e["vs"] for e in pacts
+                                if e.get("accepted"))
+    return {
+        "offers": len(pacts), "sworn": sum(1 for e in pacts if e.get("accepted")),
+        "calls": len(calls), "joined": sum(1 for e in calls if e.get("answer") == "join"),
+        "refused": sum(1 for e in calls if e.get("answer") == "refuse"),
+        "busy": sum(1 for e in calls if e.get("answer") == "busy"),
+        "joint": len(joint), "joint_lost": sum(1 for e in joint if not e.get("win")),
+        "joint_player": sum(1 for e in joint if e["tgt"] in w.players),
+        "joint_player_lost": sum(1 for e in joint if e["tgt"] in w.players and not e.get("win")),
+        "joint_camp": sum(1 for e in joint if e["tgt"] in w.factions),
+        "joint_village": sum(1 for e in joint if e["tgt"] in w.villages),
+        "joint_demands": sum(1 for e in ev if e["act"] == "demand" and e.get("ally")),
+        "ends": dict(collections.Counter(e["why"] for e in ends)),
+        "pact_days": [e["days"] for e in ends],
+        "pairs": dict(pairs),
+        "years": years,
+    }
 
 
 def one(args):
@@ -277,7 +312,7 @@ def one(args):
 
 
 KEEP = set(FIGHT) | {"demand", "succession", "dragon", "killed", "robbed", "fight", "truce", "arrive", "hunted",
-                     "ground_lost", "hunt", "warn", "clash", "guards"}
+                     "ground_lost", "hunt", "warn", "clash", "guards", "pact", "call", "pact_end"}
 
 
 def stories(name, mode, seed, days, limit=40):
@@ -306,7 +341,12 @@ def fmt(w, e):
     a = e["act"]
     if a in FIGHT:
         res = "won" if e.get("win") else "lost"
-        txt = f"{head}: {a} on {x} by {e.get('size', 0):.0f} ({e.get('speaker', '')}); {res}, {e.get('dead', 0):.0f} dead"
+        txt = f"{head}: {a} on {x} by {e.get('size', 0):.0f} ({e.get('speaker', '')})"
+        if e.get("ally"):
+            txt += (f" with {w.tname(e['ally'])}'s {e['ally_act']} of {e['ally_size']:.0f}; {res}, "
+                    f"{e.get('dead', 0):.0f} and {e['ally_dead']:.0f} dead")
+        else:
+            txt += f"; {res}, {e.get('dead', 0):.0f} dead"
         if e.get("loot"):
             txt += f", {e['loot']:.0f} taken"
         txt += f". Why: {e['reason']}."
@@ -315,6 +355,11 @@ def fmt(w, e):
         txt = f"{head}: envoy to {x} asking {e['T']:.0f} ({e.get('speaker', '')}); {ans}. Why: {e['reason']}."
     elif a == "truce":
         txt = f"{head}: {e['reason']}; {'accepted' if e.get('accepted') else 'rejected'}."
+    elif a == "pact":
+        txt = f"{head}: {e['reason']} ({e.get('speaker', '')}); {'sworn' if e.get('accepted') else 'refused'}."
+    elif a == "call":
+        ans = {"join": "it came", "refuse": "it refused", "busy": "it could not come"}[e["answer"]]
+        txt = f"{head}: {e['reason']} ({e.get('speaker', '')}); {ans}."
     else:
         txt = f"{head}: {e['reason']}."
     return txt
@@ -462,6 +507,33 @@ def summarize(rows):
             "motives": {k: v / max(1, fights) for k, v in mot.most_common()},
             "occasions": {k: v / max(1, fights) for k, v in occ.most_common()},
         }
+        al = [r["ally"] for r in rs]
+        wy = len(rs) * years
+
+        def tot(k):
+            return sum(a[k] for a in al)
+        ends = collections.Counter()
+        pairs = collections.Counter()
+        for a in al:
+            ends.update(a["ends"])
+            pairs.update(a["pairs"])
+        pdays = [d for a in al for d in a["pact_days"]]
+        row["ally"] = {
+            "offers_per_year": tot("offers") / wy, "sworn_per_year": tot("sworn") / wy,
+            "calls_per_year": tot("calls") / wy,
+            "joined": tot("joined") / max(1, tot("calls")), "refused": tot("refused") / max(1, tot("calls")),
+            "busy": tot("busy") / max(1, tot("calls")),
+            "joint_per_year": tot("joint") / wy, "joint_lost": tot("joint_lost") / max(1, tot("joint")),
+            "joint_player_per_year": tot("joint_player") / wy,
+            "joint_player_lost": tot("joint_player_lost") / max(1, tot("joint_player")),
+            "joint_camp_per_year": tot("joint_camp") / wy, "joint_village_per_year": tot("joint_village") / wy,
+            "joint_demands_per_year": tot("joint_demands") / wy,
+            "betrayals_per_year": ends.get("betrayed", 0) / wy,
+            "ends": {k: v / wy for k, v in ends.most_common()},
+            "pact_days_median": pct(pdays, 50), "pact_days_mean": float(np.mean(pdays)) if pdays else float("nan"),
+            "pairs": {k: v / wy for k, v in pairs.most_common(8)},
+            "worlds_with_pact": float(np.mean([a["sworn"] > 0 for a in al])),
+        }
         if rs[0].get("duel"):
             war = np.array([r["duel"]["war"] for r in rs])
             kil = np.array([r["duel"]["killed"] for r in rs])
@@ -507,7 +579,8 @@ def main():
     names = list(scenarios(days))
     if a.only:
         names = [n for n in names if n in a.only.split(",")]
-    jobs = [(n, m, 1000 + s, days) for n in names for m in MODES for s in range(seeds)]
+    jobs = [(n, m, 1000 + s, days) for n in names for m in (("life",) if n.endswith("_noally") else MODES)
+            for s in range(seeds)]
     t0 = time.time()
     with ProcessPoolExecutor(a.jobs) as ex:
         rows = list(ex.map(one, jobs, chunksize=4))

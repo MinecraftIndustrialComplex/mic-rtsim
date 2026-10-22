@@ -40,8 +40,8 @@ use crate::world::{Item, Member, World};
 /// it at its observe, simulate, write and save points (docs/industry-boundary.md).
 mod industry;
 pub use industry::{
-    IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY, glass_notes_offline,
-    glass_offline, glass_replay_offline,
+    IndustryStats, KEY_LINK as KEY_INDUSTRY_LINK, MODULE_INDUSTRY, TABLES as INDUSTRY_TABLES,
+    glass_notes_offline, glass_offline, glass_replay_offline,
 };
 /// Phase 1 behind the boundary: the phase 1 world (settle, trade, travel, knowledge), its
 /// observations, commands and pages (docs/boundary.md §4, §5).
@@ -1601,9 +1601,14 @@ impl Engine {
         let events = archive::take(st, &self.stats);
         let meta = encode_meta(&st.replay, &st.outbox);
         let world = st.world.to_bytes();
-        let mut whole = industry::snapshot(st);
+        let ind = industry::save(st);
+        let mut whole = ind.put;
+        let gone = ind.delete;
         let mut batch = SaveBatch::new();
-        let mut tickets = paging::Tickets::default();
+        let mut tickets = paging::Tickets {
+            industry: Some(ind.ticket),
+            ..paging::Tickets::default()
+        };
         // The dragons, the ships, the herds and the conflict page into the batch (PF13): their
         // meta pages and the pages changed since the last save.
         let (t, dragons) = dragons::save(st, &mut batch, test);
@@ -1629,6 +1634,7 @@ impl Engine {
             meta,
             world,
             whole,
+            gone,
             batch,
             live: [
                 (dragons::TABLE, dragons),
@@ -1650,6 +1656,7 @@ impl Engine {
             meta,
             world,
             whole,
+            gone,
             mut batch,
             live,
             p1,
@@ -1696,9 +1703,10 @@ impl Engine {
         if let Some(s) = serial {
             batch.put(archive::KEY, &s.to_le_bytes());
         }
-        // The paged modules' and phase 1's deletions read only their tables' index blocks.
+        // The industry engine's deletions are its own marks (no index read); the paged modules'
+        // and phase 1's read only their tables' index blocks.
         let deletions = (|| -> Result<Vec<PageKey>, rtsim_kernel::page::PageError> {
-            let mut out = industry::deletions(store, &whole)?;
+            let mut out = gone;
             for (table, l) in &live {
                 out.extend(l.deletions(store, *table)?);
             }
@@ -1872,13 +1880,16 @@ impl Engine {
 }
 
 /// The lower of two next sequences, `None` standing for none at all.
-/// One save on its way from the step thread to the IO lane: the core's pages, the whole pages
-/// (the industry engine's and the world model's), and the paged modules' batch with their
-/// tickets (`job`, sent back whatever happens) and what each leaves live in its own table.
+/// One save on its way from the step thread to the IO lane: the core's pages, the pages written
+/// outside the batch (the industry engine's changed ones and the world model's), and the paged
+/// modules' batch with their tickets (`job`, sent back whatever happens, the industry engine's
+/// included) and what each leaves live in its own table.
 struct Save {
     meta: Vec<u8>,
     world: Vec<u8>,
     whole: Vec<(PageKey, Vec<u8>)>,
+    /// The industry pages to delete: districts and replay clusters gone since the last save.
+    gone: Vec<PageKey>,
     batch: SaveBatch,
     live: [(u16, paging::Live); 4],
     p1: phase1::Saved,

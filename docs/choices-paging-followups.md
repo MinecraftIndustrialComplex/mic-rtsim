@@ -134,7 +134,8 @@ the modules themselves.
   save writes. `PagedWheel` and `PagedMap` (PF5, PF6) are the pieces for it. Written up with
   measurements: docs/choices-leg-purge.md LP11 and its "For Ben" 1.
 - **Industry's deletions read the whole store index at every save** (`store.keys()`). Industry was
-  out of bounds for this work. Done: docs/choices-leg-purge.md LP6.
+  out of bounds for this work. Done: docs/choices-leg-purge.md LP6, then no index read at all
+  (docs/choices-industry-dirty-pages.md ID2).
 - **A page miss on the step thread waits for the store's mutex**, which the IO lane holds through
   a commit and its fsync, so a step that misses during a commit stalls for it. The fix needs
   page reads that do not wait on a commit.

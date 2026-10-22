@@ -515,9 +515,13 @@ pub struct ReplayPoint {
     /// The engine's own heap accounting (`Engine::heap_bytes`: the clusters, their pools and
     /// processes), for `glass_quiet`.
     pub engine_heap_bytes: Option<u64>,
-    /// One save at the end of the span ([`save_cost`]), for `glass_quiet` and `glass_regimes`.
+    /// One save at the end of the span ([`save_cost`]), the save before it at the span's start,
+    /// for `glass_quiet` and `glass_regimes`: the bytes of the pages it wrote, its CPU, the pages
+    /// it wrote or deleted (the globals page included) and the globals page's bytes.
     pub save_bytes: Option<u64>,
     pub save_cpu_ns: Option<f64>,
+    pub save_pages: Option<u64>,
+    pub globals_bytes: Option<u64>,
     pub setup_ms: f64,
     /// The glass replay's counters over the measured span; the model at its end.
     pub counters: Counters,
@@ -531,19 +535,72 @@ fn cpu() -> u64 {
     sys::thread_cpu_ns().unwrap_or(0)
 }
 
-/// One save of the engine: its pages' bytes and the CPU of [`Engine::snapshot`], the least of
-/// three (the industry engine writes every page at every save, F36).
-pub fn save_cost(e: &Engine) -> (u64, f64) {
-    let mut best = f64::INFINITY;
-    let mut bytes = 0;
-    for _ in 0..3 {
+/// One save of the industry engine ([`save_cost`]).
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct SaveCost {
+    /// The bytes of the pages it wrote.
+    pub bytes: u64,
+    pub cpu_ns: f64,
+    /// Pages it wrote or deleted, the globals page included.
+    pub pages: u64,
+    /// The globals page's bytes (written at every save).
+    pub globals_bytes: u64,
+}
+
+/// One save of the engine ([`Engine::save_changed`], docs/choices-industry-dirty-pages.md): only
+/// the pages changed since the save before. Its CPU is the least of three: before the second and
+/// the third, the first's pages are marked again (`Engine::save_failed`), so each writes the same.
+/// With the page check on (`RTSIM_VERIFY_PAGES`, ID5), once, and the CPU includes the check.
+pub fn save_cost(e: &mut Engine) -> SaveCost {
+    use rtsim_industry::persist::GLOBAL_TABLE;
+    let reps = if rtsim_industry::engine::page_check_on() {
+        1
+    } else {
+        3
+    };
+    let mut best = SaveCost {
+        cpu_ns: f64::INFINITY,
+        ..SaveCost::default()
+    };
+    for i in 0..reps {
         let c0 = cpu();
-        let pages = std::hint::black_box(e.snapshot());
+        let c = std::hint::black_box(e.save_changed());
         let c1 = cpu();
-        bytes = pages.iter().map(|(_, b)| b.len() as u64).sum();
-        best = best.min((c1 - c0) as f64);
+        best.cpu_ns = best.cpu_ns.min((c1 - c0) as f64);
+        best.bytes = c.put.iter().map(|(_, b)| b.len() as u64).sum();
+        best.pages = (c.put.len() + c.delete.len()) as u64;
+        best.globals_bytes = c
+            .put
+            .iter()
+            .filter(|(k, _)| k.table() == GLOBAL_TABLE)
+            .map(|(_, b)| b.len() as u64)
+            .sum();
+        if let Some(check) = e.page_check() {
+            assert_eq!(
+                check.unmarked, 0,
+                "a page changed without a mark: {:?}",
+                check.first_unmarked
+            );
+            eprintln!(
+                "page check: {} saves, {} pages written, {} of them unchanged, none unmarked",
+                check.saves, check.written, check.unchanged
+            );
+        }
+        if i + 1 < reps {
+            e.save_failed(c.ticket);
+        }
     }
-    (bytes, best)
+    best
+}
+
+impl ReplayPoint {
+    fn with_save(mut self, c: SaveCost) -> ReplayPoint {
+        self.save_bytes = Some(c.bytes);
+        self.save_cpu_ns = Some(c.cpu_ns);
+        self.save_pages = Some(c.pages);
+        self.globals_bytes = Some(c.globals_bytes);
+        self
+    }
 }
 
 fn fallbacks(e: &Engine, ds: impl IntoIterator<Item = DistrictId>) -> Vec<String> {
@@ -587,6 +644,8 @@ impl Span {
             engine_heap_bytes: None,
             save_bytes: None,
             save_cpu_ns: None,
+            save_pages: None,
+            globals_bytes: None,
             setup_ms,
             counters: Counters::of(e, ds.iter().copied()).since(self.k0),
             settles: e.stats.cluster_settles - self.s0,
@@ -681,17 +740,16 @@ fn export_day(e: &mut Engine, ds: &[DistrictId], per_day: u64, day: u64, stagger
 pub fn regimes(per_day: u64, days: u64) -> ReplayPoint {
     let mut e = engine();
     let setup_ms = timed_add(&mut e, &export_line(D1));
-    // A day unmeasured: the store fills for the first time.
+    // A day unmeasured: the store fills for the first time. Then a save, the one before the
+    // span's.
     export_day(&mut e, &[D1], per_day, 1, 0);
+    e.save_changed();
     let span = Span::start(&e, &[D1]);
     for day in 2..=days + 1 {
         export_day(&mut e, &[D1], per_day, day, 0);
     }
-    let mut p = span.end(&e, &[D1], per_day, days, setup_ms);
-    let (bytes, cpu_ns) = save_cost(&e);
-    p.save_bytes = Some(bytes);
-    p.save_cpu_ns = Some(cpu_ns);
-    p
+    let p = span.end(&e, &[D1], per_day, days, setup_ms);
+    p.with_save(save_cost(&mut e))
 }
 
 /// Busy districts beside the quiet ones (an export a day each).
@@ -718,8 +776,10 @@ pub fn quiet(n: u64, days: u64) -> ReplayPoint {
     let heap = sys::heap_live().saturating_sub(heap0) as u64;
     let engine_heap = e.heap_bytes() as u64;
     let all: Vec<DistrictId> = busy.iter().chain(quiet.iter()).copied().collect();
-    // A day unmeasured: the busy stores fill for the first time.
+    // A day unmeasured: the busy stores fill for the first time. Then a save, the one before the
+    // span's.
     export_day(&mut e, &busy, 1, 1, 100);
+    e.save_changed();
     let span = Span::start(&e, &all);
     for day in 2..=days + 1 {
         export_day(&mut e, &busy, 1, day, 100);
@@ -727,10 +787,7 @@ pub fn quiet(n: u64, days: u64) -> ReplayPoint {
     let mut p = span.end(&e, &all, n, days, setup_ms);
     p.heap_bytes = Some(heap);
     p.engine_heap_bytes = Some(engine_heap);
-    let (bytes, cpu_ns) = save_cost(&e);
-    p.save_bytes = Some(bytes);
-    p.save_cpu_ns = Some(cpu_ns);
-    p
+    p.with_save(save_cost(&mut e))
 }
 
 /// [`add`] for many districts as one hand-over: every district, inventory and compile at 0,
@@ -938,6 +995,11 @@ mod tests {
         // Each busy line breaks the same, every day.
         assert_eq!(a.counters.breakpoints % (BUSY * 3), 0);
         assert!(a.counters.breakpoints > 0);
+        // A save writes the busy lines' pages and the globals page, none of a quiet cell's
+        // (docs/choices-industry-dirty-pages.md).
+        assert_eq!(a.save_pages, Some(1 + 3 * BUSY));
+        assert_eq!(b.save_pages, a.save_pages);
+        assert_eq!(b.save_bytes, a.save_bytes);
     }
 
     fn show(name: &str, p: &ReplayPoint) {
