@@ -28,6 +28,7 @@
 //! parallel work runs on an [`exec::Executor`] the caller provides.
 
 pub mod bsp;
+pub mod census;
 pub mod clock;
 pub mod codec;
 pub mod conserve;
