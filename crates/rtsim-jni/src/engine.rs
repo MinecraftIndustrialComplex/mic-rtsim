@@ -1350,6 +1350,7 @@ impl Engine {
                     conflict::order_command(st, &names, &record)
                 }
                 Order::TributeStart { village, lair } => dragons::tribute_start(st, village, lair),
+                Order::NestDay(ticks) => dragons::nest_day(st, ticks),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),

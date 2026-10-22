@@ -144,11 +144,13 @@ class IndustryWireContractTest {
                 "DestroyCrude", IndRecords.DepositPlugin.DESTROY_CRUDE);
         group("threat_class",
                 "GroundMelee", IndRecords.ThreatClass.GROUND_MELEE, "GroundRanged", IndRecords.ThreatClass.GROUND_RANGED,
-                "Flying", IndRecords.ThreatClass.FLYING, "Siege", IndRecords.ThreatClass.SIEGE);
+                "Flying", IndRecords.ThreatClass.FLYING, "Siege", IndRecords.ThreatClass.SIEGE,
+                "Burrowing", IndRecords.ThreatClass.BURROWING);
         group("block_flags",
                 "PERIMETER", IndRecords.SurveyBlocks.FLAG_PERIMETER, "ROOFLESS", IndRecords.SurveyBlocks.FLAG_ROOFLESS,
                 "MACHINE", IndRecords.SurveyBlocks.FLAG_MACHINE, "INVENTORY", IndRecords.SurveyBlocks.FLAG_INVENTORY,
-                "ROOF", IndRecords.SurveyBlocks.FLAG_ROOF);
+                "ROOF", IndRecords.SurveyBlocks.FLAG_ROOF, "SUBTERRANEAN", IndRecords.SurveyBlocks.FLAG_SUBTERRANEAN,
+                "ARMOURED", IndRecords.SurveyBlocks.FLAG_ARMOURED);
         group("survey_flag", "mob_griefing", IndRecords.Survey.FLAG_MOB_GRIEFING);
     }
 

@@ -843,6 +843,16 @@ The base sets the waits a site sees when players leave it alone; under steady fa
 set mostly by H: a den with base 6 and
 pressure yields 1.8 a year, with base 24 one a year, against 12 a year for 6 days flat.
 
+**A site of K 2 or more farmed to empty chains its waits** (found building S10, 2026-10-22). §2.2
+starts the next wait when a member arrives and the site is still short, so a farmer who kills every
+member keeps the site short, and its waits run back to back from arrivals; the kill's c days overlap
+the next wait instead of adding to it. The gap is then `min(cap, base x 2^(P* x 2^(-(gap - c)/H)))`
+with the same P*, shorter than the table's. For an oil nest (base 12, cap 96, K 2, c 2) the table's
+form gives 44.4 days a worm and the chained one 37.6; the engine's farmed test matches the chained
+form within 5% (`a_farmed_nest_renews_at_the_chained_rate`). A K 1 site, or one farmed a member at a
+time, still reads the table; the table's rows with K above 1 (the grove, the villages) are worth
+checking against a farm-to-empty run before their numbers are relied on.
+
 ### 3.4 Predator and prey
 
 Prey switching with a refuge: dragon d hunting herd i takes in proportion to `w_i = (N_i - R_i)^2 / K_i`
@@ -1042,7 +1052,7 @@ GameTest lock.
 | S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds` | S0 |
 | S8 | Ships: hires and cap, refit pressure, EV lanes | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band) | S0 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
-| S10 | Oil nests on the shared rule (with OG-9e's build) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` | S0, OG-9e |
+| S10 | Oil nests on the shared rule (with OG-9e's build). **Built 2026-10-22** (`crates/rtsim-ecology/src/nest.rs`, docs/choices-oilgate.md OGC70 onward) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` (`crates/rtsim-ecology/tests/nests.rs`) | S0, OG-9e |
 | S11 | The long-horizon suite | `long_horizon_stability_with_kills` (every module, 60 game years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind above in one place, `who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal events per day flat; nightly; its length is the engine's speed, about 45 minutes if the host runs 100 game days a second) | all |
 
 The pass bands in the test names are the model's 95th percentiles with margin; the build replaces them

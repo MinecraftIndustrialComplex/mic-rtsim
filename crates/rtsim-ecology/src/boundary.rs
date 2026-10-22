@@ -35,6 +35,14 @@ pub const OIL_CHUNKS: u16 = 0x0509;
 pub const DRAGON_BREATHS: u16 = 0x050A;
 /// The oil gate's switches from the plugin's config (OILGATE.md §4.2, §4.8).
 pub const OIL_CONFIG: u16 = 0x050B;
+/// An oil nest's chamber was placed, or could not be (OILGATE.md §4.6, OG-9e).
+pub const NEST_FOUND: u16 = 0x050C;
+/// An oil nest's worms counted at its load, and whether its heart still stands.
+pub const NEST_CENSUS: u16 = 0x050D;
+/// Worms of an oil nest died, and why (EQUILIBRIUM.md §2.2's loss causes).
+pub const NEST_LOSS: u16 = 0x050E;
+/// An oil nest's heart (its spawner) was broken.
+pub const NEST_HEART: u16 = 0x050F;
 
 pub const DRAGON_MATERIALIZE: u16 = 0x8500;
 pub const DRAGON_STEER: u16 = 0x8501;
@@ -46,8 +54,12 @@ pub const PLACE_LAIR: u16 = 0x8505;
 /// Sample oil chunks around a point, those in memory now and the rest as they load (OILGATE.md
 /// §4.1, OG-2, OGC43).
 pub const OIL_SURVEY: u16 = 0x8506;
-// 0x8507 is reserved for the underground half (OILGATE.md §4.6, OG-9b): placing the deep layer's
-// sculk on an oil chunk's first load. Nothing sends it yet.
+/// Place an oil nest's chamber and heart under an oil chunk, on its load (OILGATE.md §4.6, OG-9e).
+pub const PLACE_NEST: u16 = 0x8507;
+/// An oil nest owes this many more worms (its regrowth, EQUILIBRIUM.md §2.4.8).
+pub const NEST_RENEW: u16 = 0x8508;
+/// An oil nest's worms go up under a watched district and fight there.
+pub const NEST_SORTIE: u16 = 0x8509;
 
 pub type Uuid = (u64, u64);
 
@@ -77,6 +89,13 @@ pub const OIL_BOTTOMLESS: u32 = 1;
 pub const OIL_FIELD_FLIGHTS: u32 = 1;
 /// OIL_CONFIG flags: a field with no fire lair in reach gets one placed (§4.4, OG-7).
 pub const OIL_PLACE_LAIRS: u32 = 2;
+/// OIL_CONFIG flags: oil chunks found get oil nests under them (§4.6, OG-9e).
+pub const OIL_PLACE_NESTS: u32 = 4;
+/// NEST_FOUND aux: placed, or no room for the chamber.
+pub const NEST_PLACED: u32 = 1;
+pub const NEST_FAILED: u32 = 2;
+/// NEST_CENSUS aux: the heart is gone.
+pub const CENSUS_HEART_MISSING: u32 = 1;
 /// OIL_CHUNKS entries per record at most (the plugin batches so).
 pub const OIL_CHUNKS_MAX: usize = 1024;
 
@@ -292,6 +311,43 @@ pub struct OilConfig {
     pub flags: u32,
 }
 
+/// An oil nest's chamber placed (`placed`, with its heart) or not (OG-9e). Answers PLACE_NEST, and is
+/// sent again for a PLACE_NEST of a nest already placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestFound {
+    pub nest: u64,
+    pub placed: bool,
+    pub dimension: u32,
+    pub heart: (i32, i32, i32),
+}
+
+/// An oil nest counted when its heart's chunk loads, and after its worms spawn: worms alive (an
+/// unloaded one counts as alive) plus those it still owes, and whether its heart is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestCensus {
+    pub nest: u64,
+    pub worms: u32,
+    pub heart_missing: bool,
+}
+
+/// `count` worms of an oil nest died. `cause` is a `rtsim_kernel::renewal::LossCause` code; a worm
+/// carries boss loot, so any death no wild mob is credited with is a player's (EQUILIBRIUM.md §2.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestLoss {
+    pub nest: u64,
+    pub count: u32,
+    pub cause: u32,
+    /// The credited player, zero for none.
+    pub player: Uuid,
+}
+
+/// An oil nest's heart was broken, by `player` (zero for none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestHeart {
+    pub nest: u64,
+    pub player: Uuid,
+}
+
 /// A known lair's chest (latest-wins, docs/boundary.md §6): the plugin found one in the lair's
 /// box once its chunks loaded. Sent once a session per lair, and again if the chest is gone and
 /// another is found. The engine puts the lair's tribute coin there (TRANSFER_TO_CONTAINER).
@@ -320,6 +376,10 @@ pub enum Obs {
     Breaths(Breaths),
     OilConfig(OilConfig),
     LairChest(LairChest),
+    NestFound(NestFound),
+    NestCensus(NestCensus),
+    NestLoss(NestLoss),
+    NestHeart(NestHeart),
 }
 
 impl Obs {
@@ -339,6 +399,10 @@ impl Obs {
             Obs::OilChunks(_) => OIL_CHUNKS,
             Obs::Breaths(_) => DRAGON_BREATHS,
             Obs::OilConfig(_) => OIL_CONFIG,
+            Obs::NestFound(_) => NEST_FOUND,
+            Obs::NestCensus(_) => NEST_CENSUS,
+            Obs::NestLoss(_) => NEST_LOSS,
+            Obs::NestHeart(_) => NEST_HEART,
         }
     }
 
@@ -435,6 +499,40 @@ pub struct OilSurvey {
     pub radius: u32,
 }
 
+/// Place oil nest `nest` under chunk (cx, cz): a chamber whose floor is `depth` blocks below the
+/// surface there, in natural ground only, with its heart; answered by NEST_FOUND. On the chunk's next
+/// load if it is not loaded. Idempotent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaceNest {
+    pub nest: u64,
+    pub dimension: u32,
+    pub cx: i32,
+    pub cz: i32,
+    pub depth: u32,
+}
+
+/// Oil nest `nest` owes `count` more worms, of size `stage` (1 to 3). Placed in its chamber at the next
+/// load of the heart's chunk with no player within 128 blocks (EQUILIBRIUM.md §2.2, OnLoad).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestRenew {
+    pub nest: u64,
+    pub dimension: u32,
+    pub count: u32,
+    pub stage: u32,
+}
+
+/// Up to `count` of oil nest `nest`'s worms go up under the column (x, z) of a watched district it
+/// raids, fight there, and go home after `timeout_ticks`. A worm stops under an armoured floor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NestSortie {
+    pub nest: u64,
+    pub dimension: u32,
+    pub count: u32,
+    pub x: i32,
+    pub z: i32,
+    pub timeout_ticks: u32,
+}
+
 /// A command to the plugin.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
@@ -445,6 +543,9 @@ pub enum Cmd {
     Discard(Discard),
     PlaceLair(PlaceLair),
     OilSurvey(OilSurvey),
+    PlaceNest(PlaceNest),
+    NestRenew(NestRenew),
+    NestSortie(NestSortie),
 }
 
 impl Cmd {
@@ -457,6 +558,9 @@ impl Cmd {
             Cmd::Discard(_) => DRAGON_DISCARD,
             Cmd::PlaceLair(_) => PLACE_LAIR,
             Cmd::OilSurvey(_) => OIL_SURVEY,
+            Cmd::PlaceNest(_) => PLACE_NEST,
+            Cmd::NestRenew(_) => NEST_RENEW,
+            Cmd::NestSortie(_) => NEST_SORTIE,
         }
     }
 
@@ -466,7 +570,12 @@ impl Cmd {
             Cmd::Steer(s) => Some(s.agent),
             Cmd::Depart(d) => Some(d.agent),
             Cmd::Adopt(a) => Some(a.agent),
-            Cmd::Discard(_) | Cmd::PlaceLair(_) | Cmd::OilSurvey(_) => None,
+            Cmd::Discard(_)
+            | Cmd::PlaceLair(_)
+            | Cmd::OilSurvey(_)
+            | Cmd::PlaceNest(_)
+            | Cmd::NestRenew(_)
+            | Cmd::NestSortie(_) => None,
         }
     }
 
@@ -478,6 +587,7 @@ impl Cmd {
             Cmd::Adopt(_) => 64,
             Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
             Cmd::PlaceLair(_) => 48,
+            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) => 40,
         }
     }
 
@@ -488,6 +598,9 @@ impl Cmd {
             Cmd::Materialize(m) => Some((32, m.dimension)),
             Cmd::PlaceLair(p) => Some((24, p.dimension)),
             Cmd::OilSurvey(s) => Some((16, s.dimension)),
+            Cmd::PlaceNest(p) => Some((24, p.dimension)),
+            Cmd::NestRenew(n) => Some((24, n.dimension)),
+            Cmd::NestSortie(n) => Some((24, n.dimension)),
             _ => None,
         }
     }
@@ -808,6 +921,30 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.ipos(20, c.pos);
             w.finish(LAIR_CHEST, 0, 32);
         }
+        Obs::NestFound(n) => {
+            w.u64(24, n.nest);
+            w.u32(32, n.dimension);
+            w.ipos(36, n.heart);
+            let aux = if n.placed { NEST_PLACED } else { NEST_FAILED };
+            w.finish(NEST_FOUND, aux, 48);
+        }
+        Obs::NestCensus(n) => {
+            w.u64(24, n.nest);
+            w.u32(32, n.worms);
+            let aux = if n.heart_missing { CENSUS_HEART_MISSING } else { 0 };
+            w.finish(NEST_CENSUS, aux, 40);
+        }
+        Obs::NestLoss(n) => {
+            w.u64(24, n.nest);
+            w.u32(32, n.count);
+            w.uuid(40, n.player);
+            w.finish(NEST_LOSS, n.cause, 56);
+        }
+        Obs::NestHeart(n) => {
+            w.u64(24, n.nest);
+            w.uuid(32, n.player);
+            w.finish(NEST_HEART, 0, 48);
+        }
     }
 }
 
@@ -970,6 +1107,31 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             dimension: r.u32(16)?,
             pos: r.ipos(20)?,
         }),
+        NEST_FOUND => Obs::NestFound(NestFound {
+            nest: r.u64(24)?,
+            placed: match aux {
+                NEST_PLACED => true,
+                NEST_FAILED => false,
+                _ => return Err(CodecError::BadValue("nest found")),
+            },
+            dimension: r.u32(32)?,
+            heart: r.ipos(36)?,
+        }),
+        NEST_CENSUS => Obs::NestCensus(NestCensus {
+            nest: r.u64(24)?,
+            worms: r.u32(32)?,
+            heart_missing: aux & CENSUS_HEART_MISSING != 0,
+        }),
+        NEST_LOSS => Obs::NestLoss(NestLoss {
+            nest: r.u64(24)?,
+            count: r.u32(32)?,
+            cause: aux,
+            player: r.uuid(40)?,
+        }),
+        NEST_HEART => Obs::NestHeart(NestHeart {
+            nest: r.u64(24)?,
+            player: r.uuid(32)?,
+        }),
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((size, seq, time, o))
@@ -1038,6 +1200,28 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.i32(24, o.z);
             w.u32(28, o.radius);
             w.finish(OIL_SURVEY, 0, 32);
+        }
+        Cmd::PlaceNest(p) => {
+            w.u64(16, p.nest);
+            w.u32(24, p.dimension);
+            w.i32(28, p.cx);
+            w.i32(32, p.cz);
+            w.u32(36, p.depth);
+            w.finish(PLACE_NEST, 0, 40);
+        }
+        Cmd::NestRenew(n) => {
+            w.u64(16, n.nest);
+            w.u32(24, n.dimension);
+            w.u32(28, n.stage);
+            w.finish(NEST_RENEW, n.count, 40);
+        }
+        Cmd::NestSortie(n) => {
+            w.u64(16, n.nest);
+            w.u32(24, n.dimension);
+            w.i32(28, n.x);
+            w.i32(32, n.z);
+            w.u32(36, n.timeout_ticks);
+            w.finish(NEST_SORTIE, n.count, 40);
         }
     }
 }
@@ -1116,6 +1300,27 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             x: r.i32(20)?,
             z: r.i32(24)?,
             radius: r.u32(28)?,
+        }),
+        PLACE_NEST => Cmd::PlaceNest(PlaceNest {
+            nest: r.u64(16)?,
+            dimension: r.u32(24)?,
+            cx: r.i32(28)?,
+            cz: r.i32(32)?,
+            depth: r.u32(36)?,
+        }),
+        NEST_RENEW => Cmd::NestRenew(NestRenew {
+            nest: r.u64(16)?,
+            dimension: r.u32(24)?,
+            count: aux,
+            stage: r.u32(28)?,
+        }),
+        NEST_SORTIE => Cmd::NestSortie(NestSortie {
+            nest: r.u64(16)?,
+            dimension: r.u32(24)?,
+            count: aux,
+            x: r.i32(28)?,
+            z: r.i32(32)?,
+            timeout_ticks: r.u32(36)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -1244,6 +1449,33 @@ mod tests {
                 dimension: 1,
                 pos: (-17, 70, 2_000_001),
             }),
+            Obs::NestFound(NestFound {
+                nest: 3 << 48 | 0x00FF_FFFE << 24 | 5,
+                placed: true,
+                dimension: 1,
+                heart: (-1_000, 12, 40_000),
+            }),
+            Obs::NestFound(NestFound {
+                nest: 6,
+                placed: false,
+                dimension: 1,
+                heart: (0, 0, 0),
+            }),
+            Obs::NestCensus(NestCensus {
+                nest: 6,
+                worms: 2,
+                heart_missing: true,
+            }),
+            Obs::NestLoss(NestLoss {
+                nest: 6,
+                count: 1,
+                cause: 0,
+                player: (21, 22),
+            }),
+            Obs::NestHeart(NestHeart {
+                nest: 6,
+                player: (23, 24),
+            }),
         ]
     }
 
@@ -1305,6 +1537,27 @@ mod tests {
                 z: -34,
                 radius: 1_024,
             }),
+            Cmd::PlaceNest(PlaceNest {
+                nest: 1 << 48 | 7,
+                dimension: 1,
+                cx: -3,
+                cz: 77,
+                depth: 41,
+            }),
+            Cmd::NestRenew(NestRenew {
+                nest: 1 << 48 | 7,
+                dimension: 1,
+                count: 2,
+                stage: 3,
+            }),
+            Cmd::NestSortie(NestSortie {
+                nest: 1 << 48 | 7,
+                dimension: 1,
+                count: 1,
+                x: -40,
+                z: 1_250,
+                timeout_ticks: 1_200,
+            }),
         ]
     }
 
@@ -1358,6 +1611,20 @@ mod tests {
             SpeciesDict::structure_name(Species::Ice, LairKind::Roost),
             "iceandfire:ice_dragon_roost"
         );
+    }
+
+    /// The nest commands hold their dimension where `Cmd::dimension` says (the link rewrites it there).
+    #[test]
+    fn nest_commands_name_their_dimension_where_they_say() {
+        let dict = SpeciesDict::default();
+        for c in all_cmds() {
+            let Some((at, dim)) = c.dimension() else {
+                continue;
+            };
+            let mut buf = Vec::new();
+            encode_cmd(1, &c, &dict, &mut buf);
+            assert_eq!(u32::from_le_bytes(buf[at..at + 4].try_into().unwrap()), dim, "{c:?}");
+        }
     }
 
     proptest! {

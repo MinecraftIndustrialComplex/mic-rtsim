@@ -83,6 +83,9 @@ import java.util.UUID;
  *       {@code FLAG_TEST} only).</li>
  *   <li>32 TRIBUTE_START: u64 village, u64 lair. The village becomes the lair's tributary and pays a
  *       season's tribute at once (SINK.md §4.6; an engine opened with {@code FLAG_TEST} only).</li>
+ *   <li>34 NEST_DAY: u64 ticks. The oil nests' day (their watch period and the unit of their waits,
+ *       OILGATE.md §4.6) is this many ticks from now on; 0 restores the default (an engine opened with
+ *       {@code FLAG_TEST} only; the nest GameTests).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -121,6 +124,8 @@ final class NativeCodec {
     static final int WORKS_GRANT = 30;
     static final int WORKS_RAID = 31;
     static final int TRIBUTE_START = 32;
+    // 33: left free (a gap between peers' order codes).
+    static final int NEST_DAY = 34;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -373,6 +378,12 @@ final class NativeCodec {
             begin(TRIBUTE_START);
             u64(village);
             u64(lair);
+            return end();
+        }
+
+        Orders nestDay(long ticks) {
+            begin(NEST_DAY);
+            u64(ticks);
             return end();
         }
 
