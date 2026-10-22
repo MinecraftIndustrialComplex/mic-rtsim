@@ -104,6 +104,9 @@ public final class Districts {
     int lastRescanSlices;
     long lastRescanLongestNanos;
     long maxSliceNanos;
+    /** Block entities the last detection looked at in all, and in its biggest tick (counts, not time: GameTests gate on these). */
+    long lastRescanLooked;
+    long lastRescanLongestLooked;
     /** What the longest tick was: the commit's, or a look at this many block entities. */
     String maxSliceWhat = "";
     long declared;
@@ -137,6 +140,16 @@ public final class Districts {
     /** The longest single tick of the last detection (a slice, or the commit with it). */
     public long lastRescanLongestNanos() {
         return lastRescanLongestNanos;
+    }
+
+    /** Block entities the last detection looked at in all (a chunk costs its block entities, and one more). */
+    public long lastRescanLooked() {
+        return lastRescanLooked;
+    }
+
+    /** Block entities the last detection looked at in its biggest tick: at most the budget plus one chunk's. */
+    public long lastRescanLongestLooked() {
+        return lastRescanLongestLooked;
     }
 
     /**
@@ -331,8 +344,48 @@ public final class Districts {
         ind.commit(r);
     }
 
+    /** What {@link #adoptAround} did: the seeds adopted, and whether the detection around them is done already. */
+    public record Adopted(int seeds, boolean detected) {}
+
+    /**
+     * {@code /rtsim district adopt} (DS-12): adopts the machines around {@code centre}, then detects around the
+     * chunks it changed only: the districts owning or touching them, grown as a ticked pass grows, never the
+     * whole dimension. That finishes in this call when the neighbourhood is within one tick's block entity
+     * budget; else the detection goes on over the next ticks as a ticked one does, and {@code detected} is false.
+     * A detection of the same dimension under way leaves the adopted chunks to the pass after it.
+     */
+    public Adopted adoptAround(ServerLevel level, ChunkPos centre, int radius) {
+        ResourceKey<Level> dim = level.dimension();
+        LongOpenHashSet changed = new LongOpenHashSet();
+        int n = adopt(level, centre, radius, changed);
+        if (changed.isEmpty())
+            return new Adopted(n, true);
+        if (job != null && job.dim == dim)
+            return new Adopted(n, false); // adopt() marked the chunks dirty: the next pass has them
+        // Only these chunks leave the dirty set; other edits wait for their own pass.
+        LongOpenHashSet pending = dirty.get(dim);
+        if (pending != null) {
+            pending.removeAll(changed);
+            if (pending.isEmpty() && !fullDims.contains(dim))
+                dirty.remove(dim);
+        }
+        Rescan r = new Rescan(level, false, changed);
+        if (r.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK)))
+            return new Adopted(n, true);
+        if (job == null)
+            job = r;
+        else
+            passes.addFirst(new Pass(dim, changed, false)); // another dimension's detection is under way
+        return new Adopted(n, false);
+    }
+
     /** Adopts every machine in the chunks around {@code centre} as a seed (worlds made before the mod). */
     public int adopt(ServerLevel level, ChunkPos centre, int radius) {
+        return adopt(level, centre, radius, new LongOpenHashSet());
+    }
+
+    /** As {@link #adopt(ServerLevel, ChunkPos, int)}; the chunks that gained seeds (marked dirty) are added to {@code changed}. */
+    private int adopt(ServerLevel level, ChunkPos centre, int radius, LongOpenHashSet changed) {
         int n = 0;
         Long2ByteOpenHashMap cache = kindCache();
         for (int dx = -radius; dx <= radius; dx++) {
@@ -352,6 +405,7 @@ public final class Districts {
                     chunk.setData(IndustryAttachments.SEEDS.get(), s);
                     chunk.setUnsaved(true);
                     markDirty(level.dimension(), chunk.getPos().toLong());
+                    changed.add(chunk.getPos().toLong());
                 }
             }
         }
@@ -671,6 +725,8 @@ public final class Districts {
         long nanos;
         int slices;
         long maxSlice;
+        /** Block entities looked at in all, and in the biggest step. */
+        long looked, maxLooked;
         /** Run in one call by a command or a test: its one big tick is not a scheduling figure. */
         boolean manual;
 
@@ -754,12 +810,16 @@ public final class Districts {
             nanos += dt;
             slices++;
             maxSlice = Math.max(maxSlice, dt);
+            looked += spent;
+            maxLooked = Math.max(maxLooked, spent);
             if (done) {
                 rescans++;
                 rescanNanos += nanos;
                 lastRescanNanos = nanos;
                 lastRescanSlices = slices;
                 lastRescanLongestNanos = maxSlice;
+                lastRescanLooked = looked;
+                lastRescanLongestLooked = maxLooked;
             }
             if (!manual && dt > maxSliceNanos) {
                 maxSliceNanos = dt;

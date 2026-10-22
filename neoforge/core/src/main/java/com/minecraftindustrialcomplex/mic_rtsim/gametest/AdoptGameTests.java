@@ -1,0 +1,251 @@
+package com.minecraftindustrialcomplex.mic_rtsim.gametest;
+
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
+import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
+import net.neoforged.neoforge.gametest.GameTestHolder;
+import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.*;
+
+/**
+ * {@code /rtsim district adopt} detects around the chunks it adopted, not over the whole dimension (DS-12). Each
+ * test builds the same world, in chunk offsets from the first whole chunk of the yard: district X (0,0) and (1,0), Y
+ * (3,0), and a far Z of four chunks at (7..8, 0..1), each with a player-placed machine; and two machines nobody
+ * placed: one at (2,0) between X and Y, one alone at (5,3). Adopting around (4,2) with radius 4 must make one district
+ * of X, the bridge and Y, a new district of the lone machine, and leave Z as it was, and the districts must be the
+ * ones a full detection gives. Every chunk holds 30 inert block entities besides, so a chunk costs 32 to 34 looks.
+ */
+@GameTestHolder(MicRtsim.MODID)
+@PrefixGameTestTemplate(false)
+public final class AdoptGameTests {
+    private AdoptGameTests() {}
+
+    private static final String YARD = "industry_yard";
+    private static final int BUDGET = 10;
+    private static final int FILLER = 30;
+    private static final int[][] PLACED = {{0, 0}, {1, 0}, {3, 0}, {7, 0}, {8, 0}, {7, 1}, {8, 1}};
+    private static final int[][] UNADOPTED = {{2, 0}, {5, 3}};
+    /** The chunks the adopt changes, and so detects around: X, Y and the two new ones, each a chunk of 34 looks at most (a look as a root, one as a reached chunk). */
+    private static final int LOCAL_CHUNKS = 5;
+
+    private static BlockPos fill(GameTestHelper helper, int cx, int cz, boolean placed) {
+        BlockPos base = inChunk(helper, 0, 0);
+        BlockPos origin = new BlockPos(base.getX() + 16 * cx, base.getY(), base.getZ() + 16 * cz);
+        for (int i = 0; i < FILLER; i++)
+            set(helper, origin.offset(2 + i % 6, 0, 8 + i / 6), TestMachines.INERT.get().defaultBlockState());
+        BlockPos m = origin.offset(4, 0, 4);
+        set(helper, m, TestMachines.MACHINE.get().defaultBlockState());
+        if (placed)
+            playerPlaced(helper, m);
+        return m;
+    }
+
+    private static List<ChunkPos> force(GameTestHelper helper, ServerLevel level) {
+        BlockPos base = inChunk(helper, 0, 0);
+        int bx = base.getX() >> 4, bz = base.getZ() >> 4;
+        List<ChunkPos> forced = new ArrayList<>();
+        for (int[][] set : new int[][][] {PLACED, UNADOPTED})
+            for (int[] c : set) {
+                if (level.setChunkForced(bx + c[0], bz + c[1], true))
+                    forced.add(new ChunkPos(bx + c[0], bz + c[1]));
+                level.getChunk(bx + c[0], bz + c[1]);
+            }
+        return forced;
+    }
+
+    /** The districts without their ids: chunks, seed counts, inventories and stations, one line each, sorted. */
+    private static List<String> snapshot() {
+        List<String> out = new ArrayList<>();
+        for (District d : ind().districts().all()) {
+            List<Long> chunks = new ArrayList<>(d.chunks);
+            Collections.sort(chunks);
+            List<String> seeds = new ArrayList<>();
+            d.seedCounts.forEach((c, n) -> seeds.add(c + "=" + n));
+            Collections.sort(seeds);
+            List<String> invs = new ArrayList<>();
+            for (District.Inventory i : d.inventories)
+                invs.add(i.pos().toShortString() + "/" + i.kind() + "/" + i.itemSlots() + "/" + i.fluidCapacity() + "/" + i.energyCapacity());
+            Collections.sort(invs);
+            List<String> stations = new ArrayList<>();
+            for (District.Station s : d.stations)
+                stations.add(s.pos().toShortString());
+            Collections.sort(stations);
+            out.add("chunks " + chunks + " seeds " + seeds + " inventories " + invs + " stations " + stations + " name " + d.stationName);
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    private static void freeChunks(ServerLevel level, List<ChunkPos> forced) {
+        for (ChunkPos c : forced)
+            level.setChunkForced(c.x, c.z, false);
+    }
+
+    /** Everything the three tests share: the world built, detected, and the unadopted machines in place. */
+    private static BlockPos[] build(GameTestHelper helper, ServerLevel level, List<ChunkPos> forced) {
+        forced.addAll(force(helper, level));
+        BlockPos[] ms = new BlockPos[PLACED.length + UNADOPTED.length];
+        int i = 0;
+        for (int[] c : PLACED)
+            ms[i++] = fill(helper, c[0], c[1], true);
+        for (int[] c : UNADOPTED)
+            ms[i++] = fill(helper, c[0], c[1], false);
+        return ms;
+    }
+
+    private static void checkBefore(GameTestHelper helper, BlockPos[] ms) {
+        check("a detection is not running", !ind().districts().rescanning());
+        check("three districts: X, Y and Z, not " + ind().districts().all().size(), ind().districts().all().size() == 3);
+        check("the bridge machine is in no district", districtAt(helper, ms[PLACED.length]) == null);
+        check("the lone machine is in no district", districtAt(helper, ms[PLACED.length + 1]) == null);
+    }
+
+    private static Districts.Adopted adopt(GameTestHelper helper, ServerLevel level) {
+        BlockPos base = inChunk(helper, 0, 0);
+        return ind().districts().adoptAround(level, new ChunkPos((base.getX() >> 4) + 4, (base.getZ() >> 4) + 2), 4);
+    }
+
+    /** After the adopt's detection: the expected districts, Z untouched, and equal to what a full detection gives. */
+    private static void checkAfter(GameTestHelper helper, String test, BlockPos[] ms, long zId, int zRevision, int adoptLimit) {
+        Districts districts = ind().districts();
+        long looked = districts.lastRescanLooked(), longest = districts.lastRescanLongestLooked();
+        int slices = districts.lastRescanSlices();
+        List<String> local = snapshot();
+        District xy = districtAt(helper, ms[0]);
+        check("X, the bridge and Y are one district of four chunks",
+                xy != null && xy.chunks.size() == 4 && xy == districtAt(helper, ms[2]) && xy == districtAt(helper, ms[PLACED.length]) && xy.seeds() == 4);
+        District lone = districtAt(helper, ms[PLACED.length + 1]);
+        check("the lone machine is a district of its own", lone != null && lone != xy && lone.chunks.size() == 1 && lone.seeds() == 1);
+        District z = districtAt(helper, ms[3]);
+        check("Z is the district it was, not redeclared", z != null && z.id == zId && z.revision == zRevision && z.chunks.size() == 4);
+        check("three districts, not " + districts.all().size(), districts.all().size() == 3);
+
+        districts.rescanNow(helper.getLevel());
+        long fullLooked = districts.lastRescanLooked();
+        List<String> full = snapshot();
+        record(test, "adopt: ticks / block entities looked at / biggest tick", slices + " / " + looked + " / " + longest);
+        record(test, "full detection after it: block entities looked at", fullLooked);
+        check("the adopt's districts are a full detection's:\n" + local + "\nagainst\n" + full, local.equals(full));
+        check("the adopt looked at " + looked + " block entities, not the " + adoptLimit + " of its own chunks at most", looked <= adoptLimit);
+        check("the full detection looked at more than the adopt (" + fullLooked + " against " + looked + ")", fullLooked > looked + 3L * (FILLER + 2));
+    }
+
+    /**
+     * A budget of 10 block entities a tick: the adopt's detection goes on over several ticks, no tick looks at more
+     * than the budget plus one chunk, only the chunks around the adopt are looked at, and the districts are a full
+     * detection's.
+     */
+    @GameTest(template = YARD, batch = "adopt_1", timeoutTicks = 1200)
+    public static void anAdoptDetectsAroundItsChunksAndABudgetBoundsEachTick(GameTestHelper helper) {
+        String test = "anAdoptDetectsAroundItsChunksAndABudgetBoundsEachTick";
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        List<ChunkPos> forced = new ArrayList<>();
+        BlockPos[][] ms = new BlockPos[1][];
+        long[] z = new long[2];
+        helper.startSequence()
+                .thenExecute(() -> ms[0] = build(helper, level, forced))
+                .thenWaitUntil(() -> checkBefore(helper, ms[0]))
+                .thenExecute(() -> {
+                    District d = districtAt(helper, ms[0][3]);
+                    z[0] = d.id;
+                    z[1] = d.revision;
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
+                    Districts.Adopted a = adopt(helper, level);
+                    check("the two machines nobody placed are adopted, not " + a.seeds(), a.seeds() == 2);
+                    check("the detection is not done in the command's tick", !a.detected() && ind().districts().rescanning());
+                })
+                .thenWaitUntil(() -> check("the detection is done", !ind().districts().rescanning()))
+                .thenExecute(() -> {
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
+                    Districts districts = ind().districts();
+                    check("spread over at least four ticks, not " + districts.lastRescanSlices(), districts.lastRescanSlices() >= 4);
+                    check("no tick looked at more than the budget and one chunk (" + districts.lastRescanLongestLooked() + ")",
+                            districts.lastRescanLongestLooked() <= BUDGET + FILLER + 2);
+                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + 4));
+                    freeChunks(level, forced);
+                })
+                .thenSucceed();
+    }
+
+    /** The default budget: a neighbourhood that fits it is detected in the call itself, which is what the command reports. */
+    @GameTest(template = YARD, batch = "adopt_2", timeoutTicks = 600)
+    public static void anAdoptThatFitsTheBudgetIsDetectedInTheCall(GameTestHelper helper) {
+        String test = "anAdoptThatFitsTheBudgetIsDetectedInTheCall";
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        List<ChunkPos> forced = new ArrayList<>();
+        BlockPos[][] ms = new BlockPos[1][];
+        long[] z = new long[2];
+        helper.startSequence()
+                .thenExecute(() -> ms[0] = build(helper, level, forced))
+                .thenWaitUntil(() -> checkBefore(helper, ms[0]))
+                .thenExecute(() -> {
+                    District d = districtAt(helper, ms[0][3]);
+                    z[0] = d.id;
+                    z[1] = d.revision;
+                    Districts.Adopted a = adopt(helper, level);
+                    check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
+                    check("done in the call, nothing left running", a.detected() && !ind().districts().rescanning());
+                    check("in one tick", ind().districts().lastRescanSlices() == 1);
+                    checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + 4));
+                    freeChunks(level, forced);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A detection of the dimension is already under way: the adopt does not start a second one beside it, it leaves its
+     * chunks to the pass after, and the districts end up a full detection's.
+     */
+    @GameTest(template = YARD, batch = "adopt_3", timeoutTicks = 1200)
+    public static void anAdoptBesideARunningDetectionLeavesItsChunksToTheNextPass(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        ServerLevel level = helper.getLevel();
+        List<ChunkPos> forced = new ArrayList<>();
+        BlockPos[][] ms = new BlockPos[1][];
+        boolean[] acted = {false};
+        helper.startSequence()
+                .thenExecute(() -> ms[0] = build(helper, level, forced))
+                .thenWaitUntil(() -> checkBefore(helper, ms[0]))
+                .thenExecute(() -> {
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
+                    ind().districts().markDirty(level.dimension(), chunk(ms[0][3]));
+                })
+                .thenWaitUntil(() -> {
+                    if (!acted[0]) {
+                        check("a detection of Z is under way", ind().districts().rescanning());
+                        acted[0] = true;
+                        Districts.Adopted a = adopt(helper, level);
+                        check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
+                        check("not detected in the call", !a.detected());
+                    }
+                    District xy = districtAt(helper, ms[0][0]);
+                    check("the next pass made the district of X, the bridge and Y",
+                            !ind().districts().rescanning() && xy != null && xy.chunks.size() == 4 && districtAt(helper, ms[0][PLACED.length + 1]) != null);
+                })
+                .thenExecute(() -> {
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
+                    List<String> local = snapshot();
+                    ind().districts().rescanNow(level);
+                    List<String> full = snapshot();
+                    check("the districts are a full detection's:\n" + local + "\nagainst\n" + full, local.equals(full));
+                    freeChunks(level, forced);
+                })
+                .thenSucceed();
+    }
+}
