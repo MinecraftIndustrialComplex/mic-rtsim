@@ -128,6 +128,11 @@ public final class IndustryKit {
         BlockPos a = helper.absolutePos(BlockPos.ZERO), b = helper.absolutePos(new BlockPos(33, 0, 33));
         int minCx = Math.min(a.getX(), b.getX()) >> 4, maxCx = Math.max(a.getX(), b.getX()) >> 4;
         int minCz = Math.min(a.getZ(), b.getZ()) >> 4, maxCz = Math.max(a.getZ(), b.getZ()) >> 4;
+        // Load the ring around the yard first: an unloaded chunk would keep an earlier test's seeds on disk and
+        // bring them back when it loads mid-test.
+        for (int cx = minCx - 1; cx <= maxCx + 1; cx++)
+            for (int cz = minCz - 1; cz <= maxCz + 1; cz++)
+                helper.getLevel().getChunk(cx, cz);
         ind().districts().forgetAllForTest(helper.getLevel());
         ind().districts().forgetArea(helper.getLevel(), minCx - 1, minCz - 1, maxCx + 1, maxCz + 1);
         // The marker machines playerPlaced left above an earlier test's blocks would seed this one.
