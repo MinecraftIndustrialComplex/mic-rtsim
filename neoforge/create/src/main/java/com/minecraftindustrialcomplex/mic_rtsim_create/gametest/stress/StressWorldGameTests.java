@@ -10,7 +10,7 @@ import java.util.List;
 
 /**
  * The synthetic stress world's generator (DECISIONS.md ST1 and ST3; docs/stress-worlds-results.md
- * section 10, choices SG1 to SG12). One GameTest that builds the world with Create's own APIs and then
+ * section 10, its SG choices in 10.7). One GameTest that builds the world with Create's own APIs and then
  * lets the GameTest server save it: {@link StressWorld} does the work.
  *
  * <p>It runs only in the {@code stressGen} run ({@code ./gradlew :create:runStressGen -PskipJni}, or
