@@ -1,10 +1,10 @@
 # The oil gate: a cheese audit
 
 **Status:** audit and plan only, 2026-10-21, of the gate as built on main at 02c2096 (OILGATE.md,
-docs/choices-oilgate.md). Nothing here is built and no test was written for it. Neither mic-rtsim nor
-Deep Time is in `pack/mods` yet, so this reads the gate as it will be once both ship, with
-OILGATE.md's defaults and Ben's answers of 2026-10-21 (reserve 600, refuel below 240; drinking free of
-the theft cap).
+docs/choices-oilgate.md). None of the fixes here is built and no test was written for them. Neither
+mic-rtsim nor Deep Time is in `pack/mods` yet, so this reads the gate as it will be once both ship, with
+OILGATE.md's defaults and Ben's answers of 2026-10-21 (DECISIONS.md OGB-1 to OGB-5: reserve 600, refuel
+below 240, both built with this audit; drinking free of the theft cap).
 
 **Ben's bar** (2026-10-21, in place of For Ben 1's options): "As long as it is inpheasible for a player
 to build out an actual oil pipeline & difficult for a semi-casual player to cheese. (Probably need to
@@ -53,7 +53,7 @@ Every cheese in §2 breaks one of these links. The numbers are the defaults (Oil
 | L3 Sensed | Only when a dragon arrives to drink: `refuel_arrive` calls `sense`. A dragon flies to drink only when its reserve is at or below 240, to the oil chunk nearest wherever it is then. It senses each district whose centre (the mean of its chunk centres) lies within `sense_reach` 400 of that chunk, once a day each. The centre index is rebuilt only when the number of districts changes. | `oil.rs:837-867`, `:873-885`, `:990-1072`; `infra.rs:157-185` |
 | L4 Grudged | Severity is 100 × (1 + 2 for an oil sample + 1 for 1,000 mB of fuel + 1 for pollution), at most 255. The sentiment change is -25 × severity / 100, and a grudge is -40 or lower. So a bare district (-25) is no grudge; fuel alone (-50) or a drilling well (-63) is. Players are named only when their P26 home lies within 512 blocks of the district. | `rtsim-knowledge/src/tunables.rs:75`, `:113`; `rtsim-ecology/src/tunables.rs:177`; `engine.rs:95` |
 | L5 Raided | A grudged district is a raid target within `grudge_range` 6,000 blocks: at most once every 3 days per dragon, never while it starves, up to 2 districts a raid. Unwatched, the raid is resolved by the industry engine; watched, the dragon appears for real. | `species.rs:148`; `rtsim-ecology/src/tunables.rs:179-180`; `engine.rs:1740-1800` |
-| L6 Hurt | Theft: a dragon with room drinks fuel stock, free of the 10% cap (Ben's Q3), up to its room at 1,000 mB a point. Blocks: one per surviving pass (a fire dragon has 1 to 4 passes by stage), at most 8. A flyer breaks only roofless blocks, scaled by the unroofed share of machines, and only blocks in the last survey. A survey runs only when every chunk of the district is loaded. | `rtsim-industry/src/threat.rs:355-363`, `:462-545`; `rtsim-industry/src/tunables.rs:180-184`; `species.rs:159-160`; `Threats.java:441` |
+| L6 Hurt | Theft: a dragon with room drinks fuel stock, free of the 10% cap (OGB-3), up to its room at 1,000 mB a point. Blocks: one per surviving pass (a fire dragon has 1 to 4 passes by stage), at most 8. A flyer breaks only roofless blocks, scaled by the unroofed share of machines, and only blocks in the last survey. A survey runs only when every chunk of the district is loaded. | `rtsim-industry/src/threat.rs:355-363`, `:462-545`; `rtsim-industry/src/tunables.rs:180-184`; `species.rs:159-160`; `Threats.java:441` |
 | L7 Danger to the player | In Control's desert dragons: desert only, y 15 to 200 (OILGATE.md §3.2). Field flights are off (`fieldFlights` false), and when on they roll only for players at y 15 or higher. Lair dragons, and watched raids. | `oil.rs:534-571`, `:642-694` |
 
 Two numbers matter most:

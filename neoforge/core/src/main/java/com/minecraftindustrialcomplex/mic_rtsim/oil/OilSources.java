@@ -41,6 +41,22 @@ public final class OilSources {
 
     static final String SITES = "com.minecraftindustrialcomplex.deeptime.api.DeepTimeSites";
     private static boolean deepTimeFailed;
+    private static Boolean deepTimeInstalled;
+
+    /** Whether Deep Time is installed (its sites class is on the class path); read once. */
+    public static boolean deepTimeInstalled() {
+        if (deepTimeInstalled == null) {
+            boolean found;
+            try {
+                Class.forName(SITES, false, OilSources.class.getClassLoader());
+                found = true;
+            } catch (ClassNotFoundException | LinkageError e) {
+                found = false;
+            }
+            deepTimeInstalled = found;
+        }
+        return deepTimeInstalled;
+    }
 
     /**
      * The chunks Deep Time's petroleum traps cover in {@code level} ({@code DeepTimeSites.of(level).all()},

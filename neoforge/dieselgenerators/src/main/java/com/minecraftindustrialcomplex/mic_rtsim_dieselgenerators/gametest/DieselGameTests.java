@@ -1,5 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.gametest;
 
+import com.jesz.createdieselgenerators.CDGConfig;
+import com.jesz.createdieselgenerators.CDGTags;
 import com.jesz.createdieselgenerators.world.OilChunksSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
@@ -7,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.api.OilSource;
 import com.minecraftindustrialcomplex.mic_rtsim.oil.OilSources;
+import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.CdgFirstLook;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.CdgOilSource;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.DieselOilPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.MicRtsimDieselGenerators;
@@ -30,6 +33,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Set;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.*;
 
@@ -182,6 +186,121 @@ public final class DieselGameTests {
                     record(test, "a real overworld's uncached biomes", noise[0] + " chunks x 12,800 lookups on vanilla's overworld multi-noise source: mean "
                             + us(noise) + " us a chunk, max " + noise[2] / 1000 + " us (" + distinct / Math.max(1, noise[0]) + " biomes a chunk)");
                     record(test, "agree", agree + " chunks give the same oil before and after they generate");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The first look before {@code getBaseOilAmount} (OGB-5, {@link CdgFirstLook}). On vanilla's overworld
+     * multi-noise biomes for the level's seed (the GameTest world is one flat biome), around the edge of an
+     * oil biome and at random far chunks: the look's 504 noise cells hold every biome CDG's 12,800 points read
+     * through {@code BiomeManager} (so a chunk the look skips has no oil biome for CDG), and the look passes
+     * every chunk CDG would find an oil biome in. On the level, under the pack's rule (CDG's normal multiplier
+     * 0, set for the check and put back), the source answers what {@code getBaseOilAmount} does, chunk for
+     * chunk; under CDG's own defaults the look stands aside.
+     */
+    @GameTest(template = "yard", batch = "diesel_first_look", timeoutTicks = 1200)
+    public static void theFirstLookAgreesWithGetBaseOilAmount(GameTestHelper helper) {
+        String test = "theFirstLookAgreesWithGetBaseOilAmount";
+        ServerLevel level = helper.getLevel();
+        OilSource src = OilSources.forLevel(level);
+        check("the level's oil source is Diesel's", src instanceof CdgOilSource);
+        var reg = level.registryAccess();
+        MultiNoiseBiomeSource biomes = MultiNoiseBiomeSource.createFromPreset(
+                reg.registryOrThrow(Registries.MULTI_NOISE_BIOME_SOURCE_PARAMETER_LIST).getHolderOrThrow(MultiNoiseBiomeSourceParameterLists.OVERWORLD));
+        RandomState state = RandomState.create(reg.asGetterLookup(), NoiseGeneratorSettings.OVERWORLD, level.getSeed());
+        BiomeManager.NoiseBiomeSource cells = (x, y, z) -> biomes.getNoiseBiome(x, y, z, state.sampler());
+        BiomeManager manager = new BiomeManager(cells, BiomeManager.obfuscateSeed(level.getSeed()));
+        java.util.Random rnd = new java.util.Random();
+        List<ChunkPos> chunks = new java.util.ArrayList<>();
+        int edge = 13 * 5, far = 25; // around the oil biome's cell, and at random
+        int[] cursor = {0};
+        long[] n = new long[5]; // chunks, with an oil biome for CDG, skipped by the look, passed without one, look nanos
+        long[] exactNanos = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    // An oil biome's cell, walking 64 blocks a step at y 64 from a random start.
+                    int qx = (200_000 + rnd.nextInt(400_000)) >> 2, qz = (200_000 + rnd.nextInt(400_000)) >> 2;
+                    int found = -1;
+                    for (int i = 0; i < 20_000 && found < 0; i++)
+                        if (cells.getNoiseBiome(qx + 16 * i, 16, qz).is(CDGTags.OIL_BIOMES))
+                            found = i;
+                    check("an oil biome on the walk (" + CDGTags.OIL_BIOMES.location() + ")", found >= 0);
+                    ChunkPos c = new ChunkPos((qx + 16 * found) >> 2, qz >> 2);
+                    for (int dx = -6; dx <= 6; dx++)
+                        for (int dz = -2; dz <= 2; dz++)
+                            chunks.add(new ChunkPos(c.x + dx * 2, c.z + dz * 2));
+                    for (int i = 0; i < far; i++)
+                        chunks.add(new ChunkPos(rnd.nextInt(100_000) - 50_000, rnd.nextInt(100_000) - 50_000));
+                    check("the chunks to read (" + chunks.size() + ")", chunks.size() == edge + far);
+                })
+                .thenExecuteFor((edge + far) / 3 + 1, () -> {
+                    BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+                    for (int k = 0; k < 3 && cursor[0] < chunks.size(); k++, cursor[0]++) {
+                        ChunkPos p = chunks.get(cursor[0]);
+                        long t0 = System.nanoTime();
+                        Set<Holder<Biome>> seen = new java.util.HashSet<>();
+                        for (int x = p.getMinBlockX(); x <= p.getMaxBlockX(); x++)
+                            for (int y = CdgFirstLook.MIN_Y; y <= CdgFirstLook.MAX_Y; y++)
+                                for (int z = p.getMinBlockZ(); z <= p.getMaxBlockZ(); z++)
+                                    seen.add(manager.getBiome(m.set(x, y, z)));
+                        long t1 = System.nanoTime();
+                        boolean look = CdgFirstLook.mayHoldOil(cells, p);
+                        long t2 = System.nanoTime();
+                        Set<Holder<Biome>> held = CdgFirstLook.cellBiomes(cells, p);
+                        boolean oil = seen.stream().anyMatch(b -> b.is(CDGTags.OIL_BIOMES));
+                        check("chunk " + p + ": the cells hold every biome CDG reads", held.containsAll(seen));
+                        check("chunk " + p + ": an oil biome for CDG passes the look", !oil || look);
+                        n[0]++;
+                        if (oil)
+                            n[1]++;
+                        if (!look)
+                            n[2]++;
+                        if (look && !oil)
+                            n[3]++;
+                        n[4] += t2 - t1;
+                        exactNanos[0] += t1 - t0;
+                    }
+                })
+                .thenExecute(() -> {
+                    check("every chunk read (" + n[0] + " of " + chunks.size() + ")", n[0] == chunks.size());
+                    check("some chunks hold an oil biome (" + n[1] + ") and some are skipped (" + n[2] + ")", n[1] > 0 && n[2] > 0);
+                    record(test, "noise", n[0] + " chunks of vanilla's overworld: " + n[1] + " with an oil biome for CDG, " + n[2]
+                            + " skipped by the look, " + n[3] + " passed without one (an edge cell); the look "
+                            + String.format("%.1f", n[4] / 1000.0 / n[0]) + " us a chunk against CDG's points "
+                            + String.format("%.1f", exactNanos[0] / 1000.0 / n[0]) + " us");
+                    // On the level: CDG's defaults first (normal chunks hold oil: the look stands aside), then the pack's rule.
+                    ChunkPos here = new ChunkPos(helper.absolutePos(BlockPos.ZERO));
+                    List<ChunkPos> onLevel = new java.util.ArrayList<>();
+                    for (int dx = -3; dx <= 3; dx++)
+                        for (int dz = -3; dz <= 3; dz++)
+                            onLevel.add(new ChunkPos(here.x + dx, here.z + dz));
+                    for (int i = 0; i < 8; i++)
+                        onLevel.add(new ChunkPos(300_000 + rnd.nextInt(100_000), 300_000 + rnd.nextInt(100_000)));
+                    boolean asShipped = CdgFirstLook.applies();
+                    double normal = CDGConfig.OIL_MULTIPLIER.get();
+                    long looked0 = CdgFirstLook.looked, skipped0 = CdgFirstLook.skipped;
+                    int same = 0;
+                    boolean packRule;
+                    try {
+                        CDGConfig.OIL_MULTIPLIER.set(0.0);
+                        packRule = CdgFirstLook.applies();
+                        for (ChunkPos p : onLevel) {
+                            int a = src.baseOil(level, p), b = OilChunksSavedData.getBaseOilAmount(level, p);
+                            check("chunk " + p + " under the pack's rule: " + a + " and getBaseOilAmount " + b, a == b);
+                            same++;
+                        }
+                    } finally {
+                        CDGConfig.OIL_MULTIPLIER.set(normal);
+                    }
+                    if (normal > 0 && !CDGConfig.DISABLE_NORMAL_OIL_CHUNKS.get())
+                        check("CDG's own defaults (normal multiplier " + normal + "): the look stands aside", !asShipped);
+                    check("under the pack's rule the look answers", packRule);
+                    long looked = CdgFirstLook.looked - looked0, skipped = CdgFirstLook.skipped - skipped0;
+                    check("it looked at every chunk (" + looked + ")", looked == onLevel.size());
+                    record(test, "level", same + " chunks answer as getBaseOilAmount under the pack's rule (" + skipped
+                            + " skipped by the look, the flat preset's one biome); under CDG's defaults (normal " + normal
+                            + ") the look " + (asShipped ? "answers" : "stands aside"));
                 })
                 .thenSucceed();
     }

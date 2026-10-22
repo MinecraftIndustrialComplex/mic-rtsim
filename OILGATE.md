@@ -11,6 +11,13 @@ as many dragons, so the gate does not pass yet (For Ben 1 in the choices file). 
 (OG-9, §4.6) is not built; its seam is in `docs/choices-oilgate.md`. The design below is as approved;
 where the build chose a number or a detail, the choices file says so.
 
+**Ben's answers, 2026-10-21 (DECISIONS.md OGB-1 to OGB-5):** the gate is judged by his bar (a real oil
+pipeline infeasible, cheesing it hard for a semi-casual player), not by matching In Control; the
+adversarial audit against that bar, its fix set and its questions are `docs/oilgate-cheese-audit.md`.
+The reserve holds 600 points and is low at 240 (built); drinking stays free of the theft cap; a lost
+visitor body ends its visit; the Diesel oil source takes a cheap biome first look before
+`getBaseOilAmount` (built).
+
 **Decided, and binding here:**
 - **P13:** the desert dragon spawner is a progression gate: oil sits behind guns, through hostile
   ground. Deep Time will place oil deposits anywhere, so the gate follows deposits, not biomes:
