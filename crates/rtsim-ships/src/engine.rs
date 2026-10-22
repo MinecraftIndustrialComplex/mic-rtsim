@@ -4018,6 +4018,10 @@ impl Ships {
             if x.embodied {
                 embodied.insert(id);
             }
+            // A crewless pirate is lost, never an active ship that can no longer hunt.
+            if x.pirate.is_some() && x.is_active() && x.crew == 0 {
+                return Err(format!("pirate {id:?} is active with no crew"));
+            }
             if let Some(PState::Hunting { lane, .. }) = x.pirate.as_ref().map(|p| p.state)
                 && x.is_active()
                 && !self.threat(lane).is_some_and(|t| t.hunters.contains(&id))
