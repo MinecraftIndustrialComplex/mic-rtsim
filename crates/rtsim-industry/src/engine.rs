@@ -44,8 +44,8 @@ use crate::ids::{
 };
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
-    BlockFlags, Carriage, CarriageResult, Conditions, Direction, LoadState, NotLearnable, Obs,
-    PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
+    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -800,11 +800,21 @@ impl Engine {
                 }
                 self.glass.remove(*district);
             }
-            Obs::Edit { district, .. } => {
+            Obs::Edit {
+                district,
+                kind,
+                player,
+                ..
+            } => {
                 // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
                 // what its starvation episodes showed may no longer hold (I6). A replay of its
                 // unloaded part stops (I7: stale freezes).
                 let dist = self.district_mut(*district);
+                // A block placed or broken, or a machine configured, makes the player one of its
+                // builders (the oil gate's dragons name them, choices-oilgate.md OGC54).
+                if *kind != EditKind::Command {
+                    dist.note_editor(*player, at);
+                }
                 dist.learner.discard();
                 dist.learner.coupling.reset();
                 let went_stale = dist.phase == Phase::Learned;
