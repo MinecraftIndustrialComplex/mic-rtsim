@@ -67,6 +67,18 @@ neoForge {
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
         }
+        // `./gradlew :create:runStressGen -PskipJni`: builds the synthetic stress world (choice SG1,
+        // gametest/stress/StressWorldGameTests) into run-stressgen/world and stops. Only the generator's
+        // namespace runs; MIC_STRESS_* environment variables size it. tools/stress-worlds/synth.sh wraps it.
+        stressGen {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim_stressgen'
+            systemProperty 'mic_rtsim.stressgen', 'true'
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', 'stub'
+            jvmArgument "-Xmx${project.findProperty('stressXmx') ?: '12G'}"
+            gameDirectory = file('run-stressgen')
+        }
     }
 
     mods {

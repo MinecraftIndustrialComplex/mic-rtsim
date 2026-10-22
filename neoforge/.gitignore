@@ -9,6 +9,7 @@
 # Local runtimes: GameTest servers, dev clients. They hold logs and worlds, never commit them.
 /*/run/
 /*/run-gametest/
+/*/run-stressgen/
 /run/
 /run-gametest/
 
