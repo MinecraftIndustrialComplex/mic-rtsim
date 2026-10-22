@@ -218,6 +218,9 @@ visit would have filed. A field with no fire lair in reach has none to send, whi
 first time a player comes near. Cost: one event a field a day and a chunk lookup. Refuelling, theft
 at the field and visits stay as they are. Not Ben: it keeps OG-8's rule (dragons sense industry near
 oil) and changes only when it fires.
+**Built** (docs/choices-oilgate.md OGC52, OGC53): one daily watch for every field; the trigger at a
+first deposit sample is left to it (the ecology engine sees no deposit-sample event), so a drilling
+district is sensed within a day.
 
 **F3. Sense by chunks, not by the centre** (B2, and C3's joined districts). `Infrastructure` gains a chunk test (the
 districts with any chunk within r of a point; the industry engine holds every district's chunk set),
@@ -225,6 +228,7 @@ used by `sense` and by F2. `DistrictIndex::refresh` rebuilds whenever any distri
 counter in the industry engine), not only when their number does. A well joined to a base by pipe,
 belt, shaft or Ender Transmission is then sensed as the well it is, and its raids choose from the
 whole district's exposed blocks: linking a well to the base brings the dragons to the base. Not Ben.
+**Built** (OGC50, OGC51): raids and home raids find districts by chunk too.
 
 **F4. A roof delays a flyer; it does not stop one** (C1, C2). Needs Ben: it changes OG-11 as he
 approved it.
@@ -255,7 +259,7 @@ the player), as well as those whose home is within 512 blocks. A remote well's b
 hunted at home and on sight, wherever they live. Not Ben (it is what OGC16 meant P26's homes to stand
 in for). It needs one addition: the industry engine reads `IND_EDIT` but drops its player
 (`rtsim-industry/src/engine.rs:782`), so each district would keep its last few editors and their
-times, saved with it.
+times, saved with it. **Built** (OGC54, OGC55): the last 8 builders, saved with the district.
 
 **F8. Danger where the oil is** (F1, and bar 2's first window). §3's recommendation (a). Ben. Before
 trusting field flights or In Control at night, run OGC35's probe by night, as §4.8 already asks (F2).
@@ -265,7 +269,10 @@ trusting field flights or In Control at night, run OGC35's probe by night, as §
 district only brings the real dragon (`infra.rs:6-8`). A raid on a watched district then also
 resolves through the threat interface as an unwatched one does, blocks and theft, after the real
 fight, so watched and unwatched raids agree (P28's own words). Standing guard in a box keeps the
-player alive; it no longer keeps the well. Not Ben: it builds what he decided.
+player alive; it no longer keeps the well. Not Ben: it builds what he decided. **Built** (OGC56,
+OGC57), resolved at once rather than after the real fight: deterministic, the same inputs as an
+unwatched raid, and no pending raid to keep through a fight's many endings. In person, the raid
+leaves the dragon's oil and wounds to the real fight.
 
 **PF1. Ethanol** (D2). Ben chose a third way (OGB-8): ethanol stays as the pre-oil fuel and the pack
 rebalances it to its real properties, so it is poor in diesel engines. Not part of the gate's build.
