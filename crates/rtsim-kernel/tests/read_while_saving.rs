@@ -124,8 +124,25 @@ fn assert_matches(dir: &Path, model: &BTreeMap<u64, Vec<u8>>) {
     assert!(got == *model, "the store and the model differ");
 }
 
-/// Before every save a handle is open on every file in the store's folder; the save compacts,
-/// deletes segments and (every few saves) folds the log, and every save succeeds. The held
+/// Holds `held` open for `HOLD_MS`, reads each to the end, then closes them: one reader's read in
+/// flight, as long as the retry is meant to outlast. The thread panics on a read that fails.
+const HOLD_MS: u64 = 20;
+
+fn hold_briefly(mut held: Vec<(PathBuf, File)>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(HOLD_MS));
+        for (p, f) in &mut held {
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)
+                .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        }
+    })
+}
+
+/// Before every save a handle is open on every file in the store's folder, and stays open for
+/// `HOLD_MS` into the save; the save compacts, deletes segments and (every few saves) folds the
+/// log, and every save succeeds. On Windows the replace of a held file is refused until the
+/// reader closes, and the save's rename retries (`page::rename_over`) outlast that. The held
 /// handles still read afterwards, and a fresh read-only open reads exactly what was saved.
 #[test]
 fn saves_succeed_while_every_file_is_held_open() {
@@ -138,7 +155,7 @@ fn saves_succeed_while_every_file_is_held_open() {
         // What a viewer can hold at any instant: a read-only store (it holds nothing) and, in
         // the worst case, a read in flight on every file at once.
         let ro = PageStore::open_read_only(&dir).unwrap();
-        let mut held: Vec<(PathBuf, File)> = files_in(&dir)
+        let held: Vec<(PathBuf, File)> = files_in(&dir)
             .into_iter()
             .map(|p| {
                 let f = File::open(&p).unwrap();
@@ -146,6 +163,7 @@ fn saves_succeed_while_every_file_is_held_open() {
             })
             .collect();
         held_most = held_most.max(held.len());
+        let reader = hold_briefly(held);
         let b = round_batch(round, &mut model);
         let st = s
             .commit(b, round)
@@ -161,12 +179,7 @@ fn saves_succeed_while_every_file_is_held_open() {
             folds += 1;
         }
         // A handle on a file the save deleted or replaced still reads what it opened.
-        for (p, f) in &mut held {
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf)
-                .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-        }
-        drop(held);
+        reader.join().unwrap();
         drop(ro);
     }
     println!(
@@ -180,6 +193,36 @@ fn saves_succeed_while_every_file_is_held_open() {
     assert_matches(&dir, &model);
     // The writer reopens it too, and cleans whatever it left.
     let s = PageStore::open(&dir, Durability::Fsync).unwrap();
+    drop(s);
+    assert_matches(&dir, &model);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The log fold replaces the root (`manifest.rtm`) while a reader holds it open, as VIEWER.md
+/// §16 exit test (e) found fatal under Wine 11: with the retry the fold waits the reader out.
+#[test]
+fn a_fold_waits_out_a_reader_holding_the_root() {
+    let dir = tmpdir("root");
+    let mut s = PageStore::open(&dir, Durability::Fsync).unwrap();
+    let mut model = BTreeMap::new();
+    seed(&mut s, &mut model);
+    for round in 1..=10u64 {
+        let b = round_batch(round, &mut model);
+        s.commit(b, round).unwrap();
+        let root: Vec<(PathBuf, File)> = files_in(&dir)
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "rtm"))
+            .map(|p| {
+                let f = File::open(&p).unwrap();
+                (p, f)
+            })
+            .collect();
+        assert!(!root.is_empty(), "no root file in the store's folder");
+        let reader = hold_briefly(root);
+        s.checkpoint_now()
+            .unwrap_or_else(|e| panic!("fold {round} with the root held open: {e}"));
+        reader.join().unwrap();
+    }
     drop(s);
     assert_matches(&dir, &model);
     fs::remove_dir_all(&dir).unwrap();

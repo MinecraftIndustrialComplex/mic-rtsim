@@ -288,7 +288,7 @@ impl Lease {
         let path = rtsim.join(LEASE_FILE);
         let tmp = rtsim.join(format!("{LEASE_FILE}.{}.tmp", self.pid));
         std::fs::write(&tmp, self.encode())?;
-        std::fs::rename(&tmp, &path)
+        rtsim_kernel::page::rename_over(&tmp, &path)
     }
 
     pub fn read(rtsim: &Path) -> std::io::Result<Lease> {
