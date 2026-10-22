@@ -1,5 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
 import com.seibel.distanthorizons.api.DhApi;
 import com.seibel.distanthorizons.api.interfaces.config.IDhApiConfig;
@@ -13,6 +15,9 @@ import net.minecraft.client.Minecraft;
  * there), the detail tier is not OFF and the client is in a world. Otherwise it wants nothing from the far
  * registry, so no source asks its mod or the server for anything. It never changes a DH setting; when a
  * setting or the platform stops it, it says so once in the log.
+ *
+ * <p>While it runs it subscribes to the server's far feed ({@link FarFeedClient}) out to DH's radius, at its
+ * tier's object budget, for dragons and carriages; the core sends that only to a server that has the feed.
  */
 final class FarGates {
     enum State {
@@ -65,6 +70,10 @@ final class FarGates {
         }
         radiusBlocks = r;
         FarObjects.want(MicRtsimDh.MODID, s == State.READY ? r : 0.0);
+        FarDetail tier = DhFarConfig.detail();
+        boolean feed = s == State.READY && !FarBench.NO_FEED;
+        FarFeedClient.want(MicRtsimDh.MODID, feed ? (int) Math.ceil(r) : 0, tier.ordinal(), tier.feedObjects,
+                FarKind.DRAGON.bit() | FarKind.CARRIAGE.bit());
     }
 
     private static void log(State s) {

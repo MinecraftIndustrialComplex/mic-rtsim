@@ -4,11 +4,13 @@
 //!
 //! - **One page per district** (table [`DISTRICT_TABLE`], id = district id), **one per replay
 //!   cluster** ([`CLUSTER_TABLE`], id = cluster key, with its booked wake, restored as is: DECISIONS.md
-//!   O18), and **one page of globals** ([`GLOBAL_TABLE`], id 0).
+//!   O18), **one per district's glass state** ([`GLASS_TABLE`], id = district id: the compile, its
+//!   passed window and the glass replay, `glass::page`, G2-9), and **one page of globals**
+//!   ([`GLOBAL_TABLE`], id 0).
 //! - **Everything else is saved**, open learning windows and half-assembled sweeps included, so a
 //!   restored engine continues exactly (tested). A real restart then calls
 //!   `Engine::session_start`, which discards the windows (F6). **Not saved:** the engine's text log,
-//!   and cluster events (drained after every touch).
+//!   cluster events (drained after every touch) and the glass solve's wall-clock time.
 //! - **No format version** before release: a change wipes the save (PLAN.md §4.9). A district
 //!   page starts with a magic (`district::DISTRICT_MAGIC`, bumped on a change to the district
 //!   format), so an older page fails by name rather than mid-record.
@@ -32,6 +34,7 @@ use crate::ids::{
 pub const GLOBAL_TABLE: u16 = 0x4900;
 pub const DISTRICT_TABLE: u16 = 0x4901;
 pub const CLUSTER_TABLE: u16 = 0x4902;
+pub const GLASS_TABLE: u16 = 0x4903;
 
 /// A value that can go into an industry page.
 pub trait Persist: Sized {

@@ -4,6 +4,7 @@
 //! Veloren figures (research/veloren-rtsim-2026-10-19.md §4) are cited where one was the model;
 //! they are Veloren's, not Minecraft facts.
 
+use rtsim_kernel::renewal::RenewalRule;
 use rtsim_travel::Medium;
 
 /// What differs between sea and sky ships.
@@ -127,9 +128,23 @@ pub struct ShipTunables {
     /// A lost merchant or navy ship is replaced this long after, at its home dock. PLACEHOLDER two
     /// days.
     pub respawn_ticks: u64,
-    /// A haven builds a new pirate ship this long after losing one, if its crew pool can man it.
-    /// PLACEHOLDER four days.
-    pub haven_rebuild_ticks: u64,
+    /// A haven refits an empty slot (EQUILIBRIUM.md §2.4.6, the shared rule of §2.2) after
+    /// `min(cap, base x 2^P)` days, once its crew pool can man the ship. P is the haven's pressure:
+    /// each pirate ship a player sinks or captures adds 1/slots. TUNABLE: base 4 (T27's rebuild
+    /// delay), cap 96, half-life 96 (§2.4.6).
+    pub refit: RenewalRule,
+    /// A haven's crew pool holds at most this many crew (§2.4.6: three sea crews). TUNABLE 18.
+    pub crew_pool_cap: u32,
+    /// Hires (§2.4.6): drifters at the haven's market join its pool at this many a day toward the
+    /// cap, logistic (`r (1 - pool/cap)`), read in closed form. Not slowed by pressure: the refit
+    /// carries it. TUNABLE 0.25.
+    pub hires_per_day: f64,
+    /// What a pirate weighs a hunt with (§2.4.6 (b)): a lane is worth hunting when its win chance
+    /// `p = A² / (A² + D²)`, against the defence it expects there (a merchant, the lane's patrols
+    /// and escorts), makes `p x loot - (1 - p) x crew` positive. TUNABLE: the model's 3 and 6, a
+    /// win chance above 2/3.
+    pub hunt_loot_value: f64,
+    pub hunt_crew_value: f64,
     /// Navies: ships per patrol. PLACEHOLDER 2.
     pub navy_ships: u32,
     /// Lanes a patrol covers: those within this many lane hops of its base. PLACEHOLDER 2.
@@ -216,7 +231,15 @@ impl Default for ShipTunables {
             coast_raid_blocks: 384,
             coast_raid_milli: 250,
             respawn_ticks: 2 * 24_000,
-            haven_rebuild_ticks: 4 * 24_000,
+            refit: RenewalRule {
+                base_days: 4.0,
+                cap_days: 96.0,
+                half_life_days: 96.0,
+            },
+            crew_pool_cap: 18,
+            hires_per_day: 0.25,
+            hunt_loot_value: 3.0,
+            hunt_crew_value: 6.0,
             navy_ships: 2,
             patrol_hops: 2,
         }

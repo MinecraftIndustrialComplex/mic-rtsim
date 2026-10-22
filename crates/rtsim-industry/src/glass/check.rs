@@ -260,6 +260,11 @@ pub struct DistrictGlass {
     pub replay_since: Option<Tick>,
     /// Why this compile's glass replay fell back (cleared by a new compile or a live district).
     pub fallback: Option<super::replay::Fallback>,
+    /// A session started since the compile was accepted: Java numbers each session's compiles
+    /// from 1 (`GlassCompiler.State`), so the next END is judged by what it compiled, not by its
+    /// number. The same factory keeps the compile held, its passed window and its replay
+    /// (choice G2-81).
+    pub numbers_reset: bool,
 }
 
 /// What a sweep sees of the district.
@@ -1328,5 +1333,213 @@ impl DistrictGlass {
             compile: c.graph.end.compile,
             nodes,
         })
+    }
+}
+
+// ---- the glass page (page.rs, choice G2-80) -------------------------------------------------
+
+mod persist_impls {
+    use rtsim_kernel::codec::{Reader, Result, Writer};
+
+    use super::*;
+    use crate::persist::{Persist, invalid, persist_struct};
+
+    persist_struct!(Acc {
+        sy,
+        sty,
+        sp,
+        stp,
+        slo,
+        stlo,
+        shi,
+        sthi,
+        sd,
+        std,
+        sdd
+    });
+    persist_struct!(Cum {
+        p,
+        lo,
+        hi,
+        lo_inf,
+        hi_inf,
+        il,
+        ol,
+        iu,
+        ou,
+        iu_inf,
+        ou_inf,
+        var,
+        batch,
+        class,
+        why
+    });
+    persist_struct!(Window {
+        start,
+        last,
+        n,
+        st,
+        stt,
+        goods,
+        stores
+    });
+    persist_struct!(GoodResult {
+        good,
+        class,
+        why,
+        in_l,
+        in_u,
+        out_l,
+        out_u,
+        predicted,
+        lo,
+        hi,
+        measured,
+        sigma,
+        q,
+        verdict,
+        samples
+    });
+    persist_struct!(WindowResult {
+        start,
+        ticks,
+        verdict,
+        goods,
+        stores
+    });
+    persist_struct!(ProbeTrack {
+        first_sweep,
+        first,
+        last_sweep,
+        last
+    });
+    persist_struct!(Burn { node, left, thr });
+
+    impl Persist for GlassEvent {
+        fn put(&self, w: &mut Writer) {
+            match self {
+                GlassEvent::Derated { node, eta, good } => {
+                    w.u8(0);
+                    node.put(w);
+                    eta.put(w);
+                    good.put(w);
+                }
+                GlassEvent::Probed { nodes } => {
+                    w.u8(1);
+                    nodes.put(w);
+                }
+                GlassEvent::Demoted { model, node } => {
+                    w.u8(2);
+                    model.put(w);
+                    node.put(w);
+                }
+            }
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(match r.u8()? {
+                0 => GlassEvent::Derated {
+                    node: Persist::get(r)?,
+                    eta: Persist::get(r)?,
+                    good: Persist::get(r)?,
+                },
+                1 => GlassEvent::Probed {
+                    nodes: Persist::get(r)?,
+                },
+                2 => GlassEvent::Demoted {
+                    model: Persist::get(r)?,
+                    node: Persist::get(r)?,
+                },
+                _ => return invalid("glass event"),
+            })
+        }
+    }
+
+    /// Every field but `solve_micros` (wall-clock time, restored as 0): the regime cache too, as
+    /// a regime it answers is not a solve, and the replay's settle budget counts solves (G2-61).
+    impl Persist for Compiled {
+        fn put(&self, w: &mut Writer) {
+            self.graph.put(w);
+            self.accepted_at.put(w);
+            self.window_target.put(w);
+            self.ready_at.put(w);
+            self.ctrl_on.put(w);
+            self.regime.put(w);
+            self.key.put(w);
+            self.sol.put(w);
+            self.cache.put(w);
+            self.cache_parts.put(w);
+            self.solves.put(w);
+            self.cache_hits.put(w);
+            self.win.put(w);
+            self.last.put(w);
+            self.passed.put(w);
+            self.edited.put(w);
+            self.windows_completed.put(w);
+            self.strikes.put(w);
+            self.stock_est.put(w);
+            self.last_sweep.put(w);
+            self.heaters.put(w);
+            self.model_at.put(w);
+            self.sweeps.put(w);
+            self.sweeps_sampled.put(w);
+            self.district_revision.put(w);
+            self.probe_set.put(w);
+            self.probes.put(w);
+            self.events.put(w);
+            self.replay_regimes.put(w);
+            self.replay_breakpoints.put(w);
+            self.replay_oscillations.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            let c = Compiled {
+                graph: Persist::get(r)?,
+                accepted_at: Persist::get(r)?,
+                window_target: Persist::get(r)?,
+                ready_at: Persist::get(r)?,
+                ctrl_on: Persist::get(r)?,
+                regime: Persist::get(r)?,
+                key: Persist::get(r)?,
+                sol: Persist::get(r)?,
+                cache: Persist::get(r)?,
+                cache_parts: Persist::get(r)?,
+                solves: Persist::get(r)?,
+                cache_hits: Persist::get(r)?,
+                solve_micros: 0.0,
+                win: Persist::get(r)?,
+                last: Persist::get(r)?,
+                passed: Persist::get(r)?,
+                edited: Persist::get(r)?,
+                windows_completed: Persist::get(r)?,
+                strikes: Persist::get(r)?,
+                stock_est: Persist::get(r)?,
+                last_sweep: Persist::get(r)?,
+                heaters: Persist::get(r)?,
+                model_at: Persist::get(r)?,
+                sweeps: Persist::get(r)?,
+                sweeps_sampled: Persist::get(r)?,
+                district_revision: Persist::get(r)?,
+                probe_set: Persist::get(r)?,
+                probes: Persist::get(r)?,
+                events: Persist::get(r)?,
+                replay_regimes: Persist::get(r)?,
+                replay_breakpoints: Persist::get(r)?,
+                replay_oscillations: Persist::get(r)?,
+            };
+            // What the solve and the window index by node must cover the graph's nodes.
+            let n = c.graph.nodes.len();
+            let rg = &c.regime;
+            let per_node = [
+                c.ctrl_on.len(),
+                rg.held.len(),
+                rg.room.len(),
+                rg.read.len(),
+                rg.gate_off.len(),
+                rg.burning.len(),
+            ];
+            if per_node.iter().any(|&l| l != n) || c.heaters.iter().any(|b| b.node as usize >= n) {
+                return invalid("glass compile state of another graph");
+            }
+            Ok(c)
+        }
     }
 }

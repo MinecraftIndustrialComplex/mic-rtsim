@@ -224,7 +224,7 @@ pub fn run(c: &ShipsConfig) -> Measured {
     if st.materialized > 0 || st.voyages_booked > 0 {
         failures.push("a ship materialized or a voyage was booked with nobody watching".into());
     }
-    let pirate_kinds = ["decide", "reach_lane", "bored", "home", "rebuild"];
+    let pirate_kinds = ["decide", "reach_lane", "bored", "home", "refit"];
     if let Some((k, _)) = s
         .pending_by_kind()
         .into_iter()

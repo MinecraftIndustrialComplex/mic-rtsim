@@ -1087,6 +1087,8 @@ struct Soak {
     /// The game time the run ended at.
     end: i64,
     viewer: Option<Viewed>,
+    /// The who-is-alive census (EQUILIBRIUM.md S1, `Engine::census`) every 10 game days.
+    census: Vec<(i64, Vec<rtsim_kernel::census::KindCensus>)>,
 }
 
 impl Soak {
@@ -1125,11 +1127,8 @@ impl Soak {
             (self.days / 10).max(10)
         };
         let last = self.samples.last().map_or(0, |s| s.day);
-        for s in self
-            .samples
-            .iter()
-            .filter(|s| s.day == 10 || s.day % every == 0 || s.day == last)
-        {
+        let shown = |d: i64| d == 10 || d % every == 0 || d == last;
+        for s in self.samples.iter().filter(|s| shown(s.day)) {
             eprintln!(
                 "{:>4}  {:>7}  {:>9}  {:>8}  {:>10}  {:>9}  {:>5} KiB  {:>6}",
                 s.day,
@@ -1141,6 +1140,14 @@ impl Soak {
                 s.heap >> 10,
                 s.agents
             );
+        }
+        // The census on the same days (`sim census`'s format; renewals since the previous line).
+        eprintln!("census:\n{}", rtsim_kernel::census::CensusLog::HEADER);
+        let mut log = rtsim_kernel::census::CensusLog::new();
+        for (d, cs) in self.census.iter().filter(|(d, _)| shown(*d)) {
+            for l in log.lines(*d as u64, cs) {
+                eprintln!("{l}");
+            }
         }
         if let Some(v) = &self.viewer {
             eprintln!(
@@ -1456,6 +1463,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
     let mut samples = Vec::new();
     let mut tables = Vec::new();
     let mut sections = Vec::new();
+    let mut census = Vec::new();
     let t0 = Instant::now();
     let mut ran = 0;
     while ran + 10 <= days {
@@ -1477,6 +1485,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
             heap: mic_native_rt::memory::in_use().max(0) as u64,
             agents: host.e.stats_array()[11],
         });
+        census.push((ran, host.e.census()));
         if ran == 10 || ran == 100 || ran + 10 > days {
             tables.push((ran, by_table));
             sections.push(host.e.with_dragons(|_, w| {
@@ -1504,6 +1513,7 @@ fn soak(tag: &str, days: i64, viewer: bool) -> Soak {
         samples,
         tables,
         world: sections,
+        census,
     };
     assert!(
         host.e.protocol_error().is_none(),
@@ -1592,4 +1602,21 @@ fn a_thousand_days_at_max_keeps_the_state_bounded() {
         heap.1 <= 2 * heap.0 + (16 << 20),
         "the heap does not grow: {heap:?}"
     );
+    // The census (EQUILIBRIUM.md S1) counts every module's kinds on every sample.
+    let kinds =
+        |cs: &[rtsim_kernel::census::KindCensus]| cs.iter().map(|c| c.kind).collect::<Vec<_>>();
+    let first = kinds(&s.census[0].1);
+    for k in [
+        "village.human",
+        "dragon.lair",
+        "oil.nest",
+        "herd.range",
+        "ship.haven",
+        "conflict.camp",
+    ] {
+        assert!(first.contains(&k), "the census has {k}: {first:?}");
+    }
+    for (d, cs) in &s.census {
+        assert_eq!(kinds(cs), first, "day {d}");
+    }
 }
