@@ -82,7 +82,10 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 several with the same sweep when they do not fit (the engine adds them up). Deposits read in the
 sweep go in IND_DEPOSIT_SAMPLE. After the last one, IND_SWEEP_END says how many records the sweep
 sent. **The engine uses a sweep only if it received exactly that many records**; a dropped record
-throws the sweep away, so a dropped latest-wins record never corrupts a total (F5).
+throws the sweep away, so a dropped latest-wins record never corrupts a total (F5). A sweep of no
+records (a district with nothing to read, such as a pumpjack whose hole was broken) still becomes
+the district's latest sweep, so a deposit sampled in an older one reads as gone
+(docs/choices-oilgate.md OGC71).
 
 - The district's stock at the sweep's end is the sum of the inventories' latest samples. Inventories
   read earlier in the sweep lag by a fixed phase, which shifts a rate fit's intercept, never its slope.
@@ -114,7 +117,7 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
-| 0x0431 | IND_FIGHT | class 0 to 3 | 24 u64 district, 32 u32 attackers, 36 f32 attackerStrength, 40 u32 attackersKilled, 44 u32 blocksDestroyed, 48 u32 machinesDestroyed, 52 u32 guardsLost, 56 i64 itemsStolen, 64 i64 durationTicks | 72 |
+| 0x0431 | IND_FIGHT | class 0 to 4 | 24 u64 district, 32 u32 attackers, 36 f32 attackerStrength, 40 u32 attackersKilled, 44 u32 blocksDestroyed, 48 u32 machinesDestroyed, 52 u32 guardsLost, 56 i64 itemsStolen, 64 i64 durationTicks | 72 |
 | 0x0432 | IND_SURVEY | flags: 1 mobGriefing | 24 u64 district, 32 u32 revision, 36 u32 perimeterColumns, 40 u32 perimeterGaps, 44 u32 darkSpawnable, 48 u32 machineBlocks, 52 u32 roofedMachines (cover beyond roofReachBlocks), 56 u32 killMachinesAtGaps, 60 u32 ammoGood (0 none), 64 f32 turretStrength[4], 80 u32 guards[4], 96 u32 ammoPerEngagement, 100 u32 reserved | 104 |
 | 0x0433 | IND_SURVEY_BLOCKS | n blocks | 24 u64 district, 32 u32 revision, 36 u32 part (within the chunk), 40 i32 chunkX, 44 i32 chunkZ, 48 u32 flags (1 partial), 52 u32 reserved, 56 n × Block24 | 56 + 24n |
 
@@ -125,7 +128,9 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 - **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
   2 roofless, 4 machine, 8 boundary inventory, 16 roof: the top block over a roofed machine within
-  roofReachBlocks, OGB-7), 20 u32 inventory (0xFFFFFFFF none)`.
+  roofReachBlocks, OGB-7, 32 subterranean: a machine or inventory under at least 5 blocks of cover,
+  64 armoured: one standing on `#mic_rtsim:armoured_floor` within 4 blocks under it, or itself in
+  `#mic_rtsim:burrow_spared`, OG-9e), 20 u32 inventory (0xFFFFFFFF none)`.
 
 **Codes:**
 - **Port kinds:** 1 train cargo, 2 package, 3 player container session, 4 player toss, 5 player pickup,
@@ -135,8 +140,13 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 - **Not-learnable reasons** (INDUSTRY.md §6): 1 rotation crosses the boundary, 2 electric line crosses
   the boundary, 3 mixture not steady, 4 finite deposit unknown, 5 moving contraption, 6 spawn-fed
   farm; others are shown as "not learnable".
-- **Threat classes:** 0 ground melee, 1 ground ranged, 2 flying, 3 siege. The sampler maps entity
-  types to classes (zombies 0, skeletons 1, phantoms 2, creepers 3; the full table is the bridge's).
+- **Threat classes:** 0 ground melee, 1 ground ranged, 2 flying, 3 siege, 4 burrowing. The sampler
+  maps entity types to classes 0 to 3 (zombies 0, skeletons 1, phantoms 2, creepers 3; the full table
+  is the bridge's); IND_SPAWN_SAMPLE's spawns and IND_SURVEY's turretStrength and guards stay four
+  long, since nothing natural burrows and nothing on the surface stands in a burrower's way. Class 4
+  is the oil nests' Death Worms (OILGATE.md §4.6, OG-9e): they come up from below, past walls,
+  turrets and guards, take subterranean blocks first and then machines, never an armoured block,
+  and carry nothing off.
 
 ### 3.3 What each observation means to the engine
 
