@@ -1,8 +1,8 @@
 # Equilibrium and renewal: worlds that settle, and kinds that come back
 
 **Status:** design for Ben's review, 2026-10-21. Nothing is built and no engine code changes here.
-Ben approves this design before code. Ben answered EQ-1 to EQ-5 on 2026-10-21 (§5.1): EQ-1 to EQ-3 as
-recommended, EQ-4 (b), and EQ-5 rejected in favour of `CONFLICT-LIFE.md`; EQ-6 is still open. Branch `plan/equilibrium`, based on main `f20234e`.
+Ben approves this design before code. Ben answered EQ-1 to EQ-6 on 2026-10-21 (§5.1): EQ-1 to EQ-3 and EQ-6
+as recommended, EQ-4 (b), and EQ-5 rejected in favour of `CONFLICT-LIFE.md`. Branch `plan/equilibrium`, based on main `f20234e`.
 
 **Ben's request (2026-10-21):** "Ensuring worlds actually reach a nash equilibrium between tribes /
 animals, etc. It would also be nice if we had abilities for mobs to spawn back in. I.E. If the player
@@ -1037,14 +1037,9 @@ boss loot, how fights feel, an interface another plan must follow).
 | EQ-3 | Where does the site ledger live? | **(a) World SavedData `mic_rtsim_sites.dat`, beside `mic_rtsim_villages.dat`.** | §2.3 as written: one file, about 32 bytes a site, outside `world/rtsim/`. |
 | EQ-4 | How fast does a killed Frostmaw come back? | **(b) MOWZIE's 6 days, doubling with pressure** (not the recommended 24). | `min(192, 6 x 2^P)`: 12 days after a first kill, about 1.8 a year farmed (§3.3: 1.79 closed form, the model 1.83), a world-wide wipe back within one 24-day census (§3.6). §1.1, §1.2, §2.4.7, §2.6 and §3.3 carry the base-6 numbers; MOWZIE.md is being changed to match by its own author. |
 | EQ-5 | When do factions fight? | **None of (a), (b) or (c).** "All of these systems feel a bit too formulaic, come up with something that feels more life like." Scope: only faction fighting; renewal and pressure stay as designed here. | `CONFLICT-LIFE.md` is the redesign and replaces §2.5; §3.5 stays as the measurement of (a) and (c) it compares against. Camps keep §2.4.5's pressure, break and refound. |
+| EQ-6 | One renewal rule for every kind, in `rtsim-kernel`? | **(a) Yes: one shared rule in `rtsim-kernel::renewal`.** | §2.2 as written: `rtsim-kernel::renewal` owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it with its own numbers. |
 
-**Open.**
-
-| Id | Question | Options | Why it is Ben's |
-|---|---|---|---|
-| EQ-6 | **One renewal rule for every kind, in `rtsim-kernel`?** | (a) **Yes (Recommended):** `rtsim-kernel::renewal` (§2.2) owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it, with its own numbers. (b) Each engine keeps its own rule, and only the event contract (§2.2) is shared. (c) Pressure only for boss sites (lairs, dens, the Umvuthi); everything else keeps a flat refill. | It is an interface that binds MOWZIE.md and every later species plan. |
-
-**The options as put to Ben (EQ-1 to EQ-5).**
+**The options as put to Ben (EQ-1 to EQ-6).**
 
 | Id | Question | Options | Why it is Ben's |
 |---|---|---|---|
@@ -1053,6 +1048,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | EQ-3 | **Where does the site ledger live?** | (a) **World SavedData `mic_rtsim_sites.dat`, beside `mic_rtsim_villages.dat` (Recommended):** one file, about 32 bytes a site, outside `world/rtsim/`, so a reset keeps it and an uninstall leaves one inert file. (b) A NeoForge data attachment on each site's chunk: travels with the chunk, but is read only when the chunk loads, and vanilla strips unknown attachments while rtsim is out (the reconcile-marker problem UR-1 describes). (c) No ledger: a site found empty after a reset waits the cap (192 days); a member that died away from its unloaded home comes back after a reset. | It is a format in the world save, and it decides what a reset can mint. |
 | EQ-4 | **How fast does a killed Frostmaw come back?** (the base of the den's delay; MOWZIE's MZ-4 (a) states 6 days and defers to this, §2.6 item 5) | (a) **24 days, doubling with pressure (Recommended):** 48 days after the first kill, about one a year farmed. (b) MOWZIE's 6 days, doubling with pressure: 12 days after the first kill, about 1.8 a year farmed. (c) MOWZIE's draft, 6 days flat: 12 to 16 a year farmed. | The Frostmaw is a boss whose drops are loot; this sets their supply. |
 | EQ-5 | **When do factions fight?** | (a) **The gate (Recommended):** a war party goes out only when it is worth sending against what the faction believes of the target; terms first; scouts every 48 days otherwise. A fortress sees scouts, never raids. Camps at strength also stop fighting each other: background feuds fall from 2 to 20 a world-year to 0 to 0.34 (§3.6), and a camp falls on a neighbour only once something has thinned it. (b) The gate plus one glory raid a season whenever grievance is at the raid rung, worth or not, and one raid a season on a hated neighbour camp, so a strong base still gets fights to win and the background wars go on; each costs the camp warriors it then recruits back. (c) Today's ladder: every rung in turn, with no check that a party can win. | It changes what a player who builds a strong base experiences ((a) gives him quiet, (b) a fight a season), and whether the world has wars of its own when no player is near. |
+| EQ-6 | **One renewal rule for every kind, in `rtsim-kernel`?** | (a) **Yes (Recommended):** `rtsim-kernel::renewal` (§2.2) owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it, with its own numbers. (b) Each engine keeps its own rule, and only the event contract (§2.2) is shared. (c) Pressure only for boss sites (lairs, dens, the Umvuthi); everything else keeps a flat refill. | It is an interface that binds MOWZIE.md and every later species plan. |
 
 ### 5.2 Decided here (each can be undone)
 
