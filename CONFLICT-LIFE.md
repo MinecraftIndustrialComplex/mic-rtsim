@@ -324,7 +324,7 @@ that was at least a quarter of it.
 | Demand | a player | an envoy with guards asking the culture's tribute good (goblin emerald, Umvuthana gold) | today's Envoy party, ENVOY_MATERIALIZE (0x8802) and `Demand`; MOWZIE.md §4.5 |
 | Band | a village, a camp, a player | a small party (today's plunder party) | today's Plunder party kind |
 | Raid | a village, a camp, a player | today's Raid party | today's Raid |
-| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it and falls if it is destroyed. The Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), and there is no Umvuthana invasion while the grove has no Umvuthi. Riding with the band, its 5.0 is added: 12.6 for a full invasion (MZ-3 (b); MOWZIE.md §4.5 under MZ-15) | today's Invasion; the chief's stack (MOWZIE.md ledger 4) |
+| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it and falls if it is destroyed. The Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), and there is no Umvuthana invasion while the grove has no Umvuthi. Going with the band, its 5.0 is added: 12.6 for a full invasion (MZ-3 (b); MOWZIE.md §4.5 under MZ-15) | today's Invasion; the chief's stack (MOWZIE.md ledger 4) |
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets the share of the camp out hunting (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk and AMBUSH_SPOT, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.15) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
@@ -370,7 +370,7 @@ Every escalation has a brake that comes from the state, not a cap:
   defenders (2.1), which feeds the defender's grievance and pride.
 - **Wins.** A won fight halves the grievance and takes most of the wound away: vengeance sated.
 - **The walk home.** Survivors are on the road home for 1 to 3 days (MOWZIE.md §4.16's pace, about
-  480 blocks a day), and a chief who led and won rides back with them. Until they are home the camp's
+  480 blocks a day), and a chief who led and won comes back with them. Until they are home the camp's
   defence and its next muster lack them, and a grove lacks the Umvuthi's 5.0.
 - **Pressure.** Members killed by a player slow recruits (EQUILIBRIUM.md §2.4.5).
 - **Hunger and seasons.** A fed camp values loot little: most fights come in winter and after bad
