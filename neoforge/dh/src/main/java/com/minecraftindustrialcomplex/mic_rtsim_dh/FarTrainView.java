@@ -1,0 +1,360 @@
+package com.minecraftindustrialcomplex.mic_rtsim_dh;
+
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarKey;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
+import com.seibel.distanthorizons.api.DhApi;
+import com.seibel.distanthorizons.api.enums.rendering.EDhApiBlockMaterial;
+import com.seibel.distanthorizons.api.interfaces.render.IDhApiCustomRenderObjectFactory;
+import com.seibel.distanthorizons.api.interfaces.render.IDhApiCustomRenderRegister;
+import com.seibel.distanthorizons.api.interfaces.render.IDhApiRenderableBoxGroup;
+import com.seibel.distanthorizons.api.interfaces.world.IDhApiLevelWrapper;
+import com.seibel.distanthorizons.api.methods.events.sharedParameterObjects.DhApiRenderParam;
+import com.seibel.distanthorizons.api.objects.math.DhApiVec3d;
+import com.seibel.distanthorizons.api.objects.render.DhApiRenderableBox;
+import java.awt.Color;
+import java.io.Closeable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.phys.Vec3;
+
+/**
+ * The far view of trains: one DH group per carriage, moved by one controller per frame
+ * (research/distant-horizons-2026-10-21.md §4.1, §5, §6.4).
+ *
+ * <ul>
+ *   <li><b>One relative group per carriage</b>, its boxes cut by {@link StaircaseCutter} around the run's
+ *       midpoint. Each frame the controller moves the origin to the carriage's interpolated midpoint, which
+ *       DH treats as a uniform; the boxes are cut again only when {@link HeadingRule} says the run turned,
+ *       paced by {@link RecutPacer}.</li>
+ *   <li><b>One controller</b> in {@code DhApiBeforeGenericRenderSetupEvent}, run once per frame (DH fires
+ *       that event for both of its generic passes). Groups carry no lambdas of their own.</li>
+ *   <li><b>The hide test</b> (§5): a carriage is not drawn while the client has its real carriage entity, or
+ *       while its midpoint is in a chunk the client has loaded (vanilla draws over DH there, so a proxy would
+ *       show only where vanilla draws sky).</li>
+ *   <li><b>The budget</b> ({@link FarDetail}): the nearest visible carriages are drawn, up to the tier's
+ *       groups and boxes; hidden ones keep their group, inactive, until the registered budget needs it.</li>
+ *   <li><b>The register</b> is the one of the level being drawn, from the render parameter (§3.1). DH closes a
+ *       level's groups with the level, so a new level (or a level load or unload event, or leaving the world)
+ *       starts a fresh set.</li>
+ * </ul>
+ *
+ * <p>Everything here runs on the render thread, except {@link #levelChanged()}, which only sets a flag.
+ */
+final class FarTrainView {
+    static final String GROUP_NAME = MicRtsimDh.MODID + ":carriage";
+    /** A carriage far away: 3 wide, 3 tall, 1 block past each bogey point (research note §4.1). */
+    static final double WIDTH = 3.0, HEIGHT = 3.0, OVERHANG = 1.0;
+    /** How long a carriage nobody sees keeps its group before it is released. */
+    private static final long FORGET_NANOS = 10_000_000_000L;
+
+    private static final Map<FarKey, Proxy> PROXIES = new HashMap<>();
+    private static final Map<Integer, Color> COLOURS = new HashMap<>();
+    private static final List<Candidate> CANDIDATES = new ArrayList<>();
+    private static final double[] SEG = new double[6];
+    private static final DhApiVec3d ORIGIN = new DhApiVec3d(0, 0, 0);
+
+    private static volatile IDhApiCustomRenderRegister register;
+    private static volatile boolean levelChanged;
+    private static long frame;
+    private static long updatedFrame = -1;
+    private static int errors;
+
+    // What the last frame did, for the log and the bench
+    static int lastActive, lastBoxes, lastRegistered, lastHidden, lastCandidates;
+    static long recuts, confirms, creations, releases;
+    static long controllerNanos, controllerFrames;
+
+    private FarTrainView() {}
+
+    /** One carriage's group and the run its boxes were cut for. */
+    private static final class Proxy {
+        final FarKey key;
+        final IDhApiRenderableBoxGroup group;
+        final RecutPacer pacer = new RecutPacer();
+        double cutX, cutY, cutZ;
+        int boxCount;
+        int rgb;
+        long wantedAt;
+        long touchedFrame = -1;
+        boolean active;
+
+        Proxy(FarKey key, IDhApiRenderableBoxGroup group) {
+            this.key = key;
+            this.group = group;
+        }
+
+        void setActive(boolean on) {
+            if (active != on) {
+                group.setActive(on);
+                active = on;
+            }
+        }
+    }
+
+    private record Candidate(FarMover mover, double lx, double ly, double lz, double tx, double ty, double tz,
+            double distanceSq) {
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Events
+
+    /** A new frame (NeoForge's RenderFrameEvent.Pre): the controller runs at most once per frame. */
+    static void newFrame() {
+        frame++;
+    }
+
+    /** Frames counted so far. */
+    static long frame() {
+        return frame;
+    }
+
+    /** A DH level with a render register loaded: the next frame releases every group and starts over. */
+    static void levelChanged() {
+        levelChanged = true;
+    }
+
+    /**
+     * A DH level unloaded (on whatever thread DH fires it): if it is the one drawn (or it no longer says), the
+     * next frame releases every group. Another level's unload (a single-player server level) changes nothing.
+     */
+    static void levelUnloaded(IDhApiCustomRenderRegister reg) {
+        if (reg == null || reg == register)
+            levelChanged = true;
+    }
+
+    /** DhApiBeforeGenericRenderSetupEvent: fired twice a frame (the SSAO pass and the other); acts once. */
+    static void beforeSetup(DhApiRenderParam param) {
+        if (frame == updatedFrame)
+            return;
+        updatedFrame = frame;
+        long t0 = System.nanoTime();
+        try {
+            update(param, t0);
+        } catch (RuntimeException | LinkageError e) {
+            // Never take DH's frame down; say what broke, a few times
+            if (errors++ < 5)
+                MicRtsimDh.LOGGER.error("mic_rtsim_dh: far train view failed this frame", e);
+        }
+        controllerNanos += System.nanoTime() - t0;
+        controllerFrames++;
+    }
+
+    /** The client left its world: release every group now (on the render thread, which is the client's). */
+    static void releaseAll() {
+        Iterator<Proxy> it = PROXIES.values().iterator();
+        while (it.hasNext()) {
+            release(it.next());
+            it.remove();
+        }
+        register = null;
+        lastActive = lastBoxes = lastRegistered = lastHidden = lastCandidates = 0;
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // The controller
+
+    private static void update(DhApiRenderParam param, long now) {
+        if (levelChanged) {
+            levelChanged = false;
+            releaseAll();
+        }
+        if (!FarGates.ready()) {
+            if (!PROXIES.isEmpty())
+                releaseAll();
+            return;
+        }
+        IDhApiLevelWrapper wrapper = param.clientLevelWrapper;
+        IDhApiCustomRenderRegister reg = wrapper == null ? null : wrapper.getRenderRegister();
+        IDhApiCustomRenderObjectFactory factory = DhApi.Delayed.customRenderObjectFactory;
+        Minecraft mc = Minecraft.getInstance();
+        ClientLevel level = mc.level;
+        if (reg == null || factory == null || level == null)
+            return;
+        if (reg != register) {
+            releaseAll();
+            register = reg;
+        }
+
+        FarDetail tier = DhFarConfig.detail();
+        StaircaseCutter.Shape shape = new StaircaseCutter.Shape(WIDTH, HEIGHT, OVERHANG, tier.step);
+        String dimension = level.dimension().location().toString();
+        Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
+        double radius = FarGates.radiusBlocks();
+        double radiusSq = radius * radius;
+        double clock = FarClock.ticks() + param.partialTicks;
+
+        // Who could be drawn: in this level, inside DH's radius, and not hidden
+        CANDIDATES.clear();
+        int hidden = 0;
+        for (FarMover m : FarObjects.movers()) {
+            if (m.kind() != FarKind.CARRIAGE || !dimension.equals(m.dimension()))
+                continue;
+            m.segmentAt(clock, SEG);
+            double mx = (SEG[0] + SEG[3]) / 2.0, mz = (SEG[2] + SEG[5]) / 2.0;
+            double dx = mx - cam.x, dz = mz - cam.z;
+            double d2 = dx * dx + dz * dz;
+            if (!(d2 <= radiusSq))
+                continue;
+            Proxy p = PROXIES.get(m.key());
+            if (p != null)
+                p.wantedAt = now;
+            if (m.real() || level.getChunkSource().hasChunk(SectionPos.blockToSectionCoord(mx),
+                    SectionPos.blockToSectionCoord(mz))) {
+                hidden++;
+                continue;
+            }
+            CANDIDATES.add(new Candidate(m, SEG[0], SEG[1], SEG[2], SEG[3], SEG[4], SEG[5], d2));
+        }
+        CANDIDATES.sort((a, b) -> Double.compare(a.distanceSq, b.distanceSq));
+
+        // The nearest, within the tier's budget
+        int active = 0, boxes = 0;
+        for (Candidate c : CANDIDATES) {
+            if (active >= tier.activeGroups)
+                break;
+            FarMover m = c.mover;
+            double rx = c.lx - c.tx, ry = c.ly - c.ty, rz = c.lz - c.tz;
+            ORIGIN.x = (c.lx + c.tx) / 2.0;
+            ORIGIN.y = (c.ly + c.ty) / 2.0;
+            ORIGIN.z = (c.lz + c.tz) / 2.0;
+            Proxy p = PROXIES.get(m.key());
+            if (p == null) {
+                List<double[]> cut = StaircaseCutter.cut(rx, ry, rz, shape);
+                if (cut.isEmpty() || boxes + cut.size() > tier.boxes)
+                    continue;
+                if (PROXIES.size() >= tier.registeredGroups && !releaseOneUnseen())
+                    continue;
+                p = create(factory, m, cut, rx, ry, rz, now);
+                if (p == null)
+                    continue;
+            } else {
+                if (boxes + p.boxCount > tier.boxes)
+                    continue;
+                if (p.rgb != m.rgb() || HeadingRule.needsRecut(p.cutX, p.cutY, p.cutZ, rx, ry, rz)) {
+                    if (p.pacer.mayCut(now))
+                        recut(p, m, StaircaseCutter.cut(rx, ry, rz, shape), rx, ry, rz, now);
+                } else if (p.pacer.confirmDue(now)) {
+                    p.group.triggerBoxChange();
+                    confirms++;
+                }
+                p.group.setOriginBlockPos(ORIGIN);
+            }
+            p.touchedFrame = frame;
+            p.wantedAt = now;
+            p.setActive(true);
+            active++;
+            boxes += p.boxCount;
+        }
+
+        // Everything not drawn this frame goes dark; what nobody has wanted for a while is released
+        Iterator<Proxy> it = PROXIES.values().iterator();
+        while (it.hasNext()) {
+            Proxy p = it.next();
+            if (p.touchedFrame == frame)
+                continue;
+            p.setActive(false);
+            if (now - p.wantedAt > FORGET_NANOS) {
+                release(p);
+                it.remove();
+            }
+        }
+        lastActive = active;
+        lastBoxes = boxes;
+        lastRegistered = PROXIES.size();
+        lastHidden = hidden;
+        lastCandidates = CANDIDATES.size();
+        CANDIDATES.clear();
+    }
+
+    private static Proxy create(IDhApiCustomRenderObjectFactory factory, FarMover m, List<double[]> cut,
+            double rx, double ry, double rz, long now) {
+        IDhApiRenderableBoxGroup group = factory.createRelativePositionedGroup(GROUP_NAME,
+                new DhApiVec3d(ORIGIN.x, ORIGIN.y, ORIGIN.z), boxes(cut, m.rgb()));
+        try {
+            register.add(group);
+        } catch (IllegalArgumentException e) {
+            close(group);
+            return null;
+        }
+        Proxy p = new Proxy(m.key(), group);
+        p.active = group.isActive();
+        p.cutX = rx;
+        p.cutY = ry;
+        p.cutZ = rz;
+        p.boxCount = cut.size();
+        p.rgb = m.rgb();
+        p.pacer.cut(now);
+        PROXIES.put(m.key(), p);
+        creations++;
+        return p;
+    }
+
+    private static void recut(Proxy p, FarMover m, List<double[]> cut, double rx, double ry, double rz, long now) {
+        if (cut.isEmpty())
+            return;
+        p.group.clear();
+        p.group.addAll(boxes(cut, m.rgb()));
+        p.group.triggerBoxChange();
+        p.cutX = rx;
+        p.cutY = ry;
+        p.cutZ = rz;
+        p.boxCount = cut.size();
+        p.rgb = m.rgb();
+        p.pacer.cut(now);
+        recuts++;
+    }
+
+    /** Releases the group that has gone unwanted the longest, if any is not drawn this frame. */
+    private static boolean releaseOneUnseen() {
+        Proxy oldest = null;
+        for (Proxy p : PROXIES.values())
+            if (p.touchedFrame != frame && (oldest == null || p.wantedAt < oldest.wantedAt))
+                oldest = p;
+        if (oldest == null)
+            return false;
+        release(oldest);
+        PROXIES.remove(oldest.key);
+        return true;
+    }
+
+    private static List<DhApiRenderableBox> boxes(List<double[]> cut, int rgb) {
+        Color colour = COLOURS.computeIfAbsent(rgb, Color::new);
+        List<DhApiRenderableBox> out = new ArrayList<>(cut.size());
+        for (double[] b : cut)
+            out.add(new DhApiRenderableBox(new DhApiVec3d(b[0], b[1], b[2]), new DhApiVec3d(b[3], b[4], b[5]),
+                    colour, EDhApiBlockMaterial.METAL));
+        return out;
+    }
+
+    private static void release(Proxy p) {
+        if (register != null) {
+            try {
+                register.remove(p.group.getId());
+            } catch (RuntimeException e) {
+                // The level's renderer is closing; DH drops its map with it
+            }
+        }
+        close(p.group);
+        releases++;
+    }
+
+    /** DH's remove does not free the group's buffers; RenderableBoxGroup is Closeable and queues that. */
+    private static void close(IDhApiRenderableBoxGroup group) {
+        if (group instanceof Closeable c) {
+            try {
+                c.close();
+            } catch (Exception e) {
+                // Freeing is best effort; the level's close frees the rest
+            }
+        }
+    }
+}

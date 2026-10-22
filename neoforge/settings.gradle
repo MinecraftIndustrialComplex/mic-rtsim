@@ -34,3 +34,7 @@ include 'powergrid'         // mic_rtsim_powergrid: batteries and power links (I
 include 'destroy'           // mic_rtsim_destroy: pollution attribution (I14) and crude oil (I11)
 include 'climate'           // mic_rtsim_climate: seasons and temperature (I12)
 include 'radar'             // mic_rtsim_radar: radar turrets in the defence survey (I21)
+
+// The far view (research/distant-horizons-2026-10-21.md §6.1; DECISIONS.md DH-1, DH-2): client only, compiled
+// against the pack's Distant Horizons jar. Not in the pack yet.
+include 'dh'                // mic_rtsim_dh: Distant Horizons 3.3.3, far trains as DH boxes
