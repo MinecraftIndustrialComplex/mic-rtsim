@@ -66,28 +66,30 @@ public final class FarDragonFeedGameTests {
         List<FarWire.Message> got = new CopyOnWriteArrayList<>();
         int[] handle = {-1}, entity = {-1}, before = {0};
         AtomicBoolean cleaned = new AtomicBoolean();
-        Runnable cleanup = () -> {
+        Runnable release = () -> {
             if (cleaned.getAndSet(true))
                 return;
             FarFeed.unsubscribe(w);
             FarFeed.setSink(null);
             FarFeed.setPlayers(null);
             FakePlayers.remove(watcher);
-            unforce.run();
         };
-        // Passed or failed, the server-wide hooks, the watcher and the forced chunks go
+        // Passed or failed, the server-wide hooks and the watcher go. Never the forced chunks here: the batch's
+        // own listener runs first, un-forces every chunk and places the next batch, so un-forcing ours from a
+        // listener would un-force the next test's chunks and leave it waiting for them for ever. On a pass the
+        // sequence's last step un-forces them, before the batch ends.
         helper.testInfo.addListener(new GameTestListener() {
             @Override
             public void testStructureLoaded(GameTestInfo info) {}
 
             @Override
             public void testPassed(GameTestInfo info, GameTestRunner runner) {
-                cleanup.run();
+                release.run();
             }
 
             @Override
             public void testFailed(GameTestInfo info, GameTestRunner runner) {
-                cleanup.run();
+                release.run();
             }
 
             @Override
@@ -174,6 +176,10 @@ public final class FarDragonFeedGameTests {
                                 goneAt - lastSample >= (long) FarView.GRACE_SWEEPS * FarFeed.INTERVAL_TICKS);
                     record(test, "departed", gone ? "gone " + (goneAt - lastSample) + " ticks after its last sample"
                             : "the engine's leg on the same handle, entity -1");
+                })
+                .thenExecute(() -> {
+                    release.run();
+                    unforce.run();
                 })
                 .thenSucceed();
     }
