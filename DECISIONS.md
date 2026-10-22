@@ -105,7 +105,7 @@ These are in PLAN.md but not decided. Each one goes to Ben before work depends o
 | P9 | Economy details left open by C13: the tunables r, T and k; a Numismatics mint rule (later). | phase 1 design gate |
 | I1 | How Create schematics and the Schematicannon fit rebuilding: whether the sim records a schematic snapshot per district. Ben chose "Decide later". | industry threats |
 | P10 | The fixes from the 2026-10-19 adversarial review that change the design, listed in PLAN.md. | phase 0 |
-| SEC-1d | SECTIONS.md: the SEC-1 design (districts joined only by physical joins and cut at chain conveyors; a chain between districts is a package store owned by no district; a shaft network across districts is shared, each district reporting its own part; sections cut at stores, each with its own window, verdict, staleness by node box and freeze; flows into shared stores counted at Create's movers). Nothing is built until Ben answers its §12 questions (six). | SEC-1 build |
+| SEC-1d | SECTIONS.md: the SEC-1 design (first, neither the compile nor Create's chain and network lookups load a chunk; districts joined only by physical joins and cut at chain conveyors; a chain between districts is a package store owned by no district, with packages held in the world at the edge of a loaded side; a shaft network across districts is shared, each district reporting its own part; sections cut at stores, each with its own window, verdict, staleness by node box and freeze; flows into shared stores counted at Create's movers). Nothing is built until Ben answers its §12 questions (six). | SEC-1 build |
 
 ## Overnight choices (Claude, for Ben's review)
 
