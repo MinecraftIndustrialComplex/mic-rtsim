@@ -87,6 +87,12 @@ usage:
       player is offline, applied on load), tribute and converter (de-escalation), and a save and
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
       Exits 1 if a check fails.
+  rtsim-cli sim census [--scenario all|ecology,ships,conflict] [--days N] [--every N] [--seed S]
+      The who-is-alive census (EQUILIBRIUM.md S1): each scenario's synthetic world with nobody
+      watching, one fixed-width line per kind of site every N days (default 24, for 960 days):
+      sites, members, capacity, short, empty, broken, mean pressure, renewals since the last
+      line. ecology: lairs, oil nests and herds; ships: the pirate haven; conflict: the camp;
+      each with its world's villages.
   rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until N|Nd|@N|@Nd] [--season-days N]
                 [--view [addr]] [--socket PATH] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
       The headless host (VIEWER.md §12): exports <world> into <dir> (or resumes the fork there),
@@ -266,6 +272,7 @@ fn main() -> ExitCode {
         ["sim", "dragons", rest @ ..] => sim::dragons::cli(rest),
         ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
+        ["sim", "census", rest @ ..] => sim::census::cli(rest),
         ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
