@@ -84,7 +84,9 @@ class IndustryWireContractTest {
             // overnight agent 14: the plugin, threat and level-store records
             "IND_DEPOSIT_SAMPLE", "IND_CONDITIONS", "IND_POWER_LINK", "IND_PACKAGE",
             "IND_SPAWN_SAMPLE", "IND_FIGHT", "IND_SURVEY", "IND_SURVEY_BLOCKS",
-            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
+            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE",
+            // stress worlds' station fixes (SG30, SG32)
+            "IND_TRAIN_ARRIVED_APPROACH", "IND_STATION_PORTS");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -118,6 +120,8 @@ class IndustryWireContractTest {
                 "PlayerPickup", IndRecords.Port.PLAYER_PICKUP, "StockBroken", IndRecords.Port.STOCK_BROKEN,
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
+        group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
+                "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",
                 "RotationCrossesBoundary", IndRecords.NotLearnable.ROTATION_CROSSES,
                 "ElectricLineCrossesBoundary", IndRecords.NotLearnable.ELECTRIC_LINE_CROSSES,
@@ -579,15 +583,26 @@ class IndustryWireContractTest {
                         .put64("op", IndRecords.Port.OP_ID, op)
                         .entries(IndRecords.Port.ENTRIES, f, "entry", c);
             }
-            case "IND_TRAIN_ARRIVED": {
+            case "IND_TRAIN_ARRIVED":
+            case "IND_TRAIN_ARRIVED_APPROACH": {
                 int size = IndRecords.Train.ARRIVED_CARRIAGES + carriagesSize(f);
                 return journaled(n, IndRecords.IND_TRAIN_ARRIVED, size, f.count("n_carriages"), f)
                         .put64("train", IndRecords.Train.TRAIN, f.u64("train"))
                         .put64("station", IndRecords.Train.STATION, f.u64("station"))
                         .put64("district", IndRecords.Train.DISTRICT, f.u64("district"))
-                        .put32("simulated", IndRecords.Train.ARRIVED_FLAGS,
-                                f.bool("simulated") ? IndRecords.Train.FLAG_SIMULATED : 0)
+                        .put32("simulated, cargo_from", IndRecords.Train.ARRIVED_FLAGS,
+                                (f.bool("simulated") ? IndRecords.Train.FLAG_SIMULATED : 0)
+                                        | code("cargo_from", f.sym("cargo_from")))
                         .carriages(IndRecords.Train.ARRIVED_CARRIAGES, f);
+            }
+            case "IND_STATION_PORTS": {
+                int c = f.count("n_inventories");
+                Rec r = journaled(n, IndRecords.IND_STATION_PORTS, IndRecords.StationPorts.size(c), c, f)
+                        .put64("station", IndRecords.StationPorts.STATION, f.u64("station"))
+                        .put64("district", IndRecords.StationPorts.DISTRICT, f.u64("district"));
+                for (int i = 0; i < c; i++)
+                    r.put32("inventory" + i, IndRecords.StationPorts.INVENTORIES + 4 * i, f.u32("inventory" + i));
+                return r;
             }
             case "IND_TRAIN_DEPARTED": {
                 int size = IndRecords.Train.DEPARTED_CARRIAGES + carriagesSize(f);
