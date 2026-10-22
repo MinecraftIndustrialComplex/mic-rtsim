@@ -66,6 +66,9 @@ public final class FarFeed {
 
     // Totals since the server started, for /rtsim perf and the bench
     static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
+    /** The sweeps after the first {@link #WARM_SWEEPS} (class loading and the JIT), for the bench. */
+    static long warmSweeps, warmNanos;
+    static final int WARM_SWEEPS = 10;
 
     private FarFeed() {}
 
@@ -164,8 +167,9 @@ public final class FarFeed {
     /** One line for /rtsim perf. */
     public static String describe() {
         return SUBS.size() + " subscribers, " + SOURCES.size() + " sources; " + sweeps + " sweeps ("
-                + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each, at most " + sweepMaxNanos / 1000
-                + " us), " + messages + " messages, " + bytes
+                + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each, "
+                + (warmSweeps == 0 ? 0 : warmNanos / warmSweeps / 1000) + " us each after the first " + WARM_SWEEPS
+                + ", at most " + sweepMaxNanos / 1000 + " us), " + messages + " messages, " + bytes
                 + " bytes, " + records + " records";
     }
 
@@ -178,7 +182,10 @@ public final class FarFeed {
         long took = System.nanoTime() - t0;
         sweepNanos += took;
         sweepMaxNanos = Math.max(sweepMaxNanos, took);
-        sweeps++;
+        if (++sweeps > WARM_SWEEPS) {
+            warmSweeps++;
+            warmNanos += took;
+        }
     }
 
     private static void onLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
@@ -191,7 +198,7 @@ public final class FarFeed {
         SUBS.clear();
         sink = NETWORK;
         players = null;
-        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = 0;
+        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = 0;
     }
 
     /** One sweep over every subscriber (a test calls it directly). */
