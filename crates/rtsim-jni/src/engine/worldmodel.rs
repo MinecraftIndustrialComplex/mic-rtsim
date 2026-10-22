@@ -26,9 +26,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use rtsim_ecology::herds::habitat::{
-    FoundingTunables, HabitatClimate, RegionPlan, plan_region,
-};
+use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, RegionPlan, plan_region};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::page::{PageKey, PageStore, SaveBatch};
 use rtsim_space::habitat::{DICT_BIOME, HABITAT, HabitatRecord, KNOWN_END, KnownRecord};

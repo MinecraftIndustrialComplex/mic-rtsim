@@ -219,7 +219,10 @@ pub(super) fn enabled(st: &State) -> bool {
 /// second herd for a region; EQUILIBRIUM.md §2.4.2: the herds renew a range they hold, so the
 /// world model founds each one once). One region index read, not a scan of the herds.
 pub(super) fn has_range(st: &State, k: rtsim_space::RegionKey) -> bool {
-    !st.herds.engine.range_herds((k.frame, k.rx, k.rz)).is_empty()
+    !st.herds
+        .engine
+        .range_herds((k.frame, k.rx, k.rz))
+        .is_empty()
 }
 
 /// A herd founded from the world model (`worldmodel::simulate`, X2-11): added at the herds'

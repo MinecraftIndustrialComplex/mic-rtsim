@@ -322,10 +322,22 @@ mod tests {
     fn print_refills(what: &str, rs: &[Refill]) {
         let b = |f: &dyn Fn(&Refill) -> f64| band(&rs.iter().map(f).collect::<Vec<_>>());
         println!("{what} over {} seeds, median [5th, 95th]:", rs.len());
-        println!("  days to half the year before:  {:?}", b(&|r| days(r.half)));
-        println!("  days to 90% of the control:    {:?}", b(&|r| days(r.ninety_ctrl)));
-        println!("  days to every range alive:     {:?}", b(&|r| days(r.all_alive)));
-        println!("  last year over the control:    {:?}", b(&|r| r.end_over_ctrl));
+        println!(
+            "  days to half the year before:  {:?}",
+            b(&|r| days(r.half))
+        );
+        println!(
+            "  days to 90% of the control:    {:?}",
+            b(&|r| days(r.ninety_ctrl))
+        );
+        println!(
+            "  days to every range alive:     {:?}",
+            b(&|r| days(r.all_alive))
+        );
+        println!(
+            "  last year over the control:    {:?}",
+            b(&|r| r.end_over_ctrl)
+        );
         println!(
             "  never half: {}, never 90% of the control: {}, a range empty at the end: {}",
             rs.iter().filter(|r| r.half.is_none()).count(),
@@ -366,10 +378,18 @@ mod tests {
             assert_eq!(s.alive, s.ranges, "{j:?}: {s:?}");
         }
         let (on1, on4, off1, off4) = (got[0].fill, got[1].fill, got[2].fill, got[3].fill);
-        println!("N/K: density term {on1:.3} and {on4:.3}, births as before {off1:.3} and {off4:.3}");
-        assert!((on1 - on4).abs() <= 0.1, "density term: {on1:.3} and {on4:.3}");
+        println!(
+            "N/K: density term {on1:.3} and {on4:.3}, births as before {off1:.3} and {off4:.3}"
+        );
+        assert!(
+            (on1 - on4).abs() <= 0.1,
+            "density term: {on1:.3} and {on4:.3}"
+        );
         assert!(on1 < 1.0 && on4 < 1.0, "{on1:.3} {on4:.3}");
-        assert!(off1 > 2.0 && off4 > off1, "births as before: {off1:.3} and {off4:.3}");
+        assert!(
+            off1 > 2.0 && off4 > off1,
+            "births as before: {off1:.3} and {off4:.3}"
+        );
     }
 
     /// §3.7's forage sweep on the whole grid, seeds 1 to 30: headroom 1, 1.5 and 4 give one
@@ -393,7 +413,12 @@ mod tests {
         });
         let mut medians = Vec::new();
         for (i, x) in xs.iter().enumerate() {
-            let fills: Vec<f64> = got.iter().skip(i).step_by(xs.len()).map(|s| s.fill).collect();
+            let fills: Vec<f64> = got
+                .iter()
+                .skip(i)
+                .step_by(xs.len())
+                .map(|s| s.fill)
+                .collect();
             let b = band(&fills);
             println!("headroom {x}: N/K {b:?}");
             medians.push(b.0);
@@ -418,7 +443,14 @@ mod tests {
     /// from anywhere else (the invariants, checked at the end of both runs).
     #[test]
     fn kill_all_herds() {
-        let r = wipe_run(&Grid::spawn(), 1, Ecology::herd_tunables(), Wipe::World, 2 * YEAR, 6 * YEAR);
+        let r = wipe_run(
+            &Grid::spawn(),
+            1,
+            Ecology::herd_tunables(),
+            Wipe::World,
+            2 * YEAR,
+            6 * YEAR,
+        );
         print_refills("world wipe, 3 x 3", std::slice::from_ref(&r));
         assert!(r.killed > 0 && r.pre > 0.0, "{r:?}");
         assert!(r.frontier >= 2, "{r:?}");
@@ -433,7 +465,14 @@ mod tests {
     #[ignore]
     fn kill_all_herds_30_seeds() {
         let rs = par_map(&seeds(), threads(), |&seed| {
-            wipe_run(&Grid::world(), seed, Ecology::herd_tunables(), Wipe::World, 10 * YEAR, 40 * YEAR)
+            wipe_run(
+                &Grid::world(),
+                seed,
+                Ecology::herd_tunables(),
+                Wipe::World,
+                10 * YEAR,
+                40 * YEAR,
+            )
         });
         print_refills("world wipe", &rs);
         for r in &rs {
@@ -446,7 +485,14 @@ mod tests {
     /// within two springs.
     #[test]
     fn local_wipe_refills_from_neighbours() {
-        let r = wipe_run(&Grid::spawn(), 1, Ecology::herd_tunables(), Wipe::Centre, 2 * YEAR, 2 * YEAR);
+        let r = wipe_run(
+            &Grid::spawn(),
+            1,
+            Ecology::herd_tunables(),
+            Wipe::Centre,
+            2 * YEAR,
+            2 * YEAR,
+        );
         print_refills("centre wipe, 3 x 3", std::slice::from_ref(&r));
         assert!(r.killed > 0, "{r:?}");
         assert!(r.recolonised >= 1, "{r:?}");
@@ -461,7 +507,14 @@ mod tests {
     #[ignore]
     fn local_wipe_refills_from_neighbours_30_seeds() {
         let rs = par_map(&seeds(), threads(), |&seed| {
-            wipe_run(&Grid::world(), seed, Ecology::herd_tunables(), Wipe::Local, 10 * YEAR, 40 * YEAR)
+            wipe_run(
+                &Grid::world(),
+                seed,
+                Ecology::herd_tunables(),
+                Wipe::Local,
+                10 * YEAR,
+                40 * YEAR,
+            )
         });
         print_refills("local wipe", &rs);
         for r in &rs {

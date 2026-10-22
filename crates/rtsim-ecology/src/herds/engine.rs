@@ -611,8 +611,7 @@ impl Herds {
         for (h, x) in self.herds.iter() {
             c.site(self.count(h, self.now), x.k, false, 0.0);
         }
-        c.renewals =
-            self.stats.breedings + self.stats.frontier_foundings + self.stats.recolonised;
+        c.renewals = self.stats.breedings + self.stats.frontier_foundings + self.stats.recolonised;
         vec![c]
     }
 
@@ -805,9 +804,7 @@ impl Herds {
     fn handle(&mut self, legs: &mut LegIndex, at: Tick, ev: Ev) {
         match ev {
             Ev::Decide { h } => match self.herds.get(h) {
-                Some(x) if x.next_decide == at && x.vacant.is_some() => {
-                    self.frontier(legs, h, at)
-                }
+                Some(x) if x.next_decide == at && x.vacant.is_some() => self.frontier(legs, h, at),
                 Some(x) if x.next_decide == at => self.decide(legs, h, at),
                 _ => self.stats.stale += 1,
             },
@@ -1457,7 +1454,7 @@ impl Herds {
     }
 
     /// Dispersers reach range `g`: one class per birth day, booked as arrived. An empty range
-    /// takes their species, is decided at once and does not breed again this year.
+    /// takes their species, is scheduled to decide and does not breed again this year.
     fn arrive(
         &mut self,
         g: HerdId,
