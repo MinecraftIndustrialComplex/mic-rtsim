@@ -4,6 +4,16 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
+import com.simibubi.create.content.contraptions.bearing.ClockworkBearingBlockEntity;
+import com.simibubi.create.content.contraptions.bearing.MechanicalBearingBlockEntity;
+import com.simibubi.create.content.contraptions.gantry.GantryCarriageBlockEntity;
+import com.simibubi.create.content.contraptions.piston.LinearActuatorBlockEntity;
+import com.simibubi.create.content.fluids.hosePulley.HosePulleyBlockEntity;
+import com.simibubi.create.content.fluids.pump.PumpBlockEntity;
+import com.simibubi.create.content.kinetics.crank.HandCrankBlockEntity;
+import com.simibubi.create.content.kinetics.steamEngine.PoweredShaftBlockEntity;
+import com.simibubi.create.content.kinetics.turntable.TurntableBlockEntity;
+import com.simibubi.create.content.kinetics.waterwheel.WaterWheelBlockEntity;
 import com.simibubi.create.content.equipment.armor.BacktankBlockEntity;
 import com.simibubi.create.content.fluids.pipes.valve.FluidValveBlockEntity;
 import com.simibubi.create.content.kinetics.base.DirectionalShaftHalvesBlockEntity;
@@ -85,18 +95,18 @@ public final class CreatePlugin implements IndustryPlugin {
     }
 
     /**
-     * DS-10: what starts a district. Machines: kinetic generators (water wheels, windmill bearings, hand
-     * cranks, motors, steam engines) and every kinetic block that does work (presses, mixers, millstones,
-     * crushing wheels, saws, drills, deployers, arms, fans, pumps, crafters, bearings and pulleys), and
-     * packagers. Not seeds, though industrial and so members and links: <b>transmission</b> (a bare shaft, cogwheel,
-     * gearbox, clutch, gearshift, chain drive, speed controller, gauge: rotation that goes nowhere is no
-     * factory, and a player's rotary decoration is not either), <b>transport</b> (belts, chain conveyors,
-     * chutes, funnels, tunnels, pipes, valves), <b>storage</b> (vaults and tanks by the tags, depots, basins,
-     * crates), the logistics controls (stock tickers and links, factory panels, switches, observers, package
-     * ports) and stations (trains are another module's), decoration (flywheels, clocks, flap displays,
-     * backtanks). Create block entities this plugin does not list (a spout, an item drain, a portable
-     * storage interface) have no opinion here: the core's rule takes them as machines when they tick and
-     * hold items or fluids.
+     * DS-10: what starts a district is where goods are turned into other goods or used up. Machines: kinetic
+     * blocks that do work (presses, mixers, millstones, crushing wheels, saws, drills, deployers, arms, fans,
+     * crafters, motors' consumers) and packagers. Not seeds, though industrial and so members: <b>transmission</b>
+     * (a bare shaft, cogwheel, gearbox, clutch, gearshift, chain drive, speed controller, gauge), <b>sources</b> (water
+     * wheels, hand cranks, creative motors, bearings, a steam engine's shaft: rotation made from nothing, which
+     * joins the district of what it drives), <b>movers</b> (mechanical pumps, hose pulleys, pistons, rope and elevator
+     * pulleys, gantry carriages, clockwork bearings, turntables), <b>transport</b> (belts, chain conveyors, chutes,
+     * funnels, tunnels, pipes, valves), <b>storage</b> (vaults and tanks by the tags, depots, basins, crates), the
+     * logistics controls (stock tickers and links, factory panels, switches, observers, package ports) and
+     * stations (trains are another module's), decoration (flywheels, clocks, flap displays, backtanks). Create
+     * block entities this plugin does not list (a spout, an item drain, a portable storage interface) have no
+     * opinion here: the core's rule takes them as machines when they tick and hold items or fluids.
      */
     @Override
     public Boolean seed(BlockEntity be) {
@@ -108,16 +118,37 @@ public final class CreatePlugin implements IndustryPlugin {
                     || be instanceof GaugeBlockEntity || be instanceof BeltBlockEntity || be instanceof ChainConveyorBlockEntity
                     || be instanceof FluidValveBlockEntity || be instanceof GantryShaftBlockEntity
                     || be instanceof FlywheelBlockEntity || be instanceof CuckooClockBlockEntity
-                    || be instanceof FlapDisplayBlockEntity || be instanceof BacktankBlockEntity);
+                    || be instanceof FlapDisplayBlockEntity || be instanceof BacktankBlockEntity
+                    || isSource(be) || isMover(be));
         return be instanceof PackagerBlockEntity;
     }
 
-    @Override
-    public void links(BlockEntity be, Consumer<BlockPos> out) {
-        if (be instanceof ChainConveyorBlockEntity chain)
-            for (BlockPos rel : chain.connections)
-                out.accept(be.getBlockPos().offset(rel)); // connections are relative (addConnectionTo subtracts)
+    /**
+     * Rotation made from nothing: water wheels (large ones too), hand cranks and valve handles, creative motors,
+     * mechanical and windmill bearings (a windmill turns a contraption's sails), and the shaft a steam engine
+     * powers. A source alone is a fountain, not a factory; what it drives is the machine that seeds, and
+     * the source is in that machine's district by the shaft between them. (A steam engine's burner is what
+     * eats fuel, and the blaze burner is no block entity this plugin lists, so it is the boiler's own
+     * machine that decides.)
+     */
+    private static boolean isSource(BlockEntity be) {
+        return be instanceof WaterWheelBlockEntity || be instanceof HandCrankBlockEntity || be instanceof CreativeMotorBlockEntity
+                || be instanceof MechanicalBearingBlockEntity || be instanceof PoweredShaftBlockEntity;
     }
+
+    /**
+     * Kinetic blocks that only move things: mechanical pumps and hose pulleys (fluid transport, like pipes),
+     * pistons, rope and elevator pulleys, gantry carriages and clockwork bearings (they carry a contraption
+     * about, and what it carries is not a block entity in the world), turntables (rotating decoration).
+     */
+    private static boolean isMover(BlockEntity be) {
+        return be instanceof PumpBlockEntity || be instanceof HosePulleyBlockEntity || be instanceof LinearActuatorBlockEntity
+                || be instanceof GantryCarriageBlockEntity || be instanceof ClockworkBearingBlockEntity || be instanceof TurntableBlockEntity;
+    }
+
+    // No links(): a chain conveyor is a link between districts, not a reason to join them (SEC-1, DS-10). The
+    // packages on it are counted at the ports (packagers, frogports, postboxes), the exports at one district's
+    // edge and the imports at the other's.
 
     @Override
     public BlockPos canonicalInventory(BlockEntity be) {

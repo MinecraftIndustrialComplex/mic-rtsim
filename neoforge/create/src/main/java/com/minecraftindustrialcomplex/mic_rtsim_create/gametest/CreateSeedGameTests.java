@@ -4,6 +4,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
+import com.simibubi.create.AllBlocks;
+import com.simibubi.create.content.kinetics.chainConveyor.ChainConveyorBlockEntity;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -137,6 +139,152 @@ public final class CreateSeedGameTests {
                 .thenWaitUntil(() -> {
                     check("the district dissolved", ind().district(id[0]) == null && districtAt(helper, vault) == null);
                     check("the vault is still there", level.getBlockState(vault).is(block("create:item_vault")));
+                })
+                .thenSucceed();
+    }
+
+    private static void noSeedNoDistrict(GameTestHelper helper, String what, BlockPos... at) {
+        for (BlockPos p : at) {
+            String n = helper.getLevel().getBlockState(p).getBlock().toString();
+            check(what + ": no seed at " + n, seedsAt(helper, p) == 0);
+            check(what + ": no district at " + n, districtAt(helper, p) == null);
+        }
+    }
+
+    /** Rotation made from nothing is a fountain, not a factory: a lone water wheel (small and large) makes no district. */
+    @GameTest(template = YARD, batch = "create_seed_3", timeoutTicks = 400)
+    public static void aLoneWaterWheelMakesNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos small = at(helper, 0, 4, 4), large = at(helper, 0, 10, 10), crank = at(helper, 1, 4, 4), motor = at(helper, 1, 10, 10);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, small, block("create:water_wheel").defaultBlockState());
+                    set(helper, large, block("create:large_water_wheel").defaultBlockState());
+                    set(helper, crank, block("create:hand_crank").defaultBlockState());
+                    set(helper, motor, block("create:creative_motor").defaultBlockState());
+                    for (BlockPos p : new BlockPos[] {small, large, crank, motor})
+                        playerPlacedBare(helper, p);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    noSeedNoDistrict(helper, "source", small, large, crank, motor);
+                })
+                .thenSucceed();
+    }
+
+    /** A mechanical pump only moves fluid, like a pipe: tank, pump, tank in a row make no district. */
+    @GameTest(template = YARD, batch = "create_seed_4", timeoutTicks = 400)
+    public static void aLonePumpBetweenTwoTanksMakesNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos a = at(helper, 0, 4, 4), pump = at(helper, 0, 5, 4), b = at(helper, 0, 6, 4);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, a, block("create:fluid_tank").defaultBlockState());
+                    set(helper, pump, block("create:mechanical_pump").defaultBlockState().setValue(BlockStateProperties.FACING, Direction.EAST));
+                    set(helper, b, block("create:fluid_tank").defaultBlockState());
+                    for (BlockPos p : new BlockPos[] {a, pump, b})
+                        playerPlacedBare(helper, p);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    noSeedNoDistrict(helper, "pump", a, pump, b);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A water wheel in the next chunk, joined to a press by a shaft run across the border: one district, the press
+     * its seed, the wheel and the shafts members (the wheel's chunk is in it).
+     */
+    @GameTest(template = YARD, batch = "create_seed_5", timeoutTicks = 600)
+    public static void aWaterWheelDrivingAPressIsOneDistrictWheelIncluded(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos press = at(helper, 0, 10, 6), wheel = at(helper, 1, 3, 6);
+        BlockState shaft = block("create:shaft").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    for (int x = press.getX() + 1; x < wheel.getX(); x++)
+                        set(helper, new BlockPos(x, press.getY(), press.getZ()), shaft);
+                    set(helper, wheel, block("create:water_wheel").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X));
+                    playerPlacedBare(helper, wheel);
+                    playerPlacedBare(helper, press);
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, press);
+                    check("the press's district", d != null);
+                    check("the wheel is in it", districtAt(helper, wheel) == d);
+                    check("two chunks: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("one seed, the press's: " + d.seedCounts, d.seeds() == 1 && seedsAt(helper, wheel) == 0);
+                })
+                .thenSucceed();
+    }
+
+    private static void chain(GameTestHelper helper, BlockPos... points) {
+        for (BlockPos p : points) {
+            set(helper, p, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
+            helper.getLevel().getBlockEntity(p);
+            ((ChainConveyorBlockEntity) helper.getLevel().getBlockEntity(p)).prepareStats();
+        }
+        for (int i = 0; i + 1 < points.length; i++) {
+            ChainConveyorBlockEntity a = (ChainConveyorBlockEntity) helper.getLevel().getBlockEntity(points[i]);
+            ChainConveyorBlockEntity b = (ChainConveyorBlockEntity) helper.getLevel().getBlockEntity(points[i + 1]);
+            if (!b.addConnectionTo(points[i]) || !a.addConnectionTo(points[i + 1]))
+                throw new net.minecraft.gametest.framework.GameTestAssertException("could not join the chain conveyors");
+        }
+    }
+
+    /**
+     * SEC-1: a chain conveyor is a link between districts, not a reason to join them. A press at each end of a chain,
+     * two chunks apart: two districts, the chunk between in neither.
+     */
+    @GameTest(template = YARD, batch = "create_seed_6", timeoutTicks = 600)
+    public static void aChainBetweenTwoDistrictsLeavesThemTwo(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos pressA = at(helper, -1, 8, 6), chainA = at(helper, -1, 12, 6);
+        BlockPos pressB = at(helper, 1, 8, 6), chainB = at(helper, 1, 4, 6);
+        BlockPos between = at(helper, 0, 8, 6);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, pressA, block("create:mechanical_press").defaultBlockState());
+                    set(helper, pressB, block("create:mechanical_press").defaultBlockState());
+                    chain(helper, chainA, chainB);
+                    for (BlockPos p : new BlockPos[] {pressA, chainA, pressB, chainB})
+                        playerPlacedBare(helper, p);
+                })
+                .thenWaitUntil(() -> {
+                    District a = districtAt(helper, pressA), b = districtAt(helper, pressB);
+                    check("a district at each press", a != null && b != null);
+                    check("two districts, not one", a != b);
+                    check("each holds its chain end", districtAt(helper, chainA) == a && districtAt(helper, chainB) == b);
+                    check("the chunk between is in neither", districtAt(helper, between) == null);
+                    check("one chunk each: " + a.chunks.size() + ", " + b.chunks.size(), a.chunks.size() == 1 && b.chunks.size() == 1);
+                })
+                .thenSucceed();
+    }
+
+    /** A chain through chunks with nothing else in them, three conveyors long, makes no district. */
+    @GameTest(template = YARD, batch = "create_seed_7", timeoutTicks = 400)
+    public static void aChainThroughEmptyChunksMakesNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos a = at(helper, -1, 12, 6), b = at(helper, 0, 8, 6), c = at(helper, 1, 4, 6);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    chain(helper, a, b, c);
+                    for (BlockPos p : new BlockPos[] {a, b, c})
+                        playerPlacedBare(helper, p);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    noSeedNoDistrict(helper, "chain", a, b, c);
                 })
                 .thenSucceed();
     }
