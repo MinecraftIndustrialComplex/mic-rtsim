@@ -1041,7 +1041,10 @@ fn the_archive_records_the_ships() {
         .tun
         .refit
         .delay_ticks(Pressure::from_parts(0.5, day), day);
-    assert!(rebuilt.tick >= pirate.tick + wait, "{rebuilt:?} {pirate:?} {wait}");
+    assert!(
+        rebuilt.tick >= pirate.tick + wait,
+        "{rebuilt:?} {pirate:?} {wait}"
+    );
     assert_eq!((rebuilt.x, rebuilt.z), (haven.dock.0, haven.dock.2));
     assert_eq!(rebuilt.object.value, haven_key);
     assert_eq!(rebuilt.magnitude, c.ships.tun.sea.pirate_crew as i32);
