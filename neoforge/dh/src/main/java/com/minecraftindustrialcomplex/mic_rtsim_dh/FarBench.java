@@ -26,8 +26,8 @@ import net.neoforged.neoforge.common.NeoForge;
  * in it), logs this controller's own cost over the same window and quits.
  *
  * <p>Phase 2 (docs/choices-dh-feed.md) adds made-up dragons ({@link FarDragonBench}), a band ring of trains
- * inside the loaded chunks, the simulation distance ({@code mic_rtsim.farbench.sim}, 4 when anything is in
- * the band, else 12) and the far feed's meter; {@code mic_rtsim.farbench.feed=false} leaves the feed off, so
+ * inside the loaded chunks, the simulation distance ({@code mic_rtsim.farbench.sim}, 5 when anything is in
+ * the band, vanilla's least, else 12) and the far feed's meter; {@code mic_rtsim.farbench.feed=false} leaves the feed off, so
  * the trains come by Create's own map sync as in phase 1.
  *
  * <p>Every line it logs starts with {@code far bench}.
@@ -42,7 +42,7 @@ final class FarBench {
     static final boolean NO_FEED = ENABLED && "false".equals(System.getProperty("mic_rtsim.farbench.feed"));
     private static final boolean BAND = Integer.getInteger("mic_rtsim.farbench.bandTrains", 0) > 0
             || Integer.getInteger("mic_rtsim.farbench.bandDragons", 0) > 0;
-    private static final int SIMULATION = Integer.getInteger("mic_rtsim.farbench.sim", BAND ? 4 : 12);
+    private static final int SIMULATION = Integer.getInteger("mic_rtsim.farbench.sim", BAND ? 5 : 12);
 
     /** Client ticks in the world before the profile starts: DH builds its flat LODs and every train is placed. */
     private static final int WARMUP_TICKS = 900;
@@ -91,6 +91,11 @@ final class FarBench {
                 mc.options.framerateLimit().set(260);
                 mc.options.renderDistance().set(12);
                 mc.options.simulationDistance().set(SIMULATION);
+                if (mc.options.simulationDistance().get() != SIMULATION) {
+                    // Vanilla refuses a value outside 5 to 32 and keeps the old one: a band run would then tick its ring
+                    fail("simulation distance " + SIMULATION + " refused (vanilla allows 5 to 32)");
+                    return;
+                }
                 mc.options.save();
                 phase = Phase.OPENING;
                 if (mc.getLevelSource().levelExists(WORLD)) {

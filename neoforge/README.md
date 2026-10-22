@@ -107,7 +107,7 @@ Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
   embodied dragons are;
 - `-PfarBenchBandDragons=<n>` and `-PfarBenchBandTrains=<n>`: dragons 120 to 150 blocks east and trains on a
   140-block ring around spawn, in the band the client has loaded but the server does not tick, which the
-  band renderer draws; either sets the simulation distance to 4 (`-PfarBenchSim=<chunks>` to choose);
+  band renderer draws; either sets the simulation distance to 5, vanilla's least (`-PfarBenchSim=<chunks>` to choose);
 - `-PfarBenchFeed=false`: the client never subscribes to the far feed, so Create's own map sync carries the
   trains, as in phase 1.
 
