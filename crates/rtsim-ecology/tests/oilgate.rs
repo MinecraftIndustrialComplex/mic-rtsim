@@ -338,6 +338,51 @@ fn a_drilling_district_draws_a_grudge_raid() {
     assert!(worst <= d.tun.grudge_below, "sentiment {worst}");
 }
 
+/// A watched district with no player near (the oil audit's F9, OGC57): the grudge raid resolves
+/// through the threat interface as an unwatched one does, and nobody is there to meet, so the
+/// dragon does not come in person and the raid burns its oil as any abstract raid does.
+#[test]
+fn a_watched_district_with_nobody_near_is_raided_abstractly() {
+    let (mut w, _) = synth::world(13);
+    let mut d = Dragons::new(13, quick_oil(300), Tick::ZERO);
+    d.log_enabled = true;
+    let l = fire_lair(&mut w, &mut d, 4, 1800, 2500);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), Tick(0));
+    d.ingest(&mut w, &mut NoInfrastructure, &field(21, 81, 3), Tick(0));
+    let mut tanks = Tanks::at(
+        &[(7, 310, 1300, true)],
+        DistrictSignals {
+            oil_sample: true,
+            polluted: true,
+            fuel_mb: 0,
+        },
+    );
+    let mut cmds = Vec::new();
+    let mut t = Tick(0);
+    while t.0 < 8 * TICKS_PER_DAY {
+        t += 500;
+        d.run_until(&mut w, &mut tanks, t);
+        cmds.extend(d.take_commands());
+    }
+    let s = d.stats;
+    assert!(s.district_target_raids >= 1, "{s:?}");
+    assert!(!tanks.raids.is_empty());
+    assert!(tanks.raids.iter().all(|r| r.0 == DistrictId(7)));
+    assert!(
+        materializations(&cmds)
+            .iter()
+            .all(|m| dragon_of(m.agent) != Some(x)),
+        "nobody to meet: it never came in person"
+    );
+    assert!(
+        d.log
+            .iter()
+            .any(|e| e.kind == "raid" && e.what.contains("watched, nobody near: abstract only")),
+        "the raid was booked abstractly"
+    );
+    d.check(&w, None).unwrap();
+}
+
 /// A watched district's tanks draw a low dragon that arrives unseen in person the day it is first
 /// sensed. Since the oil audit's F9 (choices-oilgate.md OGC56, OGC57) the tanks are raided in
 /// sight as it arrives: it drinks, and comes with what it drank. The player stands south-west of the district: within two
