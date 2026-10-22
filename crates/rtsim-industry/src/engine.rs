@@ -308,6 +308,16 @@ pub struct Engine {
     /// Districts declared while the tape was on that have no chunks yet: their "found" row waits
     /// for the first chunks, which give it a place. Not saved.
     undetected: BTreeSet<DistrictId>,
+    /// Changes whenever a district comes, goes or changes its chunks (the oil gate's
+    /// `DistrictIndex` rebuilds on it, choices-oilgate.md OGC50). Drawn from a process-wide
+    /// sequence, so no two engines, a restored one included, ever share a value. Not saved.
+    districts_rev: u64,
+}
+
+/// The next value of [`Engine::districts_rev`]; 0 is never handed out.
+fn next_districts_rev() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Engine {
@@ -353,7 +363,14 @@ impl Engine {
             sent_this_session: BTreeSet::new(),
             tape: Tape::new(),
             undetected: BTreeSet::new(),
+            districts_rev: next_districts_rev(),
         }
+    }
+
+    /// A value that changes whenever a district comes, goes or changes its chunks, and differs
+    /// between engines: a cache of district chunks is current while it matches.
+    pub fn districts_rev(&self) -> u64 {
+        self.districts_rev
     }
 
     fn note(&mut self, d: DistrictId, at: Tick, what: String) {
@@ -675,6 +692,8 @@ impl Engine {
                 }
             }
             Obs::District(decl) => {
+                // A new revision clears the chunks; the dimension may change.
+                self.districts_rev = next_districts_rev();
                 let dist = self
                     .districts
                     .entry(decl.district)
@@ -742,6 +761,7 @@ impl Engine {
                 let dist = self.district_mut(*district);
                 if dist.revision == *revision {
                     dist.chunks.extend(chunks.iter().copied());
+                    self.districts_rev = next_districts_rev();
                     self.detected(*district, at);
                 }
             }
@@ -776,6 +796,7 @@ impl Engine {
                 if self.districts.contains_key(district) {
                     self.stop_sim(*district, at);
                     self.districts.remove(district);
+                    self.districts_rev = next_districts_rev();
                 }
                 self.glass.remove(*district);
             }
@@ -918,6 +939,9 @@ impl Engine {
     }
 
     fn district_mut(&mut self, d: DistrictId) -> &mut District {
+        if !self.districts.contains_key(&d) {
+            self.districts_rev = next_districts_rev();
+        }
         self.districts.entry(d).or_insert_with(|| District::new(d))
     }
 

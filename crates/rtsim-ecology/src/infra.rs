@@ -21,6 +21,8 @@ use rtsim_kernel::clock::Tick;
 use rtsim_settle::Pos;
 use rtsim_space::topology::SharedTopologies;
 
+use crate::oil::Near;
+
 /// A district as a target: where it is and whether a player is near enough to fight for real.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DistrictSite {
@@ -67,6 +69,22 @@ pub struct TrainSighting {
 pub trait Infrastructure {
     /// Districts whose centre is within `r` blocks of (x, z).
     fn districts_near(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite>;
+    /// The chunk test (the oil audit's F3, choices-oilgate.md OGC50): districts with any chunk
+    /// whose centre is within `r` blocks of (x, z), each at its chunk centre nearest (x, z), in id
+    /// order. A district is where its chunks are: a well joined to a far base is still by its
+    /// field. By default, the centre test.
+    fn districts_reaching(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
+        self.districts_near(frame, x, z, r)
+    }
+    /// Every district with a chunk `near` answers for (F2, OGC52), in id order: its site at the
+    /// first such chunk's centre, and the answer. `near` is asked with the frame and a chunk's
+    /// centre, chunk by chunk, until it answers. Nothing by default.
+    fn districts_where(
+        &mut self,
+        _near: &mut dyn FnMut(u16, i64, i64) -> Option<Near>,
+    ) -> Vec<(DistrictSite, Near)> {
+        Vec::new()
+    }
     /// Delivers a raid and reports what happened, or `None` for an unknown target.
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome>;
     /// An industry good's item name, for the prey table.
@@ -113,9 +131,9 @@ impl Infrastructure for NoInfrastructure {
     }
 }
 
-/// The industry engine as infrastructure, with a cell index of district centres rebuilt when
-/// the district count changes (districts are declared rarely), so a raid looks up cells, not
-/// every district.
+/// The industry engine as infrastructure, with cell indexes of district centres and chunks
+/// rebuilt whenever a district comes, goes or changes its chunks (the engine's
+/// [`Engine::districts_rev`]), so a raid looks up cells, not every district.
 pub struct IndustryLink<'a> {
     pub engine: &'a mut Engine,
     pub index: &'a mut DistrictIndex,
@@ -124,7 +142,10 @@ pub struct IndustryLink<'a> {
 #[derive(Clone, Debug)]
 pub struct DistrictIndex {
     cells: BTreeMap<(u16, i64, i64), Vec<(DistrictId, Pos)>>,
-    known: usize,
+    /// Every district chunk's canonical centre, by cell (the chunk test, OGC50).
+    chunk_cells: BTreeMap<(u16, i64, i64), Vec<(DistrictId, Pos)>>,
+    /// The engine's `districts_rev` the cells were built from; 0 is never one.
+    known: u64,
     /// The frames' topologies (TP6): a district's centre and a query's cells are taken through
     /// them, so a district on a seam has one centre and a raid near an edge sees past it.
     topo: SharedTopologies,
@@ -134,6 +155,7 @@ impl Default for DistrictIndex {
     fn default() -> Self {
         DistrictIndex {
             cells: BTreeMap::new(),
+            chunk_cells: BTreeMap::new(),
             known: 0,
             topo: rtsim_space::topology::all_flat(),
         }
@@ -150,22 +172,30 @@ impl DistrictIndex {
         }
         if *t != *self.topo {
             self.topo = t;
-            self.known = usize::MAX;
+            self.known = 0;
         }
     }
 
     fn refresh(&mut self, e: &Engine) {
-        let n = e.districts().count();
-        if n == self.known {
+        let rev = e.districts_rev();
+        if rev == self.known {
             return;
         }
         self.cells.clear();
+        self.chunk_cells.clear();
         for d in e.districts() {
             if d.chunks.is_empty() {
                 continue;
             }
             let frame = d.dim as u16;
             let t = self.topo.of(frame);
+            for c in &d.chunks {
+                let (x, z) = t.canonical(i64::from(c.0) * 16 + 8, i64::from(c.1) * 16 + 8);
+                self.chunk_cells
+                    .entry((frame, x.div_euclid(CELL), z.div_euclid(CELL)))
+                    .or_default()
+                    .push((d.id, Pos::new(frame, x as i32, z as i32)));
+            }
             // The centre in the chart of the district's first chunk, so a district across a
             // seam is not averaged to the far side of the world (TP16).
             let first = d.chunks.iter().next().expect("not empty");
@@ -182,7 +212,24 @@ impl DistrictIndex {
                 .or_default()
                 .push((d.id, Pos::new(frame, x as i32, z as i32)));
         }
-        self.known = n;
+        self.known = rev;
+    }
+
+    /// The cells a query of `r` blocks round (x, z) covers, through the frame's topology.
+    fn cells_near(&self, frame: u16, x: i64, z: i64, r: i64) -> Vec<(i64, i64)> {
+        let t = self.topo.of(frame);
+        let mut cells = Vec::new();
+        for part in t.rects_near(x, z, r) {
+            let (x0, z0, x1, z1) = part.grid_cells(CELL);
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    cells.push((cx, cz));
+                }
+            }
+        }
+        cells.sort_unstable();
+        cells.dedup();
+        cells
     }
 }
 
@@ -233,22 +280,81 @@ impl IndustryLink<'_> {
     }
 }
 
+impl IndustryLink<'_> {
+    fn site(&self, id: DistrictId, pos: Pos) -> Option<DistrictSite> {
+        let d = self.engine.district(id)?;
+        Some(DistrictSite {
+            id,
+            pos,
+            watched: d.watched,
+            loaded: d.presence != Presence::Unloaded,
+        })
+    }
+}
+
 impl Infrastructure for IndustryLink<'_> {
+    fn districts_reaching(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
+        self.index.refresh(self.engine);
+        let topo = self.index.topo.clone();
+        let t = topo.of(frame);
+        // Each district's chunk centre nearest (x, z); a tie goes to the lower chunk.
+        let mut best: BTreeMap<DistrictId, (u64, Pos)> = BTreeMap::new();
+        for (cx, cz) in self.index.cells_near(frame, x, z, r) {
+            for &(id, pos) in self
+                .index
+                .chunk_cells
+                .get(&(frame, cx, cz))
+                .into_iter()
+                .flatten()
+            {
+                let d = t.dist_sq((i64::from(pos.x), i64::from(pos.z)), (x, z));
+                if d > (r * r) as u64 {
+                    continue;
+                }
+                let e = best.entry(id).or_insert((d, pos));
+                if (d, pos.x, pos.z) < (e.0, e.1.x, e.1.z) {
+                    *e = (d, pos);
+                }
+            }
+        }
+        best.into_iter()
+            .filter_map(|(id, (_, pos))| self.site(id, pos))
+            .collect()
+    }
+
+    fn districts_where(
+        &mut self,
+        near: &mut dyn FnMut(u16, i64, i64) -> Option<Near>,
+    ) -> Vec<(DistrictSite, Near)> {
+        let topo = self.index.topo.clone();
+        let mut out = Vec::new();
+        for d in self.engine.districts() {
+            let frame = d.dim as u16;
+            let t = topo.of(frame);
+            for c in &d.chunks {
+                let (x, z) = t.canonical(i64::from(c.0) * 16 + 8, i64::from(c.1) * 16 + 8);
+                if let Some(n) = near(frame, x, z) {
+                    out.push((
+                        DistrictSite {
+                            id: d.id,
+                            pos: Pos::new(frame, x as i32, z as i32),
+                            watched: d.watched,
+                            loaded: d.presence != Presence::Unloaded,
+                        },
+                        n,
+                    ));
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     fn districts_near(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
         self.index.refresh(self.engine);
         let t = self.index.topo.clone();
         let t = t.of(frame);
-        let mut cells = Vec::new();
-        for part in t.rects_near(x, z, r) {
-            let (x0, z0, x1, z1) = part.grid_cells(CELL);
-            for cx in x0..=x1 {
-                for cz in z0..=z1 {
-                    cells.push((cx, cz));
-                }
-            }
-        }
-        cells.sort_unstable();
-        cells.dedup();
+        let cells = self.index.cells_near(frame, x, z, r);
         let mut out = Vec::new();
         for (cx, cz) in cells {
             {
@@ -349,5 +455,104 @@ impl Infrastructure for IndustryLink<'_> {
         self.engine.threat(t);
         let loot = self.engine.books.stolen.minus(&before);
         (!loot.is_empty()).then_some(loot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rtsim_industry::obs::{DistrictDecl, Obs, Timed};
+    use rtsim_industry::tunables::Tunables;
+
+    use super::*;
+
+    fn declare(e: &mut Engine, id: u32, revision: u32, chunks: Vec<(i32, i32)>) {
+        let at = Tick(0);
+        let district = DistrictId(u64::from(id));
+        e.ingest(&Timed {
+            at,
+            obs: Obs::District(DistrictDecl {
+                district,
+                revision,
+                dim: 0,
+                name: id,
+                not_learnable: None,
+                inventory_count: 0,
+            }),
+        });
+        e.ingest(&Timed {
+            at,
+            obs: Obs::DistrictChunks {
+                district,
+                revision,
+                part: 0,
+                chunks,
+            },
+        });
+    }
+
+    /// The oil audit's B2 and C3: a well joined to a base 3,000 blocks away is one district whose
+    /// centre is half way between. The centre test misses it at the well; the chunk test finds
+    /// it, at the well's chunk.
+    #[test]
+    fn a_well_joined_to_a_far_base_is_sensed_at_the_well() {
+        let mut e = Engine::new(1, Tunables::default(), Tick(0));
+        let mut index = DistrictIndex::default();
+        // The base: chunks round (0, 0). The well: one chunk at x = 3,000.
+        let mut chunks: Vec<(i32, i32)> = (-2..=2)
+            .flat_map(|x| (-2..=2).map(move |z| (x, z)))
+            .collect();
+        chunks.push((3_000 / 16, 0));
+        declare(&mut e, 7, 1, chunks);
+        let mut link = IndustryLink {
+            engine: &mut e,
+            index: &mut index,
+        };
+        let (wx, wz) = (3_000, 8);
+        assert!(
+            link.districts_near(0, wx, wz, 64).is_empty(),
+            "the centre test misses the joined well"
+        );
+        let found = link.districts_reaching(0, wx, wz, 64);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].id, DistrictId(7));
+        assert_eq!(
+            (found[0].pos.x, found[0].pos.z),
+            (3_000 / 16 * 16 + 8, 8),
+            "the site is the well's chunk"
+        );
+        // The base itself is still found at the base.
+        assert_eq!(link.districts_reaching(0, 0, 0, 64).len(), 1);
+        assert!(link.districts_reaching(0, 1_500, 0, 64).is_empty());
+    }
+
+    /// `DistrictIndex::refresh` rebuilds when a district grows, not only when the count changes.
+    #[test]
+    fn the_index_sees_a_district_that_grew() {
+        let mut e = Engine::new(1, Tunables::default(), Tick(0));
+        let mut index = DistrictIndex::default();
+        declare(&mut e, 3, 1, vec![(0, 0)]);
+        {
+            let mut link = IndustryLink {
+                engine: &mut e,
+                index: &mut index,
+            };
+            assert_eq!(link.districts_reaching(0, 8, 8, 32).len(), 1);
+            assert!(link.districts_reaching(0, 2_008, 8, 32).is_empty());
+        }
+        // The same district, one more chunk far off: the count is unchanged.
+        declare(&mut e, 3, 2, vec![(0, 0), (125, 0)]);
+        let mut link = IndustryLink {
+            engine: &mut e,
+            index: &mut index,
+        };
+        let found = link.districts_reaching(0, 2_008, 8, 32);
+        assert_eq!(
+            found.iter().map(|s| s.id).collect::<Vec<_>>(),
+            [DistrictId(3)]
+        );
+        // And a district that shrank away is gone from where it was.
+        declare(link.engine, 3, 3, vec![(125, 0)]);
+        assert!(link.districts_reaching(0, 8, 8, 32).is_empty());
+        assert_eq!(link.districts_reaching(0, 2_008, 8, 32).len(), 1);
     }
 }

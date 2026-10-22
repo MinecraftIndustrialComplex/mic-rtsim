@@ -2430,8 +2430,8 @@ impl Dragons {
         (food, taken, Vec::new())
     }
 
-    /// A grudge raid: the districts at the hated player's home, through the industry threat
-    /// interface. Watched districts fight for real: the dragon materializes there instead (P28).
+    /// A grudge raid: the districts with a chunk at the hated player's home (OGC50), through the
+    /// industry threat interface. Watched districts fight for real: the dragon materializes there instead (P28).
     fn raid_home(
         &mut self,
         w: &mut World,
@@ -2449,7 +2449,7 @@ impl Dragons {
         else {
             return;
         };
-        let sites = infra.districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS);
+        let sites = infra.districts_reaching(frame, i64::from(x), i64::from(z), HOME_RADIUS);
         let r = self.raid_sites(infra, d, sites, at);
         let quarry = |pos: Pos| Quarry {
             kind: PreyKind::Grudge,
@@ -4320,7 +4320,7 @@ impl Dragons {
     ) -> Vec<DistrictId> {
         match self.homes.home(p, at) {
             Some(h) => infra
-                .districts_near(
+                .districts_reaching(
                     h.pos.frame,
                     i64::from(h.pos.x),
                     i64::from(h.pos.z),

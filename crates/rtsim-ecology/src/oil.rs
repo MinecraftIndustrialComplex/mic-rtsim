@@ -986,8 +986,8 @@ impl Dragons {
         }
     }
 
-    /// Sensing (OG-8): each district within `sense_reach` of the oil chunk `d` drinks at, once a
-    /// day each, is an Encroachment report against the district (and against each player whose
+    /// Sensing (OG-8): each district with a chunk within `sense_reach` of the oil chunk `d` drinks
+    /// at (the chunk test, OGC50), once a day each, is an Encroachment report against the district (and against each player whose
     /// home is there, P26's homes standing in for its builders) that `d` witnesses. Returns every
     /// district near, with its signals and whether it was sensed now (not already today).
     pub(crate) fn sense(
@@ -999,7 +999,7 @@ impl Dragons {
         at: Tick,
     ) -> Vec<(DistrictSite, DistrictSignals, bool)> {
         let reach = i64::from(self.tun.oil.sense_reach);
-        let sites = infra.districts_near(pos.frame, i64::from(pos.x), i64::from(pos.z), reach);
+        let sites = infra.districts_reaching(pos.frame, i64::from(pos.x), i64::from(pos.z), reach);
         let day = at.day().min(u64::from(u32::MAX)) as u32;
         let fuels = self.tun.oil.fuels.clone();
         let signal = self.tun.oil.fuel_signal_mb;
@@ -1116,7 +1116,7 @@ impl Dragons {
         };
         self.stats.district_target_raids += 1;
         let sites: Vec<DistrictSite> = infra
-            .districts_near(frame, i64::from(x), i64::from(z), HOME_RADIUS)
+            .districts_reaching(frame, i64::from(x), i64::from(z), HOME_RADIUS)
             .into_iter()
             .filter(|s| s.id == DistrictId(district))
             .collect();
