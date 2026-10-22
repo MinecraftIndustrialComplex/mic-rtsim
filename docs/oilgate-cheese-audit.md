@@ -123,7 +123,7 @@ facts were read in the jars of the Prism instance "Minecraft Industiral Complex-
 | # | The cheese | Today | Why | Likely |
 |---|---|---|---|---|
 | D1 | **Find crude elsewhere:** loot, trades, Ore Excavation veins, Destroy's pumpjack. | **Stopped** | No loot table, trade or feature grants crude. Ore Excavation has only a water vein. Destroy's pumpjack and seismometer are voided (`voided_content.js`), and `oilyunification.js` removes the distillation routes. | Medium (and it fails). |
-| D2 | **Burn ethanol instead.** Ferment sugar, apples, potatoes or sugar cane with bone meal in a lidded basin (200 mB a batch), or buy moonshine from Destroy's innkeeper and distil it. | **Open**, outside the gate | `createdieselgenerators:basin_fermenting/fermentable` probably survives the pack's removal: `oilyunification.js` removes recipes by fluid output, which KubeJS 7 matches only on recipe types it has a schema for, and Diesel Generators registers none (UNVERIFIED until a server log shows it). Ethanol is a Diesel Generators engine fuel, and its Destroy distillate a Propulsion thruster fuel. Biodiesel (plant oil plus ethanol) is a Create mixing recipe and probably is removed. | High: JEI shows it. |
+| D2 | **Burn ethanol instead.** Ferment sugar, apples, potatoes or sugar cane with bone meal in a lidded basin (200 mB a batch), or buy moonshine from Destroy's innkeeper and distil it. | **Open, on purpose** (OGB-8): ethanol is the pre-oil fuel, rebalanced in the pack to its real properties so it is poor in diesel engines | `createdieselgenerators:basin_fermenting/fermentable` probably survives the pack's removal: `oilyunification.js` removes recipes by fluid output, which KubeJS 7 matches only on recipe types it has a schema for, and Diesel Generators registers none (UNVERIFIED until a server log shows it). Ethanol is a Diesel Generators engine fuel, and its Destroy distillate a Propulsion thruster fuel. Biodiesel (plant oil plus ethanol) is a Create mixing recipe and probably is removed. | High: JEI shows it. |
 
 ### E. Taking the oil home
 
@@ -150,7 +150,8 @@ well is seen and hurt (§4), and open while it is not.
 **Stopped:** A5, B3, D1. **Unknown:** F2.
 
 The gate's real failures are the twelve open rows in A to C, with B4. E's rows close by themselves
-once those do, and D2 is a recipe question for the pack.
+once those do, and D2 is open on purpose: Ben made ethanol the pre-oil fuel (OGB-8), rebalanced in
+the pack so it is poor in diesel engines.
 
 ## 3. Is In Control's fire dragon still needed?
 
@@ -266,7 +267,9 @@ resolves through the threat interface as an unwatched one does, blocks and theft
 fight, so watched and unwatched raids agree (P28's own words). Standing guard in a box keeps the
 player alive; it no longer keeps the well. Not Ben: it builds what he decided.
 
-**PF1. Ethanol** (D2). Needs Ben: it is a pack recipe call.
+**PF1. Ethanol** (D2). Ben chose a third way (OGB-8): ethanol stays as the pre-oil fuel and the pack
+rebalances it to its real properties, so it is poor in diesel engines. Not part of the gate's build.
+The options as asked:
 - **(a) Recommended.** Keep ethanol behind oil, as `oilyunification.js` already means to: remove
   `createdieselgenerators:basin_fermenting/fermentable`, `createdieselgenerators:bulk_fermenting/fermentable`
   and `destroy:distillation/ethanol_from_moonshine` by recipe id, check mic_petrochem's own ethanol
@@ -302,6 +305,9 @@ Recommended option first in each.
      raid or two.
    - (b) Keep OG-11: a roof shields every block.
    - (c) Stage 4 dragons ignore roofs.
+Ben answered on 2026-10-21 (DECISIONS.md OGB-6 to OGB-8): 1 (a), 2 (a), and for 3 ethanol stays
+pre-oil, rebalanced to be poor in diesel engines.
+
 3. **Ethanol (PF1).**
    - (a) Keep it behind oil, as `oilyunification.js` intends: remove the fermentation and moonshine
      recipes by id.
