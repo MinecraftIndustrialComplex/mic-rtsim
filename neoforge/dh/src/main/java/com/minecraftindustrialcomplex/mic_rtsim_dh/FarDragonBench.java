@@ -20,7 +20,7 @@ import net.minecraft.world.level.Level;
  *       them), a third hunt (circling), and a third are sampled every second the way Ice and Fire's embodied
  *       dragons are, flying circles, with no entity on this client (as a dragon embodied for another
  *       player).</li>
- *   <li><b>Band dragons</b> ({@code mic_rtsim.farbench.bandDragons}) 110 to 160 blocks east, inside the
+ *   <li><b>Band dragons</b> ({@code mic_rtsim.farbench.bandDragons}) 120 to 150 blocks east, inside the
  *       client's loaded chunks with no entity, so {@link FarBandRenderer} draws them.</li>
  * </ul>
  */

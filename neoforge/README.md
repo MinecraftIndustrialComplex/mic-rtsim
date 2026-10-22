@@ -101,6 +101,19 @@ The bench logs `far bench` lines (the client's `far bench result` line, the serv
 `-PfarBenchLabel=<name>` vary it; `-PfarBench=0` is the control with no trains. The first run creates the flat
 world `farbench` in `dh/run/saves/`, and later runs reuse it with DH's LODs already built.
 
+Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
+
+- `-PfarBenchDragons=<n>`: made-up dragons 500 to 1,400 blocks east, flying legs, hunting, or sampled as
+  embodied dragons are;
+- `-PfarBenchBandDragons=<n>` and `-PfarBenchBandTrains=<n>`: dragons 120 to 150 blocks east and trains on a
+  140-block ring around spawn, in the band the client has loaded but the server does not tick, which the
+  band renderer draws; either sets the simulation distance to 4 (`-PfarBenchSim=<chunks>` to choose);
+- `-PfarBenchFeed=false`: the client never subscribes to the far feed, so Create's own map sync carries the
+  trains, as in phase 1.
+
+The client's `far bench result` lines then include a `dragons:` line and a `feed:` line (messages, bytes and
+records a second, objects held).
+
 ## What is here
 
 | Package | What |
