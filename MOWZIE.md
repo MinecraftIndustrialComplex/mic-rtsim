@@ -1752,7 +1752,7 @@ one body of a band that a client draws beyond 128 blocks (below).
 - **A band that reaches a watched target with no bodies** (a player who logs in or teleports there as
   it arrives) comes as today's waves on the arc 112 blocks out, the Umvuthi on its horse with the
   first: the one case where it appears in sight. The conflict-life design's walk-in (EQUILIBRIUM.md
-  §2.2, `:224-233`) replaces the arc: placed at the farthest ticking point on its route back from the
+  §2.2, `:224-240`) replaces the arc: placed at the farthest ticking point on its route back from the
   target, the band walks the rest, so it too appears at the edge.
 - **The spawn quota** (16 units, `tunables.rs:94`) is kept and never binds a Mowzie band (§4.5). A
   bigger band of another culture keeps its whole strength in the fight's books, and its members past
@@ -1780,23 +1780,22 @@ neither had bodies. A mustering band's bodies are the camp's own, standing in it
 in, so its proxy should hide where the client has the camp's chunks (the DH note's chunk test), not
 wait for puppets; a band walking home now has bodies where a player is, as one going out does.
 
-**Agreement with the conflict-life design** (EQUILIBRIUM.md and CONFLICT-LIFE.md on main at `9775d54`,
+**Agreement with the conflict-life design** (EQUILIBRIUM.md and CONFLICT-LIFE.md on main at `72b439a`,
 read, not edited):
 - CONFLICT-LIFE.md §2.7 decides only when the Umvuthi leads (wounded pride of 0.8 or more, CL-D17) and
   §2.12 takes its ride from §4.5: its 5.0 is in the band's strength, 12.6 for a full invasion (7.6 and
   5.0), as here (§4.5, §4.13), and missing from the grove's defence until it is home.
-- Its rule that nothing appears within 128 blocks of a player (EQUILIBRIUM.md:214-222, `1099`) holds
+- Its rule that nothing appears within 128 blocks of a player (EQUILIBRIUM.md:214-222, `1106`) holds
   for a band met on the march at a simulation distance of 8 or more on an axis approach, but for a
   raptor pack's nearest body a few blocks inside the edge, which no client draws there; the Umvuthi,
   the one body drawn beyond 128 blocks, rides last and appears at the edge (above). EQUILIBRIUM.md §2.2
-  (`:224-233`) and CONFLICT-LIFE.md §2.12 quote this plan's earlier numbers (the column's head 133 to
-  160 blocks off at 10 and 101 to 131 at 8, the nearest walk-in point 113 at 8), which were wrong; they
-  should take these, and the walk-in point at 8 is at least 128 blocks off on an axis.
-- Frostmaw, Umvuthana and Umvuthi stay vanilla at home and are puppets in parties (EQUILIBRIUM.md:322),
+  (`:224-240`, `1106`) and CONFLICT-LIFE.md §2.12 and CL-D33 carry these numbers, with the nearest
+  walk-in point at least 160 blocks off on an axis at 10 and at least 128 at 8.
+- Frostmaw, Umvuthana and Umvuthi stay vanilla at home and are puppets in parties (EQUILIBRIUM.md:329),
   as here.
-- Members away at an uninstall are lost and booked Other at a reinstall (EQUILIBRIUM.md:369-371), as
+- Members away at an uninstall are lost and booked Other at a reinstall (EQUILIBRIUM.md:376-378), as
   here; MZ-15 lengthens that exposure (§4.5, §4.9).
-- **The census and the march.** EQUILIBRIUM.md §2.6 item 11 (`:688-696`) now follows MZ-15 (CL-D42): a
+- **The census and the march.** EQUILIBRIUM.md §2.6 item 11 (`:695-703`) now follows MZ-15 (CL-D42): a
   census takes the bodies a party on the road left behind, never recalls its living members, and a
   march ends only at its own home or at its last death, as here.
 - Its model leaves out the march out, which adds days before a fight, and models the walk home:
