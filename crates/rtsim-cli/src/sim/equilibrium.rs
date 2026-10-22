@@ -362,15 +362,12 @@ impl Roamer {
         if !self.rng.bernoulli(0.5) || !self.kills {
             return;
         }
-        let here: Vec<DragonId> = e
-            .d
-            .lairs
-            .iter()
-            .filter(|l| {
-                LegIndex::region_of(i64::from(l.pos.x), i64::from(l.pos.z)) == self.at
-            })
-            .flat_map(|l| l.occupants.iter().copied())
-            .collect();
+        let here: Vec<DragonId> =
+            e.d.lairs
+                .iter()
+                .filter(|l| LegIndex::region_of(i64::from(l.pos.x), i64::from(l.pos.z)) == self.at)
+                .flat_map(|l| l.occupants.iter().copied())
+                .collect();
         let at = Tick::from_days(day);
         for d in here {
             e.d.slay(&mut e.w, d, Some(self.player), at);
@@ -786,8 +783,14 @@ mod tests {
 
     fn print_dragon_refills(rs: &[DragonRefill]) {
         let b = |f: &dyn Fn(&DragonRefill) -> f64| band(&rs.iter().map(f).collect::<Vec<_>>());
-        println!("dragon kill-all over {} seeds, median [5th, 95th]:", rs.len());
-        println!("  days to half the year before:  {:?}", b(&|r| days(r.half)));
+        println!(
+            "dragon kill-all over {} seeds, median [5th, 95th]:",
+            rs.len()
+        );
+        println!(
+            "  days to half the year before:  {:?}",
+            b(&|r| days(r.half))
+        );
         println!(
             "  days to 90% of the control:    {:?}",
             b(&|r| days(r.ninety_ctrl))
