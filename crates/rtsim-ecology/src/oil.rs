@@ -98,6 +98,9 @@ pub struct OilTunables {
     pub lair_reach: u32,
     /// Districts within this many blocks of the oil chunk a dragon drinks at are sensed (OG-8).
     pub sense_reach: u32,
+    /// Sensing a district names the players who built there in the last this many days (the oil
+    /// audit's F7, OGC55).
+    pub grudge_window_days: u64,
     /// A district holding at least this much fuel signals (one tank) and draws a dry dragon.
     pub fuel_signal_mb: i64,
     /// A new lair asks for CDG's oil within this many blocks (OIL_SURVEY).
@@ -128,6 +131,7 @@ impl Default for OilTunables {
             flight_age_days_max: 80,
             lair_reach: 1_500,
             sense_reach: 400,
+            grudge_window_days: 10,
             fuel_signal_mb: 1_000,
             survey_radius: 1_024,
             presence_fresh_ticks: 200,
@@ -988,9 +992,9 @@ impl Dragons {
 
     /// Sensing (OG-8): each district with a chunk within `sense_reach` of the oil chunk `d` drinks
     /// at (the chunk test, OGC50), once a day each, is an Encroachment report against the
-    /// district (and against each player whose home is there, P26's homes standing in for its
-    /// builders) that `d` witnesses. Returns every district near, with its signals and whether
-    /// it was sensed now (not already today).
+    /// district, each player whose home is there (P26) and each player who built there lately
+    /// (OGC55), that `d` witnesses. Returns every district near, with its signals and whether it
+    /// was sensed now (not already today).
     pub(crate) fn sense(
         &mut self,
         w: &mut World,
@@ -1010,9 +1014,10 @@ impl Dragons {
         out
     }
 
-    /// `d` senses `site` from `pos` (OG-8): an Encroachment report against the district and the
-    /// players whose home is there, unless `d` sensed it already on `day`. Returns the district's
-    /// signals and whether it was sensed now.
+    /// `d` senses `site` from `pos` (OG-8): an Encroachment report against the district, the
+    /// players whose home is within `HOME_RADIUS` of it and the players who built there in the
+    /// last `grudge_window_days` (the oil audit's F7, OGC55), unless `d` sensed it already on
+    /// `day`. Returns the district's signals and whether it was sensed now.
     #[allow(clippy::too_many_arguments)]
     fn sense_site(
         &mut self,
@@ -1052,6 +1057,19 @@ impl Dragons {
                     ) <= HOME_RADIUS as f64
             });
             if home.is_some() {
+                who.push(p);
+            }
+        }
+        // Its builders, wherever they live (the oil audit's F7, OGC55).
+        let window = self
+            .tun
+            .oil
+            .grudge_window_days
+            .saturating_mul(TICKS_PER_DAY);
+        let since = Tick(at.0.saturating_sub(window));
+        for uuid in infra.builders(site.id, since) {
+            let p = self.player(w, uuid);
+            if !who.contains(&p) {
                 who.push(p);
             }
         }

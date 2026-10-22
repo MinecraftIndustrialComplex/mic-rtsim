@@ -469,6 +469,148 @@ fn a_district_drilling_far_along_the_field_is_sensed_within_a_day() {
     assert_eq!(seen[2], 0, "no fire lair in reach, nobody: {seen:?}");
 }
 
+// ---- The oil audit's F7: the dragons name the builders (OGC54, OGC55) --------------------------
+
+/// The oil audit's F7 test, through the industry engine: a pumpjack district at the long field's
+/// east end, built by a player who lives 5,000 blocks away. When the field's lair is first manned
+/// (day 11), its dragon's watch names that builder, and the grudge is theirs. A builder whose last
+/// edit is older than `grudge_window_days`, and a player who lives as far away and never built
+/// there, are not named.
+#[test]
+fn a_far_away_builder_of_a_drilling_district_gets_the_grudge() {
+    use rtsim_industry::ids::{BlockPos, ChunkPos};
+    use rtsim_industry::obs::{
+        DepositPluginId, DepositSample, DistrictDecl, EditKind, Obs as IObs, SweepEnd, Timed,
+    };
+    const BUILDER: (u64, u64) = (7, 8);
+    const OLD: (u64, u64) = (9, 10);
+    const BYSTANDER: (u64, u64) = (11, 12);
+    let day = |n: u64| Tick(n * TICKS_PER_DAY);
+    let mut ind = rtsim_industry::engine::Engine::new(
+        21,
+        rtsim_industry::tunables::Tunables::default(),
+        Tick(0),
+    );
+    let pump = DistrictId(9);
+    let feed = |e: &mut rtsim_industry::engine::Engine, at: Tick, obs: IObs| {
+        e.ingest(&Timed { at, obs });
+    };
+    feed(
+        &mut ind,
+        Tick(0),
+        IObs::District(DistrictDecl {
+            district: pump,
+            revision: 1,
+            dim: 0,
+            name: 1,
+            not_learnable: None,
+            inventory_count: 0,
+        }),
+    );
+    feed(
+        &mut ind,
+        Tick(0),
+        IObs::DistrictChunks {
+            district: pump,
+            revision: 1,
+            part: 0,
+            chunks: vec![(66, 1), (67, 1), (68, 1)],
+        },
+    );
+    // Its pumpjack's deposit sample: the district drills.
+    feed(
+        &mut ind,
+        Tick(10),
+        IObs::DepositSample(DepositSample {
+            district: pump,
+            good: DIESEL,
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos {
+                dim: 0,
+                x: 67,
+                z: 1,
+            },
+            remaining: 100_000,
+            infinite: false,
+            sweep: 1,
+        }),
+    );
+    feed(
+        &mut ind,
+        Tick(10),
+        IObs::SweepEnd(SweepEnd {
+            district: pump,
+            sweep: 1,
+            records: 1,
+            inventories: 0,
+            live: false,
+            creative: false,
+            overstressed: false,
+        }),
+    );
+    let edit = |e: &mut rtsim_industry::engine::Engine, at: Tick, player| {
+        e.ingest(&Timed {
+            at,
+            obs: IObs::Edit {
+                district: pump,
+                kind: EditKind::Placed,
+                player,
+                pos: BlockPos {
+                    x: 1_075,
+                    y: 64,
+                    z: 24,
+                },
+            },
+        });
+    };
+    edit(&mut ind, Tick(100), OLD);
+
+    let (mut w, _) = synth::world(21);
+    let mut d = Dragons::new(21, quick_oil(1 << 40), Tick::ZERO);
+    d.ingest(&mut w, &mut NoInfrastructure, &long_field(), Tick(0));
+    let far = Pos::new(0, 5_000, 5_000);
+    let players = [BUILDER, OLD, BYSTANDER].map(|u| d.player(&mut w, u));
+    for &p in &players {
+        d.homes.add_stay(p, far, Tick(0), day(12));
+    }
+    let mut index = DistrictIndex::default();
+    let mut t = Tick(0);
+    let mut run = |d: &mut Dragons, w: &mut World, ind: &mut rtsim_industry::engine::Engine, to| {
+        while t < to {
+            t += 1_000;
+            let mut link = IndustryLink {
+                engine: ind,
+                index: &mut index,
+            };
+            d.run_until(w, &mut link, t);
+        }
+    };
+    // Ten days and more with no fire lair: nobody watches.
+    run(&mut d, &mut w, &mut ind, day(11));
+    assert_eq!(d.stats.encroachments, 0);
+    edit(&mut ind, day(11), BUILDER);
+    let l = fire_lair(&mut w, &mut d, 4, -300, 24);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), day(11));
+    run(&mut d, &mut w, &mut ind, day(12) + 1_000);
+    assert_eq!(d.stats.encroachments, 1, "{:?}", d.stats);
+    assert_eq!(d.stats.refuels, 0, "no flight to the field");
+    let me = d.dragon(x).unwrap().actor;
+    let [builder, old, bystander] = players;
+    let feel = |p| w.knowledge.sentiment(me, p, t);
+    assert!(
+        feel(builder) <= d.tun.grudge_below,
+        "the builder is named and hated: {}",
+        feel(builder)
+    );
+    assert_eq!(feel(old), 0, "an edit older than the window is forgotten");
+    assert_eq!(
+        feel(bystander),
+        0,
+        "living far away and not building is no offence"
+    );
+    d.check(&w, None).unwrap();
+}
+
 // ---- OG-13: the dry fight ----------------------------------------------------------------------
 
 /// An aggressive dragon that hates the player raids the district at the player's home once it

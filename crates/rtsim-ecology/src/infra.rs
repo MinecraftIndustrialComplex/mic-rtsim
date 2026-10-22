@@ -76,6 +76,12 @@ pub trait Infrastructure {
     fn districts_reaching(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
         self.districts_near(frame, x, z, r)
     }
+    /// The players who built in `district` (placed or broke a block, or configured a machine) at
+    /// or after `since`, by UUID, the latest builder last (the oil audit's F7, OGC54). Nobody by
+    /// default.
+    fn builders(&mut self, _district: DistrictId, _since: Tick) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
     /// Every district with a chunk `near` answers for (F2, OGC52), in id order: its site at the
     /// first such chunk's centre, and the answer. `near` is asked with the frame and a chunk's
     /// centre, chunk by chunk, until it answers. Nothing by default.
@@ -320,6 +326,16 @@ impl Infrastructure for IndustryLink<'_> {
         best.into_iter()
             .filter_map(|(id, (_, pos))| self.site(id, pos))
             .collect()
+    }
+
+    fn builders(&mut self, district: DistrictId, since: Tick) -> Vec<(u64, u64)> {
+        self.engine.district(district).map_or_else(Vec::new, |d| {
+            d.editors
+                .iter()
+                .filter(|(_, t)| *t >= since)
+                .map(|(p, _)| *p)
+                .collect()
+        })
     }
 
     fn districts_where(
