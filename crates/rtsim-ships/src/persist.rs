@@ -14,6 +14,11 @@
 //! legs, reports and captains live in the phase 1 world (its leg index and knowledge), saved
 //! beside them with `World::save`.
 //!
+//! **Havens** carry their crew pool (thousandths, as of a tick) and their pressure, and a lost
+//! pirate's refit event its plan (EQUILIBRIUM.md §2.4.6, slice S8, 2026-10-22), in the same `RTS2`
+//! format: no saved world holds a haven or a pirate yet (no plugin sends HAVEN_FOUND), and saves
+//! from before a release are not migrated.
+//!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
 //! - **One blob** ([`Ships::save`], [`Ships::load`]): the row tables written whole, rows in key

@@ -1240,7 +1240,9 @@ them is P8: a structure (a harbour piece, an airship tower), a marker block, or 
 - **Navies** (M2's recommendation) sail patrol services whose presence lowers the lanes' hazard;
   players' escorts add to it (`Ships::set_escort`, for a future plugin).
 - **Losses come back**: a lost merchant or navy ship relaunches at its home dock in its own slot; a
-  haven rebuilds a pirate ship when its crew pool can man one; captured crews join the pool.
+  haven refits a pirate ship's slot after `min(96, 4 x 2^P)` days once its crew pool can man it;
+  hires and captured crews fill the pool up to 18 (EQUILIBRIUM.md §2.4.6, slice S8). A pirate hunts
+  only a lane worth it, and with none rests in port.
 
 ## 8. Herds (PLAN.md §10.2; the core's vanilla herd adapter)
 

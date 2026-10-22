@@ -18,8 +18,16 @@
 //!
 //! **What it checks** (exit 1 on a failure): conservation every hour (the world's books and the
 //! ships' holds against the world's held goods), a ship seen by the player, a raid in view, stolen
-//! goods reaching the haven's market, a patrol lowering a lane's hazard, and a restart in the
-//! middle continuing with the same state hashes as the run that never stopped.
+//! goods reaching the haven's market, a patrol lowering a lane's hazard, a restart in the
+//! middle continuing with the same state hashes as the run that never stopped, and pirates that
+//! persist (EQUILIBRIUM.md §2.4.6, slice S8).
+//!
+//! **Persistence:** a second run of the same script, its log off, goes on for `--persist-days`
+//! (192 by default, two game years) and counts the haven every 24 days (the equilibrium model's
+//! census grid): slots manned, each pirate's crew, the crew pool and the haven's pressure, and
+//! the hunts, fights, losses and refits since the last count. The player camps on the hunted lane
+//! the whole time and every fight costs the pirates crew, so the pool's hires and the refits are
+//! what keep the haven at sea: before S8 its hunts ended around day 77.
 //!
 //! It also counts the event archive's rows (R, VIEWER.md §10.4) of the main run: the world's two
 //! tapes and the ships' are on. The restored twin beside it records nothing.
@@ -43,6 +51,7 @@ use super::archive::{Rate, drain_world, world_on};
 
 pub struct Options {
     pub days: u64,
+    pub persist_days: u64,
     pub seed: u64,
     pub out: Option<PathBuf>,
     pub quiet: bool,
@@ -51,6 +60,7 @@ pub struct Options {
 pub fn cli(rest: &[&str]) -> ExitCode {
     let mut o = Options {
         days: 12,
+        persist_days: 192,
         seed: 7,
         out: Some(PathBuf::from("scenario/results/sim-ships.json")),
         quiet: false,
@@ -62,6 +72,10 @@ pub fn cli(rest: &[&str]) -> ExitCode {
             "--days" => match num(it.next()) {
                 Some(n) if n >= 10 => o.days = n,
                 _ => return bad("--days needs a number of at least 10"),
+            },
+            "--persist-days" => match num(it.next()) {
+                Some(n) => o.persist_days = n,
+                None => return bad("--persist-days needs a number (0 skips the run)"),
             },
             "--seed" => match num(it.next()) {
                 Some(n) => o.seed = n,
@@ -81,7 +95,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 
 fn bad(why: &str) -> ExitCode {
     eprintln!(
-        "{why}\nusage: rtsim-cli sim ships [--days N] [--seed S] [--out FILE | --no-write] [--quiet]"
+        "{why}\nusage: rtsim-cli sim ships [--days N] [--persist-days N] [--seed S] [--out FILE | --no-write] [--quiet]"
     );
     ExitCode::from(64)
 }
@@ -140,6 +154,37 @@ struct PatrolRow {
     hazard_without: i64,
 }
 
+/// One count of the haven in the persistence run (every 24 days).
+#[derive(Serialize)]
+struct CensusRow {
+    day: u64,
+    manned: u32,
+    slots: u32,
+    /// Each pirate's crew, in slot order; `None` while its slot is empty.
+    crews: Vec<Option<u32>>,
+    /// Crew ashore, and the haven's pressure (§2.2), now.
+    pool: f64,
+    pressure: f32,
+    /// Since the last count.
+    hunts: u64,
+    fruitless: u64,
+    fights: u64,
+    pirates_lost: u64,
+    refits: u64,
+    captures: u64,
+}
+
+#[derive(Serialize)]
+struct Persistence {
+    days: u64,
+    rows: Vec<CensusRow>,
+    /// Slots manned over the counts, and the counts with at least one ship at sea or in port.
+    manned_share: f64,
+    counts_with_a_ship: usize,
+    /// Counting windows with a hunt, of all.
+    windows_with_hunts: usize,
+}
+
 #[derive(Serialize)]
 struct Check {
     name: &'static str,
@@ -173,6 +218,7 @@ struct Results {
     checks: Vec<Check>,
     /// The archive rows the main run's engines took per game day.
     archive: Rate,
+    persistence: Persistence,
 }
 
 fn names(w: &World) -> Vec<&'static str> {
@@ -196,6 +242,68 @@ fn by_name(w: &World, m: &BTreeMap<GoodId, i128>) -> BTreeMap<String, f64> {
 fn drain(m: &mut Meter, c: &mut Coastal) {
     drain_world(m, &mut c.world);
     m.drain(&mut c.ships.tape);
+}
+
+/// The persistence run: the same script on a fresh coast, its log off, counted every 24 days.
+fn persistence(o: &Options, tun: &ShipTunables) -> Persistence {
+    const STEP: u64 = 24;
+    let mut c = synth::coastal(o.seed, tun.clone());
+    let mut fake = FakeShips::new(f64::from(tun.view_radius));
+    let mut script = Script::default();
+    let h = c.haven as usize;
+    let mut rows = Vec::new();
+    let mut last = c.ships.stats;
+    let mut lost_seen = 0u64;
+    let mut d = 0;
+    while d < o.persist_days {
+        let next = (d + STEP).min(o.persist_days);
+        script.run(&mut c, &mut fake, Tick::from_days(d), Tick::from_days(next));
+        d = next;
+        let at = Tick::from_days(d);
+        let s = &c.ships;
+        let hv = &s.havens[h];
+        let crews: Vec<Option<u32>> = hv
+            .ships
+            .iter()
+            .map(|&p| s.ship(p).filter(|x| x.is_active()).map(|x| x.crew))
+            .collect();
+        // Pirates lost since the last count: the refits since, and the change in empty slots.
+        let empty = crews.iter().filter(|c| c.is_none()).count() as u64;
+        let st = s.stats;
+        let refits = st.rebuilds - last.rebuilds;
+        let lost = refits + empty - lost_seen;
+        lost_seen = empty;
+        rows.push(CensusRow {
+            day: d,
+            manned: crews.iter().filter(|c| c.is_some()).count() as u32,
+            slots: crews.len() as u32,
+            crews,
+            pool: f64::from(s.crew_pool_milli(h as u32, at)) / 1000.0,
+            pressure: hv
+                .pressure
+                .now(d as u32, tun.refit.half_life_days),
+            hunts: st.hunts - last.hunts,
+            fruitless: st.fruitless - last.fruitless,
+            fights: st.fights_observed - last.fights_observed,
+            pirates_lost: lost,
+            refits,
+            captures: st.captures - last.captures,
+        });
+        last = st;
+    }
+    let slots: u32 = rows.iter().map(|r| r.slots).sum();
+    let manned: u32 = rows.iter().map(|r| r.manned).sum();
+    Persistence {
+        days: o.persist_days,
+        manned_share: if slots > 0 {
+            f64::from(manned) / f64::from(slots)
+        } else {
+            0.0
+        },
+        counts_with_a_ship: rows.iter().filter(|r| r.manned > 0).count(),
+        windows_with_hunts: rows.iter().filter(|r| r.hunts > 0).count(),
+        rows,
+    }
 }
 
 pub fn main(o: Options) -> i32 {
@@ -420,6 +528,26 @@ pub fn main(o: Options) -> i32 {
             ),
         },
     ];
+    let persist = persistence(&o, &tun);
+    let mut checks = checks;
+    if o.persist_days > 0 {
+        // Every count has a ship, and the haven hunts in every window but at most one (the one in
+        // which the scripted player's escort sits on the hunted lane, or a refit wait).
+        let n = persist.rows.len();
+        checks.push(Check {
+            name: "pirates persist",
+            ok: persist.counts_with_a_ship == n && persist.windows_with_hunts + 1 >= n,
+            detail: format!(
+                "{} days with the player on the hunted lane: a ship in {} of {n} counts, hunts in {} of {n} windows, {:.2} of the slots manned, {} pirates lost and {} refitted",
+                persist.days,
+                persist.counts_with_a_ship,
+                persist.windows_with_hunts,
+                persist.manned_share,
+                persist.rows.iter().map(|r| r.pirates_lost).sum::<u64>(),
+                persist.rows.iter().map(|r| r.refits).sum::<u64>(),
+            ),
+        });
+    }
     let failed = checks.iter().any(|c| !c.ok);
     let res = Results {
         seed: o.seed,
@@ -447,6 +575,7 @@ pub fn main(o: Options) -> i32 {
             .collect(),
         checks,
         archive: Rate::new(&meter, o.days as f64),
+        persistence: persist,
     };
     if !o.quiet {
         print_report(&res, s);
@@ -591,8 +720,49 @@ fn print_report(r: &Results, s: &Ships) {
         })
         .collect();
     println!("\npirates: {}", pirates.join("; "));
+    for (i, hv) in s.havens.iter().enumerate() {
+        let day = (s.now().0 / TICKS_PER_DAY) as u32;
+        println!(
+            "haven {i}: {:.1} crew ashore of {}, pressure {:.2}",
+            f64::from(s.crew_pool_milli(i as u32, s.now())) / 1000.0,
+            s.tun.crew_pool_cap,
+            hv.pressure.now(day, s.tun.refit.half_life_days)
+        );
+    }
     println!("stats: {:?}", r.stats);
     println!("pending events by kind: {:?}", s.pending_by_kind());
+    let p = &r.persistence;
+    if !p.rows.is_empty() {
+        println!(
+            "\npersistence (the same script for {} days, the haven counted every 24 days):",
+            p.days
+        );
+        println!(
+            "  {:>5} {:>6} {:<12} {:>5} {:>5} {:>6} {:>6} {:>7} {:>5} {:>7}",
+            "day", "manned", "crews", "pool", "P", "hunts", "fights", "lost", "refit", "capture"
+        );
+        for r in &p.rows {
+            let crews: Vec<String> = r
+                .crews
+                .iter()
+                .map(|c| c.map_or("-".into(), |c| c.to_string()))
+                .collect();
+            println!(
+                "  {:>5} {:>4}/{:<1} {:<12} {:>5.1} {:>5.2} {:>6} {:>6} {:>7} {:>5} {:>7}",
+                r.day,
+                r.manned,
+                r.slots,
+                crews.join(" "),
+                r.pool,
+                r.pressure,
+                r.hunts,
+                r.fights,
+                r.pirates_lost,
+                r.refits,
+                r.captures
+            );
+        }
+    }
     println!("\nchecks:");
     for c in &r.checks {
         println!(
