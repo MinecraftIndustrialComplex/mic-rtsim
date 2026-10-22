@@ -34,18 +34,33 @@ use crate::obs::{BlockFlags, DefenceSurvey, ExposedBlock, FightObserved, SpawnSa
 use crate::reconcile::apportion;
 use crate::tunables::ThreatTunables;
 
-/// The four threat classes of INDUSTRY.md §13.2.
+/// The threat classes: the four of INDUSTRY.md §13.2, and burrowing (OILGATE.md §4.6, OG-9e).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum ThreatClass {
     GroundMelee,
     GroundRanged,
     Flying,
     Siege,
+    /// An oil nest's worms (OG-9e), sent by the dragons' engine only: they come up from below, so no
+    /// wall, turret or guard stands in their way, and they break underground machines first. A machine on
+    /// an armoured floor (`BlockFlags::ARMOURED`) is out of their reach. No entity is surveyed as
+    /// burrowing: a worm on the surface fights as ground melee.
+    Burrowing,
 }
 
 impl ThreatClass {
-    pub const COUNT: usize = 4;
-    pub const ALL: [ThreatClass; 4] = [
+    pub const COUNT: usize = 5;
+    pub const ALL: [ThreatClass; 5] = [
+        ThreatClass::GroundMelee,
+        ThreatClass::GroundRanged,
+        ThreatClass::Flying,
+        ThreatClass::Siege,
+        ThreatClass::Burrowing,
+    ];
+    /// The classes the bridge surveys and samples: the SPAWNS, TURRET_STRENGTH and GUARDS arrays of
+    /// the boundary carry these, in this order, and no more (docs/industry-boundary.md §3.2).
+    pub const SURVEYED: usize = 4;
+    pub const SURVEYED_ALL: [ThreatClass; 4] = [
         ThreatClass::GroundMelee,
         ThreatClass::GroundRanged,
         ThreatClass::Flying,
@@ -58,7 +73,12 @@ impl ThreatClass {
 
     /// Ground attackers must get through the perimeter.
     pub const fn walks(self) -> bool {
-        !matches!(self, ThreatClass::Flying)
+        !matches!(self, ThreatClass::Flying | ThreatClass::Burrowing)
+    }
+
+    /// Flyers meet the roof gate (OG-11).
+    pub const fn flies(self) -> bool {
+        matches!(self, ThreatClass::Flying)
     }
 }
 
@@ -70,6 +90,8 @@ pub enum ThreatSource {
     Bandit,
     Boss,
     Synthetic,
+    /// An oil nest of the dragons' engine (OG-9e).
+    Nest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -133,7 +155,7 @@ pub trait ThreatFeed {
 pub struct Pressure {
     /// Dark-block night ticks observed.
     pub block_ticks: f64,
-    pub spawns: [u64; ThreatClass::COUNT],
+    pub spawns: [u64; ThreatClass::SURVEYED],
 }
 
 impl Pressure {
@@ -149,7 +171,7 @@ impl Pressure {
         if self.block_ticks <= 0.0 {
             0.0
         } else {
-            self.spawns[c.index()] as f64 / self.block_ticks
+            self.spawns.get(c.index()).map_or(0.0, |&n| n as f64) / self.block_ticks
         }
     }
 
@@ -249,8 +271,8 @@ pub struct SurveyFacts {
     pub machine_blocks: u32,
     pub roofed_machines: u32,
     pub kill_machines_at_gaps: u32,
-    pub turret_strength: [f32; ThreatClass::COUNT],
-    pub guards: [u32; ThreatClass::COUNT],
+    pub turret_strength: [f32; ThreatClass::SURVEYED],
+    pub guards: [u32; ThreatClass::SURVEYED],
     pub ammo_good: Option<Good>,
     pub ammo_per_engagement: u32,
 }
@@ -388,8 +410,8 @@ pub struct Outcome {
 /// The roof gate of a flying attack: the unroofed share of the surveyed machines, 1 when there is
 /// no survey or no machine (OG-11).
 pub fn roof_pass(c: ThreatClass, s: Option<SurveyFacts>) -> f64 {
-    match (c.walks(), s) {
-        (false, Some(s)) if s.machine_blocks > 0 => {
+    match (c.flies(), s) {
+        (true, Some(s)) if s.machine_blocks > 0 => {
             let open = s.machine_blocks.saturating_sub(s.roofed_machines);
             f64::from(open) / f64::from(s.machine_blocks)
         }
@@ -417,13 +439,14 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
     if let Some(s) = s {
         let need = i64::from(s.ammo_per_engagement);
         let fed = s.ammo_good.is_none() || need == 0 || ammo_held >= need;
+        // Burrowing: no surveyed defence stands in a worm's way (the arrays stop at SURVEYED).
         if fed {
-            turret = f64::from(s.turret_strength[c.index()]);
+            turret = f64::from(s.turret_strength.get(c.index()).copied().unwrap_or(0.0));
             if s.ammo_good.is_some() && turret > 0.0 {
                 ammo_used = need;
             }
         }
-        other += f64::from(s.guards[c.index()]);
+        other += f64::from(s.guards.get(c.index()).copied().unwrap_or(0));
         if c == ThreatClass::GroundMelee {
             other += f64::from(s.kill_machines_at_gaps) * pass;
         }
@@ -554,22 +577,35 @@ pub fn damage(
     };
     // The roof gate (OG-11): a flyer breaks only blocks with sky access, and fewer of them as more
     // of the district's machines are roofed.
-    let flies = !t.class.walks();
+    let flies = t.class.flies();
+    let burrows = t.class == ThreatClass::Burrowing;
     let n = if flies {
         (f64::from(n) * o.roof_pass.clamp(0.0, 1.0)).floor() as u32
     } else {
         n
     };
     if n > 0 && !def.exposed.is_empty() {
-        let first = if t.class.walks() {
-            BlockFlags::PERIMETER
+        // Walkers take the perimeter first, flyers what the sky reaches, and a nest's worms (OG-9e) the
+        // underground machines and inventories first, then the machines, never one on an armoured floor.
+        let (first, second) = if burrows {
+            (BlockFlags::SUBTERRANEAN, BlockFlags::MACHINE)
+        } else if t.class.walks() {
+            (BlockFlags::PERIMETER, 0)
         } else {
-            BlockFlags::ROOFLESS
+            (BlockFlags::ROOFLESS, 0)
         };
-        let mut order: Vec<(bool, u64, ExposedBlockRow)> = def
+        let reach = |b: &&ExposedBlockRow| {
+            if burrows {
+                b.flags & (BlockFlags::MACHINE | BlockFlags::INVENTORY) != 0
+                    && b.flags & BlockFlags::ARMOURED == 0
+            } else {
+                !flies || b.flags & BlockFlags::ROOFLESS != 0
+            }
+        };
+        let mut order: Vec<(bool, bool, u64, ExposedBlockRow)> = def
             .exposed
             .iter()
-            .filter(|b| !flies || b.flags & BlockFlags::ROOFLESS != 0)
+            .filter(reach)
             .map(|b| {
                 let h = rtsim_kernel::rng::fnv1a64(
                     &[
@@ -579,11 +615,11 @@ pub fn damage(
                     ]
                     .concat(),
                 );
-                (b.flags & first == 0, h, *b)
+                (b.flags & first == 0, second != 0 && b.flags & second == 0, h, *b)
             })
             .collect();
-        order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        out.destroyed = order.into_iter().take(n as usize).map(|e| e.2).collect();
+        order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        out.destroyed = order.into_iter().take(n as usize).map(|e| e.3).collect();
         out.machine_lost = out
             .destroyed
             .iter()
@@ -1371,7 +1407,8 @@ mod persist_impls {
             ThreatClass::GroundMelee,
             ThreatClass::GroundRanged,
             ThreatClass::Flying,
-            ThreatClass::Siege
+            ThreatClass::Siege,
+            ThreatClass::Burrowing
         ]
     );
     persist_unit_enum!(
@@ -1381,7 +1418,8 @@ mod persist_impls {
             ThreatSource::Dragon,
             ThreatSource::Bandit,
             ThreatSource::Boss,
-            ThreatSource::Synthetic
+            ThreatSource::Synthetic,
+            ThreatSource::Nest
         ]
     );
     persist_unit_enum!(Law, [Law::Square, Law::Linear]);

@@ -216,7 +216,8 @@ codes!(class_code, class_from, ThreatClass, "threat_class",
     0 => ThreatClass::GroundMelee,
     1 => ThreatClass::GroundRanged,
     2 => ThreatClass::Flying,
-    3 => ThreatClass::Siege);
+    3 => ThreatClass::Siege,
+    4 => ThreatClass::Burrowing);
 
 codes!(reason_code, reason_from, CarriageReason, "carriage_reason",
     1 => CarriageReason::Exchange,
@@ -2419,7 +2420,7 @@ mod tests {
             [1, 2, 3, 4, 5, 6, 8, 9]
         );
         assert_eq!([Direction::In, Direction::Out].map(direction_code), [1, 2]);
-        assert_eq!(ThreatClass::ALL.map(class_code), [0, 1, 2, 3]);
+        assert_eq!(ThreatClass::ALL.map(class_code), [0, 1, 2, 3, 4]);
         assert_eq!(
             [CarriageReason::Exchange, CarriageReason::Loot].map(reason_code),
             [1, 2]

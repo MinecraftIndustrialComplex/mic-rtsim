@@ -1072,6 +1072,7 @@ impl Engine {
                 inv.known_at = read_at.get(&idx).copied().unwrap_or(at);
             }
         }
+        dist.last_sweep = e.sweep;
         for s in buf.deposits {
             dist.deposits.insert(s.good, s);
         }
@@ -2887,7 +2888,8 @@ impl Engine {
             return;
         };
         let stamp = dist.pressure_stamp;
-        for c in ThreatClass::ALL {
+        // Natural mobs never burrow: the surveyed classes only.
+        for c in ThreatClass::SURVEYED_ALL {
             let mean = dist
                 .defence
                 .pressure

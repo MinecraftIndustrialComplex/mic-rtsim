@@ -581,8 +581,10 @@ public final class IndRecords {
          */
         public static final int FLAG_SUBTERRANEAN = 32;
         /**
-         * A machine or inventory standing on {@code #mic_rtsim:armoured_floor} (within four blocks under it): a
-         * burrowing attacker cannot reach it from below (OILGATE.md §4.6, OG-9e).
+         * A machine or inventory a burrowing attacker cannot reach (OILGATE.md §4.6, OG-9e): one standing on
+         * {@code #mic_rtsim:armoured_floor} (within four blocks under it), or one in
+         * {@code #mic_rtsim:burrow_spared} (a well's own blocks: the nest is after the machines, not the well
+         * that feeds it).
          */
         public static final int FLAG_ARMOURED = 64;
 

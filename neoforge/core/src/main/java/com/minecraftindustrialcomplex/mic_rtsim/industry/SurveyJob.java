@@ -337,7 +337,7 @@ final class SurveyJob {
             int flags = isRoofed ? 0 : IndRecords.SurveyBlocks.FLAG_ROOFLESS;
             if (isRoofed && top - pos.getY() >= SUBTERRANEAN_COVER)
                 flags |= IndRecords.SurveyBlocks.FLAG_SUBTERRANEAN;
-            if (armoured(chunk, pos))
+            if (armoured(chunk, pos) || be.getBlockState().is(ThreatClasses.BURROW_SPARED))
                 flags |= IndRecords.SurveyBlocks.FLAG_ARMOURED;
             if (inv != null) {
                 inventoryBlocks.add(new Exposed(pos, be.getBlockState(), flags | IndRecords.SurveyBlocks.FLAG_INVENTORY, inv.index()));

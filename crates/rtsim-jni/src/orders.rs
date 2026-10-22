@@ -52,12 +52,13 @@ pub const OP_FAIL: u16 = 7;
 pub const OP_INDUSTRY_THREAT: u16 = 8;
 pub const OP_INDUSTRY_COMMAND: u16 = 9;
 
-const SOURCES: [ThreatSource; 5] = [
+const SOURCES: [ThreatSource; 6] = [
     ThreatSource::Natural,
     ThreatSource::Dragon,
     ThreatSource::Bandit,
     ThreatSource::Boss,
     ThreatSource::Synthetic,
+    ThreatSource::Nest,
 ];
 pub const OP_MARKET: u16 = 16;
 pub const OP_MERCHANT_OFFERS: u16 = 17;
