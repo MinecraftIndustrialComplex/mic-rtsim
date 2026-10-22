@@ -45,8 +45,157 @@ mic_rtsim_dh is still not in the pack.
 
 ## Measured
 
-To be filled from the bench runs below.
+Bench round 3 on 2026-10-22, 10:21 to 11:11 (neoforge/README.md, "The far view's dev client"), on this branch
+between 30c6bd6 and 1500bc5 (the commits between change only what the feed's stop log prints). Ben's laptop
+(Ryzen, 24 threads, its Radeon), single player, render distance 12, simulation distance 12 (5 in the band run),
+DH's default settings, MEDIUM unless named. Each profile is vanilla's 10-second client recording after 900
+warm-up ticks. Trains are phase 1's (4 carriages, 500 to 1,500 blocks east); dragons are `FarDragonBench`'s
+(DHT39).
+
+| Run | What ran |
+|---|---|
+| r3c0, r3c0z | No objects: the controls, first and last in the round |
+| r3t50, r3t50s | 50 trains (200 carriages) on the feed |
+| r3t50nf | 50 trains with the feed off, so Create's sync carries them |
+| r3d24, r3d24s | 24 dragons |
+| r3d24t50 | 24 dragons and 50 trains |
+| r3d64t50h | 64 dragons and 50 trains on HIGH |
+| r3band | 4 trains (16 carriages) on the 140-block band ring and 6 band dragons |
+| r3long, r3long2 | As r3d24t50 with 6,400 warm-up ticks, for the server's sweep once the JIT has run |
+
+**The machine was not quiet, and the GPU changed state mid-round.** Other sessions' jobs held the load average
+between 10 and 24 in the profile windows. In the first three runs the GPU was at its middle clock level (600 to
+1,066 MHz); from r3d24 to the end it held its lowest, 600 MHz at 15 W and 67°C. After the round the laptop's
+platform profile read `low-power` (on AC); nothing in this work set it. So fps and GPU time do not compare
+across runs: the two empty controls ran at 258 and 184 fps, and DH's own clouds cost 145 and 330 us a frame in
+them. What holds is one of our groups against one of DH's cloud groups in the same window.
+
+### Render thread (CPU), from the profile
+
+Microseconds a frame. "Our draws" is the `mic_rtsim_dh` section inside DH's "Custom Objects", with the groups
+drawn in brackets. The controller and band columns are their own timers over the same window.
+
+| Run | Objects held | fps | Custom Objects | Our draws | Per group | DH clouds | Per cloud group | Controller | Band pass | Load |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r3c0 | 0 | 258 | 501 | none | | 145 (38) | 3.8 | 1 | 0 | 10 to 11 |
+| r3t50 | 128 | 123 | 1,991 | 921 (96) | 9.6 | 214 (37) | 5.8 | 102 | 12 | 15 to 17 |
+| r3t50s | 130 | 85 | 3,133 | 1,057 (96) | 11.0 | 355 (37) | 9.6 | 244 | 26 | 18 to 20 |
+| r3t50nf | 200, Create's sync | 210 | 1,487 | 572 (96) | 6.0 | 171 (37) | 4.6 | 118 | 10 | 19 to 20 |
+| r3d24 | 24 | 67 | 2,952 | 703 (48) | 14.6 | 489 (37) | 13.2 | 82 | 13 | 23 to 24 |
+| r3d24s | 24 | 107 | 2,233 | 517 (48) | 10.8 | 372 (37) | 10.1 | 67 | 14 | 21 to 23 |
+| r3d24t50 | 129 | 83 | 3,514 | 1,147 (96) | 11.9 | 389 (37) | 10.5 | 252 | 32 | 19 to 20 |
+| r3d64t50h | 264 | 80 | 4,974 | 2,284 (256) | 8.9 | 297 (37) | 8.0 | 377 | 48 | 15 |
+| r3band | 22 | 211 | 958 | none | | 288 (37) | 7.8 | 9 | 163 | 15 to 16 |
+| r3c0z | 0 | 184 | 1,070 | none | | 330 (37) | 8.9 | 2 | 1 | 16 |
+
+- **One of our groups costs 1.1 to 1.3 times one of DH's cloud groups** in the same window (1.7 in r3t50).
+  Phase 1 had them equal. A dragon is two groups (its body and the shown wing pose), so it costs about two
+  carriages.
+- **The far view's whole render-thread cost at the heaviest load**, r3d64t50h (64 dragons and 96 carriages
+  drawn on HIGH): 2,284 us of draws, 377 us of controller and 48 us of band pass, 2.7 ms of a 12.5 ms frame.
+  The controls moved too much (Custom Objects 501 and 1,070 us) to subtract them.
+- **A wingbeat flips group flags and cuts nothing.** The 24-dragon windows had 1,235 to 1,261 flips (4 a
+  second for each dragon) against 77 to 90 re-cuts, from turning hunters.
+- **The band pass** walks every mover each frame: 10 to 48 us with nothing in the band (24 to 264 movers held).
+  Drawing, it cost 163 us for 10 movers and 168 boxes in r3band, about 16 us a mover, because it cuts and
+  tessellates each band box every frame. The other 12 band movers were behind the camera; the screenshot shows
+  the six dragons and the two trains' carriages in view, drawn in loaded chunks where DH draws nothing. If the
+  band ever holds many movers, caching the cuts as the DH controller does is the fix.
+
+### GPU
+
+**Not separated.** Vanilla's whole-frame timer query gave medians of 1.9 to 6.9 ms a frame, the controls 3.8
+and 2.2 ms. On a shared GPU whose clock changed mid-round, that separates nothing, so the boxes' GPU time is
+unmeasured, as in phase 1.
+
+### Bandwidth per subscriber
+
+Counted on the client as the payload's byte array (DHT39), over the 10-second window:
+
+| Run | Objects held | Messages a second | Records a second | Bytes a second |
+|---|---|---|---|---|
+| r3d24, r3d24s | 24 dragons | 0.9 | 7.2, 6.9 | 115, 111 |
+| r3band | 22 | 0.9 | 14.0 | 191 |
+| r3t50, r3t50s | 128, 130 | 1.0, 0.8 | 134, 104 | 1,695, 1,289 |
+| r3d24t50 | 129 | 0.9 | 100 | 1,236 |
+| r3d64t50h | 264 (HIGH) | 0.9 | 193 | 2,551 |
+
+**Create's sync for the same 50 trains (r3t50nf, feed off): 4.01 packets a second of 10,302 bytes, 41,283
+bytes a second** (phase 1 had 41,020). With the feed on, Create's map sync sent its 2 packets at the start,
+before the feed's first message, and nothing after (DHT34).
+
+So for 50 trains on MEDIUM the feed sends 1.3 to 1.7 KB a second where Create's sync sends 41.3 KB: 24 to 32
+times less. Two things make the difference. The feed sends at most the tier's 128 objects, nearest first,
+where Create sends all 200 carriages. And it sends once a second only what changed, about 10 to 13 bytes a
+second for each object held, where Create sends every carriage 4 times a second, 206 bytes a second for each.
+On the server, r3long's one subscriber got 420,894 bytes in 297 messages (1,417 bytes a message, the first
+full message included).
+
+### The server's sweep
+
+`FarFeed`'s stop log, on the single-player server thread: CPU time for each sweep (one a second, every
+subscriber in the same tick), after the first 10 sweeps. In the one-minute runs only about 45 sweeps follow
+those 10, before the JIT has compiled most of the path:
+
+| Run | CPU a sweep | Split |
+|---|---|---|
+| r3c0, r3c0z | 127, 295 us | |
+| r3t50, r3t50s | 1,311, 3,711 us | r3t50s: Create trains 666, dedupe 397, sends 2,345 (filter 398, view 1,246, encode 596, network 93) |
+| r3d24, r3d24s | 1,492, 1,373 us | r3d24s: engine legs 40, bench dragons 99, dedupe 71, sends 910 |
+| r3d24t50 | 3,024 us | Create trains 514, dedupe 345, sends 1,846 (filter 329, view 1,002, encode 429, network 76) |
+| r3d64t50h | 3,731 us | Create trains 396, dedupe 351, sends 2,625 (filter 368, view 1,518, encode 648, network 80) |
+| r3band | 1,352 us | |
+| r3long, after 240 sweeps | 1,386 us | Create trains 217, dedupe 75, sends 655 (filter 192, view 229, encode 150, network 64) |
+| r3long2, after 240 sweeps | R3LONG2 | |
+
+- The same filter, view and encoder in a plain-Java loop outside Minecraft (not committed), once warm: 160 to
+  280 us a sweep for 200 carriages with or without 64 dragons, 24 to 42 us for 24 dragons. So most of the bench
+  figures are the JIT and the load: even after 240 sweeps the server's figure is about five times the loop's.
+- The longest single sweep in each run took 12 to 70 ms of wall time; the log does not say which sweep it was.
+- **The sends are per subscriber; the trains and dedupe are once a sweep.** Every subscriber's send happens in
+  the same tick, so many subscribers make a spike once a second. By arithmetic, not measured: at r3long's 655
+  us of sends, 10 subscribers would put about 6.5 ms into that one tick. Spreading the subscribers over the 20
+  ticks would flatten it; it is not built.
+
+### Not measured or not exercised
+
+- The boxes' GPU time (above).
+- A weak PC: the tier budgets (DHT30, DHT36) are still PLACEHOLDERs.
+- A dedicated server with remote clients, and more than one subscriber: these runs were single player, so the
+  per-subscriber spike above is arithmetic, and the connection's compression is not counted.
+- Real Ice and Fire dragons in a client: the bench's dragons are made up (DHT39). The hand-over is tested by
+  GameTests (DHT31); the hand-back from a real body to the engine's leg runs only in the core GameTest, as the
+  Ice and Fire GameTest checks a real puppet's id, looks and position.
+- The hide test with real carriages or dragons near the camera.
+- A server running for hours: the longest run was r3long2's.
+- The band's light at night or under the darkness effect, and block light (DHT33 leaves them out).
+
+### Traps the bench found
+
+- **An autosave with the synthetic trains crashed the server** (r3long, at tick 6,000): Create's
+  `RailwaySavedData.save` threw "MountedStorageManager is uninitialized" writing a carriage with no
+  contraption. The bench now turns saving off while its trains run (e5fa3fb); the stop save still runs after
+  the trains are taken out. Earlier runs ended before the first autosave.
+- **Vanilla refuses a simulation distance below 5** (30c6bd6).
+
+### Log lines that are not ours
+
+- Vanilla's profile dumps log "Preparing crash report" and "Negative index in crash report handler" on the
+  server thread. Nothing crashed.
+- The dev client warns that the core's GameTest blocks (`mic_rtsim:test_machine` and the like) have no
+  blockstate files. They exist only in dev runs.
 
 ## For Ben
 
-To be filled.
+Nothing here blocks the merge; each is reversible before a release.
+
+- **New wire formats and payloads (public interfaces):** the optional payloads `mic_rtsim:far_sub` and
+  `mic_rtsim:far` with their versioned format (boundary.md §12), the engine record FAR_LEG 0x8C00 (80 bytes),
+  the far view's id ranges (DHT26) and the carriage id namespace (DHT34). A client without mic_rtsim_dh still
+  joins.
+- **mic_rtsim_dh is still not in the pack.** Adding it is yours to decide.
+- **PLACEHOLDERs to confirm:** the hold of 2 sweeps before GONE (DHT29), the hunt circle's 0.5 blocks a tick
+  and 40-tick spiral (DHT32), the tier budgets of 8, 24 or 64 dragons and 48, 128 or 320 objects (DHT30,
+  DHT36), and the dragon colours, stage lengths, wingspan and wingbeat (DHT37), all set by eye.
+- **A possible follow-up:** spread the subscribers' sends over the second, before a server with many DH
+  players (see "The server's sweep").
