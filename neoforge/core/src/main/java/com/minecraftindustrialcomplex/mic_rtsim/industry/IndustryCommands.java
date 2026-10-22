@@ -257,7 +257,7 @@ public final class IndustryCommands {
         say(ctx, String.join("\n",
                 "districts: " + ind.districts.all().size() + "; detections " + ind.districts.rescans + " (" + ind.districts.rescanNanos / 1000
                         + " us in all, last " + ind.districts.lastRescanNanos / 1000 + " us over " + ind.districts.lastRescanSlices + " ticks, longest tick "
-                        + ind.districts.maxSliceNanos / 1000 + " us), declarations " + ind.districts.declared,
+                        + ind.districts.maxSliceNanos / 1000 + " us: " + ind.districts.maxSliceWhat + "), declarations " + ind.districts.declared,
                 "sweeps: " + s.sweeps + " (" + s.liveSweeps + " live), inventories read " + s.inventoriesRead + ", slots " + s.slotsRead
                         + ", read time " + s.readNanos / 1000 + " us (slowest inventory " + s.maxInventoryNanos / 1000 + " us), records "
                         + s.recordsSent + " sent, " + s.recordsDropped + " dropped",

@@ -104,6 +104,8 @@ public final class Districts {
     int lastRescanSlices;
     long lastRescanLongestNanos;
     long maxSliceNanos;
+    /** What the longest tick was: the commit's, or a look at this many block entities. */
+    String maxSliceWhat = "";
     long declared;
 
     Districts(Industry ind) {
@@ -725,6 +727,7 @@ public final class Districts {
             long t0 = System.nanoTime();
             long spent = 0;
             boolean progressed = false, done = false;
+            long commitNanos = 0;
             while (true) {
                 if (progressed && spent >= budget)
                     break;
@@ -739,7 +742,9 @@ public final class Districts {
                         scheduleDistricts(more);
                         continue;
                     }
+                    long c0 = System.nanoTime();
                     commit();
+                    commitNanos = System.nanoTime() - c0;
                     done = true;
                     break;
                 }
@@ -756,8 +761,10 @@ public final class Districts {
                 lastRescanSlices = slices;
                 lastRescanLongestNanos = maxSlice;
             }
-            if (!manual)
-                maxSliceNanos = Math.max(maxSliceNanos, dt);
+            if (!manual && dt > maxSliceNanos) {
+                maxSliceNanos = dt;
+                maxSliceWhat = done ? spent + " block entities, then the commit " + commitNanos / 1000 + " us" : spent + " block entities";
+            }
             return done;
         }
 
