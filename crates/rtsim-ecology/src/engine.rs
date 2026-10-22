@@ -189,6 +189,10 @@ pub(crate) enum Ev {
         frame: u16,
         plan: u32,
     },
+    /// The fields' daily watch (the oil audit's F2, choices-oilgate.md OGC52): every district on
+    /// a field is sensed by a dragon of the field's lair. One for the world, booked when the gate
+    /// opens and again each day.
+    OilWatch,
     /// A tributary village's next season's payment to the lair that raided it (SINK.md §4.6),
     /// stale unless `stamp` is still the village's tribute row's.
     Tribute {
@@ -1194,6 +1198,7 @@ impl Dragons {
                 }
             }
             Ev::FieldRoll { frame, plan } => self.field_roll(w, frame, plan, at),
+            Ev::OilWatch => self.oil_watch(w, infra, at),
             Ev::Tribute { node, stamp } => {
                 let Some(row) = self.tribute.get(&node).copied() else {
                     self.stats.stale += 1;
