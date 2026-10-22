@@ -579,15 +579,19 @@ pub fn specs() -> Vec<Spec> {
                 "area",
                 "#5ab4ac",
             )
-            .describe("Industrial districts, a box of their chunks")
+            .describe("Industrial districts, outlined by their chunks")
             .priority(8)
-            .legend(&[
-                ("Running", "#5ab4ac"),
-                ("Learning", "#e0b04a"),
-                ("Live", "#3a9e5f"),
-                ("Suspended", "#a0a0a0"),
-                ("Stopped", "#d0453a"),
-                ("Out of season", "#7a7a9a"),
+            .legend_st(&[
+                ("Unloaded, run by rtsim", "#2a8a82", None),
+                ("Being learned", "#b7791f", Some("dash")),
+                ("Loaded, run by the game", "#2e8b57", None),
+                ("Partly loaded, paused", "#57606a", Some("dot")),
+                (
+                    "Stopped: damaged, edited or not learnable",
+                    "#d1242f",
+                    Some("bad"),
+                ),
+                ("Learned, idle this season", "#57606a", Some("dot")),
             ])
             .fields(&["State", "Chunks"]),
             "industry",
@@ -621,8 +625,13 @@ pub fn specs() -> Vec<Spec> {
                 "edge",
                 "#5ab4ac",
             )
-            .describe("Station pairs trains ran between, wider with more trips")
-            .priority(3),
+            .describe(
+                "Goods trains between station pairs, beside the track, wider with more trips a day",
+            )
+            // Over the track (80) it follows, under the stations (85).
+            .priority(82)
+            .line("flow")
+            .label_bpp(8.0),
             "industry",
             64,
             true,
@@ -1275,13 +1284,26 @@ pub fn district_ci(state: &str) -> u16 {
     }
 }
 
+/// The outline a district's legend entry draws (`dash` learning, `dot` idle, `bad` stopped).
+pub fn district_st(ci: u16) -> Option<&'static str> {
+    match ci {
+        1 => Some("dash"),
+        3 | 5 => Some("dot"),
+        4 => Some("bad"),
+        _ => None,
+    }
+}
+
 fn districts(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
     let v = cx.industry?;
     v.districts(sel.range(), &mut |d| {
         if d.chunks == 0 {
             return;
         }
-        let mut m = Mark::rect(Some(d.id.to_string()), d.block_box()).with_ci(district_ci(d.state));
+        let ci = district_ci(d.state);
+        let mut m = Mark::rings(Some(d.id.to_string()), d.block_rings())
+            .with_ci(ci)
+            .with_st(district_st(ci));
         if let Some(n) = cx.names.name(DICT_NAME, d.name) {
             m = m.with_label(n);
         }
@@ -1331,7 +1353,7 @@ fn lines(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
                 id: Some(format!("{a}-{b}")),
                 a: pa,
                 b: pb,
-                w: Some(1.0 + (1.0 + l.trips as f64).log10()),
+                w: Some(industry::line_width(l)),
                 ci: None,
                 c: None,
             },
