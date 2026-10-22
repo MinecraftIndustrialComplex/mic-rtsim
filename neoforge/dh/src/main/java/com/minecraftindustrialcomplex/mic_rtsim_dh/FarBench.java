@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
+import java.io.File;
 import java.util.Locale;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
@@ -48,12 +49,14 @@ final class FarBench {
     /** Client ticks the profile window lasts; vanilla's profiler stops itself after 10 seconds. */
     private static final int PROFILE_TICKS = 260;
     private static final int LOG_EVERY = 100;
+    /** Client ticks the bench waits after the window for vanilla to write the profile's zip. */
+    private static final int SAVE_TICKS = 400;
 
-    private enum Phase { START, OPENING, WARMUP, PROFILING, DONE }
+    private enum Phase { START, OPENING, WARMUP, PROFILING, SAVING, DONE }
 
     private static Phase phase = Phase.START;
     private static int ticks;
-    private static long windowFrame0, windowNanos0;
+    private static long windowFrame0, windowNanos0, windowMillis0;
     private static long[] feed0;
 
     private FarBench() {}
@@ -138,6 +141,7 @@ final class FarBench {
                 feed0 = FarFeedClient.meter();
                 windowFrame0 = FarTrainView.frame();
                 windowNanos0 = System.nanoTime();
+                windowMillis0 = System.currentTimeMillis();
                 ticks = 0;
                 phase = Phase.PROFILING;
             }
@@ -174,6 +178,18 @@ final class FarBench {
                         feed1[1] - feed0[1], feed1[2] - feed0[2], seconds, (feed1[0] - feed0[0]) / seconds,
                         (feed1[1] - feed0[1]) / seconds, (feed1[2] - feed0[2]) / seconds, FarFeedClient.held(),
                         feed1[3]));
+                ticks = 0;
+                phase = Phase.SAVING;
+            }
+            case SAVING -> {
+                // Vanilla zips the profile once the server's half is in; quitting first loses it
+                File[] zips = new File(mc.gameDirectory, "debug/profiling").listFiles(
+                        f -> f.getName().endsWith(".zip") && f.lastModified() >= windowMillis0);
+                boolean saved = zips != null && zips.length > 0;
+                if (!saved && ++ticks < SAVE_TICKS)
+                    return;
+                MicRtsimDh.LOGGER.info("far bench: profile {}", saved ? "saved as " + zips[0].getName()
+                        : "not saved after " + SAVE_TICKS + " ticks");
                 phase = Phase.DONE;
                 mc.stop();
             }
