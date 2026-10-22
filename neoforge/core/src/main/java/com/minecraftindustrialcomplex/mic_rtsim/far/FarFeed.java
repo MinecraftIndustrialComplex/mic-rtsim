@@ -4,6 +4,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.topology.Iso;
 import com.minecraftindustrialcomplex.mic_rtsim.topology.LevelTopology;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -67,8 +69,11 @@ public final class FarFeed {
     // Totals since the server started, for /rtsim perf and the bench
     static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
     /** The sweeps after the first {@link #WARM_SWEEPS} (class loading and the JIT), for the bench. */
-    static long warmSweeps, warmNanos;
+    static long warmSweeps, warmNanos, warmCpuNanos;
     static final int WARM_SWEEPS = 10;
+    /** The server thread's own CPU time for a sweep: wall time also counts the time the thread waited for a core. */
+    private static final ThreadMXBean THREADS = ManagementFactory.getThreadMXBean();
+    private static final boolean CPU_TIME = THREADS.isCurrentThreadCpuTimeSupported();
 
     private FarFeed() {}
 
@@ -169,6 +174,7 @@ public final class FarFeed {
         return SUBS.size() + " subscribers, " + SOURCES.size() + " sources; " + sweeps + " sweeps ("
                 + (sweeps == 0 ? 0 : sweepNanos / sweeps / 1000) + " us each, "
                 + (warmSweeps == 0 ? 0 : warmNanos / warmSweeps / 1000) + " us each after the first " + WARM_SWEEPS
+                + (CPU_TIME ? " (" + (warmSweeps == 0 ? 0 : warmCpuNanos / warmSweeps / 1000) + " us of CPU)" : "")
                 + ", at most " + sweepMaxNanos / 1000 + " us), " + messages + " messages, " + bytes
                 + " bytes, " + records + " records";
     }
@@ -177,14 +183,15 @@ public final class FarFeed {
         ticks++;
         if (SUBS.isEmpty() || ticks % INTERVAL_TICKS != 0)
             return;
-        long t0 = System.nanoTime();
+        long t0 = System.nanoTime(), c0 = CPU_TIME ? THREADS.getCurrentThreadCpuTime() : 0;
         sweep(event.getServer());
-        long took = System.nanoTime() - t0;
+        long took = System.nanoTime() - t0, cpu = CPU_TIME ? THREADS.getCurrentThreadCpuTime() - c0 : 0;
         sweepNanos += took;
         sweepMaxNanos = Math.max(sweepMaxNanos, took);
         if (++sweeps > WARM_SWEEPS) {
             warmSweeps++;
             warmNanos += took;
+            warmCpuNanos += cpu;
         }
     }
 
@@ -198,7 +205,7 @@ public final class FarFeed {
         SUBS.clear();
         sink = NETWORK;
         players = null;
-        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = 0;
+        sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = 0;
     }
 
     /** One sweep over every subscriber (a test calls it directly). */
