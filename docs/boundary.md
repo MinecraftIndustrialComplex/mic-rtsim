@@ -980,9 +980,11 @@ What the bridge must do:
    `config/incontrol/spawn.json` whose mob list holds `minecraft:blaze` and `iceandfire:fire_dragon`
    (allowed in `c:is_desert`, denied elsewhere when In Control caused the join), all verified in the
    pack config. Remove the spawner entry and take `iceandfire:fire_dragon` out of both rules' mob
-   lists (the blaze rules stay). This is a pack change; Ben chose it (DECISIONS.md OGB-6) and it is
-   applied in the pack with field flights on (OGC46). `neoforge/iceandfire/pack-proposal/config/incontrol/`
-   still holds the same files for OG-10's harness (Z21).
+   lists (the blaze rules stay). This is a pack change; Ben chose it (DECISIONS.md OGB-6). It is built
+   on the pack repo's branch `oilgate-f8` and merges in the same pack commit that adds mic-rtsim to the
+   pack's `mods/` (OGC46); until then, the engine discards the fire dragons In Control spawns while
+   field flights run (item 3, OGC66). `neoforge/iceandfire/pack-proposal/config/incontrol/` holds the
+   same files for OG-10's harness (Z21).
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
@@ -993,8 +995,9 @@ What the bridge must do:
    structure spawn (choice Z10). In Control's spawner spawns as NATURAL (verified).
 3. **Apply the engine's answer:** the engine adopts a lair's own dragon from world generation as its
    occupant, adopts spawn-egg and command dragons as wanderers, leaves natural and spawner dragons alone
-   (R18 as amended by OG-1 and P13: they are In Control's, and are discarded only when the engine's
-   `adopt_natural_dragons` is set) and discards a second structure dragon for a lair that has one,
+   (R18 as amended by OG-1 and P13: they are In Control's; a fire one is discarded while field flights
+   run, since they replace it, OGB-6 and OGC66, and every one when the engine's `adopt_natural_dragons`
+   is set) and discards a second structure dragon for a lair that has one,
    and leaves **tamed** dragons alone (A10: a creature a player takes leaves the sim). Dragons
    hatched from eggs are tamed by Ice and Fire (verified, `DragonEggEntity.updateEggCondition`), so
    they are the player's.
