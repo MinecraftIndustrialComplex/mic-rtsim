@@ -144,6 +144,23 @@ the field flights. Its arm A reads In Control's rules from `packMods`' config (t
 copy), which keeps the fire dragon until that copy is synced from the pack; after that arm A has no
 fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
 
+**The night run** the audit's F8 asked for (`-Pog10 -Pog10Hour=14000`, one native sample per arm,
+2026-10-21, before the pack change, so arm A still had In Control's fire dragon):
+
+| Site, arm | Dragon damage/min | First dragon hit | Distinct dragons hitting/h | Targeting or hitting/h |
+|---|---|---|---|---|
+| 1, A | 104.7 | 1,854 | 60 | 80 |
+| 1, B | 353.3 | 334 | 120 | 220 |
+| 2, A | 0 | none | 0 | 120 |
+| 2, B | 0 | none | 0 | 0 |
+| 3, A | 235.3 | 692 | 120 | 160 |
+| 3, B | 0 | none | 0 | 0 |
+
+By night the field flights beat In Control's dragon at site 1 on every measure: In Control's dragons
+hit later and less by night (OGC35's morning runs had them at 260.7 and 334.0 a minute, first hit 676
+and 563), and the drawn visitors do not. Site 2 is safe in both arms, and site 3 (no oil) has no
+dragon in B, as designed. One sample, so this shows the direction, not a median.
+
 ## Lairs near oil (OG-7)
 
 **OGC20. One lair placed per field.** When a player is near a field with no fire lair within
