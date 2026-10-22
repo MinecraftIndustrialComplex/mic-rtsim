@@ -12,8 +12,9 @@
 //!   commands move to the link's queue;
 //! - **write** ([`write_resends`], [`write_queue`]): commands into the command buffer, with the
 //!   bridge's sequences, the DICT records they need first, and what does not fit left for later;
-//! - **save** ([`snapshot`], [`deletions`]): the engine's own pages (tables 0x4900 to 0x4903,
-//!   F36, G2-9) and the link's page, [`KEY_LINK`];
+//! - **save** ([`save`], [`saved`]): the engine's own pages changed since the last save (tables
+//!   0x4900 to 0x4903, F36, G2-9, docs/choices-industry-dirty-pages.md) and the link's page,
+//!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
 //! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA and
@@ -28,7 +29,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use rtsim_industry::cmd::{Cmd, IndustryOps};
-use rtsim_industry::engine::Engine as Industry;
+use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
 use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE};
@@ -920,15 +921,30 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 
 // ---- saves ----------------------------------------------------------------------------------
 
-/// Every industry page, taken at this step boundary: the engine's (F36) and the link's.
-pub(super) fn snapshot(st: &State) -> Vec<(PageKey, Vec<u8>)> {
-    st.industry.pages()
+/// One save's industry pages, taken at this step boundary (docs/choices-industry-dirty-pages.md
+/// ID2): the engine's globals page and its pages changed since the last save, the link's page,
+/// and the pages of districts and replay clusters gone since then, to delete. No index is read:
+/// what is gone is what the engine marked. The ticket goes back to the engine through the save's
+/// job ([`saved`]), so a save that does not reach the disk has its pages written again (ID3).
+pub(super) fn save(st: &mut State) -> ChangedPages {
+    let mut c = st.industry.engine.save_changed();
+    c.put.push((KEY_LINK, encode_link(&st.industry)));
+    c
 }
 
-/// The industry pages the store holds that a snapshot no longer has (a district removed, a replay
-/// cluster merged or dissolved): deleted in the same commit, or a restore would bring them back.
-/// Reads only the industry tables' index blocks, like the paged modules' deletions, never the
-/// whole index (docs/choices-leg-purge.md LP6).
+/// A save's result, back on the step thread: a failed one's pages are marked again (ID3).
+pub(super) fn saved(st: &mut State, t: Option<SaveTicket>, ok: bool) {
+    if let Some(t) = t
+        && !ok
+    {
+        st.industry.engine.save_failed(t);
+    }
+}
+
+/// The industry pages the store holds that `snapshot` does not have: deleted in the commit that
+/// writes a new engine's pages at start ([`Link::pages`]), or a restore would bring them back. Reads only the
+/// industry tables' index blocks, never the whole index (docs/choices-leg-purge.md LP6). A save
+/// needs none of this: its deletions are the engine's own marks (ID2).
 pub(super) fn deletions(
     store: &PageStore,
     snapshot: &[(PageKey, Vec<u8>)],

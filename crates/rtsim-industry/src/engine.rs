@@ -379,8 +379,9 @@ pub struct PageCheck {
     pub unchanged: u64,
 }
 
-/// Whether engines keep the page check: a debug build, or `RTSIM_VERIFY_PAGES` set.
-fn page_check_on() -> bool {
+/// Whether engines keep the page check (ID5): a debug build, or `RTSIM_VERIFY_PAGES` set and not
+/// `0`. Read once per process.
+pub fn page_check_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         cfg!(debug_assertions) || std::env::var_os("RTSIM_VERIFY_PAGES").is_some_and(|v| v != "0")
@@ -4371,6 +4372,23 @@ mod persist_impls {
                 delete,
                 ticket,
             }
+        }
+
+        /// A save whose pages go nowhere, for the page check (ID5): the fake world's and the
+        /// tests' saves, between steps. With the check on, it checks the marks since the save
+        /// before and panics on a page that changed without one; with it off, it does nothing.
+        pub fn check_save(&mut self) {
+            if self.page_check.is_none() {
+                return;
+            }
+            self.save_changed();
+            let c = self.page_check.as_deref().expect("on");
+            assert!(
+                c.unmarked == 0,
+                "industry page {:#x} changed since the last save without a mark ({} such pages)",
+                c.first_unmarked.map_or(0, |k| k.0),
+                c.unmarked
+            );
         }
 
         /// A save that did not reach the disk: its pages are written again by the next (ID3).
