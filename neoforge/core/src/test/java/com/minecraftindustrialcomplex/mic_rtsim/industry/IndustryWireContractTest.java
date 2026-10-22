@@ -143,7 +143,8 @@ class IndustryWireContractTest {
                 "Flying", IndRecords.ThreatClass.FLYING, "Siege", IndRecords.ThreatClass.SIEGE);
         group("block_flags",
                 "PERIMETER", IndRecords.SurveyBlocks.FLAG_PERIMETER, "ROOFLESS", IndRecords.SurveyBlocks.FLAG_ROOFLESS,
-                "MACHINE", IndRecords.SurveyBlocks.FLAG_MACHINE, "INVENTORY", IndRecords.SurveyBlocks.FLAG_INVENTORY);
+                "MACHINE", IndRecords.SurveyBlocks.FLAG_MACHINE, "INVENTORY", IndRecords.SurveyBlocks.FLAG_INVENTORY,
+                "ROOF", IndRecords.SurveyBlocks.FLAG_ROOF);
         group("survey_flag", "mob_griefing", IndRecords.Survey.FLAG_MOB_GRIEFING);
     }
 
@@ -726,7 +727,10 @@ class IndustryWireContractTest {
                 Rec r = journaled(n, IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.size(c), c, f)
                         .put64("district", IndRecords.SurveyBlocks.DISTRICT, f.u64("district"))
                         .put32("revision", IndRecords.SurveyBlocks.REVISION, f.u32("revision"))
-                        .put32("part", IndRecords.SurveyBlocks.PART, f.u32("part"));
+                        .put32("part", IndRecords.SurveyBlocks.PART, f.u32("part"))
+                        .put32("chunk_x", IndRecords.SurveyBlocks.CHUNK_X, f.i32("chunk_x") & 0xFFFF_FFFFL)
+                        .put32("chunk_z", IndRecords.SurveyBlocks.CHUNK_Z, f.i32("chunk_z") & 0xFFFF_FFFFL)
+                        .put32("partial", IndRecords.SurveyBlocks.FLAGS, f.bool("partial") ? IndRecords.SurveyBlocks.PARTIAL : 0);
                 for (int i = 0; i < c; i++) {
                     int at = IndRecords.SurveyBlocks.BLOCKS + i * IndRecords.SurveyBlocks.BLOCK;
                     String p = "block" + i + ".";

@@ -211,7 +211,8 @@ The threat GameTests (`mic_rtsim` namespace, either engine; `ThreatGameTests`):
 
 | Test | What it shows |
 |---|---|
-| `thedefencesurveymeasureswallsroofsanddark` | I21, Q14 to Q16: a furnace in the open has 4 gaps of a 4-column perimeter, a closed ring 0, a doorway 1; a stone block roofs it; torches cut the dark spawnable count (256 to 154 on the stub); IND_SURVEY and IND_SURVEY_BLOCKS (wall faces, the machine, the chest) |
+| `thedefencesurveymeasureswallsroofsanddark` | I21, Q14 to Q16: a furnace in the open has 4 gaps of a 4-column perimeter, a closed ring 0, a doorway 1; a stone block three up is a roof in a flyer's reach (listed, not roofed, OGB-7) and one ten up roofs it; torches cut the dark spawnable count (256 to 154 on the stub); IND_SURVEY and IND_SURVEY_BLOCKS (wall faces, the machine, the chest) |
+| `apartlyloadeddistrictissurveyedwhereitisloaded` | F5: a district with a far unloaded chunk gets partial surveys (IND_SURVEY_BLOCKS flagged partial for the loaded chunk, no part for the unloaded one, no whole survey); a second machine joins the loaded chunk's rows |
 | `naturalspawnsaresampledwhileobserved` | I20, Q13: natural spawns of a zombie and a skeleton while observed count 1 and 1; a spawner's and a far one do not; IND_SPAWN_SAMPLE with 600 observed ticks and the dark blocks of the district and its ring |
 | `realfightsareobserved` | Q12: a golem kills a zombie (melee: 1 attacker, 1 killed, strength 1) and a creeper's explosion breaks 9 blocks (siege), each an IND_FIGHT |
 | `vanillaconditionshavenoseasons` | I12, Q19: without a season mod, IND_CONDITIONS is season 0 of 1, length 0 |

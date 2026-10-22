@@ -639,18 +639,34 @@ fn an_unwatched_raid_is_never_better_than_observed() {
     d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 
+/// P28 as Ben decided it, "bounded damage too" (the oil audit's F9, choices-oilgate.md OGC56): a
+/// grudge raid on a watched district brings the dragon in person and also books, at once, the
+/// bounded damage the same raid books on the district unwatched.
 #[test]
-fn a_watched_district_gets_a_real_fight_and_no_abstract_damage() {
-    let (d, fake, _) = grudge_raid(true, 0.0, None);
-    assert_eq!(d.stats.district_raids, 0);
-    let farm = fake.engine.district(synth::FARM).unwrap();
-    assert!(farm.watched);
-    assert!(
-        farm.attacks
+fn a_watched_district_gets_a_real_fight_and_the_same_bounded_damage() {
+    let raid = |f: &rtsim_industry::fake::FakeWorld| {
+        f.engine
+            .district(synth::FARM)
+            .unwrap()
+            .attacks
             .iter()
-            .all(|a| a.source != rtsim_industry::threat::ThreatSource::Dragon)
-    );
+            .find(|a| a.source == rtsim_industry::threat::ThreatSource::Dragon)
+            .cloned()
+            .expect("a dragon raid is booked")
+    };
+    let (d, fake, w) = grudge_raid(true, 0.0, None);
+    assert!(fake.engine.district(synth::FARM).unwrap().watched);
     assert!(d.stats.materialized >= 1, "the dragon came in person");
+    assert!(d.stats.district_raids >= 1, "{:?}", d.stats);
+    let seen = raid(&fake);
+    assert_eq!(seen.skipped, None, "{seen:?}");
+    let (_, unwatched, _) = grudge_raid(false, 0.0, None);
+    let unseen = raid(&unwatched);
+    assert_eq!((seen.at, seen.count), (unseen.at, unseen.count));
+    assert_eq!(seen.outcome, unseen.outcome);
+    assert_eq!(seen.destroyed, unseen.destroyed);
+    assert!(seen.destroyed > 0, "blocks are lost: {seen:?}");
+    d.check(&w, Some(&fake.engine.books.stolen)).unwrap();
 }
 
 // ---- the population (P13) -----------------------------------------------------------------------

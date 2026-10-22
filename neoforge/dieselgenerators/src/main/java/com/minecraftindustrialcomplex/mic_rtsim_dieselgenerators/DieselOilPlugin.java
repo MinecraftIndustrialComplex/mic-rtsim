@@ -53,6 +53,15 @@ public final class DieselOilPlugin implements IndustryPlugin {
         return base.computeIfAbsent(new Key(level.dimension(), cp.toLong()), k -> OilChunksSavedData.getChunkOilAmount(level, cp));
     }
 
+    /**
+     * A pumpjack hole is a machine: it seeds its district (DS-10). It is also the one block that seeds with
+     * no player ({@link HoleSeeds}, the oil gate audit's F1, choice OGC60).
+     */
+    @Override
+    public Boolean seed(BlockEntity be) {
+        return be instanceof PumpjackHoleBlockEntity ? Boolean.TRUE : null;
+    }
+
     @Override
     public void deposits(ServerLevel level, District district, LevelChunk chunk, DepositSink out) {
         boolean pumpjack = false;
