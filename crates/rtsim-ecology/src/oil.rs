@@ -20,9 +20,8 @@
 //! **The gate is on only once some oil is known** (OGC12): a world whose index is empty keeps the
 //! old rules (no reserve, no drinking), so a fire dragon never runs dry where it could never drink.
 //!
-//! **The underground half** (OG-9, OILGATE.md §4.6) is not built. Its seam: [`OilIndex::add_chunk`]
-//! says when a chunk is new to the index, which is where its first load would send the deep
-//! layer's command (0x8507, reserved in `boundary`).
+//! **The underground half** (OG-9e, OILGATE.md §4.6) is [`crate::nest`]: [`OilIndex::add_chunk`]
+//! says when a chunk is new to the index (its first load), which founds its cell's oil nest.
 
 use rtsim_archive::kinds;
 use rtsim_industry::ids::DistrictId;
@@ -40,6 +39,7 @@ use crate::dragon::{DragonId, LairKind, Purpose, SENSED_KEPT, State, Target};
 use crate::engine::{BODY_RADIUS, Dragons, Ev, HOME_RADIUS, NewDragon, Quarry, did, place, spot};
 use crate::flight;
 use crate::infra::{DistrictSignals, DistrictSite, Infrastructure};
+use crate::nest::NestTunables;
 use crate::prey::PreyClass;
 use crate::species::{Gender, Species};
 use crate::tunables::PreyKind;
@@ -108,10 +108,13 @@ pub struct OilTunables {
     /// A player's presence counts for field flights this long after its last report.
     pub presence_fresh_ticks: u64,
     /// The switches the engine starts with (`boundary::OIL_*`); OIL_CONFIG replaces them. Field
-    /// flights and lair placement are on (OGB-6: the sim's dragons replace In Control's).
+    /// flights and lair placement are on (OGB-6: the sim's dragons replace In Control's), and so are
+    /// oil nests (OG-9e).
     pub flags: u32,
     /// The goods a dragon drinks (item names; a name also matches its `name/<hash>` variants).
     pub fuels: Vec<String>,
+    /// The oil nests (OG-9e, [`crate::nest`]).
+    pub nest: NestTunables,
 }
 
 impl Default for OilTunables {
@@ -136,7 +139,9 @@ impl Default for OilTunables {
             fuel_signal_mb: 1_000,
             survey_radius: 1_024,
             presence_fresh_ticks: 200,
-            flags: boundary::OIL_FIELD_FLIGHTS | boundary::OIL_PLACE_LAIRS,
+            flags: boundary::OIL_FIELD_FLIGHTS
+                | boundary::OIL_PLACE_LAIRS
+                | boundary::OIL_PLACE_NESTS,
             fuels: [
                 "destroy:crude_oil",
                 "createdieselgenerators:oil",
@@ -146,6 +151,7 @@ impl Default for OilTunables {
             ]
             .map(String::from)
             .to_vec(),
+            nest: NestTunables::default(),
         }
     }
 }
@@ -297,8 +303,8 @@ impl OilIndex {
     }
 
     /// An oil chunk joins the index (canonical through the frame's topology, TP4). Returns
-    /// whether it is new: the seam for the underground half (OG-9b), whose deep layer would be
-    /// placed on a new chunk's first load. A chunk known already may become bottomless.
+    /// whether it is new: the seam for the underground half (OG-9e), whose oil nest is founded on a
+    /// new chunk's first load. A chunk known already may become bottomless.
     pub fn add_chunk(
         &mut self,
         t: &Topology,
@@ -1259,15 +1265,18 @@ impl Dragons {
             if c.amount <= 0 {
                 continue;
             }
-            // A new chunk is the underground half's seam (OG-9b: its first load would place the
-            // deep layer, command 0x8507). Nothing is sent for it yet.
-            let _new = self.oil.add_chunk(
+            // A new chunk is the underground half's seam (OG-9e): its cell's nest is founded.
+            let new = self.oil.add_chunk(
                 t,
                 frame,
                 i64::from(c.cx),
                 i64::from(c.cz),
                 c.flags & boundary::OIL_BOTTOMLESS != 0,
             );
+            if new {
+                let (cx, cz) = t.grid(CHUNK).canonical(i64::from(c.cx), i64::from(c.cz));
+                self.nest_seam(frame, cx, cz, at);
+            }
         }
         let added = self.oil.chunks - before;
         self.stats.oil_chunks += added;

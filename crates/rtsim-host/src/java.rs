@@ -854,9 +854,11 @@ impl Java {
                             }));
                         }
                         db::Cmd::Discard(_) => failed(self, 0),
-                        // Both wait for chunks to load (OILGATE.md §4.1, §4.6), which here never
-                        // happens: no lair, no OIL_CHUNKS.
-                        db::Cmd::PlaceLair(_) | db::Cmd::OilSurvey(_) => {}
+                        // They wait for chunks to load (OILGATE.md §4.1, §4.6), which here never
+                        // happens: no lair, no OIL_CHUNKS, no nest's chamber.
+                        db::Cmd::PlaceLair(_) | db::Cmd::OilSurvey(_) | db::Cmd::PlaceNest(_) => {}
+                        // A nest's worms and sorties need its chamber, which never formed.
+                        db::Cmd::NestRenew(_) | db::Cmd::NestSortie(_) => {}
                         db::Cmd::Steer(_) => {}
                     },
                     Err(_) => self.undecoded += 1,
@@ -1326,6 +1328,10 @@ impl Java {
             // The oil gate's asks (a lair placed, a survey): recorded, in Java's dimension ids.
             D::PlaceLair(p) => p.dimension = self.java_dim(p.dimension),
             D::OilSurvey(o) => o.dimension = self.java_dim(o.dimension),
+            // The oil nests' asks (OILGATE.md §4.6): recorded; the test answers them itself.
+            D::PlaceNest(p) => p.dimension = self.java_dim(p.dimension),
+            D::NestRenew(r) => r.dimension = self.java_dim(r.dimension),
+            D::NestSortie(o) => o.dimension = self.java_dim(o.dimension),
             D::Steer(_) | D::Depart(_) => {}
         }
         self.iaf.push((seq, c));

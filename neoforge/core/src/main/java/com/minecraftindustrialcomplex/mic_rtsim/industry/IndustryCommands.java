@@ -30,7 +30,7 @@ import java.util.UUID;
  *       their own (pinned);</li>
  *   <li>{@code exclude} and {@code include}: your chunk is in no district, or detection decides again;</li>
  *   <li>{@code adopt [radius]}: industrial block entities around you become seeds (worlds made before the
- *       mod, structures placed by commands);</li>
+ *       mod, structures placed by commands); detection runs around them only (DS-12);</li>
  *   <li>{@code rescan}, {@code perf}.</li>
  * </ul>
  * No new items or blocks (D3). Every edit is an IND_EDIT (aux 4, command) for the districts it touches.
@@ -232,10 +232,11 @@ public final class IndustryCommands {
         if (ind == null)
             return 0;
         ServerLevel level = ctx.getSource().getLevel();
-        int n = ind.districts.adopt(level, new ChunkPos(net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition())), radius);
-        ind.districts.rescanNow(level);
-        say(ctx, "mic_rtsim: " + n + " block entities adopted as seeds; " + ind.districts.all().size() + " districts");
-        return n;
+        // Detects around the adopted chunks only (DS-12), never the whole dimension.
+        Districts.Adopted a = ind.districts.adoptAround(level, new ChunkPos(net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition())), radius);
+        say(ctx, "mic_rtsim: " + a.seeds() + " block entities adopted as seeds; " + ind.districts.all().size() + " districts"
+                + (a.detected() ? "" : " so far, the detection around them goes on over the next ticks"));
+        return a.seeds();
     }
 
     private static int rescan(CommandContext<CommandSourceStack> ctx) {

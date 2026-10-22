@@ -1,9 +1,12 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
+import com.iafenvoy.iceandfire.entity.DeathWormEntity;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.iafenvoy.iceandfire.event.DragonFireEvent;
+import com.iafenvoy.iceandfire.event.GriefBreakBlockEvent;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.mojang.logging.LogUtils;
 import net.minecraft.server.level.ServerLevel;
@@ -16,6 +19,7 @@ import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.attachment.AttachmentType;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityMountEvent;
 import net.neoforged.neoforge.event.entity.living.AnimalTameEvent;
 import net.neoforged.neoforge.event.entity.living.FinalizeSpawnEvent;
@@ -73,6 +77,12 @@ public final class MicRtsimIceAndFire {
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, MicRtsimIceAndFire::onBreak);
         bus.addListener(MicRtsimIceAndFire::onContainerOpen);
         bus.addListener(MicRtsimIceAndFire::onContainerClose);
+        // The oil nests (OG-9e): their hearts never spawn, and their worms break no blocks.
+        bus.addListener(EventPriority.LOWEST, true, FinalizeSpawnEvent.class, MicRtsimIceAndFire::onHeartSpawn);
+        bus.addListener(EventPriority.HIGH, false, GriefBreakBlockEvent.class, MicRtsimIceAndFire::onGrief);
+        bus.addListener(EventPriority.LOWEST, false, EntityLeaveLevelEvent.class, MicRtsimIceAndFire::onLeave);
+        if (DragonConfig.Test.ENABLED)
+            IndustryApi.register(new com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.TestWells());
         // GameTest servers only: after the core's session started (its listener has the normal priority).
         bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.server.ServerStartedEvent.class,
                 com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.GameTestClock::onServerStarted);
@@ -93,6 +103,10 @@ public final class MicRtsimIceAndFire {
     private static void onJoin(EntityJoinLevelEvent event) {
         if (event.getLevel().isClientSide())
             return;
+        if (event.getEntity() instanceof DeathWormEntity w) {
+            DragonBridge.INSTANCE.nests.joined(w); // a nest worm saved mid-glide: mended before it ticks
+            return;
+        }
         DragonBaseEntity shooter = IafDragons.chargeOwner(event.getEntity());
         if (shooter != null) {
             if (!event.loadedFromDisk() && live() != null)
@@ -120,9 +134,30 @@ public final class MicRtsimIceAndFire {
     }
 
     private static void onDeath(LivingDeathEvent event) {
-        if (event.getEntity().level().isClientSide() || live() == null)
+        if (event.getEntity().level().isClientSide())
+            return;
+        // A nest worm is forgotten even with no session; a puppet's kill of a worm is still a kill below.
+        if (event.getEntity() instanceof DeathWormEntity w)
+            DragonBridge.INSTANCE.nests.onDeath(w, event.getSource());
+        if (live() == null)
             return;
         DragonBridge.INSTANCE.onDeath(event.getEntity(), event.getSource());
+    }
+
+    /** A spawner spawn from an oil nest's heart is cancelled (its RequiredPlayerRange 0 should already stop it). */
+    private static void onHeartSpawn(FinalizeSpawnEvent event) {
+        if (event.getSpawnType() == MobSpawnType.SPAWNER && !event.isSpawnCancelled() && DragonBridge.INSTANCE.nests.fromHeart(event))
+            event.setSpawnCancelled(true);
+    }
+
+    private static void onGrief(GriefBreakBlockEvent event) {
+        if (event.getGriefer() != null && !event.getGriefer().level().isClientSide())
+            DragonBridge.INSTANCE.nests.onGrief(event);
+    }
+
+    private static void onLeave(EntityLeaveLevelEvent event) {
+        if (!event.getLevel().isClientSide() && event.getEntity() instanceof DeathWormEntity w)
+            DragonBridge.INSTANCE.nests.left(w);
     }
 
     private static void onTame(AnimalTameEvent event) {
@@ -142,6 +177,7 @@ public final class MicRtsimIceAndFire {
             return;
         DragonBridge.INSTANCE.lairs.loaded(chunk, event.isNewChunk()); // drained once the session exists
         DragonBridge.INSTANCE.sampler.loaded(chunk, event.isNewChunk());
+        DragonBridge.INSTANCE.nests.loaded(chunk);
     }
 
     private static void onBreak(BlockEvent.BreakEvent event) {
@@ -149,6 +185,7 @@ public final class MicRtsimIceAndFire {
         if (s == null || !(event.getLevel() instanceof ServerLevel level) || event.getPlayer() == null)
             return;
         DragonBridge.INSTANCE.lairs.onBreak(level, event.getPos(), event.getState(), event.getPlayer(), s.gameTime());
+        DragonBridge.INSTANCE.nests.onBreak(level, event.getPos(), event.getState(), event.getPlayer(), s.gameTime());
     }
 
     private static void onContainerOpen(PlayerContainerEvent.Open event) {

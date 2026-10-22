@@ -12,9 +12,11 @@ plugin has one danger or the other, never both, never neither. The pack's In Con
 merges in the same pack commit that adds mic-rtsim to the pack's `mods/`, which it is not in yet. §4.8 was first measured
 on 2026-10-21 (two runs by day, OGC35): at site 1 the gate's field flights matched In Control's damage
 per minute but hit 40 to 50% later and brought a third to a half as many dragons. OGB-6 retired that
-pass condition: the gate is judged by Ben's bar (OGB-1), not by matching In Control. The underground half
-(OG-9, §4.6) is not built; its seam is in `docs/choices-oilgate.md`. The design below is as approved;
-where the build chose a number or a detail, the choices file says so.
+pass condition: the gate is judged by Ben's bar (OGB-1), not by matching In Control. **The underground
+half is built as OG-9e's oil nests** (2026-10-22, the cheese audit's F6; §4.6 "As built", OGC70
+onward): Death Worms in a chamber with a spawner heart under each oil cell, asleep until a pumpjack
+drills, raiding as the fifth threat class `Burrowing`. The design below is as approved; where the build
+chose a number or a detail, the choices file says so.
 
 **Ben's answers, 2026-10-21 (DECISIONS.md OGB-1 to OGB-5):** the gate is judged by his bar (a real oil
 pipeline infeasible, cheesing it hard for a semi-casual player), not by matching In Control; the
@@ -295,6 +297,33 @@ drinking dragons, against the district's players (those who placed its machines:
   asked for ("when players are beginning to do industrial activity near an oil deposit").
 
 ### 4.6 Underground: the deep listens
+
+**As built (OG-9e, 2026-10-22; docs/choices-oilgate.md OGC70 onward).** Ben replaced the sculk design
+below with the oil nest (DECISIONS.md OG-9e; research/underground-threats-2026-10-21.md §5.1 and
+§5.2). What runs:
+- **Where:** one nest in each cell of 8 by 8 chunks that holds oil, founded when the cell's first oil
+  chunk reaches the engine's index (`crates/rtsim-ecology/src/nest.rs`). The plugin
+  (`neoforge/iceandfire`, `Nests.java`) carves its chamber, 9 by 9 blocks with a sand floor under 4
+  of air, 20 to 60 blocks under the surface, in natural ground only, with a vanilla spawner as its
+  heart (inert: it spawns nothing itself). A cell with no room is given up.
+- **Asleep until drilled:** a nest wakes only while a pumpjack's deposit sample of its district's
+  latest sweep lies within 128 blocks of the heart. Asleep, it holds: no worms come, no raids, its
+  waits stand still.
+- **Its worms:** Ice and Fire's Death Worms, K 2 a nest, placed in the chamber with no player within
+  128 blocks. They grow with the field's drainage (stage 1 to 3 at thirds of the oil left; a
+  bottomless well keeps stage 1). A worm killed comes back after `min(96, 12 x 2^P)` drilling days
+  (EQUILIBRIUM.md §2.2's shared rule, `rtsim_kernel::renewal`); a player's kill raises P.
+- **Raids:** each drilling day, with chance 1 in 4, the worms go at a district within 128 blocks of
+  the heart as a `Burrowing` threat: walls, turrets and guards do not stop them, they break
+  underground machines and inventories first, then machines, one block a worm, and carry nothing
+  off. A watched district also gets the real worms, which come up under it and fight for 1,200 ticks.
+- **Counterplay:** an armoured floor (`#mic_rtsim:armoured_floor`: obsidian, crying obsidian,
+  reinforced deepslate) within 4 blocks under a machine spares it, and a worm stops under it; break
+  the heart and nothing renews until it reforms (`min(384, 96 x 2^P)` drilling days); stop drilling
+  and the nest sleeps. The pumpjack's own hole is never a target (`#mic_rtsim:burrow_spared`).
+- **Not built:** the blowout (OG-9e: later).
+
+The sculk design, as first proposed (superseded by OG-9e):
 
 The cheese is reaching oil below y 15, where In Control spawns nothing and dragons do not fit. The
 threat there is vanilla's own, placed where the oil is:

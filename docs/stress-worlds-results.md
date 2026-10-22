@@ -936,3 +936,5 @@ adopt command itself, not from the detection triggers DS-11 spreads over ticks.
   as DS-11's ticked path already does), so its cost is one neighbourhood's at any district count.
   Alternatively, let the adopt only mark the chunks and leave the detection to the next ticked pass;
   then the command cannot report the new district count at once.
+- **Fixed afterwards (DS-12):** the adopt now detects around its own chunks (`Districts.adoptAround`), budgeted
+  like a ticked pass. `merge`, `split` and `exclude` still call `rescanNow`.

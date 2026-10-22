@@ -16,6 +16,7 @@ public final class DragonConfig {
     public static final ModConfigSpec SPEC;
     private static final ModConfigSpec.BooleanValue FIELD_FLIGHTS;
     private static final ModConfigSpec.BooleanValue PLACE_LAIRS;
+    private static final ModConfigSpec.BooleanValue PLACE_NESTS;
     private static final ModConfigSpec.IntValue SAMPLES_PER_TICK;
 
     /** PLACEHOLDER: oil samples (CDG's getBaseOilAmount, one chunk each) per server tick. */
@@ -31,6 +32,10 @@ public final class DragonConfig {
         PLACE_LAIRS = b.comment("An oil field with no fire lair in reach gets a fire roost placed near it on the first load",
                         "of a free site (OILGATE.md §4.4, OG-7). At most one per field.")
                 .define("placeLairs", true);
+        PLACE_NESTS = b.comment("The engine founds an oil nest under its oil chunks (OILGATE.md §4.6, OG-9e): a chamber of sand",
+                        "20 to 60 blocks down with a spawner heart that never spawns, carved on the chunk's first load, and",
+                        "Death Worms the engine renews there while a pumpjack drills nearby. Off: no nest is placed.")
+                .define("placeNests", true);
         SAMPLES_PER_TICK = b.comment("Chunks whose oil is sampled per tick, new chunks and the engine's surveys together",
                         "(PLACEHOLDER). One sample is one call to Create: Diesel Generators' getBaseOilAmount.")
                 .defineInRange("samplesPerTick", DEFAULT_SAMPLES_PER_TICK, 1, 4096);
@@ -56,6 +61,12 @@ public final class DragonConfig {
         if (Test.placeLairs != null)
             return Test.placeLairs;
         return loaded() ? PLACE_LAIRS.get() : true;
+    }
+
+    public static boolean placeNests() {
+        if (Test.placeNests != null)
+            return Test.placeNests;
+        return loaded() ? PLACE_NESTS.get() : true;
     }
 
     public static int samplesPerTick() {
@@ -86,12 +97,13 @@ public final class DragonConfig {
     /** OIL_CONFIG's flags from the switches. */
     public static int oilFlags() {
         return (fieldFlights() ? DragonRecords.OilConfig.FLAG_FIELD_FLIGHTS : 0)
-                | (placeLairs() ? DragonRecords.OilConfig.FLAG_PLACE_LAIRS : 0);
+                | (placeLairs() ? DragonRecords.OilConfig.FLAG_PLACE_LAIRS : 0)
+                | (placeNests() ? DragonRecords.OilConfig.FLAG_PLACE_NESTS : 0);
     }
 
     /**
      * GameTest overrides ({@code -Dmic_rtsim.gametest=true}). The GameTest world is reused across runs and
-     * its tests share one engine, so the oil gate's side effects start off there: no lair placed, no chunk
+     * its tests share one engine, so the oil gate's side effects start off there: no lair or nest placed, no chunk
      * sampled, no survey answered, no field flight, until a test switches one on and back off.
      */
     public static final class Test {
@@ -100,6 +112,14 @@ public final class DragonConfig {
         public static final boolean ENABLED = Boolean.getBoolean("mic_rtsim.gametest");
         public static Boolean fieldFlights = ENABLED ? Boolean.FALSE : null;
         public static Boolean placeLairs = ENABLED ? Boolean.FALSE : null;
+        public static Boolean placeNests = ENABLED ? Boolean.FALSE : null;
+        /**
+         * A nest chamber's floor at this y, whatever PLACE_NEST's depth (the flat GameTest world has no ground 20
+         * blocks deep): the first spot tried, the seeded alternatives above and below it as usual. Null: the depth.
+         */
+        public static Integer nestFloorY = null;
+        /** Ticks before a nest whose worms could not be placed tries again (null: one nest day, 24,000). */
+        public static Integer nestRetryTicks = null;
         public static Boolean sampleNewChunks = ENABLED ? Boolean.FALSE : null;
         public static Boolean answerSurveys = ENABLED ? Boolean.FALSE : null;
         public static Integer samplesPerTick = null;
@@ -111,6 +131,9 @@ public final class DragonConfig {
                 throw new IllegalStateException("config overrides need -Dmic_rtsim.gametest=true");
             fieldFlights = Boolean.FALSE;
             placeLairs = Boolean.FALSE;
+            placeNests = Boolean.FALSE;
+            nestFloorY = null;
+            nestRetryTicks = null;
             sampleNewChunks = Boolean.FALSE;
             answerSurveys = Boolean.FALSE;
             samplesPerTick = null;

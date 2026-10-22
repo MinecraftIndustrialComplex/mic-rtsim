@@ -47,6 +47,7 @@ use crate::engine::{
 };
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
+use crate::nest::{NEST_TABLE, Nest, NestState, NestStats};
 use crate::oil::{Field, OIL_FIELD_TABLE, OIL_REGION_TABLE, OilChunk, REGION_CHUNKS, Roll};
 use crate::prey::{Item, PreyLedger};
 use crate::species::{Gender, Species};
@@ -54,12 +55,12 @@ use crate::tunables::{DragonTunables, PreyKind};
 
 /// "RTDG" was the format before the indexes moved behind the meta (PF9), "RTD2" before tribute
 /// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md), "RTD4" before the fields' daily watch
-/// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch); no older
-/// save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD5");
+/// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch), "RTD5" before
+/// the oil nests (OG-9e); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD6");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
-/// gate, "RTN4" before the fields' daily watch).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN5");
+/// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN6");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -680,6 +681,10 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(plan);
         }
         Ev::OilWatch => w.u8(16),
+        Ev::NestWatch { plan } => {
+            w.u8(17);
+            w.u32(plan);
+        }
     }
 }
 
@@ -754,6 +759,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             plan: r.u32()?,
         },
         16 => Ev::OilWatch,
+        17 => Ev::NestWatch { plan: r.u32()? },
         t => return bad(format!("dragon event {t}")),
     })
 }
@@ -996,6 +1002,77 @@ fn put_region_into(v: &Vec<OilChunk>, w: &mut Writer) {
     put_region(w, v);
 }
 
+fn put_opt_u32(w: &mut Writer, v: Option<u32>) {
+    w.var_u64(v.map_or(0, |v| u64::from(v) + 1));
+}
+
+fn get_opt_u32(r: &mut Reader<'_>) -> codec::Result<Option<u32>> {
+    match r.var_u64()? {
+        0 => Ok(None),
+        v => u32_of(v - 1).map(Some),
+    }
+}
+
+pub(crate) fn put_nest(n: &Nest, w: &mut Writer) {
+    w.var_i64(i64::from(n.chunk.0));
+    w.var_i64(i64::from(n.chunk.1));
+    w.var_u64(u64::from(n.depth));
+    w.bool(n.heart.is_some());
+    if let Some(h) = n.heart {
+        [h.0, h.1, h.2].iter().for_each(|v| w.var_i64(i64::from(*v)));
+    }
+    w.u8(n.state.code() | u8::from(n.hatched) << 4 | u8::from(n.bottomless) << 5);
+    w.var_u64(u64::from(n.worms));
+    let (p, at) = n.pressure.parts();
+    w.f32(p);
+    w.u32(at);
+    put_opt_u32(w, n.wait_milli);
+    put_opt_u32(w, n.reform_milli);
+    w.var_i64(n.left_mb);
+    w.var_i64(n.peak_mb);
+    for v in [n.renewed, n.lost_player, n.raids] {
+        w.var_u64(u64::from(v));
+    }
+}
+
+fn get_nest(r: &mut Reader<'_>) -> codec::Result<Nest> {
+    let chunk = (i32_of(r.var_i64()?)?, i32_of(r.var_i64()?)?);
+    let depth = u32_of(r.var_u64()?)?;
+    let heart = if r.bool()? {
+        Some((
+            i32_of(r.var_i64()?)?,
+            i32_of(r.var_i64()?)?,
+            i32_of(r.var_i64()?)?,
+        ))
+    } else {
+        None
+    };
+    let flags = r.u8()?;
+    let Some(state) = NestState::from_code(flags & 0x0F).filter(|_| flags >> 6 == 0) else {
+        return bad(format!("nest flags {flags}"));
+    };
+    let worms = u32_of(r.var_u64()?)?;
+    let p = r.f32()?;
+    let at = r.u32()?;
+    Ok(Nest {
+        chunk,
+        depth,
+        heart,
+        state,
+        worms,
+        hatched: flags & 0x10 != 0,
+        bottomless: flags & 0x20 != 0,
+        pressure: rtsim_kernel::renewal::Pressure::from_parts(p, at),
+        wait_milli: get_opt_u32(r)?,
+        reform_milli: get_opt_u32(r)?,
+        left_mb: r.var_i64()?,
+        peak_mb: r.var_i64()?,
+        renewed: u32_of(r.var_u64()?)?,
+        lost_player: u32_of(r.var_u64()?)?,
+        raids: u32_of(r.var_u64()?)?,
+    })
+}
+
 fn put_field(w: &mut Writer, f: &Field) {
     w.var_u64(u64::from(f.parent));
     w.u16(f.frame);
@@ -1033,6 +1110,7 @@ pub struct DragonsTickets {
     cells: [MapTicket; 3],
     /// The oil index's regions and fields.
     oil: [MapTicket; 2],
+    nests: MapTicket,
     dragons: SaveTicket,
     lairs: SaveTicket,
 }
@@ -1046,11 +1124,12 @@ impl DragonsTickets {
             + self.by_key.pages()
             + self.cells.iter().map(MapTicket::pages).sum::<usize>()
             + self.oil.iter().map(MapTicket::pages).sum::<usize>()
+            + self.nests.pages()
     }
 }
 
 /// Every page table the dragons own when they page: a meta key in none of them.
-const TABLES: [u16; 9] = [
+const TABLES: [u16; 10] = [
     DRAGON_TABLE,
     Lairs::TABLE,
     WHEEL_TABLE,
@@ -1060,6 +1139,7 @@ const TABLES: [u16; 9] = [
     ROAD_CELL_TABLE,
     OIL_REGION_TABLE,
     OIL_FIELD_TABLE,
+    NEST_TABLE,
 ];
 
 /// The row tables' paging counters, for the bench.
@@ -1207,6 +1287,15 @@ impl Dragons {
         w.var_u64(u64::from(self.oil.next_field));
         w.var_u64(u64::from(self.oil.live));
         w.var_u64(self.oil.chunks);
+        // The oil nests (OG-9e): the watch's clock and plan, the test day, the nests awake and the
+        // counters (the rows are saved apart).
+        let n = &self.nests;
+        w.u32(n.day);
+        w.u32(n.plan);
+        w.var_u64(n.day_ticks);
+        w.var_u64(n.awake.len() as u64);
+        n.awake.iter().for_each(|c| put_cell(w, c));
+        n.stats.array().iter().for_each(|v| w.var_u64(*v));
     }
 
     /// An engine from what [`Dragons::put_meta`] wrote, with empty row tables.
@@ -1348,6 +1437,17 @@ impl Dragons {
         d.oil.next_field = u32_of(r.var_u64()?)?;
         d.oil.live = u32_of(r.var_u64()?)?;
         d.oil.chunks = r.var_u64()?;
+        d.nests.day = r.u32()?;
+        d.nests.plan = r.u32()?;
+        d.nests.day_ticks = r.var_u64()?;
+        for _ in 0..r.len_prefix(4)? {
+            d.nests.awake.insert(get_cell(r)?);
+        }
+        let mut s = [0u64; NestStats::LEN];
+        for v in &mut s {
+            *v = r.var_u64()?;
+        }
+        d.nests.stats = NestStats::of(s);
         Ok(d)
     }
 
@@ -1376,6 +1476,11 @@ impl Dragons {
         for (f, x) in &self.oil.fields {
             w.var_u64(u64::from(*f));
             put_field(&mut w, x);
+        }
+        w.var_u64(self.nests.rows.len() as u64);
+        for (c, n) in &self.nests.rows {
+            put_cell(&mut w, c);
+            put_nest(n, &mut w);
         }
         self.dragons.encode_all(&mut w);
         self.lairs.rows().encode_all(&mut w);
@@ -1410,6 +1515,12 @@ impl Dragons {
             fields.insert(f, get_field(r)?);
         }
         d.oil.fields = fields.into();
+        let mut nests = BTreeMap::new();
+        for _ in 0..r.len_prefix(10)? {
+            let c = get_cell(r)?;
+            nests.insert(c, get_nest(r)?);
+        }
+        d.nests.rows = nests.into();
         d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
         let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
         // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
@@ -1499,12 +1610,20 @@ impl Dragons {
                 |x, w| put_field(w, x),
             ),
         ];
+        let nests = self.nests.rows.save_paged(
+            batch,
+            NEST_TABLE,
+            &mut w,
+            |c, w| put_cell(w, c),
+            put_nest,
+        );
         batch.put(meta_key, w.as_bytes());
         DragonsTickets {
             wheel,
             by_key,
             cells,
             oil,
+            nests,
             dragons: self.dragons.rows_mut().save_dirty(batch),
             lairs: self.lairs.rows_mut().save_dirty(batch),
         }
@@ -1521,6 +1640,7 @@ impl Dragons {
         let [r, f] = t.oil;
         self.oil.regions.saved(r);
         self.oil.fields.saved(f);
+        self.nests.rows.saved(t.nests);
         self.dragons.rows_mut().saved(t.dragons);
         self.lairs.rows_mut().saved(t.lairs);
     }
@@ -1537,6 +1657,7 @@ impl Dragons {
         let [r, f] = t.oil;
         self.oil.regions.save_failed(r);
         self.oil.fields.save_failed(f);
+        self.nests.rows.save_failed(t.nests);
         self.dragons.rows_mut().save_failed(t.dragons);
         self.lairs.rows_mut().save_failed(t.lairs);
     }
@@ -1580,6 +1701,8 @@ impl Dragons {
             get_field,
         )
         .map_err(format_err)?;
+        d.nests.rows =
+            PagedMap::open_paged(r, NEST_TABLE, src, get_cell, get_nest).map_err(format_err)?;
         if !r.is_empty() {
             return Err(PageError::Format(format!(
                 "{} trailing bytes in the dragons' meta page",
@@ -1676,6 +1799,14 @@ impl Dragons {
             && self.oil.regions.values().flatten().all(|c| c.field < nf);
         if !oil_ok {
             return bad("the oil index names a field past its count".into());
+        }
+        if !self
+            .nests
+            .awake
+            .iter()
+            .all(|k| self.nests.rows.contains_key(k))
+        {
+            return bad("an awake oil nest is not in the table".into());
         }
         for (_, e) in self.wheel.iter() {
             let ok = match *e {
