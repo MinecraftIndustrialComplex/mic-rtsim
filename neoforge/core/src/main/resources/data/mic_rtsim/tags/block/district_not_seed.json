@@ -104,6 +104,82 @@
     {
       "id": "mic_rtsim:test_store",
       "required": false
+    },
+    {
+      "id": "overgeared:alloy_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:nether_alloy_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:casting_furnace",
+      "required": false
+    },
+    {
+      "id": "overgeared:smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:stone_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:tier_a_smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "overgeared:tier_b_smithing_anvil",
+      "required": false
+    },
+    {
+      "id": "cobblemon:campfire",
+      "required": false
+    },
+    {
+      "id": "cobblemon:soul_campfire",
+      "required": false
+    },
+    {
+      "id": "cobblemon:fossil_analyzer",
+      "required": false
+    },
+    {
+      "id": "cobblemon:restoration_tank",
+      "required": false
+    },
+    {
+      "id": "cobblemon:tm_machine",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_fire_core",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_ice_core",
+      "required": false
+    },
+    {
+      "id": "iceandfire:dragonforge_lightning_core",
+      "required": false
+    },
+    {
+      "id": "legendarysurvivaloverhaul:heater",
+      "required": false
+    },
+    {
+      "id": "legendarysurvivaloverhaul:cooler",
+      "required": false
+    },
+    {
+      "id": "exposure:lightroom",
+      "required": false
+    },
+    {
+      "id": "simpleradio:radiosmither",
+      "required": false
     }
   ]
 }

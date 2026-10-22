@@ -160,8 +160,15 @@ public final class IndustryKit {
         // DS-10: storage and vanilla blocks never seed a district. A block that is no seed itself (a chest, a vault, a
         // hopper) gets the core's marker machine in the same chunk, high above the test, so the district it stands for
         // still exists; the marker has no inventory and no ticker, so it changes nothing else.
+        // Not while the industry module is off (a test of the switch), and not into a chunk that already has a seed
+        // (its machine, or an earlier marker): one is enough, and a second would be one more IND_EDIT.
+        Industry industry = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
+        if (industry == null)
+            return;
         net.minecraft.world.level.block.entity.BlockEntity be = level.getBlockEntity(abs);
-        if (be != null && ind().districts().seed(level, be, new java.util.HashMap<>()))
+        if (be != null && industry.districts().seed(level, be, new java.util.HashMap<>()))
+            return;
+        if (level.getChunkAt(abs).getData(com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments.SEEDS.get()).positions().length > 0)
             return;
         for (int up = 8; up < 14; up++) {
             BlockPos m = abs.above(up);

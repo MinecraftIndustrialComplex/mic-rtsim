@@ -33,7 +33,9 @@ import java.util.function.Supplier;
  *   <li>{@code test_machine}: ticks on the server and has an energy capability: a machine by the generic rule;</li>
  *   <li>{@code test_inert}: an energy capability and no ticker: not a machine (a battery-like block);</li>
  *   <li>{@code test_store}: ticks and has an item capability, but is in {@code #mic_rtsim:district_not_seed}: storage;</li>
- *   <li>{@code test_marker}: no ticker and no capability, but in {@code #mic_rtsim:district_seed}: a machine by tag.</li>
+ *   <li>{@code test_marker}: no ticker and no capability, but in {@code #mic_rtsim:district_seed}: a machine by tag;</li>
+ *   <li>{@code test_furnace}: a modded furnace (an {@code AbstractFurnaceBlockEntity}) that ticks and has an item
+ *       capability, in no tag: the generic rule would take it for a machine, the furnace rule does not.</li>
  * </ul>
  */
 public final class TestMachines {
@@ -86,7 +88,50 @@ public final class TestMachines {
         }
     }
 
-    public static DeferredBlock<Block> MACHINE, INERT, STORE, MARKER;
+    private static final class FurnaceEntity extends net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity {
+        FurnaceEntity(BlockPos pos, BlockState state) {
+            super(FURNACE_TYPE.get(), pos, state, net.minecraft.world.item.crafting.RecipeType.SMELTING);
+        }
+
+        @Override
+        protected net.minecraft.network.chat.Component getDefaultName() {
+            return net.minecraft.network.chat.Component.literal("test furnace");
+        }
+
+        @Override
+        protected net.minecraft.world.inventory.AbstractContainerMenu createMenu(int id, net.minecraft.world.entity.player.Inventory inventory) {
+            return null;
+        }
+    }
+
+    private static final class FurnaceBlock extends BaseEntityBlock {
+        FurnaceBlock() {
+            super(BlockBehaviour.Properties.of().mapColor(MapColor.STONE).strength(1.0f));
+        }
+
+        @Override
+        protected MapCodec<? extends BaseEntityBlock> codec() {
+            return simpleCodec(p -> new FurnaceBlock());
+        }
+
+        @Override
+        public BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
+            return new FurnaceEntity(pos, state);
+        }
+
+        @Override
+        public <T extends BlockEntity> BlockEntityTicker<T> getTicker(Level level, BlockState state, BlockEntityType<T> t) {
+            return level.isClientSide ? null : (l, p, s, be) -> {};
+        }
+
+        @Override
+        protected RenderShape getRenderShape(BlockState state) {
+            return RenderShape.MODEL;
+        }
+    }
+
+    public static DeferredBlock<Block> MACHINE, INERT, STORE, MARKER, FURNACE;
+    public static DeferredHolder<BlockEntityType<?>, BlockEntityType<FurnaceEntity>> FURNACE_TYPE;
     public static DeferredHolder<BlockEntityType<?>, BlockEntityType<Entity>> MACHINE_TYPE, INERT_TYPE, STORE_TYPE, MARKER_TYPE;
 
     /** Called from the mod constructor: registers the blocks when this is the core's GameTest server. */
@@ -101,6 +146,8 @@ public final class TestMachines {
         INERT = BLOCKS.register("test_inert", () -> new TestBlock(Kind.INERT, INERT_TYPE));
         STORE = BLOCKS.register("test_store", () -> new TestBlock(Kind.STORE, STORE_TYPE));
         MARKER = BLOCKS.register("test_marker", () -> new TestBlock(Kind.MARKER, MARKER_TYPE));
+        FURNACE = BLOCKS.register("test_furnace", FurnaceBlock::new);
+        FURNACE_TYPE = TYPES.register("test_furnace", () -> BlockEntityType.Builder.of(FurnaceEntity::new, FURNACE.get()).build(null));
         BLOCKS.register(modBus);
         TYPES.register(modBus);
         modBus.addListener(TestMachines::capabilities);
@@ -116,5 +163,6 @@ public final class TestMachines {
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, MACHINE_TYPE.get(), (be, side) -> be.energy);
         event.registerBlockEntity(Capabilities.EnergyStorage.BLOCK, INERT_TYPE.get(), (be, side) -> be.energy);
         event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, STORE_TYPE.get(), (be, side) -> be.items);
+        event.registerBlockEntity(Capabilities.ItemHandler.BLOCK, FURNACE_TYPE.get(), (be, side) -> new net.neoforged.neoforge.items.wrapper.InvWrapper(be));
     }
 }

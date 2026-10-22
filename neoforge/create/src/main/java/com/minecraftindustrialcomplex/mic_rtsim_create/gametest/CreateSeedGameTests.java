@@ -41,8 +41,9 @@ public final class CreateSeedGameTests {
         return helper.getLevel().getChunkAt(pos).getData(IndustryAttachments.SEEDS.get()).positions().length;
     }
 
+    /** {@code dx} blocks into chunk column {@code cx} past the first border, {@code dz} into the chunk row of the yard's middle row. */
     private static BlockPos at(GameTestHelper helper, int cx, int dx, int dz) {
-        return new BlockPos(borderX(helper) + cx * 16 + dx, floorY(helper), midZ(helper) + dz);
+        return new BlockPos(borderX(helper) + cx * 16 + dx, floorY(helper), ((midZ(helper) >> 4) << 4) + dz);
     }
 
     /** One storage block per chunk, then a run of shafts, cogwheels and a gearbox: no district however long we wait. */
@@ -50,11 +51,11 @@ public final class CreateSeedGameTests {
     public static void loneCreateStorageAndKineticPartsMakeNoDistrict(GameTestHelper helper) {
         fastConfig();
         forget(helper);
-        BlockPos vault = at(helper, 0, 2, -8), tank = at(helper, 1, 2, -8), depot = at(helper, 0, 8, -8);
-        BlockPos basin = at(helper, 1, 8, -8), furnace = at(helper, 0, 12, -8), chest = at(helper, 1, 12, -8);
+        BlockPos vault = at(helper, 0, 2, 2), tank = at(helper, 1, 2, 2), depot = at(helper, 0, 8, 2);
+        BlockPos basin = at(helper, 1, 8, 2), furnace = at(helper, 0, 12, 2), chest = at(helper, 1, 12, 2);
         BlockPos[] stores = {vault, tank, depot, basin, furnace, chest};
         BlockState shaft = block("create:shaft").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X);
-        BlockPos[] kinetic = {at(helper, 0, 2, 6), at(helper, 0, 3, 6), at(helper, 0, 4, 6), at(helper, 0, 5, 6), at(helper, 0, 6, 6)};
+        BlockPos[] kinetic = {at(helper, 0, 2, 9), at(helper, 0, 3, 9), at(helper, 0, 4, 9), at(helper, 0, 5, 9), at(helper, 0, 6, 9)};
         helper.startSequence()
                 .thenExecute(() -> {
                     set(helper, vault, block("create:item_vault").defaultBlockState());
@@ -101,7 +102,7 @@ public final class CreateSeedGameTests {
         fastConfig();
         forget(helper);
         ServerLevel level = helper.getLevel();
-        BlockPos press = at(helper, 0, 10, 0), vault = at(helper, 0, 12, 4);
+        BlockPos press = at(helper, 0, 10, 6), vault = at(helper, 0, 12, 9);
         BlockState shaft = block("create:shaft").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X);
         long[] id = {0};
         helper.startSequence()
@@ -114,9 +115,9 @@ public final class CreateSeedGameTests {
                     ind().districts().rescanNow(level);
                     check("a vault alone is no district", districtAt(helper, vault) == null);
                     set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    // A shaft run along the press's row out past the chunk border: it touches the press and the next chunk.
                     for (int x = press.getX() + 1; x < press.getX() + 12; x++)
-                        set(helper, new BlockPos(x, press.getY(), press.getZ() + 1), shaft);
-                    // the shaft run is a chain from the press's row; the press's side has to touch it
+                        set(helper, new BlockPos(x, press.getY(), press.getZ()), shaft);
                     playerPlacedBare(helper, press);
                 })
                 .thenWaitUntil(() -> {
@@ -124,6 +125,8 @@ public final class CreateSeedGameTests {
                     check("the press's chunk is a district", d != null);
                     check("the vault is in it", districtAt(helper, vault) == d);
                     check("the vault's inventory is boundary stock", d.inventoryAt(vault) != null);
+                    check("the shaft run took in the next chunk: " + d.chunks.size(), d.chunks.size() == 2
+                            && d.chunks.contains(chunk(new BlockPos(press.getX() + 11, press.getY(), press.getZ()))));
                     id[0] = d.id;
                     record("aCreateMachineSeedsAndItsNeighboursAreMembers", "district " + d.id + " chunks", d.chunks.size());
                 })
