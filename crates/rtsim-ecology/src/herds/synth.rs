@@ -147,6 +147,45 @@ pub fn valley(seed: u64, tun: super::HerdTunables, at: Tick) -> Herds {
     h
 }
 
+/// Habitat cells a [`ranges`] region holds of its species: half of its 64 world-model cells.
+pub const RANGE_HABITAT_CELLS: f64 = 32.0;
+
+/// The valley founded the way the world model founds a real one (EQUILIBRIUM.md §2.4.2): one
+/// herd per 512-block region of `rx` x `rz`, at the region's centre (never on the ridge's rows),
+/// its species drawn per region from `seed`, its count (the range's K) its species' founding
+/// density (`habitat::FoundingTunables`) times [`RANGE_HABITAT_CELLS`]. Named `range rx:rz`.
+pub fn ranges(
+    seed: u64,
+    tun: super::HerdTunables,
+    at: Tick,
+    rx: std::ops::RangeInclusive<i32>,
+    rz: std::ops::RangeInclusive<i32>,
+) -> Herds {
+    let density = super::habitat::FoundingTunables::default().density;
+    let mut h = Herds::new(seed, tun, Box::new(Valley::default()), at);
+    let key = StreamKey::new(seed, SystemId::named("synth.ranges"), 0);
+    let rb = rtsim_space::habitat::REGION_BLOCKS;
+    for z in rz {
+        for x in rx.clone() {
+            let id = (u64::from(x as u32) << 32) | u64::from(z as u32);
+            let species = HerdSpecies::ALL[key.slot(id).below(HerdSpecies::COUNT as u64) as usize];
+            let count = (density[species.index()] * RANGE_HABITAT_CELLS).round() as u64;
+            h.add_herd(
+                NewHerd {
+                    name: format!("range {x}:{z}"),
+                    species,
+                    frame: 0,
+                    pos: (x * rb + rb / 2, z * rb + rb / 2),
+                    count,
+                    seed: None,
+                },
+                at,
+            );
+        }
+    }
+    h
+}
+
 /// `n` herds of `members` each spread over the valley, for the bench.
 pub fn bench_herds(seed: u64, n: usize, members: u64, at: Tick) -> Herds {
     bench_herds_in(seed, n, members, at, Valley::default())
