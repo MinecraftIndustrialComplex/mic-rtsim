@@ -777,7 +777,13 @@ public final class Districts {
                 for (long c : chunks)
                     if (level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)) != null)
                         ls.add(c);
-                loaded.put(id, ls);
+                LongOpenHashSet was = loaded.put(id, ls);
+                // A chunk the district gains while it is loaded never loads for it: its IND_CHUNK_LOADED
+                // goes now (after the declaration), or the engine, which reconciles only into chunks it
+                // knows loaded, holds everything for it until the chunk next loads (OG-11).
+                for (long c : ls)
+                    if (was == null || !was.contains(c))
+                        ind.reconciler.chunkLoaded(level, level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c)), d, now);
                 ind.sampler.revisionChanged(d);
             }
         }

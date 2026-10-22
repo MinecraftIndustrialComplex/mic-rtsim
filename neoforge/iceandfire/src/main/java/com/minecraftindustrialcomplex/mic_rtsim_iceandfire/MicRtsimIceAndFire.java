@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.iafenvoy.iceandfire.event.DragonFireEvent;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -10,6 +11,7 @@ import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.IEventBus;
+import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.attachment.AttachmentType;
 import net.neoforged.neoforge.common.NeoForge;
@@ -51,11 +53,13 @@ public final class MicRtsimIceAndFire {
     public static final Supplier<AttachmentType<MobSpawnType>> SPAWN_TYPE =
             ATTACHMENTS.register("spawn_type", () -> AttachmentType.builder(() -> MobSpawnType.NATURAL).build());
 
-    public MicRtsimIceAndFire(IEventBus modBus) {
+    public MicRtsimIceAndFire(IEventBus modBus, ModContainer container) {
         ATTACHMENTS.register(modBus);
+        DragonConfig.register(container);
         RtsimApi.registerPlugin(DragonBridge.INSTANCE);
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.LOWEST, false, FinalizeSpawnEvent.class, MicRtsimIceAndFire::onFinalizeSpawn);
+        bus.addListener(EventPriority.LOWEST, false, DragonFireEvent.class, MicRtsimIceAndFire::onFire);
         bus.addListener(EventPriority.LOWEST, false, EntityJoinLevelEvent.class, MicRtsimIceAndFire::onJoin);
         bus.addListener(EventPriority.LOWEST, false, LivingDamageEvent.Post.class, MicRtsimIceAndFire::onDamage);
         bus.addListener(EventPriority.LOWEST, false, LivingDeathEvent.class, MicRtsimIceAndFire::onDeath);
@@ -65,6 +69,9 @@ public final class MicRtsimIceAndFire {
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, MicRtsimIceAndFire::onBreak);
         bus.addListener(MicRtsimIceAndFire::onContainerOpen);
         bus.addListener(MicRtsimIceAndFire::onContainerClose);
+        // GameTest servers only: after the core's session started (its listener has the normal priority).
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.server.ServerStartedEvent.class,
+                com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest.GameTestClock::onServerStarted);
     }
 
     /** The live session this plugin is part of, or null. */
@@ -80,10 +87,26 @@ public final class MicRtsimIceAndFire {
     }
 
     private static void onJoin(EntityJoinLevelEvent event) {
-        if (event.getLevel().isClientSide() || !(event.getEntity() instanceof DragonBaseEntity d) || RtsimAttachments.isTagged(d))
+        if (event.getLevel().isClientSide())
+            return;
+        DragonBaseEntity shooter = IafDragons.chargeOwner(event.getEntity());
+        if (shooter != null) {
+            if (!event.loadedFromDisk() && live() != null)
+                DragonBridge.INSTANCE.onCharge(shooter, event);
+            return;
+        }
+        if (!(event.getEntity() instanceof DragonBaseEntity d) || RtsimAttachments.isTagged(d))
             return;
         // Queued even before the session exists (the spawn chunks load first); reported once it does.
         DragonBridge.INSTANCE.onUntaggedJoin(d);
+    }
+
+    /** A dragon's breath of fire (Ice and Fire's own event, posted before the fire does anything). */
+    private static void onFire(DragonFireEvent event) {
+        DragonBaseEntity d = event.getDragon();
+        if (d == null || d.level().isClientSide() || live() == null)
+            return;
+        DragonBridge.INSTANCE.onFire(d, event);
     }
 
     private static void onDamage(LivingDamageEvent.Post event) {
@@ -114,6 +137,7 @@ public final class MicRtsimIceAndFire {
         if (event.getLevel().isClientSide() || !(event.getChunk() instanceof LevelChunk chunk))
             return;
         DragonBridge.INSTANCE.lairs.loaded(chunk, event.isNewChunk()); // drained once the session exists
+        DragonBridge.INSTANCE.sampler.loaded(chunk, event.isNewChunk());
     }
 
     private static void onBreak(BlockEvent.BreakEvent event) {

@@ -127,6 +127,7 @@ kinds! {
     KNOWLEDGE_RESCUE = "knowledge.rescue", "Rescue", Notable;
     KNOWLEDGE_RESIDENT_ASSAULT = "knowledge.resident_assault", "Resident assaulted", Minor;
     KNOWLEDGE_RESIDENT_KILLING = "knowledge.resident_killing", "Resident killed", Notable;
+    KNOWLEDGE_ENCROACHMENT = "knowledge.encroachment", "Encroachment on a dragon's oil", Minor;
     // Industry (rtsim-industry), at the district's centre.
     INDUSTRY_DETECTED = "industry.detected", "District found", Minor;
     INDUSTRY_LEARNED = "industry.learned", "District learned", Minor;
@@ -216,7 +217,8 @@ mod tests {
         assert_eq!(CONFLICT_RAID.group(), "conflict");
         assert_eq!(CONFLICT_RAID.severity(), Severity::Major);
         assert!(of_group("herds").all(|k| k.name().starts_with("herds.")));
-        assert_eq!(of_group("knowledge").count(), 8);
+        // One per report kind (rtsim-knowledge's ReportKind, Encroachment the ninth).
+        assert_eq!(of_group("knowledge").count(), 9);
         assert_eq!(group("conflict.raid"), "conflict");
         assert_eq!(group("loose"), "loose");
         assert_eq!(fallback_label("herds.route_leg"), "Route leg");

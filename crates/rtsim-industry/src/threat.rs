@@ -343,6 +343,23 @@ pub struct Outcome {
     pub floor: Option<f64>,
     pub untested: bool,
     pub ammo_used: i64,
+    /// The roof gate (INDUSTRY.md §13.6, OILGATE.md OG-11): for a flying attack, the share of the
+    /// district's machines with sky access, which scales how many blocks it may break; 1 for a
+    /// ground attack, for a district not surveyed and for one with no machines. A roof shields
+    /// blocks only: theft and the fight itself do not see it.
+    pub roof_pass: f64,
+}
+
+/// The roof gate of a flying attack: the unroofed share of the surveyed machines, 1 when there is
+/// no survey or no machine (OG-11).
+pub fn roof_pass(c: ThreatClass, s: Option<SurveyFacts>) -> f64 {
+    match (c.walks(), s) {
+        (false, Some(s)) if s.machine_blocks > 0 => {
+            let open = s.machine_blocks.saturating_sub(s.roofed_machines);
+            f64::from(open) / f64::from(s.machine_blocks)
+        }
+        _ => 1.0,
+    }
 }
 
 /// Resolves an attack on a district against its defence (I22). `ammo_held` is the boundary stock
@@ -428,6 +445,7 @@ pub fn resolve(t: &Threat, def: &Defence, ammo_held: i64, tun: &ThreatTunables) 
         floor,
         untested,
         ammo_used,
+        roof_pass: roof_pass(c, s),
     }
 }
 
@@ -499,6 +517,14 @@ pub fn damage(
     } else {
         0
     };
+    // The roof gate (OG-11): a flyer breaks only blocks with sky access, and fewer of them as more
+    // of the district's machines are roofed.
+    let flies = !t.class.walks();
+    let n = if flies {
+        (f64::from(n) * o.roof_pass.clamp(0.0, 1.0)).floor() as u32
+    } else {
+        n
+    };
     if n > 0 && !def.exposed.is_empty() {
         let first = if t.class.walks() {
             BlockFlags::PERIMETER
@@ -508,6 +534,7 @@ pub fn damage(
         let mut order: Vec<(bool, u64, ExposedBlockRow)> = def
             .exposed
             .iter()
+            .filter(|b| !flies || b.flags & BlockFlags::ROOFLESS != 0)
             .map(|b| {
                 let h = rtsim_kernel::rng::fnv1a64(
                     &[
@@ -541,6 +568,7 @@ pub fn loot(t: &Threat, cargo: &GoodVec, tun: &ThreatTunables) -> GoodVec {
         floor: None,
         untested: true,
         ammo_used: 0,
+        roof_pass: 1.0,
     };
     damage(t, &o, cargo, &Defence::default(), tun).stolen
 }
@@ -975,6 +1003,65 @@ mod tests {
         assert_eq!(Loads::share(7, 9, 3), 7, "never more than all survive");
     }
 
+    /// OG-11, the roof gate: a flyer breaks fewer blocks as more machines are roofed, and only
+    /// blocks with sky access; a ground attacker and the theft do not see the roof.
+    #[test]
+    fn a_roof_shields_blocks_from_flyers_only() {
+        let mut d = Defence::default();
+        let mut s = survey(100, 0.0, 0);
+        s.machine_blocks = 10;
+        s.roofed_machines = 6;
+        d.set_survey(&s);
+        // Twenty blocks, the even ones under a roof.
+        d.exposed = (0..20)
+            .map(|i| ExposedBlockRow {
+                x: i,
+                y: 0,
+                z: 0,
+                state: 1,
+                flags: BlockFlags::PERIMETER | if i % 2 == 1 { BlockFlags::ROOFLESS } else { 0 },
+                inventory: None,
+            })
+            .collect();
+        let tun = ThreatTunables::default();
+        let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
+        let loads = Some(Loads {
+            carry: 40,
+            blocks: 5,
+        });
+        let mut fly = threat(ThreatClass::Flying, 4);
+        fly.loads = loads;
+        let o = resolve(&fly, &d, 0, &tun);
+        assert!((o.roof_pass - 0.4).abs() < 1e-12, "{}", o.roof_pass);
+        let dmg = damage(&fly, &o, &stock, &d, &tun);
+        assert_eq!(dmg.destroyed.len(), 2, "5 blocks at 0.4, floored");
+        assert!(
+            dmg.destroyed
+                .iter()
+                .all(|b| b.flags & BlockFlags::ROOFLESS != 0),
+            "only roofless blocks: {:?}",
+            dmg.destroyed
+        );
+        assert_eq!(dmg.stolen.total(), 40, "the roof does not stop theft");
+        // Every machine roofed: no blocks at all.
+        s.roofed_machines = 10;
+        d.set_survey(&s);
+        let o = resolve(&fly, &d, 0, &tun);
+        assert_eq!(o.roof_pass, 0.0);
+        assert!(damage(&fly, &o, &stock, &d, &tun).destroyed.is_empty());
+        // A ground attacker ignores the roof.
+        let mut walk = threat(ThreatClass::GroundMelee, 4);
+        walk.loads = loads;
+        let o = Outcome {
+            survived: 1.0,
+            ..resolve(&walk, &d, 0, &tun)
+        };
+        assert_eq!(o.roof_pass, 1.0);
+        assert_eq!(damage(&walk, &o, &stock, &d, &tun).destroyed.len(), 5);
+        // No survey: the gate is open.
+        assert_eq!(roof_pass(ThreatClass::Flying, None), 1.0);
+    }
+
     #[test]
     fn a_large_pressure_mean_gives_a_sane_count() {
         let (_, k) =
@@ -1158,7 +1245,8 @@ mod persist_impls {
         lanchester,
         floor,
         untested,
-        ammo_used
+        ammo_used,
+        roof_pass
     });
     persist_struct!(Observed { strength, survived });
     persist_struct!(Pressure {

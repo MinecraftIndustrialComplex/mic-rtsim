@@ -164,11 +164,17 @@ public final class DragonKit {
                         int variant, float health, BlockPos home, Vec3 target, UUID hostileTo, int flags) {}
 
     public static void materialize(Spawn s) {
+        materialize(s, -1);
+    }
+
+    /** A scripted DRAGON_MATERIALIZE whose body carries {@code oil} reserve points (MAT_OIL); -1 none. */
+    public static void materialize(Spawn s, int oil) {
         script(out -> {
             int species = out.dict(Obs.DICT_BODY, s.species());
             int dim = out.dict(Obs.DICT_DIMENSION, s.dimension());
             int flags = s.flags() | (s.home() != null ? DragonRecords.Materialize.FLAG_HAS_HOME : 0)
-                    | (s.hostileTo() != null ? DragonRecords.Materialize.FLAG_HOSTILE : 0);
+                    | (s.hostileTo() != null ? DragonRecords.Materialize.FLAG_HOSTILE : 0)
+                    | (oil >= 0 ? DragonRecords.Materialize.FLAG_OIL : 0);
             int at = out.reserve(DragonRecords.DRAGON_MATERIALIZE, DragonRecords.Materialize.SIZE, flags);
             if (at < 0)
                 return;
@@ -185,6 +191,8 @@ public final class DragonKit {
             b.putInt(at + DragonRecords.Materialize.GENDER, s.male() ? 1 : 0);
             b.putInt(at + DragonRecords.Materialize.VARIANT, s.variant());
             b.putFloat(at + DragonRecords.Materialize.HEALTH, s.health());
+            if (oil >= 0)
+                b.putInt(at + DragonRecords.Materialize.OIL, oil);
             if (s.home() != null) {
                 b.putInt(at + DragonRecords.Materialize.HOME_X, s.home().getX());
                 b.putInt(at + DragonRecords.Materialize.HOME_Y, s.home().getY());
@@ -267,6 +275,154 @@ public final class DragonKit {
             b.putLong(at + DragonRecords.Discard.ENTITY_MOST, entity.getMostSignificantBits());
             b.putLong(at + DragonRecords.Discard.ENTITY_LEAST, entity.getLeastSignificantBits());
         });
+    }
+
+    /**
+     * A scripted PLACE_LAIR (the stub's only: the native engine's DRAGON_COMMAND order names no structure,
+     * so the native tests have the engine place its own).
+     */
+    public static void placeLair(long field, String dimension, String structure, int x, int z, int radius) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int st = out.dict(Obs.DICT_STRUCTURE, structure);
+            int at = out.reserve(DragonRecords.PLACE_LAIR, DragonRecords.PlaceLair.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + DragonRecords.PlaceLair.FIELD, field);
+            b.putInt(at + DragonRecords.PlaceLair.DIM, dim);
+            b.putInt(at + DragonRecords.PlaceLair.STRUCTURE, st);
+            b.putInt(at + DragonRecords.PlaceLair.X, x);
+            b.putInt(at + DragonRecords.PlaceLair.Z, z);
+            b.putInt(at + DragonRecords.PlaceLair.RADIUS, radius);
+        });
+    }
+
+    /** A scripted OIL_SURVEY. */
+    public static void oilSurvey(String dimension, int x, int z, int radius) {
+        script(out -> {
+            out.dict(Obs.DICT_BODY, FIRE); // the native order needs one name; the stub sends its DICT once
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(DragonRecords.OIL_SURVEY, DragonRecords.OilSurvey.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putInt(at + DragonRecords.OilSurvey.DIM, dim);
+            b.putInt(at + DragonRecords.OilSurvey.X, x);
+            b.putInt(at + DragonRecords.OilSurvey.Z, z);
+            b.putInt(at + DragonRecords.OilSurvey.RADIUS, radius);
+        });
+    }
+
+    // ---- observations a test sends as the plugin or the core would ------------------------------
+
+    /** OIL_CONFIG with these flags (the engine takes the last one); {@link #restoreOilConfig} undoes it. */
+    public static void oilConfig(int flags) {
+        bridge().sendOilConfig(flags, session().gameTime());
+    }
+
+    /** OIL_CONFIG from the plugin's switches again (the GameTest defaults: everything off). */
+    public static void restoreOilConfig() {
+        com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonConfig.Test.reset();
+        oilConfig(com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonConfig.oilFlags());
+    }
+
+    /** OIL_CHUNKS for chunks {cx, cz, amount} of one dimension (source 2, CDG's), as the sampler sends them. */
+    public static void oilChunks(ServerLevel level, List<int[]> chunks) {
+        RtsimSession s = session();
+        int dim = s.dimId(level.dimension());
+        for (int from = 0; from < chunks.size(); from += DragonRecords.OilChunks.MAX) {
+            int n = Math.min(DragonRecords.OilChunks.MAX, chunks.size() - from);
+            ByteBuffer r = s.boundary().beginJournaled(DragonRecords.OIL_CHUNKS, DragonRecords.OilChunks.size(n), n, s.gameTime());
+            r.putInt(DragonRecords.OilChunks.DIM, dim);
+            r.putInt(DragonRecords.OilChunks.SOURCE, DragonRecords.OilChunks.SOURCE_CDG);
+            for (int k = 0; k < n; k++) {
+                int[] c = chunks.get(from + k);
+                int e = DragonRecords.OilChunks.ENTRIES + DragonRecords.OilChunks.ENTRY * k;
+                r.putInt(e + DragonRecords.OilChunks.E_CX, c[0]);
+                r.putInt(e + DragonRecords.OilChunks.E_CZ, c[1]);
+                r.putInt(e + DragonRecords.OilChunks.E_AMOUNT, c[2]);
+                r.putInt(e + DragonRecords.OilChunks.E_FLAGS, c.length > 3 ? c[3] : 0);
+            }
+            s.boundary().commit(r);
+        }
+    }
+
+    /**
+     * A PLAYER record for a GameTest player (the core reports the server's player list, which a
+     * GameTest's players are not on): where it is, with its height.
+     */
+    public static void reportPlayer(net.minecraft.server.level.ServerPlayer p) {
+        RtsimSession s = session();
+        int dim = s.dimId(p.level().dimension()); // before direct(): an id is defined before its first use
+        int at = s.boundary().direct(Obs.PLAYER, Obs.Player.SIZE, dim, s.gameTime());
+        if (at < 0)
+            return;
+        ByteBuffer b = s.boundary().openBuffer();
+        b.putLong(at + Obs.Player.UUID_MOST, p.getUUID().getMostSignificantBits());
+        b.putLong(at + Obs.Player.UUID_LEAST, p.getUUID().getLeastSignificantBits());
+        b.putDouble(at + Obs.Player.X, p.getX());
+        b.putDouble(at + Obs.Player.Y, p.getY());
+        b.putDouble(at + Obs.Player.Z, p.getZ());
+    }
+
+    /**
+     * A PLAYER record for a player who is nowhere in the level (the engine reads the record alone): a
+     * presence for the oil gate's field flights and lair checks without a body in the world.
+     */
+    public static void reportPlayerAt(UUID uuid, ServerLevel level, double x, double y, double z) {
+        RtsimSession s = session();
+        int dim = s.dimId(level.dimension());
+        int at = s.boundary().direct(Obs.PLAYER, Obs.Player.SIZE, dim, s.gameTime());
+        if (at < 0)
+            return;
+        ByteBuffer b = s.boundary().openBuffer();
+        b.putLong(at + Obs.Player.UUID_MOST, uuid.getMostSignificantBits());
+        b.putLong(at + Obs.Player.UUID_LEAST, uuid.getLeastSignificantBits());
+        b.putDouble(at + Obs.Player.X, x);
+        b.putDouble(at + Obs.Player.Y, y);
+        b.putDouble(at + Obs.Player.Z, z);
+    }
+
+    /**
+     * A site far from the arenas and from every earlier run's (the GameTest world is reused): a block
+     * column on a 4,096-block grid, 300,000 to 2,300,000 blocks out, so it is past Ice and Fire's
+     * dangerous distance from spawn and its chunks were never generated.
+     */
+    public static BlockPos farSite() {
+        java.util.concurrent.ThreadLocalRandom r = java.util.concurrent.ThreadLocalRandom.current();
+        int x = (300_000 + r.nextInt(0, 500) * 4096) * (r.nextBoolean() ? 1 : -1);
+        int z = (300_000 + r.nextInt(0, 500) * 4096) * (r.nextBoolean() ? 1 : -1);
+        return new BlockPos(x + 8, 0, z + 8);
+    }
+
+    /** Forces the chunks within {@code radius} chunks of {@code centre}; returns the undo. */
+    public static Runnable forceChunks(ServerLevel level, ChunkPos centre, int radius) {
+        List<ChunkPos> forced = new ArrayList<>();
+        for (int dx = -radius; dx <= radius; dx++)
+            for (int dz = -radius; dz <= radius; dz++) {
+                ChunkPos p = new ChunkPos(centre.x + dx, centre.z + dz);
+                if (level.setChunkForced(p.x, p.z, true))
+                    forced.add(p);
+            }
+        return () -> forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+    }
+
+    /** True when every chunk within {@code radius} chunks of {@code centre} is loaded and entity-ticking. */
+    public static boolean ready(ServerLevel level, ChunkPos centre, int radius) {
+        for (int dx = -radius; dx <= radius; dx++)
+            for (int dz = -radius; dz <= radius; dz++) {
+                ChunkPos p = new ChunkPos(centre.x + dx, centre.z + dz);
+                if (level.getChunkSource().getChunkNow(p.x, p.z) == null
+                        || !RtsimSession.entitiesTickAt(level, p.getMiddleBlockPosition(0)))
+                    return false;
+            }
+        return true;
+    }
+
+    /** The native engine's oil gate counters ({@code NativeEngine.OIL_*}), with {@code agent}'s reserve. */
+    public static long[] nativeOil(long agent) {
+        return engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine n ? n.dragonsOil(agent) : null;
     }
 
     // ---- reading what the engine received -------------------------------------------------------

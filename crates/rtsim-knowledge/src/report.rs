@@ -70,10 +70,13 @@ pub enum ReportKind {
     ResidentAssault = 7,
     /// Killing one.
     ResidentKilling = 8,
+    /// A settlement working near an oil field a dragon refuels on (OILGATE.md §4.5, OG-8): the
+    /// dragon notices a district, its oil sample, its fuel stock or its pollution. Negative.
+    Encroachment = 9,
 }
 
 impl ReportKind {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [ReportKind; ReportKind::COUNT] = [
         ReportKind::Assault,
         ReportKind::Killing,
@@ -83,6 +86,7 @@ impl ReportKind {
         ReportKind::Rescue,
         ReportKind::ResidentAssault,
         ReportKind::ResidentKilling,
+        ReportKind::Encroachment,
     ];
 
     pub const fn index(self) -> usize {
