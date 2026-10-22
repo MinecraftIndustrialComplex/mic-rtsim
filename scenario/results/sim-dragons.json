@@ -2,7 +2,7 @@
   "seed": 7,
   "days": 48,
   "starts_in": "Autumn",
-  "wall_ms": 551.356491,
+  "wall_ms": 554.7669910000001,
   "checks": [
     {
       "name": "conservation with predation",
@@ -3701,14 +3701,29 @@
       "fuel_signal_mb": 1000,
       "survey_radius": 1024,
       "presence_fresh_ticks": 200,
-      "flags": 3,
+      "flags": 7,
       "fuels": [
         "destroy:crude_oil",
         "createdieselgenerators:oil",
         "createdieselgenerators:crude_oil",
         "createdieselgenerators:diesel",
         "createdieselgenerators:gasoline"
-      ]
+      ],
+      "nest": {
+        "k": 2,
+        "base_days": 12.0,
+        "cap_days": 96.0,
+        "half_life_days": 96.0,
+        "reform_base_days": 96.0,
+        "reform_cap_days": 384.0,
+        "reach": 128,
+        "raid_chance_milli": 250,
+        "worm_strength": 1.0,
+        "depth_min": 20,
+        "depth_max": 60,
+        "sortie_ticks": 1200,
+        "day_ticks": 24000
+      }
     }
   },
   "archive": {
