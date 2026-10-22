@@ -64,9 +64,13 @@ fn adult(name: &str, lair: u32, fullness: i32) -> NewDragon {
 }
 
 /// The reserve falls a point every `tick_rate` ticks: 300 makes a full dragon low (40) in 18,000.
+/// The tests keep the first small reserve (100, low at 40) so their schedules stay short; Ben's
+/// 600 and 240 (OGB-2) change only how long a reserve lasts, not what the gate does.
 fn quick_oil(tick_rate: u64) -> DragonTunables {
     let mut tun = DragonTunables::default();
     tun.oil.tick_rate = tick_rate;
+    tun.oil.capacity = 100;
+    tun.oil.refuel_below = 40;
     tun
 }
 
