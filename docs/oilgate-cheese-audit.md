@@ -1,7 +1,10 @@
 # The oil gate: a cheese audit
 
-**Status:** audit and plan only, 2026-10-21, of the gate as built on main at 02c2096 (OILGATE.md,
-docs/choices-oilgate.md). None of the fixes here is built and no test was written for them. Neither
+**Status:** an audit of the gate as built on main at 02c2096 (2026-10-21; OILGATE.md,
+docs/choices-oilgate.md). Ben answered §5 as DECISIONS.md OGB-6 to OGB-8. **The fix set is built
+(2026-10-22) except F6:** F1 to F5 and F7 to F9, each marked in §4 with its choices (OGC46 to OGC65)
+and tests. F6, the underground half (OG-9e), is not built. §1 to §3 below still read the gate as it
+was at 02c2096. Neither
 mic-rtsim nor Deep Time is in `pack/mods` yet, so this reads the gate as it will be once both ship, with
 OILGATE.md's defaults and Ben's answers of 2026-10-21 (DECISIONS.md OGB-1 to OGB-5: reserve 600, refuel
 below 240, both built with this audit; drinking free of the theft cap).
