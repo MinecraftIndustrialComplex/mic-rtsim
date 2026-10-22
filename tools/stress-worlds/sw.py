@@ -271,6 +271,9 @@ def prep(run, world, rtsim, slot, xmx="6G", world_from_run=None):
     os.makedirs(f"{d}/kubejs/server_scripts", exist_ok=True)
     open(f"{d}/kubejs/server_scripts/zz_stress_no_hippocampus.js", "w").write(NO_HIPPO)
     set_rtsim(d, rtsim)
+    # SW_INDUSTRY_TOML="rescanBlockEntitiesPerTick = 10000000": lines for the industry server config (an A/B of one setting)
+    if os.environ.get("SW_INDUSTRY_TOML"):
+        open(f"{d}/config/mic_rtsim-industry-server.toml", "w").write("[industry]\n" + os.environ["SW_INDUSTRY_TOML"] + "\n")
     return d
 
 

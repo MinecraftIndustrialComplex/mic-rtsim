@@ -25,6 +25,7 @@ public final class IndustryConfig {
     public static final String RECONCILE_OPS_PER_TICK = "reconcileOpsPerTick";
     public static final String RESCAN_INTERVAL = "rescanIntervalTicks";
     public static final String PERIODIC_RESCAN = "periodicRescanTicks";
+    public static final String RESCAN_BLOCK_ENTITIES_PER_TICK = "rescanBlockEntitiesPerTick";
     public static final String LOAD_CHECK_INTERVAL = "loadCheckIntervalTicks";
     public static final String WATCHED_RESEND = "watchedResendTicks";
     public static final String APPROACH_RADIUS = "approachRadiusBlocks";
@@ -36,6 +37,7 @@ public final class IndustryConfig {
             RECONCILE_OPS_PER_TICK, 512,
             RESCAN_INTERVAL, 20,
             PERIODIC_RESCAN, 6000,
+            RESCAN_BLOCK_ENTITIES_PER_TICK, 256,
             LOAD_CHECK_INTERVAL, 20,
             WATCHED_RESEND, 100,
             APPROACH_RADIUS, 256);
@@ -56,6 +58,9 @@ public final class IndustryConfig {
                 .defineInRange(RESCAN_INTERVAL, DEFAULTS.get(RESCAN_INTERVAL), 1, 72_000));
         INTS.put(PERIODIC_RESCAN, b.comment("Ticks between re-detections of loaded districts without edits (inventories added by machines).")
                 .defineInRange(PERIODIC_RESCAN, DEFAULTS.get(PERIODIC_RESCAN), 20, 1_728_000));
+        INTS.put(RESCAN_BLOCK_ENTITIES_PER_TICK, b.comment("Block entities a district detection looks at per tick (as the glass fingerprint pass has), so a big detection finishes over several ticks.",
+                        "A chunk is looked at whole, so one tick can overshoot by the block entities of one chunk. The district set changes only when the whole detection is done.")
+                .defineInRange(RESCAN_BLOCK_ENTITIES_PER_TICK, DEFAULTS.get(RESCAN_BLOCK_ENTITIES_PER_TICK), 1, 10_000_000));
         INTS.put(LOAD_CHECK_INTERVAL, b.comment("Ticks between load-state and watched checks of a district with loaded chunks.")
                 .defineInRange(LOAD_CHECK_INTERVAL, DEFAULTS.get(LOAD_CHECK_INTERVAL), 1, 1200));
         INTS.put(WATCHED_RESEND, b.comment("Ticks between IND_WATCHED repeats while a loaded district's flag holds.")
