@@ -206,6 +206,7 @@ tick. The rest of a dropped-off base joins the district by connection, as any ma
 it is a pumpjack-only exception to DS-10. The wider forms would amend DS-10 itself and are Ben's:
 any seed-shaped block entity that appears without a player within `near_blocks` of an oil chunk, or
 any machine anywhere whoever placed it.
+**Built** (docs/choices-oilgate.md OGC60), with its GameTest.
 
 **F2. The field watches its own ground** (B1, B4; it also makes L3 independent of the reserve). Today
 a district is sensed only when a dragon happens to drink within 400 blocks of it. Instead:
