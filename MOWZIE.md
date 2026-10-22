@@ -1412,7 +1412,7 @@ misses, one member at most per body that moved.
 | F, step 3 | Nadia meets the column on the road; the band is embodied where it stands | as they were | CHIEF_BODY, then the chief's stack with its horse; no reconcile, the grove is out |
 | F, step 5 | Nadia kills it at her farm (CHIEF_KILLED) | the Umvuthi's slot dead, left; the heir succeeds; the warriors within 30 blocks die (BAND_CASUALTIES); the summons' deaths book nothing | none |
 | F, step 6 | the survivors walk home and reach `home`; the grove is out | the survivors home, body; the slots of warriors killed at her farm dead, left | none |
-| F, step 7 | a week later she rides to the grove; it comes in while she is about 200 blocks off | the dead, left slots' bodies found, the throne body among them | removes; the throne body's waits under Rule U until she is more than 160 blocks from it; done: freed, the Umvuthi's slot owed |
+| F, step 7 | a week later she rides to the grove; it comes in while she is about 200 blocks off | the dead, left slots' bodies found, the throne body among them | removes: the warriors' at once, the throne body's held under Rule U while she is within 160 blocks of it; done: freed, the Umvuthi's slot owed |
 | F, step 8 | the heir's wait ends; the grove comes in later | the Umvuthi's slot owed | a warrior's removal and the chief's spawn at the throne spot, under Rule U; done: the warrior's slot freed, the chief home, body |
 | F, step 9 | had she not killed it: Tomas is within 160 blocks of the throne as the grove comes in during the march | the Umvuthi's slot away, left | a take, held while he stays; done when he leaves: away, gone |
 | F, step 9 | then the Invasion walks home with Tomas still there | the take still held | answered stale as the rider comes within 32 blocks of the throne; a hand-back puts one body on the throne; done: home, body |
@@ -1596,10 +1596,11 @@ appear where the far view drew the column. A column of 16 bodies is about 12 blo
   Minecraft.
 - **The ticking edge.** Puppets live only where entities tick, within the simulation distance
   (`DistanceManager.java:252-253`; level 31 or lower, `ChunkLevel.java:10-12`): the core rejects a
-  group with any member outside it (`NOT_TICKING`) and takes back one with a member that leaves it.
-  Today one rejection of a band's first wave clears its embodiment for good (`engine.rs:3924-3931`).
-  Instead a `NOT_TICKING` rejection is retried every 200 ticks (PLACEHOLDER: 4 blocks of march) while
-  the band is within a player's area, so it appears once its whole column is inside the ticking area.
+  group with any member outside it (`NOT_TICKING`, `RtsimSession.java:533-535`) and takes back one with
+  a member that leaves it (`350-354`). Today one rejection of a band's first wave clears its embodiment
+  for good (`engine.rs:3924-3931`). Instead the engine sends a rejected stack again every 200 ticks
+  (PLACEHOLDER: 4 blocks of march) while the band is within a player's area, and keeps the stacks
+  already in, so a column that straddles the edge fills in as it walks inside.
 - **The chief's stack** at every embodiment (ledger 4, §4.5).
 
 **What a player sees, and the seams.**
