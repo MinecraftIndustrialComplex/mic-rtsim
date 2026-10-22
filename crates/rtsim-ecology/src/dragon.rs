@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rows::PagedRows;
 use rtsim_knowledge::{ActorId, Temperament};
 use rtsim_settle::Pos;
@@ -61,6 +62,31 @@ pub struct Lair {
     pub placed: i64,
     /// Stacks of tribute coin this lair has sent: the next stack's op id is drawn at this index.
     pub stacks: u64,
+    /// Recent players' losses here (EQUILIBRIUM.md §2.2, slice S4): each dragon of the lair a
+    /// player kills or takes adds 1 (K is 1), halving every `respawn_half_life_days`.
+    pub pressure: Pressure,
+    /// While the lair stands empty, when its wait ends: `min(cap, base x 2^P)` days from the
+    /// moment it emptied, P read then. Nobody claims it before (§2.4.1).
+    pub due: Tick,
+    /// The fed share (§2.4.1): a 30-day moving average of the share of their need its
+    /// dragons' hunts catch, as of `fed_at`. A newcomer starts it at 1.
+    pub fed: f32,
+    pub fed_at: Tick,
+}
+
+impl Lair {
+    /// The fed share at `at`, with `share` (a hunt's catch over its need) folded in: the
+    /// moving average weighs the new share by the time since the last one, `1 - e^(-dt / tau)`.
+    pub fn fold_fed(&mut self, share: f32, at: Tick, tau_days: f32) {
+        let dt = at.0.saturating_sub(self.fed_at.0) as f32 / TICKS_PER_DAY as f32;
+        let a = if tau_days > 0.0 {
+            1.0 - (-dt / tau_days).exp()
+        } else {
+            1.0
+        };
+        self.fed += (share.clamp(0.0, 1.0) - self.fed) * a;
+        self.fed_at = Tick(self.fed_at.0.max(at.0));
+    }
 }
 
 /// The lairs' row table (A16): page table 0x4411, rows keyed by lair index. Lairs are never

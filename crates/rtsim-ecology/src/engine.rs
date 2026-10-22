@@ -44,6 +44,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rows::PagedArena;
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
@@ -266,6 +267,14 @@ pub struct DragonStats {
     pub tribute_lapses: u64,
     /// Stacks of tribute coin the plugin put in a lair's chest.
     pub tribute_stacks: u64,
+    /// The renewal rule (EQUILIBRIUM.md §2.4.1, slice S4): lairs' dragons lost to a player (each
+    /// raised its lair's pressure), dragons that starved away from their lair and left the sim,
+    /// lair checks put off because the hunting ground would not feed a newcomer, and empty lairs
+    /// claimed by a hatchling from a lair in reach (the rest by a newcomer from afar, `respawns`).
+    pub player_losses: u64,
+    pub starved_away: u64,
+    pub arrivals_gated: u64,
+    pub heirs_sent: u64,
 }
 
 /// A village that pays a lair tribute (SINK.md §4.6): the lair whose dragon raided it last, the
@@ -445,6 +454,11 @@ fn day_of(t: Tick) -> f64 {
     t.0 as f64 / TICKS_PER_DAY as f64
 }
 
+/// The day number the shared renewal rule counts in (`rtsim_kernel::renewal`).
+fn day_num(t: Tick) -> u32 {
+    u32::try_from(t.0 / TICKS_PER_DAY).unwrap_or(u32::MAX)
+}
+
 pub(crate) fn place(p: Pos, y: i32) -> Place {
     Place::new(
         p.frame,
@@ -599,8 +613,9 @@ impl Dragons {
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
         use rtsim_kernel::census::KindCensus;
         let mut lairs = KindCensus::new("dragon.lair");
+        let (day, h) = (day_num(self.now), self.tun.respawn_half_life_days as f32);
         for l in self.lairs.iter() {
-            lairs.site(l.occupants.len() as u64, 1, false, 0.0);
+            lairs.site(l.occupants.len() as u64, 1, false, l.pressure.now(day, h));
         }
         lairs.renewals = self.stats.claims + self.stats.births;
         let mut nests = KindCensus::new("oil.nest");
@@ -702,8 +717,9 @@ impl Dragons {
     // ---- setup ---------------------------------------------------------------------------------
 
     /// A lair joins when its structure generates (LAIR_FOUND; C22's rule for villages applied to
-    /// lairs). Idempotent by key. Its respawn clock starts: if no dragon is adopted into it within
-    /// the delay, a young one comes.
+    /// lairs). Idempotent by key. Its wait starts at no pressure (the base, 20 days): if no dragon
+    /// is adopted into it within the wait, one comes. A lair found late after a reset starts at
+    /// the base too until the site ledger (EQUILIBRIUM.md S3) hands its pressure over.
     #[allow(clippy::too_many_arguments)]
     pub fn add_lair(
         &mut self,
@@ -734,20 +750,163 @@ impl Dragons {
             actor,
             occupants: Vec::new(),
             hoard: BTreeMap::new(),
-            vacant_since: Some(at),
-            plan: 1,
+            vacant_since: None,
+            plan: 0,
             unplaced: BTreeMap::new(),
             placed: 0,
             stacks: 0,
+            pressure: Pressure::default(),
+            due: at,
+            fed: 1.0,
+            fed_at: at,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
-        self.track_lair(id);
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
         self.lair_cells.get_or_default((pos.frame, rx, rz)).push(id);
-        let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
-        self.schedule(at + delay, Ev::Respawn { lair: id, plan: 1 });
+        self.start_wait(id, at);
         id
+    }
+
+    /// Lair `l` stands empty from `at`: its wait is `min(cap, base x 2^P)` days with P read now
+    /// (EQUILIBRIUM.md §2.2; more losses during the wait do not push it out), and one respawn
+    /// event is booked for its end.
+    pub(crate) fn start_wait(&mut self, l: LairId, at: Tick) {
+        let rule = self.tun.renewal();
+        let lair = &mut self.lairs[l as usize];
+        let delay = rule.delay_ticks(lair.pressure, day_num(at));
+        lair.vacant_since = Some(at);
+        lair.plan += 1;
+        lair.due = at + delay;
+        let plan = lair.plan;
+        self.track_lair(l);
+        self.schedule(at + delay, Ev::Respawn { lair: l, plan });
+    }
+
+    /// A player's loss of `d` (EQUILIBRIUM.md §2.2): its lair, or the lair it flies to claim, gains
+    /// 1 of pressure (K is 1). Called before the dragon is taken out, so the wait its removal
+    /// starts reads the new pressure.
+    fn press(&mut self, d: DragonId, at: Tick) {
+        let Some(x) = self.dragons.get(d) else {
+            return;
+        };
+        let l = x.lair.or(match x.state {
+            State::Flying(Purpose::Claim(l))
+            | State::Embodied {
+                purpose: Purpose::Claim(l),
+                ..
+            }
+            | State::Leaving {
+                purpose: Purpose::Claim(l),
+                ..
+            } => Some(l),
+            _ => None,
+        });
+        let Some(l) = l else {
+            return;
+        };
+        let h = self.tun.respawn_half_life_days as f32;
+        self.lairs[l as usize]
+            .pressure
+            .bump(day_num(at), 1.0, h);
+        self.stats.player_losses += 1;
+    }
+
+    /// The share of its need a newcomer would catch at lair `l` (the arrival gate, §2.4.1 and
+    /// §3.4): `W / (W + half)` over the herds and villages in the territory of a dragon of the
+    /// newcomer's age. With no herds lent (an engine run without them) the gate is open: 1.
+    pub(crate) fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
+        let Some(hd) = &self.wild else {
+            return 1.0;
+        };
+        let lair = &self.lairs[l as usize];
+        let sp = self.tun.species(lair.species);
+        let stage = sp.stage(self.tun.respawn_age_days * TICKS_PER_DAY);
+        let range = i64::from(sp.territory[stage.index()]);
+        let (lx, lz) = (i64::from(lair.pos.x), i64::from(lair.pos.z));
+        let t = self.topo(lair.pos.frame);
+        let village = self
+            .index
+            .villages_near(t, lair.pos.frame, lx, lz, range)
+            .into_iter()
+            .any(|n| {
+                let p = w.nodes[n as usize].pos;
+                flight::dist(t, (lx, lz), (i64::from(p.x), i64::from(p.z))) <= range as f64
+            });
+        let mut weight = if village {
+            self.tun.gate_village
+        } else {
+            self.tun.gate_wild
+        };
+        for o in hd.prey_near(lair.pos.frame, lx, lz, range, at, 0) {
+            let k = hd.herd(o.herd).map_or(1, |h| h.k.max(1));
+            let n = o.available as f64;
+            weight += n * n / k as f64;
+        }
+        weight / (weight + self.tun.gate_half)
+    }
+
+    /// `d`'s lair's fed share takes in a share of its need caught (a hunt's catch, or 0 for a day
+    /// with nothing in reach). A dragon with no lair has none.
+    fn fold_fed(&mut self, d: DragonId, share: f32, at: Tick) {
+        let Some(l) = self.dragons.get(d).and_then(|x| x.lair) else {
+            return;
+        };
+        let tau = self.tun.fed_tau_days;
+        self.lairs[l as usize].fold_fed(share, at, tau);
+    }
+
+    /// Starve-leave (§2.4.1): a dragon past `starve_leave_age_days` whose lair's fed share is
+    /// below `starve_leave` leaves it, for a vacant lair in reach whose wait has ended and whose
+    /// ground would feed it, else off the map and out of the sim. Returns whether it left.
+    fn starve_leave(&mut self, w: &mut World, d: DragonId, at: Tick) -> bool {
+        let Some(x) = self.dragons.get(d) else {
+            return false;
+        };
+        let Some(l) = x.lair else {
+            return false;
+        };
+        if x.is_embodied()
+            || x.visitor.is_some()
+            || x.age(at) <= self.tun.starve_leave_age_days * TICKS_PER_DAY
+            || self.lairs[l as usize].fed >= self.tun.starve_leave
+        {
+            return false;
+        }
+        let fed = self.lairs[l as usize].fed;
+        if let Some(to) = self.vacant_lair(w, d, at) {
+            self.stats.migrations += 1;
+            let name = self.lairs[to as usize].name.clone();
+            self.note(
+                at,
+                "migrate",
+                Some(d),
+                format!("its lair feeds it {fed:.2} of its need; migrates to {name}"),
+            );
+            self.leave_lair(w, d, at);
+            self.lairs[to as usize].plan += 1; // its respawn event is void: it is claimed
+            self.lairs[to as usize].vacant_since = None;
+            self.track_lair(to);
+            self.fly(w, d, Purpose::Claim(to), at);
+            return true;
+        }
+        self.stats.starved_away += 1;
+        let actor = self.dragons[d].actor;
+        let here = self.dragons[d].position(&self.topo, &self.lairs, at).0;
+        self.tape
+            .event(kinds::DRAGONS_DEPART, spot(at, here), did(d), 0, 0)
+            .text(|| format!("starves out of its lair (fed {fed:.2}) and leaves the sim"));
+        self.note(
+            at,
+            "starve",
+            Some(d),
+            format!("its lair feeds it {fed:.2} of its need: flies off the map"),
+        );
+        if w.knowledge.notable(actor).is_some() {
+            w.knowledge.die(actor, at);
+        }
+        self.remove(w, d, at);
+        true
     }
 
     fn fresh_seed(&mut self) -> u64 {
@@ -1654,18 +1813,12 @@ impl Dragons {
         else {
             return;
         };
-        let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
         // Read before changing: a change pins the lair's page until the next save.
         let lair = &self.lairs[l as usize];
         if !lair.occupants.is_empty() || lair.vacant_since.is_some() {
             return;
         }
-        let lair = &mut self.lairs[l as usize];
-        lair.vacant_since = Some(at);
-        lair.plan += 1;
-        let plan = lair.plan;
-        self.track_lair(l);
-        self.schedule(at + delay, Ev::Respawn { lair: l, plan });
+        self.start_wait(l, at);
     }
 
     // ---- choosing prey -----------------------------------------------------------------------------
@@ -1747,8 +1900,12 @@ impl Dragons {
                 self.stats.fruitless += 1;
                 if chain > 0 {
                     self.fly(w, d, Purpose::Home, at);
-                } else if !self.migrate(w, d, at) {
-                    // Nothing worth it within range: rest and try again in a day.
+                    return;
+                }
+                // A day with nothing worth it in reach catches none of its need.
+                self.fold_fed(d, 0.0, at);
+                if !self.starve_leave(w, d, at) {
+                    // Rest and try again in a day.
                     let plan = self.bump(d);
                     self.schedule(at + TICKS_PER_DAY, Ev::Hungry { d, plan });
                 }
@@ -2016,36 +2173,12 @@ impl Dragons {
         format!("road {}-{}", w.nodes[e.a].key, w.nodes[e.b].key)
     }
 
-    /// Moves a starving dragon to an empty roost of its species, if one is in reach (a
-    /// migration). Returns whether it left.
-    fn migrate(&mut self, w: &mut World, d: DragonId, at: Tick) -> bool {
-        let x = &self.dragons[d];
-        if x.fruitless < self.tun.fruitless_before_move {
-            return false;
-        }
-        let Some(l) = self.vacant_lair(d, at) else {
-            return false;
-        };
-        self.stats.migrations += 1;
-        let name = self.lairs[l as usize].name.clone();
-        self.note(
-            at,
-            "migrate",
-            Some(d),
-            format!("finds nothing to eat; migrates to {name}"),
-        );
-        self.leave_lair(w, d, at);
-        self.lairs[l as usize].plan += 1; // its respawn event is void: it is claimed
-        self.lairs[l as usize].vacant_since = None;
-        self.track_lair(l);
-        self.fly(w, d, Purpose::Claim(l), at);
-        true
-    }
-
-    /// The nearest roost of `d`'s species with nobody in it and nobody on the way. Looks up the
-    /// lair cells within range (one range query per row of regions), never every lair, and reads
-    /// only the vacant ones' rows ([`Dragons::vacant`]).
-    pub(crate) fn vacant_lair(&self, d: DragonId, at: Tick) -> Option<LairId> {
+    /// The nearest roost of `d`'s species with nobody in it and nobody on the way, whose wait has
+    /// ended and whose ground would feed a newcomer (EQUILIBRIUM.md §2.4.1: a hatchling, a
+    /// migrant or an oil visitor takes a lair as any newcomer does). Looks up the lair cells
+    /// within range (one range query per row of regions), never every lair, and reads only the
+    /// vacant ones' rows ([`Dragons::vacant`]).
+    pub(crate) fn vacant_lair(&self, w: &World, d: DragonId, at: Tick) -> Option<LairId> {
         let x = &self.dragons[d];
         let (p, _) = x.position(&self.topo, &self.lairs, at);
         let range = self.tun.species(x.species).grudge_range;
@@ -2067,12 +2200,16 @@ impl Dragons {
                     if l.species != x.species
                         || !l.occupants.is_empty()
                         || l.vacant_since.is_none()
+                        || l.due > at
                         || Some(i) == x.lair
                     {
                         continue;
                     }
                     let dd = flight::dist(t, (px, pz), (i64::from(l.pos.x), i64::from(l.pos.z)));
                     if dd > f64::from(range) {
+                        continue;
+                    }
+                    if self.ground_share(w, i, at) < f64::from(self.tun.arrive_food) {
                         continue;
                     }
                     let key = if oily {
@@ -2136,6 +2273,11 @@ impl Dragons {
             return;
         };
         self.stats.hunts += 1;
+        let need = {
+            let x = &self.dragons[d];
+            let sp = self.tun.species(x.species);
+            (self.tun.full - x.fullness_at(&self.tun, at)).min(sp.appetite)
+        };
         let (food, taken, victims, kind) = match target {
             Target::Road { edge, .. } => {
                 // A patrol: everything on the road when it ends.
@@ -2150,11 +2292,6 @@ impl Dragons {
                 (0, Vec::new(), Vec::new(), PreyKind::Grudge)
             }
             Target::Herd { herd, x, z, .. } => {
-                let need = {
-                    let x = &self.dragons[d];
-                    let sp = self.tun.species(x.species);
-                    (self.tun.full - x.fullness_at(&self.tun, at)).min(sp.appetite)
-                };
                 let p = self.wild.as_mut().map_or_else(Default::default, |h| {
                     h.predate(
                         HerdId::from_bits(herd),
@@ -2176,6 +2313,9 @@ impl Dragons {
             }
         };
         self.feed(d, at, food, &victims);
+        if need > 0 {
+            self.fold_fed(d, food as f32 / need as f32, at);
+        }
         let name = self.target_name(w, target);
         let quarry = self.quarry(w, target, kind, name);
         self.record_hunt(at, d, quarry, food, taken);
@@ -2185,6 +2325,9 @@ impl Dragons {
     /// After a hunt: home if fed enough, else another target (a bout chains at most
     /// `bout_hunts`).
     fn after_hunt(&mut self, w: &mut World, d: DragonId, at: Tick, food: i32) {
+        if self.starve_leave(w, d, at) {
+            return;
+        }
         let x = self.dragons.get_mut(d).expect("live");
         if food > 0 {
             x.fruitless = 0;
@@ -3082,6 +3225,13 @@ impl Dragons {
             Obs::Hurt(h) => self.hurt(w, h, at),
             Obs::Died(dd) => {
                 if let Some(d) = self.embodied(dd.agent, dd.epoch) {
+                    // A death no wild mob is credited with is a player's loss (EQUILIBRIUM.md
+                    // §2.2's rule 3 for boss kinds): a player's kill, a taming (reported with no
+                    // attacker), a trap, lava. A pet's kill reads as a mob's until the bridge
+                    // reads vanilla's kill credit (slice S3).
+                    if dd.killer_kind != AttackerKind::Mob {
+                        self.press(d, at);
+                    }
                     let killer =
                         (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
                     let pos = (
@@ -3729,11 +3879,7 @@ impl Dragons {
             }
         }
         if lair.occupants.is_empty() {
-            lair.vacant_since = Some(at);
-            lair.plan += 1;
-            let plan = lair.plan;
-            let delay = self.tun.respawn_delay_days * TICKS_PER_DAY;
-            self.schedule(at + delay, Ev::Respawn { lair: l, plan });
+            self.start_wait(l, at);
         }
         self.track_lair(l);
         let _ = w;
@@ -3749,6 +3895,11 @@ impl Dragons {
         }
         lair.vacant_since = None;
         lair.plan += 1;
+        if was_empty {
+            // A newcomer starts its lair's fed share at 1 (§2.4.1).
+            lair.fed = 1.0;
+            lair.fed_at = at;
+        }
         let la = lair.actor;
         let x = self.dragons.get_mut(d).expect("live");
         x.lair = Some(l);
@@ -3893,7 +4044,7 @@ impl Dragons {
             }
             return;
         }
-        match self.vacant_lair(d, at) {
+        match self.vacant_lair(w, d, at) {
             Some(l) => {
                 let name = self.lairs[l as usize].name.clone();
                 self.note(
@@ -3912,18 +4063,49 @@ impl Dragons {
         }
     }
 
-    /// The respawn rule (P13's recommendation, the TUNABLE delay): a roost empty for the delay
-    /// draws a young dragon of its species from afar. Its arrival is a flight like any other, so
-    /// a player can watch it come.
+    /// The renewal rule (EQUILIBRIUM.md §2.4.1): a lair whose wait has ended takes a newcomer if
+    /// its ground would feed one, else it checks again after `arrive_recheck_days`. The newcomer
+    /// is a hatchling of dispersal age from a lair in reach (Neighbour), else a young dragon of
+    /// its species from `respawn_from_blocks` away (Frontier), flying in from the side the known
+    /// world is not. Its arrival is a flight like any other, so a player can watch it come.
     fn respawn(&mut self, w: &mut World, l: LairId, plan: u32, at: Tick) {
         let lair = &self.lairs[l as usize];
         if lair.plan != plan || !lair.occupants.is_empty() || lair.vacant_since.is_none() {
             return;
         }
+        if self.ground_share(w, l, at) < f64::from(self.tun.arrive_food) {
+            self.stats.arrivals_gated += 1;
+            let lair = &mut self.lairs[l as usize];
+            lair.plan += 1;
+            let plan = lair.plan;
+            let again = at + self.tun.arrive_recheck_days * TICKS_PER_DAY;
+            self.schedule(again, Ev::Respawn { lair: l, plan });
+            return;
+        }
+        if let Some(h) = self.heir_for(l, at) {
+            self.stats.heirs_sent += 1;
+            let name = self.lairs[l as usize].name.clone();
+            self.note(
+                at,
+                "disperse",
+                Some(h),
+                format!("{name} is ready: leaves its parents to claim it"),
+            );
+            self.leave_lair(w, h, at);
+            let lair = &mut self.lairs[l as usize];
+            lair.plan += 1; // claimed
+            lair.vacant_since = None;
+            self.track_lair(l);
+            self.fly(w, h, Purpose::Claim(l), at);
+            return;
+        }
+        let lair = &self.lairs[l as usize];
         self.stats.respawns += 1;
         let species = lair.species;
         let mut rng = StreamKey::new(self.seed, SYS_BREED, lair.key).slot(at.0);
-        let angle = rng.next_f64() * std::f64::consts::TAU;
+        let random = rng.next_f64() * std::f64::consts::TAU;
+        let angle = self.frontier_angle(w, l).unwrap_or(random);
+        let lair = &self.lairs[l as usize];
         let r = f64::from(self.tun.respawn_from_blocks);
         let (fx, fz) = self.topo(lair.pos.frame).canonical_i32(
             lair.pos.x + (r * angle.cos()) as i32,
@@ -3976,6 +4158,105 @@ impl Dragons {
             format!("{name} stood empty: a young dragon flies in to claim it"),
         );
         self.fly(w, d, Purpose::Claim(l), at);
+    }
+
+    /// A hatchling of dispersal age that could take lair `l` (§2.4.1's Neighbour source): of its
+    /// species, roosting at home with a parent at a lair within the species' `grudge_range` (the
+    /// reach a disperser searches), the nearest first. Reads only the rows of lairs in reach.
+    fn heir_for(&self, l: LairId, at: Tick) -> Option<DragonId> {
+        let lair = &self.lairs[l as usize];
+        let sp = self.tun.species(lair.species);
+        let r = i64::from(sp.grudge_range);
+        let grown = sp.disperse_days * TICKS_PER_DAY;
+        let (lx, lz) = (i64::from(lair.pos.x), i64::from(lair.pos.z));
+        let frame = lair.pos.frame;
+        let t = self.topo(frame);
+        let mut best: Option<(f64, u64, DragonId)> = None;
+        for (rx, rz) in self.regions_near(frame, Rect::around(lx, lz, r)) {
+            let Some(ls) = self.lair_cells.get(&(frame, rx, rz)) else {
+                continue;
+            };
+            for &i in ls {
+                if i == l || self.vacant.contains(&i) {
+                    continue;
+                }
+                let o = &self.lairs[i as usize];
+                if o.species != lair.species || o.occupants.len() < 2 {
+                    continue;
+                }
+                let dd = flight::dist(t, (lx, lz), (i64::from(o.pos.x), i64::from(o.pos.z)));
+                if dd > r as f64 {
+                    continue;
+                }
+                for &c in &o.occupants {
+                    let Some(x) = self.dragons.get(c) else {
+                        continue;
+                    };
+                    let home = x
+                        .parent
+                        .and_then(|p| self.dragons.get(p))
+                        .is_some_and(|p| p.lair == Some(i));
+                    if !home
+                        || x.is_embodied()
+                        || !matches!(x.state, State::Roosting)
+                        || x.age(at) < grown
+                    {
+                        continue;
+                    }
+                    let key = (dd, c.to_bits());
+                    if best.is_none_or(|b| key.0.total_cmp(&b.0).then(key.1.cmp(&b.1)).is_lt()) {
+                        best = Some((key.0, key.1, c));
+                    }
+                }
+            }
+        }
+        best.map(|b| b.2)
+    }
+
+    /// The bearing a Frontier newcomer to lair `l` flies in on (§2.4.1: from the nearest
+    /// unexplored direction): away from the centre of the known sites, lairs and villages,
+    /// within `respawn_from_blocks` of it. None when there are none, or when they lie about
+    /// evenly around it (their centre within a twentieth of that distance): then a random one.
+    /// Lairs count at their region's centre, so no lair row is read.
+    fn frontier_angle(&self, w: &World, l: LairId) -> Option<f64> {
+        let lair = &self.lairs[l as usize];
+        let r = i64::from(self.tun.respawn_from_blocks);
+        let (lx, lz) = (i64::from(lair.pos.x), i64::from(lair.pos.z));
+        let frame = lair.pos.frame;
+        let t = self.topo(frame);
+        let rb = rtsim_travel::legs::REGION_BLOCKS;
+        let (own_rx, own_rz) = rtsim_travel::legs::LegIndex::region_of(lx, lz);
+        let (mut sx, mut sz, mut n) = (0.0f64, 0.0f64, 0u32);
+        let mut add = |p: (i64, i64)| {
+            let p = if t.is_flat() { p } else { t.toward((lx, lz), p) };
+            let (dx, dz) = ((p.0 - lx) as f64, (p.1 - lz) as f64);
+            if dx * dx + dz * dz <= (r * r) as f64 {
+                sx += dx;
+                sz += dz;
+                n += 1;
+            }
+        };
+        for (rx, rz) in self.regions_near(frame, Rect::around(lx, lz, r)) {
+            let Some(ls) = self.lair_cells.get(&(frame, rx, rz)) else {
+                continue;
+            };
+            let others = ls.len() - usize::from((rx, rz) == (own_rx, own_rz) && ls.contains(&l));
+            for _ in 0..others {
+                add((rx * rb + rb / 2, rz * rb + rb / 2));
+            }
+        }
+        for v in self.index.villages_near(t, frame, lx, lz, r) {
+            let p = w.nodes[v as usize].pos;
+            add((i64::from(p.x), i64::from(p.z)));
+        }
+        if n == 0 {
+            return None;
+        }
+        let (cx, cz) = (sx / f64::from(n), sz / f64::from(n));
+        if (cx * cx + cz * cz).sqrt() < r as f64 / 20.0 {
+            return None;
+        }
+        Some((-cz).atan2(-cx))
     }
 
     /// An untagged dragon appeared in the world (P13's recommendation: the sim owns every
@@ -4319,6 +4600,12 @@ impl Dragons {
             }
             wr.raw(&l.placed.to_le_bytes());
             wr.u64(l.stacks);
+            let (p, p_day) = l.pressure.parts();
+            wr.raw(&p.to_bits().to_le_bytes());
+            wr.u64(u64::from(p_day));
+            wr.u64(l.due.0);
+            wr.raw(&l.fed.to_bits().to_le_bytes());
+            wr.u64(l.fed_at.0);
         }
         wr.u64(u64::from(self.tribute_stamp));
         for (n, r) in &self.tribute {
