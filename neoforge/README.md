@@ -101,6 +101,25 @@ The bench logs `far bench` lines (the client's `far bench result` line, the serv
 `-PfarBenchLabel=<name>` vary it; `-PfarBench=0` is the control with no trains. The first run creates the flat
 world `farbench` in `dh/run/saves/`, and later runs reuse it with DH's LODs already built.
 
+Phase 2 (docs/choices-dh-feed.md DHT39) adds, all off by default:
+
+- `-PfarBenchDragons=<n>`: made-up dragons 500 to 1,400 blocks east, flying legs, hunting, or sampled as
+  embodied dragons are;
+- `-PfarBenchBandDragons=<n>` and `-PfarBenchBandTrains=<n>`: dragons 120 to 150 blocks east and trains on a
+  140-block ring around spawn, in the band the client has loaded but the server does not tick, which the
+  band renderer draws; either sets the simulation distance to 5, vanilla's least (`-PfarBenchSim=<chunks>` to choose);
+- `-PfarBenchFeed=false`: the client never subscribes to the far feed, so Create's own map sync carries the
+  trains, as in phase 1;
+- `-PfarBenchWarmup=<ticks>` (900 at least) and `-PfarBenchWarmSweeps=<n>` (10 by default): a longer run, whose
+  stop log counts the sweep's CPU time only after the first n sweeps, to time the sweep once the JIT compiled it.
+
+The client's `far bench result` lines then include a `dragons:` line and a `feed:` line (messages, bytes and
+records a second, objects held), and the integrated server logs `far feed at stop` when it stops: the cost of
+its once-a-second sweeps over the whole run: the mean, the mean after the first 10 (class loading and the
+JIT) in wall time and in the server thread's own CPU time, and the worst; then, after the first 10, the CPU
+time of each source, the dedupe and the sends (split into the filter, the view's diff, the encoding and the
+network).
+
 ## What is here
 
 | Package | What |

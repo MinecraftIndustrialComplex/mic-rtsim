@@ -290,6 +290,8 @@ public final class ThreatGameTests {
                 .thenWaitUntil(() -> {
                     check("a partial survey", ind().threats().partialSurveys() > before[0]);
                     List<ByteBuffer> parts = received(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.DISTRICT, id[0]);
+                    // The count moves when the survey runs; its records reach the engine at the next hand-over.
+                    check("an IND_SURVEY_BLOCKS part", !parts.isEmpty());
                     ByteBuffer last = parts.get(parts.size() - 1);
                     record("aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded", "partial (" + engineName() + ")", "chunk " + last.getInt(IndRecords.SurveyBlocks.CHUNK_X) + ","
                             + last.getInt(IndRecords.SurveyBlocks.CHUNK_Z) + ", flags " + last.getInt(IndRecords.SurveyBlocks.FLAGS) + ", rows " + aux(last));

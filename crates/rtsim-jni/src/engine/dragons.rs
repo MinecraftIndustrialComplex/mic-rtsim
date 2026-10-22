@@ -39,6 +39,7 @@ use std::sync::Arc;
 
 use rtsim_ecology::boundary::{self, Cmd, Obs, SpeciesDict};
 use rtsim_ecology::dragon::LairKind;
+use rtsim_ecology::far::{self, FarLeg, FarState};
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_ecology::prey::Item;
 use rtsim_ecology::species::Species;
@@ -99,6 +100,9 @@ pub(super) struct Link {
     /// Records ignored while the dragons were switched off.
     pub(super) ignored: u64,
     pub(super) commands_written: u64,
+    /// FAR_LEG records not written yet (per session; docs/boundary.md §12).
+    far: VecDeque<FarLeg>,
+    pub(super) far_written: u64,
 }
 
 fn new_engine() -> Dragons {
@@ -140,6 +144,8 @@ impl Link {
             records: 0,
             ignored: 0,
             commands_written: 0,
+            far: VecDeque::new(),
+            far_written: 0,
         }
     }
 
@@ -274,6 +280,7 @@ fn define_items(st: &mut State, ids: &[u32]) {
 /// switched on), and Java forgot the engine's dictionary.
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.dragons.queue.clear();
+    st.dragons.far.clear();
     st.dragons.java_species = None;
     st.dragons.items_defined.clear();
     // The first record of the engine's only session: what it holds is its pages as read, so a
@@ -293,6 +300,8 @@ fn set_enabled(st: &mut State, on: bool) {
         // comes back on.
         let _ = st.dragons.engine.take_commands();
         st.dragons.queue.clear();
+        st.dragons.far.clear();
+        st.dragons.engine.set_far_feed(false);
         st.dragons.pager.save_due = true;
     }
     if on && !was {
@@ -309,6 +318,8 @@ fn reset_if_due(st: &mut State) {
         let at = Tick(super::phase1::world_tick(st, st.game_time));
         let (w, d) = (&mut st.phase1.world, &mut st.dragons.engine);
         d.session_start(w, at.max(d.now()));
+        // Java's far table is per session: every dragon goes out again (far.rs).
+        d.set_far_feed(true);
         st.phase1.taint();
     }
 }
@@ -535,6 +546,9 @@ pub(super) fn simulate(st: &mut State) {
 fn take_commands(st: &mut State) {
     let cmds = st.dragons.engine.take_commands();
     st.dragons.queue.extend(cmds);
+    let now = st.dragons.engine.now();
+    let legs = st.dragons.engine.take_far(now);
+    st.dragons.far.extend(legs);
 }
 
 // ---- commands -----------------------------------------------------------------------------------
@@ -652,6 +666,54 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         highest = highest.max(seq);
         st.dragons.commands_written += 1;
         st.dragons.queue.pop_front();
+    }
+    let (h, more) = write_far(st, w);
+    (highest.max(h), more)
+}
+
+/// Writes the queued FAR_LEG records (docs/boundary.md §12) while they fit, after the dragons'
+/// own commands: each takes the next sequence, its species and dimension named in the session's
+/// dictionary and its times moved to game time.
+fn write_far(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    let mut highest = 0;
+    while let Some(r) = st.dragons.far.front().copied() {
+        let dim_name = if r.state == FarState::Gone {
+            None
+        } else {
+            match st.world.java_dict.get(&(wire::DICT_DIMENSION, u32::from(r.frame))) {
+                Some(n) => Some(n.clone()),
+                None => {
+                    // A dimension Java never named has no players to draw it for.
+                    st.dragons.far.pop_front();
+                    continue;
+                }
+            }
+        };
+        let mut names: Vec<(u32, &str)> = Vec::with_capacity(2);
+        if r.state != FarState::Gone {
+            names.push((wire::DICT_BODY, r.species.entity_id()));
+        }
+        if let Some(n) = &dim_name {
+            names.push((wire::DICT_DIMENSION, n.as_str()));
+        }
+        let need = st.dict_bytes(&names) + far::FAR_LEG_SIZE;
+        if need > w.remaining() {
+            return (highest, true);
+        }
+        let body = if r.state == FarState::Gone {
+            0
+        } else {
+            st.dict_id(w, wire::DICT_BODY, r.species.entity_id())
+        };
+        let dim = dim_name.map_or(0, |n| st.dict_id(w, wire::DICT_DIMENSION, &n));
+        let seq = st.session_seq();
+        let mut rec = Vec::with_capacity(far::FAR_LEG_SIZE);
+        far::encode(seq, &r, body, dim, st.phase1.offset, &mut rec);
+        let written = w.copy(&rec);
+        debug_assert!(written, "checked to fit");
+        highest = highest.max(seq);
+        st.dragons.far_written += 1;
+        st.dragons.far.pop_front();
     }
     (highest, false)
 }

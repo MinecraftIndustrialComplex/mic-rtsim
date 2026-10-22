@@ -23,12 +23,12 @@ import java.util.List;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.core.SectionPos;
 import net.minecraft.world.phys.Vec3;
 
 /**
  * The far view of trains: one DH group per carriage, moved by one controller per frame
- * (research/distant-horizons-2026-10-21.md §4.1, §5, §6.4).
+ * (research/distant-horizons-2026-10-21.md §4.1, §5, §6.4). The same controller runs the dragons first
+ * ({@link FarDragonView}) and gives the carriages what of the tier's budget the dragons left.
  *
  * <ul>
  *   <li><b>One relative group per carriage</b>, its boxes cut by {@link StaircaseCutter} around the run's
@@ -37,9 +37,10 @@ import net.minecraft.world.phys.Vec3;
  *       paced by {@link RecutPacer}.</li>
  *   <li><b>One controller</b> in {@code DhApiBeforeGenericRenderSetupEvent}, run once per frame (DH fires
  *       that event for both of its generic passes). Groups carry no lambdas of their own.</li>
- *   <li><b>The hide test</b> (§5): a carriage is not drawn while the client has its real carriage entity, or
- *       while its midpoint is in a chunk the client has loaded (vanilla draws over DH there, so a proxy would
- *       show only where vanilla draws sky).</li>
+ *   <li><b>The hide test</b> (§5, {@link FarHide}): a carriage is not drawn while the client has its real
+ *       carriage entity, or while its midpoint is in a chunk the client has loaded (vanilla draws over DH
+ *       there, so a proxy would show only where vanilla draws sky; {@link FarBandRenderer} draws it there
+ *       instead, when it has no entity).</li>
  *   <li><b>The budget</b> ({@link FarDetail}): the nearest visible carriages are drawn, up to the tier's
  *       groups and boxes; hidden ones keep their group, inactive, until the registered budget needs it.</li>
  *   <li><b>The register</b> is the one of the level being drawn, from the render parameter (§3.1). DH closes a
@@ -150,6 +151,7 @@ final class FarTrainView {
 
     /** The client left its world: release every group now (on the render thread, which is the client's). */
     static void releaseAll() {
+        FarDragonView.releaseAll(register);
         Iterator<Proxy> it = PROXIES.values().iterator();
         while (it.hasNext()) {
             release(it.next());
@@ -168,7 +170,7 @@ final class FarTrainView {
             releaseAll();
         }
         if (!FarGates.ready()) {
-            if (!PROXIES.isEmpty())
+            if (!PROXIES.isEmpty() || FarDragonView.held() > 0)
                 releaseAll();
             return;
         }
@@ -192,6 +194,13 @@ final class FarTrainView {
         double radiusSq = radius * radius;
         double clock = FarClock.ticks() + param.partialTicks;
 
+        // Dragons first; the carriages get what is left of the budget
+        FarDragonView.Used dragons = FarDragonView.update(reg, factory, level, tier, dimension, cam, radiusSq, clock,
+                now, frame);
+        int groupCap = Math.max(0, tier.activeGroups - dragons.groups());
+        int boxCap = Math.max(0, tier.boxes - dragons.boxes());
+        int registeredCap = Math.max(0, tier.registeredGroups - dragons.registered());
+
         // Who could be drawn: in this level, inside DH's radius, and not hidden
         CANDIDATES.clear();
         int hidden = 0;
@@ -199,7 +208,7 @@ final class FarTrainView {
             if (m.kind() != FarKind.CARRIAGE || !dimension.equals(m.dimension()))
                 continue;
             m.segmentAt(clock, SEG);
-            double mx = (SEG[0] + SEG[3]) / 2.0, mz = (SEG[2] + SEG[5]) / 2.0;
+            double mx = (SEG[0] + SEG[3]) / 2.0, my = (SEG[1] + SEG[4]) / 2.0, mz = (SEG[2] + SEG[5]) / 2.0;
             double dx = mx - cam.x, dz = mz - cam.z;
             double d2 = dx * dx + dz * dz;
             if (!(d2 <= radiusSq))
@@ -207,8 +216,7 @@ final class FarTrainView {
             Proxy p = PROXIES.get(m.key());
             if (p != null)
                 p.wantedAt = now;
-            if (m.real() || level.getChunkSource().hasChunk(SectionPos.blockToSectionCoord(mx),
-                    SectionPos.blockToSectionCoord(mz))) {
+            if (FarHide.entityPresent(m, level, mx, my, mz) || FarHide.loaded(level, mx, mz)) {
                 hidden++;
                 continue;
             }
@@ -219,7 +227,7 @@ final class FarTrainView {
         // The nearest, within the tier's budget
         int active = 0, boxes = 0;
         for (Candidate c : CANDIDATES) {
-            if (active >= tier.activeGroups)
+            if (active >= groupCap)
                 break;
             FarMover m = c.mover;
             double rx = c.lx - c.tx, ry = c.ly - c.ty, rz = c.lz - c.tz;
@@ -229,15 +237,15 @@ final class FarTrainView {
             Proxy p = PROXIES.get(m.key());
             if (p == null) {
                 List<double[]> cut = StaircaseCutter.cut(rx, ry, rz, shape);
-                if (cut.isEmpty() || boxes + cut.size() > tier.boxes)
+                if (cut.isEmpty() || boxes + cut.size() > boxCap)
                     continue;
-                if (PROXIES.size() >= tier.registeredGroups && !releaseOneUnseen())
+                if (PROXIES.size() >= registeredCap && !releaseOneUnseen())
                     continue;
                 p = create(factory, m, cut, rx, ry, rz, now);
                 if (p == null)
                     continue;
             } else {
-                if (boxes + p.boxCount > tier.boxes)
+                if (boxes + p.boxCount > boxCap)
                     continue;
                 if (p.rgb != m.rgb() || HeadingRule.needsRecut(p.cutX, p.cutY, p.cutZ, rx, ry, rz)) {
                     if (p.pacer.mayCut(now))

@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.client;
 
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKey;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
@@ -41,7 +42,9 @@ import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
  * ({@link TrainMapSyncClient#stopRequesting()}), and the server forgets the client 20 ticks later.
  *
  * <p>A carriage whose real entity is on the client is marked {@link FarMover#real()}, so a renderer hides it
- * (§5). No server change and no new payload: this reads Create's sync only.
+ * (§5). No server change and no new payload: this reads Create's sync only. It is the fallback: while the
+ * server's far feed answers ({@link FarFeedClient#active()}), the feed carries the trains and this asks Create
+ * for nothing.
  */
 public final class TrainFarSource {
     public static final String SOURCE = MicRtsimCreate.MODID + ":trains";
@@ -64,7 +67,8 @@ public final class TrainFarSource {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         double radius = FarObjects.wantedRadius();
-        if (level == null || mc.player == null || radius <= 0.0) {
+        // The server's far feed sends the trains itself (TrainFeedSource): Create's map requests stay off
+        if (level == null || mc.player == null || radius <= 0.0 || FarFeedClient.active()) {
             stop();
             return;
         }

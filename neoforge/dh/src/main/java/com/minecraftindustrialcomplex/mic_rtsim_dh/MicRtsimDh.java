@@ -22,8 +22,9 @@ import org.slf4j.Logger;
 /**
  * mic_rtsim_dh: mic-rtsim's far view in Distant Horizons (research/distant-horizons-2026-10-21.md §6.1,
  * DECISIONS.md DH-1 and DH-2). It knows DH and the core's far registry and nothing else: it draws what the
- * registry's sources put there (phase 1: Create trains, from mic_rtsim_create) as DH boxes beyond the vanilla
- * view. Client only: servers never load it.
+ * registry's sources put there (Create trains from mic_rtsim_create, and the server's far feed of trains and
+ * dragons, which it subscribes to) as DH boxes beyond the vanilla view, and as vanilla boxes in the loaded
+ * chunks where the real thing has no entity ({@link FarBandRenderer}). Client only: servers never load it.
  */
 @Mod(value = MicRtsimDh.MODID, dist = Dist.CLIENT)
 public final class MicRtsimDh {
@@ -57,6 +58,7 @@ public final class MicRtsimDh {
 
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post e) -> FarGates.tick());
         NeoForge.EVENT_BUS.addListener((RenderFrameEvent.Pre e) -> FarTrainView.newFrame());
+        NeoForge.EVENT_BUS.addListener(FarBandRenderer::onStage);
         NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut e) -> FarTrainView.releaseAll());
         if (FarBench.ENABLED)
             FarBench.register();

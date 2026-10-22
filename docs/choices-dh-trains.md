@@ -60,7 +60,7 @@ is not in the pack.
   the proxy too, because vanilla draws over DH in loaded chunks (research note §5). So where a client's render
   distance is above the server's simulation distance, a train crossing that band vanishes until it reaches the
   DH range. That is how Create behaves without DH as well. Nothing to decide now; phase 2 could draw those
-  carriages with a vanilla-side renderer if it matters.
+  carriages with a vanilla-side renderer if it matters. (Phase 2 does: `docs/choices-dh-feed.md` DHT33.)
 
 ## Measured
 
