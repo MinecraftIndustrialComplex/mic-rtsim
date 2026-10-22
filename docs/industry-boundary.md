@@ -107,10 +107,11 @@ throws the sweep away, so a dropped latest-wins record never corrupts a total (F
 | 0x0408 | IND_CONDITIONS | 0 | 24 u32 season, 28 u32 seasonCount, 32 i64 seasonLength, 40 i64 seasonOrigin | 48 |
 | 0x0409 | IND_POWER_LINK | 0 | 24 u64 sink, 32 u64 source (0: none, the coupling ends) | 40 |
 | 0x0410 | IND_PORT | n entries | 24 u64 district, 32 u32 portKind, 36 u32 inventory (0xFFFFFFFF none), 40 u64 counterpart, 48 u64 opId (0 none), 56 n × Entry16 (amount: + into the district) | 56 + 16n |
-| 0x0411 | IND_TRAIN_ARRIVED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u32 flags (1 simulated), 52 u32 reserved, 56 carriage blocks | 56 + blocks |
+| 0x0411 | IND_TRAIN_ARRIVED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u32 flags (1 simulated; when the cargo was read: 2 approach, before any interface moved goods, 4 the departure for this station, neither: late, at `arriveAt`; choices SG30, SG31), 52 u32 reserved, 56 carriage blocks | 56 + blocks |
 | 0x0412 | IND_TRAIN_DEPARTED | n carriages | 24 u64 train, 32 u64 station, 40 u64 district, 48 u64 destination (0 none), 56 i64 etaTicks, 64 carriage blocks | 64 + blocks |
 | 0x0413 | IND_STATION | 0 | 24 u64 station, 32 u64 district (0 none), 40 u32 dim, 44 i32 x, 48 i32 y, 52 i32 z, 56 u32 name (NAME), 60 u32 reserved | 64 |
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
+| 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -183,9 +184,24 @@ port.
 **Trains.**
 - IND_TRAIN_ARRIVED at a station whose district is **loaded** (`simulated` clear) feeds only the line
   statistics; the cargo diff comes as IND_PORT when the train leaves.
+- The arrival's cargo is what the train brought, read before anything moved: at the first Portable
+  Storage Interface that docks at the station (flag 2, PATCHES.md row 19a; a dock comes on the last
+  block of braking, 4 to 6 ticks before `arriveAt`). When the bridge watched the whole trip and no
+  interface docked near the station, nothing can have moved yet, so the head of `arriveAt` is read
+  (also flag 2). When an interface docked near it without knowing its station (the train had no
+  destination), it is the train's cargo at its departure for this station (flag 4). On a train's
+  first watched stop it is the head of `arriveAt`, late (neither flag). The engine learns a station's
+  exchange from arrival minus departure (I15).
+- **Station ports** (IND_STATION_PORTS, choice SG32): at a loaded call's departure the bridge walks
+  from each interface that docked, through chutes, funnels, hoppers, pipes, pumps and valves (up to
+  8 blocks, loaded chunks only, no belts), and sends the district inventories it reaches when the
+  set changed. The engine keeps them per station until the district's next revision.
 - At a **simulated** station (`simulated` set: the district is unloaded and the carriage has no entity
   in that dimension), the engine decides the exchange from the learned station pattern (I15) and
-  answers with IND_CARRIAGE_DELTA.
+  answers with IND_CARRIAGE_DELTA. It books the exchange on the station's ports only, never on the
+  district's other stock: a station without ports moves nothing (SG33). A simulated load is at most
+  the station's learned load per call, the median of its recent loaded calls (SG34). On a black-box
+  span the replay's change so far is placed in the ports first (SG35).
 - IND_TRAIN_DEPARTED books the leg for line edges and threats (§8.1, §13.3).
 
 **Results.** IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT report, per entry, what was asked and what

@@ -140,7 +140,7 @@ public final class StationCargoGameTests {
         long fd = -1;
         int revision = -1, supplyIdx = -1, sinkIdx = -1;
         long stableSince = -1;
-        boolean filled, called, portsSeen;
+        boolean filled, called, portsSeen, arrivalSeen;
         long t1 = -1, unloadedAt = -1, awayAt = -1, arrivedAt = -1, leftAt = -1, forcedAt = -1, loadedAt = -1, quietSince = -1;
         int heldBase;
         Map<String, Long> chest1, supply1, sink1;
@@ -497,12 +497,21 @@ public final class StationCargoGameTests {
             ItemHandlerHelper.insertItemStacked(car, new ItemStack(Items.GOLD_INGOT, LEARNED), false);
             run.arrivedAt = run.now();
             run.train.arriveAt(run.station);
-            List<ByteBuffer> arr = IndustryKit.received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN, train);
-            ByteBuffer a = arr.isEmpty() ? null : arr.get(arr.size() - 1);
-            if (a == null || a.getLong(Obs.GAME_TIME) < run.arrivedAt) {
-                fail(run, "no IND_TRAIN_ARRIVED for the second call");
+            return;
+        }
+        if (!run.arrivalSeen) {
+            // The engine sees the journal once the tick's records are sent: wait for the record.
+            ByteBuffer a = null;
+            for (ByteBuffer r : IndustryKit.received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN, train))
+                if (r.getLong(Obs.GAME_TIME) >= run.arrivedAt)
+                    a = r;
+            if (a == null) {
+                run.last = "waiting for the second call's IND_TRAIN_ARRIVED";
+                if (run.now() - run.arrivedAt > 200)
+                    fail(run, "no IND_TRAIN_ARRIVED for the second call");
                 return;
             }
+            run.arrivalSeen = true;
             int flags = a.getInt(IndRecords.Train.ARRIVED_FLAGS);
             IndustryKit.record(run.test, "simulated call", "at " + run.arrivedAt + ", flags " + flags);
             if ((flags & IndRecords.Train.FLAG_SIMULATED) == 0)

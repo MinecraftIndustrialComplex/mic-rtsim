@@ -721,7 +721,7 @@ Recommended option first in each.
    deploy server shows it; then find the mod that touches Create's registrate from its own
    constructor thread.
 
-### 10.7 Reversible decisions taken (SG1 to SG24)
+### 10.7 Reversible decisions taken (SG1 to SG24, SG30 onwards)
 
 | Id | Decision | Why |
 |---|---|---|
@@ -749,3 +749,10 @@ Recommended option first in each.
 | SG22 | The harness's arms wait for each other before the busy window and the unload | the rtsim arm's adopts, reports and rescan started its windows up to 110 s late |
 | SG23 | No 200 x 8 world | 200 x 32 already gives 6,400 factories and 56,918 Create block entities |
 | SG24 | sg200a (before SG22) kept for tick cost, detection and line edges, not for its deltas | its busy and reloaded windows started 110 s apart |
+| SG30 | An arrival's cargo is read at the first Portable Storage Interface dock near the station (a mixin at the head of `startTransferringTo`, PATCHES.md row 19a), flag 2 | a dock comes on the last block of braking at 0.25 blocks per tick or less, before `arriveAt`, on every call that moves goods; nothing moves before it |
+| SG31 | No dock near the station on a watched trip: the head of `arriveAt` (flag 2); a dock that could not name its station: the cargo at the previous departure (flag 4); a first watched stop: `arriveAt`, late (flag 0). `/rtsim district perf` counts each path | coordinator's option (b) only where no early hook fires; the flags say which path each arrival took |
+| SG32 | Station ports (IND_STATION_PORTS, 0x0415): at a loaded call's departure, a walk from the docked interfaces through chutes, funnels, hoppers, pipes, pumps and valves, at most 8 blocks, loaded chunks only, no belts; sent when the set changes; cleared by a district revision | the containers the station's interfaces serve, found from what docked; belts would reach the factories |
+| SG33 | A simulated call books only on its station's ports (black box: the district's pool as well, so its processes see the goods; glass: a port's store pool for the good, else the port's own contents); a station with a rule and no ports moves nothing (`exchanges_portless`) | the coordinator's (a); never the district's stock |
+| SG34 | A simulated load is at most the median of the station's last 8 loaded calls' amounts of that good (placeholder window); unloads are not capped | the coordinator's (b), about 30 items here; the median ignores the first thin calls and a catch-up call after an absence |
+| SG35 | Before a station call on a black-box span, the replay's change so far is placed in the ports by the reconcile's own plan (as their `held`), and the span's base moves with it | otherwise a port's bookings from earlier calls grow without bound while the replay's change waits for the reconcile, and a load finds nothing to take |
+| SG36 | The first-tick stall is reported, not fixed: it is Project Atmosphere's region forecast (a fresh `RandomState` that C2ME compiles), reached through rtsim's habitat sampler and mic_climate | the cost is PA's and C2ME's; any first temperature query in a new region pays it |
