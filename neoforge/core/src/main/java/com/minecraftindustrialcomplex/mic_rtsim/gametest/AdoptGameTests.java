@@ -95,6 +95,15 @@ public final class AdoptGameTests {
     /** Everything the three tests share: the world built, detected, and the unadopted machines in place. */
     private static BlockPos[] build(GameTestHelper helper, ServerLevel level, List<ChunkPos> forced) {
         forced.addAll(force(helper, level));
+        // Earlier tests leave block entities in the chunks around the yard: the adopt would take them too.
+        BlockPos centre = inChunk(helper, 0, 0);
+        for (int dx = -4; dx <= 4; dx++)
+            for (int dz = -4; dz <= 4; dz++) {
+                var chunk = level.getChunkSource().getChunkNow((centre.getX() >> 4) + 4 + dx, (centre.getZ() >> 4) + 2 + dz);
+                if (chunk != null)
+                    for (BlockPos p : new ArrayList<>(chunk.getBlockEntities().keySet()))
+                        level.removeBlock(p, false);
+            }
         BlockPos[] ms = new BlockPos[PLACED.length + UNADOPTED.length];
         int i = 0;
         for (int[] c : PLACED)
