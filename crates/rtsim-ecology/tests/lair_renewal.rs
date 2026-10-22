@@ -149,12 +149,7 @@ fn starving_dragon(seed: u64) {
         },
         Tick::ZERO,
     );
-    let mut h = Herds::new(
-        seed,
-        HerdTunables::default(),
-        Box::new(Uniform),
-        Tick::ZERO,
-    );
+    let mut h = Herds::new(seed, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
     let tun = d.tun.clone();
     // Starving: the fed share falls by e^(-1/30) a day from 1, below 0.35 after 32 days.
     let mut left = None;
@@ -173,7 +168,11 @@ fn starving_dragon(seed: u64) {
     let left = left.expect("the starving dragon left");
     assert!((30..=40).contains(&left), "left on day {left}");
     assert_eq!(
-        (d.stats.starved_away, d.stats.migrations, d.stats.player_losses),
+        (
+            d.stats.starved_away,
+            d.stats.migrations,
+            d.stats.player_losses
+        ),
         (1, 0, 0)
     );
     let lair = &d.lairs[l as usize];
@@ -193,7 +192,10 @@ fn starving_dragon(seed: u64) {
     let due = lair.due;
     let gated_until = due + 2 * tun.arrive_recheck_days * TICKS_PER_DAY + TICKS_PER_DAY;
     d.run_until_with_herds(&mut w, &mut NoInfrastructure, &mut h, gated_until);
-    assert_eq!(d.stats.arrivals_gated, 3, "at the wait's end and twice after");
+    assert_eq!(
+        d.stats.arrivals_gated, 3,
+        "at the wait's end and twice after"
+    );
     assert_eq!((d.stats.respawns, d.stats.heirs_sent), (0, 0));
     assert!(d.lairs[l as usize].occupants.is_empty());
     // Herds come to graze by the lair (on uniform grassland, so they stay near it): the next

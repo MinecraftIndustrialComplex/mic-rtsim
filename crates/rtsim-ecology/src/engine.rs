@@ -43,8 +43,8 @@ use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
-use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::PagedArena;
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
@@ -806,9 +806,7 @@ impl Dragons {
             return;
         };
         let h = self.tun.respawn_half_life_days as f32;
-        self.lairs[l as usize]
-            .pressure
-            .bump(day_num(at), 1.0, h);
+        self.lairs[l as usize].pressure.bump(day_num(at), 1.0, h);
         self.stats.player_losses += 1;
     }
 
@@ -829,7 +827,11 @@ impl Dragons {
         // In the nine regions: the point brought to the lair's side of any seam lies in a region
         // within one of the lair's.
         let ground = |p: (i64, i64)| {
-            let p = if t.is_flat() { p } else { t.toward((lx, lz), p) };
+            let p = if t.is_flat() {
+                p
+            } else {
+                t.toward((lx, lz), p)
+            };
             let (px, pz) = rtsim_travel::legs::LegIndex::region_of(p.0, p.1);
             (px - rx).abs() <= 1 && (pz - rz).abs() <= 1
         };
@@ -4256,7 +4258,11 @@ impl Dragons {
         let (own_rx, own_rz) = rtsim_travel::legs::LegIndex::region_of(lx, lz);
         let (mut sx, mut sz, mut n) = (0.0f64, 0.0f64, 0u32);
         let mut add = |p: (i64, i64)| {
-            let p = if t.is_flat() { p } else { t.toward((lx, lz), p) };
+            let p = if t.is_flat() {
+                p
+            } else {
+                t.toward((lx, lz), p)
+            };
             let (dx, dz) = ((p.0 - lx) as f64, (p.1 - lz) as f64);
             if dx * dx + dz * dz <= (r * r) as f64 {
                 sx += dx;
