@@ -231,14 +231,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Dragons now guard oil: they need it to breathe fire, nest near it and raid whoever works it. The gate's own arrivals stay off, and you answered all 5 questions</h1>
-  <p class="dek" data-ss-id="dek">The oil gate's dragon half, built as you approved it (OG-1 to OG-8 and OG-10 to OG-13) and merged to mic-rtsim main at 5f8b403. The underground half comes next and is not built. You answered its five questions on 21 October; the bigger reserve and the cheap biome look are built on branch docs/oilgate-cheese-audit, not yet on main.</p>
-  <p class="lead" data-ss-id="lead">Fire dragons now carry a fuel reserve. Time and every breath of fire drain it, and they refill by resting on an oil field or by drinking a base's tanks. One with none fights with bite and claws. Every oil field gets a fire lair within reach, and dragons raid districts that work near their oil. A roof now stops a flying raid's block damage. In Control's own desert dragons and blazes are untouched. The gate's own arrivals at oil, the field flights, failed the danger test against In Control, so they ship switched off.</p>
+  <p class="dek" data-ss-id="dek">The oil gate's dragon half, built as you approved it (OG-1 to OG-8 and OG-10 to OG-13) and merged to mic-rtsim main at 5f8b403. The underground half is now being built, as the cheese audit's fix F6. You answered its five questions on 21 October; the bigger reserve and the cheap biome look are built and on main (2ea6e29).</p>
+  <p class="lead" data-ss-id="lead">Fire dragons now carry a fuel reserve. Time and every breath of fire drain it, and they refill by resting on an oil field or by drinking a base's tanks. One with none fights with bite and claws. Every oil field gets a fire lair within reach, and dragons raid districts that work near their oil. A roof now stops a flying raid's block damage. In Control's own desert dragons and blazes are untouched. The gate's own arrivals at oil, the field flights, failed the danger test against In Control, so they ship switched off, until the cheese audit's first three fixes land (OGB-6).</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-built"><div class="n">12</div><div class="t">decisions built: all you approved for the dragon half</div></div>
     <div class="tile" data-ss-id="kpi-iaf"><div class="n">20 <small>of 20</small></div><div class="t">Ice and Fire GameTests, on the native engine and the stub</div></div>
     <div class="tile" data-ss-id="kpi-core"><div class="n">63 <small>of 63</small></div><div class="t">core GameTests</div></div>
     <div class="tile" data-ss-id="kpi-rust"><div class="n">about 835</div><div class="t">Rust tests</div></div>
     <div class="tile" data-ss-id="kpi-decide"><div class="n">5</div><div class="t">questions answered</div></div>
+  </div>
+  <div class="box" data-ss-id="audit-box">
+    <p><strong>The cheese audit: as built, the gate fails your bar.</strong> 18 of 26 tricks a semi-casual player would try get past it, from your minecart drop-off to roofing the pumpjack. Fixes F1 to F9 are now being built, and you answered its three questions (OGB-6 to OGB-8). <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit">Read the audit</a>.</p>
   </div>
 </header>
 
@@ -320,7 +323,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </tbody>
   </table>
   </div>
-  <p data-ss-id="test-early">The verdict is early. The plan asks for medians over several runs, by day and by night; these are two runs by day. Both runs fail the same two measures, and field flights stay off. You then reframed question 1: matching In Control is no longer the bar, so this test no longer decides the switch.</p>
+  <p data-ss-id="test-early">The verdict is early. The plan asks for medians over several runs, by day and by night; these are two runs by day. Both runs fail the same two measures, and field flights stay off. You then reframed question 1, and after the cheese audit chose to replace In Control's fire dragon with field flights once its fixes F1 to F3 land (OGB-6). Matching In Control is no longer the bar; this harness stays for tuning the draw.</p>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
@@ -330,7 +333,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <div class="decision" data-ss-id="q1">
     <h3>1. Field flights: what makes the gate dangerous enough to switch?</h3>
     <p class="rec">Your answer: neither option. The gate is judged by your bar, not by matching In Control, which "might have been overkill".</p>
-    <p>A real oil pipeline must be infeasible to build, and hard for a semi-casual player to cheese, for example by running in, dropping a contraption as real blocks and running off laying pipe (OGB-1). A cheese audit, not an integration test, is judging the gate against that bar. Its results follow when it finishes.</p>
+    <p>A real oil pipeline must be infeasible to build, and hard for a semi-casual player to cheese, for example by running in, dropping a contraption as real blocks and running off laying pipe (OGB-1). A cheese audit then judged the gate against that bar: as built it fails, with 18 of 26 cheeses open, and fixes F1 to F9 are now being built. <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit">The audit page</a> has the cheeses, the fixes and your three answers to it.</p>
   </div>
 
   <div class="decision" data-ss-id="q2">
@@ -414,8 +417,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="next" data-ss-id="next" data-ss-section>
-  <h2 data-ss-id="next-h">Next: the underground threat, not built</h2>
-  <p data-ss-id="next-p">OG-9e: a Death Worm oil nest, placed on the first load of each oil chunk and asleep until a pumpjack drills, under a new threat class for burrowing attackers. Nothing of it exists yet, but its hooks are in place:</p>
+  <h2 data-ss-id="next-h">Next: the underground threat, now being built as the audit's fix F6</h2>
+  <p data-ss-id="next-p">OG-9e: a Death Worm oil nest, placed on the first load of each oil chunk and asleep until a pumpjack drills, under a new threat class for burrowing attackers. It is being built with the audit's other fixes, on these hooks:</p>
   <ul data-ss-id="next-list">
     <li>Every new oil chunk passes one spot in the engine, whatever reported it: that is where a nest will be queued.</li>
     <li>A command id is reserved for placing the nest on a chunk's first load.</li>
@@ -427,7 +430,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-react="off" data-ss-id="sources">
   <summary>Sources</summary>
   <ul>
-    <li>Your answers: <code>DECISIONS.md</code> rows OGB-1 to OGB-5 and <code>docs/choices-oilgate.md</code> OGC44 and OGC45, on branch docs/oilgate-cheese-audit (40fc3c8, 5390f28).</li>
+    <li>Your answers: <code>DECISIONS.md</code> rows OGB-1 to OGB-5 and <code>docs/choices-oilgate.md</code> OGC44 and OGC45 (40fc3c8, 5390f28), on main since 2ea6e29.</li>
+    <li>The cheese audit: <code>docs/oilgate-cheese-audit.md</code> and <code>DECISIONS.md</code> OGB-6 to OGB-8 (ece190e, c413e4a), on <a href="https://spacesheep.dev/@benmac/rtsim-oil-cheese-audit">its own page</a>.</li>
     <li>mic-rtsim main at 5f8b403, "Merge feat/oilgate-dragons: the dragon half of the oil gate (OG-1 to OG-8, OG-10 to OG-13)".</li>
     <li><code>docs/choices-oilgate.md</code>: OGC1 to OGC43, the OG-10 results table (OGC35), the fire events per stream, the seam for the underground half and the five questions ("For Ben").</li>
     <li><code>OILGATE.md</code>: the design as approved, its status line and the §8 proposals OG-1 to OG-13. <code>DECISIONS.md</code>: BR-OG and OG-9 to OG-9e.</li>
