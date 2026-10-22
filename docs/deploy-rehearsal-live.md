@@ -740,7 +740,9 @@ its console for maintenance: systemd starts it again 10 seconds later. Use `syst
 3. Re-apply the two live KubeJS edits if Ben still wants them (diff
    `kubejs/server_scripts/destroy_metallurgy_integration.js` and `overgeared_mechanical_forging.js`
    against the backup).
-4. JVM arguments: replace `user_jvm_args.txt` (section 8.5). The installer leaves it alone.
+4. JVM arguments: `setup_server.py` now sets `-Xms` equal to `-Xmx` (8G by default, `--heap SIZE`,
+   `--no-heap`) and with `-y` does so without asking; it never lowers a larger `-Xmx` and keeps other
+   args. The host's file has `-Xms` twice and no `-Xmx`, so check the result against section 8.5.
 5. `sudo systemctl start minecraft-server`; follow `logs/latest.log` to `Done`, then compare it with
    section 6.2's list of expected errors. Let one player log in and check an inventory, an ender
    chest, the Cobblemon party and PC, a train and a Sable ship: the rehearsal could not check any of
@@ -778,7 +780,7 @@ the bases loaded (6.4): 2.3 to 2.5 GiB (2,349 to 2,532 MiB) live after each youn
 under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with:
 
 ```
--Xms4G
+-Xms8G
 -Xmx8G
 -Xlog:gc:file=logs/gc.log:time,uptime:filecount=5,filesize=20M
 ```
@@ -786,9 +788,12 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
 - 8 GiB is three times the live set measured here. A player at the main base, Distant Horizons'
   server-side generation and rtsim's growth over months add to it; the GC log says after a week whether
   it is enough (the `Pause Young` lines' heap after collection should stay under about 5 GiB).
-- 4 GiB initial saves the heap growing in small steps during boot, and G1 does not shrink below it.
-- The java process then peaks near 9.2 GiB resident instead of over 12, which leaves the OS, the page
-  cache and Elasticsearch about 6 GiB and keeps the heap out of swap.
+- `-Xms` equal to `-Xmx` (ST3): on big Create worlds the live heap near G1's marking threshold at
+  `-Xmx6G` cost 10 to 16 ms of background CPU per tick (`docs/stress-worlds-results.md` §8). A heap of
+  at least 8 GB with `-Xms` equal to `-Xmx` avoids it, and the heap no longer grows in steps during boot.
+- The java process then sits near 9.2 GiB resident (the 8 GiB heap plus the 1.2 GiB of non-heap memory),
+  all of the heap committed from the start, instead of over 12. That leaves the OS, the page cache and
+  Elasticsearch about 6 GiB and keeps the heap out of swap.
 - G1 is JDK 21's default on this host: no collector flags. `-XX:ActiveProcessorCount` and the
   `mic_native` thread properties of the rehearsal are not needed on the host (its defaults are its 4
   cores).
