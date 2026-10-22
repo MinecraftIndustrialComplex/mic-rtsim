@@ -170,11 +170,20 @@ public final class OilFieldGameTests {
             if (a > 0)
                 expected.put(p, a);
         }
-        // The site's 3x3 is in memory when the survey comes; the rest of the radius is not.
+        // The site's 3x3 is forced, which holds its 7x7 FULL (ticket level 31 reaches two chunks out): those
+        // are in memory when the survey comes, the rest of the radius is not. More may load while the survey
+        // is on its way, so the split is checked against the held 7x7, not a snapshot.
         List<ChunkPos> near = new ArrayList<>();
         for (int dx = -1; dx <= 1; dx++)
             for (int dz = -1; dz <= 1; dz++)
                 near.add(new ChunkPos(sc.x + dx, sc.z + dz));
+        List<ChunkPos> held = new ArrayList<>();
+        for (int dx = -3; dx <= 3; dx++)
+            for (int dz = -3; dz <= 3; dz++) {
+                ChunkPos c = new ChunkPos(sc.x + dx, sc.z + dz);
+                if (inside.contains(c.toLong()))
+                    held.add(c);
+            }
         List<ChunkPos> forced = new ArrayList<>();
         for (ChunkPos c : near)
             if (level.setChunkForced(c.x, c.z, true))
@@ -182,19 +191,21 @@ public final class OilFieldGameTests {
         Set<Long> inMemory = new HashSet<>();
         long[] c0 = new long[7];
         long[] took = {0, 0};
+        long[] later0 = {0};
         int budget = DragonConfig.samplesPerTick();
         long[] oil0 = DragonKit.nativeOil(0);
         helper.startSequence()
                 .thenWaitUntil(() -> {
-                    for (ChunkPos c : near)
+                    for (ChunkPos c : held)
                         check("the site's chunk " + c + " is in memory", level.getChunkSource().getChunkNow(c.x, c.z) != null);
                 })
+                .thenIdle(20)
                 .thenExecute(() -> {
                     for (long p : within)
                         if (level.getChunkSource().getChunkNow(ChunkPos.getX(p), ChunkPos.getZ(p)) != null)
                             inMemory.add(p);
-                    check("the site's 3x3 is in memory and the radius's edge is not (" + inMemory.size() + " of " + within.length + ")",
-                            inMemory.size() >= near.size() && inMemory.size() < within.length);
+                    check("the site's 7x7 is in memory and the radius's edge is not (" + inMemory.size() + " of " + within.length + ")",
+                            inMemory.size() >= held.size() && inMemory.size() < within.length);
                     c0[0] = s.surveysDone;
                     c0[1] = s.surveySampled;
                     c0[2] = s.surveyDeferred;
@@ -209,20 +220,22 @@ public final class OilFieldGameTests {
                         s.surveysDone > c0[0] && s.surveysPending() == 0))
                 .thenExecute(() -> {
                     long now = s.surveySampled - c0[1], later = s.surveyDeferred - c0[2];
-                    check("the chunks in memory were sampled at once (" + now + " of " + inMemory.size() + ")", now == inMemory.size());
-                    check("the others wait for their load (" + later + " of " + (within.length - inMemory.size()) + ", "
-                            + s.deferredPending(level.dimension()) + " pending)",
-                            later == within.length - inMemory.size() && s.deferredPending(level.dimension()) >= later);
+                    later0[0] = later;
+                    check("every chunk within the radius was sampled or deferred, once (" + now + " + " + later + " of " + within.length + ", "
+                            + (s.repeats - c0[5]) + " repeats)", now + later == within.length && s.repeats == c0[5]);
+                    check("the held chunks were sampled at once (" + now + " of at least " + held.size() + ")", now >= held.size());
+                    check("the radius's edge waits for its load (" + later + ")", later > 0);
                     check("no sample read a chunk not in memory (" + (s.ungenerated.samples - c0[4]) + ")", s.ungenerated.samples == c0[4]);
                     record(test, "survey", "radius " + radius + " at " + site.toShortString() + ": " + within.length + " chunks, "
-                            + now + " in memory sampled at once, " + later + " waiting for their load");
+                            + now + " in memory sampled at once (" + inMemory.size() + " in memory when sent), " + later
+                            + " waiting for their load");
                     // Their loads: each deferred chunk is sampled once it is in memory.
                     for (long p : within)
-                        if (!inMemory.contains(p) && level.setChunkForced(ChunkPos.getX(p), ChunkPos.getZ(p), true))
+                        if (level.setChunkForced(ChunkPos.getX(p), ChunkPos.getZ(p), true))
                             forced.add(new ChunkPos(p));
                 })
                 .thenWaitUntil(() -> check("the deferred chunks were sampled as they loaded (" + (s.deferredSampled - c0[3]) + " of "
-                        + (within.length - inMemory.size()) + ")", s.deferredSampled - c0[3] == within.length - inMemory.size()))
+                        + later0[0] + ")", s.deferredSampled - c0[3] == later0[0]))
                 .thenIdle(5)
                 .thenExecute(() -> {
                     took[1] = level.getGameTime() - took[0];
