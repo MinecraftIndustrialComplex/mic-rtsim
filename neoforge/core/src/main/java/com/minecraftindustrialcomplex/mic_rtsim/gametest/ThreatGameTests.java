@@ -251,6 +251,75 @@ public final class ThreatGameTests {
     }
 
     /**
+     * F5 (docs/oilgate-cheese-audit.md): a partly loaded district is surveyed where it is loaded. A machine's
+     * district gains a far member chunk that is not loaded (as detection keeps one that recorded a seed): no
+     * whole survey runs, since the perimeter cut needs every chunk, but a partial one does, and its
+     * IND_SURVEY_BLOCKS for the loaded chunk is flagged partial and lists the machine; the unloaded chunk gets
+     * no part. A second machine set down in the loaded chunk is in the next partial survey, and the engine's
+     * view (each chunk's part 0 replaces its rows) holds both machines, once each.
+     */
+    @GameTest(template = YARD, batch = "threat_partial", timeoutTicks = 600)
+    public static void aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        ThreatConfig.setForTest(ThreatConfig.SURVEY_MIN_INTERVAL, 1);
+        ThreatConfig.setForTest(ThreatConfig.SURVEY_CHUNKS_PER_TICK, 64);
+        ServerLevel level = helper.getLevel();
+        BlockPos machine = inChunk(helper, 4, 4), second = inChunk(helper, 10, 10);
+        int cx = machine.getX() >> 4, cz = machine.getZ() >> 4;
+        long far = net.minecraft.world.level.ChunkPos.asLong(cx + 9300, cz + 9300);
+        long[] id = {0};
+        long[] before = new long[2]; // partial surveys, this district's whole surveys
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, machine, TestMachines.MACHINE.get().defaultBlockState());
+                    playerPlaced(helper, machine);
+                    check("the far chunk is not loaded", level.getChunkSource().getChunkNow(cx + 9300, cz + 9300) == null);
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, machine);
+                    check("the district", d != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    ind().districts().addSeededChunkForTest(ind().district(id[0]), far);
+                    before[0] = ind().threats().partialSurveys();
+                    before[1] = surveyCount(id[0]);
+                    ind().threats().surveySoon(ind().district(id[0]));
+                })
+                .thenWaitUntil(() -> {
+                    check("a partial survey", ind().threats().partialSurveys() > before[0]);
+                    List<ByteBuffer> parts = received(IndRecords.IND_SURVEY_BLOCKS, IndRecords.SurveyBlocks.DISTRICT, id[0]);
+                    ByteBuffer last = parts.get(parts.size() - 1);
+                    record("aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded", "partial (" + engineName() + ")", "chunk " + last.getInt(IndRecords.SurveyBlocks.CHUNK_X) + ","
+                            + last.getInt(IndRecords.SurveyBlocks.CHUNK_Z) + ", flags " + last.getInt(IndRecords.SurveyBlocks.FLAGS) + ", rows " + aux(last));
+                    check("the last part is the loaded chunk's, flagged partial", (last.getInt(IndRecords.SurveyBlocks.FLAGS) & IndRecords.SurveyBlocks.PARTIAL) != 0
+                            && last.getInt(IndRecords.SurveyBlocks.CHUNK_X) == cx && last.getInt(IndRecords.SurveyBlocks.CHUNK_Z) == cz);
+                    check("no part for the unloaded chunk", parts.stream().noneMatch(r -> r.getInt(IndRecords.SurveyBlocks.CHUNK_X) == cx + 9300));
+                    int f = rowFlags(exposedRows(id[0]), machine);
+                    check("the machine is listed: " + f, f >= 0 && (f & IndRecords.SurveyBlocks.FLAG_MACHINE) != 0);
+                    check("no whole survey of a partly loaded district", surveyCount(id[0]) == before[1]);
+                    set(helper, second, TestMachines.MACHINE.get().defaultBlockState());
+                    before[0] = ind().threats().partialSurveys();
+                    ind().threats().surveySoon(ind().district(id[0]));
+                })
+                .thenWaitUntil(() -> {
+                    check("a second partial survey", ind().threats().partialSurveys() > before[0]);
+                    District d = ind().district(id[0]);
+                    check("the district still has its unloaded member", d != null && d.chunks.contains(far));
+                    List<int[]> rows = exposedRows(id[0]);
+                    long atFirst = rows.stream().filter(r -> r[0] == machine.getX() && r[1] == machine.getY() && r[2] == machine.getZ()).count();
+                    int f = rowFlags(rows, second);
+                    record("aPartlyLoadedDistrictIsSurveyedWhereItIsLoaded", "second", rows.size() + " rows; the first machine listed " + atFirst + " times, the second's flags " + f);
+                    check("both machines listed, the first once", atFirst == 1 && f >= 0 && (f & IndRecords.SurveyBlocks.FLAG_MACHINE) != 0);
+                    check("still no whole survey", surveyCount(id[0]) == before[1]);
+                    ThreatConfig.setForTest(ThreatConfig.SURVEY_MIN_INTERVAL, null);
+                    ThreatConfig.setForTest(ThreatConfig.SURVEY_CHUNKS_PER_TICK, null);
+                })
+                .thenSucceed();
+    }
+
+    /**
      * I20: while the district is observed (a player in it at night; a GameTest server has no player, so
      * the observation is started by hand), natural spawns of a zombie and a skeleton in it count as ground
      * melee and ground ranged; a spawner's zombie and a natural zombie far away do not. When the
