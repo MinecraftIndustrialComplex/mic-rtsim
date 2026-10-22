@@ -4,16 +4,16 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit e939d11
-//!   (the oil audit's F2, F3, F7 and F9 merged with main 6928b4b: the dragons' pages are RTD5 and
-//!   RTN5, the fields' daily watch; an industry district page starts with IDS2, its builders).
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 03763d1
+//!   (the oil audit's F6, the oil nests: the dragons' pages are RTD6 and RTN6, the nest table; an
+//!   industry district page starts with IDS3, five threat classes).
 //!   Villages, roads, news, herds, a district; no caravan is on the road when the server stops
 //!   (the harness world draws caravans). A herd's route draws only when a herd is on the move at
 //!   the save, which depends on when the server stops: 6638edc's save had one, while both runs of
 //!   98d6d34 and main's 7e4042a had every herd staying put. So the route layer is not required
 //!   here; it still has to draw or say why. The district is the roof gate test's, the suite's last.
-//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from 97bbf65 (the same
-//!   fixes merged with main eedf467). Every module's pages, mostly empty: herds, districts and
+//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from 03763d1 (the same
+//!   formats). Every module's pages, mostly empty: herds, districts and
 //!   stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
