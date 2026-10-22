@@ -183,7 +183,8 @@ not a measurement. Where a default follows from a verified fact (Create's 100-ti
   - Everything is saved, open learning windows included, so a restore is exact; a real restart's
     `session_start` then discards the windows (F6).
   - District and cluster ids must fit 48 bits (the kernel's page key).
-  - No dirty tracking yet: every page is written on every save.
+  - No dirty tracking yet: every page is written on every save. (Since 2026-10-22 a save writes
+    only the pages changed since the one before: docs/choices-industry-dirty-pages.md.)
 - **F37 (A15).** `Engine::encounters` returns the trains whose booked legs lie in the regions a
   threat leg crosses during a window. Turning a meeting into an attack is the threat module's
   call.

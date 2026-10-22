@@ -17,5 +17,6 @@ pub mod reconcile;
 pub mod scenario;
 pub(crate) mod ser;
 pub mod threat;
+pub mod tracked;
 pub mod tunables;
 pub mod wire;

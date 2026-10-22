@@ -2571,12 +2571,15 @@ mod replay_path {
         Timed { at: Tick(t), obs }
     }
 
+    /// The record at its time, then a save for the page check (`Engine::check_save`, ID5).
     fn feed(e: &mut Engine, t: &Timed) -> Vec<Cmd> {
         if t.at > e.now() {
             e.advance_to(t.at);
         }
         e.ingest(t);
-        e.drain_commands()
+        let cmds = e.drain_commands();
+        e.check_save();
+        cmds
     }
 
     /// The district, its inventories (live) and the compile at 0.
@@ -4052,6 +4055,15 @@ mod replay_path {
 
         type Pages = Vec<(PageKey, Vec<u8>)>;
 
+        /// The record at its time, with no save: these tests make their own (`save`).
+        fn feed(e: &mut Engine, t: &Timed) -> Vec<Cmd> {
+            if t.at > e.now() {
+                e.advance_to(t.at);
+            }
+            e.ingest(t);
+            e.drain_commands()
+        }
+
         /// What a run does after its start: advance to a tick, or feed a record.
         enum Act {
             To(u64),
@@ -4074,20 +4086,60 @@ mod replay_path {
             r
         }
 
-        /// Runs `acts` on the engine `start` makes, restoring it from its pages before each act
-        /// whose index is in `cuts`: its pages at the end, every command on the way, and its
-        /// replay model at each act.
+        /// A store's industry pages: what the saves put and deleted, by key.
+        type Disk = std::collections::BTreeMap<PageKey, Vec<u8>>;
+
+        /// One save into `disk`, as the host makes it (docs/choices-industry-dirty-pages.md ID2):
+        /// only the pages changed since the save before, and the deletions. The disk then holds
+        /// the engine's whole state, page for page. Returns the pages written or deleted, the
+        /// globals page not counted.
+        fn save(e: &mut Engine, disk: &mut Disk) -> usize {
+            let c = e.save_changed();
+            for k in &c.delete {
+                disk.remove(k);
+            }
+            for (k, b) in c.put {
+                disk.insert(k, b);
+            }
+            let whole: Disk = e.snapshot().into_iter().collect();
+            assert!(
+                *disk == whole,
+                "the saves' pages are the engine's whole state"
+            );
+            if let Some(c) = e.page_check() {
+                assert_eq!(c.unmarked, 0, "{:?}", c.first_unmarked);
+            }
+            c.ticket.len()
+        }
+
+        /// The engine the disk holds; the restored engine saves the same pages.
+        fn restored(disk: &Disk) -> Engine {
+            let r = Engine::restore(disk.clone(), Tunables::default()).expect("restore");
+            let pages: Disk = r.snapshot().into_iter().collect();
+            assert!(
+                pages == *disk,
+                "a restored engine saves what it was restored from"
+            );
+            r
+        }
+
+        /// Runs `acts` on the engine `start` makes, saving after its start and after each act
+        /// and restoring it from the saves' pages before each act whose index is in `cuts`: its
+        /// pages at the end, every command on the way, its replay model at each act, and the
+        /// pages each save wrote.
         fn run(
             start: &dyn Fn() -> Engine,
             acts: &[Act],
             cuts: &[usize],
-        ) -> (Pages, Vec<Cmd>, Vec<u32>) {
+        ) -> (Pages, Vec<Cmd>, Vec<u32>, Vec<usize>) {
             let mut e = start();
+            let mut disk = Disk::new();
+            let mut writes = vec![save(&mut e, &mut disk)];
             let mut cmds = e.drain_commands();
             let mut models = Vec::new();
             for (i, a) in acts.iter().enumerate() {
                 if cuts.contains(&i) {
-                    e = round_trip(&e);
+                    e = restored(&disk);
                 }
                 match a {
                     To(t) => e.advance_to(Tick(*t)),
@@ -4095,9 +4147,10 @@ mod replay_path {
                 }
                 cmds.extend(e.drain_commands());
                 models.push(model(&e));
+                writes.push(save(&mut e, &mut disk));
             }
             e.check_books().expect("books");
-            (e.snapshot(), cmds, models)
+            (e.snapshot(), cmds, models, writes)
         }
 
         /// The run whole, and cut before each act in turn and before all of them at once.

@@ -124,6 +124,27 @@ def write(res, path):
                 L.append(f"| {n} | {m} | {p} | {f(v)} | {f(r['by_player_lost'][p], 1)} | "
                          f"{f(r['loot_by_player'][p], 0)} | {f(r['tribute_by_player'][p], 0)} | "
                          f"{f(r['income_share_by_player'][p])} |")
+    L.append("\n## Alliances (life; section 2.16)\n")
+    L.append("Each `*_noally` scenario is the same seeds with alliances off. Calls: the shares a sworn ally "
+             "joined, refused or could not send (busy). Joint fights lost: the share the attackers lost. Ends: "
+             "a year, by why the pact ended.\n")
+    L.append("| Scenario | Offers a year | Sworn a year | Worlds with a pact | Pact days median (mean) | Calls a year "
+             "(joined, refused, busy) | Joint fights a year (lost) | On players (lost) | On camps | Joint demands "
+             "a year | Betrayals a year | Ends a year | Pairs a year |")
+    L.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for n in names:
+        r = S.get(f"{n}/life")
+        if not r or "ally" not in r or n.startswith("duel_") or n.endswith("_noally"):
+            continue
+        a = r["ally"]
+        ends = ", ".join(f"{k} {v:.3f}" for k, v in a["ends"].items())
+        pairs = ", ".join(f"{k} {v:.3f}" for k, v in list(a["pairs"].items())[:3])
+        L.append(f"| {n} | {f(a['offers_per_year'], 3)} | {f(a['sworn_per_year'], 3)} | {f(a['worlds_with_pact'])} | "
+                 f"{f(a['pact_days_median'], 0)} ({f(a['pact_days_mean'], 0)}) | {f(a['calls_per_year'], 3)} "
+                 f"({f(a['joined'])}, {f(a['refused'])}, {f(a['busy'])}) | {f(a['joint_per_year'], 3)} "
+                 f"({f(a['joint_lost'])}) | {f(a['joint_player_per_year'], 3)} ({f(a['joint_player_lost'])}) | "
+                 f"{f(a['joint_camp_per_year'], 3)} | {f(a['joint_demands_per_year'], 3)} | "
+                 f"{f(a['betrayals_per_year'], 3)} | {ends} | {pairs} |")
     L.append("\n## Work (life): what the engine does a faction-year\n")
     L.append("| Scenario | Council sittings a faction-year | Sittings a year by culture | Relations weighed a "
              "sitting | Acts a faction-year | Rows touched a faction-day |")

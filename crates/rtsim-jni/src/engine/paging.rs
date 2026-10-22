@@ -220,6 +220,8 @@ pub(super) struct Tickets {
     pub(super) conflict: Option<ConflictTickets>,
     pub(super) ships: Option<ShipTickets>,
     pub(super) world: Option<SaveTicket>,
+    /// The industry engine's pages of this save (docs/choices-industry-dirty-pages.md ID3).
+    pub(super) industry: Option<rtsim_industry::engine::SaveTicket>,
 }
 
 /// A save's result, back to the step thread.
@@ -290,6 +292,7 @@ pub(super) fn drain(st: &mut State) {
             conflict,
             ships,
             world,
+            industry,
         } = o.tickets;
         done(&mut st.herds.engine, &mut st.herds.pager, herds, o.ok);
         done(&mut st.dragons.engine, &mut st.dragons.pager, dragons, o.ok);
@@ -301,6 +304,7 @@ pub(super) fn drain(st: &mut State) {
         );
         done(&mut st.ships.engine, &mut st.ships.pager, ships, o.ok);
         super::phase1::world_done(st, world, o.ok);
+        super::industry::saved(st, industry, o.ok);
     }
 }
 

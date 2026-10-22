@@ -16,7 +16,7 @@
 //! | `glass_regimes` | exports a day, each a breakpoint (1 to 1,000) | one export line | CPU per sim day | 1 | §4.5: O(breakpoints + events) |
 //! | `glass_quiet` | replaying factory cells with nothing happening | 10 export lines, one export a day each | CPU per sim day | 0 (flat) | §9.1 |
 //! | `glass_quiet` | same | same | live heap | 1 | §9.2 |
-//! | `glass_quiet` | same | same | save bytes, save CPU | 1 | every page at every save (F36), glass pages included (G2-9) |
+//! | `glass_quiet` | same | same | save bytes, save CPU | 0 (flat) | a save writes only the pages changed since the one before (docs/choices-industry-dirty-pages.md): the busy lines' and the globals page |
 //! | `glass_oscillation` | adversarial controller graphs | | districts that fell back | reported | §4.5 |
 //!
 //! Every glass replay point also records the replay model at its end (2 is the glass box) and the
@@ -73,11 +73,17 @@ struct Point {
     /// `Engine::heap_bytes` (the clusters), beside the counting allocator's `heap_bytes`.
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_heap_bytes: Option<u64>,
-    /// One save at the end: every page's bytes and the snapshot's CPU (`glass_replay::save_cost`).
+    /// One save at the end, the save before it at the span's start (`glass_replay::save_cost`):
+    /// the bytes of the pages it wrote, its CPU, the pages it wrote or deleted and the globals
+    /// page's bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     save_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     save_cpu_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save_pages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    globals_bytes: Option<u64>,
 }
 
 impl Point {
@@ -95,6 +101,8 @@ impl Point {
             engine_heap_bytes: None,
             save_bytes: None,
             save_cpu_ns: None,
+            save_pages: None,
+            globals_bytes: None,
         }
     }
 
@@ -112,6 +120,8 @@ impl Point {
             engine_heap_bytes: p.engine_heap_bytes,
             save_bytes: p.save_bytes,
             save_cpu_ns: p.save_cpu_ns,
+            save_pages: p.save_pages,
+            globals_bytes: p.globals_bytes,
             ..Point::plain(p.n)
         }
     }
@@ -589,12 +599,12 @@ pub fn run(opts: Options) -> i32 {
         out.push(sweep(
             "glass_quiet",
             "save_bytes",
-            1.0,
-            false,
+            0.0,
+            true,
             pts.clone(),
             |p| p.save_bytes.map(|b| b as f64),
         ));
-        out.push(sweep("glass_quiet", "save_cpu_ns", 1.0, false, pts, |p| {
+        out.push(sweep("glass_quiet", "save_cpu_ns", 0.0, true, pts, |p| {
             p.save_cpu_ns
         }));
     }
@@ -631,8 +641,17 @@ pub fn run(opts: Options) -> i32 {
             } else {
                 format!(" fell back: {}", p.fallbacks.join(", "))
             };
-            let save = match (p.save_bytes, s.name) {
-                (Some(b), "glass_regimes") => format!(" save {b} B"),
+            let save = match (
+                p.save_bytes,
+                p.save_pages,
+                p.globals_bytes,
+                s.name,
+                s.metric,
+            ) {
+                (Some(b), Some(n), Some(g), "glass_regimes", _)
+                | (Some(b), Some(n), Some(g), "glass_quiet", "save_bytes") => {
+                    format!(" save {b} B, {n} pages, globals {g} B")
+                }
                 _ => String::new(),
             };
             println!(
@@ -699,7 +718,7 @@ pub fn run(opts: Options) -> i32 {
     }
     if !glass_points.is_empty() {
         println!(
-            "{:<12} {:>8} {:>8} {:>14} {:>12} {:>7} {:>9} {:>10} {:>8} {:>10} {:>9}",
+            "{:<12} {:>8} {:>8} {:>14} {:>12} {:>7} {:>9} {:>10} {:>8} {:>10} {:>9} {:>18}",
             "glass",
             "nodes",
             "edges",
@@ -710,11 +729,12 @@ pub fn run(opts: Options) -> i32 {
             "LP skipped",
             "LP tight",
             "save bytes",
-            "save"
+            "save",
+            "next save"
         );
         for (name, p) in &glass_points {
             println!(
-                "{:<12} {:>8} {:>8} {:>11.0} us {:>9.0} us {:>7} {:>9} {:>10} {:>8} {:>10} {:>6.0} us",
+                "{:<12} {:>8} {:>8} {:>11.0} us {:>9.0} us {:>7} {:>9} {:>10} {:>8} {:>10} {:>6.0} us {:>18}",
                 name,
                 p.nodes,
                 p.edges,
@@ -725,7 +745,8 @@ pub fn run(opts: Options) -> i32 {
                 p.lp_skipped,
                 p.lp_tight,
                 p.save_bytes,
-                p.save_cpu_ns / 1e3
+                p.save_cpu_ns / 1e3,
+                format!("{} B {:.1} us", p.next_save_bytes, p.next_save_cpu_ns / 1e3)
             );
         }
     }
