@@ -57,6 +57,8 @@ def run_line(r):
     if "save_flush_s" in r:
         parts.append(f"save-all flush {r['save_flush_s']:.2f} s, world {r.get('world_bytes', 0) / 1e6:.1f} MB, "
                      f"rtsim dir {r.get('rtsim_dir_bytes', 0) / 1e3:.0f} kB, data {r.get('data_files')}")
+    if r.get("stop_crash"):
+        parts.append("crashed while stopping: " + r["stop_crash"])
     if r.get("error"):
         parts.append("ERROR " + r["error"].strip().splitlines()[-1])
     return parts
