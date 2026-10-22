@@ -33,7 +33,7 @@ hold the industry design and the research behind them.
 | `docs/overnight-choices-integrate2.md` | The ships' route through the native engine, one interest area per player across modules, the C25 switches for the dragons and the ships, and a hunted lane priced as an expected loss (U1 to U18). |
 | `tools/ci/scale-check.sh` | The CI-style scale check: fails when a growth slope exceeds its contract. |
 | `bench/results/` | Committed bench results, with the machine and conditions. |
-| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies), its `NativeEngine` over rtsim-jni and a pure-Java stub engine for tests; GameTests. See `neoforge/README.md`. |
+| `neoforge/` | The Java side: the core bridge mod `mic_rtsim` (puppets, journal, module switches, vanilla bodies), its `NativeEngine` over rtsim-jni and a pure-Java stub engine for tests; GameTests; the plugins, and `mic_rtsim_dh`, the client-only Distant Horizons far view. See `neoforge/README.md`. |
 | `docs/boundary.md` | The binary contract between the bridge and the engine: four buffers, the hand-over, every record. |
 
 The kernel's modules:

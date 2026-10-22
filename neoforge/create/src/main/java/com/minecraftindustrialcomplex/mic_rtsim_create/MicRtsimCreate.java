@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create;
 
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim_create.bench.FarTrainBench;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -11,9 +12,13 @@ import org.slf4j.Logger;
 /**
  * mic_rtsim_create: the Create plugin of the industry workstream (INDUSTRY.md §12, layer 2; A19).
  * Built around Create 6.0.10 (D4 allows a plugin to depend on its mod). It adds no block, item or entity
- * (D3). It registers nothing a player can see: what a distant factory is doing is not shown to players (I18).
- * The one thing it leaves in the world is Create's own: a repair schematic where an unwatched attack broke
- * blocks ({@link RepairSchematics}, I1).
+ * (D3). What a distant factory is doing is not shown to players (I18). The one thing it leaves in the world is
+ * Create's own: a repair schematic where an unwatched attack broke blocks ({@link RepairSchematics}, I1).
+ *
+ * <p>On clients it is also the far view's train source ({@code client.MicRtsimCreateClient}): Create trains
+ * beyond the vanilla view go into the core's far registry for a renderer such as mic_rtsim_dh to draw, as the
+ * player's eyes would see them (DECISIONS.md DH-1, DH-2). That reads Create's own train map sync; no server
+ * change. {@link FarTrainBench} lays out synthetic trains for the far-view bench, and only with its property.
  */
 @Mod(MicRtsimCreate.MODID)
 public final class MicRtsimCreate {
@@ -28,5 +33,7 @@ public final class MicRtsimCreate {
         IndustryApi.registerCommand(IndRecords.IND_WRITE_PACKAGE, WritePackages::accept);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::joined);
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::left);
+        if (FarTrainBench.ENABLED)
+            FarTrainBench.register();
     }
 }

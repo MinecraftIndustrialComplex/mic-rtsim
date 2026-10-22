@@ -13,13 +13,16 @@ base's libraries). Stdlib only. Every server runs under nice 10 on its own ports
 copy of the world. The world sources stay untouched. Results go to <run>/sw-result.json.
 
 A pair starts its arms 5 s apart and runs the same scene in parallel threads, so both share the
-laptop's load; compare per sample. Scenes are JSON:
+laptop's load; compare per sample. The arms wait for each other at the scene's start, before the
+busy window and before the unload, so the rtsim arm's extra steps (adopts, reports, rescan) do not
+shift its windows against the others'. Scenes are JSON:
 
     {"forceload": [[x1, z1, x2, z2], ...],       block coordinates, added 10 s apart; an optional fifth
                                                  element names the dimension (default minecraft:overworld)
      "adopt": [[x, y, z, radius], ...],          rtsim district adopt (rtsim arms only), optional dimension
      "idle": 60, "settle": 120, "busy": 300, "sample": 5,
      "unload_reload": 90,                        forceload remove all, wait, add again, wait
+     "rescan": true,                             `rtsim district rescan` after the busy window (rtsim arms)
      "info_max": 12}                             districts to ask for info
 """
 import argparse
@@ -384,6 +387,14 @@ class Server:
             return
         r = {"perf": self.cmd("rtsim perf"), "district_perf": self.cmd("rtsim district perf"),
              "district_list": self.cmd("rtsim district list")}
+        # rtsim's own tick handlers since the last `rtsim perf reset` (choice SG7)
+        m = re.search(r"tick cost: (\d+) ticks since the reset; mean ([\d.]+) us, p50 ([\d.]+) us, p99 ([\d.]+) us, "
+                      r"p99\.9 ([\d.]+) us, worst ([\d.]+) us \(game tick (-?\d+)\)", r["perf"])
+        if m:
+            r["tick_cost"] = {"ticks": int(m.group(1)), "mean_us": float(m.group(2)), "p50_us": float(m.group(3)),
+                              "p99_us": float(m.group(4)), "p999_us": float(m.group(5)), "worst_us": float(m.group(6)),
+                              "worst_at": int(m.group(7))}
+            log(self.run, key, "rtsim tick cost: mean", m.group(2), "us, p99", m.group(4), "us, worst", m.group(6), "us")
         rows = re.findall(r"^\s+(\d+) '([^']*)' (\S+), (\d+) chunks, (\d+) inventories, load (-?\d+)",
                           r["district_list"], re.M)
         r["n_districts"] = len(rows)
@@ -458,6 +469,12 @@ def scene_run(s, sc, profile_s, barrier=None):
             log(s.run, "adopt", x, z, r, out.strip()[:120])
     time.sleep(sc.get("settle", 120) / 2)
     s.rtsim_report("settled", sc.get("info_max", 12))
+    if barrier:
+        # the rtsim arm's adopts and reports take longer than nothing (110 s at 200 districts):
+        # all arms start the busy window together (choice SG22)
+        barrier.wait()
+    if s.rtsim:
+        s.cmd("rtsim perf reset")  # the busy window's tick cost alone (SG7)
     s.window("busy", sc.get("busy", 300), smp)
     s.rtsim_report("busy", sc.get("info_max", 12))
     if profile_s:
@@ -472,8 +489,15 @@ def scene_run(s, sc, profile_s, barrier=None):
                 shutil.copy(f"{s.dir}/config/spark/{got[0]}", f"{s.dir}/busy.sparkprofile")
                 break
             time.sleep(5)
+    if sc.get("rescan") and s.rtsim:
+        # one full detection on demand, timed by the bridge (the periodic pass's work; choice SG17)
+        out = s.cmd("rtsim district rescan")
+        s.res["rescan_out"] = out
+        log(s.run, "rescan", out.strip()[:160])
     if sc.get("unload_reload"):
         w = sc["unload_reload"]
+        if barrier:
+            barrier.wait()  # unload together after the rtsim arm's reports and rescan (SG22)
         forceload(s, boxes, add=False)
         s.ev("unloaded")
         time.sleep(w)
