@@ -1,15 +1,18 @@
 # Conflict life: how factions decide to fight
 
 **Status:** design for Ben's review, 2026-10-21; revised 2026-10-22 after an adversarial review and
-MOWZIE.md's MZ-15. Nothing is built and no engine code changes here. Ben approves this design before
-code. Branch `plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`.
+MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Nothing is
+built and no engine code changes here. Ben approves this design before code. Branch
+`plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`; the alliances on branch
+`plan/umvuthi-alliances`, worktree `mods/mic-rtsim-conflict2`.
 
 **Ben's answers (2026-10-22).** CL-1 to CL-4 take (a), as recommended. CL-5 takes (b): "Add
 alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed, and
-the alliance design is being added (section 8 has the answers).
+section 2.16 is the alliance design. Section 8 has the answers, and CL-6 and CL-7, the questions the
+alliances raise.
 
 **What the revision changed.** The engine's abstract fights are deterministic: the stronger side wins
-(`village_outcome`, `engine.rs:4343-4365`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
+(`village_outcome`, `engine.rs:4350-4377`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
 model rolled Lanchester odds as a chance to win, and so did EQUILIBRIUM.md's gate. The model now
 fights as the engine does: a losing raid comes from a wrong belief, never from dice. Every number below
 is from the corrected model. MZ-15 (MOWZIE.md on main) settles marches, and section 2.12 follows it.
@@ -83,17 +86,27 @@ Calendar: a game day is 24,000 ticks; a game year is 96 days, four seasons of 24
 - **Every fight has a reason, and the reason is kept.** The engine keeps the motive that drove each
   party and the memory behind it, so an envoy can say what it is owed and why, and a notice can say
   who is angry and for what.
+- **Camps that share an enemy can swear against it** (CL-5 (b), 2.16). Two camps that would each do
+  better or be safer side by side swear a pact against one foe: a camp, a village or a player. A
+  sworn camp calls its ally instead of marching alone, and the ally comes or refuses; the two
+  contingents fight together, by the engine's law and certain. Pacts lapse, break on refusals, and are
+  betrayed mostly by hungry chiefs who never swore them. A pact against a player is told to him.
+  Between camps the engine's law is linear, so two parties together kill no more than the two apart,
+  and pacts are rare: in the valley left alone, one about every seven years and a joint fight about
+  every 28, and the fights on players do not change (4.5). As designed a player almost never meets
+  one: a joint party came at the fortress about once in 4,450 server hours and at the hunter about
+  once in 9,300, and never at the others (CL-7).
 
 What the player sees, in the model's numbers (section 4):
 
 | Player | Today's ladder | The gate (rejected) | This design |
 |---|---|---|---|
-| A walled base (defence 80) near three camps, never pays | 2.7 fights a year on him, every one lost, 39 attackers killed a year | 0.8 a year, 99% lost, 16 killed a year | 0.13 a year (one in eight years), every one lost, 3 killed a year: a new neighbour's first test (in 3 worlds of 4 within two years), a feud after a chief fell at his walls, word that he was away |
+| A walled base (defence 80) near three camps, never pays | 2.7 fights a year on him, every one lost, 39 attackers killed a year | 0.8 a year, 99% lost, 16 killed a year | 0.12 a year (one in eight years), 97% lost, 3 killed a year: a new neighbour's first test (in 3 worlds of 4 within two years), a feud after a chief fell at his walls, word that he was away; two camps sworn against him have beaten his walls while he was away, about once in 240 years (2.16, CL-6) |
 | A weak base (defence 6) that pays when the price is no more than a raid would take | 14.7 wars a year in the last decade: in some camps today's price outgrows the raid, and one refusal is war for good; 138 tribute a year | no war; 329 tribute | 0.1 fights a year; 177 tribute and 30 loot a year, 43% of his income |
 | A weak base that never pays | 23.7 wars a year | 10.4 | 3.4, which take all his income |
-| A player who hunts a goblin camp and kills its envoys (defence 50) | 7.5 fights a year on him | 3.3 | 0.33: the attacks that find him away win (25 loot a year, 5% of his income); the rest break on his walls |
-| A railway at 4 legs a day past a goblin camp and a Frostmaw den | no robbery | no robbery | 2.9 train ambushes a year: 2.5 by the goblins (one in seven lost to the guards the owner puts on) and 0.36 Frostmaw lurks; 0.7 caravan ambushes; at 12 legs, 1.9 lurks (section 3.3) |
-| Nobody: the world left alone | 30 fights a year, 10 between camps and every one of those lost, every world a forever war | 12.6, 2.1 between camps, 75% of those lost | 7.3 a year, 1.2 between camps, 12% of those lost; wars that start and end |
+| A player who hunts a goblin camp and kills its envoys (defence 50) | 7.5 fights a year on him | 3.3 | 0.32: the attacks that find him away win (24 loot a year, 5% of his income); the rest break on his walls |
+| A railway at 4 legs a day past a goblin camp and a Frostmaw den | no robbery | no robbery | 2.9 train ambushes a year: 2.5 by the goblins (one in seven lost to the guards the owner puts on) and 0.37 Frostmaw lurks; 0.7 caravan ambushes; at 12 legs, 1.8 lurks (section 3.3) |
+| Nobody: the world left alone | 30 fights a year, 10 between camps and every one of those lost, every world a forever war | 12.6, 2.1 between camps, 75% of those lost | 7.4 a year, 1.2 between camps, 12% of those lost; wars that start and end; two goblin camps swear against the raider outpost about every seven years and march together about every 28 (2.16) |
 
 ---
 
@@ -328,6 +341,8 @@ that was at least a quarter of it.
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets the share of the camp out hunting (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk and AMBUSH_SPOT, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.15) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
+| Pact | a camp, against a foe both quarrel with (2.16) | nothing seen between camps; against a player, a notice naming both camps | new feud fields (2.16) |
+| Call | a sworn ally, against the foe | a joint party: two columns from two camps, arriving together | two of today's parties, each with its BAND_MARCH, naming each other (2.16) |
 | Hunt | a village (Umvuthana only, when hungry) | raptor packs take a district's animals | MZ-8's owed hunts |
 
 Siege stays in the culture data but is not chosen in this design (section 7, CL-D14).
@@ -377,13 +392,18 @@ Every escalation has a brake that comes from the state, not a cap:
   years, and stop when the stores are full.
 - **Truces.** A camp afraid or sociable enough offers a truce, and the other side accepts if its
   chief is sociable or afraid enough to outweigh its wounded pride, or one time in five; both chiefs
-  swear it. In 64 worlds of 50 years, 1,562 truces between camps were sworn; the chiefs who swore them
-  fought the other camp 55 times while they ran, later chiefs 261 times.
+  swear it. In 64 worlds of 50 years, 1,511 truces between camps were sworn; the chiefs who swore them
+  fought the other camp 45 times while they ran, later chiefs 300 times.
 - **Peace cost and kin cost.** Making a new enemy, or fighting one's own culture, is dear.
+- **Pacts fray** (2.16). A pact lapses after Exp(192) days; refusals, defeats and short contingents
+  strain it until it breaks; falling on an ally ends it and brands the betrayer. A sworn ally makes a
+  camp dearer to attack (deterrence), and an alliance pays only where one camp cannot win alone or
+  fears the foe, so it does not snowball into a bloc: in 320 worlds of 50 years no camp held more than
+  two pacts at once, and in 310 none held more than one.
 - **Clashes keep it from going quiet.** Hunters of two hostile neighbouring camps meet about once in
   two years when both are fed, up to two or three times a year when both starve (rate 1 a year x
   (0.5 + hunger + hunger)); one side loses one or two members. Each clash is a provocation with a
-  memory, and some become feuds.
+  memory, and some become feuds. Sworn allies' hunters do not clash while the pact runs (2.16).
 - **Dragons** (world physics in the model, not a decision): a strike about once in four years a camp
   kills 30 to 60% of it, burns half its stores and frightens it; word of its weakness reaches its
   neighbours about 6 days later.
@@ -441,15 +461,16 @@ today (PM-C2).
 | `Feud` | belief: mean and variance of the log | 8 | |
 | | trust: paid and refused | 8 | fading toward even (192 days) |
 | | wounded pride W | 4 | halves over pride_half, read at the grievance's anchor |
-| | memories (4) | 32 | 8 bytes each: kind u8, flags u8 (hostile, and so on), count u16 (saturating; a name index for a dead chief), weight u16, day u16 |
+| | memories (4) | 32 | 8 bytes each: kind u8, flags u8 (hostile, and so on), count u16 (saturating; a name index for a dead chief; for the six kinds that name a second party, a camp or the player a pact is sworn against, a u8 count and its feud index, 2.16), weight u16, day u16 |
 | | away until, truce until, last warning, paid until, refused at | 20 | days |
 | | the swearing chief | 4 | the chief's ordinal (`Faction::chiefs`) |
 | | the defeat floor: strength and day | 8 | |
 | | believed stock: amount and day | 8 | |
 | | guards news | 4 | the day word came that the trains ride bare (a railway feud) |
 
-About 45 bytes a faction and 96 a feud. A memory is a code and its numbers, not text: the story is
-written when it is read (2.14). The parties on the road home are today's `Party` records.
+About 45 bytes a faction and 96 a feud; for alliances (2.16), 16 more a faction, 40 on each feud toward
+a camp and 4 on each toward a player. A memory is a code and its numbers, not text: the story is written
+when it is read (2.14). The parties on the road home are today's `Party` records.
 
 **Events.** `Ev::Plunder` and its Poisson clock (`schedule_plunder`, `SYS_PLUNDER`) become
 `Ev::Council { faction, stamp }`, booked from `StreamKey(seed, SYS_COUNCIL, key).slot(n)` at the
@@ -478,6 +499,8 @@ party u64: an actor, or a chief's name index):
   "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." (CL-1).
 - **A notice carries its reason.** FACTION_NOTICE (0x8801, `boundary.rs:35`) grows from 64 to 80
   bytes, shown with the howl, roar or gong.
+- **Alliances (2.16)** add the ally's actor to both, 8 bytes each (128 + 8m and 88), and the partner's
+  agent and a joint flag to BAND_MARCH (72 bytes plus its counts and waypoints).
 No backward compatibility is needed before a release. A truce, a skirmish between camps, a border
 clash and a caravan ambush are unwatched in nearly every case and need nothing from Java: a skirmish
 or a caravan ambush a player meets is a band party on its march, as a plunder is today.
@@ -496,6 +519,9 @@ crystal held) and BAND_MARCH (0x880B, MZ-15). Build order:
 5. With CHIEF_STATE: a stolen crystal as a Theft report (test 14).
 6. With BAND_MARCH and MZ-15's march: the walk-in and the quota's walk-in (2.12).
 7. Caravan ambushes: the `rtsim-world` query and the robbery report.
+8. Alliances (2.16): the pact fields and acts, the call and the joint fight on the harness first (tests
+   21 to 25); then, with BAND_MARCH, the joint march, the shared quota, and the ConflictBridge's target
+   listener (GameTests 5 and 6).
 
 **UR-1.** The design adds no entity, block or item, no body and no world change. Its state lives in
 the faction rows and the wheel, which rtsim saves and drops as today; removing rtsim leaves nothing,
@@ -507,11 +533,12 @@ cost MZ-15 lengthens and this design does not change.
 
 MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes it as it is:
 
-- **BAND_MARCH (0x880B) is the march record.** This design has no march or route record of its own
-  and adds no record id. Its acts are today's party kinds, so each rides BAND_MARCH like any party: a
+- **BAND_MARCH (0x880B) is the march record.** This design has no march or route record of its own and
+  adds no record id. Its acts are today's party kinds, so each rides BAND_MARCH like any party: a
   skirmish's route ends at the rival's territory edge, a caravan ambush's on the road, a lurk's at its
-  AMBUSH_SPOT. The ids it touches, FACTION_NOTICE 0x8801 and ENVOY_MATERIALIZE 0x8802, gain fields,
-  and none clashes with MOWZIE.md's planned 0x080C, 0x0811, 0x0091, 0x8807, 0x8809 or 0x880B.
+  AMBUSH_SPOT. A joint party is two parties, each with its own BAND_MARCH naming the other (2.16). The
+  ids it touches, FACTION_NOTICE 0x8801 and ENVOY_MATERIALIZE 0x8802, gain fields, and none clashes with
+  MOWZIE.md's planned 0x080C, 0x0811, 0x0091, 0x8807, 0x8809 or 0x880B.
 - **The 128-block rule**, worded once in EQUILIBRIUM.md §2.2 and used here as written:
 
   > **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
@@ -547,8 +574,9 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   a raider one of 23, a bandit one of 20; a Mowzie band never exceeds it) keeps its whole strength in
   the fight's books. Its column is embodied up to the quota, and the members past it stay in the
   record and walk in along the route from the ticking edge as the quota frees, as `start_fight`'s
-  later waves send only the members not yet in Minecraft (`spawn_wave`, `engine.rs:3364-3378`). The
-  player sees the band the far view drew, arriving in two or three bunches.
+  later waves send only the members not yet in Minecraft (`spawn_wave`, `engine.rs:3378-3390`). The
+  player sees the band the far view drew, arriving in two or three bunches. The two contingents of a
+  joint party share one quota of 16 (2.16, CL-D49).
 
 ### 2.13 Cultures as data
 
@@ -563,15 +591,20 @@ with a pool of one, the Umvuthana one with a small pool, an invasion gate and ra
 | Culture | bold | aggr | soc | spread | τ | greed | pride_half | wake_days | effort | demand bias | other |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | goblin | 0.55 | 0.6 | 0.35 | 0.2 | 4 | 1.6 | 12 | 12 | 2 | 0 | ambush weight 1.4 |
-| bandit | 0.45 | 0.45 | 0.6 | 0.15 | 2 | 1.2 | 24 | 14 | 4 | 6 | ambush weight 1.6 |
-| raider | 0.6 | 0.6 | 0.35 | 0.15 | 2.5 | 0.9 | 96 | 20 | 4 | 2 | preempt 10, oath 10, pride_w 20 |
+| bandit | 0.45 | 0.45 | 0.6 | 0.15 | 2 | 1.2 | 24 | 14 | 4 | 6 | ambush weight 1.6, ally weight 1.2 |
+| raider | 0.6 | 0.6 | 0.35 | 0.15 | 2.5 | 0.9 | 96 | 20 | 4 | 2 | preempt 10, oath 10, pride_w 20, ally weight 0.8 |
 | Umvuthana | 0.5 | 0.45 | 0.65 | 0.15 | 2.5 | 1.2 | 48 | 16 | 6 | 10 | guard share 1, invasion pride 0.8, chief strength 5, one by one, heir wait, hunts |
-| Frostmaw | 0.5 | 0.5 | 0.1 | 0.25 | 3 | 1.0 | 96 | 30 | 14 | none | council of one, its life 60, pride_w 25, killer's grudge 80 and pride 2 |
+| Frostmaw | 0.5 | 0.5 | 0.1 | 0.25 | 3 | 1.0 | 96 | 30 | 14 | none | council of one, its life 60, pride_w 25, killer's grudge 80 and pride 2, ally weight 0 |
+
+The ally weight (2.16) is 1.0 where the table names none; the `mind` block gains it, one line.
 
 World numbers, shared: loot value 0.2 an item fed, 0.03 beyond the stores; boldness shift 1; battle
 doubt 0.3; belief drift 1/384 a day, a quarter of it for a player's base; rumour error 0.5; speaker
 weight 0.6; train notice 0.05; caravan attention 0.03; clash rate 1 a year a pair; guard share 0.25;
 field share 0.15; peace cost 8; tributary cost 12; sworn multiplier 3; tribute truce 48 days.
+Alliances (2.16): pact days 192; kin +4 and hated -10 to a pact's worth; effort of offering 3, of a
+call no one answers 1; a refused call costs 1.0 of the oath's truce cost; strain breaks a pact above 2
+and halves over 96 days; betrayal 10 beyond the oath; the guard up to 8 and deterrence up to 4 an ally.
 
 ### 2.14 The story
 
@@ -602,6 +635,319 @@ written when a player, a page or a log reads it (from the model's runs):
 | Renewal and pressure | EQUILIBRIUM.md §2.4.5 and §2.4.7 (as designed there; `rtsim-kernel::renewal` is EQ-6 (a)'s design, not built) | none |
 | Camp bodies, UR-1 | MOWZIE.md §4.9 reconciler, MZ-15's census | none |
 | Decision | none fits | the council: drives, beliefs, Thompson draw, logit choice, truces, clashes |
+| Alliances (2.16) | feud rows, the sitting's acts, `village_outcome` and `threat.rs` as the joint resolve's parts, today's parties and BAND_MARCH, NeoForge's `LivingChangeTargetEvent` (the core listens already, `industry/ThreatEvents.java:32`) | the pact fields and acts, the open-pact list, the call, the joint resolve (one fight on two parties at a camp, a village or a base) and its books, a partner on `Party` and BAND_MARCH, the partner-aware wait and the joint arrival, a two-party `start_fight` with one epoch, the shared quota, the target listener |
+
+### 2.16 Alliances (CL-5 (b))
+
+Ben's answer to CL-5 (2026-10-22): "Add alliances". Camps that share an enemy can ally and send joint
+war parties. This section is that design. The model has it (`"alliances"` in `LIFE_DEFAULTS`), and
+every number in sections 3 and 4 is measured with it on. Alliances draw from a random stream of their
+own, so with them off the model is the world before them, draw for draw: `run.py`'s `*_noally`
+scenarios are the same seeds with alliances off, and they reproduce the earlier results exactly. They
+are the control for every comparison in section 4.5.
+
+**What the fight allows.** Between camps the engine's fight is the linear law: the winner loses d / A
+of its party. For members of one strength that is the same number of dead whatever the party's size,
+and beside an ally each contingent loses the same share of its members. The take is what the joint
+party left standing can carry, capped by what the target holds, and it is split by carry. So a camp
+that can win alone gains less from an ally than it seems: it loses fewer, but where the target's
+holdings cap the take, it carries home only its share of the same take. A joint party pays where one
+camp cannot win alone, or where the dead it would lose alone are dear. At a player's base where
+turrets outweigh guards the engine's fight is the square law (`threat.rs:461`), and a bigger party
+loses fewer, so two camps gain more there. The model learned this the hard way: with pacts that bound
+nobody, camps swore and then marched alone (CL-D44).
+
+**Who can swear.** Camp f can offer camp y a pact against x when all of these hold:
+- each reaches the other, and both reach x. x is a camp, a village or a player; never the railway or
+  a caravan, which a band ambushes alone (CL-D24).
+- both quarrel with x (a standing hate, a grievance of 30 or more, or wounded pride of 0.5 or more), or
+  one does and the other is of its own culture.
+- neither is sworn to the other already, neither is sworn to x, and neither is sworn against the
+  other: a camp sworn against the Grey Outpost cannot swear beside it against a player.
+- y's culture makes alliances. The Frostmaw never does: a council of one has no one to swear with
+  (ally weight 0). Bandits swear most readily (1.2), raiders least (0.8), goblins and the Umvuthana at
+  1.0.
+- f is calm toward y (grievance under 30, wounded pride under 0.5), and y has not turned f down in the
+  last 48 days.
+
+A camp may hold several pacts, each with one camp against one foe, and at most four at once (the list
+on its faction row, below; the model has no cap and never had a camp in more than two). A camp holding
+four makes no offer and refuses any. While a pact
+runs, the two camps' hunters share the border: no clash between them.
+
+**What a pact is worth.** An offer is one of the acts a sitting weighs toward x (2.6), on the same
+Thompson draw of x's strength. Its worth:
+- **The gain:** the best joint war f could make beside y, over the best war it could make alone today
+  (none is 0), floored at 0. The joint war counts y's help at the chance y comes: y's record of
+  coming, Beta(ka, kb), 1 in 2 at first. If y does not come, the party goes alone, or turns home if
+  going alone is worth no more than turning home (-1, the call's wasted effort). Each pact is valued
+  as if it were the camp's first: a second pact against the same foe is measured against going alone,
+  not against the joint war the first allows.
+- **The guard:** what y at f's side is worth for safety against x, up to 8. It grows with the danger
+  x poses and with y's strength against x's. The danger is the members x killed lately at f's camp or
+  its border (a raid on it, a clash, a player's hunt), a tenth of the camp being full danger, and for a
+  camp also how far its believed strength passes f's own defence. y's strength counts against x's only
+  when x is a camp; against a player or a village the guard is the danger alone.
+- The gain and the guard are scaled by the culture's ally weight and the council's sociability
+  (0.5 + soc).
+- **Who y is:** kin +4; a culture that hates f's, or that f's hates, -10 (raiders hate goblins and
+  bandits, goblins hate bandits); less the grudge and wounded pride f bears y, as for any act.
+- Less the effort of sending, 3.
+
+A camp offers only when the gain and the guard together are above 0: as it sees x today, it would do
+better or be safer beside y.
+
+**The answer.** y weighs the same worth from its side, with its council's mean temper and its middle
+guess of x. No speaker is drawn: a camp that is asked answers without calling a sitting. It refuses
+outright if it bears f a grievance of 30 or more or wounded pride of 0.5 or more, or if the bars above
+close the pact from its side. Otherwise its logit weighs the pact against refusing (0). A refusal is
+remembered for 48 days.
+
+**Swearing.** Both chiefs swear. The pact runs Exp(192) days (mean two game years) unless something ends
+it first. Each camp tells the other what it knows of x: each belief takes the other's guess as an
+observation (its uncertainty and 0.3 in the log, added in quadrature), and the stronger floor (2.4) is
+shared. Each camp then sits on x within 1 + Exp(2) days (an "allied" occasion, sat unless the camp is
+still busy with its last fight). While a camp is sworn against x, the peace cost toward x (2.9) is
+waived: the oath has made x its enemy already.
+
+**The oath binds** (CL-D44). A camp sworn against x does not march alone on x with a party its ally
+could stand beside: it calls the ally. It still sends alone what no ally could join: a skirmish on x's
+hunters, and a band where the ally can muster no party that small.
+
+**The call.** The council weighs each of its war parties beside the ally's help as it believes it: the
+ally's largest party of the same kind or a smaller kind (band, raid, invasion), from the members it
+believes the ally has at home (its guess of the ally's defence). Kinds are not sizes: a party's size is
+its culture's, so a goblin raid of 12 can join a grove's raid of 4. The grove's invasion is never
+counted on: it waits on the Umvuthi's own pride (2.10), which no ally can know. When the council chooses
+a joint party, an envoy goes to the ally. Between two camps nobody sees him, and the ally answers in the
+same sitting:
+- **Busy.** It cannot send: it is still busy with its last fight (two days in the model; in the engine,
+  until that party is home), or it cannot muster a party of the caller's kind or a smaller one. No
+  blame.
+- **Join or refuse.** The caller's envoy tells what it knows of x, as at the swearing. The ally's
+  council draws a guess of its own and weighs each party it could send, of the caller's kind or a
+  smaller one, as its own war beside the caller's party: its own dead, its share of the take by carry,
+  its own grudges and pride toward x, and the cost of x's allies (deterrence, below). It takes the best
+  and weighs it against refusing. Refusing shames the oath: the culture's oath x (1.5 - aggression), the
+  cost of breaking a truce, 3 times over for the chief who swore (CL-D8's multiplier) and once for his
+  heir. A logit decides.
+
+A refusal costs the ally the caller's trust (kb + 1), strains the pact (+1), and wounds the caller's
+pride (+0.2), with a memory: "Mudhollow would not come against the Grey Outpost in the winter of year
+3". The caller then goes alone if that is worth more than turning home, and its reason says so:
+"Mudhollow would not come, so it went alone". A join adds to the ally's record (ka + 1).
+
+**The joint fight.** The two contingents fight x together, by the engine's law and certain, as every
+fight is (CL-D25). The engine fights one party at a time today, so the joint resolve is new (2.15),
+built on the same calls:
+- **At a camp or a village:** one `village_outcome` on A + AB against d, its `observed` list the union
+  of both camps' observed fights (each shared its own at the swearing), which floors the attackers'
+  surviving share as it does for one camp; 2.4's belief floor is another thing. Each contingent loses
+  the same share of its members. A destroyed party destroys both contingents, and a chief who led either
+  falls with it (CL-D41). The take is the joint carry left standing, capped by the target's loot share
+  of each good, and split by carry.
+- **At a player's base:** one `Threat` for each threat class, on both contingents' members of that
+  class summed (count, strength, loads), resolved once by `threat.rs`. Each contingent loses
+  `abstract_loss_share` of its own held-back members of the class (`engine.rs:2977-2980`), and the
+  class's take is split by the carry of each contingent's survivors in it. Two contingents of
+  different classes lose different shares, as two bands would. The model fights a player by the square
+  law on the sum, which simplifies `threat.rs` (the square law only where turrets outweigh guards).
+
+Each camp books its own:
+- its dead, its fear, what it learned of x, and its floor if it lost;
+- its memory: "we lost 9 at the Grey Outpost beside Mudhollow";
+- at a player's base, its own pressure (EQUILIBRIUM.md §2.4.5: the warriors the player killed, over
+  its own cap) and its own grievance for its dead.
+
+The target meets one fight and blames both. A camp attacked bears each attacker the grievance of its
+dead in proportion to that attacker's strength, +20 each, and wounded pride. It keeps a memory naming
+both ("Ashpit and Mudhollow raided us in the spring of year 7") and sits on each. Its own sworn allies
+are provoked at both attackers (+10 grievance, +0.2 pride, a memory, an occasion). Word of its losses
+spreads as after any raid.
+
+**After the fight.** A win draws the two together: the caller's record of coming rises in the ally's
+book (ka + 1 on the ally's feud toward the caller; the join already raised the ally's in the caller's),
+and the strain in the pact falls by 0.5 on each side. A defeat strains it, the ally most (+1 for the
+ally, +0.5 for the caller): it followed and lost. An ally that sent less than the caller counted on
+(under 0.8 of the strength it believed) is resented: +1 strain and a memory, "Mudhollow sent too few
+against the Grey Outpost". Strain halves over 96 days, and the record of coming fades toward even over
+192, as tribute trust does (2.4).
+
+**How a pact ends.**
+- **Lapsed:** its Exp(192) days ran out.
+- **Strained:** the strain on either side passed 2, after defeats and short contingents.
+- **Refused:** a refusal took the strain past 2.
+- **Torn:** a camp sworn to both sides of a fight. An attack on x provokes x's allies; one that is also
+  sworn to the attacker takes +1 strain on that pact.
+- **Betrayed:** one camp fell on the other.
+
+A camp beaten down to a few members keeps its pacts until they lapse: a call to it comes back busy,
+with no blame, and the caller goes alone; it deters only as far as its neighbours still believe it
+strong.
+
+**Betrayal.** Falling on a sworn ally costs the oath (as breaking a truce does, 3 times over for the
+chief who swore) and 10 more. A council that does it anyway ends the pact. The betrayed camp takes it as
+the gravest insult: +1 pride, +40 grievance, and a memory of weight 3, "Ashpit broke its oath and fell
+on us in the summer of year 12". Every camp that knows the betrayer trusts its word less (kb + 1): it
+counts less on the betrayer's help, so a pact with it is worth less. The betrayer's reason names the
+oath: "Gitz broke the oath sworn with Mudhollow against the Grey Outpost", or, for an heir, "Gitz was
+not chief when Ashpit swore". The oath binds the chief who held the seat at the swearing, not whoever
+spoke it: a war leader who speaks for his chief and takes the seat later is an heir to it (3.6).
+
+**Deterrence.** Falling on a camp costs more for each of its sworn allies that can reach the attacker,
+whoever the pact is against: up to 4 each, by that ally's strength against the attacker's own
+defence, as the attacker believes it. Camps know their neighbours' pacts: envoys walk between camps,
+and a pact is no secret among them (a player is told only of a pact against him). This is a choice,
+not a measurement of what camps could learn. The list of a camp's pacts is on its faction row, so a
+sitting that weighs a fight on a camp reads that row (a page load when it is not resident; counted in
+5.2), not its feuds. A camp that swears is safer for it, which is half of why camps swear (the guard).
+
+**Joint demands** (CL-D48). An envoy may name a joint party as its threat: "Mudhollow would come with
+us". The price is set on the joint take (2.8: between the war's worth to the camp and the believed
+chance to win times what both would carry home). A payment is split by carry, and the ally is bound by
+the same truce, sworn by its own chief, and remembers the payment. Only the caller's envoy walks: one
+party, one line. A player who refuses may meet the joint party, called as any is, and the ally may still
+refuse.
+
+**Envoys and notices** (CL-1 (a), CL-D55).
+- **The envoy names the ally:** "You killed Vorr, our chief, in the spring of year 3. Ashpit and
+  Mudhollow ask 140 emeralds." ENVOY_MATERIALIZE's reason gains the ally's actor, 8 bytes (128 + 8m).
+- **A pact against a player is told.** When two camps swear against him, the caller's notice plays for
+  him (the howl, the gong, the war band shown) with one line: "Ashpit and Mudhollow have sworn against
+  you." FACTION_NOTICE's reason gains the ally, 8 bytes (88), and the notice is kept until shown
+  (NOTICE_SHOWN, MOWZIE.md §4.12).
+- **A joint party's reason names both camps:** "beside the Grey Outpost, sworn against player Ben".
+- **Pacts between camps are told to players near them** (CL-9 (a), open). A player both camps reach
+  is told, by a notice line with no sound, when they swear ("Ashpit and Mudhollow have sworn against
+  the Grey Outpost"), when they march together ("Ashpit and Mudhollow march on the Grey Outpost") and
+  when one falls on the other ("Mudhollow broke its oath and fell on Ashpit"). These are three notice
+  kinds on FACTION_NOTICE as it stands (88 bytes with the ally); no row grows. In the valley left alone
+  they would come about 0.15, 0.04 and 0.03 times a year. Under CL-9 (b) a pact against a camp or a
+  village is not told: no one sees it, and a player learns of it from its parties.
+
+**What the player sees.**
+- An envoy naming two camps, often first, and the notice of the pact.
+- Two columns of two cultures marching on him from two camps and arriving together: a goblin band and
+  a pillager war band side by side, not fighting each other (below; the goblins in bodies once P8
+  picks their mod).
+- After a fight he wins at his walls, two camps that hate him for their dead, each with its own memory.
+  After one they win while he is away, each camp takes its part of his stock.
+
+**Peaceful** (MOWZIE.md §4.12: no war party leaves; CL-D53). Councils sit and pacts may still be sworn:
+a pact is words between camps. No call is made and no joint party leaves.
+
+**UR-1.** A pact is fields on two feud rows (2.11), saved and dropped with them, and a joint attack is
+two ordinary parties that name each other. Nothing is added to the world: no entity, block, item,
+scoreboard team or saved tag. The Java side's joint key lives in memory only, built from BAND_MARCH
+records, which the engine resends at every session start. An uninstall leaves nothing, and a reinstall
+starts with no pacts, as every council starts fresh (2.11).
+
+#### In the engine
+
+**State.**
+
+| Where | Field | Bytes | Notes |
+|---|---|---|---|
+| `Faction` | open pacts (up to 4) | 16 | each the ally's faction index (u16) and the foe's index in our feud list (u16), kept in step with the feud rows: deterrence and the bars on swearing read it |
+| `Feud`, toward a camp | pact until, since | 8 | days; a pact is open while now is before its lapse, so nothing is booked for it |
+| | the swearing chief | 4 | the chief's ordinal (`Faction::chiefs`), as for a truce |
+| | the foe | 8 | its actor |
+| | the ally's record of coming: ka, kb | 8 | fading toward even over 192 days, read at the feud's anchor day, as trust is |
+| | strain | 4 | halving over 96 days, read at the feud's anchor day |
+| | refused at | 4 | the day this camp last turned our offer down |
+| `Feud`, toward a camp or a player | hurt | 4 | our members this neighbour killed lately at our camp or its border (danger), halving over 96 days, read at the feud's anchor day |
+| `Party` | the partner party | 8 | a handle, set on both contingents of a joint attack |
+| | going on alone | 1 bit | the sitting found going alone worth more than turning home (-1) |
+
+About 16 bytes on each faction, 40 on each feud toward a camp and 4 on each toward a player. A feud
+toward a village has no ally fields.
+
+**Memories that name two parties.** Six memory kinds name a second party, a camp or the player a
+pact is sworn against: "we lost 9 at the Grey Outpost
+beside Mudhollow", "the Grey Outpost drove us and Mudhollow off", "Ashpit and Mudhollow raided us", "the
+Grey Outpost raided Ashpit, our ally", "Mudhollow would not come against the Grey Outpost" and
+"Mudhollow sent too few against the Grey Outpost". The 8-byte slot keeps its shape: for these kinds its
+count is a u8 (the dead of one fight fit) and the other u8 is the second party's index in the camp's
+own feud list. If that feud has been dropped when the memory is read, the line says "an ally" or
+"another camp" for a camp, and "a player" for a player.
+
+**Events and draws.** No new event kind. An offer and a call are answered inside the caller's sitting:
+the answer reads the other camp's rows, a page load when they are not resident, as a fight on a camp
+does. Every alliance draw comes from `StreamKey(seed, SYS_ALLY, key).slot(n)` of the camp it belongs
+to, n that camp's own count of alliance draws, so one camp's alliances never shift another camp's
+draws (CL-D21, CL-D54):
+- the answering camp: its guess of x and its logit, at an offer or a call;
+- the offerer: the pact's Exp(192) lapse, at the swearing;
+- each camp: its "allied" occasion's delay, and after a joint fight its chief's fall (CL-D41);
+- the target of a joint fight: its provoked delays and the news of its losses.
+
+The model draws all of these from one stream for the whole world (`arng`), an approximation: there one
+camp's answers shift the others' alliance draws, though never their council draws.
+
+**Records.** No record carries two factions' members, and no record id is new:
+- **BAND_MARCH (0x880B):** each contingent is its own party with its own record: one faction, one
+  culture, its own route and phase. It gains the partner's agent (8 bytes) and a joint flag: 72 bytes
+  plus 8 per body kind and 16 per waypoint.
+- **ENVOY_MATERIALIZE (0x8802)** and **FACTION_NOTICE (0x8801)** gain the ally's actor, 8 bytes each.
+
+**The march** (MZ-15, CL-D51). Each contingent marches its own route from its own camp. The engine
+ends the nearer contingent's muster later, so both arrive at the target on one tick. The mustering
+phase already holds a band at its camp, its members standing in it (MOWZIE.md §4.9, §4.16). A
+contingent that arrives first, because a route changed or a column slowed, waits at the target until
+the other arrives or ends. That wait is new: `Phase::Waiting` today ends in `wait_over`, which sends a
+war party home (`RECALL_DONE`), so a contingent's wait checks its partner first. If the other was
+destroyed or recalled on its march, the survivor goes on alone only if its sitting found going alone
+worth it (the party's flag); otherwise it turns home. The second arrival resolves both: unwatched,
+the joint resolve above; watched, one fight for both (below). The census treats each contingent as any
+party (CL-D42; EQUILIBRIUM.md §2.6 item 11): a camp that comes in while its contingent is out has that
+contingent's bodies taken, and the march goes on.
+
+**Edge loading and the quota** (CL-D35, MZ-17, CL-D49). Each column fills in stack by stack at the
+entity-ticking edge, as any band's does (2.12). A joint attack shares one spawn quota (D1): 16 bodies in
+Minecraft at once for both contingents (`tunables.rs:94` is per band today), split in proportion to
+their bodies, at least one stack each. Today's quota counts members (`spawn_wave`: `room = spawn_quota -
+in_mc` over the party's units), and D1 is about bodies, so the shared quota counts bodies: for goblin,
+bandit and raider contingents that is the same, and a raptor pack (one member of 5 bodies, MOWZIE.md
+§4.5) counts as 5. A joint attack then never puts more than 16 bodies in Minecraft, no more than one
+band of 16. The members past a contingent's share walk in along its route as the quota frees, as
+`spawn_wave` does for one band. Two invasions (a goblin 26 and a raider 23) show about 8 members of each
+at first, and the rest in bunches.
+
+**The watched fight.** At a watched target the raid director runs one fight for both contingents: a
+`start_fight` on two parties, with one epoch and one end, whose waves draw from both within the shared
+quota. Each contingent books its own dead from its own bodies' deaths.
+
+**Allies do not fight each other** (CL-D50). Bodies of one joint attack must not turn on each other
+when a stray arrow hits. A goal-based mob retaliates through `HurtByTargetGoal` and changes its target
+through `Mob.setTarget`; a brain mob that attacks through `StartAttacking` goes through it too. Both
+fire NeoForge's cancellable `LivingChangeTargetEvent` (`Mob.java:245-250`, `StartAttacking.java:33`).
+The ConflictBridge listens and cancels a change of target to a body of the same joint attack, from
+each body's party and BAND_MARCH's partner. It listens at a higher priority than the industry's own
+listener (`industry/ThreatEvents.java:32`), which skips cancelled events. There is no mixin and no
+scoreboard team: a team is saved with the world (UR-1), and the event already covers the targeting,
+which is all that needs stopping.
+- **Friendly fire still hurts**, since `Projectile.canHitEntity` has no ally check
+  (`Projectile.java:257-264`); only the grudge is suppressed. A member killed by its partner's body is
+  booked to its own camp's dead in the fight, with no grievance toward the partner and no strain.
+- **Some brain mobs bypass the event:** the hoglin, the zoglin and the warden write their target
+  straight into memory (`HoglinAi.java:219`, `Zoglin.java:218`, `Warden.java:543`). None is a camp's
+  body.
+- **The Mowzie bodies go through `setTarget`** (verified in the jar):
+  `UmvuthanaHurtByTargetAI.canContinueToUse` ends in `this.mob.setTarget(livingentity)`; a follower
+  raptor takes its leader's target with `setTarget(leader.getTarget())`
+  (`EntityUmvuthanaFollowerToRaptor:48`); the Umvuthi hands its target on with
+  `umvuthana.setTarget(entity.getTarget())` (`EntityUmvuthi:1093`). None overrides `isAlliedTo`.
+- **The raider bodies** are vanilla pillagers, vindicators and, in an invasion, a ravager (PLAN.md's
+  fallback; `data/cultures/raider.json`): goal-based `Raider` mobs that retarget through `setTarget`.
+- **The goblin bodies** are abstract until P8. Whichever mod P8 picks for them must retarget through
+  `setTarget` or `StartAttacking`: a gate on that choice, and GameTest 5 runs on it then.
+
+**The far view.** Two columns, each drawn as any band from its own BAND_MARCH (DH-2: walking figures,
+never names or counts), converging on one target. Nothing new is drawn.
+
+**The Mowzie cultures.** The Frostmaw never swears. The grove may swear, against a player both it and a
+goblin camp hate, and its raid can be called; its invasion goes only on the Umvuthi's own pride, with
+the Umvuthi aloft at the rear of its own column (MOWZIE.md §4.16). No ally counts on it.
 
 ---
 
@@ -619,11 +965,11 @@ finds the damage on his return (PLAN.md §10.3).
 
 Ben's walled base (defence 80) is in reach of the Sun Grove (Umvuthana), Mudhollow (goblins) and the
 Grey Outpost (pillagers). His industry makes 3 grievance a day toward each camp that hates humans. He
-never attacks them and never pays. Seed 1000: 7 fights on him in 50 years (median 7).
+never attacks them and never pays. Seed 1000: 6 fights on him in 50 years (median 6).
 
-1. **Y1 d27 to d74.** The Sun Grove's masks beat the gong at him; the Grey Outpost shows him a war
-   band. Nobody knows how strong this new base is: each camp's guess is 15, give or take a factor of
-   three.
+1. **Y1 d27 to d74.** The Sun Grove's masks and the Umvuthi beat the gong at him; the Grey Outpost
+   shows him a war band. Nobody knows how strong this new base is: each camp's guess is 15, give or
+   take a factor of three.
 2. **Y1 d76.** The Grey Outpost invades with 23. Its war leader Captain Vask had the floor; its chief
    Captain Hesk leads, as raider captains do. The council's draw of a new base came out low and it
    believed the attack certain. It meets 80: all 23 die, and Hesk falls with them. Vask leads now.
@@ -631,28 +977,24 @@ never attacks them and never pays. Seed 1000: 7 fights on him in 50 years (media
 3. **Y1 d77.** Mudhollow, the next day, invades with 26 under its chief Vorr, for loot and its
    restless warriors: all 26 die. Each camp now knows a floor: this base beat its whole invasion (36,
    30.4).
-4. **Y2 to Y4.** No fights: war bands shown at his border, howls, the gong, and Mudhollow's scouts
-   (100 looks in the 50 years). Y4 d67: Mudhollow's elder Brakka has the floor and sends an envoy
-   asking 115, "after: we lost 26 at player Ben in the winter of year 1". Refused.
-5. **Y5 d96.** Word reaches Mudhollow that Ben is away, in a hungry winter. Its chief Mott invades with
-   26, guessing his walls at half. Half is 40, and 30.4 is short of it: all 26 die.
-6. **Y7 d54.** The Sun Grove asks 9 gold, its only envoy to him in 50 years. Refused. A grove of 12.6
-   at its strongest has no hope against 80, and the Umvuthi never leads it there.
-7. **Y8 d12 to d22.** The Grey Outpost's envoy asks 94, reminding him of the 23 lost in year 1.
-   Refused. Ten days later its chief Dorn leads an invasion of 23 out of honour, and falls with it.
-8. **The rest.** Mudhollow tries once more before the decade is out; then one invasion in each of
-   decades 3 and 4, and nothing in decades 2 and 5.
+4. **Y2 to Y6.** No fights: war bands shown at his border, a howl, the gong, and Mudhollow's scouts
+   (97 looks in the 50 years).
+5. **Y7 d2, Y7 d58 and Y8 d1.** Three Grey Outpost envoys, under three different speakers, ask 68,
+   69 and 119, each "after: we lost 23 at player Ben in the winter of year 1". He refuses all three.
+   Nobody attacks: the floor holds, and the camp's belief of the base blurs slowly.
 
-Over the 50 years: 7 fights, every one lost, 173 attackers killed at his walls, 12 envoys, nothing
-paid; 57 war bands shown by the Grey Outpost, 66 gongs and 13 howls. Over all 64 fortress worlds, a
-fight on him every eight years, every one lost; the first test of the new base came within two years
-in 73% of worlds (the median on day 62). In this world the Sun Grove never sent a party at him.
+Over the 50 years: 6 fights (2, 0, 3, 0 and 1 by decade), every one lost, 147 attackers killed at his
+walls, 22 envoys, nothing paid; 71 war bands shown by the Grey Outpost, 67 gongs and 12 howls. In this
+world the Sun Grove never sent a war party at him. Over all 64 fortress worlds, a fight on him every
+eight years, 97% of them lost; the first test of the new base came within two years in 73% of worlds
+(the median on day 62). The 3% the attackers won were joint parties of two camps sworn against him
+that found him away (3.6, CL-6).
 
 ### 3.2 Farming the Frostmaw den
 
 Ben (defence 30, pays envoys) kills the North Den's Frostmaw whenever it is back, and now and then
 steals the crystal from the sleeping Frostmaw at the Pass Den. The Sun Grove is also in reach.
-Seed 1002: 109 Frostmaw deaths in 50 years over the two dens (median 110).
+Seed 1002: 111 Frostmaw deaths in 50 years over the two dens (median 110).
 
 1. **Y1 d2.** He kills the North Den's Frostmaw. Its heir arrives on d14, 12 days later
    (`min(192, 6 x 2^P)`, EQ-4 (b)); he kills it on d16.
@@ -662,133 +1004,194 @@ Seed 1002: 109 Frostmaw deaths in 50 years over the two dens (median 110).
    It knows who killed the last one, and its restless clock went stale while the den stood empty: it
    raids him that day, wins (41.7 against his walls of 30) and takes 60. "Honour: player Ben killed the
    Frostmaw before me in the spring of year 1." He kills it on d41.
-4. **Y1 d55.** The Pass Den's heir, arrived on d51, raids him for the same reason, and takes 44.
-5. **Y1 d78.** The Sun Grove asks 14 gold. A grove raid on his walls (3.8, or 12.6 with the Umvuthi,
-   against 30) would take nothing, so his script refuses. The gong follows, about once a year.
-6. **Y2.** He steals on d11, d58 and d75. The Pass Den answers 21 days, 3 days and the same day later,
-   and again on d84: "honour: player Ben stole the crystal". Each raid wins and takes 44.
-7. **Y4 d89 to Y5 d96.** Four times the Frostmaw wakes as he reaches for the crystal and drives him off.
+4. **Y1 d55 and d80.** The Pass Den's heir, arrived on d51, raids him for the same reason and takes
+   44; so does the North Den's next heir on d80, the day it arrives.
+5. **Y1 d78.** The Sun Grove asks 14 gold. A grove raid on his walls (3.8), or an invasion with the
+   Umvuthi (12.6), against 30 would take nothing, so his script refuses. The gong follows, about once a
+   year.
+6. **Y2.** He steals on d11, d58 and d75. The Pass Den raids him on d32, d61, d75 and d84, 21 days, 3
+   days and the same day after a theft, and again: "honour: player Ben stole the crystal". Each raid
+   wins and takes 44.
+7. **Y4 d83.** The Frostmaw wakes as he reaches for the crystal and drives him off.
 
-Over the 50 years: 79 raids on him, none lost (17, 17, 17, 16 and 12 by decade): 24 by the North Den,
-the den he farms, and 55 by the Pass Den, the den he robs (68 thefts). The North Den's Frostmaw died 87
-times at his hand, 1.73 a game year over all 64 worlds, MOWZIE.md's 1.8 for a farmed den; the Pass
-Den's 22 times, when it woke. Over the 64 worlds the Pass Den raided him 1.39 times a year and the North
-Den 0.51; he lost 92 items a year, 19% of his income. The Umvuthi led its grove at his walls 58 times in
-40 of the 64 worlds, its pride wounded by refusals, and lost and fell every time.
+Over the 50 years: 94 raids on him, none lost (18, 18, 24, 21 and 13 by decade): 24 by the North Den,
+the den he farms, and 70 by the Pass Den, the den he robs (64 thefts). The North Den's Frostmaw died
+86 times at his hand, 1.73 a game year over all 64 worlds, MOWZIE.md's 1.8 for a farmed den; the Pass
+Den's 25 times, when it woke. Over the 64 worlds the Pass Den raided him 1.41 times a year and the
+North Den 0.50; he lost 93 items a year, 19% of his income. The Umvuthi led its grove at his walls 65
+times in 39 of the 64 worlds, its pride wounded by refusals, and lost and fell every time.
 
 ### 3.3 A railway through goblin land
 
 A line runs past Ashpit (goblins) and the Pass Den (a Frostmaw) at 12 legs a day. Its owner (defence
 30) never pays; after three robberies in 30 days he puts guards on the trains for 48 to 144 days (his
-script). Seed 1003: 231 fights on the line in 50 years (median 226).
+script). Seed 1000: 217 train ambushes in 50 years (median 222).
 
-1. **Y1 d3.** The Frostmaw roars at the line: the rail meter has made it angry, and a roar is cheap.
-2. **Y1 d7 to d73.** Ashpit ambushes five trains, 8 goblins each, 49 items a train, under its chiefs
-   Gitz and then Brakka: "a train came through; loot; and old hatred of the railway", once "the new
-   war leader must prove himself". On d73 the owner puts guards on. On d77 the next ambush (the elder
-   Snag had the floor) meets them: all 8 die.
-3. **Y1 d95 to Y2 d9.** The Frostmaw lurks by the track three times and robs a train each time. It
-   beats the guards (41.7 against 20) and loses half its haul to them: 33 items.
-4. **Y2 d13 to d48.** Ashpit's envoy asks the owner 122 emeralds. Refused. On d48 word comes that he is
-   away: Ashpit invades his base with 26, wins, loses 3 and takes 167.
-5. **Y2 d63 to d86.** The guards are off again. The Frostmaw robs twice and Ashpit once in 15 days,
-   and on d77 the guards go back on; the next goblin ambush, on d86, loses all 8. The pattern holds but not on a calendar: across the 64 worlds, the first robbery
-   after the guards come off follows by a median of 27 days, from 5 to 74 (p10 to p90).
-6. **The Frostmaw** robs a train a few times a year and roars at the line every few weeks (232 roars,
-   119 lurks in the 50 years).
+1. **Y1 d6.** Ashpit ambushes a train with 8 goblins under its war leader Gitz and takes 49: "a train
+   came through; loot".
+2. **Y1 d11 to d47.** The Frostmaw roars at the line three times: the rail meter has made it angry,
+   and a roar is cheap. On d47 it lurks by the track and robs a train of 62.
+3. **Y1 d60 to d77.** Ashpit robs again (its elder Snag had the floor, "restless warriors"), and on
+   d75 the Frostmaw: three robberies in a month, and the owner puts guards on. On d77 the next goblin
+   ambush meets them: all 8 die.
+4. **Y2.** Ashpit's envoy asks the owner 116 emeralds. Refused. The guards are still on: on d69 the
+   Frostmaw beats them (41.7 against 20) and loses half its haul to them, 33 items; on d78 the next
+   goblin ambush loses all 8 again.
+5. **Y3 d70.** Ashpit's new war leader Skarl invades the owner's base with 26, "the new war leader must
+   prove himself; and loot": it wins, loses 3 and takes 167.
+6. **Y3 d80 to Y4 d56.** The guards are off. Ashpit robs three trains in 15 days, and on d95 the guards
+   go back on; the Frostmaw robs twice through them in Y4, and the next goblin ambush, on Y4 d56, loses
+   all 8: "revenge: we lost 8 at the railway in the winter of year 2". The pattern holds but not on a
+   calendar: across the 64 worlds, the first robbery after the guards come off follows by a median of
+   28 days, from 5 to 74 (p10 to p90).
 
-Over the 50 years: 238 fights on the line and its owner (50, 51, 44, 45 and 48 by decade), 25 of them
-lost; Ashpit ambushed 112 trains and invaded the owner 7 times, the Pass Den lurked 119 times, and the
-guards went on 34 times.
+Over the 50 years: 230 fights on the line and its owner (47, 49, 37, 49 and 48 by decade), 32 of them
+lost; Ashpit ambushed 106 trains and invaded the owner 13 times, the Pass Den lurked 111 times and
+roared 218 times, and the guards went on 32 times.
 
 How traffic changes it (8 seeds x 20 years each):
 
 | Legs a day | Rail meter grievance (MOWZIE.md §4.3) | Frostmaw lurks a year | Frostmaw roars a year | Goblin ambushes a year | Guards put on a year |
 |---|---|---|---|---|---|
-| 2 | 0 | 0.17 | 0.88 | 2.33 | 0.31 |
-| 4 | 17.3 | 0.35 | 1.97 | 2.42 | 0.43 |
-| 8 | 52.0 | 0.91 | 3.58 | 2.63 | 0.55 |
-| 12 | 86.6 | 1.89 | 4.29 | 2.38 | 0.62 |
-| 24 | 190.5 | 5.19 | 5.02 | 2.06 | 0.83 |
+| 2 | 0 | 0.17 | 0.88 | 2.46 | 0.29 |
+| 4 | 17.3 | 0.24 | 1.89 | 2.37 | 0.44 |
+| 8 | 52.0 | 1.00 | 3.59 | 2.66 | 0.57 |
+| 12 | 86.6 | 1.81 | 4.34 | 2.42 | 0.63 |
+| 24 | 190.5 | 5.01 | 5.04 | 2.16 | 0.81 |
 
-The Frostmaw's robbing grows smoothly with traffic. Today's ladder has none below the Raid rung (none
-at 4 legs) and at 12 legs a lurk every 10 days from day 14, to the day, in every seed (9.6 a year; CL-3).
-The goblins rob for loot at any traffic; the guards cap them.
+The Frostmaw's robbing grows smoothly with traffic. Today's ladder has none below the Raid rung (none at
+4 legs) and at 12 legs a lurk every 10 days from day 14, to the day, in every seed (9.6 a year; CL-3).
+The goblins rob for loot at any traffic; the guards cap them. CL-3's answer quotes the sweep as it stood
+(0.35, 1.9 and 5.2 lurks a year at 4, 12 and 24 legs); with alliances in the world the seeds draw other
+histories, and the sweep's 4-leg cell, 8 seeds of 20 years, is the noisiest: over 64 worlds of 50 years
+the line at 4 legs sees 0.37 lurks a year, with alliances and without (0.36).
 
 ### 3.4 Multiplayer: one provokes, another suffers
 
 Ash (defence 50) hunts Ashpit's goblins every few weeks and kills its envoys. Bea (defence 8) lives
 near Ash, pays what she is asked when it is no more than a raid would take, and has done nothing.
 Both are in reach of Ashpit and the Grey Outpost. A camp that cannot tell who killed its members
-sometimes blames the other player near it (blame spill, 0.3 of the time; CL-2). Seed 1000: 7 fights
-on Bea in 50 years (median 6).
+sometimes blames the other player near it (blame spill, 0.3 of the time; CL-2). Seed 1003: 7 fights
+on Bea in 50 years (median 7).
 
-1. **Y1 d11 to d13.** Ash hunts Ashpit. Two days later Ashpit's envoy finds Bea and asks 81, "after:
-   player Bea killed 4 of ours at our camp": Ash's hunt, blamed on her. She pays.
-2. **Y1 d33.** Word reaches Ashpit that Ash is away; it sends a band of 8 at him. His walls at half are
-   25: all 8 die. On d68 the Grey Outpost's band meets the same end.
-3. **Y1 d83.** The Grey Outpost's band falls on Bea instead, before anyone has asked her for anything:
-   it wins, loses 3 and takes 43. "Loot."
-4. **Y1 d94 to Y4.** Both camps' envoys ask Bea 79 to 114 and she pays every one, about three a year
-   between them. Ash kills Ashpit's chiefs Nub (Y2 d38) and Gitz (Y2 d68); a week later Ashpit's
-   envoy asks Bea 87, "after: player Bea killed Nub, our chief". On Y4 d4 Ash kills Vorr, its chief
-   by then.
-5. **Y3 d32.** The Grey Outpost invades Ash with 23 while he is away, for its restless warriors and
-   "revenge: we lost 8 at player Ash in the autumn of year 1": it wins, loses 6, takes 130.
-6. **Y4 d14.** Ashpit sends an envoy to Ash, "after: player Ash killed Vorr, our chief". He kills it.
+1. **Y1 d10 to d22.** Ashpit's envoy asks Bea 46 and the Grey Outpost's 94. She pays both. Ash hunts
+   Ashpit on d11.
+2. **Y1 d39.** After two more hunts, Ashpit's elder Snag invades Ash with 26, "honour: player Ash
+   killed 6 of ours at our camp in the summer of year 1": it wins, loses 11 and takes 109.
+3. **Y1 d46.** The Grey Outpost invades Ash with 23 under its chief Talv, for loot "and anger at player
+   Ash's mines and smoke": all 23 die, and Talv with them.
+4. **Y1 d82.** Ashpit's envoy asks Bea 107, "after: player Bea killed 3 of ours at our camp in the
+   autumn of year 1": Ash's hunt, blamed on her. She pays.
+5. **Y2 to Y8.** Both camps' envoys ask Bea 92 to 164 and she pays every one, about three a year
+   between them. Ash hunts Ashpit every few weeks, kills its chiefs Skarl (Y5 d29) and Lugg (Y6 d61),
+   and kills three of its envoys. On Y8 d59 word reaches the Grey Outpost that Ash is away: it invades
+   with 23, wins, loses 6 and takes 130.
+6. **Y8 d90.** Ashpit invades Bea with 26 under its chief Vorr, who had taken her tribute: "winter
+   hunger; and loot; Vorr broke his own truce". It takes 185.
 
-Every fight on Bea in the 50 years, each by a camp she was paying:
-- Y1 d83, the Grey Outpost's band (above).
-- Y5 d93, Ashpit invades with 26: "loot; Brakka had not sworn Nub's truce". It takes 185.
-- Y11 d25, Ashpit: "the new war leader must prove himself".
-- Y22 d61, Ashpit: "empty stores".
-- Y24 d91, the Grey Outpost: "winter hunger; Captain Hesk broke his own truce".
-- Y27 d81, the Grey Outpost: "word came that player Bea was away; loot; Talv broke his own truce".
-- Y34 d65, the Grey Outpost: "loot; and the new war leader must prove himself; Talv had not sworn
-  Captain Mol's truce".
+Every fight on Bea in the 50 years was an invasion of 26 by Ashpit, a camp she was paying, and each
+took 185 or 190:
+- Y8 d90 (above).
+- Y21 d66: "loot; and the new war leader must prove himself; Gitz had not sworn Nub's truce".
+- Y23 d8: "empty stores; Gitz broke his own truce".
+- Y29 d19: "word came that player Bea was away; loot; and the new war leader must prove himself; Vorr
+  had not sworn Gitz's truce".
+- Y34 d8: "loot; and honour: player Bea killed Skarl, our chief, in the spring of year 34; Grukk had
+  not sworn Skarl's truce": Ash's kill, blamed on her.
+- Y43 d57: "honour: player Bea killed Lugg, our chief, in the autumn of year 43; and the new war leader
+  must prove himself".
+- Y47 d19: "empty stores; and loot; Vorr had not sworn Skarl's truce".
 
-The attackers win every one. Bea pays about 27 envoys a decade. Over the 64 worlds she pays 272 a year
-and loses 25 to raids, 62% of her income; Ash takes 0.33 fights a year, kills 4.6 attackers a year,
-and loses 25 items a year (5% of his income) to the attacks that find him away. Without blame spill
-Bea's fights fall from 0.14 to 0.08 a year and her tribute from 272 to 268: the spill shows mostly in
+The attackers win every one. Bea pays about 29 envoys a decade. Over the 64 worlds she pays 272 a year
+and loses 25 to raids, 62% of her income; Ash takes 0.32 fights a year, kills 4.5 attackers a year,
+and loses 24 items a year (5% of his income) to the attacks that find him away. Without blame spill
+Bea's fights fall from 0.14 to 0.09 a year and her tribute from 272 to 266: the spill shows mostly in
 the reasons her envoys give, and in the raids of chiefs who believe she killed theirs.
 
 ### 3.5 A world left alone for 50 years
 
-No player. Seed 1001: 54 fights between camps in 50 years (median 54).
+No player. Seed 1001: 55 fights between camps in 50 years (median 55).
 
 | Decade | Fights (camp, village, caravan) | Lost | Truces | Chiefs replaced | Dragons | Bloodiest camp fight |
 |---|---|---|---|---|---|---|
-| 1 to 10 | 65 (12, 39, 14) | 4 | 4 | 30 | 11 | Y7 d96 Mudhollow invades the Grey Outpost with 26 under its chief Snag, in winter hunger: wins, 22 dead, 32 taken |
-| 11 to 20 | 52 (6, 35, 11) | 1 | 4 | 36 | 8 | Y13 d3 Ashpit invades the Grey Outpost with 26, its stores empty: wins, 22 dead, 32 taken |
-| 21 to 30 | 69 (15, 41, 13) | 3 | 7 | 35 | 17 | Y24 d67 Ashpit invades the Grey Outpost, empty stores and loot: wins, 22 dead, 32 taken |
-| 31 to 40 | 61 (10, 42, 9) | 1 | 5 | 33 | 9 | Y31 d26 Mudhollow invades the Grey Outpost, empty stores: wins, 22 dead, 32 taken |
-| 41 to 50 | 72 (11, 49, 12) | 3 | 4 | 33 | 13 | Y50 d77 Mudhollow invades the Grey Outpost, winter hunger: wins, 22 dead, 32 taken |
+| 1 to 10 | 65 (13, 47, 5) | 2 | 2 | 31 | 9 | Y3 d34 Mudhollow invades the Grey Outpost with 26 under its chief Gitz, its stores empty: wins, 22 dead, 32 taken |
+| 11 to 20 | 65 (13, 49, 3) | 2 | 4 | 36 | 6 | Y12 d58 Mudhollow invades the Grey Outpost, its war leader Vorr speaking, empty stores: wins, 22 dead, 32 taken |
+| 21 to 30 | 83 (12, 57, 14) | 1 | 5 | 31 | 9 | Y22 d7 Mudhollow invades the Grey Outpost under its chief Skarl, empty stores: wins, 22 dead, 32 taken |
+| 31 to 40 | 56 (8, 43, 5) | 1 | 4 | 32 | 11 | Y35 d11 Ashpit invades the Grey Outpost under its chief Vorr, empty stores: wins, 22 dead, 32 taken |
+| 41 to 50 | 53 (9, 38, 6) | 2 | 4 | 24 | 14 | Y44 d11 Mudhollow invades the Grey Outpost, its war leader Vorr speaking, empty stores: wins, 22 dead, 32 taken |
 
 The bloodiest fight of every decade has the same shape: a starving goblin camp throws its whole
 invasion (30.4) at the raider outpost's full guard (25.3) and wins a victory that costs it 22 of 26
 for 32 items. The fight is deterministic, so the same two full camps always give the same result; what
-varies is when hunger drives a council to it, and who speaks.
+varies is when hunger drives a council to it, and who speaks. Beside a sworn ally the same fight pays
+better (3.6).
 
-Fights between camps over the 50 years, attacker on target: the Grey Outpost on Crowsnest 9; Ashpit on
-Crowsnest 8; the Grey Outpost on Mudhollow 7; Mudhollow on the Grey Outpost 7; Mudhollow on Ashpit 7;
-the Grey Outpost on Ashpit 5; Ashpit on the Grey Outpost 5; three more pairs, 2 each. The next seed on
-the same map tells another history: the Grey Outpost on Ashpit 10, on Mudhollow 8, and on Crowsnest
-only 3; Mudhollow on Ashpit 7 and on the Grey Outpost 7; Ashpit on Crowsnest 5.
+Fights between camps over the 50 years, attacker on target: the Grey Outpost on Mudhollow 11;
+Mudhollow on the Grey Outpost 11; the Grey Outpost on Ashpit 9; the Grey Outpost on Crowsnest 6;
+Mudhollow on Ashpit 5; Crowsnest on Ashpit 5; five more pairs, 1 to 3 each. The next seed on the same
+map tells another history: Ashpit on the Grey Outpost 11 and on Crowsnest 9; the Grey Outpost on
+Ashpit 9 and on Crowsnest 8; Mudhollow on the Grey Outpost 8.
 
 The first years read like a chronicle: Y1 d31 a dragon strikes Ashpit; Y1 d51 Ashpit's chief Grukk is
 killed in a quarrel; Y1 d63 the Grey Outpost's war leader Captain Mol ambushes a caravan; Y1 d81
 Ashpit's hunters kill one of the Grey Outpost's at the border; Y1 d95 Mudhollow's war leader Brakka
 takes 26 to Lowmarsh "to prove himself" and comes back with 120; Y2 d78 the Grey Outpost's band falls
-on Mudhollow and dies; Y3 d44 Mudhollow, its stores empty, invades the dragon-struck Grey Outpost;
-four days later the Grey Outpost, its hunting ground lost, invades Ashpit; Y3 d86 the Sun Grove's
-raptors, hungry, take Lowmarsh's animals.
+on Mudhollow and dies; Y2 d80 Ashpit's chief Snag swears with Mudhollow against the Grey Outpost, a
+pact that lapses twelve days later; Y3 d34 Mudhollow, its stores empty, invades the Grey Outpost; Y3
+d88 Mudhollow, in winter hunger, invades Ashpit and takes 117.
 
-Chiefs turn over fast: about three a camp a decade, from today's `chief_lifespan_days` (goblin 120
+Chiefs turn over fast: about eight a camp a decade, from today's `chief_lifespan_days` (goblin 120
 days, bandit 90, raider 150) and from chiefs who fall leading attacks. Each change brings a new war
 leader with a season or a year to prove himself and a council with another temper, which is much of
 why no two decades of one world read alike. The figure is today's data, not this design's; a longer
 tenure would give fewer, longer reigns.
+
+### 3.6 Two camps swear against a third (2.16)
+
+The valley of 3.5, no player. Seed 1000: 9 pacts sworn and 3 joint fights in 50 years (median 2 joint
+fights over 16 seeds). Every pact is the same pair: Ashpit and Mudhollow, two goblin camps, kin,
+against the Grey Outpost, which hates goblins and is the strongest camp in reach of both.
+
+1. **Y3 d3.** Mudhollow's chief Lugg sends to Ashpit to swear against the Grey Outpost. Sworn; it
+   lapses eleven days later. Pacts between the two come and go: sworn again in Y4 and Y5.
+2. **Y7 d5.** Mudhollow's chief Ozzit, its stores empty, calls Ashpit, and it comes. Mudhollow invades
+   the Grey Outpost with 26 beside Ashpit's band of 8: "empty stores; and loot; beside Ashpit, sworn
+   against the Grey Outpost". They win, losing 17 and 5, and take 76. Alone, the same invasion loses 22
+   of 26 for 32 items (3.5): the dead are about the same, but twelve carry home instead of four.
+3. **Y10 d35 to Y12 d81.** Ashpit's chief Skarl swears again. In Y11 three calls, one from Ashpit and
+   two from Mudhollow under two speakers, are each refused: each time the ally's council, weighing its
+   own dead and its share of the take against the shame of refusing, said no. The pact lapses, and so
+   does the next, sworn in Y14, unused.
+4. **Y12 d5.** Crowsnest (bandits) asks the Grey Outpost to swear against Ashpit. Refused: raiders
+   hate bandits.
+5. **Y22 d8 to Y23 d75.** Mudhollow swears with Ashpit, its war leader Gitz speaking for its chief
+   Ozzit; 17 days later Gitz is chief. 163 days after the swearing Mudhollow, in winter hunger, invades
+   Ashpit: "winter hunger; Gitz had not sworn the oath sworn with Ashpit against the Grey Outpost". The
+   oath binds the chief who held the seat when it was sworn, not the speaker, so Gitz weighs it as an
+   heir does, once; the engine's line says so ("Gitz was not chief when Mudhollow swore"), where the
+   model's says "had not sworn". Mudhollow wins, losing 18, and takes 60. The pact ends in betrayal:
+   Ashpit takes it as the gravest insult, and every camp that knows Mudhollow trusts its word less.
+6. **Y26 d31 to Y29 d55.** Ashpit's elder Snag swears with Mudhollow. Mudhollow's first call is
+   refused; twice in Y27 it calls again and Ashpit comes: two joint invasions of the Grey Outpost, each
+   won (17 and 5 dead for 83; 15 and 5 for 81). In Y29 Ashpit refuses twice, and the second refusal
+   ends the pact.
+7. **Y38 to Y42.** Two more pacts, each lapsing unused. On Y40 d48 Ashpit turns down Mudhollow's
+   offer; two days later Ashpit's own chief offers the same pact, and Mudhollow swears: the camp that
+   offers weighs the pact with its speaker's temper, the camp that answers with its council's mean, and
+   the two can differ.
+
+At the fortress (3.1), joint parties are rarer still: 3 in 16 worlds of 50 years.
+- Seed 1002, Y4 d12: the Grey Outpost invades Ben with 23 under its chief Captain Mol beside
+  Mudhollow's invasion of 26, "empty stores; beside Mudhollow, sworn against player Ben", and finds him
+  away (40): won, 5 and 5 dead, 297 taken.
+- Seed 1002, Y4 d65: the Grey Outpost again, with Mudhollow's band of 8: won, 14 and 5 dead, 94 taken.
+- Seed 1014, Y11 d9: Mudhollow invades with 26 beside the Grey Outpost's 23, "newly sworn against
+  player Ben; empty stores", and finds him home: all 49 die.
+
+What Ben sees in seed 1002: the notice that the Grey Outpost and Mudhollow have sworn against him.
+While he is away, two columns arrive together. He comes home to a base robbed of 297, and 53 days
+later of 94 more. Over the 64 fortress worlds a joint party came at him about once in 140 years and
+won about once in 250 (CL-6).
 
 ---
 
@@ -807,52 +1210,54 @@ The world left alone (no player):
 
 | | Ladder (c) | Gate (a) | Life |
 |---|---|---|---|
-| Fights a world-year: mean [p5, p95] | 30.1 [23, 38] | 12.6 [9, 18] | 7.3 [3, 14] |
+| Fights a world-year: mean [p5, p95] | 30.1 [23, 38] | 12.6 [9, 18] | 7.4 [3, 14] |
 | Between camps a year | 10.2 | 2.1 | 1.2 |
 | Share the attackers lost | 0.34 | 0.12 | 0.02 |
-| Lost fights a year | 10.1 | 1.6 | 0.17 |
+| Lost fights a year | 10.1 | 1.6 | 0.16 |
 | Worlds with an endless war | 1.00 | 0 | 0 |
 | Worlds with a surge | 0 | 0 | 0 |
 | Worlds where a camp died out | 0 | 0 | 0 |
 | Worlds with no camp fight in 50 years | 0 | 0 | 0 |
-| Worlds with a decade of no camp fight | 0 | 0.02 | 0.02 |
+| Worlds with a decade of no camp fight | 0 | 0.02 | 0 |
 
-The longest gap between two camp fights in any life world was 10.9 years. Unattended for 500 years
-(8 worlds): fights a year by century stay between 6.1 and 8.4 in every world, fights between camps
-between 0.87 and 1.56, with no trend.
+The longest gap between two camp fights in any life world was 9.9 years. Unattended for 500 years
+(8 worlds): fights a year by century stay between 6.4 and 8.7 in every world, fights between camps
+between 0.88 and 1.55, with no trend.
 
 Where the losses fall (the share of the attackers' fights they lost, `results/summary.md`):
 
 | Target | Ladder (c) | Gate (a) | Life |
 |---|---|---|---|
 | A rival camp (alone) | 1.00 | 0.75 | 0.12 |
-| A village (alone) | 0.00 | 0.00 | 0.01 |
+| A village (alone) | 0.00 | 0.00 | 0.00 |
 | A train or caravan (railway) | (none) | (none) | 0.11 |
-| The walled base, 80 (fortress) | 1.00 | 0.99 | 1.00 |
-| The hunter and the bystander (multi) | 0.98 | 0.96 | 0.28 |
+| The walled base, 80 (fortress) | 1.00 | 0.99 | 0.97 |
+| The hunter and the bystander (multi) | 0.98 | 0.96 | 0.29 |
 | The farmer, 30 | 0.00 | 0.00 | 0.01 |
 | A weak base, 6 (duels) | 0.00 | 0.00 | 0.00 |
 
 Losing raids are rare (one fight in fifty when the world is left alone or near the farmer, one in
-seventeen to twenty-five near a fortress, a hunter or a busy line) and they come from wrong beliefs: a new base guessed weak, a guard guessed thin, a
-player believed away. Under the ladder the plunder clock keeps sending a band of 8 at a camp it cannot
-beat, and loses every time. The gate believes the square law's odds, A² / (A² + d²), against an engine
-whose fight is certain, so it attacks camps it cannot beat (75% lost) and, in the valley, the fortress
-(99% lost). Every life fight on the fortress is lost because the fortress is stronger than any party
-in the valley; what keeps them rare is the floor and the slow blur of a base's belief.
+seventeen to twenty-five near a fortress, a hunter or a busy line) and they come from wrong beliefs: a
+new base guessed weak, a guard guessed thin, a player believed away. Under the ladder the plunder clock
+keeps sending a band of 8 at a camp it cannot beat, and loses every time. The gate believes the square
+law's odds, A² / (A² + d²), against an engine whose fight is certain, so it attacks camps it cannot beat
+(75% lost) and, in the valley, the fortress (99% lost). Nearly every life fight on the fortress is lost
+because the fortress is stronger than any one party in the valley; what keeps them rare is the floor and
+the slow blur of a base's belief. The 3% the attackers won were joint parties of two camps sworn against
+him that found him away (2.16, CL-6).
 
 ### 4.2 The players
 
 | Scenario, player | Ladder (c) | Gate (a) | Life |
 |---|---|---|---|
-| Fortress, Ben: fights a year on him (attackers killed a year) | 2.74 (39.4) | 0.79 (16.0) | 0.13 (2.9) |
-| Farmer, Ben: fights a year (loot taken a year, share of income) | 0.13 (6, 1%) | 0.18 (9, 2%) | 1.92 (92, 19%) |
-| Multi, Ash: fights a year (attackers killed; loot) | 7.47 (79.7; 10) | 3.34 (48.0; 15) | 0.33 (4.6; 25) |
+| Fortress, Ben: fights a year on him (attackers killed a year) | 2.74 (39.4) | 0.79 (16.0) | 0.12 (2.9) |
+| Farmer, Ben: fights a year (loot taken a year, share of income) | 0.13 (6, 1%) | 0.18 (9, 2%) | 1.93 (93, 19%) |
+| Multi, Ash: fights a year (attackers killed; loot) | 7.47 (79.7; 10) | 3.34 (48.0; 15) | 0.32 (4.5; 24) |
 | Multi, Bea: fights a year (tribute and loot, share of income) | 0 (1, 0%) | 0 (0) | 0.14 (272 and 25, 62%) |
-| Multi without blame spill, Bea | 0 (1) | 0 (0) | 0.08 (268 and 15, 59%) |
-| Railway at 4 legs, the owner: invasions a year (loot) | 0 | 0 | 0.17 (20, 4%) |
-| Railway at 4 legs: train ambushes a year | 0 | 0 | 2.9: goblins 2.15 won and 0.38 lost, the Frostmaw 0.36, every one won |
-| Railway: caravan ambushes a year | 0 | 0 | 0.68 |
+| Multi without blame spill, Bea | 0 (1) | 0 (0) | 0.09 (266 and 17, 59%) |
+| Railway at 4 legs, the owner: invasions a year (loot) | 0 | 0 | 0.16 (19, 4%) |
+| Railway at 4 legs: train ambushes a year | 0 | 0 | 2.9: goblins 2.16 won and 0.38 lost, the Frostmaw 0.37, every one won |
+| Railway: caravan ambushes a year | 0 | 0 | 0.72 |
 
 The duels (`game.py`'s setting: one goblin camp, one base, grievance 9 a day, no trips), last decade;
 the player's income is 480 a year:
@@ -886,12 +1291,12 @@ engine exactly (`settle` resets a paid feud to Notice), and both show the ladder
 | Measure (world left alone) | Ladder (c) | Gate (a) | Life |
 |---|---|---|---|
 | Next act called to the day from the last two (kind, target, day within 1) | 0.18 | 0.17 | 0.02 |
-| Spread of days between one attacker's fights (CV, median; 1 is Poisson) | 0.83 | 0.83 | 0.84 |
-| The same between one attacker's fights on one target | 0.83 | 1.30 | 0.78 |
-| Same camp, different seeds: difference of act mix (Jensen-Shannon) | 0.000 | 0.004 | 0.011 |
-| Same camp, different seeds: spread of fights a year (CV) | 0.04 | 0.10 | 0.15 |
-| Two seeds of one world: share of the first ten years' acts that match (chance) | 0.52 (0.49) | 0.38 (0.36) | 0.09 (0.07) |
-| A camp's years: variance beyond Poisson, median [p10, p90] | 0 [0, 0] | 0 [0, 1.06] | 0.31 [0, 0.61] |
+| Spread of days between one attacker's fights (CV, median; 1 is Poisson) | 0.83 | 0.83 | 0.85 |
+| The same between one attacker's fights on one target | 0.83 | 1.30 | 0.77 |
+| Same camp, different seeds: difference of act mix (Jensen-Shannon) | 0.000 | 0.004 | 0.012 |
+| Same camp, different seeds: spread of fights a year (CV) | 0.04 | 0.10 | 0.16 |
+| Two seeds of one world: share of the first ten years' acts that match (chance) | 0.52 (0.49) | 0.38 (0.36) | 0.09 (0.08) |
+| A camp's years: variance beyond Poisson, median [p10, p90] | 0 [0, 0] | 0 [0, 1.06] | 0.32 [0, 0.61] |
 
 The intervals alone do not tell the rules apart; what does is whether the next act can be called and
 whether two seeds tell the same story. A life camp also has good years and bad years (variance beyond
@@ -904,17 +1309,17 @@ the target, within a year:
 
 | | Ladder (c) | Gate (a) | Life |
 |---|---|---|---|
-| Fortress: median [p10, p90] | 9 [9, 10] | 3 [3, 3] | 4 [1, 65] |
-| Share within a day of the commonest lag | 1.00 | 0.99 | 0.41 |
+| Fortress: median [p10, p90] | 9 [9, 10] | 3 [3, 3] | 4 [1, 60] |
+| Share within a day of the commonest lag | 1.00 | 0.99 | 0.40 |
 | Share of refusals followed by a fight within a year | 1.00 | 0.99 | 0.30 |
-| Multi: median [p10, p90] (share within a day of the commonest) | 9 [2, 37] (0.55) | 3 [3, 3] (0.98) | 8 [2, 67] (0.26) |
+| Multi: median [p10, p90] (share within a day of the commonest) | 9 [2, 37] (0.55) | 3 [3, 3] (0.98) | 9 [2, 66] (0.25) |
 
-On the railway, the first robbery after the guards come off follows by a median of 27 days [5, 74]
-(CV 0.81, 1,354 cases): word of the guards' going reaches the camps late, and the watch on the line
+On the railway, the first robbery after the guards come off follows by a median of 28 days [5, 74]
+(CV 0.79, 1,371 cases): word of the guards' going reaches the camps late, and the watch on the line
 misses them half the time.
 
-What started the life fights (alone): hunger was a driver of 62%, loot of 64%, glory of 13%, pride
-of 2%; loot alone, with no other motive, 24%. Occasions: the restless clock 83%, caravans 14%,
+What started the life fights (alone): hunger was a driver of 63%, loot of 63%, glory of 13%, pride
+of 2%; loot alone, with no other motive, 23%. Occasions: the restless clock 83%, caravans 14%,
 provocations 2%, news 1%. With players near, provocations, refusals and news start more of them, and
 revenge and pride drive more: at the farmer pride is a driver of 22% (the Frostmaw's honour); on the
 railway a passing train is the occasion of 35%.
@@ -932,6 +1337,146 @@ railway a passing train is the occasion of 35%.
   model's stand-ins for the world, not part of the design.
 - The ladder mode follows `engine.rs` in its rules, not in its code paths; the gate follows
   EQUILIBRIUM.md §2.5 as written, including its belief of the odds.
+- Alliances (2.16): an offer and a call are answered inside the caller's sitting, and a joint fight
+  resolves the day it is decided, so the two marches, the nearer contingent's longer muster and a
+  first arrival's wait are not modelled; nor are the shared quota and the target listener. No player
+  swears with a camp (CL-8), and no pact holds more than two camps.
+
+### 4.5 Alliances
+
+Every number in sections 3 and 4.1 to 4.3 is measured with alliances on. Here each scenario is set
+against its control: the same 64 seeds and 50 years with alliances off (`run.py`'s `*_noally`). Pacts
+draw from a stream of their own, so the two arms share every other draw and part only where an offer, a
+pact or a call changes what a camp does. Each comparison is paired by seed (`extra/paired.py`,
+`extra/base_an.py`).
+
+**What they change** (on, then off; the paired difference a year with its sign test):
+
+| Scenario | Measure | On | Off | Paired on less off (p) |
+|---|---|---|---|---|
+| Alone | fights a world-year; between camps | 7.36; 1.16 | 7.32; 1.16 | |
+| Fortress | fights a year on Ben; share lost; loot a year | 0.125; 0.97; 1.0 | 0.125; 1.00; 0 | -0.0003 (0.18) |
+| Farmer | fights a year on Ben; loot a year | 1.93; 93 | 1.92; 92 | +0.010 (0.70) |
+| Farmer | Frostmaw deaths a year, North Den and Pass Den; their raids on Ben | 1.73, 0.49; 0.50, 1.41 | 1.73, 0.48; 0.51, 1.39 | |
+| Multi | fights a year on Ash; loot a year | 0.32; 24 | 0.33; 25 | -0.012 (0.79) |
+| Multi | fights a year on Bea; loot a year | 0.14; 25 | 0.14; 25 | +0.001 (0.59) |
+| Railway at 4 legs | fights a year on the owner; loot a year | 0.16; 19 | 0.17; 20 | -0.006 (0.69) |
+| Railway at 4 legs | Frostmaw lurks and roars a year; goblin train ambushes | 0.37, 2.18; 2.54 | 0.36, 2.19; 2.54 | |
+| Railway at 4 legs | caravan ambushes a year by Ashpit, Crowsnest, the Grey Outpost | 0.16, 0.30, 0.26 | 0.15, 0.29, 0.23 | |
+
+Nothing a player feels moves: no paired difference comes near significance, and the Frostmaw's rates
+move by 0.02 a year at most. No camp died out and no war became endless in either arm. The one change
+is the fortress's: with alliances off every fight on Ben is lost; with them on, two camps sworn against
+him have beaten his walls while he was away, 13 times in 3,200 world-years (0.004 a year, about once
+in 250 years), and taken about one item a year from him on average.
+
+**The alliances themselves** (`results/summary.md`):
+
+| Scenario | Pacts sworn a year | Calls a year (joined, refused) | Joint fights a year (on players; won there) | Joint demands a year | Betrayals a year | Who swore, against whom |
+|---|---|---|---|---|---|---|
+| Alone | 0.146 | 0.077 (47%, 48%) | 0.036 (0) | 0 | 0.026 | Ashpit and Mudhollow against the Grey Outpost, every pact |
+| Farmer | 0.150 | 0.057 (52%, 45%) | 0.030 (0) | 0 | 0.022 | the same |
+| Fortress | 0.169 | 0.092 (43%, 54%) | 0.039 (0.0072; 0.0041) | 0.023 | 0.027 | the same, 0.160; Mudhollow with the Grey Outpost against Ben, 0.005, and with the Sun Grove, 0.004 |
+| Multi | 0.089 | 0.032 (50%, 48%) | 0.016 (0.0034 on Ash; 0.0025) | 0.007 | 0.012 | the goblin pair, 0.087; Ashpit with the Grey Outpost against Ash, 0.001 |
+| Railway | 0.121 | 0.036 (32%, 54%) | 0.012 (0) | 0 | 0.021 | the goblin pair |
+
+The rest of the calls found the ally busy. A pact runs a median of about 100 days (mean 134 to 154).
+Four in five lapse; about one in six ends in betrayal (14% to 18% by scenario); a handful end in
+refusals. Every betrayal in the valley left alone (82 in 64 worlds, `extra/betray.py`; 86 at the
+fortress, 70 at the farmer's, 67 on the railway, 39 in multi) is a hungry goblin camp invading its
+kin, and 59 of the 82 came under a chief who was not chief when his camp swore (about five of those
+59 had spoken the oath as war leader or elder and took the seat later, as Gitz in 3.6). The joint
+fights between camps are won: 99% in the valley.
+
+Joint parties on players do better than single ones. At the fortress 13 of 23 won, every win while Ben
+was away; of the 10 lost, 7 found him home and 3 found him away but were too weak for his walls. No
+single party ever wins there: the strongest is 36 against his 40, even with him away. At Ash 27% of
+joint parties were lost, against 41% of single ones.
+
+**How often a player meets one.** A game year of 96 days is 32 hours of a running server:
+
+| As designed | Once in (world-years) | About (server hours) |
+|---|---|---|
+| A pact sworn against Ben at the fortress | 119 | 3,800 |
+| A joint party at the fortress | 139 | 4,450 |
+| A joint win at the fortress | 246 | 7,900 |
+| A joint party at Ash, the hunter | 291 | 9,300 |
+| A joint fight between camps, in the valley left alone | 28 | 880 |
+
+As designed, a player almost never meets an alliance. Bea, the farmer and the railway owner met none in
+3,200 world-years each; the server would run about 3,800 hours before two camps swore against Ben, and
+about 9,300 before a joint party came at Ash. Between camps they are part of the valley's history, which
+a player sees only as far as he hears it (CL-9).
+
+**No blocs.** In 310 of the 320 worlds (`extra/bloc.py`) no camp held more than one pact at a time. In
+the other 10, all fortress worlds, Mudhollow held two: with Ashpit against the Grey Outpost, and with
+the Sun Grove against Ben. No pact holds more than two camps, and the faction row's room for four open
+pacts (5.1) was never more than half used.
+
+**Why they are rare.** Two reasons are the model's structure; the rest are tunables, which CL-7
+turns:
+- **The law.** Between camps the fight is linear (2.16): a winning party loses d / A of its members, so
+  two parties together lose about the dead one party of their joint strength would, each its share. A
+  pact buys the carry of more survivors and the wins a camp could not take alone, and the ally pays for
+  its part with its own dead. In 3.6 the joint invasion lost 22, as Mudhollow alone does, but brought 76
+  home instead of 32; Ashpit's band lost 5 of its 8 for about a quarter of the take. Where the target's
+  holdings cap the take, the extra carry buys nothing.
+- **Who can swear.** Both must quarrel with the foe, reach it and each other. In this valley only the
+  two goblin camps against the Grey Outpost pass often: they are kin (+4), and the raiders, the
+  strongest camp in reach of both, hate goblins. Every other pair weighs a culture's hate (-10) or has
+  no shared foe worth it. The structure is who quarrels with whom and who reaches whom; the weights,
+  kin +4 and hate -10, are tunables.
+- **Few offers pass.** A pact's worth to a camp is a joint war's gain and the guard, with who the other
+  is (kin, hate), less the effort of sending to swear (`pact_effort` 3); the camp that answers weighs it
+  the same way, and it must pass in both councils.
+- **Most pacts lapse.** A pact runs Exp(`pact_days` 192) days, and four in five end so: the largest
+  ender.
+- **Half the calls are refused.** The ally's council weighs its own dead and its share against the shame
+  of refusing (`call_honour` 1.0, tripled for the chief who swore), and about half the time the dead
+  win.
+- **Oaths do not outlive chiefs.** Chiefs turn over about eight times a camp a decade (3.5). The oath
+  binds the chief who held the seat at the swearing three times over (the oath multiplier, 3); an heir
+  is bound once, and 59 of the 82 betrayals in the valley are heirs'.
+
+Between camps the structure sets the rate; against players the tunables do. The warm arm below turns
+four of them and multiplies Ash's joint parties 13 times, joint demands in multi 22 times and offers 5
+times.
+
+**Warmer alliances.** Doubling a pact's run (`pact_days` 384), cutting the effort of sending to swear to
+1, and making kin worth 6 and a hated culture cost 6 instead of 10 (`extra/warm_an.py`):
+
+| Scenario | Warm | As designed |
+|---|---|---|
+| Alone | fights 7.10 a year, 1.08 between camps; 0.164 pacts sworn and 0.052 joint fights a year; 0.052 betrayals; pacts run a median 175 days | 7.36, 1.16; 0.146 and 0.036; 0.026; 105 |
+| Fortress | Ben 0.127 fights a year, 97% lost, 1.0 loot; joint parties at him 0.011 a year, 0.0044 won; joint demands 0.044; 23 pacts of Mudhollow and the Sun Grove against him and 19 of Mudhollow and the Grey Outpost | 0.125, 97%, 1.0; 0.0072, 0.0041; 0.023; 12 and 15 |
+| Multi | Ash 0.372 fights a year, 33 loot; joint parties at him 0.044 a year, 0.035 won; joint demands 0.156; 72 pacts of Ashpit and the Grey Outpost against him; Bea 0.129 | 0.322, 24; 0.0034, 0.0025; 0.007; 4; 0.141 |
+
+Warm, the hunter is the one who feels it: the two camps he provokes swear against him, and against the
+design as it stands his fights rise by 16% (paired +0.050 a year, sign p 0.0002) and the loot taken from
+him by 41% (+9.6 a year, p 0.0001; `extra/knobs_an.py`). The fortress still loses almost nothing, and
+Bea's fights do not rise. Fights between camps fall a little in the valley left alone (1.08 a world-year
+against 1.16; sign test p 0.10, not significant). The cause is not measured; probably a sworn camp calls
+before it marches, and a camp with a sworn ally is a costlier target. As designed, a player almost never
+meets an alliance; warm, they are the hunter's standing problem. CL-7 asks which Ben wants.
+
+**One knob at a time** (`extra/knobs_an.py`; the same 64 seeds, each arm paired with the design; the
+paired difference a year and its sign test in brackets):
+
+| Arm | Ash: fights a year; loot a year | Ash: joint parties a year; pacts against him | Bea: fights a year | Ben: fights a year; joint parties, won |
+|---|---|---|---|---|
+| As designed | 0.322; 23.6 | 0.0034; 4 | 0.141 | 0.125; 0.0072, 0.0041 |
+| A pact's run doubled (`pact_days` 384) | 0.322 (0.000, p 0.87); 24.9 (+1.3, p 0.23) | 0.0025; 3 | 0.146 (+0.005, p 1) | 0.114 (-0.011, p 0.08); 0.0056, 0.0019 |
+| Sending to swear costs 1 (`pact_effort`) | 0.327 (+0.005, p 0.69); 24.3 (+0.7, p 0.90) | 0.0069; 12 | 0.117 (-0.024, p 0.009) | 0.130; 0.0078, 0.0031 |
+| Kin worth 6 (`kin_pact`) | 0.342 (+0.021, p 0.14); 25.0 (+1.4, p 0.40) | 0.0031; 6 | 0.140 | 0.124; 0.0047, 0.0025 |
+| A hate costs 6 (`hate_pact`) | 0.334 (+0.013, p 0.29); 27.1 (+3.5, p 0.16) | 0.0144; 30 | 0.139 | 0.122; 0.0084, 0.0053 |
+| All four (warm) | 0.372 (+0.050, p 0.0002); 33.2 (+9.6, p 0.0001) | 0.0444; 72 | 0.129 (-0.012, p 0.37) | 0.127; 0.0112, 0.0044 |
+
+No single knob moves the hunter's fights or his loss significantly; the four compound. The hate weight
+is the strongest alone: it lets the Grey Outpost swear with Ashpit against him (30 pacts in 3,200
+world-years against 4) and makes joint parties at him four times as common, about once in 2,200 server
+hours. Cheaper swearing lowered Bea's fights and her loss (p 0.009 and 0.004): with 24 comparisons in
+the table one such result is not unlikely by chance, and the cause is not measured (probably camps
+busier with each other). No knob moves the fortress.
 
 ---
 
@@ -947,32 +1492,37 @@ railway a passing train is the occasion of 35%.
 | The council clock | the wheel | replaces the plunder clock's event: no change |
 | Border clashes | the wheel | one event a camp with a hostile neighbour: about 94 bytes a faction (PM-C13's wheel cost of an event) |
 | Occasions waiting their delay | the wheel | about 0.1 a faction at any time |
+| Pact fields (2.16): the open-pact list, the fields on each feud toward a camp, `hurt` on each toward a player | the paged faction row | 16 a faction, about 40 a camp feud, 4 a player feud |
+| A joint attack's partner (2.16) | `Party`, resident while the party lives | 8 bytes and a bit a party |
 
-The faction row (about 450 bytes encoded with two feuds, PM-C1) grows to about 1.4 to 1.7 KB with four
-feuds toward nodes; it is paged, 4 factions a page (PM-C12), so it costs disk, page loads and saves,
-not resident memory. Resident memory grows by the clash event, about 100 bytes a faction: about 0.4 MB
-at 4,096 factions on top of PM-C13's 3.17 MB.
+The faction row (about 450 bytes encoded with two feuds, PM-C1) grows to about 1.6 to 1.9 KB with four
+feuds toward nodes and the pact fields (about 180 bytes of it with four camp feuds); it is paged, 4
+factions a page (PM-C12), so it costs disk, page loads and saves, not resident memory. Resident memory
+grows by the clash event, about 100 bytes a faction: about 0.4 MB at 4,096 factions on top of PM-C13's
+3.17 MB.
 
 ### 5.2 CPU
 
 | What | How often | Cost |
 |---|---|---|
-| A sitting | 9.4 to 14.2 a faction-year in the valley scenarios (the most near a busy line), 16 to 18 in a duel; today's plunder clock books 8 to 16 (`plunder_mean_days` 12, 6 and 8). By culture, left alone: goblin 13.7, bandit 11.5, raider 9.9, Umvuthana 9.5, Frostmaw 3.9 | 3.9 to 5.0 neighbours weighed, each one normal draw and 4 to 7 scored acts of a few dozen operations: a few microseconds (inferred), plus the faction's page, which today's plunder event loads as well |
+| A sitting | 9.5 to 14.2 a faction-year in the valley scenarios (the most near a busy line), 16 to 18 in a duel; today's plunder clock books 8 to 16 (`plunder_mean_days` 12, 6 and 8). By culture, left alone: goblin 13.9, bandit 11.6, raider 10.0, Umvuthana 9.4, Frostmaw 3.9 | 3.9 to 5.0 neighbours weighed, each one normal draw and 4 to 7 scored acts of a few dozen operations: a few microseconds (inferred), plus the faction's page, which today's plunder event loads as well |
 | A border clash | about 1 a year per hostile pair | one draw and a feud update |
 | An occasion | a provocation, a refusal, news, a passing train or caravan | a booked event; most become one sitting |
 | Belief, stores, fear, pride, trust | at each event touching the feud or faction | closed form, a few operations |
 | Acts | 4.9 to 6.1 a faction-year | as today's parties |
 | Rows touched | 0.11 to 0.19 a faction-day (two for a fight on a camp) | a page load each when not resident |
+| An offer of a pact, a call (2.16) | at most 0.07 offers and 0.013 calls a faction-year in the valley scenarios (the fortress's) | inside the caller's sitting: the other camp's rows read (a page load when not resident) and its answer scored as one more act |
+| Deterrence (2.16) | at each sitting, for each camp weighed as a target | the target's open-pact list, on its faction row: one row read, a page load when not resident (neighbours often share a page of 4) |
 
-**Step CPU.** Sittings replace plunders about one for one, and a sitting's arithmetic is small beside
-a page load (about 5 microseconds plus 0.45 decode a faction, PM-C12). What grows is the row: decoding
-a row three times the size, against today's 52.3 microseconds a faction-day at 1,024 factions, gives
-an estimated 52 to 60 (inferred).
+**Step CPU.** Sittings replace plunders about one for one, and a sitting's arithmetic is small beside a
+page load (about 5 microseconds plus 0.45 decode a faction, PM-C12). What grows is the row: decoding a
+row three to four times the size, against today's 52.3 microseconds a faction-day at 1,024 factions,
+gives an estimated 52 to 60 (inferred).
 
-**Save CPU.** A page of four rows of 1.4 to 1.7 KB is about the bytes of PM-C12's 16-a-page runs
+**Save CPU.** A page of four rows of 1.6 to 1.9 KB is about the bytes of PM-C12's 16-a-page runs
 (16 rows of 450). Those saved 44 times a day for 125 ms of CPU a day at 1,024 factions and 162 times
 for 801 ms at 4,096, against 13 and 37 ms, and 47 and 276 ms, at today's 4 a page. So expect save CPU
-about three times today's: about 110 to 125 ms a game day at 1,024 factions, about 800 at 4,096
+about three times today's: about 120 to 140 ms a game day at 1,024 factions, about 900 at 4,096
 (inferred; the paged sweep measures it, test 17). If that is too much, the feuds toward nodes can
 live in a page of their own, loaded only by sittings.
 
@@ -992,8 +1542,15 @@ two numbers, the floor and the stock one pair each).
 | Rust tests (section 6) | about 1,000 |
 | Java: reason lines on ENVOY_MATERIALIZE and FACTION_NOTICE in the `ConflictBridge` | about 120 |
 | Java GameTests | about 300 |
+| Rust: alliances (2.16: the pact fields and the open-pact list, offer and answer, the call, the joint resolve at a camp, a village and a base, the joint fight's books, strain, betrayal, deterrence, the guard, joint demands, the `SYS_ALLY` stream) | about 600 |
+| Rust: the joint march (the longer muster, the partner-aware wait, the joint arrival, a two-party `start_fight`, the shared quota in bodies) and BAND_MARCH's partner | about 250 |
+| Rust tests 21 to 25 | about 300 |
+| Java: the target listener and the joint key from BAND_MARCH (2.16) | about 80 |
+| Java GameTests 5 and 6 | about 150 |
 
-The model is `model.py` (1,676 lines), `run.py` (542), `walk.py` (194) and `summarize_md.py` (144).
+The model is `model.py` (2,356 lines, about 680 of them alliances), `run.py` (615), `walk.py` (233) and
+`summarize_md.py` (165), with eight measuring scripts in `extra/` (326 lines; their outputs are in
+`results/alliances.txt`).
 
 ---
 
@@ -1007,26 +1564,26 @@ seeds unless said. The model's value for each is in brackets.
 2. `belief_converges`: after five fights or eight scouting trips, the believed defence is within 25%
    of the truth for 95% of draws; after a year with no look, a camp's variance is back above 0.2.
 3. `a_strong_base_is_mostly_left_alone`: the fortress duel at most 0.05 fights a year over 50 years
-   [0.01]; in the valley, at most 0.3 fights a year on the fortress [0.13], and at least one test of
+   [0.01]; in the valley, at most 0.3 fights a year on the fortress [0.12], and at least one test of
    the new base in the first two years in at least half the seeds [73%].
 4. `a_payer_is_asked_not_raided`: the weak duel, at most 0.5 fights a year, tribute at least 120 a
    year [0.2, 177].
 5. `a_weak_refuser_is_raided`: the stubborn duel, between 1 and 6 fights a year [3.4].
 6. `no_runaway_no_permanent_peace`: the world left alone, 50 years: no surge; endless wars in at most
    5% of worlds [0] and none longer than 10 years; no gap of 20 years without a camp fight in any
-   world [the longest 10.9 years].
+   world [the longest 9.9 years].
 7. `no_camp_dies_by_fighting`: no camp held at one member or none for 96 days, 50 years; and 8 worlds
    of 500 years with fights a year by century within a factor of 1.5 of each other [at most 1.3].
 8. `stories_differ`: two seeds of one world share less than 20% of their first ten years' acts [9%];
    the next act is called to the day under 5% of the time [2%].
 9. `one_culture_many_minds`: the same camp over seeds has a spread of fights a year (CV) of at least
-   0.1 [0.15].
+   0.1 [0.16].
 10. `every_fight_has_a_reason`: every party's reason code names a motive; a revenge or honour motive
     names a memory that exists or a standing cause (industry, a culture's hatred, the rail meter).
 11. `a_sworn_truce_mostly_holds`: fights by a chief on a camp he swore a running truce with number
-    under 1 in 10 of the truces sworn [55 for 1,562].
+    under 1 in 10 of the truces sworn [45 for 1,511].
 12. `the_frostmaw_robs_more_on_a_busier_line`: lurks a year rise with legs a day over 2, 4, 8, 12 and
-    24 [0.17 to 5.19].
+    24 [0.17 to 5.01].
 13. `the_umvuthi_leads_only_when_wounded`: every Umvuthana invasion was chosen with W at least 0.8,
     with an Umvuthi in the grove, carries the chief flag, and fights at the band's strength plus 5.0
     (12.6 at full strength); no Umvuthana invasion while the grove waits for an heir.
@@ -1045,11 +1602,34 @@ seeds unless said. The model's value for each is in brackets.
     `threat.rs` on its A and d; the council's believed chance never enters it; a camp that holds loses
     A / d of the guard that met it.
 19. `a_killer_is_hated`: the Frostmaw's killer is on the den's record at +80 and +2 with a memory of
-    weight 3; its heir arrives with half and raids him before any other player [the farmed den 0.51 a
+    weight 3; its heir arrives with half and raids him before any other player [the farmed den 0.50 a
     year]; a camp whose chief a player killed bears him W + 1 and +40.
 20. `a_beaten_party_takes_its_leader`: a destroyed raider invasion ends its captain's rule; a destroyed
     Umvuthana invasion ends the Umvuthi's, the grove then waits the later of its cowed time and
     `min(192, 6 x 2^P)` days and its count falls by one when a warrior takes up the mask.
+21. `alliances_off_is_the_world_before` (2.16): with alliances off, the same event log and the same
+    count of draws in every stream as the commit before them, and an equal hash over the fields that
+    existed before them (the new fields make a whole-state hash differ) [the model's `*_noally` runs
+    reproduce the earlier results exactly].
+22. `a_pact_needs_a_shared_foe`: every pact sworn joins two camps that reach each other and the foe,
+    both quarrelling with it or kin with one quarrelling; none by the Frostmaw; none against the
+    railway or a caravan; a camp holding four pacts makes no offer and refuses one.
+23. `the_joint_fight_is_the_engines`: at a camp or a village, a joint fight's outcome equals
+    `village_outcome` on A + AB and d with both camps' observed fights, and each contingent loses the
+    same share of its members; at a player's base, each class's outcome equals `threat.rs` on both
+    contingents' members of that class, and each contingent loses `abstract_loss_share` of its own
+    held-back members of the class; the take splits by carry; each camp's pressure counts its own dead
+    only.
+24. `the_oath_binds_and_frays`: a camp sworn against x sends no party alone on x that its ally could
+    join, unless the ally refused or was busy at the call; a refusal adds 1 strain, and a pact past 2
+    ends; a betrayal ends the pact and sets W + 1, +40 and a memory of weight 3 on the betrayed.
+25. `alliances_keep_the_world_settled`: on the same seeds with alliances on and off, the world left
+    alone keeps its fights a year within 5% [7.4 and 7.3], no endless war and no camp dying out [none
+    in either], and the fortress at most 0.3 fights a year [0.12]; on Peaceful no call is made and no
+    joint party leaves.
+26. `a_pact_is_news_nearby` (CL-9 (a)): when two camps swear, march together, or one falls on the
+    other, every player both camps reach gets one notice of that kind naming both, and no other player
+    gets one.
 
 GameTests, only where Java is involved:
 
@@ -1062,6 +1642,14 @@ GameTests, only where Java is involved:
 4. `aWatchedSkirmishIsABand`: a skirmish between two camps, and a caravan ambush, that a player meets
    are band parties on their BAND_MARCH routes, their bodies placed where the march puts them; a band
    past the spawn quota walks its remaining members in from the ticking edge as the quota frees.
+5. `alliesDoNotFightEachOther` (2.16): a pillager band and an Umvuthana band (the pack's Mowzie
+   bodies) of one joint attack at a target; an arrow from one hits the other, and neither turns on the
+   other (`LivingChangeTargetEvent` cancelled), while both keep the player as their target; with the
+   partner cleared, the hit one turns. The goblin bodies join it when P8 picks their mod.
+6. `aJointPartyArrivesTogether`: two contingents on routes of different lengths arrive on one tick;
+   the bodies in Minecraft never pass 16 for both, a raptor pack counting 5; the members past the
+   shared quota walk in from the ticking edge as it frees; a contingent whose partner is late waits and
+   is not sent home.
 
 ---
 
@@ -1087,7 +1675,7 @@ GameTests, only where Java is involved:
 | CL-D16 | The Frostmaw is a council of one whose rail grievance is revenge, not a threshold | its robbing rises smoothly with traffic and each lurk is a decision (CL-3) |
 | CL-D17 | The Umvuthi leads an invasion in person only with wounded pride of 0.8 or more, and the grove has no invasion without it | MZ-3 (b) says it leads; a pride gate makes it rare and always provoked |
 | CL-D18 | Blame spill 0.3 | multiplayer stories where a camp cannot tell two players apart (CL-2) |
-| CL-D19 | **Reversed by Ben's CL-5 (b), 2026-10-22.** Was: no alliances | the alliance design replaces it |
+| CL-D19 | **Reversed by Ben's CL-5 (b), 2026-10-22.** Was: no alliances. Now: section 2.16, CL-D43 to CL-D55 | the alliance design replaces it |
 | CL-D20 | Reasons as codes, text written when read | 8-byte memories; no text in saves |
 | CL-D21 | Every draw from `StreamKey(seed, SYS_COUNCIL or SYS_CLASH, faction key)` slotted by the faction's own counter; the world deterministic in the wheel's order | one faction's draws do not shift with another's sittings |
 | CL-D22 | A stolen crystal is a Theft report naming the player at the steal | MOWZIE.md reports the steal in its CHIEF_STATE record (crystal held, §4.2); this makes it a grievance and a memory |
@@ -1111,12 +1699,26 @@ GameTests, only where Java is involved:
 | CL-D40 | The Frostmaw dies in every abstract fight it loses; its killer gets +80 grievance and +2 pride; its heir arrives with half and a provoked occasion | a party that loses is destroyed, and the Frostmaw's party is itself; a den should hate its killer |
 | CL-D41 | A chief who leads falls with a destroyed party, and with a chance of a tenth of his party's loss in a win | a beaten invasion is a story about its leader |
 | CL-D42 | EQUILIBRIUM.md §2.6 item 11: the census does not recall a band's living members | MZ-15: the march goes on; a recall broke it at every visit to a camp |
+| CL-D43 | A pact joins two camps against one foe both quarrel with (or kin, one quarrelling), offered only when a joint war's gain or the guard against a feared foe is above 0, sworn by both chiefs, lapsing after Exp(192) days | an alliance needs a reason both sides see; a lapse keeps pacts from lasting for ever |
+| CL-D44 | The oath binds: a camp sworn against x calls its ally rather than march alone on a party the ally could join; refusing a call costs 1.0 of the oath's truce cost, 3 times over for the chief who swore; the oath binds the chief who held the seat at the swearing, not the speaker, so a war leader who spoke it and takes the seat later is an heir to it | under the linear law a camp that can win alone gains little beside an ally; with pacts that bound nobody, camps swore and then marched alone |
+| CL-D45 | A joint fight is a new joint resolve on the engine's parts: one `village_outcome` on the sum at a camp or a village (each contingent the same share), one `threat.rs` resolve per class on the summed members at a base; the take splits by carry; each camp books its own dead, pressure and memories | the engine owns the truth (P3) and fights one party at a time today; pressure is per site (EQUILIBRIUM.md §2.4.5) |
+| CL-D46 | Strain: +1 for a refusal, +1 for the ally and +0.5 for the caller after a lost joint fight, +1 for a contingent under 0.8 of what was counted on; a pact ends above 2; strain halves over 96 days | a pact should fray from what happens inside it, not on a clock |
+| CL-D47 | Betrayal costs the oath and 10 more; the betrayed takes +1 pride, +40 grievance and a memory of weight 3; every camp that knows the betrayer counts less on its help | a broken oath is the gravest insult, and a reputation |
+| CL-D48 | Joint demands: one envoy names the joint threat; the price is set on the joint take, the tribute split by carry, and the ally bound by the same truce | the price must match the threat the envoy names |
+| CL-D49 | A joint attack shares one spawn quota of 16 bodies (a raptor pack counts as its 5), split by bodies, at least one stack each | D1: two bands at 16 each would double the bodies a weak PC carries, and D1 is about bodies |
+| CL-D50 | Allies do not turn on each other: the ConflictBridge cancels a `LivingChangeTargetEvent` toward a body of the same joint attack; no team and no mixin; friendly fire still hurts, booked to the victim's own camp with no grievance | UR-1 (a team is saved with the world); the event covers every retargeting through `setTarget` or `StartAttacking`, which the Mowzie and pillager bodies use; the goblin bodies' mod is a P8 gate |
+| CL-D51 | Each contingent marches its own route; the nearer musters longer so both arrive on one tick; one that arrives first waits; a survivor whose partner ended goes on only if its sitting found going alone worth it | MZ-15's march is per party; a joint attack is one fight |
+| CL-D52 | Ally weight by culture: Frostmaw 0, raider 0.8, bandit 1.2, the others 1.0; no ally counts on the grove's invasion | a council of one swears with no one; the Umvuthi's pride is its own (2.10) |
+| CL-D53 | Peaceful: pacts may be sworn; no call is made and no joint party leaves | MOWZIE.md §4.12 |
+| CL-D54 | Alliances draw from their own stream (`SYS_ALLY` in the engine, `arng` in the model); with them off the world is the one before them, draw for draw | a clean same-seed control for every comparison (4.5) |
+| CL-D55 | A pact against a player is told by a notice naming both camps; a joint envoy and a joint party name the ally; pacts between camps are told to the players both camps reach while CL-9 is open (its (a)) | CL-1 (a): a faction tells the player why; without the notices a player almost never sees an alliance (4.5) |
 
 ---
 
 ## 8. Ben's answers and questions
 
-**Answered** (Ben, 2026-10-22, in one line for all five: CL-1 to CL-4 as recommended, "Add alliances" for CL-5):
+**Answered** (Ben, 2026-10-22, in one line for all five: CL-1 to CL-4 as recommended, "Add alliances"
+for CL-5):
 
 | Id | Question | Ben's answer |
 |---|---|---|
@@ -1135,3 +1737,12 @@ GameTests, only where Java is involved:
 | CL-3 | **How often does a Frostmaw rob a busy line?** | (a) **This design's rate (Recommended):** a lurk about 0.35 a year at 4 legs a day, 1.9 at 12, 5.2 at 24, roars between. (b) Today's ladder (MOWZIE.md §4.2): none below 70 grievance (none at 4 legs), then a lurk every 10 days, to the day (from day 14 at 12 legs, 9.6 a year). (c) This design with the Frostmaw's grudge weighing twice as much: 0.33 at 4 legs, 4.2 at 12, 12.5 at 24. | It sets how much the railway costs in Frostmaw country. |
 | CL-4 | **How often is a strong base tested?** | (a) **Now and then (Recommended):** about one fight in eight years at a fortress, every one lost by the attackers, each with a reason (a new neighbour's first test, a feud after a chief fell at his walls, word he is away). (b) Never unless he provokes. (c) About one a season. | It decides whether walls end the game's danger. |
 | CL-5 | **Alliances between camps?** | (a) **Not in this build (Recommended):** camps fight, truce and feud pairwise. (b) Camps that share an enemy can ally and send joint war parties. | Alliances are a new mechanic with Java-visible joint parties. |
+
+**The questions the alliances raise** (recommended option first; open):
+
+| Id | Question | Options | Why it is yours |
+|---|---|---|---|
+| CL-6 | **May two sworn camps beat a strong base while its owner is away?** | (a) **Yes, rarely (Recommended):** a pact against a player is told to him when it is sworn, and its joint party fights as any party does. At the fortress, two camps sworn against Ben found him away and won 13 times in 3,200 world-years, about once in 250 (about 7,900 server hours; 3.6, 4.5). A win takes about 297 items (10 of the 13; 94 or 61 in the rest); 97% of the fights on him are still lost, and he loses about one item a year on average. A pact is the only way his walls ever fall: no single party wins there, even when he is away. (b) No: a player is never the foe of a pact; pacts are sworn only against camps and villages, and every fight on a fortress is lost, as in CL-4. | It changes CL-4's answer, "every one lost by the attackers", and lets walls fail while their owner is away. |
+| CL-7 | **How common should alliances be?** | (a) **As designed (Recommended):** rare. In the valley one pact about every seven years and a joint fight about every 28 (about 880 server hours), and a player almost never meets one: a joint party came at the fortress about once in 4,450 server hours, at the hunter about once in 9,300, and never at Bea, the farmer or the railway (4.5). Nothing a player feels changes. The weights are TUNABLE, like every number here, and can be warmed later without a format change. (b) Warm (4.5): pacts run twice as long (`pact_days` 384), sending costs 1 instead of 3, kin count 6 instead of 4, and a hated culture costs 6 instead of 10 to swear across. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loot taken, joint parties at him 13 times as often (about once in 720 server hours) and joint envoys about twenty times as often; the fortress and Bea barely move. (c) One knob, the hate weight at 6, nothing else: pacts against the hunter 30 in 3,200 world-years instead of 4, joint parties at him four times as often (about once in 2,200 server hours), 4% more fights and 15% more loot taken (neither significant); the fortress and Bea barely move. No other single knob moves the hunter (4.5). | It decides whether an alliance is a rare story or a standing answer to a player who provokes. CL-6 (b) would bar pacts against players and take most of (b)'s and (c)'s effect on players with it, so CL-6 and CL-7 are best asked together. |
+| CL-8 | **Can a player swear with a camp?** | (a) **Not in this build (Recommended):** pacts are between camps; a player deals with a camp by tribute, truce and feud, as now. (b) Yes: a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call a player can answer, a place to show it, and rules for his refusals and his betrayals. | It is a new mechanic players use, with its own interface. |
+| CL-9 | **Should players see pacts between camps?** | (a) **A notice to the players both camps reach (Recommended):** when they swear, when they march together and when one betrays the other (2.16, "Envoys and notices"); in the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance (4.5). (b) Nothing, as designed so far: a player learns of a pact only when it is sworn against him or its parties reach him. | It decides whether the valley's politics is news a player reads or history he never sees. |
