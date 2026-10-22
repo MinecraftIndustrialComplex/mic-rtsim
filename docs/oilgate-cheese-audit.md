@@ -2,7 +2,7 @@
 
 **Status:** an audit of the gate as built on main at 02c2096 (2026-10-21; OILGATE.md,
 docs/choices-oilgate.md). Ben answered §5 as DECISIONS.md OGB-6 to OGB-8. **The fix set is built
-(2026-10-22) except F6:** F1 to F5 and F7 to F9, each marked in §4 with its choices (OGC46 to OGC65)
+(2026-10-22) except F6:** F1 to F5 and F7 to F9, each marked in §4 with its choices (OGC46 to OGC66)
 and tests. F6, the underground half (OG-9e), is not built. §1 to §3 below still read the gate as it
 was at 02c2096. Neither
 mic-rtsim nor Deep Time is in `pack/mods` yet, so this reads the gate as it will be once both ship, with
@@ -270,8 +270,10 @@ times, saved with it. **Built** (OGC54, OGC55): the last 8 builders, saved with 
 
 **F8. Danger where the oil is** (F1, and bar 2's first window). §3's recommendation (a). Ben. Before
 trusting field flights or In Control at night, run OGC35's probe by night, as §4.8 already asks (F2).
-**Built** (OGB-6, OGC46 to OGC48): field flights on at the built draw, the fire dragon out of the
-pack's In Control files (blazes kept), OG-10's pass condition retired; the night run is OGC48.
+**Built** (OGB-6, OGC46 to OGC48, OGC66): field flights on at the built draw, and while they run the
+engine discards In Control's fire dragons as they join; OG-10's pass condition retired; the night run
+is OGC48. The pack's In Control files without the fire dragon (blazes kept) are on the pack repo's
+branch `oilgate-f8`, to merge with mic-rtsim's entry into the pack's `mods/` (OGC46).
 
 **F9. A watched raid does the bounded damage too, as P28 decided** (C5, F4). Ben decided P28 as
 "bounded damage too"; the build followed R19, the earlier recommendation, so a watched raid on a

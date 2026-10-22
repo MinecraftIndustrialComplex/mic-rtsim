@@ -3925,8 +3925,10 @@ impl Dragons {
     /// dragon). Tamed ones are the player's (A10) and are left alone; a lair's own dragon from
     /// world generation is adopted as its occupant; spawn eggs and commands are adopted as
     /// wanderers. Natural and spawner dragons (In Control's desert dragons) are left alone, not
-    /// adopted, discarded or tracked, unless `tun.adopt_natural_dragons` is set, which restores
-    /// R18's old rule: they are discarded (R18 as amended by OG-1 and P13, 2026-10-20).
+    /// adopted, discarded or tracked (R18 as amended by OG-1 and P13, 2026-10-20), with two
+    /// exceptions that discard them as R18 had it: a fire one while field flights run, since the
+    /// flights replace In Control's desert fire dragons and one never runs beside the other
+    /// (OGB-6, docs/choices-oilgate.md OGC66); and every one with `tun.adopt_natural_dragons`.
     fn untagged(&mut self, w: &mut World, u: &boundary::Untagged, at: Tick) {
         if u.flags & boundary::UNTAGGED_TAMED != 0 || u.spawn == SpawnKind::Hatched {
             return;
@@ -3943,6 +3945,7 @@ impl Dragons {
         // Left alone (a dragon this engine adopted before is still taken back above).
         if matches!(u.spawn, SpawnKind::Natural | SpawnKind::Spawner)
             && !self.tun.adopt_natural_dragons
+            && !(u.species == Species::Fire && self.field_flights_on())
         {
             return;
         }
