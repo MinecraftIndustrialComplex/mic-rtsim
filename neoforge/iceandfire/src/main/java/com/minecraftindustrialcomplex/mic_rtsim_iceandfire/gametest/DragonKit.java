@@ -15,6 +15,9 @@ import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ChunkPos;
@@ -311,6 +314,91 @@ public final class DragonKit {
             b.putInt(at + DragonRecords.OilSurvey.X, x);
             b.putInt(at + DragonRecords.OilSurvey.Z, z);
             b.putInt(at + DragonRecords.OilSurvey.RADIUS, radius);
+        });
+    }
+
+    /** A scripted PLACE_NEST (OG-9e): nest {@code nest} in chunk (cx, cz), its floor {@code depth} under the surface. */
+    public static void placeNest(long nest, String dimension, int cx, int cz, int depth) {
+        script(out -> {
+            out.dict(Obs.DICT_BODY, FIRE); // the native order needs one name; the stub sends its DICT once
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(DragonRecords.PLACE_NEST, DragonRecords.PlaceNest.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + DragonRecords.PlaceNest.NEST, nest);
+            b.putInt(at + DragonRecords.PlaceNest.DIM, dim);
+            b.putInt(at + DragonRecords.PlaceNest.CX, cx);
+            b.putInt(at + DragonRecords.PlaceNest.CZ, cz);
+            b.putInt(at + DragonRecords.PlaceNest.DEPTH, depth);
+        });
+    }
+
+    /** A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}. */
+    public static void nestRenew(long nest, String dimension, int stage, int count) {
+        script(out -> {
+            out.dict(Obs.DICT_BODY, FIRE);
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(DragonRecords.NEST_RENEW, DragonRecords.NestRenew.SIZE, count);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + DragonRecords.NestRenew.NEST, nest);
+            b.putInt(at + DragonRecords.NestRenew.DIM, dim);
+            b.putInt(at + DragonRecords.NestRenew.STAGE, stage);
+            b.putInt(at + DragonRecords.NestRenew.RESERVED, 0);
+        });
+    }
+
+    /** A scripted NEST_SORTIE: up to {@code count} of nest {@code nest}'s worms raid column (x, z) for {@code timeout} ticks. */
+    public static void nestSortie(long nest, String dimension, int x, int z, int timeout, int count) {
+        script(out -> {
+            out.dict(Obs.DICT_BODY, FIRE);
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(DragonRecords.NEST_SORTIE, DragonRecords.NestSortie.SIZE, count);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + DragonRecords.NestSortie.NEST, nest);
+            b.putInt(at + DragonRecords.NestSortie.DIM, dim);
+            b.putInt(at + DragonRecords.NestSortie.X, x);
+            b.putInt(at + DragonRecords.NestSortie.Z, z);
+            b.putInt(at + DragonRecords.NestSortie.TIMEOUT_TICKS, timeout);
+        });
+    }
+
+    /**
+     * Runs {@code undo} once when the test ends, passed or failed (a failed assertion skips the rest of
+     * its sequence, so the sequence's own last step cannot restore what the test changed).
+     */
+    public static void onEnd(GameTestHelper helper, Runnable undo) {
+        boolean[] done = {false};
+        Runnable once = () -> {
+            if (done[0])
+                return;
+            done[0] = true;
+            try {
+                undo.run();
+            } catch (RuntimeException e) {
+                MicRtsim.LOGGER.error("[gametest] restoring after a test failed", e);
+            }
+        };
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                once.run();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                once.run();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo old, GameTestInfo fresh, GameTestRunner runner) {}
         });
     }
 
