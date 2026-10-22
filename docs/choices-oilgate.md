@@ -126,30 +126,45 @@ hunting one (within two view radii of its target): the sight that tells a player
 
 ## In Control's fire dragon replaced (OGB-6, the audit's F8)
 
-**OGC46. Field flights on at the built draw, and the pack's In Control keeps only its blazes.**
+**OGC46. Field flights on at the built draw; the pack's In Control change waits for mic-rtsim.**
 `DragonConfig`'s `fieldFlights` defaults true, and so does the engine's `OilTunables::flags` (field
 flights and lair placement), at the draw OGC24 built (a roll a 10 seconds per dimension, 200 alive
 per dimension, 8 per field). GameTests still start with every oil switch off (`DragonConfig.Test`).
-In the pack repo (`master`), `config/incontrol/spawner.json` loses its `iceandfire:fire_dragon` entry
-and both `onjoin` rules in `spawn.json` hold only `minecraft:blaze` (OG-12 (a): the blazes stay
-desert-keyed), the files `neoforge/iceandfire/pack-proposal/` held. Both sides land together, so there
-is never a pack with neither danger nor one with both. The pack's `index.toml` and `pack.toml` take
-the two files' new hashes by hand: `packwiz refresh` in a fresh pack worktree also drops the raw jars
-that worktree lacks. OG-10's "at least as dangerous as In Control" no longer gates anything
-(OILGATE.md §4.8).
+The pack side is built on the pack repo's branch `oilgate-f8` (bb48c52): `config/incontrol/spawner.json`
+loses its `iceandfire:fire_dragon` entry and both `onjoin` rules in `spawn.json` hold only
+`minecraft:blaze` (OG-12 (a): the blazes stay desert-keyed), the files `neoforge/iceandfire/pack-proposal/`
+held, with `index.toml` and `pack.toml` taking the two files' new hashes by hand (`packwiz refresh` in a
+fresh pack worktree also drops the raw jars that worktree lacks). It landed on `master` and was reverted
+there (33435e8): mic-rtsim is not in the pack's `mods/` yet, so on master it left the pack with neither
+danger. It merges in the same pack commit that adds mic-rtsim and its Ice and Fire plugin to `mods/`.
+Until then OGC66 keeps the switch-over whole on any server that runs the plugin. OG-10's "at least as
+dangerous as In Control" no longer gates anything (OILGATE.md §4.8).
 
-**OGC47. OG-1's exemption stays.** `adopt_natural_dragons` stays false: a natural or spawner fire
-dragon is still left alone. With In Control's rule gone the pack spawns none, so the setting has
-nothing to act on; true would discard any that a server's own In Control rules still make, and is the
-switch if one turns up. Left alone, the untagged-dragon tests stand as they are.
+**OGC47. OG-1's exemption stays for everything but a fire dragon under field flights.**
+`adopt_natural_dragons` stays false: a natural or spawner dragon of another species is still left alone,
+and so is a fire one while field flights are off. True discards every one, as R18 had it.
+
+**OGC66. While field flights run, a natural or spawner fire dragon is discarded as it joins.** The
+engine's `untagged` discards it (reason 1, as R18) when `field_flights_on()` (the OIL_CONFIG switch, or
+the tunables' until it comes, and a chance above zero), whatever `adopt_natural_dragons` says. So the
+replacement does not hang on the pack's files: with the plugin and flights on, In Control's dragon is
+gone even while the pack still has its rule; with the flights off (`fieldFlights` false, or every
+GameTest), In Control's dragon stays the danger. Never both and never neither, on the pack's master
+today or with `oilgate-f8` merged, except a server that turns flights off after merging `oilgate-f8`,
+which has neither (the config comment says so). Rejected: tying it to `adopt_natural_dragons` alone
+(a server that turned flights off would then lose In Control's dragon too), and discarding every
+species (Ice and Fire spawns none naturally, and only the fire dragon is replaced). OG-10's arm A sends
+flights off, so it still measures In Control's dragon; arm B's rules have no fire dragon to discard.
+A discarded dragon exists from its join until the engine's next step answers (a tick or two, the same
+as R18's discard was); once `oilgate-f8` merges, In Control stops spawning it at all.
 
 **OGC48. OG-10's harness stays, as a measure.** `OilDangerGameTests` (`-Pog10`) is kept for measuring
 the field flights. Its arm A reads In Control's rules from `packMods`' config (the smoke server's
-copy), which keeps the fire dragon until that copy is synced from the pack; after that arm A has no
-fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
+copy), which keeps the fire dragon; it sends field flights off, so OGC66 leaves that dragon alone. If
+the copy is synced from the pack after `oilgate-f8` merges, arm A has no fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
 
 **The night run** the audit's F8 asked for (`-Pog10 -Pog10Hour=14000`, one native sample per arm,
-2026-10-21, before the pack change, so arm A still had In Control's fire dragon):
+2026-10-21, arm A with In Control's fire dragon):
 
 | Site, arm | Dragon damage/min | First dragon hit | Distinct dragons hitting/h | Targeting or hitting/h |
 |---|---|---|---|---|
@@ -562,7 +577,7 @@ IND_SURVEY field).
 Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
 are in docs/oilgate-cheese-audit.md §5.
 
-1. **Superseded (OGB-1); the switch is built (OGB-6, OGC46).** Ben judged In Control's dragons possibly overkill and set his own bar: a
+1. **Superseded (OGB-1); the switch is built (OGB-6, OGC46, OGC66; the pack side waits on its branch `oilgate-f8`).** Ben judged In Control's dragons possibly overkill and set his own bar: a
    real oil pipeline must be infeasible and cheesing it hard for a semi-casual player.
    docs/oilgate-cheese-audit.md judges the gate against that bar and asks the follow-up. The question
    as it stood: **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its

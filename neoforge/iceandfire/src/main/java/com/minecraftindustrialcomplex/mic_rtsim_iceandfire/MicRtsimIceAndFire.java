@@ -37,8 +37,9 @@ import java.util.function.Supplier;
  * adopts or discards it. Wounds, deaths, meals, lairs and robbed hoards go back as the dragons' records.
  *
  * <p>Every hook is a NeoForge event (no mixin): the reaches into Ice and Fire are in {@link IafDragons}
- * and PATCHES.md. The In Control changes P13 needs are the pack's, applied with field flights on (OGB-6;
- * {@code pack-proposal/} keeps a copy for OG-10's harness).
+ * and PATCHES.md. Field flights replace In Control's fire dragon (OGB-6): while they run, the engine
+ * discards the ones In Control spawns; the pack's own In Control change waits on its branch
+ * {@code oilgate-f8} ({@code pack-proposal/} keeps a copy for OG-10's harness).
  */
 @Mod(MicRtsimIceAndFire.MODID)
 public final class MicRtsimIceAndFire {

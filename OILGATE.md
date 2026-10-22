@@ -4,9 +4,12 @@
 half is built (2026-10-21): the engine side in `crates/rtsim-ecology/src/oil.rs` (with the drinking
 raid and the roof gate in `crates/rtsim-industry`), the plugin side in `neoforge/iceandfire`, the
 records in docs/boundary.md §6 and §6.8, the choices in `docs/choices-oilgate.md` (OGC#). **Field
-flights are on and In Control's fire dragon is gone** (DECISIONS.md OGB-6, built with the cheese
-audit's F1 to F3, OGC46 to OGC49): the plugin's `fieldFlights` defaults true at the built draw, and the
-pack's `config/incontrol/spawner.json` and `spawn.json` keep only the blazes. §4.8 was first measured
+flights are on and replace In Control's fire dragon** (DECISIONS.md OGB-6, built with the cheese
+audit's F1 to F3, OGC46 to OGC49, OGC66): the plugin's `fieldFlights` defaults true at the built draw,
+and while the flights run the engine discards the fire dragons In Control spawns, so a server with the
+plugin has one danger or the other, never both, never neither. The pack's In Control change (its
+`spawner.json` and `spawn.json` keeping only the blazes) is on the pack repo's branch `oilgate-f8`: it
+merges in the same pack commit that adds mic-rtsim to the pack's `mods/`, which it is not in yet. §4.8 was first measured
 on 2026-10-21 (two runs by day, OGC35): at site 1 the gate's field flights matched In Control's damage
 per minute but hit 40 to 50% later and brought a third to a half as many dragons. OGB-6 retired that
 pass condition: the gate is judged by Ben's bar (OGB-1), not by matching In Control. The underground half
@@ -91,15 +94,15 @@ and a bow can visit an oil field and run; holding one takes guns.
 
 1. **The oil field index** in the engine: oil chunks and fields, from Deep Time's sites or CDG's own
    amount (§4.1).
-2. **Field flights** (§4.2): In Control's arrival process keyed to fields, which replaced its fire
-   dragon (OGB-6).
+2. **Field flights** (§4.2): In Control's arrival process keyed to fields, which replace its fire
+   dragon (OGB-6; while they run, a natural fire dragon is discarded as it joins, OGC66).
 3. **The oil reserve** on each sim dragon: two saved fields, a closed form, a `DragonFireEvent` handler
    (§4.3), and a `Refuel` purpose.
 4. **Lair choice weighted by oil**, and lair placement where a field has none (§4.4).
 5. **One report kind** (`Encroachment`) and a `District` target for dragons (§4.5).
 6. **One placed-feature file** in the mic_rtsim datapack and one boundary record to place it (§4.6).
-7. **R18's exemption** for In Control's dragons until the gate passes (§3.3; kept after OGB-6, with
-   nothing left for it to act on, OGC47).
+7. **R18's exemption** for In Control's dragons (§3.3): since OGB-6 it holds only while field flights
+   are off, or for a species other than fire (OGC47, OGC66).
 8. **The measurement harness** (§4.8; its pass condition retired by OGB-6).
 9. **Roof cover in `resolve()`**, already designed in INDUSTRY.md §13.6 and not built (§4.5).
 
@@ -165,8 +168,9 @@ fire dragon is In Control's. **With mic_rtsim_iceandfire installed, the desert g
 P13's "In Control stays untouched until measured". OG-1: until the gate passes, the plugin leaves
 natural fire dragons alone (not adopted, not discarded, not given the oil rules), and the ledger counts
 them as "In Control's". Landed 2026-10-20: the engine tunable `adopt_natural_dragons` (default false)
-leaves them alone; true restores R18's discard (R18a). Since OGB-6 the pack spawns no natural fire
-dragon, so the exemption has nothing left to act on; it stays false (OGC47).
+leaves them alone; true restores R18's discard (R18a). Since OGB-6 the field flights replace In
+Control's fire dragon: while they run, a natural or spawner fire dragon is discarded as it joins,
+whatever the tunable says; with them off it is left alone as before (OGC47, OGC66).
 
 ## 4. The design
 
@@ -345,11 +349,13 @@ threat there is vanilla's own, placed where the oil is:
 ### 4.8 Measuring against In Control, and the switch-over
 
 **Retired (OGB-6, 2026-10-21).** Ben judges the gate by his own bar (OGB-1) and chose to replace In
-Control's fire dragon once the cheese audit's F1 to F3 shipped. The switch-over below is done: field
-flights on at the built draw, the fire dragon gone from the pack's `spawner.json` and both `spawn.json`
-rules, the blazes kept (OG-12). The pass condition gates nothing now; the harness stays as a measure of
-the field flights' danger (with the pack's rules now without the fire dragon, its arm A has none,
-OGC48). The rest of this section is as it was approved.
+Control's fire dragon once the cheese audit's F1 to F3 shipped. The switch-over below is built: field
+flights on at the built draw, and while they run the engine discards In Control's fire dragons as they
+join (OGC66); the pack's `spawner.json` and both `spawn.json` rules without the fire dragon, blazes kept
+(OG-12), wait on the pack repo's branch `oilgate-f8` until mic-rtsim is in the pack's `mods/` (OGC46).
+The pass condition gates nothing now; the harness stays as a measure of the field flights' danger (its
+arm A sends flights off and keeps In Control's dragon, OGC48). The rest of this section is as it was
+approved.
 
 "At least as dangerous" is measured, not argued.
 - **The probe:** a mock player (the GameTest harness's `makeMockServerPlayerInLevel`, which In Control's
