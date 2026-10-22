@@ -99,9 +99,9 @@ instead of coming back at once.
 
 ## Field flights (OG-3)
 
-**OGC10. Field flights are off by default; the plugin's config sends the switches.** OIL_CONFIG
-carries `fieldFlights` (default false) and `placeLairs` (default true). Off until OG-10's A/B shows
-the gate at least as dangerous as In Control at the oil sites; the engine's own default
+**OGC10. The plugin's config sends the switches.** OIL_CONFIG carries `fieldFlights` and
+`placeLairs` (default true). `fieldFlights` was off by default until OG-10's A/B showed the gate at
+least as dangerous as In Control; since OGB-6 it is on (OGC46). The engine's own default
 (`OilTunables::flags`) matches.
 
 **OGC11. Visitors are hostile and do not stay.** A field flight's dragon materializes hostile
@@ -123,6 +123,50 @@ comes near a field.
 
 **OGC19. A refuelling dragon is seen.** A dragon flying to a field passes a player's view like a
 hunting one (within two view radii of its target): the sight that tells a player where oil is.
+
+## In Control's fire dragon replaced (OGB-6, the audit's F8)
+
+**OGC46. Field flights on at the built draw, and the pack's In Control keeps only its blazes.**
+`DragonConfig`'s `fieldFlights` defaults true, and so does the engine's `OilTunables::flags` (field
+flights and lair placement), at the draw OGC24 built (a roll a 10 seconds per dimension, 200 alive
+per dimension, 8 per field). GameTests still start with every oil switch off (`DragonConfig.Test`).
+In the pack repo (`master`), `config/incontrol/spawner.json` loses its `iceandfire:fire_dragon` entry
+and both `onjoin` rules in `spawn.json` hold only `minecraft:blaze` (OG-12 (a): the blazes stay
+desert-keyed), the files `neoforge/iceandfire/pack-proposal/` held. Both sides land together, so there
+is never a pack with neither danger nor one with both. The pack's `index.toml` and `pack.toml` take
+the two files' new hashes by hand: `packwiz refresh` in a fresh pack worktree also drops the raw jars
+that worktree lacks. OG-10's "at least as dangerous as In Control" no longer gates anything
+(OILGATE.md §4.8).
+
+**OGC47. OG-1's exemption stays.** `adopt_natural_dragons` stays false: a natural or spawner fire
+dragon is still left alone. With In Control's rule gone the pack spawns none, so the setting has
+nothing to act on; true would discard any that a server's own In Control rules still make, and is the
+switch if one turns up. Left alone, the untagged-dragon tests stand as they are.
+
+**OGC48. OG-10's harness stays, as a measure.** `OilDangerGameTests` (`-Pog10`) is kept for measuring
+the field flights. Its arm A reads In Control's rules from `packMods`' config (the smoke server's
+copy), which keeps the fire dragon until that copy is synced from the pack; after that arm A has no
+fire dragon. `-Pog10Hour=<day time>` starts both arms at another hour (default 1000, morning).
+
+**The night run** the audit's F8 asked for (`-Pog10 -Pog10Hour=14000`, one native sample per arm,
+2026-10-21, before the pack change, so arm A still had In Control's fire dragon):
+
+| Site, arm | Dragon damage/min | First dragon hit | Distinct dragons hitting/h | Targeting or hitting/h |
+|---|---|---|---|---|
+| 1, A | 104.7 | 1,854 | 60 | 80 |
+| 1, B | 353.3 | 334 | 120 | 220 |
+| 2, A | 0 | none | 0 | 120 |
+| 2, B | 0 | none | 0 | 0 |
+| 3, A | 235.3 | 692 | 120 | 160 |
+| 3, B | 0 | none | 0 | 0 |
+
+By night the field flights beat In Control's dragon at site 1 on every measure: In Control's dragons
+hit later and less by night (OGC35's morning runs had them at 260.7 and 334.0 a minute, first hit 676
+and 563), and the drawn visitors do not. Site 2 is safe in both arms, and site 3 (no oil) has no
+dragon in B, as designed. One sample, so this shows the direction, not a median.
+In that run the suite's later lair test (`aLairsDragonIsAdoptedAndItsHoardRobbed`) read its dragon's
+DRAGON_MATERIALIZED before it was sent and crashed the server; it now waits for the record. Without
+`-Pog10` all 20 iceandfire tests passed.
 
 ## Lairs near oil (OG-7)
 
@@ -172,7 +216,7 @@ compatibility before release). Now RTD5 and RTN5 (OGC58).
 ## The plugin side (`neoforge/iceandfire`, `neoforge/dieselgenerators`, core)
 
 **OGC28. The switches and OIL_CONFIG.** The plugin's server config (`DragonConfig`,
-`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (false) and `placeLairs` (true); OIL_CONFIG
+`mic_rtsim_iceandfire-server.toml`) has `fieldFlights` (true since OGB-6, OGC46) and `placeLairs` (true); OIL_CONFIG
 carries them to the engine at each session start. On a GameTest server every side effect of the gate
 starts off (no flight, no lair placed, no chunk sampled, no survey answered) and a test switches on
 what it needs: the tests share one engine and a reused world.
@@ -325,7 +369,8 @@ First hit by any hostile at site 1: A 165 and 291, B 185 and 184.
 dragon hit comes 40 to 50% later and B brings a third to a half of A's distinct dragons. Site 2 passes
 trivially (nothing reaches the sealed pocket in either arm); site 3 falls, as designed. OILGATE.md §4.8
 asks for medians over several runs by day and night; these are two runs by day, so the verdict is
-early, but both runs fail the same two measures. Field flights stay off (For Ben 1, now OGB-1 and the cheese audit).
+early, but both runs fail the same two measures. Field flights stayed off (For Ben 1, now OGB-1 and the cheese audit)
+until OGB-6 retired the pass condition and turned them on (OGC46).
 
 **Fire events per stream** (a 30-day fire dragon, native): ground fire came in 14 bursts, mostly 33 to
 38 events over 40 to 44 ticks, with 2 charges inside them; scorch in 12 bursts of 41 events over 41
@@ -517,7 +562,7 @@ IND_SURVEY field).
 Recommended option first in each. Ben's answers are DECISIONS.md OGB-1 to OGB-5; the new questions
 are in docs/oilgate-cheese-audit.md §5.
 
-1. **Superseded (OGB-1).** Ben judged In Control's dragons possibly overkill and set his own bar: a
+1. **Superseded (OGB-1); the switch is built (OGB-6, OGC46).** Ben judged In Control's dragons possibly overkill and set his own bar: a
    real oil pipeline must be infeasible and cheesing it hard for a semi-casual player.
    docs/oilgate-cheese-audit.md judges the gate against that bar and asks the follow-up. The question
    as it stood: **OG-10 failed at site 1, so field flights stay off.** B matched A's damage per minute but its

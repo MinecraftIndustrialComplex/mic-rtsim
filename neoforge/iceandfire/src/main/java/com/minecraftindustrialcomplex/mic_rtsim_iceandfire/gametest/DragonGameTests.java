@@ -369,7 +369,9 @@ public final class DragonGameTests {
                     if (!DragonKit.nativeEngine())
                         DragonKit.adopt(d.getUUID(), stubAgent, 1, home);
                 })
-                .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0))
+                // Adopted, and its DRAGON_MATERIALIZED sent (after OG-10's arms the engine can take a step longer).
+                .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0
+                        && !about(DragonRecords.DRAGON_MATERIALIZED, bridge().agentOf(d)).isEmpty()))
                 .thenExecute(() -> {
                     agent[0] = bridge().agentOf(d);
                     agent[1] = about(DragonRecords.DRAGON_MATERIALIZED, agent[0]).get(0).view().getInt(DragonRecords.Materialized.EPOCH);
