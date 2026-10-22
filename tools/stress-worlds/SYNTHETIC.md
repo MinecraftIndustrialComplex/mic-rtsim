@@ -39,7 +39,7 @@ It takes `/tmp/mic-rtsim-bridge-heavy.lock` and runs at `nice -n 10`. The output
 - `~/mic-stress-worlds/scenes/synthetic-<name>.json`: an `sw.py` scene. It forceloads every district
   and the track between them, runs `rtsim district adopt` across each district, sets a 600 s busy
   window and times one `rtsim district rescan` after it. At 20 TPS the busy window also spans the
-  6,000-tick periodic detection pass; a slower world (syn200 runs at about 9 TPS) does not reach it.
+  6,000-tick periodic detection pass; a slower world may not reach it.
 - `neoforge/create/build/stressgen-<name>.log`: the GameTest server's log.
 
 The build fails, and leaves no world, unless every line delivers: each train must make its
@@ -69,7 +69,10 @@ flock /tmp/mic-rtsim-bridge-heavy.lock python3 -I tools/stress-worlds/sw.py pair
 ```
 
 The third arm is the A/A control: two rtsim arms on one world show the noise between identical
-servers. Per rtsim arm, `sw-result.json` holds:
+servers. The arms wait for each other before the busy window and before the unload, so the rtsim
+arms' extra steps (adopts, reports, rescan) do not shift their windows. At 200 districts the runs
+here were pairs with `--xmx 10G --need-gb 24`; each server's live heap was about 2 GB, 5 to 6 GB
+resident. Per rtsim arm, `sw-result.json` holds:
 
 - MSPT and CPU per tick for each window;
 - `rtsim_reports.busy.tick_cost`, rtsim's own tick handlers over the busy window (mean, p50, p99,
