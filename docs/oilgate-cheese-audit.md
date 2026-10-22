@@ -268,8 +268,11 @@ stop: underground machines first, then machines, never one on an armoured floor,
 A watched district gets the real worms too. A roofed or buried well is now hurt from below, so C1's
 deep cover and C4's shaft both meet the nests. Tests: 14 engine tests in
 `crates/rtsim-ecology/tests/nests.rs` (EQUILIBRIUM.md S10's `kill_all_nests` and `asleep_nest_holds`
-among them), `burrowers_pass_walls_and_turrets_and_spare_armoured_floors` (threat.rs), and the
-iceandfire GameTests (OGC84 onward).
+among them), `burrowers_pass_walls_and_turrets_and_spare_armoured_floors` (threat.rs), and 8
+iceandfire GameTests in `NestGameTests` (OGC84 to OGC102). The native one,
+`theEngineWakesItsNestByAWell`, is the whole loop: asleep with no well, a drilling well wakes it and
+two worms appear, a player kills both, the regrowth wait holds while the well is stopped, and a worm
+regrows once it drills again.
 
 **F7. Name the builders** (C6). `sense` names the players who placed or broke blocks in the district
 in the last `grudge_window` days (PLACEHOLDER 10; the industry engine journals every `IND_EDIT` with

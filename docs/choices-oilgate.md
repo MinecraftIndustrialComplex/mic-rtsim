@@ -592,6 +592,125 @@ their own table, 0x4419. Nothing reads the old formats (no backward compatibilit
 delete GameTest worlds after this lands. `rtsim-view`'s fixtures are regenerated from fresh GameTest
 runs.
 
+### The plugin side of the nests (`neoforge/iceandfire`, `Nests.java`)
+
+**OGC84. The heart is an inert vanilla spawner.** A spawner set to `iceandfire:deathworm` with
+RequiredPlayerRange 0, so no player is ever near enough for it to spawn. As a backstop, a spawner
+spawn is cancelled at FinalizeSpawn when it comes from a known heart, or when it is a Death Worm
+within 8 blocks of one. The heart is a thing to find and break, never a source of worms: the engine
+alone renews them.
+
+**OGC85. The chamber.** 9 by 9: one layer of sand under 4 of air, the floor `depth` blocks under the
+chunk's OCEAN_FLOOR heightmap at the chosen spot (water ignored), the heart at the floor's centre.
+
+**OGC86. Natural ground only.** A chamber is carved only where the chamber and a 1-block shell
+around it are all `#minecraft:overworld_carver_replaceables` or `#c:ores`, with no fluid and no block
+entity, a roof of nothing that falls, and the whole shell inside the asked chunk. A nest never cuts
+into a base, a cave lake or another chunk.
+
+**OGC87. Eight tries.** Up to 8 spots, seeded from the nest id: the first at the asked depth, the
+rest shifted up to 6 blocks up or down. None fits: NEST_FOUND failed (and the engine gives up the
+cell, OGC73).
+
+**OGC88. Requests wait for their chunk.** A PLACE_NEST whose chunk is not loaded waits in the
+plugin's saved state and is answered when carved. A failed nest is not remembered, so a repeat
+PLACE_NEST is a fresh try.
+
+**OGC89. The switch.** A `placeNests` config (default true) sets OIL_CONFIG flag 4. With it off a
+PLACE_NEST is refused with a log line and no answer. An unknown dimension or a depth under 1 answers
+failed.
+
+**OGC90. A repeat PLACE_NEST is idempotent and re-forms a broken heart.** For a nest already placed
+it answers placed with the same heart and carves nothing. If the heart is broken it re-forms (the
+engine's reform after its wait, OGC79): at once if the chunk is loaded, else on its next load before
+that load's census. A NEST_RENEW re-forms it too, as a fallback. If the heart's block has become
+anything other than air, sand, natural ground or a spawner, the heart stays broken and each census
+says HEART_MISSING.
+
+**OGC91. At most 2 chambers carved a tick** (PLACEHOLDER; each reads up to 8 x 847 blocks).
+
+**OGC92. How a worm is made.** No finalizeSpawn (so no In Control rule and no random size):
+`setWormAge(5)` then `setDeathWormScale(stage)`, the stage clamped to 1 to 3; one colour a nest,
+from a hash of its id; homed on the heart, persistence required, persistent data `mic_rtsim_nest` =
+the nest id, no agent tag (the sim counts nest worms, it does not steer them); placed on a ring of 8
+floor spots around the heart, each new worm on the next spot.
+
+**OGC93. Worms are placed unwatched.** Owed worms are placed only while the heart's chunk ticks
+entities and no player is within 128 blocks; otherwise they are tried again after a nest day (24,000
+ticks), or after 100 ticks when the chunk is loaded but not yet ticking. A load of the heart's chunk
+makes them due at once.
+
+**OGC94. The boss rule, plugin side.** NEST_LOSS's cause:
+
+| Death | Cause | Player |
+|---|---|---|
+| A player killed it, or holds the kill credit | Player | that player |
+| An owned pet killed it | Player | the owner |
+| A guard (`ThreatClasses.guard`) killed it | Player | none |
+| Any other living killer | Predator | none |
+| No killer (lava, /kill, a fall) | Player | none |
+
+The plugin never sends Age, Starved, Faction or Other (Other is the engine's, for a census
+shortfall).
+
+**OGC95. When a census goes out.** After worms are placed, on every load of the heart's chunk, when a
+nest worm is discarded, and when placing finds the heart gone. Its count is the worms the nest knows
+(an unloaded one counted alive) plus those owed, owed counting 0 while the heart is broken.
+HEART_MISSING repeats on every census while the heart is gone; the engine books a break once (only a
+placed nest breaks).
+
+**OGC96. A heart lost without a break event** (an explosion, a machine) is noticed at the next census
+or placement try: the nest is broken with no NEST_HEART, and the census flag carries it to the engine.
+
+**OGC97. Nest worms break no blocks.** Ice and Fire's grief event is cancelled for nest worms (a HIGH
+priority listener), except the one at the worm's own position: TNT a player fed it still goes off.
+Raids break blocks through the industry engine's Burrowing class (OGC81), never through the body.
+
+**OGC98. A sortie.** Loaded worms only, so `count` is a most. A worm turns off its AI and physics and
+glides 0.5 blocks a tick through the ground, crossing at the lowest of its own y, the target column's
+top less 24, and 3 under the column's lowest armour or block entity, then rises in the column. Under
+`#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` it stops and glides home; otherwise it
+surfaces into the first air its body fits, takes its AI back, goes for the nearest player within 48
+blocks, and fights until the timeout, then glides home. A glide waits at an unloaded chunk.
+
+**OGC99. Glides are never saved.** When the session stops, gliding worms get their AI and physics
+back and keep the sortie mark; a worm that joins a level with the mark, or with its AI or physics
+off, is mended and glides home; if the session fails, gliding worms are put home at once.
+
+**OGC100. A surfaced worm is a melee threat.** `iceandfire:deathworm` goes into
+`#mic_rtsim:threat/ground_melee` (required false). There is no burrowing entity tag: Burrowing is the
+engine's class for raids (OGC80), which never have a body in the survey.
+
+**OGC101. Test switches and the stand-in well.** `DragonConfig.Test`: `placeNests` (off by default
+in tests, each nest test turns it on), `nestFloorY` (forces the floor height) and `nestRetryTicks`.
+The GameTest server has no Diesel Generators, so `TestWells` stands in for a pumpjack: an industry
+plugin, registered only on GameTest servers, that reports a Diesel oil deposit of 1,000,000 mB (one
+that never runs dry) for each drilling chunk of a district, the deposit Diesel's own plugin reports
+for a pumpjack's chunk.
+
+**OGC102. A census that crosses a NEST_RENEW in flight.** A census the plugin wrote before a
+NEST_RENEW reached it reads as a shortfall (a loss of cause Other), which starts a wait and so, later,
+one renewal more than the nest needed: the plugin can hold a worm over K until that worm dies, and
+the next census sets the engine's count back (capped at K). The window is the boundary's latency
+against a renewal once a nest day; it costs a worm, never a regrowth a player has earned, so it is
+left as it is.
+
+### GameTests (`NestGameTests`, iceandfire)
+
+All pass on the stub and on the native engine (2026-10-22): `placeNestCarvesAChamberOnce` (80 sand,
+324 air, the inert heart; a repeat carves nothing; the saved state reads back),
+`placeNestAvoidsFluidsAndBlockEntities` (water in the first spot moves it; chests in all 8 spots and
+open air fail), `nestRenewPlacesTaggedWorms` (two worms on two spots, age 5, scale by stage, tagged,
+no agent tag), `nestWormDeathsFollowTheBossRule`, `breakingTheHeartStopsTheNest` (NEST_HEART, owed
+worms forgotten, HEART_MISSING; a PLACE_NEST re-forms it and a NEST_RENEW then places a worm),
+`sortiesStopUnderArmourOrSurface` (one stops under obsidian, one surfaces; both glide home with AI and
+physics back), `theHeartNeverSpawns`, and on the native engine only
+`theEngineWakesItsNestByAWell`: an oil chunk founds a nest the plugin places; with no well it sleeps
+with no worms; a test well drilling in the next chunk wakes it, a NEST_RENEW places two worms and
+the engine counts them; a player kills both, the engine books 2 lost to players (pressure 1.0) and a
+regrowth wait starts; the well stops, the nest sleeps and the wait stays put for 240 ticks with no
+worm; the well drills again and a worm regrows.
+
 ## The audit's fixes: seeds and the survey (F1, F4, F5)
 
 docs/oilgate-cheese-audit.md §4's F1, F4 and F5. F4 builds OGB-7 (Ben, 2026-10-21); F1 and F5 are
