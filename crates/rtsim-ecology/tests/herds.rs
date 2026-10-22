@@ -469,12 +469,11 @@ fn founded_by_row(r: &Rig, start: &[(HerdId, String, u64)]) -> Vec<(HerdId, u64)
         .map(|(h, name, count)| {
             let k = r.h.herd(*h).expect("a row").k;
             let n = ((t.frontier_share * k as f64).round() as u64).max(t.frontier_min);
-            let frontiers = r
-                .h
-                .log
-                .iter()
-                .filter(|l| l.kind == "frontier" && l.herd.as_deref() == Some(name.as_str()))
-                .count() as u64;
+            let frontiers =
+                r.h.log
+                    .iter()
+                    .filter(|l| l.kind == "frontier" && l.herd.as_deref() == Some(name.as_str()))
+                    .count() as u64;
             (*h, count + frontiers * n)
         })
         .collect()

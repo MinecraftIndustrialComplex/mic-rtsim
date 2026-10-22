@@ -123,10 +123,9 @@ impl Scenario {
     pub fn new(kind: Kind, seed: u64) -> Self {
         match kind {
             Kind::Ecology => Scenario::Ecology(Box::new(Ecology::new(seed))),
-            Kind::Ranges => Scenario::Ecology(Box::new(Ecology::ranges(
-                seed,
-                Ecology::herd_tunables(),
-            ))),
+            Kind::Ranges => {
+                Scenario::Ecology(Box::new(Ecology::ranges(seed, Ecology::herd_tunables())))
+            }
             Kind::Ships => {
                 let tun = rtsim_ships::ShipTunables::default();
                 let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
