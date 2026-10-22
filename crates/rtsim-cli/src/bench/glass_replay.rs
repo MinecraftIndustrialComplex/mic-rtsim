@@ -515,6 +515,9 @@ pub struct ReplayPoint {
     /// The engine's own heap accounting (`Engine::heap_bytes`: the clusters, their pools and
     /// processes), for `glass_quiet`.
     pub engine_heap_bytes: Option<u64>,
+    /// One save at the end of the span ([`save_cost`]), for `glass_quiet` and `glass_regimes`.
+    pub save_bytes: Option<u64>,
+    pub save_cpu_ns: Option<f64>,
     pub setup_ms: f64,
     /// The glass replay's counters over the measured span; the model at its end.
     pub counters: Counters,
@@ -526,6 +529,21 @@ pub struct ReplayPoint {
 
 fn cpu() -> u64 {
     sys::thread_cpu_ns().unwrap_or(0)
+}
+
+/// One save of the engine: its pages' bytes and the CPU of [`Engine::snapshot`], the least of
+/// three (the industry engine writes every page at every save, F36).
+pub fn save_cost(e: &Engine) -> (u64, f64) {
+    let mut best = f64::INFINITY;
+    let mut bytes = 0;
+    for _ in 0..3 {
+        let c0 = cpu();
+        let pages = std::hint::black_box(e.snapshot());
+        let c1 = cpu();
+        bytes = pages.iter().map(|(_, b)| b.len() as u64).sum();
+        best = best.min((c1 - c0) as f64);
+    }
+    (bytes, best)
 }
 
 fn fallbacks(e: &Engine, ds: impl IntoIterator<Item = DistrictId>) -> Vec<String> {
@@ -567,6 +585,8 @@ impl Span {
             cpu_ns: (c1 - self.c0) as f64 / per as f64,
             heap_bytes: None,
             engine_heap_bytes: None,
+            save_bytes: None,
+            save_cpu_ns: None,
             setup_ms,
             counters: Counters::of(e, ds.iter().copied()).since(self.k0),
             settles: e.stats.cluster_settles - self.s0,
@@ -667,7 +687,11 @@ pub fn regimes(per_day: u64, days: u64) -> ReplayPoint {
     for day in 2..=days + 1 {
         export_day(&mut e, &[D1], per_day, day, 0);
     }
-    span.end(&e, &[D1], per_day, days, setup_ms)
+    let mut p = span.end(&e, &[D1], per_day, days, setup_ms);
+    let (bytes, cpu_ns) = save_cost(&e);
+    p.save_bytes = Some(bytes);
+    p.save_cpu_ns = Some(cpu_ns);
+    p
 }
 
 /// Busy districts beside the quiet ones (an export a day each).
@@ -703,6 +727,9 @@ pub fn quiet(n: u64, days: u64) -> ReplayPoint {
     let mut p = span.end(&e, &all, n, days, setup_ms);
     p.heap_bytes = Some(heap);
     p.engine_heap_bytes = Some(engine_heap);
+    let (bytes, cpu_ns) = save_cost(&e);
+    p.save_bytes = Some(bytes);
+    p.save_cpu_ns = Some(cpu_ns);
     p
 }
 
@@ -915,7 +942,7 @@ mod tests {
 
     fn show(name: &str, p: &ReplayPoint) {
         println!(
-            "{name:<16} n {:>7} cpu {:>12.0} ns setup {:>8.1} ms {:?} settles {} {:?} heap {:?} engine heap {:?}",
+            "{name:<16} n {:>7} cpu {:>12.0} ns setup {:>8.1} ms {:?} settles {} {:?} heap {:?} engine heap {:?} save {:?} B {:?} ns",
             p.n,
             p.cpu_ns,
             p.setup_ms,
@@ -923,7 +950,9 @@ mod tests {
             p.settles,
             p.fallbacks,
             p.heap_bytes,
-            p.engine_heap_bytes
+            p.engine_heap_bytes,
+            p.save_bytes,
+            p.save_cpu_ns
         );
     }
 

@@ -16,6 +16,7 @@
 //! | `glass_regimes` | exports a day, each a breakpoint (1 to 1,000) | one export line | CPU per sim day | 1 | §4.5: O(breakpoints + events) |
 //! | `glass_quiet` | replaying factory cells with nothing happening | 10 export lines, one export a day each | CPU per sim day | 0 (flat) | §9.1 |
 //! | `glass_quiet` | same | same | live heap | 1 | §9.2 |
+//! | `glass_quiet` | same | same | save bytes, save CPU | 1 | every page at every save (F36), glass pages included (G2-9) |
 //! | `glass_oscillation` | adversarial controller graphs | | districts that fell back | reported | §4.5 |
 //!
 //! Every glass replay point also records the replay model at its end (2 is the glass box) and the
@@ -72,6 +73,11 @@ struct Point {
     /// `Engine::heap_bytes` (the clusters), beside the counting allocator's `heap_bytes`.
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_heap_bytes: Option<u64>,
+    /// One save at the end: every page's bytes and the snapshot's CPU (`glass_replay::save_cost`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save_cpu_ns: Option<f64>,
 }
 
 impl Point {
@@ -87,6 +93,8 @@ impl Point {
             glass: None,
             fallbacks: Vec::new(),
             engine_heap_bytes: None,
+            save_bytes: None,
+            save_cpu_ns: None,
         }
     }
 
@@ -102,6 +110,8 @@ impl Point {
             glass: Some(p.counters),
             fallbacks: p.fallbacks,
             engine_heap_bytes: p.engine_heap_bytes,
+            save_bytes: p.save_bytes,
+            save_cpu_ns: p.save_cpu_ns,
             ..Point::plain(p.n)
         }
     }
@@ -568,8 +578,24 @@ pub fn run(opts: Options) -> i32 {
             pts.clone(),
             |p| p.cpu_ns_per_day,
         ));
-        out.push(sweep("glass_quiet", "heap_bytes", 1.0, false, pts, |p| {
-            p.heap_bytes.map(|b| b as f64)
+        out.push(sweep(
+            "glass_quiet",
+            "heap_bytes",
+            1.0,
+            false,
+            pts.clone(),
+            |p| p.heap_bytes.map(|b| b as f64),
+        ));
+        out.push(sweep(
+            "glass_quiet",
+            "save_bytes",
+            1.0,
+            false,
+            pts.clone(),
+            |p| p.save_bytes.map(|b| b as f64),
+        ));
+        out.push(sweep("glass_quiet", "save_cpu_ns", 1.0, false, pts, |p| {
+            p.save_cpu_ns
         }));
     }
     let oscillation: Vec<gr::OscillationCase> = if want("glass_oscillation") {
@@ -588,6 +614,8 @@ pub fn run(opts: Options) -> i32 {
             let v = match s.metric {
                 "cpu_ns_per_day" => p.cpu_ns_per_day,
                 "heap_bytes" => p.heap_bytes.map(|b| b as f64),
+                "save_bytes" => p.save_bytes.map(|b| b as f64),
+                "save_cpu_ns" => p.save_cpu_ns,
                 _ => p.cpu_ns_per_read,
             };
             let glass = p.glass.map_or(String::new(), |c| {
@@ -603,8 +631,12 @@ pub fn run(opts: Options) -> i32 {
             } else {
                 format!(" fell back: {}", p.fallbacks.join(", "))
             };
+            let save = match (p.save_bytes, s.name) {
+                (Some(b), "glass_regimes") => format!(" save {b} B"),
+                _ => String::new(),
+            };
             println!(
-                "{:<15} {:<16} {:>10} {:>14.0} {:>14.1} {:>9} {:>9}{glass}{fell}",
+                "{:<15} {:<16} {:>10} {:>14.0} {:>14.1} {:>9} {:>9}{glass}{save}{fell}",
                 s.name,
                 s.metric,
                 p.n,
@@ -667,7 +699,7 @@ pub fn run(opts: Options) -> i32 {
     }
     if !glass_points.is_empty() {
         println!(
-            "{:<12} {:>8} {:>8} {:>14} {:>12} {:>7} {:>9} {:>10} {:>8}",
+            "{:<12} {:>8} {:>8} {:>14} {:>12} {:>7} {:>9} {:>10} {:>8} {:>10} {:>9}",
             "glass",
             "nodes",
             "edges",
@@ -676,11 +708,13 @@ pub fn run(opts: Options) -> i32 {
             "rounds",
             "LP solves",
             "LP skipped",
-            "LP tight"
+            "LP tight",
+            "save bytes",
+            "save"
         );
         for (name, p) in &glass_points {
             println!(
-                "{:<12} {:>8} {:>8} {:>11.0} us {:>9.0} us {:>7} {:>9} {:>10} {:>8}",
+                "{:<12} {:>8} {:>8} {:>11.0} us {:>9.0} us {:>7} {:>9} {:>10} {:>8} {:>10} {:>6.0} us",
                 name,
                 p.nodes,
                 p.edges,
@@ -689,7 +723,9 @@ pub fn run(opts: Options) -> i32 {
                 p.rounds,
                 p.lp_solves,
                 p.lp_skipped,
-                p.lp_tight
+                p.lp_tight,
+                p.save_bytes,
+                p.save_cpu_ns / 1e3
             );
         }
     }
