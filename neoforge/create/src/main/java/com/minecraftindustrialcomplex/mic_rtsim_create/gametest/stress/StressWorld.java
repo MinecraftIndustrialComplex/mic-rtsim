@@ -773,6 +773,7 @@ final class StressWorld {
         sc.put("sample", 5);
         sc.put("unload_reload", 90);
         sc.put("info_max", 12);
+        sc.put("rescan", true);
         return sc;
     }
 }
