@@ -98,7 +98,10 @@ fn save(e: &mut Engine, disk: &mut Disk) -> (Vec<u64>, Vec<u64>) {
         disk.insert(k.0, b);
     }
     let whole: Disk = snapshot(e).into_iter().collect();
-    assert!(*disk == whole, "the saves' pages are the engine's whole state");
+    assert!(
+        *disk == whole,
+        "the saves' pages are the engine's whole state"
+    );
     if let Some(c) = e.page_check() {
         assert_eq!(c.unmarked, 0, "{:?}", c.first_unmarked);
     }
@@ -111,7 +114,10 @@ fn restore(disk: &Disk) -> Engine {
         .map(|(k, b)| (rtsim_kernel::page::PageKey(*k), b.clone()));
     let e = Engine::restore(pages, Tunables::default()).expect("restore");
     let back: Disk = snapshot(&e).into_iter().collect();
-    assert!(back == *disk, "a restored engine saves what it was restored from");
+    assert!(
+        back == *disk,
+        "a restored engine saves what it was restored from"
+    );
     e
 }
 
@@ -146,7 +152,10 @@ fn a_run_restored_from_its_changed_pages_continues_exactly() {
     w.conservation().expect("conserves across the restores");
     // The iron line is busy (its trains and visits touch every district between two autosaves),
     // so its saves write nearly every page: the test is the restores, not the saving.
-    assert!(restores >= 10 && written >= saves, "{restores} restores, {written} pages");
+    assert!(
+        restores >= 10 && written >= saves,
+        "{restores} restores, {written} pages"
+    );
 }
 
 /// A save writes the globals page and only the pages changed since the one before: nothing else
@@ -164,7 +173,10 @@ fn a_save_writes_only_what_changed() {
     run_iron_line_until(&mut w, &c, Tick(3 * TICKS_PER_DAY));
     let mut disk = Disk::new();
     let (first, _) = save(&mut w.engine, &mut disk);
-    assert!(first.len() > 3, "the first save writes every page: {first:?}");
+    assert!(
+        first.len() > 3,
+        "the first save writes every page: {first:?}"
+    );
     let globals = PageKey::new(GLOBAL_TABLE, 0).0;
     // Nothing changed: the globals page alone.
     assert_eq!(save(&mut w.engine, &mut disk), (vec![globals], vec![]));
@@ -186,7 +198,11 @@ fn a_save_writes_only_what_changed() {
     for k in &put {
         let k = PageKey(*k);
         if k.table() == DISTRICT_TABLE || k.table() == GLASS_TABLE {
-            assert_eq!(DistrictId(k.id()), d, "only the edited district's pages: {put:?}");
+            assert_eq!(
+                DistrictId(k.id()),
+                d,
+                "only the edited district's pages: {put:?}"
+            );
         }
     }
     assert!(put.len() < first.len(), "{put:?} of {first:?}");
@@ -194,7 +210,10 @@ fn a_save_writes_only_what_changed() {
     let had_glass = disk.contains_key(&PageKey::new(GLASS_TABLE, d.0).0);
     ingest(&mut w.engine, Obs::DistrictRemoved { district: d });
     let (_, deleted) = save(&mut w.engine, &mut disk);
-    assert!(deleted.contains(&PageKey::new(DISTRICT_TABLE, d.0).0), "{deleted:?}");
+    assert!(
+        deleted.contains(&PageKey::new(DISTRICT_TABLE, d.0).0),
+        "{deleted:?}"
+    );
     assert_eq!(
         deleted.contains(&PageKey::new(GLASS_TABLE, d.0).0),
         had_glass,
@@ -214,13 +233,19 @@ fn a_failed_save_is_written_again_by_the_next() {
     save(&mut w.engine, &mut disk);
     run_iron_line_until(&mut w, &c, Tick(2 * TICKS_PER_DAY + 3_000));
     let lost = w.engine.save_changed();
-    assert!(!lost.ticket.is_empty(), "the lost save wrote district pages");
+    assert!(
+        !lost.ticket.is_empty(),
+        "the lost save wrote district pages"
+    );
     let lost_keys: Vec<u64> = lost.put.iter().map(|(k, _)| k.0).collect();
     w.engine.save_failed(lost.ticket);
     run_iron_line_until(&mut w, &c, Tick(2 * TICKS_PER_DAY + 3_100));
     let (put, _) = save(&mut w.engine, &mut disk);
     for k in &lost_keys {
-        assert!(put.contains(k), "page {k:#x} of the lost save is written again");
+        assert!(
+            put.contains(k),
+            "page {k:#x} of the lost save is written again"
+        );
     }
     restore(&disk);
 }

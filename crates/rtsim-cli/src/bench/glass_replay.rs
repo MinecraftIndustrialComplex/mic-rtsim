@@ -581,6 +581,10 @@ pub fn save_cost(e: &mut Engine) -> SaveCost {
                 "a page changed without a mark: {:?}",
                 check.first_unmarked
             );
+            eprintln!(
+                "page check: {} saves, {} pages written, {} of them unchanged, none unmarked",
+                check.saves, check.written, check.unchanged
+            );
         }
         if i + 1 < reps {
             e.save_failed(c.ticket);

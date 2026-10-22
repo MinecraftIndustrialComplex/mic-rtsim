@@ -171,7 +171,11 @@ impl<M: LazyModel> TrackedTable<M> {
     pub fn read(&mut self, h: RegionId<M>, at: Tick) -> Option<M::View> {
         let before = self.table.get(h)?.cell().anchor();
         let v = self.table.read(h, at);
-        if self.table.get(h).is_some_and(|r| r.cell().anchor() != before) {
+        if self
+            .table
+            .get(h)
+            .is_some_and(|r| r.cell().anchor() != before)
+        {
             self.mark_handle(h);
         }
         v
