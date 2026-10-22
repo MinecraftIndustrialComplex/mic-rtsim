@@ -218,7 +218,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that wants your gold: the plan is ready, and 7 decisions are yours</h1>
-  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (cb9f3b9). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources. The third found every earlier problem fixed and one blocker; that is now fixed and under a final check. Nothing is built.</p>
+  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (cb9f3b9). It went through three adversarial reviews against the Mowzie's Mobs 1.8.2, Create 6.0.10 and engine sources, and a fourth check. The third found every earlier problem fixed and one blocker, since fixed. The fourth check found four small gaps in the spec of the new census path, none needing a redesign; they are being fixed. Nothing is built.</p>
   <p class="lead" data-ss-id="lead">Two Mowzie's bosses become rtsim factions. A Frostmaw in the snow comes to hate a railway through its range: the more trains, the angrier it gets, until it waits beside your track, robs passing trains and freezes riders off their seats. An Umvuthana grove in the savanna becomes a tribe that sends an envoy for gold, then raptor hunters and a war band. Both come back after you kill them, both are left as Mowzie's made them if rtsim is removed, and a faction with nothing happening costs nothing.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-factions"><div class="n">2</div><div class="t">factions: Frostmaw dens in the snow, Umvuthana groves in the savanna</div></div>
@@ -563,7 +563,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="checked" data-ss-id="checked" data-ss-section>
-  <h2 data-ss-id="checked-h">How this was checked: three adversarial reviews against the jars; every bug they caught is fixed, the last one under a final check</h2>
+  <h2 data-ss-id="checked-h">How this was checked: three adversarial reviews and a fourth check against the jars; the fourth found four spec gaps, being fixed</h2>
   <p data-ss-id="checked-intro">Each review read the plan against the decompiled Mowzie's Mobs 1.8.2 and Create 6.0.10 jars and the engine source. The verdicts climbed: "not S tier yet", then "a strong A", then "not S tier yet, but close". The plan won all three of its disputes with the second review, and the third reproduced every walkthrough and table number within 0.2 day.</p>
   <div class="scroll" data-ss-id="checked-wrap">
   <table class="stack" data-ss-id="checked-table">
@@ -584,12 +584,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td><strong>A feud woke every tick while a den regrew,</strong> about 72,000 times in 3 days.</td><td data-label="What changed">It waits for a whole body.</td></tr>
       <tr><td><strong>The rung table was off,</strong> because the pushed rate froze up to 1 leg a day wrong.</td><td data-label="What changed">A daily resync; the table was recomputed.</td></tr>
       <tr class="group"><th colspan="2">Third review: all of the above confirmed fixed</th></tr>
-      <tr><td><strong>One blocker: a recall brings nobody home.</strong> The plan called a Frostmaw home with a recall when its den loads unwatched, but the engine's recall only removes bodies already in the world, and an unwatched party has none.</td><td data-label="What changed"><strong>Fixed (cb9f3b9), under a final check.</strong> The census now ends the party through the engine's <code>home</code> call, which puts members back in the pool.</td></tr>
-      <tr><td><strong>Two notes.</strong> Iva's Invasion on day 18.7 rests on two events 0.1 day apart, and "watched" depended on the server's view distance.</td><td data-label="What changed">The walkthrough states the margin. Watched now means the party's puppets are in the world, or the player nearest the camp is nearer the party than the camp is, so a rider meets the Frostmaw at any view distance.</td></tr>
+      <tr><td><strong>One blocker: a recall brings nobody home.</strong> The plan called a Frostmaw home with a recall when its den loads unwatched, but the engine's recall only removes bodies already in the world, and an unwatched party has none.</td><td data-label="What changed"><strong>Fixed (cb9f3b9); the fourth check confirmed it.</strong> The census now ends the party through the engine's <code>home</code> call, which puts members back in the pool.</td></tr>
+      <tr><td><strong>Two notes.</strong> Iva's Invasion on day 18.7 rests on two events 0.1 day apart, and "watched" depended on the server's view distance.</td><td data-label="What changed">The walkthrough states the margin. Watched now means the party's puppets are in the world, or the player nearest the camp is nearer the party than the camp is, so a rider meets the Frostmaw at any view distance. The fourth check accepted both.</td></tr>
+      <tr class="group"><th colspan="2">Fourth check, on cb9f3b9</th></tr>
+      <tr><td><strong>Four small gaps in the spec of the new census path.</strong> A Frostmaw could be counted twice after a player takes it. No record carries the take to the Java side. The ambush spot's removed flag is never sent. An Umvuthana envoy with a demand open could be ended as if the demand were refused.</td><td data-label="What changed"><strong>Being fixed now.</strong> None needs a redesign. This page will be updated when the fixes land.</td></tr>
     </tbody>
   </table>
   </div>
-  <p data-ss-id="checked-third">The only number off: in the trunk row, the early Invasion (day 13.8) came in 3 of 32 runs, not 4. This page will be updated with the final check's result.</p>
+  <p data-ss-id="checked-third">The only number off: in the trunk row, the early Invasion (day 13.8) came in 3 of 32 runs, not 4.</p>
 </section>
 
 <section id="decided" data-ss-id="decided" data-ss-section>
@@ -696,7 +698,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <summary>Sources</summary>
   <ul>
     <li>MOWZIE.md on mic-rtsim main at cb9f3b9 (merged at 24213d4, blocker fixed at cb9f3b9), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, UR-1, renewal, strength), walkthroughs A to E, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
-    <li>The three adversarial review notes: the first on the original plan, the second at be38b77 after the first revision, the third on main at 24213d4. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, vanilla 1.21.1 and the rtsim engine.</li>
+    <li>The three adversarial review notes and the fourth check: the first on the original plan, the second at be38b77 after the first revision, the third on main at 24213d4, the fourth on cb9f3b9. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, vanilla 1.21.1 and the rtsim engine.</li>
     <li>The meter curve: recomputed here from the plan's section 4.3 (a meter with a 2-day time constant, a tolerance of 2 legs a day, a 10% push band with a 1-leg floor and a daily resync, a 6-day grievance half-life), median of 8 runs with passes jittered by up to 40% of the headway.</li>
     <li>The population equilibrium design: EQUILIBRIUM.md on mic-rtsim main (3590249), sections 1, 2.4.7 and 2.6; its model and results are in research/equilibrium-2026-10-21/.</li>
   </ul>
