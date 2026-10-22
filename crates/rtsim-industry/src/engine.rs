@@ -221,10 +221,13 @@ struct PendingExchange {
     entries: Vec<(u32, Good, i64)>,
     /// Loot from a train leg (I24) rather than a station exchange.
     loot: bool,
-    /// A station exchange's bookings on the station's port inventories (choice SG33):
-    /// (inventory, good, delta into the inventory, booked on its glass store pool).
-    ports: Vec<(u32, Good, i64, bool)>,
+    /// A station exchange's bookings on the station's port inventories (choice SG33).
+    ports: Vec<PortBooking>,
 }
+
+/// One booking of a simulated station call: (inventory, good, delta into the inventory, booked
+/// on its glass store pool).
+type PortBooking = (u32, Good, i64, bool);
 
 /// A fraction as an archive magnitude: thousandths.
 fn per_mille(f: f64) -> i64 {
@@ -1427,6 +1430,7 @@ impl Engine {
             season,
             invs: part,
             glass: false,
+            folded: GoodVec::new(),
         });
         self.stats.sims_started += 1;
         if let Some(dg) = self.glass.districts.get_mut(&d) {
@@ -1727,6 +1731,7 @@ impl Engine {
             season,
             invs: part,
             glass: true,
+            folded: GoodVec::new(),
         });
         self.stats.sims_started += 1;
         self.glass.stats.replays += 1;
@@ -2566,16 +2571,12 @@ impl Engine {
         };
         let d = c.district;
         let glass = span.glass;
-        // The station's own port inventories, still standing and in the replay (choice SG33):
-        // never the district's whole stock, which its factories draw on.
-        let ports: Vec<reconcile::InvState> = rule
+        if !rule
             .ports
             .iter()
             .filter_map(|i| dist.inventories.get(i))
-            .filter(|i| !i.destroyed && !i.doomed && span.invs.contains(&i.decl.index))
-            .map(Inventory::state)
-            .collect();
-        if ports.is_empty() {
+            .any(|i| !i.destroyed && !i.doomed && span.invs.contains(&i.decl.index))
+        {
             if rule.unload.is_empty() && rule.load.is_empty() {
                 return;
             }
@@ -2589,22 +2590,29 @@ impl Engine {
             }
             return;
         }
-        // A black-box replay's change lands only at the reconcile, by its plan over the covered
-        // inventories: the ports' share of it is theirs now (the ore a drill made is in its vault).
-        let replay = (!glass).then(|| {
-            let covered: Vec<reconcile::InvState> = dist
-                .inventories
-                .values()
-                .filter(|i| !i.destroyed && span.invs.contains(&i.decl.index))
-                .map(Inventory::state)
-                .collect();
-            (covered, span.base.clone())
-        });
+        // A black-box replay's change so far lands in its inventories first, as a reconcile
+        // would place it, so the ports hold what the replay made (choice SG35).
+        if !glass {
+            let of: BTreeSet<Good> = rule.unload.union(&rule.load).copied().collect();
+            self.fold_replay(h, d, at, &of);
+        }
+        // The station's own port inventories, still standing and in the replay (choice SG33):
+        // never the district's whole stock, which its factories draw on.
+        let dist = &self.districts[&d];
+        let Some(span) = dist.sim.as_ref() else {
+            return;
+        };
+        let ports: Vec<reconcile::InvState> = rule
+            .ports
+            .iter()
+            .filter_map(|i| dist.inventories.get(i))
+            .filter(|i| !i.destroyed && !i.doomed && span.invs.contains(&i.decl.index))
+            .map(Inventory::state)
+            .collect();
         let carriages = c.carriages.clone();
         let goods = &self.goods;
         let booked = self.clusters.apply(h, at, |cl, at| {
-            let replay = replay.as_ref().map(|(c, b)| (c.as_slice(), b));
-            exchange_on_ports(cl, at, d, replay, &rule, &ports, &carriages, goods)
+            exchange_on_ports(cl, at, d, glass, &rule, &ports, &carriages, goods)
         });
         let Some((entries, bookings)) = booked else {
             return;
@@ -2746,12 +2754,71 @@ impl Engine {
         }
     }
 
+    /// Places a black-box replay's change so far in `of` over the inventories it covers, by the
+    /// reconcile's own plan, as their `held` (choice SG35), and moves the span's base with it. A
+    /// station call then reads the ports as the replay left them: without it, a port's `held` from
+    /// earlier calls grows without bound while the replay's change waits for the reconcile, and
+    /// the two never meet inside the port's room. What the plan cannot place stays in the net.
+    fn fold_replay(&mut self, h: RegionId<Cluster>, d: DistrictId, at: Tick, of: &BTreeSet<Good>) {
+        let keys: Vec<Good> = of
+            .iter()
+            .copied()
+            .filter(|g| {
+                matches!(
+                    self.goods.get(g).map(|i| i.class),
+                    Some(GoodClass::Item | GoodClass::Fluid)
+                ) && !self.is_live(*g)
+            })
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        let Some(levels) = self.clusters.apply(h, at, |cl, _| {
+            keys.iter()
+                .filter_map(|&g| cl.level(PoolKey::Stock(d, g)).map(|l| (g, l)))
+                .collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+        let Some(dist) = self.districts.get_mut(&d) else {
+            return;
+        };
+        let Some(span) = dist.sim.as_ref() else {
+            return;
+        };
+        let mut net = GoodVec::new();
+        for (g, l) in levels {
+            net.add(g, l - span.base.get(g));
+        }
+        if net.is_empty() {
+            return;
+        }
+        let covered: Vec<reconcile::InvState> = dist
+            .inventories
+            .values()
+            .filter(|i| !i.destroyed && span.invs.contains(&i.decl.index))
+            .map(Inventory::state)
+            .collect();
+        let plan = reconcile::plan(&covered, &net, &self.goods);
+        let mut placed = GoodVec::new();
+        for p in &plan.deltas {
+            if let Some(i) = dist.inventories.get_mut(&p.inventory) {
+                i.held.add(p.good, p.delta);
+                placed.add(p.good, p.delta);
+            }
+        }
+        if let Some(span) = dist.sim.as_mut() {
+            span.base.merge(&placed);
+            span.folded.merge(&placed);
+        }
+    }
+
     /// Takes back what a station exchange booked and the carriage did not take (choice SG33),
     /// on the same port inventories, newest booking first. `fix` is into the district.
     fn unbook_ports(&mut self, at: Tick, ex: &PendingExchange, fix: &GoodVec) {
         let d = ex.district;
         let mut owed = GoodVec::new();
-        let mut back: Vec<(u32, Good, i64, bool)> = Vec::new();
+        let mut back: Vec<PortBooking> = Vec::new();
         for (g, f) in fix.iter() {
             let mut left = f;
             for &(inv, bg, n, store) in ex.ports.iter().rev() {
@@ -2775,7 +2842,10 @@ impl Engine {
                     back.iter()
                         .map(|&(inv, g, r, store)| {
                             if store && cl.pool(PoolKey::Store(d, inv, g)).is_some() {
-                                (cl.add_to_pool(PoolKey::Store(d, inv, g), r, false, at), true)
+                                (
+                                    cl.add_to_pool(PoolKey::Store(d, inv, g), r, false, at),
+                                    true,
+                                )
                             } else if glass {
                                 (r, false)
                             } else {
@@ -3670,6 +3740,7 @@ impl Engine {
         if let (Some(v), Some(span)) = (&view, &dist.sim) {
             let now = stock_of(v, d);
             made_since = now.minus(&span.base);
+            made_since.merge(&span.folded);
             let runs: Vec<Run> = v
                 .runs
                 .iter()
@@ -3858,40 +3929,25 @@ fn space_free(dist: &District, goods: &impl GoodLookup) -> bool {
 /// of what the ports hold, at most the learned amount per call. A black-box span moves the
 /// district's stock pool as well (its processes see the goods come and go); a glass span moves a
 /// port's store pool where it has one for the good, and otherwise only the port's own contents.
-/// `replay` (a black-box span: the covered inventories and the span's base) places the replay's
-/// change so far by the reconcile's own plan, and the ports' share counts as theirs. Returns the
-/// carriage entries (carriage, good, delta into the carriage) and the bookings (inventory, good,
+/// A black-box caller has folded the replay's change so far into the ports first (SG35), so
+/// their contents are what the replay made. Returns the carriage entries (carriage, good, delta into the carriage) and the bookings (inventory, good,
 /// delta into it, on its store pool).
 #[allow(clippy::too_many_arguments)]
 fn exchange_on_ports(
     cl: &mut Cluster,
     at: Tick,
     d: DistrictId,
-    replay: Option<(&[reconcile::InvState], &GoodVec)>,
+    glass: bool,
     rule: &crate::district::ExchangeRule,
     ports: &[reconcile::InvState],
     carriages: &[Carriage],
     goods: &BTreeMap<Good, GoodInfo>,
-) -> (Vec<(u32, Good, i64)>, Vec<(u32, Good, i64, bool)>) {
-    let glass = replay.is_none();
+) -> (Vec<(u32, Good, i64)>, Vec<PortBooking>) {
     let mut entries = Vec::new();
     let mut bookings = Vec::new();
     let mut cargo: Vec<GoodVec> = carriages.iter().map(|c| c.goods.clone()).collect();
     // The ports' contents as this call leaves them.
     let mut contents: Vec<GoodVec> = ports.iter().map(|p| p.contents.clone()).collect();
-    if let Some((covered, base)) = replay {
-        let mut net = GoodVec::new();
-        for &g in rule.unload.iter().chain(&rule.load) {
-            net.add(g, cl.level(PoolKey::Stock(d, g)).unwrap_or(0) - base.get(g));
-        }
-        if !net.is_empty() {
-            for p in reconcile::plan(covered, &net, goods).deltas {
-                if let Some(k) = ports.iter().position(|x| x.index == p.inventory) {
-                    contents[k].add(p.good, p.delta);
-                }
-            }
-        }
-    }
     // A glass span's store pool of the port and good, if it has one: its level is the port's.
     let store = |cl: &Cluster, inv: u32, g: Good| {
         if glass {

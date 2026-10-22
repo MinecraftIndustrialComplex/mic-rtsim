@@ -304,6 +304,9 @@ pub struct FakeWorld {
     /// Every IND_CARRIAGE_DELTA is answered FAILED and changes nothing (a remote world's test of
     /// the engine's correction).
     pub fail_carriage_deltas: bool,
+    /// A loaded call reports the inventories its station's interfaces serve (IND_STATION_PORTS,
+    /// choice SG32). Off: a Java side that never finds them.
+    pub station_ports: bool,
     pub threats: Option<Box<dyn ThreatFeed>>,
     /// A scripted player's one-off repair has happened (the iron line's).
     pub repaired: bool,
@@ -363,6 +366,7 @@ impl FakeWorld {
             wire_bytes: 0,
             remote: false,
             fail_carriage_deltas: false,
+            station_ports: true,
             outgoing: Vec::new(),
             threats_out: Vec::new(),
             probes: Vec::new(),
@@ -1137,11 +1141,13 @@ impl FakeWorld {
         let mut inventories: Vec<u32> = st.unload.iter().chain(&st.load).map(|&(_, i)| i).collect();
         inventories.sort_unstable();
         inventories.dedup();
-        self.send(Obs::StationPorts(StationPorts {
-            station: st.id,
-            district: id,
-            inventories,
-        }));
+        if self.station_ports {
+            self.send(Obs::StationPorts(StationPorts {
+                station: st.id,
+                district: id,
+                inventories,
+            }));
+        }
         // Portable Storage Interfaces, for real: unload all, then load all (I15's pattern).
         let goods = self.goods.clone();
         let mut port = GoodVec::new();

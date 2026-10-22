@@ -177,6 +177,9 @@ pub struct SimSpan {
     /// part holds and the district owes, when goods cross from it) and the events (imports wait
     /// there, G2-14); their change from their start is owed.
     pub glass: bool,
+    /// A black-box replay's change already placed in the covered inventories' `held` before a
+    /// station call (choice SG35); `base` moved with it, so the made-since figure adds it back.
+    pub folded: GoodVec,
 }
 
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
@@ -235,17 +238,26 @@ pub struct ExchangeRule {
     /// The inventories the station's interfaces serve (IND_STATION_PORTS, choice SG32): a
     /// simulated call books against these only, and moves nothing while there are none.
     pub ports: Vec<u32>,
-    /// Per good, what loaded calls moved in its current direction: the total, the calls and the
-    /// most one call moved (choice SG34). A simulated load takes at most that largest call.
-    pub per_call: BTreeMap<Good, (i64, u32, i64)>,
+    /// Per good, what the last loaded calls moved in its current direction, newest last, at
+    /// most [`PER_CALL_WINDOW`] (choice SG34). A simulated load takes at most their median.
+    pub per_call: BTreeMap<Good, VecDeque<i64>>,
 }
 
+/// How many loaded calls a station's per-call amount remembers (SG34). PLACEHOLDER.
+pub const PER_CALL_WINDOW: usize = 8;
+
 impl ExchangeRule {
-    /// The most a simulated call loads of `g`: the largest amount one real call moved (SG34).
-    /// Not the mean: early calls find little made yet, so a mean sits below what the line moves
-    /// once it runs, and a capped line then backs up.
+    /// The most a simulated call loads of `g`: the median of what the last loaded calls moved,
+    /// the upper one of an even count (SG34). Not the mean, which the first calls of a new line
+    /// (little made yet) hold down and one catch-up call after an absence pushes up; not the
+    /// largest, which that catch-up call sets for good.
     pub fn load_cap(&self, g: Good) -> i64 {
-        self.per_call.get(&g).map_or(0, |e| e.2.max(0))
+        let Some(calls) = self.per_call.get(&g).filter(|c| !c.is_empty()) else {
+            return 0;
+        };
+        let mut sorted: Vec<i64> = calls.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2].max(0)
     }
 
     /// One loaded call's change of `g` (positive: unloaded into the district). Called before
@@ -257,14 +269,14 @@ impl ExchangeRule {
         } else {
             self.load.contains(&g)
         };
-        let e = self.per_call.entry(g).or_insert((0, 0, 0));
+        let calls = self.per_call.entry(g).or_default();
         if !same {
-            *e = (0, 0, 0);
+            calls.clear();
         }
-        let moved = n.saturating_abs();
-        e.0 = e.0.saturating_add(moved);
-        e.1 = e.1.saturating_add(1);
-        e.2 = e.2.max(moved);
+        if calls.len() == PER_CALL_WINDOW {
+            calls.pop_front();
+        }
+        calls.push_back(n.saturating_abs());
     }
 }
 
@@ -823,7 +835,8 @@ mod persist_impls {
         base,
         season,
         invs,
-        glass
+        glass,
+        folded
     });
     persist_struct!(PendingChunk { cmd, trim, sent });
     persist_struct!(ReconcileReport {
