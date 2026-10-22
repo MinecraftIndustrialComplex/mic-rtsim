@@ -14,6 +14,7 @@ import net.minecraft.world.entity.monster.AbstractSkeleton;
 import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.RangedAttackMob;
+import net.minecraft.world.level.block.Block;
 
 /**
  * Threat classes of entities (docs/industry-boundary.md §3.2: zombies 0, skeletons 1, phantoms 2,
@@ -28,6 +29,13 @@ public final class ThreatClasses {
     public static final TagKey<EntityType<?>> RANGED = tag("threat/ground_ranged");
     public static final TagKey<EntityType<?>> FLYING = tag("threat/flying");
     public static final TagKey<EntityType<?>> SIEGE = tag("threat/siege");
+
+    /**
+     * Blocks a burrowing attacker cannot come up through (OILGATE.md §4.6, OG-9e): a machine standing on
+     * one is armoured (the survey's {@code FLAG_ARMOURED}), and an oil nest's worm stops under it.
+     */
+    public static final TagKey<Block> ARMOURED_FLOOR = TagKey.create(Registries.BLOCK,
+            ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "armoured_floor"));
 
     private static TagKey<EntityType<?>> tag(String path) {
         return TagKey.create(Registries.ENTITY_TYPE, ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, path));
