@@ -60,7 +60,8 @@ import java.util.UUID;
  * <p><b>What a machine is.</b> Never a block of the {@code minecraft} namespace (a player's furnace and
  * hopper sorter is a home, not a factory), never a block in {@code #mic_rtsim:district_stock} (chests,
  * barrels, vaults, tanks: boundary stock, I3) or {@code #mic_rtsim:district_not_seed} (other ticking storage
- * and the like). Else a block in {@code #mic_rtsim:district_seed}; else what a plugin says
+ * and the like), and never a furnace of any mod (a block entity that is an {@code AbstractFurnaceBlockEntity}).
+ * Else a block in {@code #mic_rtsim:district_seed}; else what a plugin says
  * ({@link IndustryPlugin#seed}); else, for a modded block entity nobody knows, one that ticks on the server
  * and has an item, fluid or energy capability.
  *
@@ -1113,6 +1114,9 @@ public final class Districts {
         if ("minecraft".equals(BuiltInRegistries.BLOCK.getKey(s.getBlock()).getNamespace()))
             return false;
         if (isStorage(s))
+            return false;
+        // A furnace, smoker or blast furnace of any mod: a utility block every build has, never a factory (DS-10).
+        if (be instanceof net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity)
             return false;
         if (s.is(SEED_TAG))
             return true;

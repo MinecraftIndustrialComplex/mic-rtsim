@@ -283,4 +283,69 @@ public final class DistrictSeedGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * Ben, 2026-10-21: "Sole furnaces shouldn't be a machine / district trigger by themselves." A vanilla
+     * furnace, smoker and blast furnace and a modded furnace (an AbstractFurnaceBlockEntity that ticks and
+     * has an item capability, in no tag) make no district, one by one in their own chunks.
+     */
+    @GameTest(template = YARD, batch = "district_seed_6", timeoutTicks = 400)
+    public static void loneFurnacesOfAnyModMakeNoDistrict(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        BlockPos furnace = inChunk(helper, 2, 2), smoker = inChunk(helper, 18, 2), blast = inChunk(helper, 2, 18);
+        BlockPos modded = inChunk(helper, 18, 18);
+        BlockPos[] all = {furnace, smoker, blast, modded};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, furnace, Blocks.FURNACE.defaultBlockState());
+                    set(helper, smoker, Blocks.SMOKER.defaultBlockState());
+                    set(helper, blast, Blocks.BLAST_FURNACE.defaultBlockState());
+                    set(helper, modded, TestMachines.FURNACE.get().defaultBlockState());
+                    for (BlockPos p : all)
+                        playerPlaced(helper, p);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    rescan(helper);
+                    for (BlockPos p : all) {
+                        check("no seed at " + helper.getLevel().getBlockState(p).getBlock(), seedsAt(helper, p) == 0);
+                        check("no district at " + helper.getLevel().getBlockState(p).getBlock(), districtAt(helper, p) == null);
+                    }
+                    record("loneFurnacesOfAnyModMakeNoDistrict", "districts in the yard (" + engineName() + ")", 0);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A furnace beside a real machine is a member of its district: a vanilla one in the machine's chunk, and a
+     * modded one across the chunk border (the physical connection takes its chunk in). The furnaces add no seed.
+     */
+    @GameTest(template = YARD, batch = "district_seed_7", timeoutTicks = 400)
+    public static void aFurnaceBesideAMachineIsAMember(GameTestHelper helper) {
+        fastConfig();
+        forgetAll(helper);
+        BlockPos machine = inChunk(helper, 15, 6);
+        BlockPos modded = inChunk(helper, 16, 6);   // lx 0 of the next chunk, against the machine
+        BlockPos furnace = inChunk(helper, 4, 8);
+        long next = ChunkPos.asLong((machine.getX() >> 4) + 1, machine.getZ() >> 4);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, furnace, Blocks.FURNACE.defaultBlockState());
+                    set(helper, modded, TestMachines.FURNACE.get().defaultBlockState());
+                    playerPlaced(helper, furnace);
+                    playerPlaced(helper, modded);
+                    set(helper, machine, machine());
+                    playerPlaced(helper, machine);
+                })
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, machine);
+                    check("the machine's district", d != null);
+                    check("the furnace in its chunk is in it", districtAt(helper, furnace) == d);
+                    check("the modded furnace's chunk joined: " + d.chunks.size(), d.chunks.size() == 2 && d.chunks.contains(next));
+                    check("one seed, the machine's: " + d.seedCounts, d.seeds() == 1 && seedsAt(helper, machine) == 1 && seedsAt(helper, modded) == 0);
+                    record("aFurnaceBesideAMachineIsAMember", "district (" + engineName() + ")", d);
+                })
+                .thenSucceed();
+    }
 }
