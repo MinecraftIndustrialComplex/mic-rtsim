@@ -41,7 +41,7 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
  * <p>The rings lie 500 to 1500 blocks east of spawn, far from the chunks around a player who stays there: a
  * carriage in an entity-ticking chunk would try to spawn its contraption entity, find none, and drop its train.
  * {@code mic_rtsim.farbench.bandTrains} more run on a ring of radius {@link #BAND_RADIUS} around spawn, inside
- * the client's loaded chunks and outside its entity-ticking ones (the bench sets the simulation distance to 4),
+ * the client's loaded chunks and outside its entity-ticking ones (the bench sets the simulation distance to 5),
  * which is the band mic_rtsim_dh's band renderer draws (docs/choices-dh-feed.md).
  */
 public final class FarTrainBench {
@@ -49,7 +49,7 @@ public final class FarTrainBench {
     static final int TRAINS = Math.max(0, Integer.getInteger("mic_rtsim.farbench.trains", 0));
     static final int CARRIAGES = Math.max(1, Integer.getInteger("mic_rtsim.farbench.carriages", 4));
     static final int BAND_TRAINS = Math.max(0, Integer.getInteger("mic_rtsim.farbench.bandTrains", 0));
-    /** The band ring: 8.75 chunks, between a simulation distance of 4 and a render distance of 12. */
+    /** The band ring: 8.75 chunks, between a simulation distance of 5 and a render distance of 12. */
     static final double BAND_RADIUS = 140.0;
 
     static final double CENTRE_X = 1000.0, CENTRE_Z = 0.0;
