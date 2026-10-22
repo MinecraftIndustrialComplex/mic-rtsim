@@ -55,14 +55,14 @@ microlp = { version = "=0.6.0", default-features = false }
 mic-native-rt = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
 mic-native-host = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-native.git", rev = "63add99806268bdc77b53e72adc807cc5d0f9f67", default-features = false }
 # The shared world viewer (VIEWER.md, VW1): its HTTP server, viewer API, scenes, tile cache and page,
-# from the private repository MinecraftIndustrialComplex/mic-viewer at a pinned commit, as mic-native
+# from the public repository MinecraftIndustrialComplex/mic-viewer at a pinned commit, as mic-native
 # is pinned. MPL-2.0. Only rtsim-view, rtsim-host and rtsim-cli use them.
-mic-viewer = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "58c66c667f6be8ea3ccbcf7bade33d9b80ba362a" }
+mic-viewer = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "335ae9cf23d2b35ef34fb265d50de0d8788f3c07" }
 # Surveyor's terrain summaries as a base map (VIEWER.md §9, V5), from the same repository and commit.
-mic-viewer-surveyor = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "58c66c667f6be8ea3ccbcf7bade33d9b80ba362a" }
+mic-viewer-surveyor = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "335ae9cf23d2b35ef34fb265d50de0d8788f3c07" }
 # Create's rail (create_tracks.dat) and its factory block entities read from a save, drawn as the
 # viewer's rail, factory and logistics layers, from the same repository and commit.
-mic-viewer-create = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "58c66c667f6be8ea3ccbcf7bade33d9b80ba362a" }
+mic-viewer-create = { git = "ssh://git@github.com/MinecraftIndustrialComplex/mic-viewer.git", rev = "335ae9cf23d2b35ef34fb265d50de0d8788f3c07" }
 # Gzip for Minecraft's NBT files (the Java journal, level.dat; the viewer reads the journal's
 # dimension names). Already in the tree through mic-viewer's png. MIT OR Apache-2.0.
 flate2 = "1.1"
