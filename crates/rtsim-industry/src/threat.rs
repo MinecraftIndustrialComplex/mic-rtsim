@@ -1193,6 +1193,53 @@ mod tests {
         assert!(dmg.machine_lost);
     }
 
+    /// OG-9e: a nest's worms come up from below. A closed wall, turrets and guards do not stop them;
+    /// they take underground machines and inventories first, then machines, never a block on an
+    /// armoured floor (or a pumpjack's hole, `burrow_spared`), and carry nothing off.
+    #[test]
+    fn burrowers_pass_walls_and_turrets_and_spare_armoured_floors() {
+        const M: u32 = BlockFlags::MACHINE;
+        const I: u32 = BlockFlags::INVENTORY;
+        const DEEP: u32 = BlockFlags::SUBTERRANEAN;
+        const ARM: u32 = BlockFlags::ARMOURED;
+        let mut d = Defence::default();
+        d.set_survey(&survey(0, 50.0, 20));
+        d.exposed = vec![
+            row(0, 64, 0, M),
+            row(1, 64, 0, I | BlockFlags::PERIMETER),
+            row(2, 40, 0, M | DEEP),
+            row(3, 40, 0, I | DEEP),
+            row(4, 40, 0, M | DEEP | ARM),
+            row(5, 64, 0, M | ARM),
+            row(6, 64, 0, BlockFlags::PERIMETER),
+        ];
+        let tun = ThreatTunables::default();
+        let mut worms = threat(ThreatClass::Burrowing, 2);
+        worms.source = ThreatSource::Nest;
+        let o = resolve(&worms, &d, 0, &tun);
+        assert_eq!(o.survived, 1.0, "walls, turrets and guards are above them");
+        assert_eq!(o.roof_pass, 1.0);
+        let stock = GoodVec::from_pairs([(Good(1), 10_000)]);
+        let mut big = worms;
+        big.count = 20;
+        let dmg = damage(&big, &resolve(&big, &d, 0, &tun), &stock, &d, &tun);
+        assert!(dmg.stolen.is_empty(), "worms carry nothing");
+        let mut got: Vec<(i32, u32)> = dmg.destroyed.iter().map(|b| (b.x, b.flags)).collect();
+        // The underground ones first, then the machine; the armoured and the bare wall never.
+        let first: Vec<i32> = got.iter().take(2).map(|e| e.0).collect();
+        assert!(first.contains(&2) && first.contains(&3), "{got:?}");
+        assert_eq!(got.get(2).map(|e| e.0), Some(0), "{got:?}");
+        got.sort_unstable();
+        assert_eq!(
+            got.iter().map(|e| e.0).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "never an armoured block or a wall"
+        );
+        // A walker on the same district: the closed wall stops it.
+        let o = resolve(&threat(ThreatClass::GroundMelee, 2), &d, 0, &tun);
+        assert_eq!(o.survived, 0.0);
+    }
+
     /// The oil gate audit's F5: IND_SURVEY_BLOCKS replaces one chunk's rows at a time. A partial
     /// survey (some of the district's chunks unloaded) replaces the chunks it read, keeping their
     /// wall faces, and leaves every other chunk's rows; a chunk read with no rows is emptied; a later
