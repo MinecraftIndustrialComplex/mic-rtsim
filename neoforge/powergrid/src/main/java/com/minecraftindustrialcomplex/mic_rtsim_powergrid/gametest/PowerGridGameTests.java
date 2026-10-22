@@ -113,11 +113,14 @@ public final class PowerGridGameTests {
                 .thenExecute(() -> {
                     set(helper, src, block("powergrid:creative_voltage_source").defaultBlockState());
                     set(helper, res, block("powergrid:creative_resistor").defaultBlockState());
-                    playerPlaced(helper, src);
-                    playerPlaced(helper, res);
                     check("two chunks", chunk(src) != chunk(res));
-                    ids[0] = ind().districts().createForTest(helper.getLevel(), chunk(src)).id;
-                    ids[1] = ind().districts().createForTest(helper.getLevel(), chunk(res)).id;
+                    // Made by hand, with a recorded seed each so the periodic detection leaves them as they are (DS-10).
+                    var da = ind().districts().createForTest(helper.getLevel(), chunk(src));
+                    var db = ind().districts().createForTest(helper.getLevel(), chunk(res));
+                    da.seedCounts.put(chunk(src), 1);
+                    db.seedCounts.put(chunk(res), 1);
+                    ids[0] = da.id;
+                    ids[1] = db.id;
                 })
                 .thenIdle(5)
                 .thenExecute(() -> {

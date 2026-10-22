@@ -211,7 +211,7 @@ public final class CreateSeedGameTests {
                     set(helper, press, block("create:mechanical_press").defaultBlockState());
                     for (int x = press.getX() + 1; x < wheel.getX(); x++)
                         set(helper, new BlockPos(x, press.getY(), press.getZ()), shaft);
-                    set(helper, wheel, block("create:water_wheel").defaultBlockState().setValue(BlockStateProperties.AXIS, Direction.Axis.X));
+                    set(helper, wheel, block("create:water_wheel").defaultBlockState().setValue(BlockStateProperties.HORIZONTAL_AXIS, Direction.Axis.X));
                     playerPlacedBare(helper, wheel);
                     playerPlacedBare(helper, press);
                 })
