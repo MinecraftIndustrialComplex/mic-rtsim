@@ -28,8 +28,8 @@ use crate::ids::{
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, CarriageResultEntry, DefenceSurvey, DepositPluginId,
     DepositSample, DistrictDecl, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState,
-    Obs, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, SweepEnd,
-    Timed, TrainCall, TrainDeparture,
+    Obs, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
 };
 use crate::reconcile::{GoodLookup, InvState, room_for};
 use crate::threat::{Threat, ThreatClass, ThreatFeed};
@@ -1120,16 +1120,28 @@ impl FakeWorld {
         let id = self.districts[di].id;
         let train = self.trains[ti].id;
         let cars = self.carriages(ti);
+        // The cargo before the interfaces dock, as the Java side's approach snapshot (SG30).
         self.send(Obs::TrainArrived(TrainCall {
             train,
             station: st.id,
             district: id,
             simulated,
+            cargo_from: crate::obs::CargoFrom::Approach,
             carriages: cars,
         }));
         if !loaded {
             return;
         }
+        // The inventories the interfaces serve, as the Java side reports them from a loaded call
+        // (SG32).
+        let mut inventories: Vec<u32> = st.unload.iter().chain(&st.load).map(|&(_, i)| i).collect();
+        inventories.sort_unstable();
+        inventories.dedup();
+        self.send(Obs::StationPorts(StationPorts {
+            station: st.id,
+            district: id,
+            inventories,
+        }));
         // Portable Storage Interfaces, for real: unload all, then load all (I15's pattern).
         let goods = self.goods.clone();
         let mut port = GoodVec::new();

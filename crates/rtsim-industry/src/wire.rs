@@ -22,11 +22,11 @@ use crate::cmd::{
 use crate::glass;
 use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, TrainId};
 use crate::obs::{
-    BlockFlags, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
+    BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, Conditions, DefenceSurvey,
     DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl, EditKind, ExposedBlock,
     FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind,
-    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, SweepEnd, Timed,
-    TrainCall, TrainDeparture,
+    PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, SweepEnd,
+    Timed, TrainCall, TrainDeparture,
 };
 use crate::threat::ThreatClass;
 
@@ -64,6 +64,8 @@ pub const IND_TRAIN_ARRIVED: u16 = 0x0411;
 pub const IND_TRAIN_DEPARTED: u16 = 0x0412;
 pub const IND_STATION: u16 = 0x0413;
 pub const IND_PACKAGE: u16 = 0x0414;
+/// The inventories a station's Portable Storage Interfaces serve (choice SG32).
+pub const IND_STATION_PORTS: u16 = 0x0415;
 pub const IND_RECONCILE_RESULT: u16 = 0x0420;
 pub const IND_CARRIAGE_RESULT: u16 = 0x0421;
 pub const IND_SPAWN_SAMPLE: u16 = 0x0430;
@@ -79,7 +81,7 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
-const OBS_KINDS: [u16; 27] = [
+const OBS_KINDS: [u16; 28] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
@@ -101,6 +103,7 @@ const OBS_KINDS: [u16; 27] = [
     IND_TRAIN_DEPARTED,
     IND_STATION,
     IND_PACKAGE,
+    IND_STATION_PORTS,
     IND_RECONCILE_RESULT,
     IND_CARRIAGE_RESULT,
     IND_SPAWN_SAMPLE,
@@ -221,6 +224,17 @@ codes!(class_code, class_from, ThreatClass, "threat_class",
 codes!(reason_code, reason_from, CarriageReason, "carriage_reason",
     1 => CarriageReason::Exchange,
     2 => CarriageReason::Loot);
+
+codes!(cargo_from_flag, cargo_from_code, CargoFrom, "cargo_from",
+    0 => CargoFrom::Arrival,
+    2 => CargoFrom::Approach,
+    4 => CargoFrom::Departure);
+
+/// IND_TRAIN_ARRIVED flags: bit 0 simulated, bits 1 and 2 when the cargo was read (choice SG30;
+/// at most one of them).
+fn cargo_from_flags(kind: u16, flags: u32) -> Result<CargoFrom, WireError> {
+    cargo_from_code(kind, u64::from(flags & !1))
+}
 
 // ---------------------------------------------------------------------------------------------
 // Writer and reader.
@@ -695,7 +709,7 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u64(c.train.0);
             w.put_u64(c.station.0);
             w.put_u64(c.district.0);
-            w.put_u32(u32::from(c.simulated));
+            w.put_u32(u32::from(c.simulated) | cargo_from_flag(c.cargo_from));
             w.zero(4);
             w.carriages(&c.carriages);
             w.finish()
@@ -718,6 +732,15 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.pos3(s.pos);
             w.put_u32(s.name);
             w.zero(4);
+            w.finish()
+        }
+        Obs::StationPorts(p) => {
+            let mut w = W::obs(out, IND_STATION_PORTS, n32(p.inventories.len()), seq, at);
+            w.put_u64(p.station.0);
+            w.put_u64(p.district.0);
+            for &i in &p.inventories {
+                w.put_u32(i);
+            }
             w.finish()
         }
         Obs::Package(p) => {
@@ -1057,6 +1080,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 station: StationId(r.get_u64(32)),
                 district: r.district(40),
                 simulated: r.get_u32(48) & 1 != 0,
+                cargo_from: cargo_from_flags(kind, r.get_u32(48))?,
                 carriages,
             })
         }
@@ -1082,6 +1106,14 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 dim: r.get_u32(40),
                 pos: r.pos3(44),
                 name: r.get_u32(56),
+            })
+        }
+        IND_STATION_PORTS => {
+            check(kind, size, sized(40, n, 4).div_ceil(8) * 8)?;
+            Obs::StationPorts(StationPorts {
+                station: StationId(r.get_u64(24)),
+                district: r.district(32),
+                inventories: (0..n).map(|i| r.get_u32(40 + 4 * i)).collect(),
             })
         }
         IND_PACKAGE => {
@@ -1622,6 +1654,7 @@ mod tests {
                 station: StationId(78),
                 district: d,
                 simulated: true,
+                cargo_from: CargoFrom::Arrival,
                 carriages: carriages(),
             }),
             Obs::TrainArrived(TrainCall {
@@ -1629,7 +1662,16 @@ mod tests {
                 station: StationId(2),
                 district: d,
                 simulated: false,
+                cargo_from: CargoFrom::Approach,
                 carriages: vec![],
+            }),
+            Obs::TrainArrived(TrainCall {
+                train: TrainId(1),
+                station: StationId(2),
+                district: d,
+                simulated: false,
+                cargo_from: CargoFrom::Departure,
+                carriages: carriages(),
             }),
             Obs::TrainDeparted(TrainDeparture {
                 train: TrainId(77),
@@ -1660,6 +1702,21 @@ mod tests {
                 dim: 0,
                 pos: BlockPos::new(0, 0, 0),
                 name: 18,
+            }),
+            Obs::StationPorts(StationPorts {
+                station: StationId(78),
+                district: d,
+                inventories: vec![0, 3, 0xFFFF_FFFE],
+            }),
+            Obs::StationPorts(StationPorts {
+                station: StationId(79),
+                district: d,
+                inventories: vec![],
+            }),
+            Obs::StationPorts(StationPorts {
+                station: StationId(80),
+                district: d,
+                inventories: vec![5, 6],
             }),
             Obs::Package(PackageEvent {
                 district: d,
@@ -2017,6 +2074,7 @@ mod tests {
             Obs::TrainDeparted(c) => 64 + carriage_bytes(&c.carriages),
             Obs::Station(_) => 64,
             Obs::Package(p) => 56 + 16 * p.goods.len(),
+            Obs::StationPorts(p) => (40 + 4 * p.inventories.len()).div_ceil(8) * 8,
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
             Obs::SpawnSample(_) => 64,
@@ -2061,6 +2119,7 @@ mod tests {
             Obs::TrainDeparted(_) => 0x0412,
             Obs::Station(_) => 0x0413,
             Obs::Package(_) => 0x0414,
+            Obs::StationPorts(_) => 0x0415,
             Obs::ReconcileResult(_) => 0x0420,
             Obs::CarriageResult(_) => 0x0421,
             Obs::SpawnSample(_) => 0x0430,
@@ -2453,10 +2512,41 @@ mod tests {
             station: StationId(2),
             district: DistrictId(3),
             simulated: true,
+            cargo_from: CargoFrom::Arrival,
             carriages: vec![],
         }));
         assert_eq!(arrived.len(), 56);
         assert_eq!(le32(&arrived, 48), 1);
+        let approach = enc_obs(Obs::TrainArrived(TrainCall {
+            train: TrainId(1),
+            station: StationId(2),
+            district: DistrictId(3),
+            simulated: false,
+            cargo_from: CargoFrom::Approach,
+            carriages: vec![],
+        }));
+        assert_eq!(le32(&approach, 48), 2);
+        let mut both = approach.clone();
+        both[48] = 6;
+        assert!(matches!(
+            decode_obs(&both),
+            Err(WireError::BadCode {
+                field: "cargo_from",
+                value: 6,
+                ..
+            })
+        ));
+
+        let ports = enc_obs(Obs::StationPorts(StationPorts {
+            station: StationId(9),
+            district: DistrictId(3),
+            inventories: vec![4, 5, 6],
+        }));
+        assert_eq!(ports.len(), 56);
+        assert_eq!(le32(&ports, 4), 3);
+        assert_eq!(le64(&ports, 24), 9);
+        assert_eq!(le32(&ports, 40), 4);
+        assert_eq!(le32(&ports, 48), 6);
 
         let survey = enc_obs(Obs::Survey(DefenceSurvey {
             district: DistrictId(1),
@@ -2722,6 +2812,7 @@ mod tests {
             station: StationId(2),
             district: DistrictId(3),
             simulated: false,
+            cargo_from: CargoFrom::Arrival,
             carriages: carriages(),
         }));
         let mut r = arrived.clone();
@@ -2983,6 +3074,7 @@ mod tests {
                 0..12,
             ),
             simulated in any::<bool>(),
+            cargo_from in prop::sample::select(vec![CargoFrom::Arrival, CargoFrom::Approach, CargoFrom::Departure]),
         ) {
             let carriages = carriages
                 .into_iter()
@@ -2995,6 +3087,7 @@ mod tests {
                     station: StationId(2),
                     district: DistrictId(3),
                     simulated,
+                    cargo_from,
                     carriages,
                 }),
             };
