@@ -1416,7 +1416,7 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 | Lurk offset, reach | 5 blocks off the rail, 8 blocks | PLACEHOLDER | where it stands; which passes count | test 9 |
 | Repeat | 4 days after a return | PLACEHOLDER | how often an angry Frostmaw comes back | `sim mowzie` line run; Ben's call |
 | Frostmaw carry | 64 | industry's siege carry; MZ-5 (a), Ben, 2026-10-21 | cargo lost per ambush | decided |
-| Renewal | Frostmaw `min(192, 6 × 2^P)` days, H 96; Umvuthi heir `min(192, 6 × 2^P_chief)`; tribe 2 a day | Frostmaw: EQ-4 (b), Ben; Umvuthi: MZ-14, open; tribe TUNABLE | heir and migrant arrival; regrowth | EQUILIBRIUM.md's model; `sim mowzie` renewal runs |
+| Renewal | Frostmaw `min(192, 6 × 2^P)` days, H 96; Umvuthi heir `min(192, 6 × 2^P_chief)`; tribe 2 a day | Frostmaw: EQ-4 (b), Ben; Umvuthi: MZ-14 (a), Ben; tribe TUNABLE | heir and migrant arrival; regrowth | EQUILIBRIUM.md's model; `sim mowzie` renewal runs |
 | Thresholds, dwell, half-life, patience, muster, cowed | goblin's | PLACEHOLDER | pace of the ladder | `sim mowzie` |
 | Tribute | 0.5 emerald's worth a point; fallback 9 nuggets an emerald | goblin's; gold nuggets by MZ-6 (a), Ben; PLACEHOLDER rate | the price of peace | the grove market's gold price, once it exists (ledger 12) |
 | Party sizes | §4.5 | PLACEHOLDER: a grove of 5 can field each | raid strength | GameTest fights |
@@ -1864,6 +1864,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | MZ-11 | (a), as recommended (Ben, 2026-10-21): the real warriors, saved as vanilla at home, with a census | §4.5, §4.9 |
 | MZ-13 | (a), as recommended (Ben, 2026-10-21): `Train.owner`, with P14 at the line's stations as the fallback | §4.3 |
 | EQ-4 | (b), against EQUILIBRIUM.md's recommended 24 (Ben, 2026-10-21): MOWZIE's base of 6 days, doubling with pressure, `min(192, 6 × 2^P)`: 12 days after a first kill, about 1.8 a game year farmed | §4.2, §4.10, walkthroughs A and D, sim runs 1 and 6 |
+| MZ-14 | (a), as recommended (Ben, 2026-10-21): the Umvuthi heir waits on the same base of 6 as the Frostmaw, `min(192, 6 × 2^P_chief)`: 12 days after a first kill, about 1.8 Sol Visages a game year farmed | §4.6, §4.10, renewal and tunables rows; EQUILIBRIUM.md §2.4.7 and §2.6 items 3 and 12 follow |
 
 **Decided here** (each can be undone; the reason is the plan's):
 
@@ -1895,8 +1896,4 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Two bodies | While a throne line is held, the first death is the member's; the other body drops nothing, takes no warriors with it, books nothing, and is removed | §4.5: bounded by the hold; otherwise a visitor could take a second Sol Visage, and a second death would kill the grove's warriors again. |
 | Recall hold | An Umvuthi's recall timeout is held while it has a player target, at most 6,000 ticks | §4.5: it cannot walk off, so the timeout would make it vanish mid-fight. |
 
-**Questions** (recommended option first):
-
-| Id | Question | Recommended | Alternatives |
-|---|---|---|---|
-| MZ-14 | The base of the Umvuthi heir's wait (new with MZ-3 (b) and EQ-4 (b)) | (a) base 6, as EQ-4 (b) set for the Frostmaw: `min(192, 6 × 2^P_chief)`, 12 days after a first kill, about 1.8 Sol Visages a game year when farmed; this plan uses it meanwhile. EQUILIBRIUM.md §2.4.7 and §2.6 item 3 would then change 24 to 6, by that file's author | (b) EQUILIBRIUM.md's 24: `min(192, 24 × 2^P_chief)`, 48 days after a first kill, about 1.0 a year farmed |
+**Questions:** none open.
