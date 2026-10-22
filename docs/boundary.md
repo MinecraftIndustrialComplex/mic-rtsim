@@ -1775,8 +1775,10 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 - **What Java does with it**: the session keeps the last record per dragon (`RtsimSession.farLegs`, not
   saved) and the far feed draws it. A BODY record is never drawn: the body's own source gives the same id
   at a higher priority (§12.3). A record whose dimension the dictionary does not name drops the dragon;
-  a short record or an unknown state counts as malformed. While the ecology module is off the table is
-  cleared, and the engine resends every dragon when it comes back.
+  a short record or an unknown state counts as malformed. Switching the ecology module off clears the
+  table and drops any record still on its way (the engine drops its own queue, GONE records included);
+  the engine resends every dragon when the module comes back. A changed dragon whose page will not load
+  is skipped and counted (`far_read_failed`): Java draws its last leg until it next changes.
 
 ### 12.2 The payloads and the far feed's message
 
@@ -1803,17 +1805,24 @@ GONE   5: handle
 ```
 
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
-  use it. GONE frees it, and GONE records come first in a message so their handles can be reused in it.
+  use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE
+  frees the handle, and GONE records come first in a message so their handles can be reused in it. The
+  hold covers the hand-over's gap: a dragon whose body was just captured is in neither source until the
+  engine's next leg lands, and comes back on its own handle.
 - **Positions** are relative to the header's origin (the subscriber's block): legs in whole blocks,
   samples in eighths of a block with the trailing point relative to the leading one. Times are relative
   to the header's game time.
 - **Only what changed** (`far/FarView.java`): an INTRO when an object is new or its looks changed, a LEG
   when the leg changed, a SAMPLE when it moved by an eighth of a block, a REAL when its entity id changed.
-  RESET (a new subscription or a new dimension) tells the client to forget every object first.
-- **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock
-  (a hunt circles at 0.5 blocks a tick, PLACEHOLDER); a mover moves from where it was drawn to each new
-  sample over the next second, so the view runs a second behind the server. A message that does not
-  decode drops every object until the next RESET.
+  RESET tells the client to forget every object first. The server sends it on every subscription (a
+  client subscribes again when its wants change or a message did not decode) and on a new dimension,
+  and then everything the filter chose.
+- **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock,
+  timed through the client's game time; a hunt circles at 0.5 blocks a tick (PLACEHOLDER), spiralling
+  onto its circle over 40 ticks from where the dragon was drawn and turning the way it was flying. A
+  mover moves from where it was drawn to each new sample over the next second, so the view runs a second
+  behind the server. A message that does not decode drops every object, and the client subscribes again,
+  so the server's RESET brings them back.
 
 ### 12.3 Sources and the filter
 
