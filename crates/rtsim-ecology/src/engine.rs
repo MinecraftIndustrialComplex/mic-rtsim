@@ -314,7 +314,7 @@ pub struct HuntRecord {
 }
 
 /// What [`Dragons::raid_sites`] did: the food and goods taken, whether any raid landed, and the
-/// watched district it stopped at.
+/// watched district it stopped at (raided too, OGC56).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Raided {
     pub food: i32,
@@ -2436,7 +2436,8 @@ impl Dragons {
     }
 
     /// A grudge raid: the districts with a chunk at the hated player's home (OGC50), through the
-    /// industry threat interface. Watched districts fight for real: the dragon materializes there instead (P28).
+    /// industry threat interface. A watched one is raided too, and fights for real: the dragon
+    /// materializes there (P28, OGC56).
     fn raid_home(
         &mut self,
         w: &mut World,
@@ -2483,7 +2484,7 @@ impl Dragons {
     }
 
     /// Raids `sites` in order, at most `raid_districts` of them, through the threat interface;
-    /// stops at the first watched one (the caller materializes there).
+    /// stops at the first watched one, raided too (P28, OGC56), where the caller materializes it.
     pub(crate) fn raid_sites(
         &mut self,
         infra: &mut dyn Infrastructure,
@@ -2493,21 +2494,24 @@ impl Dragons {
     ) -> Raided {
         let mut r = Raided::default();
         for site in sites.into_iter().take(self.tun.raid_districts) {
-            if site.watched {
-                r.watched = Some(site);
-                break;
-            }
             if let Some(gained) = self.raid_site(infra, d, site, &mut r.taken, at) {
                 r.any = true;
                 r.food += gained;
+            }
+            if site.watched {
+                r.watched = Some(site);
+                break;
             }
         }
         r
     }
 
-    /// One unwatched district raided: a threat of the dragon's passes. A fire dragon's passes
-    /// burn oil, those beyond its reserve strike without fire (OG-13), and its theft drinks fuel
-    /// first, up to the reserve's room (OG-5). Defences that stopped passes wound it.
+    /// One district raided: a threat of the dragon's passes. A fire dragon's passes burn oil,
+    /// those beyond its reserve strike without fire (OG-13), and its theft drinks fuel first, up
+    /// to the reserve's room (OG-5). Defences that stopped passes wound it. A watched district is
+    /// raided the same way at once, blocks and theft (P28 as Ben decided it, OGC56), but the
+    /// dragon is about to fight there in person: its real breaths burn its oil and real blows
+    /// wound it, so the raid does neither.
     fn raid_site(
         &mut self,
         infra: &mut dyn Infrastructure,
@@ -2516,6 +2520,7 @@ impl Dragons {
         taken: &mut Vec<(String, i64)>,
         at: Tick,
     ) -> Option<i32> {
+        let in_sight = site.watched;
         let x0 = &self.dragons[d];
         let sp = self.tun.species(x0.species).clone();
         let stage = x0.stage(&sp, at);
@@ -2538,14 +2543,16 @@ impl Dragons {
             loads: None,
             at,
         };
-        let o = if op.room_mb > 0 {
+        let o = if in_sight {
+            infra.raid_in_sight(&threat, &self.tun.oil.fuels, op.room_mb.max(0))
+        } else if op.room_mb > 0 {
             infra.raid_drinking(&threat, &self.tun.oil.fuels, op.room_mb)
         } else {
             infra.raid(&threat)
         }?;
         self.stats.district_raids += 1;
         if o.skipped.is_none() {
-            if op.burn > 0 {
+            if op.burn > 0 && !in_sight {
                 self.dragons
                     .get_mut(d)
                     .expect("live")
@@ -2604,21 +2611,29 @@ impl Dragons {
                 )
             });
         // An abstract raid never kills a dragon (a death needs a real fight), so it keeps at
-        // least a tenth of its health.
-        let max = self.dragons[d].max_health(&sp, at);
-        let h = self.dragons[d].health_at(&sp, at);
-        let wound = max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
-        self.dragons
-            .get_mut(d)
-            .expect("live")
-            .set_health((h - wound).max(max * 0.1), at);
+        // least a tenth of its health. In sight, the real fight wounds it instead.
+        if !in_sight {
+            let max = self.dragons[d].max_health(&sp, at);
+            let h = self.dragons[d].health_at(&sp, at);
+            let wound =
+                max * (self.tun.raid_wound_milli as f32 / 1000.0) * (1.0 - o.survived as f32);
+            self.dragons
+                .get_mut(d)
+                .expect("live")
+                .set_health((h - wound).max(max * 0.1), at);
+        }
         self.note(
             at,
             "raid",
             Some(d),
             format!(
-                "raids district {} (unwatched): survived {:.2}{}{}, {} blocks destroyed{}{}{}",
+                "raids district {} ({}): survived {:.2}{}{}, {} blocks destroyed{}{}{}",
                 site.id.0,
+                if in_sight {
+                    "watched: it comes in person too"
+                } else {
+                    "unwatched"
+                },
                 o.survived,
                 o.floor.map_or(String::new(), |f| format!(
                     ", floored by an observed fight at {f:.2}"

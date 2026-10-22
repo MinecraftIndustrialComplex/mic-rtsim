@@ -338,8 +338,9 @@ fn a_drilling_district_draws_a_grudge_raid() {
     assert!(worst <= d.tun.grudge_below, "sentiment {worst}");
 }
 
-/// A watched district's tanks draw a low dragon that arrives unseen in person, carrying its
-/// reserve, the day it is first sensed. The player stands south-west of the district: within two
+/// A watched district's tanks draw a low dragon that arrives unseen in person the day it is first
+/// sensed. Since the oil audit's F9 (choices-oilgate.md OGC56, OGC57) the tanks are raided in
+/// sight as it arrives: it drinks, and comes with what it drank. The player stands south-west of the district: within two
 /// view radii (320 blocks) of it, but beyond view (160) of the field's north-east chunk (376,
 /// 1336), where the dragon from the north-east lands. The player lives there (P26's home
 /// counter), so the Encroachment is theirs too: the dragon comes hostile, at them.
@@ -372,7 +373,7 @@ fn a_watched_tank_draws_the_dragon_in_person() {
         .collect();
     let m = ms.first().expect("it came to the tanks in person");
     assert!(m.flags & boundary::MAT_OIL != 0, "{m:?}");
-    assert!(m.oil <= d.tun.oil.refuel_below, "low: {}", m.oil);
+    assert!(m.oil > d.tun.oil.refuel_below, "it drank first: {}", m.oil);
     assert!(
         (m.pos.0 - 310.0).abs() < 1.0 && (m.pos.2 - 1300.0).abs() < 1.0,
         "at the tanks: {:?}",
@@ -381,8 +382,10 @@ fn a_watched_tank_draws_the_dragon_in_person() {
     assert_eq!(d.stats.encroachments, 1);
     assert!(m.flags & boundary::MAT_HOSTILE != 0, "{m:?}");
     assert_eq!(m.target_player, PLAYER);
-    // In person, nothing was raided abstractly.
-    assert!(tanks.raids.is_empty(), "{:?}", tanks.raids);
+    // One raid, in sight, at the tanks; it drank from them.
+    assert_eq!(tanks.raids.len(), 1, "{:?}", tanks.raids);
+    assert_eq!(tanks.raids[0].0, DistrictId(7));
+    assert!(d.stats.oil_drunk_mb > 0, "{:?}", d.stats);
 }
 
 // ---- The oil audit's F2: the field watches its own ground (OGC52, OGC53) ----------------------

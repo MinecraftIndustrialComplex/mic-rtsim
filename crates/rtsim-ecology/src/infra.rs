@@ -3,12 +3,13 @@
 //! threat interface.
 //!
 //! A dragon raid on a district is a [`Threat`] of class `Flying` from source `Dragon`, with the
-//! dragon's passes as its count. The industry engine resolves it: watched districts fight for
-//! real (the dragon materializes there instead, and P28's recommendation holds: a watched dragon
-//! breaks no blocks, since Ice and Fire griefing stays off); unwatched ones resolve abstractly,
-//! never better for the defender than the best comparable real fight, with theft and destroyed
-//! blocks capped per attack and applied on load (C18, I22, I23). What the engine books as stolen,
-//! this module's ledger splits into eaten, burnt and hoarded.
+//! dragon's passes as its count. The industry engine resolves it abstractly, never better for the
+//! defender than the best comparable real fight, with theft and destroyed blocks capped per
+//! attack and applied on load (C18, I22, I23). A watched district resolves the same way, at once,
+//! and the dragon also materializes there for a real fight: P28 as Ben decided it, "bounded damage
+//! too" (the oil audit's F9, choices-oilgate.md OGC56). Ice and Fire griefing stays off, so the
+//! real dragon itself breaks no blocks; the bounded sim damage is the raid's. What the engine
+//! books as stolen, this module's ledger splits into eaten, burnt and hoarded.
 
 use std::collections::BTreeMap;
 
@@ -115,6 +116,13 @@ pub trait Infrastructure {
     /// stock to drink from it is a plain raid.
     fn raid_drinking(&mut self, t: &Threat, _fuels: &[String], _room: i64) -> Option<RaidOutcome> {
         self.raid(t)
+    }
+    /// A drinking raid on a district the dragon also comes to in person (P28 as Ben decided it,
+    /// OGC56): watched, it resolves as an unwatched one does, blocks and theft, while the real
+    /// fight goes on. By default [`Infrastructure::raid_drinking`] (an infrastructure that never
+    /// skips a watched district).
+    fn raid_in_sight(&mut self, t: &Threat, fuels: &[String], room: i64) -> Option<RaidOutcome> {
+        self.raid_drinking(t, fuels, room)
     }
     /// What a dragon senses of `district` (OG-8). Nothing by default.
     fn signals(&mut self, _district: DistrictId, _fuels: &[String]) -> DistrictSignals {
@@ -261,13 +269,23 @@ impl IndustryLink<'_> {
         out.into_iter().map(|(_, g)| g).collect()
     }
 
-    fn raid_with(&mut self, t: &Threat, fuels: &[Good], room: i64) -> Option<RaidOutcome> {
+    fn raid_with(
+        &mut self,
+        t: &Threat,
+        fuels: &[Good],
+        room: i64,
+        in_sight: bool,
+    ) -> Option<RaidOutcome> {
         let ThreatTarget::District(d) = t.target else {
             self.engine.threat_drinking(t, fuels, room);
             return None;
         };
         let before = self.engine.district(d)?.attacks.len();
-        self.engine.threat_drinking(t, fuels, room);
+        if in_sight {
+            self.engine.threat_in_sight(t, fuels, room);
+        } else {
+            self.engine.threat_drinking(t, fuels, room);
+        }
         let dist = self.engine.district(d)?;
         // The engine keeps a bounded history; the newest entry is this attack's.
         let r = dist.attacks.back()?;
@@ -395,12 +413,17 @@ impl Infrastructure for IndustryLink<'_> {
     }
 
     fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
-        self.raid_with(t, &[], 0)
+        self.raid_with(t, &[], 0, false)
     }
 
     fn raid_drinking(&mut self, t: &Threat, fuels: &[String], room: i64) -> Option<RaidOutcome> {
         let goods = self.fuel_goods(fuels);
-        self.raid_with(t, &goods, room)
+        self.raid_with(t, &goods, room, false)
+    }
+
+    fn raid_in_sight(&mut self, t: &Threat, fuels: &[String], room: i64) -> Option<RaidOutcome> {
+        let goods = self.fuel_goods(fuels);
+        self.raid_with(t, &goods, room, true)
     }
 
     fn signals(&mut self, district: DistrictId, fuels: &[String]) -> DistrictSignals {
