@@ -153,7 +153,7 @@ Frostmaw while he steals its crystal is Minecraft's fight, and the model draws i
 | goblin (60) | 8 at 7.6, carry 56 | 12 at 11.2, carry 80 | 26 at 30.4, carry 192 | 1.4 | 20.9 |
 | raider (50) | 8 at 10.8, carry 64 | 12 at 16.2, carry 96 | 23 at 36.0, carry 180 | 2.0 | 25.3 |
 | bandit (40) | 8 at 9.2, carry 76 | 10 at 11.2, carry 104 | 20 at 22.4, carry 208 | 1.65 | 16.5 |
-| Umvuthana (7) | none | 3 warriors at 0.4 and 1 raptor pack at 2.6: 3.8 | 6 warriors and 2 packs, 7.6, and the Umvuthi riding with it, 5.0: 12.6 | 1.4 | 9.8, and the Umvuthi on its throne 5.0: 14.8 |
+| Umvuthana (7) | none | 3 warriors at 0.4 and 1 raptor pack at 2.6: 3.8 | 6 warriors and 2 packs, 7.6, and the Umvuthi leading it, 5.0: 12.6 | 1.4 | 9.8, and the Umvuthi on its throne 5.0: 14.8 |
 | Frostmaw (1) | | 41.7 for any war act, carry 64 | | | 50 at its den |
 
 Targets: a village 4; a caravan 3 (carrying 60); a train 1 bare, 20 with guards (carrying 64); the
@@ -324,7 +324,7 @@ that was at least a quarter of it.
 | Demand | a player | an envoy with guards asking the culture's tribute good (goblin emerald, Umvuthana gold) | today's Envoy party, ENVOY_MATERIALIZE (0x8802) and `Demand`; MOWZIE.md §4.5 |
 | Band | a village, a camp, a player | a small party (today's plunder party) | today's Plunder party kind |
 | Raid | a village, a camp, a player | today's Raid party | today's Raid |
-| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it and falls if it is destroyed. The Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), and there is no Umvuthana invasion while the grove has no Umvuthi. Riding with the band, its 5.0 is added: 12.6 for a full invasion (MZ-3 (b); MOWZIE.md §4.5 under MZ-15) | today's Invasion; the chief's stack (MOWZIE.md ledger 4) |
+| Invasion | a village, a camp, a player | today's Invasion party; a raider captain leads it and falls if it is destroyed. The Umvuthi leads its tribe's in person, only when its pride is wounded (W of 0.8 or more), and there is no Umvuthana invasion while the grove has no Umvuthi. Going with the band, its 5.0 is added: 12.6 for a full invasion (MZ-3 (b); MOWZIE.md §4.5 under MZ-15) | today's Invasion; the chief's stack (MOWZIE.md ledger 4) |
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets the share of the camp out hunting (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk and AMBUSH_SPOT, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.15) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
@@ -370,7 +370,7 @@ Every escalation has a brake that comes from the state, not a cap:
   defenders (2.1), which feeds the defender's grievance and pride.
 - **Wins.** A won fight halves the grievance and takes most of the wound away: vengeance sated.
 - **The walk home.** Survivors are on the road home for 1 to 3 days (MOWZIE.md §4.16's pace, about
-  480 blocks a day), and a chief who led and won rides back with them. Until they are home the camp's
+  480 blocks a day), and a chief who led and won comes back with them. Until they are home the camp's
   defence and its next muster lack them, and a grove lacks the Umvuthi's 5.0.
 - **Pressure.** Members killed by a player slow recruits (EQUILIBRIUM.md §2.4.5).
 - **Hunger and seasons.** A fed camp values loot little: most fights come in winter and after bad
@@ -521,10 +521,10 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   > simulation distance of s chunks its edge is 16s to 16s + 16 blocks off along an axis and up to about
   > 1.4 times that on a diagonal (`DistanceManager.java:252-253`): 160 to 176 blocks at 10, vanilla's
   > default, and 128 to 144 at 8. The column fills in stack by stack (a row of two warriors, a raptor
-  > pack, the chief and its horse; MZ-17, provisional (a)), each stack the tick its last member comes
-  > inside, so a raptor pack's nearest body can be a few blocks inside the edge. No warrior, raptor or
-  > horse is drawn where it appears, at either distance: they walk into sight. The Umvuthi, the one body
-  > drawn beyond 128 blocks (132), rides at the rear of the column; at 8 it can be seen to appear 128 to
+  > pack, the chief alone; MZ-17, provisional (a)), each stack the tick its last member comes inside,
+  > so a raptor pack's nearest body can be a few blocks inside the edge. No warrior or raptor is drawn
+  > where it appears, at either distance: they walk into sight. The Umvuthi, the one body drawn beyond
+  > 128 blocks (132), goes aloft at the rear of the column; at 8 it can be seen to appear 128 to
   > 132 blocks off along an axis, never nearer, and at 10 it appears beyond its draw distance. Nothing
   > appears that was not already walking toward the player. A party that reaches a watched target with
   > no bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its
@@ -538,9 +538,10 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   bodies taken, and the party marches on; a living member away is counted with its party and not
   recalled; a party ends only at its own home or at its last death (EQUILIBRIUM.md §2.6 item 11, now
   rewritten to MZ-15). The model's walk home (2.9) is that march home.
-- **The Umvuthi rides with its band**, at the rear of the column (MOWZIE.md §4.5, §4.16): its 5.0 is in the band's strength, 12.6 for a
-  full invasion, and missing from the grove's defence until it is home. If the band is destroyed, it
-  falls with it, and the grove waits for an heir (2.10).
+- **The Umvuthi goes with its band**, aloft at the rear of the column (MOWZIE.md §4.5, §4.16, MZ-16's
+  second round, provisional): its 5.0 is in the band's strength, 12.6 for a full invasion, and missing
+  from the grove's defence until it is home. If the band is destroyed, it falls with it, and the grove
+  waits for an heir (2.10).
 - **The spawn quota does not shrink a band.** MOWZIE.md leaves this to the conflict engine: a band
   bigger than the quota of 16 members in Minecraft at once (`tunables.rs:94`; a goblin invasion of 26,
   a raider one of 23, a bandit one of 20; a Mowzie band never exceeds it) keeps its whole strength in
