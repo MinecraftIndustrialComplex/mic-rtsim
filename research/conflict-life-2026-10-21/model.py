@@ -780,7 +780,8 @@ class World:
                 r.cowed_until = t + f.c.cowed
                 if self.mode == "life":
                     r.W = min(2.0, 0.6 * r.W + 0.2)     # honour answered, but a defeat stings
-                    what = (f"we lost {dead:.0f} at {self.tname(x)}" if dead >= 0.5
+                    nd = f"{dead:.0f}"                  # as the log line shows it (0.5 shows as 0)
+                    what = (f"we lost {nd} at {self.tname(x)}" if nd != "0"
                             else f"{self.tname(x)} drove us off")
                     self.remember(f, x, 1.0 + dead / 5, f"{what} {self.when(t)}")
         # chief at risk when he leads
@@ -1411,8 +1412,8 @@ class World:
 GATE = {"warrior_value": 3.0, "revenge_max": 10.0, "revenge_half": 100.0, "belief_half": 96.0, "probe_days": 48.0}
 
 LIFE_DEFAULTS = {
-    "sworn_mult": 3.0,
-    "tributary": 12.0,          # cost of raiding a player who pays, at a record of always paying          # a truce costs this many times more to break for the chief who swore it
+    "sworn_mult": 3.0,          # a truce costs this many times more to break for the chief who swore it
+    "tributary": 12.0,          # cost of raiding a player who pays, at a record of always paying
     "loot_base": 0.2,           # value of an item of loot to a fed camp
     "bold_shift": 1.0,          # how far boldness lowers the believed defence (log units at bold 1)
     "belief_drift": 1.0 / 384,  # belief variance regained a day

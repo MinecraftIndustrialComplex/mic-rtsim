@@ -53,6 +53,8 @@ The whole 50 years, by decade (fights aimed at the focus; attackers killed there
 | 31-40 | 1 | 1 | 26 | 8 | 0 |
 | 41-50 | 5 | 3 | 72 | 17 | 0 |
 
+Everything aimed there over the 50 years, by faction and act: Mudhollow demand 21; Mudhollow invasion 8; Mudhollow scout 100; Mudhollow warn 8; the Grey Outpost demand 27; the Grey Outpost invasion 10; the Grey Outpost scout 10; the Grey Outpost succession 3; the Grey Outpost warn 66; the Sun Grove demand 11; the Sun Grove scout 8; the Sun Grove warn 53.
+
 ## Farming the Frostmaw den
 
 Ben (defence 30, pays envoys) kills the Frostmaw at the north den whenever it is back, and steals the crystal from the sleeping Frostmaw at the south den now and then. The Sun Grove is also in reach. The headline count is Frostmaw deaths. Seed 1004: 121 against a median of 122 over 16 seeds.
@@ -153,6 +155,8 @@ The whole 50 years, by decade (fights aimed at the focus; attackers killed there
 | 31-40 | 5 | 0 | 0 | 6 | 0 |
 | 41-50 | 19 | 5 | 2 | 9 | 3 |
 
+Everything aimed there over the 50 years, by faction and act: the North Den killed 91; the North Den warn 7; the Pass Den fight 14; the Pass Den killed 30; the Pass Den raid 54; the Pass Den robbed 66; the Pass Den warn 34; the Sun Grove demand 36; the Sun Grove scout 6; the Sun Grove warn 53.
+
 ## A railway through goblin land
 
 A line runs past Ashpit (goblins) and the Pass Den (a Frostmaw), 12 legs a day. The line's owner (defence 30) never pays; after three robberies in 30 days he puts guards on the trains for a year. Seed 1003: 231 against a median of 231 over 16 seeds.
@@ -246,7 +250,7 @@ A line runs past Ashpit (goblins) and the Pass Den (a Frostmaw), 12 legs a day. 
 - Y8 d10 (spring) Ashpit: ambush on the railway by 8 (Nub (war)); won, 0 dead, 56 taken. Why: a train came through; loot; and revenge: we lost 8 at the railway in the winter of year 6.
 - Y8 d10 (spring) Ashpit: robbed three times in a month, the railway puts guards on its trains for a year.
 - Y8 d26 (summer) the Pass Den: the Frostmaw roared at the railway.
-- Y8 d30 (summer) the Pass Den: ambush on the railway by 1 (the Frostmaw (chief)); won, 0 dead, 56 taken. Why: a train came through; revenge: we lost 0 at the railway in the summer of year 7; and loot.
+- Y8 d30 (summer) the Pass Den: ambush on the railway by 1 (the Frostmaw (chief)); won, 0 dead, 56 taken. Why: a train came through; revenge: the railway drove us off in the summer of year 7; and loot.
 - Y8 d48 (summer) the Pass Den: the Frostmaw roared at the railway.
 - Y8 d65 (autumn) the Pass Den: the Frostmaw roared at the railway.
 - Y8 d80 (winter) Ashpit: envoy to player rail asking 86 (Lugg (elder)); refused. Why: asking tribute after: player rail refused our envoy in the winter of year 6.
@@ -263,6 +267,8 @@ The whole 50 years, by decade (fights aimed at the focus; attackers killed there
 | 31-40 | 50 | 10 | 130 | 9 | 0 |
 | 41-50 | 48 | 10 | 107 | 3 | 0 |
 
+Everything aimed there over the 50 years, by faction and act: Ashpit ambush 166; Ashpit demand 34; Ashpit guards 39; Ashpit invasion 9; Ashpit scout 1075; Ashpit warn 21; the Pass Den ambush 65; the Pass Den guards 4; the Pass Den warn 228.
+
 Robberies and warnings a year by traffic on the line (life, 8 seeds x 20 years each):
 
 | Legs a day | Rail meter grievance (MOWZIE 4.3) | Frostmaw lurks | Frostmaw roars | Goblin ambushes | Guards put on |
@@ -275,7 +281,7 @@ Robberies and warnings a year by traffic on the line (life, 8 seeds x 20 years e
 
 ## Multiplayer: one provokes, another suffers
 
-Ash (defence 50) hunts Ashpit's goblins every few weeks and kills its envoys; Bea (defence 8) lives near Ash, pays what she is asked, and has done nothing. Both are in reach of Ashpit and the Grey Outpost. A camp that cannot tell who killed its warriors sometimes blames the other player near it (blame spill, 0.15). The headline count is fights on Bea. Seed 1003: 5 against a median of 5 over 16 seeds.
+Ash (defence 50) hunts Ashpit's goblins every few weeks and kills its envoys; Bea (defence 8) lives near Ash, pays what she is asked, and has done nothing. Both are in reach of Ashpit and the Grey Outpost. A camp that cannot tell who killed its warriors sometimes blames the other player near it (blame spill, 0.3). The headline count is fights on Bea. Seed 1003: 5 against a median of 5 over 16 seeds.
 
 - Y1 d11 (spring) Ashpit: player Ash hunted the camp.
 - Y1 d11 (spring) Ashpit: Skarl was killed by a player; Nub leads now.
@@ -392,15 +398,37 @@ Ash (defence 50) hunts Ashpit's goblins every few weeks and kills its envoys; Be
 - Y8 d93 (winter) Ashpit: player Ash hunted the camp.
 - Y8 d93 (winter) Ashpit: Lugg howled at player Bea.
 
-The whole 50 years, by decade (fights aimed at the focus; attackers killed there):
+The whole 50 years, by decade (fights aimed at Bea; attackers killed there):
 
 | Decade | Fights | Of them lost | Attackers killed | Envoys | Paid |
 |---|---|---|---|---|---|
-| 1-10 | 4 | 3 | 40 | 35 | 30 |
-| 11-20 | 3 | 2 | 38 | 43 | 29 |
-| 21-30 | 7 | 3 | 62 | 45 | 28 |
-| 31-40 | 3 | 0 | 14 | 41 | 27 |
-| 41-50 | 4 | 1 | 35 | 41 | 30 |
+| 1-10 | 1 | 0 | 1 | 30 | 30 |
+| 11-20 | 0 | 0 | 0 | 29 | 29 |
+| 21-30 | 2 | 0 | 1 | 28 | 28 |
+| 31-40 | 1 | 0 | 1 | 27 | 27 |
+| 41-50 | 1 | 0 | 1 | 30 | 30 |
+
+Everything aimed there over the 50 years, by faction and act: Ashpit demand 76; Ashpit invasion 3; Ashpit scout 72; Ashpit succession 9; Ashpit warn 26; the Grey Outpost demand 68; the Grey Outpost invasion 2; the Grey Outpost scout 9; the Grey Outpost warn 8.
+
+The whole 50 years, by decade (fights aimed at Ash; attackers killed there):
+
+| Decade | Fights | Of them lost | Attackers killed | Envoys | Paid |
+|---|---|---|---|---|---|
+| 1-10 | 3 | 3 | 39 | 5 | 0 |
+| 11-20 | 3 | 2 | 38 | 14 | 0 |
+| 21-30 | 5 | 3 | 61 | 17 | 0 |
+| 31-40 | 2 | 0 | 13 | 14 | 0 |
+| 41-50 | 3 | 1 | 34 | 11 | 0 |
+
+Everything aimed there over the 50 years, by faction and act: Ashpit demand 21; Ashpit hunted 234; Ashpit invasion 1; Ashpit scout 81; Ashpit succession 14; Ashpit warn 80; the Grey Outpost demand 40; the Grey Outpost invasion 15; the Grey Outpost scout 9; the Grey Outpost succession 6; the Grey Outpost warn 63.
+
+Every fight on player Bea in the 50 years:
+
+- Y10 d33 (summer) Ashpit: invasion on player Bea by 26 (Mott (chief)); won, 1 dead, 185 taken. Why: honour: player Bea killed Ozzit, our chief, in the summer of year 10; Mott had not sworn Skarl's truce.
+- Y21 d54 (autumn) the Grey Outpost: invasion on player Bea by 23 (Isk (war)); won, 1 dead, 176 taken. Why: loot; and empty stores; Captain Mol had not sworn Captain Hesk's truce.
+- Y23 d7 (spring) the Grey Outpost: invasion on player Bea by 23 (Captain Vask (elder)); won, 1 dead, 176 taken. Why: empty stores; and loot; Isk had not sworn Captain Mol's truce.
+- Y35 d49 (autumn) Ashpit: invasion on player Bea by 26 (Brakka (war)); won, 1 dead, 185 taken. Why: empty stores; and loot; Vorr had not sworn Ozzit's truce.
+- Y45 d32 (summer) Ashpit: invasion on player Bea by 26 (Lugg (elder)); won, 1 dead, 185 taken. Why: empty stores; and loot; Brakka had not sworn Gitz's truce.
 
 ## A world left alone for 50 years
 

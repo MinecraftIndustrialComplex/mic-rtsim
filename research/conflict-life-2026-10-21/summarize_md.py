@@ -75,7 +75,7 @@ def write(res, path):
         oc = ", ".join(f"{k} {v:.2f}" for k, v in r["occasions"].items())
         dv = ", ".join(f"{k} {v:.2f}" for k, v in r["drivers"].items())
         L.append(f"| {n} | {mo} | {dv} | {f(r['loot_only'])} | {oc} |")
-    L.append("\n## Fights by target (a world-year)\n")
+    L.append("\n## Fights by target (a world-year; in brackets, the share the attacker lost)\n")
     L.append("| Scenario | Mode | Camps | Villages | Players | Trains and caravans |")
     L.append("|---|---|---|---|---|---|")
     for n in names:
@@ -84,8 +84,12 @@ def write(res, path):
             if not r:
                 continue
             b = r["by_target"]
-            L.append(f"| {n} | {m} | {f(b.get('camp', 0))} | {f(b.get('village', 0))} | {f(b.get('player', 0))} | "
-                     f"{f(b.get('train_or_caravan', 0))} |")
+            ls = r.get("lost_share_by_target", {})
+
+            def cell(k):
+                return f"{f(b.get(k, 0))} ({f(ls[k])})" if k in ls else f(b.get(k, 0))
+            L.append(f"| {n} | {m} | {cell('camp')} | {cell('village')} | {cell('player')} | "
+                     f"{cell('train_or_caravan')} |")
     L.append("\n## Each player's share (a year)\n")
     L.append("| Scenario | Mode | Player | Fights on him | Attackers killed there | Tribute paid |")
     L.append("|---|---|---|---|---|---|")
