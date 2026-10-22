@@ -10,7 +10,7 @@ use rtsim_ecology::dragon::{LairKind, Purpose, State, Target};
 use rtsim_ecology::herds::HerdId;
 use rtsim_ecology::species::SpeciesData;
 use rtsim_industry::cluster::PoolKey;
-use rtsim_industry::engine::ProcessPeek;
+use rtsim_industry::engine::{LineEdge, ProcessPeek};
 use rtsim_industry::ids::Good;
 use rtsim_kernel::handle::Handle;
 use rtsim_settle::{Culture, NodeKind};
@@ -682,46 +682,110 @@ fn station(cx: &Ctx, id: u64) -> Option<Card> {
         .filter(|((a, b), _)| *a == id || *b == id)
         .take(ROWS)
     {
+        let other = if *a == id { (*b, "to") } else { (*a, "from") };
         sec.push(
-            Field::new(&format!("{a} to {b}"), format!("{} trips", l.trips))
-                .link("industry.lines", format!("{a}-{b}")),
+            Field::new(
+                &format!("{} {}", other.1, v.station_title(&cx.saved.names, other.0)),
+                l.trips,
+            )
+            .unit("trips")
+            .link("industry.lines", format!("{a}-{b}")),
         );
     }
     Some(c.section(sec))
 }
 
+/// A span of game ticks as "1 min 40 s", "12 s" or "2 h 5 min" (20 ticks a second).
+pub fn span(ticks: u64) -> String {
+    let s = ticks / 20;
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 if s.is_multiple_of(60) => format!("{} min", s / 60),
+        60..3600 => format!("{} min {} s", s / 60, s % 60),
+        _ => format!("{} h {} min", s / 3600, s / 60 % 60),
+    }
+}
+
+/// A line's label on the map: "Ironworks to Docks: 42 trips".
+pub fn line_label(saved: &Saved, v: &IndustryView, a: u64, b: u64, l: &LineEdge) -> String {
+    let how_often = match rtsim_layers::industry::line_per_day(l) {
+        Some(d) if d >= 10.0 => format!("{} trips a day", d.round()),
+        Some(d) => format!("{} trips a day", (d * 10.0).round() / 10.0),
+        None if l.trips == 1 => "1 trip".to_owned(),
+        None => format!("{} trips", l.trips),
+    };
+    let top = l
+        .cargo
+        .iter()
+        .filter(|(_, n)| *n != 0)
+        .max_by_key(|(g, n)| (n.saturating_abs(), std::cmp::Reverse(*g)))
+        .map(|(g, _)| v.good_title(g).to_lowercase());
+    format!(
+        "{} to {}: {}{how_often}",
+        v.station_title(&saved.names, a),
+        v.station_title(&saved.names, b),
+        top.map_or_else(String::new, |g| format!("{g}, "))
+    )
+}
+
 fn line(cx: &Ctx, a: u64, b: u64) -> Option<Card> {
     let v = cx.saved.industry.as_ref()?;
     let (_, l) = v.lines.iter().find(|(k, _)| *k == (a, b))?;
-    let mut sec = Section::new("Cargo seen");
-    for (g, n) in l.cargo.iter().take(ROWS) {
-        sec = sec.field(&v.good_name(g), n);
+    let (na, nb) = (
+        v.station_title(&cx.saved.names, a),
+        v.station_title(&cx.saved.names, b),
+    );
+    let mut cargo: Vec<_> = l.cargo.iter().filter(|(_, n)| *n != 0).collect();
+    cargo.sort_by_key(|(g, n)| (std::cmp::Reverse(n.saturating_abs()), *g));
+    let mut sec = Section::new("Goods carried, all trips");
+    for (g, n) in cargo.iter().take(ROWS) {
+        sec = sec.field_unit(&v.good_title(*g), *n, v.good_unit(*g));
     }
-    Some(
-        Card::new(
-            "industry.lines",
-            format!("{a}-{b}"),
-            format!("Line {a} to {b}"),
-        )
-        .link("From", a, "industry.stations", a)
-        .link("To", b, "industry.stations", b)
-        .field("Trips", l.trips)
-        .field_unit("Travel", l.travel_ticks, "ticks")
-        .field("First", day(l.first.0 as i64))
-        .field("Last", day(l.last.0 as i64))
-        .section(sec),
+    let mut c = Card::new(
+        "industry.lines",
+        format!("{a}-{b}"),
+        format!("{na} to {nb}"),
     )
+    .link("From", na, "industry.stations", a)
+    .link("To", nb, "industry.stations", b)
+    .field_unit("Trips", l.trips, "trips");
+    if let Some(each) = l.travel_ticks.checked_div(l.trips) {
+        c = c.field("Average trip", span(each));
+    }
+    let seen = l.last.0.saturating_sub(l.first.0);
+    if l.trips > 1 && seen >= TICKS_PER_DAY as u64 {
+        let per_day = l.trips as f64 * TICKS_PER_DAY as f64 / seen as f64;
+        c = c.field_unit(
+            "Trips a day",
+            (per_day * 10.0).round() / 10.0,
+            "a Minecraft day",
+        );
+    }
+    let c = c
+        .field("First seen", day(l.first.0 as i64))
+        .field("Last seen", day(l.last.0 as i64));
+    Some(if cargo.is_empty() {
+        c.note("No goods were seen on this line's trains.")
+    } else {
+        c.section(sec)
+    })
 }
 
 fn train(cx: &Ctx, id: u64) -> Option<Card> {
     let v = cx.saved.industry.as_ref()?;
     let (_, l) = v.legs.iter().find(|(k, _)| *k == id)?;
+    let names = &cx.saved.names;
     let mut c = Card::new("industry.trains", id, format!("Train {}", l.train.0))
-        .link("From", l.from.0, "industry.stations", l.from.0)
+        .link(
+            "From",
+            v.station_title(names, l.from.0),
+            "industry.stations",
+            l.from.0,
+        )
         .field("Departs", day(l.depart.0 as i64))
         .field("Arrives", day(l.eta.0 as i64));
     if let Some(t) = l.to {
-        c = c.link("To", t.0, "industry.stations", t.0);
+        c = c.link("To", v.station_title(names, t.0), "industry.stations", t.0);
     }
     let mut total: BTreeMap<rtsim_industry::ids::Good, i64> = BTreeMap::new();
     for (_, gv) in &l.cargo {
@@ -731,7 +795,7 @@ fn train(cx: &Ctx, id: u64) -> Option<Card> {
     }
     let mut sec = Section::new("Cargo");
     for (g, n) in total.iter().take(ROWS) {
-        sec = sec.field(&v.good_name(*g), *n);
+        sec = sec.field_unit(&v.good_title(*g), *n, v.good_unit(*g));
     }
     Some(c.field("Carriages", l.cargo.len()).section(sec))
 }
@@ -771,16 +835,15 @@ pub fn district(saved: &Saved, id: u64) -> Option<(Card, bool)> {
     let d = v.district(id)?;
     let name = district_name(saved, v, id);
     let (x, z) = d.centre();
+    let state = rtsim_layers::industry::district_state_words(d.state);
     let mut c = Card::new("industry.districts", id, name)
-        .subtitle(d.state)
+        .subtitle(state)
         .at(x, z)
-        .field("State", d.state)
-        .field("Chunks", d.chunks)
-        .field("Inventories", d.inventories)
-        .field("Watched", d.watched);
+        .field("State", state)
+        .field_unit("Size", d.chunks, "chunks");
     let mut sec = Section::new("Stations");
     for s in d.stations.iter().take(ROWS) {
-        sec.push(Field::new(&format!("Station {s}"), "").link("industry.stations", s));
+        sec.push(Field::new(&v.station_title(&saved.names, *s), "").link("industry.stations", s));
     }
     c = c.section(sec);
     match v.inspect(&*saved.source, id) {
