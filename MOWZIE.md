@@ -449,7 +449,7 @@ The conflict engine (rtsim-conflict) exists and runs in Rust tests and `rtsim-cl
 | Faction | Camp | Chief | Members | Hates |
 |---|---|---|---|---|
 | `frostmaw` | each `mowziesmobs:frostmaw_spawn` | the Frostmaw | none besides it: a culture of one | nobody: it plunders nothing |
-| `umvuthana` | each `mowziesmobs:umvuthana_grove` | the Umvuthi, who leads the Invasion from a war seat (MZ-3 (b), §4.5) | the grove's Umvuthana warriors and raptor packs | `human` (village herds) |
+| `umvuthana` | each `mowziesmobs:umvuthana_grove` | the Umvuthi, who leads the Invasion riding with it (MZ-3 (b), MZ-15, §4.5) | the grove's Umvuthana warriors and raptor packs | `human` (village herds) |
 
 Every value the jar does not give and this section does not set is goblin.json's, labelled
 PLACEHOLDER (§4.14). The two cultures share goblin's thresholds `[10, 30, 50, 70, 140, 260]`, dwell
@@ -1197,10 +1197,10 @@ and its loot is stocked at the camp (a Frostmaw carries none, ledger 10). A surv
 still in the camp is home, body again. One whose body is gone is owed: at a camp that is in, a survivor
 whose puppet is in the world is handed back where it stands (*A homecoming*, below), and the rest get
 spawn lines in the same reconcile; at a camp that is out, its puppets, if any, are recalled as today
-(`RECALL_DONE`), and the camp's next census spawns them. A party left with no units ends the same way,
-with AMBUSH_SPOT's removed flag if it was lurking (ledger 8). So no member is in two places, outside
-the Umvuthi's one held exception (I5). And while a camp is in, a body is left behind only while its
-party musters or a line for it is in flight.
+(BAND_RECALL, reason 3, done), and the camp's next census spawns them. A party left with no units ends
+the same way, with AMBUSH_SPOT's removed flag if it was lurking (ledger 8). So no member is in two
+places, outside the Umvuthi's one held exception (I5). And while a camp is in, a body is left behind
+only while its party musters or a line for it is in flight.
 
 **While a camp is in,** the engine orders each change as it happens, in the same form:
 - **A muster's end** (`party_event`, `engine.rs:2413-2417`): a set-out line with the party's agent for
@@ -1637,8 +1637,8 @@ raid short, and the band on the road, or in the far view, vanished. The cost is 
 
 **The walk home.** At its camp a band ends through `home`. If the camp is in, its puppets are handed
 back (§4.9): each becomes the camp's tagged vanilla body where it stands, the Umvuthi on its throne. If
-the camp is out, its puppets are recalled as today (`RECALL_DONE`) and the camp's next census places
-its members.
+the camp is out, its puppets are recalled as today (BAND_RECALL, reason 3, done) and the camp's next
+census places its members.
 
 **What the far view can draw.** The record carries the phase, so the far view can draw a band mustering
 at its camp and one walking home as well as one going out; the DH note's §15.2 drew neither, because
