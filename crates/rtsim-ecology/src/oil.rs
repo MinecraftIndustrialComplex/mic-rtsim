@@ -539,14 +539,19 @@ impl Dragons {
         p
     }
 
+    /// Field flights run: switched on (OIL_CONFIG, or the tunables' switches until it comes) with
+    /// a chance above zero. While they run, a natural or spawner fire dragon (In Control's) is
+    /// discarded when it joins, since the flights replace it (OGB-6, OGC66).
+    pub fn field_flights_on(&self) -> bool {
+        self.oil_flags & boundary::OIL_FIELD_FLIGHTS != 0 && self.tun.oil.flight_chance_milli > 0
+    }
+
     fn oil_presence(&mut self, pos: Pos, y: i32, at: Tick) {
         if self.oil.is_empty() {
             return;
         }
         let o = &self.tun.oil;
-        let flights = self.oil_flags & boundary::OIL_FIELD_FLIGHTS != 0
-            && o.flight_chance_milli > 0
-            && y >= o.flight_min_y;
+        let flights = self.field_flights_on() && y >= o.flight_min_y;
         let lairs = self.oil_flags & boundary::OIL_PLACE_LAIRS != 0;
         if !flights && !lairs {
             return;
@@ -665,7 +670,7 @@ impl Dragons {
             .filter(|(p, _, s)| p.frame == frame && at.since(*s) <= o.presence_fresh_ticks)
             .map(|(p, y, _)| (*p, *y))
             .collect();
-        let on = self.oil_flags & boundary::OIL_FIELD_FLIGHTS != 0 && o.flight_chance_milli > 0;
+        let on = self.field_flights_on();
         let near = |oil: &OilIndex, p: &Pos| {
             oil.near(
                 t,

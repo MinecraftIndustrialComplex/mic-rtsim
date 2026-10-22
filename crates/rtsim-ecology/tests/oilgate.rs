@@ -469,11 +469,13 @@ fn watched_ground(lair_x: i32) -> (Vec<u64>, u64, Option<Near>) {
         24,
         i64::from(d.tun.oil.lair_reach) * 4,
     );
-    let mut tanks = Tanks::default();
-    tanks.signals = DistrictSignals {
-        oil_sample: true,
-        polluted: false,
-        fuel_mb: 0,
+    let mut tanks = Tanks {
+        signals: DistrictSignals {
+            oil_sample: true,
+            polluted: false,
+            fuel_mb: 0,
+        },
+        ..Tanks::default()
     };
     let mut by_half_day = Vec::new();
     let mut t = Tick(0);

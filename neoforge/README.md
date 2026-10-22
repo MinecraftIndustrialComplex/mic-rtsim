@@ -265,9 +265,11 @@ The industry plugins' GameTests (each in its plugin's namespace, with its mod's 
   are not built (Q8); an assembled, loaded radar turret is not built in a GameTest (Q17); the threat
   observation needs a real player at night (the spawn test starts it by hand); an Ender Transmission
   channel on a Sable vehicle is not tested (no Sable on the test servers; Q7).
-- **Ice and Fire** (docs/overnight-choices-iceandfire.md): the pack's In Control edits P13 needs are
-  applied (OGB-6: the fire dragon rule is gone, field flights replace it; `iceandfire/pack-proposal/`
-  keeps a copy for OG-10's harness); a real lair structure, settling, and the
+- **Ice and Fire** (docs/overnight-choices-iceandfire.md): field flights replace In Control's fire
+  dragon (OGB-6): while they run, the engine discards the fire dragons In Control spawns (OGC66); the
+  pack's In Control edits are on the pack repo's branch `oilgate-f8`, to merge when mic-rtsim enters
+  the pack's `mods/` (`iceandfire/pack-proposal/` keeps a copy for OG-10's harness); a real lair
+  structure, settling, and the
   not-ticking, dimension-change and session-end captures are not covered by a GameTest.
 - **Herds** (docs/overnight-choices-herdsmc.md): herds are founded from the world model (the habitat
   sampler, X2-11) and their climate is its (X2-9, X2-10); vanilla's own chunk-generation animals are
