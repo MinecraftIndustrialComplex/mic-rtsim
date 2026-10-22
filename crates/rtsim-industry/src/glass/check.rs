@@ -1536,8 +1536,7 @@ mod persist_impls {
                 rg.gate_off.len(),
                 rg.burning.len(),
             ];
-            if per_node.iter().any(|&l| l != n) || c.heaters.iter().any(|b| b.node as usize >= n)
-            {
+            if per_node.iter().any(|&l| l != n) || c.heaters.iter().any(|b| b.node as usize >= n) {
                 return invalid("glass compile state of another graph");
             }
             Ok(c)
