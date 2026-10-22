@@ -177,6 +177,30 @@ public final class LevelTopology {
         return f.iso.inverse().point(img[0], img[1]);
     }
 
+    /**
+     * The motion that takes {@code to}'s frame to its image nearest {@code from} (the one
+     * {@link #nearestImage} picks, with {@code embodied} false): applied to a whole leg or segment near
+     * {@code to}, it moves every point of it by the same seam crossing, so the far view draws it where
+     * an eye at {@code from} sees it (research/distant-horizons-2026-10-21.md §6.3).
+     */
+    public Iso nearestImageIso(double fromX, double fromZ, double toX, double toZ) {
+        if (kind == Kind.FLAT)
+            return Iso.IDENTITY;
+        Folded f = fold(fromX, fromZ), t = fold(toX, toZ);
+        double best = Double.POSITIVE_INFINITY;
+        Iso pick = Iso.IDENTITY;
+        for (Iso h : adjacent) {
+            double[] q = h.point(t.x, t.z);
+            double dx = q[0] - f.x, dz = q[1] - f.z;
+            double d2 = dx * dx + dz * dz;
+            if (d2 < best) {
+                best = d2;
+                pick = h;
+            }
+        }
+        return f.iso.inverse().compose(pick.compose(t.iso));
+    }
+
     /** The shortest displacement from one point to another, through the seams bodies may cross. */
     public double[] displacement(double fromX, double fromZ, double toX, double toZ) {
         double[] i = nearestImage(fromX, fromZ, toX, toZ, true);

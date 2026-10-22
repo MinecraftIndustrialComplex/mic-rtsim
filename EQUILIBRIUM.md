@@ -228,10 +228,10 @@ belonging to it, and a **pressure** P:
     simulation distance of s chunks its edge is 16s to 16s + 16 blocks off along an axis and up to about
     1.4 times that on a diagonal (`DistanceManager.java:252-253`): 160 to 176 blocks at 10, vanilla's
     default, and 128 to 144 at 8. The column fills in stack by stack (a row of two warriors, a raptor
-    pack, the chief and its horse; MZ-17, provisional (a)), each stack the tick its last member comes
-    inside, so a raptor pack's nearest body can be a few blocks inside the edge. No warrior, raptor or
-    horse is drawn where it appears, at either distance: they walk into sight. The Umvuthi, the one body
-    drawn beyond 128 blocks (132), rides at the rear of the column; at 8 it can be seen to appear 128 to
+    pack, the chief alone; MZ-17, provisional (a)), each stack the tick its last member comes inside,
+    so a raptor pack's nearest body can be a few blocks inside the edge. No warrior or raptor is drawn
+    where it appears, at either distance: they walk into sight. The Umvuthi, the one body drawn beyond
+    128 blocks (132), goes aloft at the rear of the column; at 8 it can be seen to appear 128 to
     132 blocks off along an axis, never nearer, and at 10 it appears beyond its draw distance. Nothing
     appears that was not already walking toward the player. A party that reaches a watched target with
     no bodies yet (a player who logs in or teleports there as it arrives) comes as a WalkIn along its

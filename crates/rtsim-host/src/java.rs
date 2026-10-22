@@ -170,6 +170,9 @@ pub struct Java {
     /// Dragon commands applied, as the Ice and Fire plugin would (docs/boundary.md §6.5):
     /// (cmdSeq, command decoded with the reference codec, its dimension in Java's dictionary).
     pub iaf: Vec<(u64, rtsim_ecology::boundary::Cmd)>,
+    /// The far view's FAR_LEG records as they arrived (docs/boundary.md §12), names still the
+    /// engine's dictionary ids (`cmd_dict`).
+    pub far: Vec<rtsim_ecology::far::Decoded>,
     /// Ship commands applied, as a ships plugin would (docs/boundary.md §7.5): (cmdSeq, command
     /// decoded with the reference codec, its body, item and dimension ids in Java's dictionary).
     pub ships: Vec<(u64, rtsim_ships::boundary::Cmd)>,
@@ -293,6 +296,7 @@ impl Java {
             fail_next_carriage: false,
             failed_carriage: None,
             iaf: Vec::new(),
+            far: Vec::new(),
             ships: Vec::new(),
             herds: Vec::new(),
             herd_plugin: rtsim_ecology::herds::synth::FakeHerds::default(),
@@ -685,6 +689,11 @@ impl Java {
                     k if (0x8700..=0x87FF).contains(&k) => self.herd_command(seq, rec.bytes),
                     k if (0x8800..=0x88FF).contains(&k) => self.conflict_command(seq, rec.bytes),
                     k if (0x8900..=0x89FF).contains(&k) => self.habitat_command(seq, rec.bytes),
+                    k if (0x8C00..=0x8CFF).contains(&k) => {
+                        let r = rtsim_ecology::far::decode(rec.bytes).expect("a FAR_LEG decodes");
+                        assert_eq!(r.seq, seq);
+                        self.far.push(r);
+                    }
                     cmd::DESPAWN_GROUP => {
                         let b = rec.bytes;
                         let agent = wire::u64_at(b, cmd::despawn_group::AGENT);

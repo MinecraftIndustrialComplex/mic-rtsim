@@ -1,0 +1,141 @@
+package com.minecraftindustrialcomplex.mic_rtsim.far;
+
+import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
+import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
+import net.minecraft.server.level.ServerLevel;
+
+/**
+ * The engine's far legs (FAR_LEG, 0x8C00, docs/boundary.md §12.1): what every dragon is doing, as the engine
+ * sends it whenever that changes, kept per session and drawn by the far feed. A dragon in the game is drawn
+ * from its body instead (a body source gives the same id at a higher priority), so a BODY record is kept only
+ * to know where the engine last had it, and never drawn from here: the entity is the truth.
+ */
+public final class FarLegs implements FarSource {
+    public static final int FAR_LEG = 0x8C00;
+    public static final int SIZE = 80;
+
+    /** FAR_LEG's fields (docs/boundary.md §12.1). */
+    public static final int AGENT = 16, BODY = 24, DIM = 28, KIND = 32, VARIANT = 33, STAGE = 34, Y = 36, X0 = 40,
+            Z0 = 44, X1 = 48, Z1 = 52, T0 = 56, T1 = 64, RADIUS = 72;
+
+    /** How a body's look is drawn: its style number and colours per variant (registered by its plugin). */
+    public record Style(int style, int[] rgbByVariant) {
+        public int rgb(int variant) {
+            return rgbByVariant.length == 0 ? 0x808080 : rgbByVariant[Math.floorMod(variant, rgbByVariant.length)];
+        }
+    }
+
+    private static final Map<String, Style> STYLES = new ConcurrentHashMap<>();
+
+    /** The look of a dragon of entity type {@code body} ({@code iceandfire:ice_dragon}); its plugin says. */
+    public static void registerStyle(String body, Style style) {
+        STYLES.put(body, style);
+    }
+
+    public static Style style(String body) {
+        Style s = body == null ? null : STYLES.get(body);
+        return s != null ? s : new Style(0, new int[]{0x808080});
+    }
+
+    /** One dragon's last record. */
+    public record Rec(long agent, FarState state, String body, String dimension, int variant, int stage, int y,
+            int x0, int z0, int x1, int z1, long t0, long t1, int radius) {
+    }
+
+    private final Map<Long, Rec> legs = new HashMap<>();
+    private long accepted, gone, malformed;
+    private boolean enabled = true;
+
+    public static boolean isFarCommand(int kind) {
+        return kind >= 0x8C00 && kind <= 0x8CFF;
+    }
+
+    /**
+     * The ecology module switched (the session's {@code onModulesChanged}, server thread). Off forgets every leg
+     * and drops any record still on its way: the engine clears its own queue, GONE records included, and resends
+     * every dragon when the module is back on, so a leg kept now would be a ghost then.
+     */
+    public void setEnabled(boolean on) {
+        enabled = on;
+        if (!on)
+            legs.clear();
+    }
+
+    /** A FAR_LEG from the engine (the dispatcher's sequence check has passed). */
+    public boolean accept(ByteBuffer b, int at, int kind, int size, int aux, SessionPlugin.EngineNames names) {
+        if (kind != FAR_LEG || size < SIZE) {
+            malformed++;
+            return true;
+        }
+        if (!enabled)
+            return true;
+        long agent = b.getLong(at + AGENT);
+        FarState state = FarState.ofWire(aux);
+        if (state == null || state == FarState.MOVING) {
+            malformed++;
+            return true;
+        }
+        accepted++;
+        if (state == FarState.GONE) {
+            legs.remove(agent);
+            gone++;
+            return true;
+        }
+        String dim = names.name(Obs.DICT_DIMENSION, b.getInt(at + DIM));
+        String body = names.name(Obs.DICT_BODY, b.getInt(at + BODY));
+        if (dim == null) {
+            malformed++;
+            legs.remove(agent);
+            return true;
+        }
+        legs.put(agent, new Rec(agent, state, body, dim, b.get(at + VARIANT) & 0xFF, b.get(at + STAGE) & 0xFF,
+                b.getInt(at + Y), b.getInt(at + X0), b.getInt(at + Z0), b.getInt(at + X1), b.getInt(at + Z1),
+                b.getLong(at + T0), b.getLong(at + T1), b.getInt(at + RADIUS)));
+        return true;
+    }
+
+    /** The dragon's last record, or null. */
+    public Rec get(long agent) {
+        return legs.get(agent);
+    }
+
+    public int size() {
+        return legs.size();
+    }
+
+    public String describe() {
+        return legs.size() + " dragons, " + accepted + " records (" + gone + " gone, " + malformed + " malformed)";
+    }
+
+    @Override
+    public String name() {
+        return "engine dragon legs";
+    }
+
+    @Override
+    public void collect(ServerLevel level, long gameTime, Consumer<FarItem> out) {
+        if ((RtsimConfig.effectiveMask() & Module.ECOLOGY.bit()) == 0) {
+            // The dragons are switched off: the engine resends every dragon when they come back
+            if (!legs.isEmpty())
+                legs.clear();
+            return;
+        }
+        String dim = level.dimension().location().toString();
+        for (Rec r : legs.values()) {
+            if (r.state == FarState.BODY || !dim.equals(r.dimension))
+                continue;
+            Style s = style(r.body);
+            int x1 = r.state == FarState.FLY ? r.x1 : r.x0, z1 = r.state == FarState.FLY ? r.z1 : r.z0;
+            out.accept(new FarItem(r.agent, FarKind.DRAGON, s.style(), r.variant, r.stage, s.rgb(r.variant), r.state,
+                    null, new FarItem.Leg(r.y, r.x0, r.z0, x1, z1, r.t0, r.t1, r.state == FarState.HUNT ? r.radius : 0),
+                    -1, 0));
+        }
+    }
+}
