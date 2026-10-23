@@ -890,7 +890,7 @@ impl Engine {
                 district,
                 kind,
                 player,
-                ..
+                pos,
             } => {
                 // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
                 // what its starvation episodes showed may no longer hold (I6). A replay of its
@@ -907,11 +907,13 @@ impl Engine {
                 if went_stale {
                     dist.phase = Phase::Stale;
                 }
-                // The compile no longer matches the blocks until Java recompiles (G-B3).
-                self.glass.discard(
+                // The compile no longer matches the blocks until Java recompiles (G-B3); of its
+                // judging units, those whose box holds the edit (all, for a command's).
+                self.glass.edit(
                     at,
                     *district,
-                    crate::glass::report::discard::EDIT,
+                    *pos,
+                    *kind == EditKind::Command,
                     &self.tun.glass,
                 );
                 self.mark(*district);
@@ -934,6 +936,7 @@ impl Engine {
             Obs::ChunkUnloaded { district, chunk } => {
                 self.per_chunk_unloads = true;
                 self.district_mut(*district).loaded_chunks.remove(chunk);
+                self.glass.chunk_stopped(*district, *chunk);
                 self.mark(*district);
             }
             Obs::ChunkLoaded {
@@ -1175,22 +1178,29 @@ impl Engine {
             dist.deposits.insert(s.good, s);
         }
         // The glass checksum (GLASSBOX.md §5.3): every live sweep counts, creative and
-        // overstressed ones too (the compile models both); read only in G1.
-        if e.live {
+        // overstressed ones too (the compile models both). A sweep that was not live discards
+        // the district's window (`NOT_LIVE`) and samples the judging units whose chunks all ran
+        // (SECTIONS.md §3.4).
+        {
             let view = crate::glass::check::View {
                 revision: dist.revision,
                 inventories: &dist.inventories,
                 ports: &dist.ports,
             };
+            let live = if e.live {
+                crate::glass::check::Liveness::All
+            } else {
+                crate::glass::check::Liveness::Partial {
+                    loaded: &dist.loaded_chunks,
+                    dim: dist.dim,
+                }
+            };
             if let Some(p) = self
                 .glass
-                .sweep(at, e.district, &view, goods, &self.tun.glass)
+                .sweep(at, e.district, &view, &live, goods, &self.tun.glass)
             {
                 self.out.push(Cmd::ProbeSet(p));
             }
-        } else {
-            self.glass
-                .discard(at, e.district, discard::NOT_LIVE, &self.tun.glass);
         }
         if !e.live || e.creative || e.overstressed {
             if e.creative || e.overstressed {
@@ -1315,6 +1325,8 @@ impl Engine {
                 }
                 self.mark(d);
                 self.schedule_pressure(d, at);
+                // No judging unit's window spans the stretch away (choice SC59).
+                self.glass.away(at, d, &self.tun.glass);
             }
         }
         // Live or not, its power sinks follow it (F21).
@@ -2385,6 +2397,8 @@ impl Engine {
             }
             // Applied amounts cross the boundary: learning must never read them as production.
             dist.ports.add(e.good, e.applied);
+            self.glass
+                .port_one(r.district, dist.revision, e.inventory, e.good, e.applied);
             if e.requested < 0 && e.applied > e.requested {
                 shortfall.add(e.good, e.applied - e.requested);
             }
@@ -2396,6 +2410,7 @@ impl Engine {
         // Blocks broke: the doomed inventories at those positions are gone, and what they held
         // dropped. A block skipped (changed since) keeps its inventory (review finding 7).
         if !r.destroyed.is_empty() {
+            let revision = dist.revision;
             for inv in dist.inventories.values_mut() {
                 if inv.doomed && r.destroyed.contains(&inv.decl.pos) {
                     inv.doomed = false;
@@ -2403,6 +2418,8 @@ impl Engine {
                     let spill = inv.effective();
                     self.books.dropped.merge(&spill);
                     dist.ports.subtract(&spill);
+                    let out: GoodVec = spill.iter().map(|(g, a)| (g, -a)).collect();
+                    self.glass.port(r.district, revision, inv.decl.index, &out);
                     inv.known = GoodVec::new();
                     inv.pending = GoodVec::new();
                 }
@@ -2584,6 +2601,10 @@ impl Engine {
     fn port(&mut self, _at: Tick, p: &crate::obs::PortTransfer) {
         let dist = self.district_mut(p.district);
         dist.ports.merge(&p.goods);
+        let revision = dist.revision;
+        if let Some(inv) = p.inventory {
+            self.glass.port(p.district, revision, inv, &p.goods);
+        }
     }
 
     fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
@@ -3033,6 +3054,12 @@ impl Engine {
         let d = p.district;
         let simulated = self.cluster_of.contains_key(&d);
         let sign = if p.direction == Direction::In { 1 } else { -1 };
+        // Into or out of a judging unit's store: a port for its window, loaded or not (an away
+        // unit's window is gone already).
+        if let Some(revision) = self.districts.get(&d).map(|x| x.revision) {
+            let signed: GoodVec = p.goods.iter().map(|(g, n)| (g, sign * n)).collect();
+            self.glass.port(d, revision, p.inventory, &signed);
+        }
         let dist = self.district_mut(d);
         if !simulated {
             // Loaded: an ordinary port. Packages leaving are the packager's learned rate.
@@ -4563,6 +4590,7 @@ mod persist_impls {
             e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
             e.glass.districts = Tracked::restored(glass);
+            e.glass.recount_rows();
             // A dropped glass page is deleted at the next save; the district learns again.
             for &(id, _) in &glass_dropped {
                 e.glass.districts.mark(id);

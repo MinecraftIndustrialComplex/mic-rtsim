@@ -32,14 +32,17 @@ pub mod solve;
 pub mod store;
 #[cfg(test)]
 mod tests;
+pub mod units;
+
+use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::Tick;
 use serde::Serialize;
 
-use crate::ids::{DistrictId, GoodVec, VecMap};
+use crate::ids::{BlockPos, ChunkPos, DistrictId, GoodVec, VecMap};
 use crate::reconcile::GoodLookup;
 use crate::tunables::GlassTunables;
-use check::{Compiled, DistrictGlass, View};
+use check::{Compiled, DistrictGlass, Liveness, View};
 use records::{GlassObs, ProbeSet};
 use report::{Report, discard};
 use store::EndOutcome;
@@ -81,6 +84,10 @@ pub struct Glass {
     /// before sections, or sections their compile no longer cuts into), for the host's one line.
     /// Not saved.
     pub dropped_on_restore: Vec<(DistrictId, &'static str)>,
+    /// Per district with active units: its units' extra rows (SECTIONS.md §7.2), as of its last
+    /// sweep or restore, and their sum, for the row caps. Not saved: recounted on restore.
+    extra: BTreeMap<DistrictId, usize>,
+    extra_total: usize,
 }
 
 /// An empty view, for a compile whose district the engine does not know yet.
@@ -221,14 +228,21 @@ impl Glass {
                         let c = complete.expect("complete");
                         match graph::Graph::build(c.end, c.nodes, c.edges, c.recipes, c.domains) {
                             Ok(graph) => {
-                                let mut comp = Compiled::new(graph, at, tun, &dg.demoted);
+                                let max = dg
+                                    .sections_cap
+                                    .map_or(tun.sections_max, |c| (c as usize).min(tun.sections_max));
+                                let mut comp = Compiled::new_cut(graph, at, tun, &dg.demoted, max);
                                 let none_inv = VecMap::new();
                                 let none_ports = GoodVec::new();
                                 let empty = empty_view(&none_inv, &none_ports);
                                 comp.start(view.unwrap_or(&empty), goods, tun);
                                 self.stats.solves += u64::from(comp.solves);
-                                // The old compile's window (open or warming up) goes with it.
-                                if dg.compiled.is_some() {
+                                // The old compile's district window (open or warming up) goes
+                                // with it; its units the new compile has unchanged go on (§3.6).
+                                if let Some(old) = dg.compiled.as_mut() {
+                                    let solves = old.solves;
+                                    comp.carry_from(old, at, tun);
+                                    self.stats.solves += u64::from(old.solves - solves);
                                     dg.note(at, discard::RECOMPILE);
                                 }
                                 dg.compiled = Some(comp);
@@ -265,18 +279,42 @@ impl Glass {
                     dg.ticking.insert(t.chunk);
                 } else {
                     dg.ticking.remove(&t.chunk);
+                    dg.stopped.insert(t.chunk);
                 }
             }
         }
+        self.recount(d, tun);
     }
 
-    /// A live sweep of `district`, after its inventories were updated (creative and overstressed
-    /// sweeps count: the compile models both). Returns the probe set to send, if any.
+    /// A sweep of `district`, after its inventories were updated (creative and overstressed
+    /// sweeps count: the compile models both). `live` says which chunks ran through it: a live
+    /// sweep (every chunk did) samples the district's window and every unit's; a partial one
+    /// discards the district's window (`NOT_LIVE`) and samples the units whose chunks all ran
+    /// (SECTIONS.md §3.4), discarding the others'. Returns the probe set to send, if any.
     pub fn sweep(
         &mut self,
         at: Tick,
         district: DistrictId,
         view: &View<'_>,
+        live: &Liveness<'_>,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+    ) -> Option<ProbeSet> {
+        let out = self.sweep_inner(at, district, view, live, goods, tun);
+        if let Some(dg) = self.districts.get_mut(&district) {
+            dg.stopped.clear();
+        }
+        self.recount(district, tun);
+        self.enforce_caps(at, district, tun);
+        out
+    }
+
+    fn sweep_inner(
+        &mut self,
+        at: Tick,
+        district: DistrictId,
+        view: &View<'_>,
+        live: &Liveness<'_>,
         goods: &dyn GoodLookup,
         tun: &GlassTunables,
     ) -> Option<ProbeSet> {
@@ -290,10 +328,37 @@ impl Glass {
             c.discard(at, tun);
             return None;
         }
+        let c = dg.compiled.as_ref()?;
+        let nu = c.unit_state.len();
+        let (district_live, unit_live) = match live {
+            Liveness::All => (true, vec![true; nu]),
+            Liveness::Partial { loaded, dim } => {
+                let (ticking, stopped) = (&dg.ticking, &dg.stopped);
+                let runs = |x: i32, z: i32| {
+                    let cp = ChunkPos { dim: *dim, x, z };
+                    loaded.contains(&cp)
+                        && (ticking.is_empty() || ticking.contains(&cp))
+                        && !stopped.contains(&cp)
+                };
+                let ul: Vec<bool> = (0..nu).map(|u| c.units.runs(u as u16, &runs)).collect();
+                (false, ul)
+            }
+        };
+        if !district_live {
+            // Today's rule for the district's window (`NOT_LIVE`); with no unit that ran, the
+            // sweep is today's discard of everything.
+            dg.note(at, discard::NOT_LIVE);
+            let c = dg.compiled.as_mut()?;
+            if !unit_live.iter().any(|&r| r) {
+                c.discard(at, tun);
+                return None;
+            }
+            c.discard_district(at, tun);
+        }
         let c = dg.compiled.as_mut()?;
         let solves = c.solves;
         let windows = c.windows_completed;
-        let (probes, demoted) = c.sweep(at, view, goods, tun);
+        let (probes, demoted) = c.sweep_with(at, view, goods, tun, district_live, &unit_live);
         self.stats.solves += u64::from(c.solves - solves);
         if c.windows_completed > windows {
             self.stats.windows_completed += 1;
@@ -314,9 +379,10 @@ impl Glass {
     }
 
     /// A sweep that does not count, or a change that ends the window, for a [`discard`] reason. A
-    /// sweep without its samples (NO_SWEEP, DROPPED) is a skip: nothing is sampled and the window
-    /// goes on, integrating across the gap (GB101). The rest discard the open window, and the next
-    /// starts after a fresh warm-up.
+    /// sweep without its samples (NO_SWEEP, DROPPED) is a skip: nothing is sampled and the windows
+    /// go on, integrating across the gap (GB101). The rest discard every open window, the
+    /// district's and each unit's, and the next start after a fresh warm-up; an `EDIT` with no
+    /// place stales every unit ([`Glass::edit`] for one with a place).
     pub fn discard(&mut self, at: Tick, district: DistrictId, reason: u32, tun: &GlassTunables) {
         let Some(dg) = self.districts.get_mut(&district) else {
             return;
@@ -329,13 +395,187 @@ impl Glass {
             return;
         }
         if let Some(c) = dg.compiled.as_mut() {
-            c.discard(at, tun);
-            // An edit: the compile no longer matches the blocks until a window passes again or
-            // Java recompiles (G-B3, G-B4); no glass replay meanwhile.
             if reason == discard::EDIT {
-                c.edited = true;
+                c.edit(at, None, tun);
+            } else {
+                c.discard(at, tun);
             }
         }
+        self.recount(district, tun);
+    }
+
+    /// An `IND_EDIT` at `pos` (SECTIONS.md §3.6): the district's window goes and the compile no
+    /// longer matches the blocks until a window passes again or Java recompiles (G-B3, G-B4; no
+    /// glass replay meanwhile). Of its units, those whose box holds `pos` go stale and lose their
+    /// windows; every unit does for a `whole` edit (a command's).
+    pub fn edit(
+        &mut self,
+        at: Tick,
+        district: DistrictId,
+        pos: BlockPos,
+        whole: bool,
+        tun: &GlassTunables,
+    ) {
+        let Some(dg) = self.districts.get_mut(&district) else {
+            return;
+        };
+        if dg.compiled.is_none() {
+            return;
+        }
+        dg.note(at, discard::EDIT);
+        if let Some(c) = dg.compiled.as_mut() {
+            c.edit(at, (!whole).then_some(pos), tun);
+        }
+        self.recount(district, tun);
+    }
+
+    /// Goods ported into (positive) or out of inventory `inv` of the district's revision
+    /// `revision`: kept per inventory a unit holds, which its measured series subtracts (§4.4).
+    pub fn port(&mut self, district: DistrictId, revision: u32, inv: u32, goods: &GoodVec) {
+        let wanted = self
+            .districts
+            .get(&district)
+            .and_then(|dg| dg.compiled.as_ref())
+            .is_some_and(|c| {
+                c.graph.end.revision == revision && c.units.unit_of_inv(inv).is_some()
+            });
+        if !wanted {
+            return;
+        }
+        let Some(c) = self
+            .districts
+            .get_mut(&district)
+            .and_then(|dg| dg.compiled.as_mut())
+        else {
+            return;
+        };
+        let mut v = c.ports_at.get(&inv).cloned().unwrap_or_default();
+        v.merge(goods);
+        c.ports_at.insert(inv, v);
+    }
+
+    /// One good ported into (positive) or out of an inventory: [`Glass::port`] for one good.
+    pub fn port_one(&mut self, district: DistrictId, revision: u32, inv: u32, good: crate::ids::Good, amount: i64) {
+        if amount == 0 {
+            return;
+        }
+        let mut v = GoodVec::new();
+        v.add(good, amount);
+        self.port(district, revision, inv, &v);
+    }
+
+    /// Chunk `chunk` of the district unloaded: a unit lying in it did not run through the sweep
+    /// in progress (§3.4).
+    pub fn chunk_stopped(&mut self, district: DistrictId, chunk: ChunkPos) {
+        let wanted = self
+            .districts
+            .get(&district)
+            .and_then(|dg| dg.compiled.as_ref())
+            .is_some_and(|c| c.units.active());
+        if let Some(dg) = self.districts.get_mut(&district).filter(|_| wanted) {
+            dg.stopped.insert(chunk);
+        }
+    }
+
+    /// The district went away (unloaded): no unit window spans the stretch it did not run, whether
+    /// or not Java sent each chunk's unload (choice SC59).
+    pub fn away(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
+        let wanted = self
+            .districts
+            .get(&district)
+            .and_then(|dg| dg.compiled.as_ref())
+            .is_some_and(|c| c.units.active());
+        if !wanted {
+            return;
+        }
+        if let Some(c) = self
+            .districts
+            .get_mut(&district)
+            .and_then(|dg| dg.compiled.as_mut())
+        {
+            for u in 0..c.unit_state.len() as u16 {
+                c.discard_unit(u, at, tun);
+            }
+        }
+        self.recount(district, tun);
+    }
+
+    /// Recounts the district's extra rows into the row caps' totals.
+    fn recount(&mut self, district: DistrictId, _tun: &GlassTunables) {
+        let now = self
+            .districts
+            .get(&district)
+            .and_then(|dg| dg.compiled.as_ref())
+            .map_or(0, |c| c.extra_rows());
+        let was = if now == 0 {
+            self.extra.remove(&district).unwrap_or(0)
+        } else {
+            self.extra.insert(district, now).unwrap_or(0)
+        };
+        self.extra_total = self.extra_total - was + now;
+    }
+
+    /// Recounts every district's extra rows (after a restore).
+    pub fn recount_rows(&mut self) {
+        self.extra.clear();
+        self.extra_total = 0;
+        for (&d, dg) in self.districts.iter() {
+            let n = dg.compiled.as_ref().map_or(0, |c| c.extra_rows());
+            if n > 0 {
+                self.extra.insert(d, n);
+                self.extra_total += n;
+            }
+        }
+    }
+
+    /// Every district's units' extra rows, summed (SECTIONS.md §7.2).
+    pub fn extra_rows(&self) -> usize {
+        self.extra_total
+    }
+
+    /// The row caps (SECTIONS.md §7.2): a district past `glass.sectionRowsMax` extra rows is cut
+    /// into fewer sections until it holds no more; while the world is past
+    /// `glass.sectionRowsWorldMax`, the district with the most (the lowest id of equals) is cut
+    /// down by the excess. A cut holds for the district's later compiles (choice SC57).
+    fn enforce_caps(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
+        if self.extra.get(&district).copied().unwrap_or(0) > tun.section_rows_max {
+            self.cap(at, district, tun.section_rows_max, tun);
+        }
+        while self.extra_total > tun.section_rows_world_max {
+            let Some((&d, &n)) = self
+                .extra
+                .iter()
+                .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+            else {
+                break;
+            };
+            let limit = n.saturating_sub(self.extra_total - tun.section_rows_world_max);
+            if !self.cap(at, d, limit, tun) {
+                break;
+            }
+        }
+    }
+
+    /// Cuts the district into the most sections below its count whose rows stay within `limit`
+    /// extra rows, and keeps the cut. False when it holds one section already.
+    fn cap(&mut self, at: Tick, district: DistrictId, limit: usize, tun: &GlassTunables) -> bool {
+        let Some(dg) = self.districts.get_mut(&district) else {
+            return false;
+        };
+        let Some(c) = dg.compiled.as_mut() else {
+            return false;
+        };
+        let have = c.sections.list.len();
+        if have <= 1 {
+            return false;
+        }
+        let n = c.sections_for_rows(limit, have);
+        c.recut(n, at, tun);
+        // Not a discard (`report::discard` is Java's report layout): the units it keeps keep
+        // their windows, and the CLI shows the cap.
+        dg.sections_cap = Some(n as u32);
+        self.recount(district, tun);
+        true
     }
 
     /// A session start: every open window loses the samples that were in flight.
@@ -349,6 +589,7 @@ impl Glass {
             }
             dg.asm = store::Assembler::default();
             dg.ticking.clear();
+            dg.stopped.clear();
             dg.numbers_reset = dg.compiled.is_some();
         }
     }
@@ -356,6 +597,9 @@ impl Glass {
     /// The district is gone.
     pub fn remove(&mut self, district: DistrictId) {
         self.districts.remove(&district);
+        if let Some(n) = self.extra.remove(&district) {
+            self.extra_total -= n;
+        }
     }
 
     /// The district's glass report (`report.rs`), or None if it has no complete compile.

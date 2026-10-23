@@ -15,6 +15,16 @@
 //! measured slope's standard error comes from the residual of measured minus predicted, so a regime
 //! change inside the window does not inflate it, and the predicted value is the least-squares slope
 //! of the cumulative prediction at the same sample times (in one regime, exactly `in_l - out_l`).
+//!
+//! **Judging units** (SECTIONS.md §3.4, §4.1 to §4.3; slice S2b). A compile cut into two judging
+//! units or more ([`Units`]) keeps, beside the district's window, one window per unit: its rows
+//! (one sorted `Vec` by unit and good), its own start, warm-up, verdicts and strikes. The units'
+//! windows integrate the same solve, each on its own stores and its own bounds ([`units::bounds`],
+//! choice SC56), and are sampled from the same sweep: a unit is measured on its stores less the
+//! ports into its inventories (`ports_at`). A unit's window survives what does not touch it: a
+//! sweep in which another part of the district did not run, an edit outside its box, and a
+//! recompile that left it unchanged. The district's window stays the checksum over everything and
+//! keeps today's rules; derates and demotions are still its own.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -26,8 +36,9 @@ use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeS
 use super::report::{self, GoodReport, Report};
 use super::sections::Sections;
 use super::solve::{self, Regime, Solution, burn};
+use super::units::{self, UnitBound, Units};
 use crate::district::Inventory;
-use crate::ids::{DistrictId, Good, GoodClass, GoodVec, VecMap};
+use crate::ids::{BlockPos, DistrictId, Good, GoodClass, GoodVec, VecMap};
 use crate::reconcile::GoodLookup;
 use crate::tunables::GlassTunables;
 
@@ -96,6 +107,61 @@ struct Window {
     /// sampled level and that prediction, for the per-store slopes the replay's residual is split
     /// by (G2-8).
     stores: BTreeMap<(u32, Good), (f64, [f64; 4])>,
+}
+
+/// One row of a judging unit's open window (SECTIONS.md §3.3): its good's running sums. The rows
+/// of every unit are one `Vec` sorted by (unit, good), never a map per unit.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Row {
+    unit: u16,
+    good: Good,
+    acc: Acc,
+    cum: Cum,
+}
+
+/// A judging unit's open window: when it began and its sample times' sums (its goods are its rows
+/// in [`Compiled`]). Its target length is the district's.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct UnitWin {
+    start: Tick,
+    last: Tick,
+    n: u32,
+    st: f64,
+    stt: f64,
+}
+
+/// One judging unit's learning state (SECTIONS.md §3.3, §3.4): the district's window fields, per
+/// unit. Saved by unit index: the units are a function of the compile and its sections, which the
+/// page's reader recomputes and checks.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnitState {
+    win: Option<UnitWin>,
+    /// Its window may open from here: the district's warm-up at the compile, and a fresh one after
+    /// each discard of its own.
+    pub ready_at: Tick,
+    /// Its last concluded window (no per-store slopes: those are the district's).
+    pub last: Option<WindowResult>,
+    /// The start and length of its latest window that passed.
+    pub passed: Option<(Tick, u64)>,
+    /// An edit inside its box came after that pass: stale until a window passes again or a
+    /// recompile finds it unchanged (§3.6).
+    pub edited: bool,
+    /// Failed windows in a row.
+    pub strikes: u32,
+    pub windows_completed: u32,
+}
+
+/// Which chunks ran through a sweep, for the units' liveness (SECTIONS.md §3.4).
+pub enum Liveness<'a> {
+    /// Every chunk of the district block-ticked throughout (IND_SWEEP_END's live flag).
+    All,
+    /// Some did not. A unit ran when each chunk it lies in is loaded, block-ticks (a district
+    /// whose Java sends no IND_CHUNK_TICKING ticks every loaded chunk, G2-17) and did not stop
+    /// since the last sweep sampled.
+    Partial {
+        loaded: &'a BTreeSet<crate::ids::ChunkPos>,
+        dim: u32,
+    },
 }
 
 /// One good's verdict in a completed window.
@@ -241,6 +307,20 @@ pub struct Compiled {
     /// The compile cut into sections (SECTIONS.md §3): recomputed from the graph at the accept and
     /// on restore (`page::read_district_page`), never saved but for the fingerprints the page checks.
     pub sections: Sections,
+    /// The sections' judging units (§4.3, `units.rs`): recomputed with the sections, never saved.
+    pub units: Units,
+    /// Each unit's bounds per good under the current solve (choice SC56), by (unit, good):
+    /// recomputed at every solve and on restore, never saved. Empty unless the units are active.
+    pub ubounds: Vec<UnitBound>,
+    /// Per unit: its learning state. Empty unless the units are [`Units::active`]: one unit's
+    /// window would be the district's.
+    pub unit_state: Vec<UnitState>,
+    /// The units' open windows' rows, sorted by (unit, good).
+    rows: Vec<Row>,
+    /// Per inventory a unit holds: the ports into it since the compile (cumulative, positive in),
+    /// what a unit's measured series subtracts (§4.4). Kept across a recompile of the same
+    /// revision, with the windows it carries.
+    pub ports_at: VecMap<u32, GoodVec>,
 }
 
 /// One district's glass state.
@@ -269,6 +349,12 @@ pub struct DistrictGlass {
     /// number. The same factory keeps the compile held, its passed window and its replay
     /// (choice G2-81).
     pub numbers_reset: bool,
+    /// The sections a compile of this district is cut into at most, below `glass.sectionsMax`,
+    /// once its extra rows passed a row cap (SECTIONS.md §7.2): kept across compiles (choice SC57).
+    pub sections_cap: Option<u32>,
+    /// Chunks that stopped running (unloaded, or stopped block-ticking) since the last sweep that
+    /// sampled: a unit lying in one did not run throughout that sweep (§3.4).
+    pub stopped: BTreeSet<crate::ids::ChunkPos>,
 }
 
 /// What a sweep sees of the district.
@@ -324,8 +410,227 @@ fn slope(n: f64, st: f64, stt: f64, sy: f64, sty: f64) -> f64 {
     }
 }
 
+/// Judges a window's goods by the check's rules (G-B14): the district's window and each unit's
+/// alike. `samples`, `st` and `stt` are its sample count and the sums of its sample times (from
+/// its start), `w` its length in ticks. Returns each good's result and whether one failed.
+fn judge_goods<'a>(
+    samples: u32,
+    st: f64,
+    stt: f64,
+    w: f64,
+    goods: impl Iterator<Item = (Good, &'a Acc, &'a Cum)>,
+    z: f64,
+) -> (Vec<GoodResult>, bool) {
+    let n = f64::from(samples);
+    let mut out = Vec::new();
+    let mut any_fail = false;
+    for (g, acc, cum) in goods {
+        let measured = slope(n, st, stt, acc.sy, acc.sty);
+        let predicted = slope(n, st, stt, acc.sp, acc.stp);
+        let lo = if cum.lo_inf {
+            f64::NEG_INFINITY
+        } else {
+            slope(n, st, stt, acc.slo, acc.stlo)
+        };
+        let hi = if cum.hi_inf {
+            f64::INFINITY
+        } else {
+            slope(n, st, stt, acc.shi, acc.sthi)
+        };
+        // The slope's standard error, from the residual of measured minus predicted.
+        let sxx = stt - st * st / n;
+        let sxy = acc.std - st * acc.sd / n;
+        let syy = acc.sdd - acc.sd * acc.sd / n;
+        let se = if samples > 2 && sxx > 0.0 {
+            ((syy - sxy * sxy / sxx).max(0.0) / (n - 2.0) / sxx).sqrt()
+        } else {
+            0.0
+        };
+        let model = if w > 0.0 {
+            (POISSON_SLOPE_FACTOR * (cum.var / w) / w).sqrt()
+        } else {
+            0.0
+        };
+        let sigma = se.max(model);
+        let q = if w > 0.0 { cum.batch.max(1.0) / w } else { 0.0 };
+        let avg = |x: f64, inf: bool| {
+            if inf {
+                f64::INFINITY
+            } else if w > 0.0 {
+                x / w
+            } else {
+                f64::NAN
+            }
+        };
+        let tol = z * sigma + q;
+        let verdict =
+            if samples < 3 || cum.class == report::class::UNBOUNDED || !measured.is_finite() {
+                report::verdict::NONE
+            } else if cum.class == report::class::EXACT {
+                if (measured - predicted).abs() <= tol {
+                    report::verdict::PASS
+                } else {
+                    report::verdict::FAIL
+                }
+            } else if lo - tol <= measured && measured <= hi + tol {
+                report::verdict::PASS
+            } else {
+                report::verdict::FAIL
+            };
+        any_fail |= verdict == report::verdict::FAIL;
+        out.push(GoodResult {
+            good: g,
+            class: cum.class,
+            why: cum.why,
+            in_l: avg(cum.il, false),
+            in_u: avg(cum.iu, cum.iu_inf),
+            out_l: avg(cum.ol, false),
+            out_u: avg(cum.ou, cum.ou_inf),
+            predicted,
+            lo,
+            hi,
+            measured,
+            sigma,
+            q,
+            verdict,
+            samples,
+        });
+    }
+    (out, any_fail)
+}
+
+/// One flow piece of `dt` ticks into a good's cumulative prediction: L in and out, U in and out
+/// (infinite ones flag it), what the stores could not give (`c`, at most 0: their drain clamp),
+/// the variance rate, the batch and the class with its why.
+#[allow(clippy::too_many_arguments)]
+fn add_flow(
+    cum: &mut Cum,
+    dt: f64,
+    c: f64,
+    (il, ol, iu, ou): (f64, f64, f64, f64),
+    var_rate: f64,
+    batch: f64,
+    class: u32,
+    why: (u32, u32),
+) {
+    let dp = (il - ol) * dt + c;
+    cum.p += dp;
+    cum.il += il * dt;
+    cum.ol += ol * dt - c;
+    if iu.is_finite() {
+        cum.iu += iu * dt;
+    } else {
+        cum.iu_inf = true;
+    }
+    if ou.is_finite() {
+        cum.ou += ou * dt - c;
+    } else {
+        cum.ou_inf = true;
+    }
+    let out_spread = ou - ol;
+    let in_spread = iu - il;
+    if out_spread.is_finite() {
+        cum.lo += dp - out_spread * dt;
+    } else {
+        cum.lo_inf = true;
+    }
+    if in_spread.is_finite() {
+        cum.hi += dp + in_spread * dt;
+    } else {
+        cum.hi_inf = true;
+    }
+    cum.var += var_rate * dt;
+    cum.batch = cum.batch.max(batch);
+    if class > cum.class || (class == cum.class && cum.why.0 == report::why::NONE) {
+        cum.class = class;
+        cum.why = why;
+    }
+}
+
+/// The row of (`unit`, `good`) in rows sorted by both, inserted (with `fresh`) if missing.
+fn row_mut(rows: &mut Vec<Row>, unit: u16, good: Good, fresh: impl FnOnce() -> Cum) -> &mut Row {
+    let i = match rows.binary_search_by(|r| (r.unit, r.good).cmp(&(unit, good))) {
+        Ok(i) => i,
+        Err(i) => {
+            rows.insert(
+                i,
+                Row {
+                    unit,
+                    good,
+                    acc: Acc::default(),
+                    cum: fresh(),
+                },
+            );
+            i
+        }
+    };
+    &mut rows[i]
+}
+
+/// The span of `unit`'s rows.
+fn rows_of(rows: &[Row], unit: u16) -> std::ops::Range<usize> {
+    rows.partition_point(|r| r.unit < unit)..rows.partition_point(|r| r.unit <= unit)
+}
+
+/// The cumulative prediction a good sampled before any flow starts with: exact, or unbounded on
+/// a unit or district holding a black box or a port; a batch of one.
+fn sampled_cum(unbounded: bool) -> Cum {
+    Cum {
+        class: if unbounded {
+            report::class::UNBOUNDED
+        } else {
+            report::class::EXACT
+        },
+        batch: 1.0,
+        ..Cum::default()
+    }
+}
+
+/// Every unit's fresh state (none unless the units are active), ready from `ready`.
+fn fresh_units(units: &Units, ready: Tick) -> Vec<UnitState> {
+    if !units.active() {
+        return Vec::new();
+    }
+    vec![
+        UnitState {
+            ready_at: ready,
+            ..UnitState::default()
+        };
+        units.len()
+    ]
+}
+
+/// One sample of a good at `t` ticks into its window: measured `y`, the cumulative prediction
+/// and its bounds as integrated so far.
+fn add_sample(acc: &mut Acc, cum: &Cum, t: f64, y: f64) {
+    acc.sy += y;
+    acc.sty += t * y;
+    acc.sp += cum.p;
+    acc.stp += t * cum.p;
+    acc.slo += cum.lo;
+    acc.stlo += t * cum.lo;
+    acc.shi += cum.hi;
+    acc.sthi += t * cum.hi;
+    let d = y - cum.p;
+    acc.sd += d;
+    acc.std += t * d;
+    acc.sdd += d * d;
+}
+
 impl Compiled {
     pub fn new(graph: Graph, at: Tick, tun: &GlassTunables, demoted: &BTreeSet<u32>) -> Compiled {
+        Compiled::new_cut(graph, at, tun, demoted, tun.sections_max)
+    }
+
+    /// [`Compiled::new`], cut into at most `max` sections (`glass.sectionsMax`, or a district's
+    /// row cap below it).
+    pub fn new_cut(
+        graph: Graph,
+        at: Tick,
+        tun: &GlassTunables,
+        demoted: &BTreeSet<u32>,
+        max: usize,
+    ) -> Compiled {
         let n = graph.nodes.len();
         let window_target = if graph.end.window == 0 {
             tun.checksum_window_min
@@ -350,7 +655,8 @@ impl Compiled {
                 }
             })
             .collect();
-        let sections = Sections::compute(&graph, tun.sections_max);
+        let sections = Sections::compute(&graph, max);
+        let units = Units::build(&graph, &sections);
         let mut regime = Regime::new(n);
         regime.demoted = demoted.clone();
         // Heaters lit at the compile spend their burn from here (§9.3); a creative one never does.
@@ -401,7 +707,108 @@ impl Compiled {
             replay_regimes: 0,
             replay_breakpoints: 0,
             replay_oscillations: 0,
+            unit_state: fresh_units(&units, ready_at),
             sections,
+            units,
+            ubounds: Vec::new(),
+            rows: Vec::new(),
+            ports_at: VecMap::new(),
+        }
+    }
+
+    /// Cuts the compile into at most `max` sections (a district's row cap, SECTIONS.md §7.2),
+    /// keeping each unit the cut leaves as it was (by its sections' fingerprints) with its window
+    /// and verdicts; a merged unit starts learning after a fresh warm-up from `at`.
+    pub fn recut(&mut self, max: usize, at: Tick, tun: &GlassTunables) {
+        let sections = Sections::compute(&self.graph, max);
+        let units = Units::build(&self.graph, &sections);
+        let ready = self
+            .ready_at
+            .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+        let old_units = std::mem::replace(&mut self.units, units);
+        let old_state = std::mem::replace(&mut self.unit_state, fresh_units(&self.units, ready));
+        let old_rows = std::mem::take(&mut self.rows);
+        self.sections = sections;
+        self.adopt(&old_units, old_state, old_rows, false);
+        self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
+        self.forget_idle_state();
+    }
+
+    /// Takes over each unit of an older cut (`old_units`, with its states and rows) that this cut
+    /// has unchanged: the same sections by fingerprint, each key once on both sides. A recompile
+    /// (`recompiled`) also clears its edit: the compile found it as it was (§3.6).
+    fn adopt(
+        &mut self,
+        old_units: &Units,
+        mut old_state: Vec<UnitState>,
+        old_rows: Vec<Row>,
+        recompiled: bool,
+    ) {
+        if !self.units.active() || old_state.len() != old_units.len() {
+            return;
+        }
+        let once = |keys: &[Vec<u64>]| {
+            let mut n: BTreeMap<&[u64], (u32, u16)> = BTreeMap::new();
+            for (u, k) in keys.iter().enumerate() {
+                let e = n.entry(k.as_slice()).or_insert((0, u as u16));
+                e.0 += 1;
+            }
+            n.into_iter()
+                .filter(|(_, (c, _))| *c == 1)
+                .map(|(k, (_, u))| (k.to_vec(), u))
+                .collect::<BTreeMap<Vec<u64>, u16>>()
+        };
+        let old = once(&old_units.keys);
+        let new = once(&self.units.keys);
+        let mut to: BTreeMap<u16, u16> = BTreeMap::new();
+        for (k, &u) in &new {
+            if let Some(&o) = old.get(k) {
+                to.insert(o, u);
+            }
+        }
+        for (&o, &u) in &to {
+            let mut st = std::mem::take(&mut old_state[o as usize]);
+            if recompiled {
+                st.edited = false;
+            }
+            self.unit_state[u as usize] = st;
+        }
+        let mut rows: Vec<Row> = old_rows
+            .into_iter()
+            .filter_map(|mut r| {
+                let &u = to.get(&r.unit)?;
+                r.unit = u;
+                Some(r)
+            })
+            .collect();
+        rows.sort_by(|a, b| (a.unit, a.good).cmp(&(b.unit, b.good)));
+        self.rows = rows;
+    }
+
+    /// With every unit window closed, the interval clock and the drain clamp go, as the district's
+    /// discard has always cleared them.
+    fn forget_idle_state(&mut self) {
+        if self.win.is_none() && self.unit_state.iter().all(|s| s.win.is_none()) {
+            self.last_sweep = None;
+            self.stock_est.clear();
+        }
+    }
+
+    /// A recompile of the same revision (G-B3, SECTIONS.md §3.6): each unit the new compile has
+    /// unchanged keeps its passed window, strikes and open window, which the old compile's model
+    /// integrates up to `at` first; the ports into its inventories go on from where they were.
+    pub fn carry_from(&mut self, old: &mut Compiled, at: Tick, tun: &GlassTunables) {
+        if old.graph.end.revision != self.graph.end.revision {
+            return;
+        }
+        old.advance(at, tun);
+        self.ports_at = std::mem::take(&mut old.ports_at);
+        let old_state = std::mem::take(&mut old.unit_state);
+        let old_rows = std::mem::take(&mut old.rows);
+        self.adopt(&old.units, old_state, old_rows, true);
+        if self.unit_state.iter().any(|s| s.win.is_some()) {
+            self.last_sweep = old.last_sweep;
+            self.stock_est = std::mem::take(&mut old.stock_est);
         }
     }
 
@@ -514,6 +921,7 @@ impl Compiled {
             self.sol = sol.clone();
             self.cache.push_back((k, sol));
             self.cache_hits += 1;
+            self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
             return;
         }
         let t0 = std::time::Instant::now();
@@ -527,6 +935,7 @@ impl Compiled {
             }
             self.cache.push_back((key, sol));
         }
+        self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
     }
 
     /// Solves any regime through the regime cache (the glass replay's regimes, G2): a cached
@@ -573,14 +982,56 @@ impl Compiled {
         self.resolve(tun, true);
     }
 
-    /// Discards the open window; the next starts after a fresh warm-up.
+    /// Discards every open window, the district's and each unit's; the next start after a fresh
+    /// warm-up.
     pub fn discard(&mut self, at: Tick, tun: &GlassTunables) {
+        for u in 0..self.unit_state.len() as u16 {
+            self.discard_unit(u, at, tun);
+        }
+        self.discard_district(at, tun);
+    }
+
+    /// Discards the district's open window alone (the units keep theirs); the next starts after a
+    /// fresh warm-up.
+    pub fn discard_district(&mut self, at: Tick, tun: &GlassTunables) {
         self.win = None;
-        self.last_sweep = None;
-        self.stock_est.clear();
         self.ready_at = self
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+        self.forget_idle_state();
+    }
+
+    /// Discards unit `u`'s open window and its rows; its next starts after a fresh warm-up.
+    pub fn discard_unit(&mut self, u: u16, at: Tick, tun: &GlassTunables) {
+        let Some(st) = self.unit_state.get_mut(u as usize) else {
+            return;
+        };
+        st.win = None;
+        st.ready_at = st
+            .ready_at
+            .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+        let span = rows_of(&self.rows, u);
+        self.rows.drain(span);
+    }
+
+    /// An edit (SECTIONS.md §3.6): the district's window goes, as it covers every section, and the
+    /// compile no longer matches the blocks until a window passes again or Java recompiles (G-B3,
+    /// G-B4). Of the units, those whose sections' node boxes hold `pos` go stale and lose their
+    /// windows; every unit does for an edit with no place (a command) or on a moving frame, whose
+    /// positions are not the world's.
+    pub fn edit(&mut self, at: Tick, pos: Option<BlockPos>, tun: &GlassTunables) {
+        let hit: Vec<u16> = match pos {
+            Some(p) if self.graph.end.frame == 0 => self.units.at(&self.sections, p),
+            _ => (0..self.unit_state.len() as u16).collect(),
+        };
+        for u in hit {
+            if let Some(st) = self.unit_state.get_mut(u as usize) {
+                st.edited = true;
+                self.discard_unit(u, at, tun);
+            }
+        }
+        self.edited = true;
+        self.discard_district(at, tun);
     }
 
     /// Each read store's level per good, each inventory once.
@@ -629,7 +1080,8 @@ impl Compiled {
     fn advance(&mut self, at: Tick, tun: &GlassTunables) {
         let end = at.0 as f64;
         let mut t = self.model_at.0 as f64;
-        let integrating = self.win.is_some() && self.last_sweep.is_some();
+        let integrating = (self.win.is_some() || self.unit_state.iter().any(|s| s.win.is_some()))
+            && self.last_sweep.is_some();
         // Each heater changes phase at most twice: the loop ends.
         let mut pieces = 0usize;
         while t < end && pieces <= 2 * self.heaters.len() + 1 {
@@ -696,62 +1148,57 @@ impl Compiled {
             .count() as u32
     }
 
-    /// Integrates `dt` ticks of the current regime into the open window.
+    /// Integrates `dt` ticks of the current regime into the open windows: the district's on its
+    /// goods' bounds, each open unit's on its own (choice SC56). The stores' drain clamp is shared:
+    /// what a store could not give is short in the district's good and in its unit's.
     fn integrate(&mut self, dt: f64) {
         if dt <= 0.0 {
             return;
         }
-        let Some(win) = self.win.as_mut() else {
+        let units_open = self.unit_state.iter().any(|s| s.win.is_some());
+        if self.win.is_none() && !units_open {
             return;
-        };
-        // What the stores could not give (they held too little), per good.
+        }
+        // What the stores could not give (they held too little), per good and per unit's good.
         let mut corr: BTreeMap<Good, f64> = BTreeMap::new();
+        let mut ucorr: BTreeMap<(u16, Good), f64> = BTreeMap::new();
         for &(inv, g, net) in &self.sol.per_store {
             let est = self.stock_est.entry((inv, g)).or_insert(0.0);
             let raw = net * dt;
             let clamped = raw.max(-*est);
             *est += clamped;
-            win.stores.entry((inv, g)).or_default().0 += clamped;
+            if let Some(win) = self.win.as_mut() {
+                win.stores.entry((inv, g)).or_default().0 += clamped;
+            }
             if clamped != raw {
                 *corr.entry(g).or_insert(0.0) += clamped - raw;
+                if units_open && let Some(u) = self.units.unit_of_inv(inv) {
+                    *ucorr.entry((u, g)).or_insert(0.0) += clamped - raw;
+                }
             }
         }
-        for gb in &self.sol.goods {
-            let (_, cum) = win.goods.entry(gb.good).or_default();
-            let c = corr.get(&gb.good).copied().unwrap_or(0.0);
-            let (il, ol) = (gb.in_l.to_f64(), gb.out_l.to_f64());
-            let (iu, ou) = (gb.in_u.to_f64(), gb.out_u.to_f64());
-            let dp = (il - ol) * dt + c;
-            cum.p += dp;
-            cum.il += il * dt;
-            cum.ol += ol * dt - c;
-            if iu.is_finite() {
-                cum.iu += iu * dt;
-            } else {
-                cum.iu_inf = true;
+        if let Some(win) = self.win.as_mut() {
+            for gb in &self.sol.goods {
+                let (_, cum) = win.goods.entry(gb.good).or_default();
+                let c = corr.get(&gb.good).copied().unwrap_or(0.0);
+                let flows = (
+                    gb.in_l.to_f64(),
+                    gb.out_l.to_f64(),
+                    gb.in_u.to_f64(),
+                    gb.out_u.to_f64(),
+                );
+                add_flow(cum, dt, c, flows, gb.var_rate, gb.batch, gb.class, gb.why);
             }
-            if ou.is_finite() {
-                cum.ou += ou * dt - c;
-            } else {
-                cum.ou_inf = true;
-            }
-            let out_spread = ou - ol;
-            let in_spread = iu - il;
-            if out_spread.is_finite() {
-                cum.lo += dp - out_spread * dt;
-            } else {
-                cum.lo_inf = true;
-            }
-            if in_spread.is_finite() {
-                cum.hi += dp + in_spread * dt;
-            } else {
-                cum.hi_inf = true;
-            }
-            cum.var += gb.var_rate * dt;
-            cum.batch = cum.batch.max(gb.batch);
-            if gb.class > cum.class || (gb.class == cum.class && cum.why.0 == report::why::NONE) {
-                cum.class = gb.class;
-                cum.why = gb.why;
+        }
+        if units_open {
+            for ub in &self.ubounds {
+                if self.unit_state[ub.unit as usize].win.is_none() {
+                    continue;
+                }
+                let c = ucorr.get(&(ub.unit, ub.good)).copied().unwrap_or(0.0);
+                let row = row_mut(&mut self.rows, ub.unit, ub.good, Cum::default);
+                let flows = (ub.in_l, ub.out_l, ub.in_u, ub.out_u);
+                add_flow(&mut row.cum, dt, c, flows, ub.var, ub.batch, ub.class, ub.why);
             }
         }
     }
@@ -781,40 +1228,73 @@ impl Compiled {
             acc[2] += *p;
             acc[3] += t * *p;
         }
-        for (&g, &a) in stock {
-            win.goods.entry(g).or_insert_with(|| {
-                (
-                    Acc::default(),
-                    Cum {
-                        class: if unbounded {
-                            report::class::UNBOUNDED
-                        } else {
-                            report::class::EXACT
-                        },
-                        batch: 1.0,
-                        ..Cum::default()
-                    },
-                )
-            });
-            let _ = a;
+        for &g in stock.keys() {
+            win.goods
+                .entry(g)
+                .or_insert_with(|| (Acc::default(), sampled_cum(unbounded)));
         }
         for (g, _) in ports.iter() {
             win.goods.entry(g).or_default();
         }
         for (g, (acc, cum)) in win.goods.iter_mut() {
             let y = stock.get(g).copied().unwrap_or(0) as f64 - ports.get(*g) as f64;
-            acc.sy += y;
-            acc.sty += t * y;
-            acc.sp += cum.p;
-            acc.stp += t * cum.p;
-            acc.slo += cum.lo;
-            acc.stlo += t * cum.lo;
-            acc.shi += cum.hi;
-            acc.sthi += t * cum.hi;
-            let d = y - cum.p;
-            acc.sd += d;
-            acc.std += t * d;
-            acc.sdd += d * d;
+            add_sample(acc, cum, t, y);
+        }
+    }
+
+    /// Adds the sample at `at` to the open windows of the units `take` names: each unit's stores'
+    /// stock less the ports into its inventories, per good (SECTIONS.md §4.1, the units' stores
+    /// interior).
+    fn sample_units(&mut self, at: Tick, view: &View<'_>, take: &[bool]) {
+        if !take.iter().any(|&x| x) || view.revision != self.graph.end.revision {
+            return;
+        }
+        let mut y: BTreeMap<(u16, Good), i64> = BTreeMap::new();
+        for (u, stores) in self.units.stores.iter().enumerate() {
+            if !take[u] {
+                continue;
+            }
+            for inv in stores {
+                if let Some(i) = view.inventories.get(inv) {
+                    for (g, a) in i.known.iter() {
+                        *y.entry((u as u16, g)).or_insert(0) += a;
+                    }
+                }
+            }
+        }
+        for (inv, &u) in self.units.of_inv.iter() {
+            if !take[u as usize] {
+                continue;
+            }
+            if let Some(p) = self.ports_at.get(inv) {
+                for (g, a) in p.iter() {
+                    *y.entry((u, g)).or_insert(0) -= a;
+                }
+            }
+        }
+        for &(u, g) in y.keys() {
+            let unbounded = self.units.unbounded[u as usize];
+            row_mut(&mut self.rows, u, g, || sampled_cum(unbounded));
+        }
+        let mut times = vec![0.0; take.len()];
+        for (u, st) in self.unit_state.iter_mut().enumerate() {
+            let Some(w) = st.win.as_mut().filter(|_| take[u]) else {
+                continue;
+            };
+            let t = at.0.saturating_sub(w.start.0) as f64;
+            w.n += 1;
+            w.st += t;
+            w.stt += t * t;
+            w.last = at;
+            times[u] = t;
+        }
+        for r in self.rows.iter_mut() {
+            let u = r.unit as usize;
+            if !take[u] || self.unit_state[u].win.is_none() {
+                continue;
+            }
+            let v = y.get(&(r.unit, r.good)).copied().unwrap_or(0) as f64;
+            add_sample(&mut r.acc, &r.cum, times[u], v);
         }
     }
 
@@ -822,80 +1302,14 @@ impl Compiled {
     fn judge(&self, win: &Window, z: f64) -> WindowResult {
         let n = f64::from(win.n);
         let w = win.last.0.saturating_sub(win.start.0) as f64;
-        let mut goods = Vec::new();
-        let mut any_fail = false;
-        for (g, (acc, cum)) in &win.goods {
-            let measured = slope(n, win.st, win.stt, acc.sy, acc.sty);
-            let predicted = slope(n, win.st, win.stt, acc.sp, acc.stp);
-            let lo = if cum.lo_inf {
-                f64::NEG_INFINITY
-            } else {
-                slope(n, win.st, win.stt, acc.slo, acc.stlo)
-            };
-            let hi = if cum.hi_inf {
-                f64::INFINITY
-            } else {
-                slope(n, win.st, win.stt, acc.shi, acc.sthi)
-            };
-            // The slope's standard error, from the residual of measured minus predicted.
-            let sxx = win.stt - win.st * win.st / n;
-            let sxy = acc.std - win.st * acc.sd / n;
-            let syy = acc.sdd - acc.sd * acc.sd / n;
-            let se = if win.n > 2 && sxx > 0.0 {
-                ((syy - sxy * sxy / sxx).max(0.0) / (n - 2.0) / sxx).sqrt()
-            } else {
-                0.0
-            };
-            let model = if w > 0.0 {
-                (POISSON_SLOPE_FACTOR * (cum.var / w) / w).sqrt()
-            } else {
-                0.0
-            };
-            let sigma = se.max(model);
-            let q = if w > 0.0 { cum.batch.max(1.0) / w } else { 0.0 };
-            let avg = |x: f64, inf: bool| {
-                if inf {
-                    f64::INFINITY
-                } else if w > 0.0 {
-                    x / w
-                } else {
-                    f64::NAN
-                }
-            };
-            let tol = z * sigma + q;
-            let verdict =
-                if win.n < 3 || cum.class == report::class::UNBOUNDED || !measured.is_finite() {
-                    report::verdict::NONE
-                } else if cum.class == report::class::EXACT {
-                    if (measured - predicted).abs() <= tol {
-                        report::verdict::PASS
-                    } else {
-                        report::verdict::FAIL
-                    }
-                } else if lo - tol <= measured && measured <= hi + tol {
-                    report::verdict::PASS
-                } else {
-                    report::verdict::FAIL
-                };
-            any_fail |= verdict == report::verdict::FAIL;
-            goods.push(GoodResult {
-                good: *g,
-                class: cum.class,
-                why: cum.why,
-                in_l: avg(cum.il, false),
-                in_u: avg(cum.iu, cum.iu_inf),
-                out_l: avg(cum.ol, false),
-                out_u: avg(cum.ou, cum.ou_inf),
-                predicted,
-                lo,
-                hi,
-                measured,
-                sigma,
-                q,
-                verdict,
-                samples: win.n,
-            });
-        }
+        let (goods, any_fail) = judge_goods(
+            win.n,
+            win.st,
+            win.stt,
+            w,
+            win.goods.iter().map(|(&g, (acc, cum))| (g, acc, cum)),
+            z,
+        );
         let stores = win
             .stores
             .iter()
@@ -919,6 +1333,65 @@ impl Compiled {
             },
             goods,
         }
+    }
+
+    /// Judges unit `u`'s open window on its rows, by the district's rules (§3.4).
+    fn judge_unit(&self, u: u16, z: f64) -> Option<WindowResult> {
+        let w = self.unit_state.get(u as usize)?.win?;
+        let ticks = w.last.0.saturating_sub(w.start.0);
+        let rows = &self.rows[rows_of(&self.rows, u)];
+        let (goods, any_fail) = judge_goods(
+            w.n,
+            w.st,
+            w.stt,
+            ticks as f64,
+            rows.iter().map(|r| (r.good, &r.acc, &r.cum)),
+            z,
+        );
+        Some(WindowResult {
+            start: w.start,
+            ticks,
+            verdict: if any_fail {
+                report::verdict::FAIL
+            } else {
+                report::verdict::PASS
+            },
+            goods,
+            stores: Vec::new(),
+        })
+    }
+
+    /// Concludes each unit window that reached the district's target length with three samples:
+    /// judged, its verdicts kept, and a new one opened at `at`. Returns which units opened one.
+    fn conclude_units(&mut self, at: Tick, z: f64) -> Vec<bool> {
+        let mut opened = vec![false; self.unit_state.len()];
+        for u in 0..self.unit_state.len() {
+            let Some(w) = self.unit_state[u].win else {
+                continue;
+            };
+            if at.0.saturating_sub(w.start.0) < self.window_target || w.n < 3 {
+                continue;
+            }
+            let res = self.judge_unit(u as u16, z).expect("open");
+            let span = rows_of(&self.rows, u as u16);
+            self.rows.drain(span);
+            let st = &mut self.unit_state[u];
+            st.windows_completed += 1;
+            if res.verdict == report::verdict::PASS {
+                st.passed = Some((res.start, res.ticks));
+                st.edited = false;
+                st.strikes = 0;
+            } else {
+                st.strikes += 1;
+            }
+            st.last = Some(res);
+            st.win = Some(UnitWin {
+                start: at,
+                ..UnitWin::default()
+            });
+            opened[u] = true;
+        }
+        opened
     }
 
     /// The node limiting a good's flow on the read stores (§5.3): from the stores' edges carrying it
@@ -1086,14 +1559,47 @@ impl Compiled {
         goods: &dyn GoodLookup,
         tun: &GlassTunables,
     ) -> (Option<Vec<u32>>, Option<u32>) {
+        let live = vec![true; self.unit_state.len()];
+        self.sweep_with(at, view, goods, tun, true, &live)
+    }
+
+    /// One sweep: `district_live` when every chunk ran throughout it (the district's window then
+    /// samples), and per unit whether its chunks did (`unit_live`, SECTIONS.md §3.4). A unit whose
+    /// chunks did not run loses its open window; the others sample as the district does. Returns a
+    /// probe set to send and a newly demoted model, if any.
+    pub fn sweep_with(
+        &mut self,
+        at: Tick,
+        view: &View<'_>,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+        district_live: bool,
+        unit_live: &[bool],
+    ) -> (Option<Vec<u32>>, Option<u32>) {
         let mut out = (None, None);
-        self.sweeps += 1;
+        if district_live {
+            self.sweeps += 1;
+        }
         self.district_revision = Some(view.revision);
         self.advance(at, tun);
+        // The units first: each open one that ran is sampled, the others lose their windows.
+        let nu = self.unit_state.len();
+        let ran = |u: usize| unit_live.get(u).copied().unwrap_or(false);
+        for u in 0..nu {
+            if self.unit_state[u].win.is_some() && !ran(u) {
+                self.discard_unit(u as u16, at, tun);
+            }
+        }
+        let take: Vec<bool> = (0..nu)
+            .map(|u| ran(u) && self.unit_state[u].win.is_some())
+            .collect();
+        self.sample_units(at, view, &take);
+        let mut first = self.conclude_units(at, tun.checksum_z);
         let stock = self.stock(view);
         let per = self.store_levels(view);
         let unbounded = self.sol.has_unbounded;
-        if self.win.is_some() {
+        let mut restarted = false;
+        if district_live && self.win.is_some() {
             self.sample(at, &stock, &per, view.ports, unbounded);
             self.sweeps_sampled += 1;
             let done = self
@@ -1115,17 +1621,14 @@ impl Compiled {
                     start: at,
                     ..Window::default()
                 });
-                self.read_state(view, goods, tun);
-                self.resolve(tun, false);
-                self.sample(at, &stock, &per, view.ports, unbounded);
-                self.set_stock(view);
-                self.last_sweep = Some(at);
-                return out;
+                restarted = true;
             }
         }
         self.read_state(view, goods, tun);
         self.resolve(tun, false);
-        if self.win.is_none() && at >= self.ready_at {
+        if restarted {
+            self.sample(at, &stock, &per, view.ports, unbounded);
+        } else if district_live && self.win.is_none() && at >= self.ready_at {
             self.win = Some(Window {
                 start: at,
                 ..Window::default()
@@ -1133,6 +1636,19 @@ impl Compiled {
             self.sample(at, &stock, &per, view.ports, self.sol.has_unbounded);
             self.sweeps_sampled += 1;
         }
+        // Units that concluded start their next window here, with this sample; units past their
+        // warm-up whose chunks ran open one.
+        for (u, f) in first.iter_mut().enumerate() {
+            let st = &mut self.unit_state[u];
+            if st.win.is_none() && ran(u) && at >= st.ready_at {
+                st.win = Some(UnitWin {
+                    start: at,
+                    ..UnitWin::default()
+                });
+                *f = true;
+            }
+        }
+        self.sample_units(at, view, &first);
         self.set_stock(view);
         self.last_sweep = Some(at);
         out
@@ -1321,6 +1837,159 @@ impl Compiled {
     pub fn window(&self) -> Option<(Tick, u32)> {
         self.win.as_ref().map(|w| (w.start, w.n))
     }
+
+    /// Unit `u`'s window in progress, if any: (start, samples).
+    pub fn unit_window(&self, u: u16) -> Option<(Tick, u32)> {
+        self.unit_state
+            .get(u as usize)?
+            .win
+            .as_ref()
+            .map(|w| (w.start, w.n))
+    }
+
+    /// Unit `u`'s window in progress, judged as it stands (its verdicts reported as NONE).
+    pub fn unit_partial(&self, u: u16) -> Option<WindowResult> {
+        let mut r = self.judge_unit(u, 0.0)?;
+        for g in r.goods.iter_mut() {
+            g.verdict = report::verdict::NONE;
+        }
+        r.verdict = report::verdict::NONE;
+        Some(r)
+    }
+
+    /// The units' open rows.
+    pub fn rows_len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The units' extra rows (SECTIONS.md §7.2): their (unit, good) rows, open or in their last
+    /// window, beyond one per good, which one section per district would hold.
+    pub fn extra_rows(&self) -> usize {
+        if self.unit_state.is_empty() {
+            return 0;
+        }
+        let mut pairs: BTreeSet<(u16, Good)> = self.rows.iter().map(|r| (r.unit, r.good)).collect();
+        for (u, st) in self.unit_state.iter().enumerate() {
+            if let Some(l) = &st.last {
+                pairs.extend(l.goods.iter().map(|g| (u as u16, g.good)));
+            }
+        }
+        let goods: BTreeSet<Good> = pairs.iter().map(|&(_, g)| g).collect();
+        pairs.len() - goods.len()
+    }
+
+    /// The units' goods (open or in their last window), per unit.
+    fn unit_goods(&self) -> Vec<BTreeSet<Good>> {
+        let mut out = vec![BTreeSet::new(); self.unit_state.len()];
+        for r in &self.rows {
+            out[r.unit as usize].insert(r.good);
+        }
+        for (u, st) in self.unit_state.iter().enumerate() {
+            if let Some(l) = &st.last {
+                out[u].extend(l.goods.iter().map(|g| g.good));
+            }
+        }
+        out
+    }
+
+    /// The largest section count at most `below - 1` whose cut would hold at most `limit` extra
+    /// rows, counting each unit of it as the goods of the units it merges (a lower count only
+    /// merges more: `Sections::compute`'s merges are a prefix of a lower count's). 1 always does.
+    pub fn sections_for_rows(&self, limit: usize, below: usize) -> usize {
+        let goods = self.unit_goods();
+        let extra_at = |max: usize| -> usize {
+            let s = Sections::compute(&self.graph, max);
+            let u = Units::build(&self.graph, &s);
+            if !u.active() {
+                return 0;
+            }
+            let mut merged = vec![BTreeSet::new(); u.len()];
+            for (old, gs) in goods.iter().enumerate() {
+                // An old unit lies in one new unit: its first section's first node names it.
+                let node = self.units.sections[old]
+                    .first()
+                    .and_then(|&x| self.sections.list[x as usize].nodes.first());
+                let Some(&v) = node else { continue };
+                let nu = u.of_node[v as usize];
+                if nu != super::sections::NONE {
+                    merged[nu as usize].extend(gs.iter().copied());
+                }
+            }
+            let all: BTreeSet<Good> = merged.iter().flatten().copied().collect();
+            merged.iter().map(|m| m.len()).sum::<usize>() - all.len()
+        };
+        let (mut lo, mut hi) = (1usize, below.saturating_sub(1).max(1));
+        if extra_at(hi) <= limit {
+            return hi;
+        }
+        // extra_at(lo) is 0; find the largest count that holds.
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if extra_at(mid) <= limit {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// On restore (`page::read_district_page`, its sections recomputed): the judging units and
+    /// their bounds from the sections and the solve, and a check that the saved unit state is
+    /// theirs. False when it is not (an invalid page).
+    pub(crate) fn restore_units(&mut self) -> bool {
+        self.units = Units::build(&self.graph, &self.sections);
+        self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
+        let nu = if self.units.active() { self.units.len() } else { 0 };
+        if self.unit_state.len() != nu {
+            return false;
+        }
+        let sorted = self
+            .rows
+            .windows(2)
+            .all(|p| (p[0].unit, p[0].good) < (p[1].unit, p[1].good));
+        sorted
+            && self.rows.iter().all(|r| {
+                self.unit_state
+                    .get(r.unit as usize)
+                    .is_some_and(|s| s.win.is_some())
+            })
+    }
+
+    /// May unit `u` replay (SECTIONS.md §3.4)? Its own last window passed and no edit staled it
+    /// since, and the district's last concluded window failed on none of the goods it touches. With
+    /// the units not active, the district's rule (G-B4, [`Compiled::eligible`]).
+    pub fn unit_may_replay(&self, u: u16) -> bool {
+        if self.unit_state.is_empty() {
+            return self.eligible();
+        }
+        let Some(st) = self.unit_state.get(u as usize) else {
+            return false;
+        };
+        let Some(own) = st.last.as_ref().filter(|r| r.verdict == report::verdict::PASS) else {
+            return false;
+        };
+        if st.edited {
+            return false;
+        }
+        let failing: BTreeSet<Good> = self.last.as_ref().map_or(BTreeSet::new(), |r| {
+            r.goods
+                .iter()
+                .filter(|g| g.verdict == report::verdict::FAIL)
+                .map(|g| g.good)
+                .collect()
+        });
+        !own.goods.iter().any(|g| failing.contains(&g.good))
+    }
+
+    /// May section `s` replay: its unit's rule ([`Compiled::unit_may_replay`]); an idle node's
+    /// section (none) never does.
+    pub fn section_may_replay(&self, s: u16) -> bool {
+        match self.units.of_section.get(s as usize) {
+            Some(&u) if u != super::sections::NONE => self.unit_may_replay(u),
+            _ => false,
+        }
+    }
 }
 
 impl DistrictGlass {
@@ -1421,6 +2090,28 @@ mod persist_impls {
         last
     });
     persist_struct!(Burn { node, left, thr });
+    persist_struct!(Row {
+        unit,
+        good,
+        acc,
+        cum
+    });
+    persist_struct!(UnitWin {
+        start,
+        last,
+        n,
+        st,
+        stt
+    });
+    persist_struct!(UnitState {
+        win,
+        ready_at,
+        last,
+        passed,
+        edited,
+        strikes,
+        windows_completed
+    });
 
     impl Persist for GlassEvent {
         fn put(&self, w: &mut Writer) {
@@ -1461,8 +2152,9 @@ mod persist_impls {
         }
     }
 
-    /// Every field but `solve_micros` (wall-clock time, restored as 0) and `sections` (recomputed
-    /// by the page's reader, which checks them against the fingerprints the page keeps): the regime
+    /// Every field but `solve_micros` (wall-clock time, restored as 0), `sections` and `units`
+    /// (recomputed by the page's reader, which checks them against the fingerprints the page keeps
+    /// and the unit state against the units) and `ubounds` (recomputed from the solve): the regime
     /// cache too, as a regime it answers is not a solve, and the replay's settle budget counts
     /// solves (G2-61).
     impl Persist for Compiled {
@@ -1498,6 +2190,9 @@ mod persist_impls {
             self.replay_regimes.put(w);
             self.replay_breakpoints.put(w);
             self.replay_oscillations.put(w);
+            self.unit_state.put(w);
+            self.rows.put(w);
+            self.ports_at.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             let c = Compiled {
@@ -1533,7 +2228,12 @@ mod persist_impls {
                 replay_regimes: Persist::get(r)?,
                 replay_breakpoints: Persist::get(r)?,
                 replay_oscillations: Persist::get(r)?,
+                unit_state: Persist::get(r)?,
+                rows: Persist::get(r)?,
+                ports_at: Persist::get(r)?,
                 sections: Sections::default(),
+                units: Units::default(),
+                ubounds: Vec::new(),
             };
             // What the solve and the window index by node must cover the graph's nodes.
             let n = c.graph.nodes.len();

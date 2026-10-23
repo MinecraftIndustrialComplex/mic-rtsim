@@ -255,6 +255,13 @@ pub struct GlassTunables {
     /// step 5); past it the smallest that share a store merge, then a domain, then the smallest.
     /// TUNABLE, 64.
     pub sections_max: usize,
+    /// `glass.sectionRowsMax`: extra window rows one district's judging units hold at most
+    /// (SECTIONS.md §7.2: rows beyond one per good, what one section per district holds); past it
+    /// the district is cut into fewer sections, and keeps that cut (choice SC57). TUNABLE, 1024.
+    pub section_rows_max: usize,
+    /// `glass.sectionRowsWorldMax`: extra window rows every district's units hold at most together;
+    /// past it the district holding the most is cut down by the excess. TUNABLE, 16384.
+    pub section_rows_world_max: usize,
 }
 
 impl Default for GlassTunables {
@@ -276,6 +283,8 @@ impl Default for GlassTunables {
             probe_nodes_max: 16,
             breakpoints_per_event_max: 64,
             sections_max: 64,
+            section_rows_max: 1024,
+            section_rows_world_max: 16_384,
         }
     }
 }
