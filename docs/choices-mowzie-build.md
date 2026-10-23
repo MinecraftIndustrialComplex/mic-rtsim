@@ -700,6 +700,12 @@ under its own heading.
   culture (patience 1 day), the envoy leaves bored with the demand open, 6,600 ticks before its
   deadline, and a full payment to it settles PAID as a tribute, not a gift; on the MZB-137 lookup it
   was a gift and nothing settled.
+- **MZB-144** (ENVOY_ANSWER is an envoy's; re-review P3-1): an answer for a party that is not an
+  envoy (a stale or misrouted record, never sent by the bridge) used the party's feud as the demand's
+  target, so for a war band it booked the insult and refused the feud's demand. The ENVOY_ANSWER
+  arm now returns at once for a party that is not an `Envoy`, for both answers (ANSWER_REFUSED is
+  never sent by the bridge either). Test: ATTACKED for a raid band that serves the player's feud
+  changes no grievance and settles nothing; it booked the insult on the old engine.
 
 ## M4 Camp reconciler, engine
 
