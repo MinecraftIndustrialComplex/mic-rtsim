@@ -60,8 +60,10 @@ const DIST_PREFIX: u64 = 0x4449_5354;
 /// still not a caravan.
 const LAIR_PREFIX: u64 = LAIR_TAG >> 32;
 
-/// A severity under this is read as a rung, whatever the kind, when ranking news (TK33): the
-/// conflict records rungs on today's kinds too (a robbery of 2, a rescue of 2, a killing of 4).
+/// A severity under this is read as a rung, whatever the kind, when ranking news (TK33). Only a
+/// guard now: the conflict once recorded rungs on today's kinds (a robbery of 2, a rescue of 2, a
+/// killing of 4), and since MZB-36 (b053f0f5) it records them on `SEVERITY_UNIT` like every other
+/// module, so no record of today's kinds should fall under it.
 pub const RUNG_LIMIT: u8 = 25;
 
 /// What TALK counts (`Engine::talk_stats`).
@@ -436,8 +438,9 @@ pub const fn kind_weight(kind: ReportKind) -> u64 {
 /// as it is. A small code (a rung, an outcome, 1 or 2 for a port) counts as
 /// [`rtsim_knowledge::report::rung_weight`]: 100 plus 25 a step to four, so a rung 4 feud outweighs
 /// a rung 1 by 25 percent and a rung 1 outweighs a fair trade. A code is the news kinds' severity
-/// always, and any kind's under [`RUNG_LIMIT`]: the conflict records a robbery, a rescue or a
-/// killing by its rung (2, 2, 4), not on the base-delta scale (TK33). Nothing weighs less than 25.
+/// always, and any kind's under [`RUNG_LIMIT`] (a guard, TK33). A robbery, a rescue or a killing the
+/// conflict records is on the unit scale (MZB-36), so it counts as it is, beside a villager's own:
+/// the ranking compares a camp's robbery and a player's like for like. Nothing weighs less than 25.
 pub fn severity_term(kind: ReportKind, severity: u8) -> u64 {
     u64::from(if kind.is_news() || severity < RUNG_LIMIT {
         rung_weight(severity)
@@ -1191,8 +1194,8 @@ mod tests {
         assert_eq!(severity_term(ReportKind::PortClosed, 0), 100);
         assert_eq!(severity_term(ReportKind::Assault, 100), 100);
         assert_eq!(severity_term(ReportKind::Assault, 101), 101);
-        // The conflict records some old kinds by rung (Robbery 2, Rescue 2, Killing 4): under 25 a
-        // severity of any kind is a rung.
+        // Under 25 a severity of any kind is read as a rung: a guard since MZB-36, when the conflict
+        // stopped recording Robbery 2, Rescue 2 and Killing 4 and moved to the unit scale.
         assert_eq!(severity_term(ReportKind::Robbery, 2), 150);
         assert_eq!(severity_term(ReportKind::Killing, 4), 200);
         assert_eq!(severity_term(ReportKind::Assault, 0), 100);
