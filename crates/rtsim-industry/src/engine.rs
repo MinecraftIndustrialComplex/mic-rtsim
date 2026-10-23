@@ -1321,9 +1321,17 @@ impl Engine {
                 if let Some(dg) = self.glass.districts.get_mut(&d) {
                     dg.fallback = None;
                 }
+                if old == Presence::Unloaded {
+                    self.glass.back(at, d, &self.tun.glass);
+                }
                 self.reconcile_round(d, at, Round::Full);
             }
-            Presence::Partial => self.mark(d),
+            Presence::Partial => {
+                if old == Presence::Unloaded {
+                    self.glass.back(at, d, &self.tun.glass);
+                }
+                self.mark(d);
+            }
             Presence::Unloaded => {
                 dist.watched = false;
                 dist.learner.discard();

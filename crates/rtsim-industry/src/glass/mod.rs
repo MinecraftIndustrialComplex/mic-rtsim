@@ -309,7 +309,6 @@ impl Glass {
         let out = self.sweep_inner(at, district, view, live, goods, tun);
         if let Some(dg) = self.districts.get_mut(&district) {
             dg.stopped.clear();
-            dg.away = false;
         }
         self.recount(district, tun);
         self.enforce_caps(at, district, tun);
@@ -338,8 +337,8 @@ impl Glass {
         let c = dg.compiled.as_ref()?;
         let nu = c.unit_state.len();
         let (ticking, stopped) = (&dg.ticking, &dg.stopped);
-        // The first sweep after the district went away runs no unit: each warms up afresh from it
-        // (choice SC59).
+        // While the district is away no unit runs, whatever a sweep still in flight says; its return
+        // starts each one's warm-up afresh ([`Glass::back`], choice SC59).
         let units_run = |runs: &dyn Fn(i32, i32) -> bool| -> Vec<bool> {
             if dg.away {
                 return vec![false; nu];
@@ -509,8 +508,8 @@ impl Glass {
     }
 
     /// The district went away (unloaded): no unit window spans the stretch it did not run, whether
-    /// or not Java sent each chunk's unload, and the first sweep back runs no unit, so each warms
-    /// up afresh from it (choice SC59).
+    /// or not Java sent each chunk's unload, and no unit runs until it is back ([`Glass::back`]),
+    /// whatever a sweep still in flight says (choice SC59).
     pub fn away(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
         let wanted = self
             .districts
@@ -526,6 +525,21 @@ impl Glass {
                 for u in 0..c.unit_state.len() as u16 {
                     c.discard_unit(u, at, tun);
                 }
+            }
+        }
+        self.recount(district, tun);
+    }
+
+    /// The district is back (loaded again after [`Glass::away`]): each unit warms up afresh from
+    /// here (choice SC59).
+    pub fn back(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
+        let Some(dg) = self.districts.get_mut(&district).filter(|dg| dg.away) else {
+            return;
+        };
+        dg.away = false;
+        if let Some(c) = dg.compiled.as_mut() {
+            for u in 0..c.unit_state.len() as u16 {
+                c.discard_unit(u, at, tun);
             }
         }
         self.recount(district, tun);
@@ -621,6 +635,8 @@ impl Glass {
             dg.asm = store::Assembler::default();
             dg.ticking.clear();
             dg.stopped.clear();
+            // Every unit warms up afresh from the discard.
+            dg.away = false;
             dg.numbers_reset = dg.compiled.is_some();
         }
         // The windows' rows went with them.
