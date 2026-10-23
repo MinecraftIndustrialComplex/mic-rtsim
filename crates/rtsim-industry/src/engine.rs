@@ -4548,7 +4548,7 @@ mod persist_impls {
                             tun.glass.sections_max,
                         )? {
                             crate::glass::page::PageRead::Kept(dg) => {
-                                glass.insert(DistrictId(k.id()), dg);
+                                glass.insert(DistrictId(k.id()), *dg);
                             }
                             crate::glass::page::PageRead::Dropped(why) => {
                                 glass_dropped.push((DistrictId(k.id()), why));

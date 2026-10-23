@@ -4762,4 +4762,619 @@ mod replay_path {
             r.check_books().expect("books");
         }
     }
+
+    /// Judging units (SECTIONS.md §3.4 to §3.6, §4, §7.2; slice S2b): each line of a district
+    /// learns on its own window beside the district's.
+    mod units {
+        use super::*;
+        use crate::glass::check::{Liveness, UnitState};
+        use crate::glass::page::GLASS_MAGIC_IGL2;
+        use crate::glass::page::{PageRead, district_page, read_district_page};
+        use crate::glass::report::discard;
+        use crate::ids::ChunkPos;
+
+        /// Two press lines apart, each a section and a unit: brass (inventory 0) into press A
+        /// into sheets (1) at x 0 to 2 (chunk 0), and `b_in` (2) into press B into `b_out` (3) at
+        /// x 40 to 42 (chunk 2), each a press per 10 ticks (B's per `b_ticks`). Returns the
+        /// builder and the two presses.
+        fn two_lines(b_in: Good, b_out: Good, b_ticks: u32) -> (B, u32, u32) {
+            let mut b = B::default();
+            let (i0, o0, i1, o1) = (b.store(0), b.store(1), b.store(2), b.store(3));
+            let r0 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let r1 = b.recipe(&[(b_in, 1)], &[(b_out, 1)]);
+            let p0 = b.machine(model::PRESS, r0, 1, 10);
+            let p1 = b.machine(model::PRESS, r1, 1, b_ticks);
+            b.edge(i0, p0);
+            b.edge(p0, o0);
+            b.edge(i1, p1);
+            b.edge(p1, o1);
+            for (v, x) in [(i0, 0), (p0, 1), (o0, 2), (i1, 40), (p1, 41), (o1, 42)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            b.window = 2000;
+            (b, p0, p1)
+        }
+
+        /// The two lines' inventories when A made `a` and B made `bm`.
+        fn invs(b_in: Good, b_out: Good, a: i64, bm: i64) -> VecMap<u32, Inventory> {
+            let mut v = VecMap::new();
+            v.insert(0, inventory(0, &[(BRASS, 100_000 - a)]));
+            v.insert(1, inventory(1, &[(SHEET, a)]));
+            v.insert(2, inventory(2, &[(b_in, 100_000 - bm)]));
+            v.insert(3, inventory(3, &[(b_out, bm)]));
+            v
+        }
+
+        /// Sweeps a compile every 100 ticks from `from` to `to` (both included).
+        #[allow(clippy::too_many_arguments)]
+        fn drive2(
+            c: &mut Compiled,
+            from: u64,
+            to: u64,
+            (b_in, b_out): (Good, Good),
+            a: impl Fn(u64) -> i64,
+            bm: impl Fn(u64) -> i64,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let ports = GoodVec::new();
+            let mut t = from;
+            while t <= to {
+                let inv = invs(b_in, b_out, a(t), bm(t));
+                let view = View {
+                    revision: 1,
+                    inventories: &inv,
+                    ports: &ports,
+                };
+                if t == 0 {
+                    c.start(&view, &goods, tun);
+                }
+                c.sweep(Tick(t), &view, &goods, tun);
+                t += 100;
+            }
+        }
+
+        fn unit_of(c: &Compiled, v: u32) -> u16 {
+            c.units.of_node[v as usize]
+        }
+
+        fn verdict_of(st: &UnitState) -> u32 {
+            st.last.as_ref().map_or(verdict::NONE, |r| r.verdict)
+        }
+
+        /// The compile's records for district `d`.
+        fn records_for(b: &B, compile: u32, d: DistrictId) -> Vec<GlassObs> {
+            let mut out = b.records(compile);
+            for r in out.iter_mut() {
+                match r {
+                    GlassObs::Node(n) => n.head.district = d,
+                    GlassObs::Edge(e) => e.head.district = d,
+                    GlassObs::Recipe(x) => x.head.district = d,
+                    GlassObs::Domain(x) => x.head.district = d,
+                    GlassObs::End(e) => e.district = d,
+                    _ => {}
+                }
+            }
+            out
+        }
+
+        fn ingest_all(g: &mut Glass, t: u64, recs: &[GlassObs], tun: &GlassTunables) {
+            let goods = goods();
+            for r in recs {
+                g.ingest(Tick(t), r, None, &goods, tun);
+            }
+        }
+
+        /// [`ingest_all`] with the district's inventories known, as the engine has them after
+        /// its IND_DISTRICT: a recompile carries the units it keeps only then.
+        fn ingest_seen(
+            g: &mut Glass,
+            t: u64,
+            recs: &[GlassObs],
+            inv: &VecMap<u32, Inventory>,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let ports = GoodVec::new();
+            let view = View {
+                revision: 1,
+                inventories: inv,
+                ports: &ports,
+            };
+            for r in recs {
+                g.ingest(Tick(t), r, Some(&view), &goods, tun);
+            }
+        }
+
+        /// One sweep of district `d` through [`Glass::sweep`].
+        #[allow(clippy::too_many_arguments)]
+        fn glass_sweep(
+            g: &mut Glass,
+            d: DistrictId,
+            t: u64,
+            inv: &VecMap<u32, Inventory>,
+            ports: &GoodVec,
+            live: &Liveness<'_>,
+            tun: &GlassTunables,
+        ) {
+            let goods = goods();
+            let view = View {
+                revision: 1,
+                inventories: inv,
+                ports,
+            };
+            g.sweep(Tick(t), d, &view, live, &goods, tun);
+        }
+
+        fn comp(g: &Glass, d: DistrictId) -> &Compiled {
+            g.districts[&d].compiled.as_ref().expect("a compile")
+        }
+
+        /// Two lines with goods of their own: each is judged on its own window, so the slow one
+        /// fails its window and the other passes and may replay, while the district's window (the
+        /// checksum over both) fails on the slow line's goods alone.
+        #[test]
+        fn two_lines_are_judged_apart_and_the_slow_one_fails_alone() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            assert!(c.units.active() && c.units.len() == 2);
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            assert_ne!(ua, ub);
+            // B makes half what its press is compiled to.
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert_eq!(verdict_of(a), verdict::PASS);
+            assert_eq!(verdict_of(bs), verdict::FAIL);
+            assert_eq!((a.windows_completed, a.strikes), (1, 0));
+            assert_eq!((bs.windows_completed, bs.strikes), (1, 1));
+            assert_eq!(a.passed, Some((Tick(1200), 2000)));
+            let ra = a.last.as_ref().expect("judged");
+            let sheet = ra
+                .goods
+                .iter()
+                .find(|g| g.good == SHEET)
+                .expect("sheet row");
+            assert!(close(sheet.measured, 0.1) && close(sheet.predicted, 0.1));
+            assert!(ra.goods.iter().all(|g| g.good == BRASS || g.good == SHEET));
+            // The district's window fails on B's goods only.
+            let d = c.last.as_ref().expect("the district judged");
+            assert_eq!(d.verdict, verdict::FAIL);
+            for g in &d.goods {
+                let failed = g.verdict == verdict::FAIL;
+                assert_eq!(failed, g.good == ORE || g.good == CRUSHED, "{:?}", g.good);
+            }
+            assert!(c.unit_may_replay(ua));
+            assert!(!c.unit_may_replay(ub));
+            assert!(c.section_may_replay(c.sections.section_of[p0 as usize]));
+            assert!(!c.section_may_replay(c.sections.section_of[p1 as usize]));
+            // Each unit's next window opened where its last concluded.
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // Goods of their own cost no extra rows (§7.2).
+            assert_eq!(c.extra_rows(), 0);
+        }
+
+        /// Two lines of the same goods: a line whose own window passes still may not replay while
+        /// the district's last window failed on a good it touches (§3.4).
+        #[test]
+        fn a_unit_does_not_replay_on_a_good_the_district_failed() {
+            let (b, p0, p1) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (BRASS, SHEET),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(verdict_of(&c.unit_state[ub as usize]), verdict::FAIL);
+            assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::FAIL));
+            assert!(!c.unit_may_replay(ua), "the district failed on sheets");
+            assert!(!c.unit_may_replay(ub));
+            // Each unit holds a row per good, two goods past one row each.
+            assert_eq!(c.extra_rows(), 2);
+        }
+
+        /// Both lines at their compiled rates: a unit's window and the district's both pass.
+        fn both_passed(goods_b: (Good, Good)) -> (Compiled, u32, u32, GlassTunables) {
+            let (b, p0, p1) = two_lines(goods_b.0, goods_b.1, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                3200,
+                goods_b,
+                |t| (t / 10) as i64,
+                |t| (t / 10) as i64,
+                &tun,
+            );
+            (c, p0, p1, tun)
+        }
+
+        /// An edit stales the unit whose box holds it and drops its window and the district's;
+        /// the other unit keeps its window and may replay. An edit in no box stales no unit; a
+        /// command's stales every one (§3.6).
+        #[test]
+        fn an_edit_stales_only_the_unit_whose_box_holds_it() {
+            let (mut c, p0, p1, tun) = both_passed((ORE, CRUSHED));
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert!(c.window().is_some());
+            c.edit(Tick(3250), Some(BlockPos::new(41, 64, 0)), &tun);
+            assert!(c.edited && c.window().is_none(), "the district window goes");
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert!(!a.edited && bs.edited);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(bs.ready_at, Tick(3250 + tun.warmup_ticks));
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+            // Between the lines: no box holds it.
+            c.edit(Tick(3260), Some(BlockPos::new(20, 64, 0)), &tun);
+            assert!(!c.unit_state[ua as usize].edited);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // A command's edit has no place: every unit.
+            c.edit(Tick(3270), None, &tun);
+            assert!(c.unit_state.iter().all(|s| s.edited && !s.window_open()));
+            assert!(!c.unit_may_replay(ua));
+        }
+
+        /// A sweep that was not live: the district's window is discarded (`NOT_LIVE`), and the
+        /// unit whose chunks all ran samples and passes; the other never opens. A chunk that
+        /// stopped between two sweeps discards its unit's window though it runs again (§3.4).
+        #[test]
+        fn a_unit_whose_chunks_ran_learns_through_partial_sweeps() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            let loaded: BTreeSet<ChunkPos> = [ChunkPos { dim: 0, x: 0, z: 0 }].into();
+            let ports = GoodVec::new();
+            let live = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            for k in 0..=32u64 {
+                let t = k * 100;
+                // B made nothing it could be judged by: its chunk is away.
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, 0);
+                glass_sweep(&mut g, D, t, &inv, &ports, &live, &tun);
+            }
+            let dg = &g.districts[&D];
+            assert_eq!(dg.discards[discard::NOT_LIVE as usize], 33);
+            let c = comp(&g, D);
+            assert!(c.window().is_none() && c.last.is_none());
+            assert_eq!(c.sweeps, 0, "no live sweep");
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(c.unit_state[ub as usize].last, None);
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(c.unit_window(ua), Some((Tick(3200), 1)));
+            // Chunk 0 unloads and loads again before the next sweep: A did not run throughout.
+            g.chunk_stopped(D, ChunkPos { dim: 0, x: 0, z: 0 });
+            let inv = invs(ORE, CRUSHED, 330, 0);
+            glass_sweep(&mut g, D, 3300, &inv, &ports, &live, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.unit_window(ua), None);
+            assert_eq!(
+                c.unit_state[ua as usize].ready_at,
+                Tick(3300 + tun.warmup_ticks)
+            );
+            assert!(
+                g.districts[&D].stopped.is_empty(),
+                "the sweep took the stops"
+            );
+            // No unit ran: today's discard of everything.
+            let none: BTreeSet<ChunkPos> = BTreeSet::new();
+            let away = Liveness::Partial {
+                loaded: &none,
+                dim: 0,
+            };
+            glass_sweep(&mut g, D, 3400, &inv, &ports, &away, &tun);
+            assert_eq!(g.districts[&D].discards[discard::NOT_LIVE as usize], 35);
+        }
+
+        /// A recompile keeps the unit it did not change: its passed window, its open window (the
+        /// old model integrated up to the recompile) and its ports, and clears its edit; the
+        /// changed unit starts learning after a warm-up (§3.6).
+        #[test]
+        fn a_recompile_keeps_the_unit_it_did_not_change() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let sweep_to = |g: &mut Glass, from: u64, to: u64, b_rate: u64| {
+                let mut t = from;
+                while t <= to {
+                    let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / b_rate) as i64);
+                    glass_sweep(g, D, t, &inv, &ports, &Liveness::All, &tun);
+                    t += 100;
+                }
+            };
+            sweep_to(&mut g, 0, 3500, 10);
+            let ua = unit_of(comp(&g, D), p0);
+            let before = comp(&g, D).unit_state[ua as usize].clone();
+            assert_eq!(comp(&g, D).unit_window(ua), Some((Tick(3200), 4)));
+            // A stales itself by an edit at its own press, then B's press is rebuilt slower.
+            g.edit(Tick(3520), D, BlockPos::new(1, 64, 0), false, &tun);
+            g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 7)]));
+            let (b2, p0b, p1b) = two_lines(ORE, CRUSHED, 20);
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            ingest_seen(&mut g, 3550, &b2.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert_eq!(g.districts[&D].discards[discard::RECOMPILE as usize], 1);
+            let (ua2, ub2) = (unit_of(c, p0b), unit_of(c, p1b));
+            let a = &c.unit_state[ua2 as usize];
+            assert_eq!(a.passed, before.passed);
+            assert_eq!(a.windows_completed, 1);
+            assert!(!a.edited, "the recompile found it unchanged");
+            // The edit took A's window; it opens again after its warm-up.
+            assert_eq!(c.unit_window(ua2), None);
+            assert_eq!(a.ready_at, Tick(3520 + tun.warmup_ticks));
+            let bs = &c.unit_state[ub2 as usize];
+            assert_eq!((bs.passed, bs.windows_completed), (None, 0));
+            assert_eq!(bs.ready_at, Tick(3550 + tun.warmup_ticks));
+            assert_eq!(
+                c.ports_at.get(&1).map(|v| v.get(SHEET)),
+                Some(7),
+                "the ports go on"
+            );
+            assert!(c.window().is_none());
+        }
+
+        /// An open window carried across a recompile goes on and passes: the old compile's model
+        /// integrated it to the recompile, the new one from there.
+        #[test]
+        fn a_window_carried_across_a_recompile_passes() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= 6000 {
+                let b_made = if t < 4050 {
+                    t / 10
+                } else {
+                    405 + (t - 4050) / 20
+                };
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, b_made as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                if t == 4000 {
+                    // B's press rebuilt slower: a recompile between two sweeps.
+                    let (b2, _, _) = two_lines(ORE, CRUSHED, 20);
+                    ingest_seen(&mut g, 4050, &b2.records(2), &inv, &tun);
+                }
+                t += 100;
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            let ua = unit_of(c, p0);
+            let a = &c.unit_state[ua as usize];
+            assert_eq!(a.windows_completed, 2);
+            assert_eq!(
+                a.passed,
+                Some((Tick(3200), 2000)),
+                "the carried window passed"
+            );
+            assert_eq!(verdict_of(a), verdict::PASS);
+        }
+
+        /// Ports into a unit's store are not its production: a player's sheets put into A's
+        /// output, credited to that inventory, leave A's window passing; uncredited they fail it.
+        #[test]
+        fn ports_into_a_units_store_are_not_its_production() {
+            let tun = GlassTunables::default();
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            for credit in [true, false] {
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &b.records(1), &tun);
+                for k in 0..=32u64 {
+                    let t = k * 100;
+                    let extra = if t >= 2000 { 500 } else { 0 };
+                    if t == 2000 && credit {
+                        g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 500)]));
+                    }
+                    // The district's own ports always count the sheets.
+                    let ports = GoodVec::from_pairs([(SHEET, extra)]);
+                    let mut inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                    inv.insert(1, inventory(1, &[(SHEET, (t / 10) as i64 + extra)]));
+                    glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                }
+                let c = comp(&g, D);
+                let ua = unit_of(c, p0);
+                assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+                let want = if credit { verdict::PASS } else { verdict::FAIL };
+                assert_eq!(
+                    verdict_of(&c.unit_state[ua as usize]),
+                    want,
+                    "credit {credit}"
+                );
+            }
+            // A port into an inventory no unit holds, or of another revision, is not kept.
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            g.port(D, 1, 9, &GoodVec::from_pairs([(SHEET, 5)]));
+            g.port(D, 2, 1, &GoodVec::from_pairs([(SHEET, 5)]));
+            assert!(comp(&g, D).ports_at.is_empty());
+        }
+
+        /// The row caps (§7.2): a district past `glass.sectionRowsMax` extra rows is cut into
+        /// fewer sections and keeps the cut for its later compiles and through its page; past
+        /// `glass.sectionRowsWorldMax` the district with the most (the lowest id of equals) is cut.
+        #[test]
+        fn the_row_caps_cut_a_district_into_fewer_sections() {
+            let tun = GlassTunables {
+                section_rows_max: 1,
+                ..GlassTunables::default()
+            };
+            let (b, _, _) = two_lines(BRASS, SHEET, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            assert_eq!(comp(&g, D).sections.len(), 2);
+            let ports = GoodVec::new();
+            for k in 0..=13u64 {
+                let t = k * 100;
+                let inv = invs(BRASS, SHEET, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.sections.len(), 1, "merged by the cap");
+            assert!(c.unit_state.is_empty());
+            assert_eq!(g.districts[&D].sections_cap, Some(1));
+            assert_eq!(g.extra_rows(), 0);
+            assert!(c.window().is_some(), "the district window goes on");
+            // Its page keeps the cut.
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(dg) = read_district_page(&page, 64).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(dg.compiled.as_ref().expect("compile").sections.len(), 1);
+            // A later compile is cut the same.
+            ingest_all(&mut g, 1400, &b.records(2), &tun);
+            assert_eq!(comp(&g, D).sections.len(), 1);
+
+            // The world cap: two such districts, four extra rows, three allowed.
+            let tun = GlassTunables {
+                section_rows_world_max: 3,
+                ..GlassTunables::default()
+            };
+            let (d1, d2) = (DistrictId(3), DistrictId(4));
+            let mut g = Glass::default();
+            for d in [d2, d1] {
+                ingest_all(&mut g, 0, &records_for(&b, 1, d), &tun);
+            }
+            for k in 0..=13u64 {
+                let t = k * 100;
+                let inv = invs(BRASS, SHEET, (t / 10) as i64, (t / 10) as i64);
+                for d in [d2, d1] {
+                    glass_sweep(&mut g, d, t, &inv, &ports, &Liveness::All, &tun);
+                }
+            }
+            assert_eq!(
+                g.districts[&d1].sections_cap,
+                Some(1),
+                "the lower id of equals"
+            );
+            assert_eq!(g.districts[&d2].sections_cap, None);
+            assert_eq!(comp(&g, d2).sections.len(), 2);
+            assert_eq!(g.extra_rows(), 2);
+        }
+
+        /// A page keeps the units' windows, rows, verdicts and ports: read back, it is the state
+        /// it was written from, byte for byte. An IGL2 page drops its district (§5).
+        #[test]
+        fn a_page_keeps_the_units_windows() {
+            let tun = GlassTunables::default();
+            let (b, _, _) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=35u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 20) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            g.port(D, 1, 1, &GoodVec::from_pairs([(SHEET, 3)]));
+            let dg = &g.districts[&D];
+            let c = dg.compiled.as_ref().expect("compile");
+            assert!(c.rows_len() > 0 && c.unit_state.iter().all(|s| s.last.is_some()));
+            let page = district_page(dg);
+            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+                panic!("kept");
+            };
+            let r = back.compiled.as_ref().expect("compile");
+            assert_eq!(r.units, c.units);
+            assert_eq!(r.ubounds, c.ubounds);
+            assert_eq!(r.unit_state, c.unit_state);
+            assert_eq!(r.rows_len(), c.rows_len());
+            assert_eq!(r.ports_at, c.ports_at);
+            assert_eq!(district_page(&back), page);
+            let mut old = page.clone();
+            old[..4].copy_from_slice(&GLASS_MAGIC_IGL2.to_le_bytes());
+            assert!(matches!(
+                read_district_page(&old, 64),
+                Ok(PageRead::Dropped(_))
+            ));
+        }
+
+        /// Through the engine: a partial load learns the loaded line (its chunk loaded, the sweep
+        /// not live), an `IND_EDIT` at the other line's press stales that line alone, and a save
+        /// and restore keeps the units' state.
+        #[test]
+        fn the_engine_judges_units_through_its_hooks() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut s = setup(&b, 4);
+            s.push(load_state(0, LoadState::Partial));
+            s.push(at(
+                0,
+                Obs::ChunkLoaded {
+                    district: D,
+                    chunk: ChunkPos { dim: 0, x: 0, z: 0 },
+                    applied_epoch: 0,
+                },
+            ));
+            for k in 1..=32u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000)],
+                        &[],
+                    ],
+                );
+                // Some chunk did not tick throughout.
+                if let Some(Timed {
+                    obs: Obs::SweepEnd(e),
+                    ..
+                }) = s.last_mut()
+                {
+                    e.live = false;
+                }
+            }
+            s.push(at(
+                3250,
+                Obs::Edit {
+                    district: D,
+                    kind: EditKind::Placed,
+                    player: (1, 2),
+                    pos: BlockPos::new(41, 64, 0),
+                },
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            let (ua, ub) = (c.units.of_node[p0 as usize], c.units.of_node[p1 as usize]);
+            let a = &c.unit_state[ua as usize];
+            assert_eq!(verdict_of(a), verdict::PASS);
+            assert!(!a.edited && c.unit_state[ub as usize].edited);
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+            let r = Engine::restore(e.snapshot(), Tunables::default()).expect("restore");
+            let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(rc.unit_state, c.unit_state);
+            assert_eq!(r.glass.extra_rows(), e.glass.extra_rows());
+        }
+    }
 }

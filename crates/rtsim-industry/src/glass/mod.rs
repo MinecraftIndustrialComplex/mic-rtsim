@@ -228,9 +228,9 @@ impl Glass {
                         let c = complete.expect("complete");
                         match graph::Graph::build(c.end, c.nodes, c.edges, c.recipes, c.domains) {
                             Ok(graph) => {
-                                let max = dg
-                                    .sections_cap
-                                    .map_or(tun.sections_max, |c| (c as usize).min(tun.sections_max));
+                                let max = dg.sections_cap.map_or(tun.sections_max, |c| {
+                                    (c as usize).min(tun.sections_max)
+                                });
                                 let mut comp = Compiled::new_cut(graph, at, tun, &dg.demoted, max);
                                 let none_inv = VecMap::new();
                                 let none_ports = GoodVec::new();
@@ -238,11 +238,15 @@ impl Glass {
                                 comp.start(view.unwrap_or(&empty), goods, tun);
                                 self.stats.solves += u64::from(comp.solves);
                                 // The old compile's district window (open or warming up) goes
-                                // with it; its units the new compile has unchanged go on (§3.6).
+                                // with it; its units the new compile has unchanged go on (§3.6),
+                                // when the engine knows the district: the new compile's first
+                                // solve reads its stores.
                                 if let Some(old) = dg.compiled.as_mut() {
-                                    let solves = old.solves;
-                                    comp.carry_from(old, at, tun);
-                                    self.stats.solves += u64::from(old.solves - solves);
+                                    if view.is_some() {
+                                        let solves = old.solves;
+                                        comp.carry_from(old, at, tun);
+                                        self.stats.solves += u64::from(old.solves - solves);
+                                    }
                                     dg.note(at, discard::RECOMPILE);
                                 }
                                 dg.compiled = Some(comp);
@@ -265,6 +269,7 @@ impl Glass {
                         self.stats.not_compilable += 1;
                     }
                 }
+                self.recount(d, tun);
             }
             GlassObs::ProbeSample(p) => {
                 if let Some(c) = dg.compiled.as_mut()
@@ -283,7 +288,6 @@ impl Glass {
                 }
             }
         }
-        self.recount(d, tun);
     }
 
     /// A sweep of `district`, after its inventories were updated (creative and overstressed
@@ -455,7 +459,14 @@ impl Glass {
     }
 
     /// One good ported into (positive) or out of an inventory: [`Glass::port`] for one good.
-    pub fn port_one(&mut self, district: DistrictId, revision: u32, inv: u32, good: crate::ids::Good, amount: i64) {
+    pub fn port_one(
+        &mut self,
+        district: DistrictId,
+        revision: u32,
+        inv: u32,
+        good: crate::ids::Good,
+        amount: i64,
+    ) {
         if amount == 0 {
             return;
         }

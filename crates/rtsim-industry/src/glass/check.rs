@@ -226,6 +226,13 @@ pub struct Burn {
     pub thr: f64,
 }
 
+impl UnitState {
+    /// Its window is open.
+    pub fn window_open(&self) -> bool {
+        self.win.is_some()
+    }
+}
+
 impl Burn {
     pub fn phase(&self) -> u8 {
         if self.left > self.thr {
@@ -781,7 +788,7 @@ impl Compiled {
                 Some(r)
             })
             .collect();
-        rows.sort_by(|a, b| (a.unit, a.good).cmp(&(b.unit, b.good)));
+        rows.sort_by_key(|r| (r.unit, r.good));
         self.rows = rows;
     }
 
@@ -1198,7 +1205,16 @@ impl Compiled {
                 let c = ucorr.get(&(ub.unit, ub.good)).copied().unwrap_or(0.0);
                 let row = row_mut(&mut self.rows, ub.unit, ub.good, Cum::default);
                 let flows = (ub.in_l, ub.out_l, ub.in_u, ub.out_u);
-                add_flow(&mut row.cum, dt, c, flows, ub.var, ub.batch, ub.class, ub.why);
+                add_flow(
+                    &mut row.cum,
+                    dt,
+                    c,
+                    flows,
+                    ub.var,
+                    ub.batch,
+                    ub.class,
+                    ub.why,
+                );
             }
         }
     }
@@ -1364,14 +1380,16 @@ impl Compiled {
     /// Concludes each unit window that reached the district's target length with three samples:
     /// judged, its verdicts kept, and a new one opened at `at`. Returns which units opened one.
     fn conclude_units(&mut self, at: Tick, z: f64) -> Vec<bool> {
-        let mut opened = vec![false; self.unit_state.len()];
-        for u in 0..self.unit_state.len() {
-            let Some(w) = self.unit_state[u].win else {
-                continue;
-            };
-            if at.0.saturating_sub(w.start.0) < self.window_target || w.n < 3 {
-                continue;
-            }
+        let nu = self.unit_state.len();
+        let mut opened = vec![false; nu];
+        let due: Vec<usize> = (0..nu)
+            .filter(|&u| {
+                self.unit_state[u].win.is_some_and(|w| {
+                    at.0.saturating_sub(w.start.0) >= self.window_target && w.n >= 3
+                })
+            })
+            .collect();
+        for u in due {
             let res = self.judge_unit(u as u16, z).expect("open");
             let span = rows_of(&self.rows, u as u16);
             self.rows.drain(span);
@@ -1940,7 +1958,11 @@ impl Compiled {
     pub(crate) fn restore_units(&mut self) -> bool {
         self.units = Units::build(&self.graph, &self.sections);
         self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
-        let nu = if self.units.active() { self.units.len() } else { 0 };
+        let nu = if self.units.active() {
+            self.units.len()
+        } else {
+            0
+        };
         if self.unit_state.len() != nu {
             return false;
         }
@@ -1966,7 +1988,11 @@ impl Compiled {
         let Some(st) = self.unit_state.get(u as usize) else {
             return false;
         };
-        let Some(own) = st.last.as_ref().filter(|r| r.verdict == report::verdict::PASS) else {
+        let Some(own) = st
+            .last
+            .as_ref()
+            .filter(|r| r.verdict == report::verdict::PASS)
+        else {
             return false;
         };
         if st.edited {
