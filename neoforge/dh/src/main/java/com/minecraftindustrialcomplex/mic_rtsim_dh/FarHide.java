@@ -1,7 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
@@ -12,8 +12,7 @@ import net.minecraft.world.phys.Vec3;
  * the client's side of {@link HandOverRule}.
  *
  * <ul>
- *   <li><b>The real thing is on the client</b> and vanilla draws it from here ({@link #entityPresent}): nobody;
- *       vanilla draws the entity.</li>
+ *   <li><b>The real thing is on the client</b> ({@link #entityPresent}): nobody; vanilla draws the entity.</li>
  *   <li><b>Its midpoint is in a chunk the client has loaded</b> ({@link #loaded}): the band renderer
  *       ({@link FarBandRenderer}), in vanilla's own pass with vanilla's depth, because vanilla draws over DH in
  *       loaded chunks. That is the band between the server's simulation distance and the client's render
@@ -30,7 +29,7 @@ final class FarHide {
 
     /** True when DH draws the mover whose midpoint is (x, y, z) and farthest point {@code reach} from it. */
     static boolean dhDraws(FarMover m, ClientLevel level, double x, double y, double z, double reach, Vec3 cam) {
-        if (entityPresent(m, level, x, y, z))
+        if (entityPresent(m, level, x, y, z, cam))
             return false;
         if (!loaded(level, x, z))
             return true;
@@ -39,24 +38,28 @@ final class FarHide {
     }
 
     /** True when the band renderer draws the mover whose midpoint is (x, y, z). */
-    static boolean bandDraws(FarMover m, ClientLevel level, double x, double y, double z) {
+    static boolean bandDraws(FarMover m, ClientLevel level, double x, double y, double z, Vec3 cam) {
         boolean loaded = loaded(level, x, z);
         // Out of the loaded chunks the band has nothing to draw, entity or not
-        return HandOverRule.band(loaded && entityPresent(m, level, x, y, z), loaded);
+        return HandOverRule.band(loaded && entityPresent(m, level, x, y, z, cam), loaded);
     }
 
     /**
      * True when the client has the real thing: its source said so (Create's map, or the server's REAL record,
      * sent as the entity joins its level), or the client's level has the entity the server named for it, near
-     * where the mover is, and vanilla would draw it from the camera (docs/choices-dh-feed.md DHT46).
+     * where the mover is, and, for a dragon, vanilla's distance rule draws it from the camera {@code cam}
+     * (docs/choices-dh-feed.md DHT46).
      *
-     * <p>The last is vanilla's own distance rule ({@link Entity#shouldRender}: the entity's box size times 64
-     * times the entity distance setting), which it checks before anything else it draws an entity by. Ice and
-     * Fire sets a dragon's size only in its tick, so a new body keeps its type's 0.78 by 1.2 block box until its
-     * first client tick, and vanilla leaves it out beyond about 59 blocks at the default entity distance: hidden
-     * for its entity then, the far box left a gap of a frame or two. Render thread only.
+     * <p>That rule is {@link Entity#shouldRender}: the entity's box size (its mean edge) times 64 times
+     * vanilla's view scale (render distance over 8, clamped to 1 to 2.5, times the entity distance setting).
+     * Ice and Fire sets a dragon's size only in its tick, so a new body keeps its type's 0.78 by 1.2 block box
+     * until its first client tick, and vanilla leaves it out beyond about 74 blocks at render distance 10 and 88
+     * at 12 (the default entity distance): hidden for its entity then, the far box left a gap of a frame or two.
+     *
+     * <p>Not for a carriage: Create hands its carriages to Flywheel, which draws them with no distance rule,
+     * while a new carriage entity's box is Create's 1 by 1 by 1 until its first client tick. Render thread only.
      */
-    static boolean entityPresent(FarMover m, ClientLevel level, double x, double y, double z) {
+    static boolean entityPresent(FarMover m, ClientLevel level, double x, double y, double z, Vec3 cam) {
         if (m.real())
             return true;
         if (m.entity() < 0)
@@ -64,8 +67,7 @@ final class FarHide {
         Entity e = level.getEntity(m.entity());
         if (e == null || e.isRemoved() || e.distanceToSqr(x, y, z) >= ENTITY_NEAR * ENTITY_NEAR)
             return false;
-        Vec3 cam = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
-        return e.shouldRender(cam.x, cam.y, cam.z);
+        return m.kind() != FarKind.DRAGON || e.shouldRender(cam.x, cam.y, cam.z);
     }
 
     /** True when the client has loaded the chunk at (x, z). */
