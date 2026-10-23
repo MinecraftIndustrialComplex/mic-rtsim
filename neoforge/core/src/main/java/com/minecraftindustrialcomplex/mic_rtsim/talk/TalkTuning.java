@@ -1,5 +1,8 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Every number the engine's answer is turned into speech with (TALK.md §5.2, §5.3, §6; TK4, TK29, TK49 to
  * TK55): weights, thresholds and bands, in one place. All of it is TUNABLE; none of it is on the wire.
@@ -124,20 +127,30 @@ public final class TalkTuning {
     // ---- perspective and kinds ----------------------------------------------------------------
 
     /**
-     * The news item's perspective, one of {@code you}, {@code to_you}, {@code us}, {@code by_us},
-     * {@code other}. The order is the listener first (a player's own deeds and wrongs are what a player
-     * most wants to hear), then the holder (TK51).
+     * The perspectives a news item can be told from, best first (TK51): the holder's own side before the
+     * listener's ({@code us}, {@code by_us}), then {@code you} (the listener did it), {@code to_you} (it was
+     * done to the listener), and {@code other} last, which always applies. The holder's side wins because a
+     * villager told that "you robbed us" says "Since you robbed us today, we've been counting every crust"
+     * (the line's {@code %1$s} is "you"), not "You robbed Oakford", and one that "we hit you" says
+     * {@code by_us} ("We hit you"), not {@code to_you} ("Heard Oakford hit you").
      */
-    public static String perspective(int talkFlags) {
-        if ((talkFlags & TalkRecords.YOU_DID) != 0)
-            return "you";
-        if ((talkFlags & TalkRecords.TO_YOU) != 0)
-            return "to_you";
+    public static List<String> perspectives(int talkFlags) {
+        List<String> out = new ArrayList<>(3);
         if ((talkFlags & TalkRecords.TO_US) != 0)
-            return "us";
+            out.add("us");
         if ((talkFlags & TalkRecords.BY_US) != 0)
-            return "by_us";
-        return "other";
+            out.add("by_us");
+        if ((talkFlags & TalkRecords.YOU_DID) != 0)
+            out.add("you");
+        if ((talkFlags & TalkRecords.TO_YOU) != 0)
+            out.add("to_you");
+        out.add("other");
+        return out;
+    }
+
+    /** The first perspective of {@link #perspectives}: the one a news item is told from when its topic has lines. */
+    public static String perspective(int talkFlags) {
+        return perspectives(talkFlags).get(0);
     }
 
     /** The lang names of rtsim-knowledge's report kinds, by id (the gaps are spare or reserved); null for one this build does not know. */
