@@ -8,6 +8,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
@@ -74,6 +75,24 @@ public final class IndustryTestKit {
     public static void check(String what, boolean ok) {
         if (!ok)
             throw new GameTestAssertException(what);
+    }
+
+    /**
+     * What a detection's per-tick budget bounds (Districts.Rescan.step): a tick stops at the first chunk that takes it
+     * to the budget, so its spend is at most the budget less one plus the costliest look at one chunk. Both are read
+     * from the detection, so nothing here depends on the load or on what earlier tests left in the yard's chunks. That
+     * the costliest look was one chunk (and not a district or a batch) is checked against the chunks themselves: a look
+     * costs one, plus the chunk's block entities, plus at most a candidate inventory for each (the test machines add
+     * no more), so it is at most {@code 1 + 2 * (the most block entities one of these chunks holds)}.
+     */
+    public static void checkTickBudget(Districts ds, ServerLevel level, int budget, BlockPos... in) {
+        long longest = ds.lastRescanLongestLooked(), item = ds.lastRescanLongestItem();
+        check("no tick looked at more than the budget less one and a chunk (" + (budget - 1 + item) + "): " + longest,
+                longest <= budget - 1 + item);
+        int biggest = 0;
+        for (BlockPos p : in)
+            biggest = Math.max(biggest, level.getChunkAt(p).getBlockEntities().size());
+        check("the costliest look was one chunk (at most " + (1 + 2 * biggest) + "): " + item, item <= 1 + 2L * biggest);
     }
 
     public static void record(String test, String what, Object value) {
