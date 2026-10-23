@@ -2058,7 +2058,7 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK82)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK84)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, a camp, later a ship) knows; the engine answers with the holder's mood, its
