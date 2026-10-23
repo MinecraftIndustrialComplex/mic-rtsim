@@ -109,6 +109,11 @@ public final class ConflictBridge implements SessionPlugin {
      */
     static boolean m1Records = false;
 
+    /** Whether M1's records are sent (GameTests check NOTICE_SHOWN only then). */
+    public static boolean m1Records() {
+        return m1Records;
+    }
+
     private ConflictBridge() {}
 
     // ---- state ----------------------------------------------------------------------------------
@@ -213,6 +218,8 @@ public final class ConflictBridge implements SessionPlugin {
         Set<Long> chunks = Set.of();
         /** Times placed (GameTests: a stack that walked out and came back is placed twice). */
         int placings;
+        /** Times tested while pending, and times its place moved into other chunks (GameTests, ledger 25). */
+        int tests, moves;
 
         Stack(Party party, int index, int wave) {
             this.party = party;
@@ -257,6 +264,19 @@ public final class ConflictBridge implements SessionPlugin {
 
         public int placings() {
             return placings;
+        }
+
+        public int tests() {
+            return tests;
+        }
+
+        public int moves() {
+            return moves;
+        }
+
+        /** The chunks its living members would stand in now (GameTests). */
+        public Set<Long> chunksNow(long now) {
+            return chunksOf(this, now);
         }
 
         public List<Slot> slots() {
@@ -344,6 +364,11 @@ public final class ConflictBridge implements SessionPlugin {
 
         public boolean alive() {
             return alive;
+        }
+
+        /** Blocks between its body and its place now; NaN with no body (GameTests). */
+        public double lag() {
+            return entity == null ? Double.NaN : lag(entity);
         }
     }
 
@@ -918,9 +943,10 @@ public final class ConflictBridge implements SessionPlugin {
      * entities, Peaceful does not remove its kind, and it fits the spawn quota. True when it is placed.
      */
     private boolean tryPlace(Stack st, ServerLevel level, long now) {
-        pendingTests++;
         if (now < st.retryAt)
             return false;
+        pendingTests++;
+        st.tests++;
         for (Slot sl : st.slots) {
             if (!sl.alive || sl.entity != null)
                 continue;
@@ -1091,6 +1117,7 @@ public final class ConflictBridge implements SessionPlugin {
         }
         if (!st.chunks.isEmpty()) {
             placeMoves++;
+            st.moves++;
             st.dirty = true;
         }
         st.chunks = now2;

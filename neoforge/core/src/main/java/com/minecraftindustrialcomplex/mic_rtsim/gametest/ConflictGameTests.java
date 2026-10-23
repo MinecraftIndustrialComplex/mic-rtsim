@@ -1,0 +1,898 @@
+package com.minecraftindustrialcomplex.mic_rtsim.gametest;
+
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTest;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.entity.monster.Endermite;
+import net.minecraft.world.entity.monster.Skeleton;
+import net.minecraft.world.entity.monster.Zombie;
+import net.minecraft.world.entity.projectile.Arrow;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.gametest.GameTestHolder;
+import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.ARCHER;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.EMISSARY;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.WARRIOR;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.about;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.bridge;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.party;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
+import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
+
+/**
+ * The conflict bridge (MOWZIE.md slice M3, docs/boundary.md §9) on the server's real session, native
+ * engine or stub. The tests script conflict commands as the engine's conflict would send them
+ * ({@link ConflictKit}) for test agents and factions the engine does not know (it ignores what Java
+ * reports about them), and read back what the bridge journaled. Each test has its own batch: parties of
+ * two tests never meet, and no other test's player stands near a party. Every test logs what it compared
+ * on a {@code [gametest]} line.
+ *
+ * <p>The arena tests have sky access: without it the framework roofs the test with barriers, which are
+ * motion-blocking, so a body would stand on the roof.
+ */
+@GameTestHolder(MicRtsim.MODID)
+@PrefixGameTestTemplate(false)
+public final class ConflictGameTests {
+    private ConflictGameTests() {}
+
+    private static long chunk(int cx, int cz) {
+        return ChunkPos.asLong(cx, cz);
+    }
+
+    private static String chunks(Set<Long> cs) {
+        List<String> out = new ArrayList<>();
+        for (long c : cs)
+            out.add(ConflictKit.chunk(c));
+        return out.toString();
+    }
+
+    /** Holds a stack's bodies where they stand (no AI, so no stroll crosses a chunk edge; MZB-119). */
+    private static void pin(ConflictBridge.Stack st) {
+        for (Mob m : st.bodies())
+            m.setNoAi(true);
+    }
+
+    private static int count(List<ScriptedEngine.Received> rs, int aux) {
+        int n = 0;
+        for (ScriptedEngine.Received r : rs)
+            if (r.aux() == aux)
+                n++;
+        return n;
+    }
+
+    private static ScriptedEngine.Received first(List<ScriptedEngine.Received> rs, int aux) {
+        for (ScriptedEngine.Received r : rs)
+            if (r.aux() == aux)
+                return r;
+        return null;
+    }
+
+    private static String name(Mob m) {
+        return m.getCustomName() == null ? null : m.getCustomName().getString();
+    }
+
+    // ---- ledger 25: a band stack by stack --------------------------------------------------------
+
+    /**
+     * Test 33 without its column (MOWZIE.md §8, ledger 25), at a place far from every earlier run's with
+     * forced chunks standing in for the simulation distance: a band of two stacks whose places are in
+     * chunks that do not tick entities is answered BAND_MATERIALIZED with none placed and never
+     * rejected; each stack is pending and is tested only when its place moves into other chunks or a
+     * chunk it waits on changes (counted: idle ticks test nothing). Each stack straddles a chunk edge,
+     * and is placed the tick its last chunk ticks entities, not before; the other stack, whose chunks did
+     * not change, is not tested. A member moved out of the ticking area takes its stack back to pending,
+     * and it comes again at once while its place ticks; a stack whose chunk stops ticking goes back to
+     * pending, and the other stays. A recall reports every living member, placed or pending, as a
+     * survivor.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "conflict_stacks")
+    public static void aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange(GameTestHelper helper) {
+        String test = "aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange";
+        ServerLevel level = helper.getLevel();
+        String dim = RtsimTests.dimension(helper);
+        int[] base = ConflictKit.farBase();
+        int bx = base[0], bz = base[1];
+        int k = bx >> 4, z0 = bz >> 4;
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), dim);
+        // Radius 0: both stacks at the arc's centre, 4 blocks apart across the heading (+x), so stack 0
+        // stands in chunk row z0 and stack 1 in z0 + 1; the front rows 16 blocks west of bx, the rear
+        // rows 1.5 behind.
+        band.arcX = bx - 15.5;
+        band.arcZ = bz + 16;
+        band.targetX = bx + 1000;
+        band.targetZ = bz + 16;
+        band.speed = 0f;
+        List<Long> forced = new ArrayList<>();
+        Runnable unforce = () -> {
+            for (long c : forced)
+                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
+            forced.clear();
+        };
+        java.util.function.BiConsumer<Integer, Integer> force = (cx, cz) -> {
+            if (ConflictKit.force(level, cx, cz, true))
+                forced.add(chunk(cx, cz));
+        };
+        int[] tests = new int[2], moves = new int[2];
+        long[] arrive = {0};
+        long[] requeued = {0};
+        ConflictBridge.Stack[] st = new ConflictBridge.Stack[2];
+
+        helper.startSequence()
+                .thenExecute(() -> ConflictKit.materialize(band, List.of(
+                        new ConflictKit.StackSpec(WARRIOR, 4, false), new ConflictKit.StackSpec(ARCHER, 4, false))))
+                .thenWaitUntil(() -> check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
+                    check("none placed now (" + m.aux() + ")", m.aux() == 0);
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    ConflictBridge.Party p = party(agent);
+                    check("two stacks", p.stacks().size() == 2);
+                    for (int i = 0; i < 2; i++) {
+                        st[i] = p.stacks().get(i);
+                        check("stack " + i + " pending", st[i].state() == ConflictBridge.StackState.PENDING);
+                        Set<Long> want = Set.of(chunk(k - 1, z0 + i), chunk(k - 2, z0 + i));
+                        Set<Long> got = st[i].chunksNow(level.getGameTime());
+                        check("stack " + i + " straddles " + chunks(want) + ": " + chunks(got), got.equals(want));
+                        tests[i] = st[i].tests();
+                        moves[i] = st[i].moves();
+                    }
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("stack " + i + " was not tested while nothing changed (" + st[i].tests() + " vs " + tests[i] + ")",
+                                st[i].tests() == tests[i] && st[i].moves() == moves[i]);
+                    // Walk 16 blocks east: the front rows into chunk k, the rear rows into k - 1.
+                    arrive[0] = level.getGameTime() + 100;
+                    ConflictKit.steer(agent, 1, 0.8f, bx + 0.5, bz + 16, arrive[0], false);
+                })
+                .thenWaitUntil(() -> {
+                    long now = level.getGameTime();
+                    check("arrived", now > arrive[0] && bridge().steered > 0);
+                    for (int i = 0; i < 2; i++) {
+                        Set<Long> want = Set.of(chunk(k - 1, z0 + i), chunk(k, z0 + i));
+                        check("stack " + i + " in " + chunks(want), st[i].chunksNow(now).equals(want));
+                    }
+                })
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        int dm = st[i].moves() - moves[i], dt = st[i].tests() - tests[i];
+                        record(test, "stack " + i + " walking", dm + " moves into other chunks, " + dt + " tests");
+                        check("stack " + i + " moved chunks twice (" + dm + ")", dm == 2);
+                        check("and was tested once per move (" + dt + ")", dt == dm);
+                        check("still pending", st[i].state() == ConflictBridge.StackState.PENDING);
+                        tests[i] = st[i].tests();
+                    }
+                    force.accept(k, z0);
+                    force.accept(k, z0 + 1);
+                })
+                .thenWaitUntil(io(() -> check("chunk k ticks entities in both rows",
+                        RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 8))
+                                && RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)))))
+                .thenWaitUntil(io(() -> check("chunks k - 1 are loaded", level.hasChunk(k - 1, z0) && level.hasChunk(k - 1, z0 + 1))))
+                .thenWaitUntil(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("stack " + i + " tested on its chunk's change", st[i].tests() == tests[i] + 1);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        check("stack " + i + " tested once (" + (st[i].tests() - tests[i]) + ")", st[i].tests() == tests[i] + 1);
+                        check("and still pending: its rear rows do not tick", st[i].state() == ConflictBridge.StackState.PENDING);
+                        tests[i] = st[i].tests();
+                    }
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    platform(level, bx - 4, bx + 3, bz + 11, bz + 21);
+                    force.accept(k - 1, z0);
+                })
+                .thenWaitUntil(io(() -> {
+                    check("stack 0 placed", st[0].state() == ConflictBridge.StackState.PLACED && st[0].bodies().size() == 4);
+                    pin(st[0]);
+                }))
+                .thenExecute(() -> {
+                    check("stack 1 still pending", st[1].state() == ConflictBridge.StackState.PENDING);
+                    check("stack 1 not tested: none of its chunks changed (" + (st[1].tests() - tests[1]) + ")", st[1].tests() == tests[1]);
+                    check("stack 0 placed once", st[0].placings() == 1);
+                    for (Mob m : st[0].bodies())
+                        check("a warrior is a vindicator", m.getType() == EntityType.VINDICATOR && RtsimApi.isPuppet(m));
+                    force.accept(k - 1, z0 + 1);
+                })
+                .thenWaitUntil(io(() -> {
+                    check("stack 1 placed", st[1].state() == ConflictBridge.StackState.PLACED && st[1].bodies().size() == 4);
+                    pin(st[1]);
+                }))
+                .thenExecute(() -> {
+                    for (Mob m : st[1].bodies())
+                        check("an archer is a pillager", m.getType() == EntityType.PILLAGER);
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    record(test, "placed", "stack 0 when chunk (" + (k - 1) + ", " + z0 + ") ticked, stack 1 when ("
+                            + (k - 1) + ", " + (z0 + 1) + ") did; tests " + st[0].tests() + ", " + st[1].tests());
+                    // A member walks out (moved into chunk k - 2, loaded but not ticking entities).
+                    requeued[0] = bridge().requeued;
+                    Mob out = st[0].bodies().get(0);
+                    out.moveTo(bx - 19.5, out.getY(), out.getZ());
+                })
+                .thenWaitUntil(() -> {
+                    check("stack 0 placed again", st[0].placings() == 2 && st[0].state() == ConflictBridge.StackState.PLACED
+                            && st[0].bodies().size() == 4);
+                    pin(st[0]);
+                })
+                .thenExecute(() -> {
+                    check("requeued once", bridge().requeued == requeued[0] + 1);
+                    for (Mob m : st[0].bodies())
+                        check("all of it in the ticking chunks", m.getX() > bx - 16);
+                    check("stack 1 stayed in", st[1].state() == ConflictBridge.StackState.PLACED && st[1].placings() == 1);
+                    // Its rear chunk stops ticking entities: stack 1 goes back to pending.
+                    ConflictKit.force(level, k - 1, z0 + 1, false);
+                    forced.remove(chunk(k - 1, z0 + 1));
+                })
+                .thenWaitUntil(io(() -> check("stack 1 pending again", st[1].state() == ConflictBridge.StackState.PENDING)))
+                .thenExecute(() -> {
+                    check("its bodies are gone", st[1].bodies().isEmpty());
+                    check("stack 0 stayed in", st[0].state() == ConflictBridge.StackState.PLACED && st[0].placings() == 2);
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, bx - 200, bz + 16);
+                })
+                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0);
+                    Map<String, Integer> s = ConflictKit.survivors(d);
+                    record(test, "recalled", "survivors " + s);
+                    check("reason: the command", d.aux() == ConflictRecords.Dematerialized.COMMAND);
+                    check("every living member, placed or pending, survives: " + s, s.equals(Map.of(WARRIOR, 4, ARCHER, 4)));
+                    check("the party is gone", bridge().party(agent) == null);
+                    check("and its bodies", st[0].bodies().isEmpty() && st[1].bodies().isEmpty());
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
+
+    /** A stone floor over the area at its highest surface, three blocks of air above (no water, no trees under a body). */
+    private static void platform(ServerLevel level, int x0, int x1, int z0, int z1) {
+        int top = level.getMinBuildHeight();
+        for (int x = x0; x <= x1; x++)
+            for (int z = z0; z <= z1; z++)
+                top = Math.max(top, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z));
+        for (int x = x0; x <= x1; x++)
+            for (int z = z0; z <= z1; z++) {
+                level.setBlock(new BlockPos(x, top, z), Blocks.STONE.defaultBlockState(), 2);
+                for (int y = 1; y <= 3; y++)
+                    level.setBlock(new BlockPos(x, top + y, z), Blocks.AIR.defaultBlockState(), 2);
+            }
+    }
+
+    // ---- a raid party: steer, losses, loot, recall ---------------------------------------------
+
+    /**
+     * A raid band of two stacks in the arena (ledger 25 with every chunk ticking): each stack is placed
+     * at once, the war chief as an extra body at the rear of its stack (MZB-109), every body a tagged,
+     * persistent stand-in. BAND_STEER moves every stack's place; a member far from its place walks back
+     * to it (MZB-106). Each loss is journaled with who did it: a player's kill (BAND_CASUALTIES kind 1,
+     * the player, the body), a death with no killer (0), a mob's kill (2), a removal by something else
+     * (3, no killer), and the chief killed by a player (CHIEF_KILLED kind 1 with a Java op id); the drops
+     * carry their record. BAND_LOOTED has a Java op id. BAND_STATE counts the bodies present. A recall
+     * keeps the bodies while a player can see them, and ends the party (survivors) once none can.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1500, batch = "conflict_raid", skyAccess = true)
+    public static void aRaidPartyIsSteeredLosesMembersAndIsRecalled(GameTestHelper helper) {
+        String test = "aRaidPartyIsSteeredLosesMembersAndIsRecalled";
+        ServerLevel level = helper.getLevel();
+        Vec3 c = RtsimTests.centre(helper);
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), RtsimTests.dimension(helper));
+        band.arcX = c.x + 0.5;
+        band.arcZ = c.z;
+        band.targetX = c.x + 100;
+        band.targetY = c.y;
+        band.targetZ = c.z;
+        band.flags = ConflictRecords.Materialize.FLAG_HOSTILE | ConflictRecords.Materialize.FLAG_CHIEF;
+        ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 3, true), new ConflictKit.StackSpec(ARCHER, 3, false)));
+        ServerPlayer[] player = new ServerPlayer[1];
+        ConflictBridge.Stack[] st = new ConflictBridge.Stack[2];
+        Mob[] strayed = new Mob[1];
+        long[] arrive = {0};
+        long[] statesBefore = {0};
+        long[] recalledAt = {0};
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    check("two stacks", p.stacks().size() == 2);
+                    for (ConflictBridge.Stack s : p.stacks())
+                        check("stack " + s.index + " placed", s.state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    st[0] = p.stacks().get(0);
+                    st[1] = p.stacks().get(1);
+                    ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
+                    check("BAND_MATERIALIZED counts every body placed, the chief too (" + m.aux() + ")", m.aux() == 7);
+                    check("4 and 3 bodies", st[0].bodies().size() == 4 && st[1].bodies().size() == 3);
+                    int chiefs = 0;
+                    for (ConflictBridge.Slot s : st[0].slots())
+                        if (s.chief) {
+                            chiefs++;
+                            for (ConflictBridge.Slot o : st[0].slots())
+                                check("the chief walks at the rear", o.chief || o.entity().getX() > s.entity().getX());
+                        }
+                    check("one chief, in stack 0", chiefs == 1);
+                    for (ConflictBridge.Slot s : st[1].slots())
+                        check("no chief in stack 1", !s.chief);
+                    for (ConflictBridge.Stack s : st)
+                        for (ConflictBridge.Slot sl : s.slots()) {
+                            Mob b = sl.entity();
+                            check("a tagged puppet", RtsimApi.isPuppet(b) && b.isPersistenceRequired());
+                            check("at its place (" + sl.lag() + ")", sl.lag() < 1.0);
+                        }
+                    player[0] = FakePlayers.add(level, c.add(0, 0, 0), "conflict_raid_watcher");
+                    player[0].setGameMode(GameType.CREATIVE);
+                    arrive[0] = level.getGameTime() + 40;
+                    ConflictKit.steer(agent, 1, 0.1f, c.x + 2.5, c.z, arrive[0], false);
+                })
+                .thenWaitUntil(() -> check("steered", st[0].target()[0] == c.x + 2.5 && st[1].target()[0] == c.x + 2.5))
+                .thenExecute(() -> {
+                    check("each stack keeps its side", st[0].target()[1] == c.z - 2.0 && st[1].target()[1] == c.z + 2.0);
+                    // A warrior pushed to the far corner, more than LEASH blocks from its place.
+                    strayed[0] = st[0].slots().get(0).entity();
+                    strayed[0].moveTo(c.x - 4.0, strayed[0].getY(), c.z + 4.0);
+                })
+                .thenWaitUntil(() -> {
+                    check("arrived", level.getGameTime() > arrive[0]);
+                    for (ConflictBridge.Stack s : st)
+                        for (ConflictBridge.Slot sl : s.slots())
+                            check("a member near its place (" + sl.lag() + ")", sl.lag() <= ConflictBridge.LEASH);
+                })
+                .thenExecute(() -> {
+                    record(test, "steered", "the strayed warrior walked back to " + String.format("%.1f", st[0].slots().get(0).lag())
+                            + " blocks from its place");
+                    check("the strayed warrior is still placed, not requeued", st[0].placings() == 1 && st[0].slots().get(0).entity() == strayed[0]);
+                    // Every kind of loss.
+                    Mob archerByPlayer = st[1].slots().get(0).entity();
+                    Mob archerRemoved = st[1].slots().get(1).entity();
+                    Mob warriorNone = st[0].slots().get(0).entity();
+                    Mob warriorByMob = st[0].slots().get(1).entity();
+                    Mob chief = null;
+                    for (ConflictBridge.Slot sl : st[0].slots())
+                        if (sl.chief)
+                            chief = sl.entity();
+                    archerByPlayer.setDropChance(EquipmentSlot.MAINHAND, 2.0f); // always drops its crossbow
+                    archerByPlayer.hurt(level.damageSources().playerAttack(player[0]), 1000f);
+                    archerRemoved.discard();
+                    warriorNone.hurt(level.damageSources().generic(), 1000f);
+                    IronGolem golem = EntityType.IRON_GOLEM.create(level);
+                    warriorByMob.hurt(level.damageSources().mobAttack(golem), 1000f);
+                    golem.discard();
+                    chief.hurt(level.damageSources().playerAttack(player[0]), 1000f);
+                })
+                .thenWaitUntil(() -> check("four casualties and the chief", about(ConflictRecords.BAND_CASUALTIES, agent).size() == 4
+                        && about(ConflictRecords.CHIEF_KILLED, agent).size() == 1))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> cs = about(ConflictRecords.BAND_CASUALTIES, agent);
+                    int archer = ConflictKit.bodyId(ARCHER), warrior = ConflictKit.bodyId(WARRIOR);
+                    ScriptedEngine.Received byPlayer = first(cs, ConflictRecords.BY_PLAYER), byNone = first(cs, ConflictRecords.BY_NONE),
+                            byMob = first(cs, ConflictRecords.BY_MOB), byOther = first(cs, ConflictRecords.BY_OTHER);
+                    check("one of each killer kind", byPlayer != null && byNone != null && byMob != null && byOther != null);
+                    check("a player's kill names the player", player[0].getUUID().equals(ConflictKit.uuidAt(byPlayer, ConflictRecords.Casualties.KILLER_MOST)));
+                    check("of an archer", byPlayer.view().getInt(ConflictRecords.Casualties.BODY) == archer
+                            && byPlayer.view().getInt(ConflictRecords.Casualties.COUNT) == 1);
+                    check("a removal names no one, an archer", ConflictKit.uuidAt(byOther, ConflictRecords.Casualties.KILLER_MOST) == null
+                            && byOther.view().getInt(ConflictRecords.Casualties.BODY) == archer);
+                    check("a death with no killer names no one, a warrior", ConflictKit.uuidAt(byNone, ConflictRecords.Casualties.KILLER_MOST) == null
+                            && byNone.view().getInt(ConflictRecords.Casualties.BODY) == warrior);
+                    check("a mob's kill names no one, a warrior", ConflictKit.uuidAt(byMob, ConflictRecords.Casualties.KILLER_MOST) == null
+                            && byMob.view().getInt(ConflictRecords.Casualties.BODY) == warrior);
+                    ScriptedEngine.Received ck = about(ConflictRecords.CHIEF_KILLED, agent).get(0);
+                    check("the chief killed by the player", ck.aux() == ConflictRecords.BY_PLAYER
+                            && player[0].getUUID().equals(ConflictKit.uuidAt(ck, ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("with a Java op id", (ck.view().getLong(ConflictRecords.ChiefKilled.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    int carrying = 0;
+                    for (ItemEntity drop : level.getEntitiesOfClass(ItemEntity.class, new AABB(BlockPos.containing(c)).inflate(12)))
+                        if (drop.hasData(RtsimAttachments.PENDING))
+                            carrying++;
+                    check("the drops carry their record (" + carrying + ")", carrying >= 1);
+                    check("one body left in each stack", st[0].bodies().size() == 1 && st[1].bodies().size() == 1);
+                    check("both still placed", st[0].state() == ConflictBridge.StackState.PLACED && st[1].state() == ConflictBridge.StackState.PLACED);
+                    record(test, "losses", "kinds 1, 0, 2, 3 and the chief by " + player[0].getUUID() + "; " + carrying + " drops carry their record");
+                    // Loot: what a member carried off.
+                    Mob looter = st[0].bodies().get(0);
+                    check("loot from a member", bridge().looted(looter, List.of(new ItemStack(Items.BREAD, 3), ItemStack.EMPTY)));
+                    check("none from anything else", !bridge().looted(player[0], List.of(new ItemStack(Items.BREAD, 3))));
+                    statesBefore[0] = ConflictKit.states(agent).size();
+                })
+                .thenWaitUntil(() -> check("BAND_LOOTED", about(ConflictRecords.BAND_LOOTED, agent).size() == 1))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received l = about(ConflictRecords.BAND_LOOTED, agent).get(0);
+                    check("one item", l.aux() == 1);
+                    check("3 bread", l.view().getInt(ConflictRecords.Looted.ITEMS + ConflictRecords.I_ITEM) == RtsimTests.session().itemId(Items.BREAD)
+                            && l.view().getInt(ConflictRecords.Looted.ITEMS + ConflictRecords.I_COUNT) == 3);
+                    check("with a Java op id", (l.view().getLong(ConflictRecords.Looted.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                })
+                .thenWaitUntil(() -> check("a later BAND_STATE", ConflictKit.states(agent).size() > statesBefore[0]))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> s = ConflictKit.states(agent);
+                    ScriptedEngine.Received last = s.get(s.size() - 1);
+                    check("two present (" + last.view().getInt(ConflictRecords.BandState.PRESENT) + ")",
+                            last.view().getInt(ConflictRecords.BandState.PRESENT) == 2);
+                    check("ticking", (last.aux() & ConflictRecords.BandState.FLAG_TICKING) != 0);
+                    recalledAt[0] = level.getGameTime();
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_ROUTED, 400, c.x - 100, c.z);
+                })
+                .thenWaitUntil(() -> check("recalling", party(agent).recalling()))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("a player sees them: the bodies stay", bridge().party(agent) != null && bridge().bodies(agent).size() == 2);
+                    check("not ended yet", about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty());
+                    FakePlayers.remove(player[0]); // no one sees them now
+                })
+                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0);
+                    Map<String, Integer> s = ConflictKit.survivors(d);
+                    record(test, "recalled", "after " + (RtsimTests.gameTimeOf(d) - recalledAt[0]) + " ticks, survivors " + s);
+                    check("before the timeout", RtsimTests.gameTimeOf(d) - recalledAt[0] < 400);
+                    check("the two left, never the chief: " + s, s.equals(Map.of(WARRIOR, 1, ARCHER, 1)));
+                    check("their bodies are gone", st[0].bodies().isEmpty() && st[1].bodies().isEmpty() && bridge().party(agent) == null);
+                })
+                .thenSucceed();
+    }
+
+    // ---- test 14: the envoy ----------------------------------------------------------------------
+
+    /**
+     * Test 14 (MOWZIE.md §8, §4.5): an envoy party is one group, its envoy named with its demand (MZB-101).
+     * While the demand is open nothing targets the party and it targets nothing: an iron golem's
+     * target and a guard's are refused, and a golem's blow, an arrow with no owner (the stand-in for a
+     * Create Big Cannons shell) and a skeleton's arrow do no damage. The player it came to pays part of
+     * the tribute by right-clicking the envoy (TRIBUTE_PAID with a Java op id; the name counts down) and
+     * refuses by sneaking with an empty hand (ENVOY_ANSWER 2, once; MZB-110). A player's arrow hurts a
+     * guard and is an insult (ENVOY_ANSWER 3, once): the guard is lifted. Another envoy party killed by
+     * {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES with no killer. DEMAND_SETTLED takes the
+     * name away. A recall keeps the bodies while a player sees them, until its timeout. (DEMAND_SETTLED 5
+     * for the killed party is the engine's, M1.)
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1500, batch = "conflict_envoy", skyAccess = true)
+    public static void anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment(GameTestHelper helper) {
+        String test = "anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment";
+        ServerLevel level = helper.getLevel();
+        String dim = RtsimTests.dimension(helper);
+        Vec3 c = RtsimTests.centre(helper);
+        long a = ConflictKit.newAgent(), b = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        ServerPlayer player = FakePlayers.add(level, c.add(3, 0, 0), "conflict_envoy_target");
+        int demand = ConflictRecords.Envoy.DEMAND_TRIBUTE | ConflictRecords.Envoy.DEMAND_STOP;
+        long deadline = level.getGameTime() + 24_000;
+        ConflictKit.envoy(a, 1, faction, dim, c.x - 1.5, c.y, c.z, player.getUUID(), demand, ConflictRecords.SIGNAL_MINING,
+                "minecraft:emerald", 5, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1), new ConflictKit.MemberSpec(WARRIOR, 2)));
+        ConflictKit.envoy(b, 1, faction, dim, c.x + 1.0, c.y, c.z - 3.5, null, ConflictRecords.Envoy.DEMAND_TRIBUTE, 0,
+                "minecraft:emerald", 1, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
+        Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1];
+        IronGolem[] golem = new IronGolem[1];
+        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0};
+        float[] health = {0};
+
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    check("party A placed", party(a).stacks().size() == 1 && party(a).stacks().get(0).bodies().size() == 3);
+                    check("party B placed", party(b).stacks().size() == 1 && party(b).stacks().get(0).bodies().size() == 1);
+                })
+                .thenExecute(() -> {
+                    check("one group: one stack", party(a).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                    check("BAND_MATERIALIZED with all three", about(ConflictRecords.BAND_MATERIALIZED, a).get(0).aux() == 3);
+                    for (ConflictBridge.Slot sl : party(a).stacks().get(0).slots()) {
+                        if (sl.envoy)
+                            envoy[0] = sl.entity();
+                        else if (guard[0] == null)
+                            guard[0] = sl.entity();
+                    }
+                    envoyB[0] = party(b).stacks().get(0).bodies().get(0);
+                    check("the envoy is a pillager, its guards vindicators", envoy[0].getType() == EntityType.PILLAGER
+                            && guard[0].getType() == EntityType.VINDICATOR);
+                    String n = name(envoy[0]);
+                    record(test, "envoy name", n + " / " + name(envoyB[0]));
+                    check("the envoy says its demand: " + n, n != null && n.startsWith("5 ") && n.contains("mining") && envoy[0].isCustomNameVisible());
+                    check("party B's: " + name(envoyB[0]), name(envoyB[0]) != null && name(envoyB[0]).startsWith("1 ") && !name(envoyB[0]).contains("stop"));
+                    check("only the envoy is named", guard[0].getCustomName() == null);
+                    check("both guarded", party(a).guarded() && party(b).guarded());
+                    for (Mob m : party(a).stacks().get(0).bodies())
+                        check("no target goals while guarded", m.targetSelector.getAvailableGoals().isEmpty());
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    for (Mob m : bridge().bodies(a))
+                        check("a survival player 4 blocks off is not targeted", m.getTarget() == null);
+                    blockedTargets[0] = bridge().blockedTargets;
+                    blockedHits[0] = bridge().blockedHits;
+                    golem[0] = EntityType.IRON_GOLEM.create(level);
+                    golem[0].moveTo(c.x, c.y, c.z + 3.0);
+                    level.addFreshEntity(golem[0]);
+                    golem[0].setTarget(guard[0]);
+                    check("the golem may not target a guard", golem[0].getTarget() == null);
+                    guard[0].setTarget(player);
+                    check("a guard may not target the player", guard[0].getTarget() == null);
+                    check("both refusals counted", bridge().blockedTargets >= blockedTargets[0] + 2);
+                    health[0] = guard[0].getHealth();
+                    golem[0].doHurtTarget(guard[0]);
+                    Arrow arrow = EntityType.ARROW.create(level);
+                    guard[0].hurt(level.damageSources().arrow(arrow, null), 4f);
+                    Skeleton skeleton = EntityType.SKELETON.create(level);
+                    guard[0].hurt(level.damageSources().arrow(arrow, skeleton), 4f);
+                    envoy[0].hurt(level.damageSources().mobAttack(golem[0]), 4f);
+                    arrow.discard();
+                    skeleton.discard();
+                    check("no damage (" + guard[0].getHealth() + " of " + health[0] + ")", guard[0].getHealth() == health[0]
+                            && envoy[0].getHealth() == envoy[0].getMaxHealth());
+                    check("four blocked hits (" + (bridge().blockedHits - blockedHits[0]) + ")", bridge().blockedHits == blockedHits[0] + 4);
+                    check("no answer for any of it", about(ConflictRecords.ENVOY_ANSWER, a).isEmpty());
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("the golem never got a guarded target", golem[0].getTarget() == null);
+                    record(test, "guard", (bridge().blockedHits - blockedHits[0]) + " hits and " + (bridge().blockedTargets - blockedTargets[0])
+                            + " targets refused");
+                    // Part of the tribute: 3 of 5 emeralds. A stack of something else pays nothing.
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIRT, 4));
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    check("dirt pays nothing", bridge().party(a).demand().remaining() == 5);
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 3));
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    check("3 paid, 2 owed", bridge().party(a).demand().remaining() == 2 && player.getMainHandItem().isEmpty());
+                    check("the name counts down: " + name(envoy[0]), name(envoy[0]).startsWith("2 "));
+                    // Refusal: sneaking with an empty hand, twice.
+                    player.setShiftKeyDown(true);
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    player.setShiftKeyDown(false);
+                })
+                .thenWaitUntil(() -> check("TRIBUTE_PAID", ConflictKit.tributes(a).size() == 1))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received t = ConflictKit.tributes(a).get(0);
+                    check("one item", t.aux() == 1);
+                    check("3 emeralds", t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_ITEM) == RtsimTests.session().itemId(Items.EMERALD)
+                            && t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_COUNT) == 3);
+                    check("from the player", player.getUUID().equals(ConflictKit.uuidAt(t, ConflictRecords.TributePaid.PLAYER_MOST)));
+                    check("to the faction", t.view().getLong(ConflictRecords.TributePaid.FACTION) == faction);
+                    check("with a Java op id", (t.view().getLong(ConflictRecords.TributePaid.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    check("one refusal (" + ConflictKit.answers(a, ConflictRecords.ANSWER_REFUSED) + ")", ConflictKit.answers(a, ConflictRecords.ANSWER_REFUSED) == 1);
+                    check("still guarded: a refusal is no blow", party(a).guarded());
+                    // A player's arrow: it hurts, and it is an insult.
+                    golem[0].discard();
+                    player.setGameMode(GameType.CREATIVE);
+                    health[0] = guard[0].getHealth();
+                    Arrow arrow = EntityType.ARROW.create(level);
+                    guard[0].hurt(level.damageSources().arrow(arrow, player), 2f);
+                    arrow.discard();
+                    check("the player's arrow hurt (" + guard[0].getHealth() + " of " + health[0] + ")", guard[0].getHealth() < health[0]);
+                    check("the guard is lifted", !party(a).guarded());
+                    for (Mob m : bridge().bodies(a))
+                        check("their target goals are back", !m.targetSelector.getAvailableGoals().isEmpty());
+                    envoy[0].hurt(level.damageSources().playerAttack(player), 1f);
+                    check("party B still guarded", party(b).guarded());
+                    // Party B killed by /kill: no answer, a casualty with no killer.
+                    envoyB[0].kill();
+                })
+                .thenWaitUntil(() -> check("B's casualty", about(ConflictRecords.BAND_CASUALTIES, b).size() == 1))
+                .thenExecute(() -> {
+                    check("one insult (" + ConflictKit.answers(a, ConflictRecords.ANSWER_ATTACKED) + ")", ConflictKit.answers(a, ConflictRecords.ANSWER_ATTACKED) == 1);
+                    ScriptedEngine.Received insult = first(about(ConflictRecords.ENVOY_ANSWER, a), ConflictRecords.ANSWER_ATTACKED);
+                    check("by the player", player.getUUID().equals(ConflictKit.uuidAt(insult, ConflictRecords.EnvoyAnswer.PLAYER_MOST)));
+                    ScriptedEngine.Received cb = about(ConflictRecords.BAND_CASUALTIES, b).get(0);
+                    check("/kill: no killer", cb.aux() == ConflictRecords.BY_NONE && ConflictKit.uuidAt(cb, ConflictRecords.Casualties.KILLER_MOST) == null);
+                    check("the emissary", cb.view().getInt(ConflictRecords.Casualties.BODY) == ConflictKit.bodyId(EMISSARY));
+                    check("and no ENVOY_ANSWER from B", about(ConflictRecords.ENVOY_ANSWER, b).isEmpty());
+                    ConflictKit.recall(b, 1, ConflictRecords.RECALL_ROUTED, 0, c.x, c.z);
+                    ConflictKit.settled(faction, a, player.getUUID(), ConflictRecords.SETTLED_PAID, 0);
+                })
+                .thenWaitUntil(() -> check("A's demand settled", party(a).demand() == null))
+                .thenExecute(() -> {
+                    check("its name is gone", envoy[0].getCustomName() == null && !envoy[0].isCustomNameVisible());
+                    check("the outcome", bridge().lastSettled == ConflictRecords.SETTLED_PAID);
+                    recalledAt[0] = level.getGameTime();
+                    ConflictKit.recall(a, 1, ConflictRecords.RECALL_SETTLED, 60, c.x - 100, c.z);
+                })
+                .thenWaitUntil(() -> check("B ended", !about(ConflictRecords.BAND_DEMATERIALIZED, b).isEmpty()))
+                .thenExecute(() -> check("B had no one left", ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, b).get(0)).isEmpty()))
+                .thenWaitUntil(() -> check("recalling", party(a).recalling()))
+                .thenIdle(20)
+                .thenExecute(() -> check("a player sees A: the bodies stay", bridge().bodies(a).size() == 3))
+                .thenWaitUntil(() -> check("A ended at its timeout", !about(ConflictRecords.BAND_DEMATERIALIZED, a).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = about(ConflictRecords.BAND_DEMATERIALIZED, a).get(0);
+                    long after = RtsimTests.gameTimeOf(d) - recalledAt[0];
+                    Map<String, Integer> s = ConflictKit.survivors(d);
+                    record(test, "recalled", "after " + after + " ticks, survivors " + s);
+                    check("at the timeout (" + after + ")", after >= 60);
+                    check("all three: " + s, s.equals(Map.of(EMISSARY, 1, WARRIOR, 2)));
+                    check("the bodies are gone", !envoy[0].isAlive() || envoy[0].isRemoved());
+                    FakePlayers.remove(player);
+                })
+                .thenSucceed();
+    }
+
+    // ---- test 18 and ledger 19: fights ----------------------------------------------------------
+
+    private static final String STRONG_TAG = "mic_rtsim_test_strong";
+    private static boolean strengthPluginRegistered;
+
+    /** A plugin that knows one entity: a zombie with the test's tag is 2.5 ordinary mobs (ledger 19). */
+    private static synchronized void registerStrengthPlugin() {
+        if (strengthPluginRegistered)
+            return;
+        strengthPluginRegistered = true;
+        IndustryApi.register(new IndustryPlugin() {
+            @Override
+            public float fightStrength(Entity attacker) {
+                return attacker instanceof Zombie && attacker.getTags().contains(STRONG_TAG) ? 2.5f : Float.NaN;
+            }
+        });
+    }
+
+    /**
+     * Test 18 and ledger 19 (MOWZIE.md §4.13): an observed fight in a district counts each attacker's
+     * strength as the first plugin that knows it says (a tagged zombie 2.5) or 1 (a plain zombie), and
+     * never a mob of {@code mic_rtsim:threat/ignored} (the test pack's endermite, standing in for
+     * Mowzie's foliaath, MZB-114): IND_FIGHT melee with 2 attackers, strength 3.5.
+     */
+    @GameTest(template = "industry_yard", batch = "conflict_strength", timeoutTicks = 800)
+    public static void aNaturalFoliaathIsNotCountedAsPressure(GameTestHelper helper) {
+        String test = "aNaturalFoliaathIsNotCountedAsPressure";
+        IndustryTestKit.fastConfig();
+        IndustryTestKit.forgetAll(helper);
+        ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, 20);
+        registerStrengthPlugin();
+        ServerLevel level = helper.getLevel();
+        BlockPos chest = IndustryTestKit.inChunk(helper, 2, 2);
+        long[] id = {0};
+        helper.startSequence()
+                .thenExecute(() -> {
+                    IndustryTestKit.set(helper, chest, TestMachines.MACHINE.get().defaultBlockState());
+                    IndustryTestKit.playerPlaced(helper, chest);
+                })
+                .thenWaitUntil(() -> {
+                    District d = IndustryTestKit.districtAt(helper, chest);
+                    check("the district", d != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    check("the endermite is ignored", EntityType.ENDERMITE.is(com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatClasses.IGNORED));
+                    IronGolem golem = EntityType.IRON_GOLEM.create(level);
+                    golem.setPlayerCreated(true);
+                    golem.moveTo(chest.getX() + 3.5, chest.getY(), chest.getZ() + 0.5);
+                    level.addFreshEntity(golem);
+                    Zombie strong = EntityType.ZOMBIE.create(level);
+                    strong.addTag(STRONG_TAG);
+                    strong.moveTo(chest.getX() + 4.5, chest.getY(), chest.getZ() + 0.5);
+                    level.addFreshEntity(strong);
+                    Zombie plain = EntityType.ZOMBIE.create(level);
+                    plain.moveTo(chest.getX() + 4.5, chest.getY(), chest.getZ() + 2.5);
+                    level.addFreshEntity(plain);
+                    Endermite mite = EntityType.ENDERMITE.create(level);
+                    mite.moveTo(chest.getX() + 4.5, chest.getY(), chest.getZ() + 4.5);
+                    level.addFreshEntity(mite);
+                    for (Mob m : List.of(strong, plain, mite))
+                        m.hurt(level.damageSources().mobAttack(golem), 1f);
+                    for (Mob m : List.of(strong, plain, mite, golem))
+                        m.discard();
+                })
+                .thenWaitUntil(() -> {
+                    ByteBuffer melee = null;
+                    for (ByteBuffer f : IndustryTestKit.received(IndRecords.IND_FIGHT, IndRecords.Fight.DISTRICT, id[0]))
+                        if (IndustryTestKit.aux(f) == IndRecords.ThreatClass.GROUND_MELEE)
+                            melee = f;
+                    check("a melee fight", melee != null);
+                    int attackers = melee.getInt(IndRecords.Fight.ATTACKERS);
+                    float strength = melee.getFloat(IndRecords.Fight.ATTACKER_STRENGTH);
+                    record(test, "melee (" + IndustryTestKit.engineName() + ")", "attackers " + attackers + ", strength " + strength);
+                    check("two attackers, the endermite not one (" + attackers + ")", attackers == 2);
+                    check("strength 2.5 + 1 (" + strength + ")", Math.abs(strength - 3.5f) < 1e-6);
+                    ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, null);
+                })
+                .thenSucceed();
+    }
+
+    // ---- notices ---------------------------------------------------------------------------------
+
+    /**
+     * FACTION_NOTICE is a sound only (Ben, 2026-10-22: nothing in chat, the action bar or a title),
+     * kept until its player is in range: a notice to a player away from the territory waits; the player
+     * leaves and comes back inside it, and it plays once (NOTICE_SHOWN with its step once M1's records
+     * are on). A notice to the settlers plays to any player in range. The territory command adds and
+     * removes the faction's circle. Test 19 without the M1 half.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_notice", skyAccess = true)
+    public static void aNoticeWaitsForThePlayersNextEntry(GameTestHelper helper) {
+        String test = "aNoticeWaitsForThePlayersNextEntry";
+        ServerLevel level = helper.getLevel();
+        String dim = RtsimTests.dimension(helper);
+        Vec3 c = RtsimTests.centre(helper);
+        long faction = ConflictKit.newFaction();
+        int tx = (int) Math.floor(c.x), tz = (int) Math.floor(c.z);
+        // The player stands 600 blocks off: outside the territory (radius 100) and NOTICE_RANGE.
+        ServerPlayer player = FakePlayers.add(level, c.add(600, 0, 0), "conflict_notice_target");
+        long[] played = {0}, posted = {0};
+        helper.startSequence()
+                .thenExecute(() -> ConflictKit.territory(faction, dim, (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING), tx, tz, 100))
+                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction) != null))
+                .thenExecute(() -> {
+                    played[0] = bridge().noticesPlayed;
+                    posted[0] = ConflictNews.posted();
+                    ConflictKit.notice(faction, player.getUUID(), dim, ConflictRecords.SIGNAL_MINING, tx, tz, 12f, 3);
+                })
+                .thenWaitUntil(() -> check("kept", bridge().noticesKept() >= 1))
+                .thenIdle(ConflictBridge.NOTICE_CHECK * 3)
+                .thenExecute(() -> {
+                    check("not played while the player is away", bridge().noticesPlayed == played[0] && bridge().noticesKept() >= 1);
+                    FakePlayers.remove(player); // logs out
+                    player.moveTo(c.x + 20, c.y, c.z); // and back, inside the territory
+                })
+                .thenIdle(ConflictBridge.NOTICE_CHECK * 2)
+                .thenExecute(() -> {
+                    check("not played to a player not in the level", bridge().noticesPlayed == played[0]);
+                    level.players().add(player);
+                })
+                .thenWaitUntil(() -> check("played on the player's entry", bridge().noticesPlayed == played[0] + 1))
+                .thenExecute(() -> {
+                    check("forgotten once played", bridge().noticesKept() == 0);
+                    check("the news hook reached (MZB-101: it sends nothing)", ConflictNews.posted() > posted[0]);
+                    if (ConflictBridge.m1Records()) {
+                        List<ScriptedEngine.Received> shown = new ArrayList<>();
+                        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
+                            if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
+                                shown.add(r);
+                        check("NOTICE_SHOWN with the step", shown.size() == 1 && shown.get(0).aux() == 3
+                                && player.getUUID().equals(ConflictKit.uuidAt(shown.get(0), ConflictRecords.NoticeShown.PLAYER_MOST)));
+                    }
+                    // To the settlers: any player in range.
+                    ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1);
+                })
+                .thenWaitUntil(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0))
+                .thenExecute(() -> {
+                    record(test, "notices", "kept while away, played on entry; the settlers' to the player in range");
+                    FakePlayers.remove(player);
+                    ConflictKit.territoryRemoved(faction, dim);
+                })
+                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction) == null))
+                .thenSucceed();
+    }
+
+    // ---- territory signals and camps --------------------------------------------------------------
+
+    /** A structure no culture claims: the engine ignores its FACTION_FOUND, so no engine faction answers the test's. */
+    private static final String UNCLAIMED_CAMP = "mic_rtsim:conflict/test_unclaimed_camp";
+
+    /**
+     * Territory signals (MOWZIE.md §4.4): inside a faction's territory a player's broken log is logging
+     * (2), a broken ore mining (3), a placed block building (5), and a kill of the camp's kin killing (4,
+     * with the faction); each kind is one TERRITORY_SIGNAL a batch, its count summed, after
+     * {@link ConflictBridge#SIGNAL_FLUSH} ticks. A signal the territory does not mind, a block outside it
+     * and a kill of a body that is no kin count nothing. {@code reportCamp} sends FACTION_FOUND with the
+     * structure and the census.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 800, batch = "conflict_signals", skyAccess = true)
+    public static void signalsInsideATerritoryAreCountedAndBatched(GameTestHelper helper) {
+        String test = "signalsInsideATerritoryAreCountedAndBatched";
+        ServerLevel level = helper.getLevel();
+        String dim = RtsimTests.dimension(helper);
+        Vec3 c = RtsimTests.centre(helper);
+        BlockPos camp = BlockPos.containing(c);
+        ServerPlayer player = FakePlayers.add(level, c, "conflict_signal_maker");
+        String kinTag = "mic_rtsim_test_kin";
+        long[] faction = {0};
+        long[] counted = {0};
+        BlockPos log = BlockPos.containing(c).offset(2, 0, 2), ore = BlockPos.containing(c).offset(-2, 0, 2),
+                dirt = BlockPos.containing(c).offset(2, 0, -2);
+        helper.startSequence()
+                .thenExecute(() -> {
+                    faction[0] = bridge().reportCamp(level, UNCLAIMED_CAMP, camp,
+                            e -> e.getTags().contains(kinTag), null, false, 7, ConflictRecords.FactionFound.CENSUS_CHIEF);
+                    check("a faction key", faction[0] != 0 && bridge().hasCamp(faction[0]));
+                })
+                .thenWaitUntil(() -> check("FACTION_FOUND", !ConflictKit.factionsFound(faction[0]).isEmpty()))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received f = ConflictKit.factionsFound(faction[0]).get(0);
+                    check("the structure", f.view().getInt(ConflictRecords.FactionFound.STRUCTURE)
+                            == RtsimTests.session().dictId(Obs.DICT_STRUCTURE, UNCLAIMED_CAMP));
+                    check("its position", f.view().getInt(ConflictRecords.FactionFound.X) == camp.getX()
+                            && f.view().getInt(ConflictRecords.FactionFound.Z) == camp.getZ());
+                    check("the census", (f.view().getShort(ConflictRecords.FactionFound.HOME_BODIES) & 0xFFFF) == 7
+                            && f.view().get(ConflictRecords.FactionFound.CENSUS) == ConflictRecords.FactionFound.CENSUS_CHIEF);
+                    check("not late", f.aux() == 0);
+                    // Its territory minds everything but building.
+                    int mask = (1 << ConflictRecords.SIGNAL_LOGGING) | (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING);
+                    ConflictKit.territory(faction[0], dim, mask, camp.getX(), camp.getZ(), 64);
+                })
+                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction[0]) != null))
+                .thenExecute(() -> {
+                    counted[0] = bridge().signalsCounted;
+                    level.setBlock(log, Blocks.OAK_LOG.defaultBlockState(), 3);
+                    level.setBlock(ore, Blocks.IRON_ORE.defaultBlockState(), 3);
+                    level.setBlock(dirt, Blocks.DIRT.defaultBlockState(), 3);
+                    // Two logs, one ore, a block placed (building: not minded), dirt broken (nothing).
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.BreakEvent(level, log, level.getBlockState(log), player));
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.BreakEvent(level, log, level.getBlockState(log), player));
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.BreakEvent(level, ore, level.getBlockState(ore), player));
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.BreakEvent(level, dirt, level.getBlockState(dirt), player));
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent(
+                            net.neoforged.neoforge.common.util.BlockSnapshot.create(level.dimension(), level, dirt), level.getBlockState(dirt.below()), player));
+                    // A log far outside the territory.
+                    BlockPos far = camp.offset(500, 0, 0);
+                    post(new net.neoforged.neoforge.event.level.BlockEvent.BreakEvent(level, far, Blocks.OAK_LOG.defaultBlockState(), player));
+                    // The camp's kin killed by the player, and a zombie that is no kin.
+                    Zombie kin = EntityType.ZOMBIE.create(level);
+                    kin.addTag(kinTag);
+                    kin.moveTo(c.x + 1, c.y, c.z + 1);
+                    level.addFreshEntity(kin);
+                    Zombie other = EntityType.ZOMBIE.create(level);
+                    other.moveTo(c.x - 1, c.y, c.z - 1);
+                    level.addFreshEntity(other);
+                    kin.hurt(level.damageSources().playerAttack(player), 1000f);
+                    other.hurt(level.damageSources().playerAttack(player), 1000f);
+                    check("counted: 2 logs, an ore, a kill (" + (bridge().signalsCounted - counted[0]) + ")", bridge().signalsCounted == counted[0] + 4);
+                })
+                .thenIdle(ConflictBridge.SIGNAL_FLUSH / 2)
+                .thenExecute(() -> check("batched: nothing journaled yet", ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()))
+                .thenWaitUntil(() -> check("journaled", !ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID()).isEmpty()
+                        && !ConflictKit.signals(ConflictRecords.SIGNAL_MINING, player.getUUID()).isEmpty()
+                        && !ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID()).isEmpty()))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> logs = ConflictKit.signals(ConflictRecords.SIGNAL_LOGGING, player.getUUID());
+                    check("one logging record of 2", logs.size() == 1 && logs.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == 2);
+                    check("at the first log", logs.get(0).view().getInt(ConflictRecords.TerritorySignal.X) == log.getX());
+                    check("for no faction: the engine finds it", logs.get(0).view().getLong(ConflictRecords.TerritorySignal.FACTION) == 0);
+                    List<ScriptedEngine.Received> ores = ConflictKit.signals(ConflictRecords.SIGNAL_MINING, player.getUUID());
+                    check("one mining record of 1", ores.size() == 1 && ores.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == 1);
+                    List<ScriptedEngine.Received> kills = ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player.getUUID());
+                    check("one killing record of 1, the camp's faction", kills.size() == 1
+                            && kills.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == 1
+                            && kills.get(0).view().getLong(ConflictRecords.TerritorySignal.FACTION) == faction[0]);
+                    check("no building record: not minded", ConflictKit.signals(ConflictRecords.SIGNAL_BUILDING, player.getUUID()).isEmpty());
+                    record(test, "signals", "logging 2, mining 1, killing 1 in one record each");
+                    FakePlayers.remove(player);
+                    ConflictKit.territoryRemoved(faction[0], dim);
+                })
+                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction[0]) == null))
+                .thenSucceed();
+    }
+
+    private static void post(net.neoforged.bus.api.Event e) {
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(e);
+    }
+}
