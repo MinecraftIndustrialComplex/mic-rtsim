@@ -671,6 +671,17 @@ broken, and refounding at found sites.
      how a blockade lifts by itself.
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
+   - **Built (S8b-4)**, 2026-10-22 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
+     PC80 to PC89; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
+     `crates/rtsim-ships/tests/blockade.rs`). Measured over 1,000 years on `synth::sea_havens`, seeds
+     1 to 30, nobody watching: per sea per decade 0.76 blockades and 5.39 closures; closed spells of
+     30.4 days on average and 37 at the longest, never more than 11 days past the last day a lane was
+     above a quarter; 0.86% of port-days closed; 33 of 589 ports ever closed, in 18 of 30 seas; 2.5%
+     fewer hunts than with closures off (86.34 against 88.53 a sea-year); havens open 0.973 of the
+     time (0.980 off); hunts in every decade; never every sea port of a sea closed at once, and no
+     navy ship laid up. A port whose lanes are its haven's main prey closes again 17 to 30 days after a
+     reopening on average and is closed 50% to 64% of the time (seeds 3, 10, 11 and 12, with 79% of the
+     closures). `synth::coastal`, whose navy patrols the lanes, never closes a port.
 8. **News travels in the world, never in chat (CL-9).**
    - New report kinds 16 to 20 (`rtsim-knowledge`, reserved for ports and ships): PortRaided (16), Blockade
      begun (17), PortClosed (18), PortReopened (19) and HavenFell (20). `who` is the haven (the navy's
