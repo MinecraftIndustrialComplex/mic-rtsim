@@ -179,16 +179,15 @@ final class FarDragonView {
         }
         CANDIDATES.sort((a, b) -> Double.compare(a.distanceSq, b.distanceSq));
 
-        int drawn = 0, models = 0, groups = 0, boxes = 0;
+        int drawn = 0, slots = 0, groups = 0, boxes = 0;
         int keep = tier.dragons * KEEP_PER_DRAWN;
         for (Candidate c : CANDIDATES) {
-            if (drawn >= tier.dragons || groups + 2 > tier.activeGroups)
+            if (slots >= tier.dragons || groups + 2 > tier.activeGroups)
                 break;
-            if (c.model) {
-                drawn++;
-                models++;
+            // Its place in the count is taken whether it draws or not, as FarModelRenderer counts it
+            slots++;
+            if (c.model)
                 continue;
-            }
             FarMover m = c.mover;
             int stage = Math.max(1, Math.min(5, m.size()));
             int poses = tier.wingPoses;
@@ -247,7 +246,7 @@ final class FarDragonView {
             }
             registered += p.groups();
         }
-        lastDrawn = drawn - models;
+        lastDrawn = drawn;
         lastGroups = groups;
         lastBoxes = boxes;
         lastRegistered = registered;

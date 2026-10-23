@@ -330,9 +330,15 @@ public final class CarriageLook implements FarLook {
                 if (md != null) {
                     int n = md.drawState().vertexCount();
                     VertexBuffer vb = new VertexBuffer(VertexBuffer.Usage.STATIC);
-                    vb.bind();
-                    vb.upload(md);
-                    VertexBuffer.unbind();
+                    try {
+                        vb.bind();
+                        vb.upload(md);
+                    } catch (RuntimeException | LinkageError x) {
+                        vb.close();
+                        throw x;
+                    } finally {
+                        VertexBuffer.unbind();
+                    }
                     parts.add(new FarModel.Part(LAYERS[i], vb, n));
                 }
             }
