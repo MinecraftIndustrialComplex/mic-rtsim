@@ -72,6 +72,9 @@ pub use worldmodel::{
 mod shared;
 pub use shared::PLAYER_STALE;
 
+/// TALK's asks and facts (TALK_ASK, TALK_FACTS; docs/boundary.md §13, TALK.md §9).
+mod talk;
+pub use talk::Stats as TalkStats;
 // Every level's topology (TOPOLOGY records; docs/boundary.md §11).
 mod topology;
 // The paged modules' saves, tickets and budgets (PF12 to PF21).
@@ -356,6 +359,8 @@ struct State {
     shared: shared::Link,
     /// Every level's topology (`topology.rs`), handed to the modules.
     topology: topology::Link,
+    /// TALK's open asks (`talk.rs`).
+    talk: talk::Link,
     /// The paged modules' saves on their way back from the IO lane (`paging.rs`).
     paging: paging::Channel,
     /// The event archive's pending rows and dictionary (`archive.rs`), and whether this session
@@ -398,6 +403,7 @@ impl State {
             worldmodel: wm,
             shared: shared::Link::default(),
             topology: topology::Link::default(),
+            talk: talk::Link::default(),
             paging: paging::Channel::new(),
             archive: rtsim_archive::Recorder::default(),
             archive_on: false,
@@ -1067,7 +1073,7 @@ impl Engine {
         let mut unit = unit;
         if !self.cfg.test && unit.iter().any(Order::test_only) {
             return Err(
-                "a FAIL, P1_SPAWN_NEAR, P1_ADVANCE, DRAGON_COMMAND, SHIP_COMMAND, HERD_COMMAND, HERD_FOUND or CONFLICT_COMMAND order needs an engine opened in TEST mode"
+                "a FAIL, P1_SPAWN_NEAR, P1_ADVANCE, DRAGON_COMMAND, SHIP_COMMAND, HERD_COMMAND, HERD_FOUND, CONFLICT_COMMAND or TALK_REPORT order needs an engine opened in TEST mode"
                     .into(),
             );
         }
@@ -1372,6 +1378,7 @@ impl Engine {
                 }
                 Order::TributeStart { village, lair } => dragons::tribute_start(st, village, lair),
                 Order::NestDay(ticks) => dragons::nest_day(st, ticks),
+                Order::TalkReport(c) => talk::post(st, &c),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
                 other => kept.push(other),
@@ -1447,6 +1454,7 @@ impl Engine {
                 conflict::session_start(st, mask);
                 worldmodel::session_start(st);
                 shared::session_start(st);
+                talk::session_start(st);
                 if last_applied > st.last_applied_cmd {
                     st.last_applied_cmd = last_applied;
                 }
@@ -1495,6 +1503,7 @@ impl Engine {
                 conflict::observe_state(st, rec);
                 worldmodel::observe_state(st, rec);
                 shared::observe_state(st, rec);
+                talk::observe_state(st, rec);
                 Self::log_received(st, h, rec, 0, false);
             }
         }
@@ -1875,6 +1884,11 @@ impl Engine {
             return (highest, true);
         }
         let (h, more) = worldmodel::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = talk::write_queue(st, w);
         (highest.max(h), more)
     }
 }
