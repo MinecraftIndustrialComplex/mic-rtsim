@@ -72,8 +72,6 @@ public final class Talk {
         remember(player.getUUID(), pick.key());
         talker.react(entity, player);
         credit(talker, entity, player, now);
-        if (!player.getData(RtsimAttachments.TALK_HINTED))
-            player.setData(RtsimAttachments.TALK_HINTED, true);
         return true;
     }
 

@@ -13,7 +13,6 @@
     "LevelChunkAccessor",
     "LevelChunkTickGateMixin",
     "LlamaInvoker",
-    "MerchantMenuAccessor",
     "MerchantOfferAccessor",
     "MerchantResultSlotMixin",
     "RegionFileStorageAccessor",
