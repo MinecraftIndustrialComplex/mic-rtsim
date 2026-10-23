@@ -637,7 +637,12 @@ under its own heading.
   fight's casualties with no despawn journaled), which fail on the old engine (12, not 10 and 6).
   Also tested, not a new rule: a restart in the middle of Peaceful goes on exactly as the run that
   kept going (the same deadline, expiry tick and commands; a jni crash-and-leave test), and two
-  Peaceful spans move a deadline by both.
+  Peaceful spans move a deadline by both. A correction to the commit message of 11eb3e62, which
+  says each of its tests was checked to fail on the old rule (re-review P3-6): the jni test
+  `a_crash_in_the_middle_of_peaceful_then_leaving_it_moves_the_deadline_by_the_whole_span` passes on
+  106bda63 too. It is a regression guard for the Peaceful rule of MZB-132 across a restart, not a
+  failing-first test; the two crash-and-replay tests above and the rtsim-conflict tests are the
+  ones that failed first.
 - **MZB-139** (the party's chief flag goes stale; TALK review): when a chief dies of age while out
   with a band, the lazy succession (`ensure_chief` on a feud wake or a plunder) cleared only the
   faction's `chief_out`; the band kept `chief == true`, so a later CHIEF_KILLED for it killed the new
