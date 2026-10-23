@@ -1682,8 +1682,10 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   engine's per-class tunables. **Watched**, the director above.
 - **The real witnesses of a rout** hear when a player breaks one of a faction's bands (a rescue report,
   C24; CL-D61): the village the band marched on, every village that hates the faction within the
-  view radius of where the band broke, and every player base within it. Every other village hears it
-  from travellers. Villages that
+  view radius of where the band broke (where the breaker stands for a watched fight, else where the
+  band is on the road), and the player's base the band marched on and every player base within that
+  radius. A band routed on the road records the rescue as one routed in a fight does. Every other
+  village hears it from travellers. Villages that
   hate a faction also remember the raids on them (a robbery report against the faction).
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
