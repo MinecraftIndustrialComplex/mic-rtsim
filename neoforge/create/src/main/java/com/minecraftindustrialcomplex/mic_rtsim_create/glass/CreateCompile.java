@@ -614,23 +614,45 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (!listed(m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
-            for (Direction f : Direction.values())
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f)))
-                    return true;
             BlockState state = m.getBlockState();
-            if (state.getBlock() instanceof IRotate block)
+            IRotate block = state.getBlock() instanceof IRotate r ? r : null;
+            for (Direction f : Direction.values())
+                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f), block != null && connects(block, p, state, f)))
+                    return true;
+            if (block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
-                    if (linksOutTo(id, n))
+                    if (linksOutTo(id, n, true))
                         return true;
         }
         return false;
     }
 
-    private boolean linksOutTo(long id, BlockPos n) {
+    /**
+     * Whether position {@code n} outside the district holds, or may hold, a member of network {@code id}:
+     * a kinetic block entity of the network, or a chunk that is not loaded where {@code mayConnect} (the
+     * member links that way at all).
+     */
+    private boolean linksOutTo(long id, BlockPos n, boolean mayConnect) {
         if (!g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(n.getX() >> 4, n.getZ() >> 4)))
-            return !Loaded.at(level, n)
+            return (mayConnect && !Loaded.at(level, n))
                     || (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && o.network != null && o.network == id);
         return false;
+    }
+
+    /**
+     * Whether a kinetic block may turn its neighbour across face {@code f}. A shaft or a cog does only
+     * through a shaft end that way or, for a cog, in its plane; any other block may (a chain drive links
+     * across its sides, which no shaft end says), so it counts, on the safe side. Reads the block's own
+     * state only.
+     */
+    private boolean connects(IRotate block, BlockPos p, BlockState state, Direction f) {
+        if (!(block instanceof com.simibubi.create.content.kinetics.simpleRelays.AbstractSimpleShaftBlock))
+            return true;
+        if (block.hasShaftTowards(level, p, state, f))
+            return true;
+        return (com.simibubi.create.content.kinetics.simpleRelays.ICogWheel.isSmallCog(state)
+                || com.simibubi.create.content.kinetics.simpleRelays.ICogWheel.isLargeCog(state))
+                && block.getRotationAxis(state) != f.getAxis();
     }
 
     /** Whether a block entity lies outside the district's chunks. */

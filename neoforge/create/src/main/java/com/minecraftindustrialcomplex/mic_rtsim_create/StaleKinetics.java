@@ -55,13 +55,9 @@ public final class StaleKinetics {
     static void register() {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Pre e) -> drain());
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> drain());
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Unload e) -> {
-            if (e.getLevel() instanceof ServerLevel level) {
-                LongOpenHashSet away = AWAY.get(level);
-                if (away != null)
-                    away.remove(e.getChunk().getPos().toLong());
-            }
-        });
+        // a chunk that unloads, or loads anew (its block entities attach, which re-syncs them), is no longer away
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Unload e) -> forget(e));
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Load e) -> forget(e));
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerStoppedEvent e) -> {
             AWAY.clear();
             FULL_AGAIN.clear();
@@ -69,9 +65,24 @@ public final class StaleKinetics {
     }
 
     /**
-     * {@code ChunkMap.onFullChunkStatusChange}: a chunk below FULL is noted away until it unloads; one that is
-     * FULL or more again while noted is queued for {@link #chunkFull}. A promotion by several steps at once
-     * reports only its last status (each step cancels the one before), so any status from FULL on counts.
+     * The maps are the server thread's: an event another thread posts (a chunk system that loads off it) is
+     * left out, which at worst costs one spurious {@link #chunkFull} pass over a chunk that loaded anew.
+     */
+    private static void forget(ChunkEvent e) {
+        if (e.getLevel() instanceof ServerLevel level && level.getServer().isSameThread()) {
+            LongOpenHashSet away = AWAY.get(level);
+            if (away != null)
+                away.remove(e.getChunk().getPos().toLong());
+        }
+    }
+
+    /**
+     * {@code ChunkMap.onFullChunkStatusChange}: a chunk below FULL is noted away until it unloads or loads
+     * anew; one that is FULL or more again while noted is queued for {@link #chunkFull}. A promotion by
+     * several steps at once reports only its last status (each step cancels the one before), so any status
+     * from FULL on counts. A promotion is reported later, from the main thread's task queue, and a demotion
+     * can come between (it is reported at once): a promotion reported for a chunk that is no longer FULL
+     * leaves it noted, for its next promotion.
      */
     public static void fullStatusChanged(ServerLevel level, ChunkPos pos, FullChunkStatus status) {
         long c = pos.toLong();
@@ -79,6 +90,8 @@ public final class StaleKinetics {
             AWAY.computeIfAbsent(level, l -> new LongOpenHashSet()).add(c);
             return;
         }
+        if (level.getChunkSource().getChunkNow(pos.x, pos.z) == null)
+            return;
         LongOpenHashSet away = AWAY.get(level);
         if (away != null && away.remove(c))
             FULL_AGAIN.computeIfAbsent(level, l -> new LongLinkedOpenHashSet()).add(c);
