@@ -157,6 +157,20 @@ fn step(
             let dir = &e.dirs[d.dir as usize];
             let j = dir.to;
             let had = dir.goods.get(&g).is_some_and(|p| p.current_rate() > 0);
+            if e.closed {
+                // A closed lane (a blockaded port, PC22) offers nothing new: a direction that
+                // was sending is kept as a zero-want candidate, so its rate (and raided share)
+                // winds down through this allocation. What is already on the road lands.
+                if had || dir.raid.get(&g).is_some_and(|p| p.current_rate() > 0) {
+                    cands.push(Candidate {
+                        dir: *d,
+                        margin: -1,
+                        want: 0,
+                        quote: 0,
+                    });
+                }
+                continue;
+            }
             let Some(snap) = node.news.get(j).filter(|s| !s.is_base) else {
                 if had {
                     cands.push(Candidate {

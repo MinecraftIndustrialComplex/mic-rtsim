@@ -1203,6 +1203,9 @@ impl World {
             if !ok {
                 return bad(format!("edge {i} refers past the world's nodes"));
             }
+            if e.closed && e.medium == rtsim_travel::Medium::Road {
+                return bad(format!("edge {i} is a closed road"));
+            }
         }
         for (h, c) in self.caravans.iter() {
             if !node_ok(c.home) || !node_ok(c.leg.from) || !node_ok(c.leg.to) {

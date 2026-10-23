@@ -151,6 +151,34 @@ impl World {
         Ok(())
     }
 
+    /// A closed lane offers no new goods (choice PC22): once `close_lane` has returned, every
+    /// closed edge's goods and raid pipelines run at rate 0 in both directions, whatever the
+    /// news says, so what is on the road is all that is left to arrive. Cheap: one pass over the
+    /// edges. Not part of the per-event check, because between the two ends' events of a closure
+    /// the far end still sends.
+    pub fn check_lanes(&self) -> Result<(), String> {
+        for (i, e) in self.edges.iter().enumerate() {
+            if !e.closed {
+                continue;
+            }
+            if e.medium == rtsim_travel::Medium::Road {
+                return Err(format!("edge {i} is a closed road"));
+            }
+            for (k, d) in e.dirs.iter().enumerate() {
+                for (g, p) in d.goods.iter().chain(d.raid.iter()) {
+                    if p.current_rate() != 0 {
+                        return Err(format!(
+                            "closed edge {i} direction {k} still sends good {} at {}",
+                            g.0,
+                            p.current_rate()
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn assert_conserved(&self, at: Tick) {
         if let Err(e) = self.check_conserved(at) {
             panic!("{e} at {at:?} ({:?})", self.stats);
@@ -173,6 +201,7 @@ impl World {
             }
         }
         for e in &self.edges {
+            w.bool(e.closed);
             for d in &e.dirs {
                 w.u64(d.lattice.current_period());
                 for (g, p) in d.pipelines() {
