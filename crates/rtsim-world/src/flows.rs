@@ -680,19 +680,24 @@ fn net_changes(
 /// it now and those whose news says they have it to spare (overnight choice E46). A neighbour
 /// whose every edge to this market is closed (a blockaded port, PC22) cannot send anything new, so
 /// it is not counted: the advertisement is split among the suppliers that can answer it (PC60).
+/// Which neighbours can send is weighed once, not per good.
 fn count_suppliers(s: &mut Snapshot, node: &Node, edges: &[rtsim_travel::Edge]) {
     let inflows = std::mem::take(&mut s.inflows);
+    let reachable: Vec<usize> = node
+        .neighbours
+        .iter()
+        .copied()
+        .filter(|&j| {
+            node.out.iter().any(|d| {
+                let e = &edges[d.edge as usize];
+                e.dirs[d.dir as usize].to == j && !e.closed
+            })
+        })
+        .collect();
     for (gi, gn) in s.goods.iter_mut().enumerate() {
         let g = GoodId(gi as u16);
-        let n = node
-            .neighbours
+        let n = reachable
             .iter()
-            .filter(|&&j| {
-                node.out.iter().any(|d| {
-                    let e = &edges[d.edge as usize];
-                    e.dirs[d.dir as usize].to == j && !e.closed
-                })
-            })
             .filter(|&&j| {
                 inflows
                     .iter()

@@ -177,6 +177,10 @@ pub struct ShipTunables {
     /// closed (PC25). TUNABLE 6 (two hunts of three days: a heat rise is seen within one hunt and
     /// a cooling within the next).
     pub blockade_check_days: f64,
+    /// A reopened port does not close again for this many days, however hot its lanes get
+    /// (PC99): its merchants hold their nerve. It may still be blockaded. 0 lets the next check
+    /// close it. TUNABLE 0 (chosen by the S8b-4 sweep).
+    pub blockade_min_open_days: f64,
 }
 
 impl ShipTunables {
@@ -280,6 +284,7 @@ impl Default for ShipTunables {
             blockade_days: 30.0,
             blockade_min_closed_days: 30.0,
             blockade_check_days: 6.0,
+            blockade_min_open_days: 0.0,
         }
     }
 }
