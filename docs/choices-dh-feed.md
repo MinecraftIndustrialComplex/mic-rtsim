@@ -205,13 +205,42 @@ Stills and the tools are in `/home/greencheetah/mic-media/dh-fixes-2026-10-22/`.
   about twice as long as these carriages.
 - For 2 frames as each carriage arrives, Create draws its body without its bogeys. No frame is empty.
 
+#### Dragons
+
+Captured on the night of 2026-10-22 to 23 in the same private sway: render distance 10, simulation distance 12,
+field of view 60, DH radius 160. A fire dragon (stage 4) is flown at the camera by the media branch's
+`/micmedia flyin`: a far leg under an engine-style agent id, then a real body made at its end the way the Ice and
+Fire bridge makes one, 114 blocks from the camera, which flies on east and leaves the client's tracking at about
+157 blocks. Before: the capture session's `dh-2026-10-22/raw/rec/flyin_b.mkv` (main before DHT40). After:
+`dh-fixes-2026-10-22/raw/rec/fly240*.mkv` and `fly320*.mkv`, at y 240 (under Ice and Fire's flight ceiling) and
+y 320 (above it: the dive stays, DHT43). Frames were classed from the red pixels in a window round each seam
+(`work/redbox.py`, and `work/redbg.py` less a frame of the red terrain), and the client logged the box against
+its body once a tick.
+
+| Seam | Before | After |
+|---|---|---|
+| Box to body, 114 blocks out | 16 frames with both | After DHT40 to DHT44 (fly240_gap): none with both, 2 with neither (DHT46's cause). After DHT46 (fly240, fly320): none with both, none with neither; the box held one more tick in fly320 while the body had its type's small box |
+| The box while the body is there | | The box is where the far feed has it, at most 33 blocks from the body (14.7 and 30.2 in the gap takes), under the 64 that hides it. The first take after DHT44's run on (fly240_strand) left the box held about 100 blocks away twice, for about 2 and 3 seconds: the unbounded hold, now bounded (DHT44) |
+| Body to box, at the client's tracking edge (about 157 blocks) | | 2 departures: no frame with neither. The body fades out over about 11 frames in DH's vanilla fade (134 to 170 blocks here), then the box comes back solid 18.0 and 13.3 blocks from where the body last was |
+| A body made 149 blocks out, inside the fade (`ring_before.mkv`) | | The box solid to the last frame; the body then drawn part-faded (its far wing and tail toward the sky's colour), fading in as it comes nearer |
+
+- **The box ahead as a body leaves** is the trains' lead again, for another reason: vanilla draws a client entity
+  where its last position packets put it, a few ticks behind the server, and the box is run on to the server's
+  time (DHT44) while the dragon speeds up. The same possible follow-up as for the carriages.
+- **The body's fade in DH's ring** is DH's own, for every vanilla entity. A dragon arrives at the client's
+  tracking edge, which at most render distances is inside the fade. DHT47 (branch fix/dh-ring-body, not
+  merged) is the option of leaving the body out there and keeping the box.
+- After the body leaves, the media branch's stub engine has no leg to take the dragon back, so its far object
+  goes GONE about a second later. In play the engine's leg takes it back (the core GameTests' hand-back).
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
 - A weak PC: the tier budgets (DHT30, DHT36) are still PLACEHOLDERs.
 - A dedicated server with remote clients, and more than one subscriber: these runs were single player, so the
   per-subscriber spike above is arithmetic, and the connection's compression is not counted.
-- Real Ice and Fire dragons in a client: the bench's dragons are made up (DHT39). The hand-over is tested by
+- Real Ice and Fire dragons in a client beyond the media takes above (one stage 4 fire dragon, single player):
+  the bench's dragons are made up (DHT39). The hand-over is tested by
   GameTests (DHT31); the hand-back from a real body to the engine's leg runs only in the core GameTest, as the
   Ice and Fire GameTest checks a real puppet's id, looks and position.
 - The hide test with real carriages or dragons near the camera.
