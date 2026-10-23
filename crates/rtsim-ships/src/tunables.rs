@@ -123,6 +123,14 @@ pub struct ShipTunables {
     /// Chance in thousandths, at the middle temperament, that a hunt starts with a raid on such a
     /// district or a booked player leg on the lane. PLACEHOLDER 250, bent by Aggressive.
     pub coast_raid_milli: u32,
+    /// A coast raid that finds no player district or train raids the port village at the lane's
+    /// nearer end (§2.4.6a rule 6, PC9, PC40): the survivors carry off this many items a man, at
+    /// most `loot_share_milli` of each stock. 0 turns port raids off. TUNABLE 10 (between the
+    /// conflict engine's bandit thug, 12, and crossbowman, 8).
+    pub port_raid_carry: u32,
+    /// A port village's defence against pirates, per resident (§2.4.6a rule 6, PC9): the
+    /// conflict engine's `village_defence_per_pop`. TUNABLE 0.25.
+    pub port_village_defence_per_pop: f64,
 
     // ---- Losses and respawns (unlike Veloren, killed crews come back) ----
     /// A lost merchant or navy ship is replaced this long after, at its home dock. PLACEHOLDER two
@@ -254,6 +262,8 @@ impl Default for ShipTunables {
             captain_lifespan_ticks: 200 * 24_000,
             coast_raid_blocks: 384,
             coast_raid_milli: 250,
+            port_raid_carry: 10,
+            port_village_defence_per_pop: 0.25,
             respawn_ticks: 2 * 24_000,
             refit: RenewalRule {
                 base_days: 4.0,

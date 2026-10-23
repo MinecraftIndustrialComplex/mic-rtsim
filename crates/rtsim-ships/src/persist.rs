@@ -816,13 +816,16 @@ fn put_stats(w: &mut Writer, s: &ShipStats) {
         s.rebuilds,
         s.captains_died,
         s.bored,
+        s.port_raids,
+        s.items_from_ports,
+        s.port_raid_lost_milli,
     ] {
         w.var_u64(v);
     }
 }
 
 fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
-    let mut v = [0u64; 25];
+    let mut v = [0u64; 28];
     for x in &mut v {
         *x = r.var_u64()?;
     }
@@ -852,6 +855,9 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
         rebuilds: v[22],
         captains_died: v[23],
         bored: v[24],
+        port_raids: v[25],
+        items_from_ports: v[26],
+        port_raid_lost_milli: v[27],
     })
 }
 
@@ -865,6 +871,7 @@ fn put_ledger(w: &mut Writer, l: &ShipLedger) {
         &l.from_districts,
         &l.districts_landed,
         &l.districts_lost,
+        &l.looted_from_ports,
     ] {
         put_big(w, m);
     }
@@ -885,6 +892,7 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ShipLedger> {
         from_districts: get_big(r)?,
         districts_landed: get_big(r)?,
         districts_lost: get_big(r)?,
+        looted_from_ports: get_big(r)?,
         districts_unmapped: BTreeMap::new(),
     };
     for _ in 0..r.len_prefix(2)? {
