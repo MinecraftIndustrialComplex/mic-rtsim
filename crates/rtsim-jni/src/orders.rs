@@ -35,6 +35,8 @@
 //! | 27 | TEST: a herd command (docs/boundary.md §8.4), as if the herds had decided it: the vanilla herd adapter's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the species entries the record uses); then the record exactly as `rtsim_ecology::herds::boundary` encodes it (cmdSeq ignored), its species ids Java's own (body dictionary) and its dimension Java's id (the herds' frame) |
 //! | 28 | TEST: found a herd (nothing in the game founds one yet: no habitat provider), applied when the engine takes the unit | str name, str species (`minecraft:sheep` and the rest), u32 dimension (Java's id: the herds' frame), i32 x, i32 z, u64 count, u64 seed (0: the herds' own) |
 //! | 29 | TEST: a conflict command (docs/boundary.md §9.4), as if the conflict had decided it: a future conflict plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_conflict::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries), its dimension Java's id (the conflict's frame) and its ticks game time |
+//! | 30 to 39 | 30, 31, 32 and 34 are the works, tribute and nest test orders (see `Order`); the rest are free | |
+//! | 40 | TEST: post a report to a phase 1 village's noticeboard (TALK, docs/boundary.md §13), as if the village had witnessed it: slice 2b's GameTest `talk_tells_the_village_news` puts news on a board with it; refused if the village is unknown or an actor does not resolve | u64 village, u16 kind (rtsim-knowledge's `ReportKind` id), u8 severity, u8 flags, then who and whom each as u8 class, u64 a, u64 b (the TALK_FACTS ref classes: 0 none, 1 player a b the UUID halves, 2 village and 3 base a Java's id, 4 caravan a its seed, 5 camp a its faction key, 6 and 7 a notable's seed, 8 lair a its key, 9 haven a its node key), then i32 x, i32 z (in the village's frame), u32 ticks ago |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
@@ -78,6 +80,8 @@ pub const OP_WORKS_GRANT: u16 = 30;
 pub const OP_WORKS_RAID: u16 = 31;
 pub const OP_TRIBUTE_START: u16 = 32;
 pub const OP_NEST_DAY: u16 = 34;
+/// TALK's test order (30 to 39 are left free for the orders other branches take).
+pub const OP_TALK_REPORT: u16 = 40;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +192,33 @@ pub struct MemberOrder {
     pub body_a: i32,
     pub body_b: i32,
     pub items: Vec<ItemOrder>,
+}
+
+/// An actor an order names, as a TALK_FACTS ref does: a class and the two ids of that class
+/// (docs/boundary.md §13.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TalkActor {
+    pub class: u8,
+    pub a: u64,
+    pub b: u64,
+}
+
+/// TEST: a report put on a village's noticeboard (opcode 40).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TalkReportCmd {
+    /// The village (Java's id) whose board it goes on.
+    pub village: u64,
+    /// rtsim-knowledge's `ReportKind` id.
+    pub kind: u16,
+    pub severity: u8,
+    pub flags: u8,
+    pub who: TalkActor,
+    pub whom: TalkActor,
+    /// The place, in the village's frame.
+    pub x: i32,
+    pub z: i32,
+    /// How long ago it happened, game ticks.
+    pub ago: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -313,6 +344,9 @@ pub enum Order {
     /// TEST: the oil nests' day (their watch period and the unit of their waits, OILGATE.md §4.6)
     /// is this many ticks from now on; 0 restores the tunable's. Applied at the next step.
     NestDay(u64),
+    /// TEST: a report on a phase 1 village's noticeboard, as if the village had witnessed it
+    /// (TALK; docs/boundary.md §13.4). Applied when the engine takes the unit.
+    TalkReport(TalkReportCmd),
 }
 
 impl Order {
@@ -348,6 +382,7 @@ impl Order {
                 | Order::WorksRaid { .. }
                 | Order::TributeStart { .. }
                 | Order::NestDay(_)
+                | Order::TalkReport(_)
         )
     }
 }
@@ -392,6 +427,28 @@ impl<'a> Cursor<'a> {
         } else {
             Ok(())
         }
+    }
+
+    fn u8(&mut self) -> Result<u8, String> {
+        self.need(1)?;
+        let v = self.b[self.at];
+        self.at += 1;
+        Ok(v)
+    }
+
+    fn u16(&mut self) -> Result<u16, String> {
+        self.need(2)?;
+        let v = u16_at(self.b, self.at);
+        self.at += 2;
+        Ok(v)
+    }
+
+    fn talk_actor(&mut self) -> Result<TalkActor, String> {
+        Ok(TalkActor {
+            class: self.u8()?,
+            a: self.u64()?,
+            b: self.u64()?,
+        })
     }
 
     fn u32(&mut self) -> Result<u32, String> {
@@ -673,6 +730,17 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 lair: c.u64()?,
             },
             OP_NEST_DAY => Order::NestDay(c.u64()?),
+            OP_TALK_REPORT => Order::TalkReport(TalkReportCmd {
+                village: c.u64()?,
+                kind: c.u16()?,
+                severity: c.u8()?,
+                flags: c.u8()?,
+                who: c.talk_actor()?,
+                whom: c.talk_actor()?,
+                x: c.i32()?,
+                z: c.i32()?,
+                ago: c.u32()?,
+            }),
             OP_INDUSTRY_THREAT => {
                 let id = c.u64()?;
                 let source = *SOURCES
@@ -866,6 +934,20 @@ impl Encoder {
     fn end(&mut self, at: usize) {
         let size = (self.buf.len() - at) as u32;
         self.buf[at + 4..at + 8].copy_from_slice(&size.to_le_bytes());
+    }
+
+    fn u8(&mut self, v: u8) {
+        self.buf.push(v);
+    }
+
+    fn u16(&mut self, v: u16) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+
+    fn talk_actor(&mut self, a: &TalkActor) {
+        self.u8(a.class);
+        self.u64(a.a);
+        self.u64(a.b);
     }
 
     fn u32(&mut self, v: u32) {
@@ -1118,6 +1200,19 @@ impl Encoder {
                 self.u64(*ticks);
                 self.end(at);
             }
+            Order::TalkReport(r) => {
+                let at = self.begin(OP_TALK_REPORT);
+                self.u64(r.village);
+                self.u16(r.kind);
+                self.u8(r.severity);
+                self.u8(r.flags);
+                self.talk_actor(&r.who);
+                self.talk_actor(&r.whom);
+                self.i32(r.x);
+                self.i32(r.z);
+                self.u32(r.ago);
+                self.end(at);
+            }
             Order::IndustryThreat(t) => {
                 let at = self.begin(OP_INDUSTRY_THREAT);
                 self.u64(t.id);
@@ -1364,6 +1459,25 @@ mod tests {
                 lair: 0x1d_0000_0003,
             },
             Order::NestDay(600),
+            Order::TalkReport(TalkReportCmd {
+                village: 6,
+                kind: 13,
+                severity: 150,
+                flags: 1,
+                who: TalkActor {
+                    class: 5,
+                    a: 0x1d_0000_0003,
+                    b: 0,
+                },
+                whom: TalkActor {
+                    class: 1,
+                    a: 0x1111_2222_3333_4444,
+                    b: 0x5555_6666_7777_8888,
+                },
+                x: -300,
+                z: 4_000,
+                ago: 24_000,
+            }),
             Order::IndustryThreat(Threat {
                 id: 5,
                 source: ThreatSource::Bandit,

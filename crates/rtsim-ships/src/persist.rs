@@ -20,12 +20,15 @@
 //! from before a release are not migrated. Slice S8b (§2.4.6a, 2026-10-22) adds to each haven row
 //! the tick it starves from, whether it is shut (since, when its site looks again, broken), the
 //! stamp of its one live look and its lifecycle counters, and the look itself (`Ev::Refound`,
-//! tag 12) to the wheel: still `RTS2`, for the same reason. S8b-4 (rule 7, PC80, PC93) adds the
-//! port's check (`Ev::DockCheck`, tag 14) and a laid-up slot's relaunch (`Ev::Relaunch`, tag 15)
-//! to the wheel, and one trailing section after the resident state, written only once a port
-//! has a state, a service is laid up or a closure counter moved (so a run with closures off
-//! saves the bytes it did before): the ports' states, the laid-up services' ticks and the
-//! closures' counters. A reader that finds no bytes left reads it as empty.
+//! tag 12) to the wheel: still `RTS2`, for the same reason. S8b-3's port raids grew the stats
+//! (25 to 28) and the ledger (`looted_from_ports`), which every save carries, so the format became
+//! `RTS3` (2026-10-23); an older save is refused by name ([`check_magic`]), not read as truncated.
+//! S8b-4 (rule 7, PC80, PC93) adds the port's check (`Ev::DockCheck`, tag 14) and a laid-up
+//! slot's relaunch (`Ev::Relaunch`, tag 15) to the wheel, and one trailing section after the
+//! resident state, written only once a port has a state, a service is laid up or a closure
+//! counter moved (so a run with closures off saves the bytes it did before): the ports' states,
+//! the laid-up services' ticks and the closures' counters. A reader that finds no bytes left
+//! reads it as empty.
 //!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
@@ -68,10 +71,26 @@ use crate::network::{Dock, Hop, Lane, NetworkLints};
 use crate::timetable::{Leg, Service, ServiceKind};
 use crate::tunables::ShipTunables;
 
-/// RTS2 since the rows moved to paged tables (RTS1 wrote an `Arena` and lists of ships per
-/// service). No reader of RTS1 is kept: nothing is released (no backward compatibility before a
-/// release).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTS2");
+/// RTS3 since S8b-3's port raids grew the stats and the ledger; RTS2 since the rows moved to paged
+/// tables (RTS1 wrote an `Arena` and lists of ships per service). No reader of an older format is
+/// kept: nothing is released (no backward compatibility before a release).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTS3");
+
+/// Whether `magic` is this build's format: an older ships format (`RTS` and another digit) is
+/// named, so an old save says which format it is and never reads as a truncated one.
+fn check_magic(magic: u32, what: &str) -> Result<(), String> {
+    if magic == MAGIC {
+        return Ok(());
+    }
+    let b = magic.to_le_bytes();
+    if b[..3] == *b"RTS" && b[3].is_ascii_digit() {
+        return Err(format!(
+            "{what} of format RTS{}; this build reads RTS3 (no older save opens before a release)",
+            b[3] as char
+        ));
+    }
+    Err(format!("not {what}"))
+}
 /// The row tables follow whole, in key order ([`Ships::save`]).
 const ROWS_INLINE: u8 = 0;
 /// The row tables are in their own pages; only their layouts and counts follow
@@ -1299,9 +1318,7 @@ impl Ships {
     pub fn load(tun: ShipTunables, bytes: &[u8]) -> codec::Result<Ships> {
         let mut r = Reader::new(bytes);
         let r = &mut r;
-        if r.u32()? != MAGIC {
-            return bad("not a ships save".into());
-        }
+        check_magic(r.u32()?, "a ships save").or_else(bad)?;
         if r.u8()? != ROWS_INLINE {
             return bad("a ships meta page, not a whole save".into());
         }
@@ -1648,9 +1665,7 @@ impl Ships {
         let fmt = page_format("the ships' meta page");
         let mut r = Reader::new(&raw);
         let r = &mut r;
-        if r.u32().map_err(&fmt)? != MAGIC {
-            return Err(PageError::Format("not a ships meta page".into()));
-        }
+        check_magic(r.u32().map_err(&fmt)?, "a ships meta page").map_err(PageError::Format)?;
         if r.u8().map_err(&fmt)? != ROWS_PAGED {
             return Err(PageError::Format(
                 "a whole ships save, not a meta page".into(),
@@ -1674,7 +1689,8 @@ impl Ships {
             .ok_or_else(|| PageError::Format("no ships network page".into()))?;
         let fmt = page_format("the ships' network page");
         let mut r = Reader::new(&raw);
-        if r.u32().map_err(&fmt)? != MAGIC || r.u8().map_err(&fmt)? != NETWORK {
+        check_magic(r.u32().map_err(&fmt)?, "a ships network page").map_err(PageError::Format)?;
+        if r.u8().map_err(&fmt)? != NETWORK {
             return Err(PageError::Format("not a ships network page".into()));
         }
         s.get_network(&mut r).map_err(&fmt)?;
