@@ -592,7 +592,8 @@ broken, and refounding at found sites.
      more stored tick (`fed_until`).
    - A pirate whose decision finds no lane worth hunting while its haven starves is **laid up**. Its
      crew goes ashore into the deserting pool, and its slot books no refit.
-3. **Navies break havens** (PORTS-1 (a), recommended; Ben's answer pending).
+3. **Navies break havens** (PORTS-1 (a), Ben 2026-10-22: his exception, for havens only, to §2.4.5's rule
+   that only players break a faction).
    - Every 24 days a navy's home port looks at the havens whose pirates hunt a lane the navy
      patrols.
    - **Belief.** The port believes it wins against haven h with `p = A² / (A² + D²)`:
@@ -608,8 +609,8 @@ broken, and refounding at found sites.
      - Its pool is emptied.
      - Ships at sea finish their hunt and are laid up when they come home to the ashes.
    - A navy at those odds takes no lasting losses.
-   - This is the one place a faction breaks another's site. Camps keep §2.4.5's rule that only
-     players break them.
+   - This is the one place a faction breaks another's site (Ben's exception, PORTS-1). Camps keep
+     §2.4.5's rule that only players break them.
 4. **A haven shuts down.**
    - A haven shuts down when it has no active ship and it is either broken (rule 3) or starving
      (rule 2).
@@ -628,7 +629,7 @@ broken, and refounding at found sites.
    - **Where.** New havens form only at found haven sites, because the sim never makes a site (C22).
      The number of havens is therefore bounded by the sites found, and no site stays empty for more
      than 384 days while it has prey.
-6. **Pirates raid port villages** (PORTS-2 (a), recommended; Ben's answer pending).
+6. **Pirates raid port villages** (kept with PORTS-2 (b), Ben 2026-10-22).
    - A quarter of hunts open with a coast raid (T25, bent by Aggressive). When no player district or
      train is in reach, the raid now hits the port village at the hunted lane's nearer end, unless
      someone is watching it.
@@ -638,14 +639,43 @@ broken, and refounding at found sites.
    - **The loot.** Survivors carry off 10 items a man, at most 600‰ of each stock. This is the
      conflict engine's plunder: `World::stock_to_held`, apportioned. The loot is landed at the
      haven's market when the ship comes home (C24).
-   - A port never closes. Villages are fixed in phase 1, and closing a port would lay up the services
-     players ride and trade on.
-7. **News travels in the world, never in chat (CL-9).**
-   - A port raid records a Robbery against the village, and a broken haven records an Assault by the
-     navy's port on the haven.
-   - Each is witnessed by the places in sight and carried by messengers, bands and caravans like any
-     other report.
-   - A refound has no report of its own: the new band's first robberies are the news.
+7. **A blockaded port closes and reopens** (PORTS-2 (b), Ben 2026-10-22: "Close under blockade").
+   - **The gauge.** Each lane keeps its *heat*: the hazard share it has carried, averaged over the
+     last month (an exponential average with a 30-day time constant, updated in closed form at each
+     hazard change, which is already an event).
+   - **Blockade begun.** A port's dock is under blockade when every lane of it is at least a quarter
+     as hot as one full-crew pirate of its medium hunting it without pause (sea 6 x 20 = 120‰, so
+     30‰; sky 25‰). This is news, not yet a closure.
+   - **Closed.** When every lane of the dock is at least half that hot (sea 60‰, sky 50‰), about a
+     month of being hunted half the time, the dock closes:
+     - the lanes touching it carry nothing new (the world edge's capacity drops to 0; consignments
+       already sailing land);
+     - every service that calls there lays up. A ship out of every player's view leaves the
+       timetable at once. A ship in view, or with a player aboard, keeps sailing its timetable,
+       with empty holds, until its body is out of every player's view, and lays up then, so no ship
+       vanishes in front of anyone and no player is ever dropped in the sea or the sky;
+     - a lane left with no active service carries nothing either.
+   - **Reopened.** A closed dock reopens when no lane of it is hotter than a quarter of the full
+     share, and not before 30 days after it closed. Its services' ships come back at their slots'
+     next home-dock stays (the existing relaunch path, so no ship appears in view), and the lanes'
+     capacities return.
+   - **Why it cannot flap.** The band between a quarter and a half, the month-long average and the
+     30-day minimum closure keep a port from closing and reopening faster than about once a season.
+     A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
+     how a blockade lifts by itself.
+   - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
+     (UR-1). Uninstalling rtsim leaves every structure as it stands.
+8. **News travels in the world, never in chat (CL-9).**
+   - New report kinds 16 to 20 (`rtsim-knowledge`, reserved for ports and ships): PortRaided (16), Blockade
+     begun (17), PortClosed (18), PortReopened (19) and HavenFell (20). `who` is the haven (the navy's
+     port for HavenFell), `whom` the port (the haven for HavenFell), `place` the port (the haven).
+     They change no feeling (CONFLICT-LIFE §2.17): sentiment 0, no vanilla gossip mapping.
+   - Players hear them by talking to villagers, Ribbits and clans (the talk build's lines for
+     kinds 16 to 23).
+   - Each is witnessed by the port (or haven) and the places in sight, and carried by messengers,
+     bands and caravans like any other report.
+   - A refound or a starved haven has no report of its own: the robberies that start or stop are the
+     news.
 
 **Bounds.**
 
@@ -653,7 +683,9 @@ broken, and refounding at found sites.
 - Slots never outnumber the media.
 - The pool is at most its cap.
 - A site with prey is never empty longer than 384 days.
-- Nothing is placed within view of a player.
+- A port closes for at least 30 days and only after about a month of blockade; it reopens only
+  below a quarter of the closing heat.
+- Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
 With P8's bodies, the same events gain ships and crews.
@@ -664,17 +696,25 @@ With P8's bodies, the same events gain ships and crews.
 2. **The haven raids his port.** The village loses part of its stock in a day, and its prices jump.
    Its villagers and the next caravan carry the robbery as gossip. The village's opinion of the
    pirates' captain falls, as after any robbery.
-3. **The navy burns the haven.** He hears it as gossip, the Assault carried from the navy's port and
+3. **The haven blockades his port.** When the pirates have hunted every lane of the port for weeks,
+   a villager he talks to says the lanes are watched (Blockade, 17). If it goes on, the port closes
+   (PortClosed, 18): the merchant ships stop calling, their timetables empty and goods that came by
+   sea run short at the village, so its prices climb. A ship he is watching or riding is never
+   taken away under him: it sails its last loop empty and lays up only once nobody sees it. His own
+   Create trains, stations and docks are untouched. With no trade left to rob the pirates drift off,
+   and a month or more later the port reopens (PortReopened, 19): ships come back at their home
+   docks, out of sight, and prices settle.
+4. **The navy burns the haven.** He hears it as gossip, the Assault carried from the navy's port and
    from the villages in sight of the haven. The lane's hazard drops to 0 within the hunt's length,
    and imports get cheaper. With bodies, no pirate crew spawns at the haven any more, while its
-   structure stays exactly as it was (UR-1).
-4. **Or the haven starves.** If he escorts every lane (players' escorts, T28) or a navy patrols them,
+   structure stays exactly as it was (UR-1). Villagers tell it as HavenFell (20).
+5. **Or the haven starves.** If he escorts every lane (players' escorts, T28) or a navy patrols them,
    the pirates rest in port and, a month after their last hunt, lay their ships up and drift away.
    Nobody reports it; the robberies simply stop.
-5. **A new band arrives.** Forty-eight days to four game years later (longer if he sank its ships:
+6. **A new band arrives.** Forty-eight days to four game years later (longer if he sank its ships:
    each ship he sank raises the wait), a new band takes the empty site, never while he is in view of it,
    and the robberies begin again.
-6. **His own base is never a port.** Player bases cannot be ports or havens (`is_storehouse`), and
+7. **His own base is never a port.** Player bases cannot be ports or havens (`is_storehouse`), and
    nothing here touches his Create stations or docks. Uninstalling rtsim leaves every structure as it
    stands.
 
@@ -687,16 +727,19 @@ With P8's bodies, the same events gain ships and crews.
 | Shut down and refound | S0's `RenewalRule` and `Pressure`, the camps' delay (§2.4.5), S8's refit event | a `Dormant` state and one refound event per shut haven |
 | Navy assault | the patrol walk (which lanes a navy covers), T35's belief and values, the square law | one event per navy every 24 days |
 | Port raids | T25's coast raid roll, the conflict engine's plunder (`World::stock_to_held`, carry, loot share), `land_held` at home | the village as a third target |
-| News | `rtsim-knowledge` reports (Robbery, Assault) and witnesses, carried as today | nothing |
+| Blockade and closure | the lane hazard (T20), `relaunch_time` and the lost-ship path (T27), lane capacity from the timetable (`attach_lane`), embodiment state (a ship in view) | the lanes' heat, the dock's closed state, a world call that sets a lane's capacity |
+| News | `rtsim-knowledge` reports and witnesses, carried as today; the talk build's lines | report kinds 16 to 20 |
 | Census | S1's `KindCensus` (`broken` column) | nothing |
 
 **Cost (D1).**
 
 - Per haven: one tick (`fed_until`) and one state word.
 - Per navy: one event every 24 days.
+- Per lane: its heat (8 bytes and a tick), updated at hazard changes that are already events.
+- Per dock with a hot lane: one check every 6 days; per closed dock, its state.
 - Per shut haven: one refound event.
 - The toll is arithmetic at an event that already exists (reaching the lane).
-- Nothing scans.
+- Nothing scans the world: only docks with a hot lane are checked.
 
 **Built.** See §4, row S8b, and the measured numbers in `docs/choices-ports.md`.
 
@@ -1263,12 +1306,12 @@ boss loot, how fights feel, an interface another plan must follow).
 | EQ-5 | **When do factions fight?** | (a) **The gate (Recommended):** a war party goes out only when it is worth sending against what the faction believes of the target; terms first; scouts every 48 days otherwise. A fortress sees scouts, never raids. Camps at strength also stop fighting each other: background feuds fall from 2 to 20 a world-year to 0 to 0.34 (§3.6), and a camp falls on a neighbour only once something has thinned it. (b) The gate plus one glory raid a season whenever grievance is at the raid rung, worth or not, and one raid a season on a hated neighbour camp, so a strong base still gets fights to win and the background wars go on; each costs the camp warriors it then recruits back. (c) Today's ladder: every rung in turn, with no check that a party can win. | It changes what a player who builds a strong base experiences ((a) gives him quiet, (b) a fight a season), and whether the world has wars of its own when no player is near. |
 | EQ-6 | **One renewal rule for every kind, in `rtsim-kernel`?** | (a) **Yes (Recommended):** `rtsim-kernel::renewal` (§2.2) owns pressure, delay and the closed forms; every engine and species plan (MOWZIE first, §2.6) uses it, with its own numbers. (b) Each engine keeps its own rule, and only the event contract (§2.2) is shared. (c) Pressure only for boss sites (lairs, dens, the Umvuthi); everything else keeps a flat refill. | It is an interface that binds MOWZIE.md and every later species plan. |
 
-**Open (S8b, 2026-10-22).** Built on the recommended option while Ben's answer is pending.
+**Decided (Ben, 2026-10-22), S8b.** PORTS-1: "Navies too (Recommended)", option (a), recorded as his exception, for havens only, to §2.4.5's rule that only players break a faction. PORTS-2: "Close under blockade", option (b), not the recommendation: §2.4.6a rule 7. The options as put to him:
 
 | Id | Question | Options | Why it is Ben's |
 |---|---|---|---|
 | PORTS-1 | **Who can shut down a pirate haven while nobody watches?** | (a) **Navies as well as players and starving (Recommended):** a navy's home port assaults a haven whose pirates hunt its lanes, only when it believes it wins (p > 2/3, the pirates' own gate) and never in view; the square law decides, so it never rolls; the broken haven stands empty `min(384, 48 x 2^P)` days, then refounds (§2.4.6a rule 3). (b) Only players and starving: navies keep only lowering lanes' hazard (T28). | (a) lets a faction break another's site, which §2.4.5 forbids for camps. |
-| PORTS-2 | **Can trade ports close?** | (a) **No, in phase 1 (Recommended):** pirates raid port villages (part of the stock, a Robbery told as gossip) and blockade them by hazard, but a port never closes (§2.4.6a rule 6). (b) A port whose every lane sits at a haven's full hazard for 30 days lays its services up and reopens when the blockade lifts. | It decides whether services players ride and trade on can disappear. |
+| PORTS-2 | **Can trade ports close?** | (a) **No, in phase 1 (Recommended):** pirates raid port villages (part of the stock, a Robbery told as gossip) and blockade them by hazard, but a port never closes. (b) A port whose every lane sits at a haven's full hazard for 30 days lays its services up and reopens when the blockade lifts. | It decides whether services players ride and trade on can disappear. |
 
 ### 5.2 Decided here (each can be undone)
 
