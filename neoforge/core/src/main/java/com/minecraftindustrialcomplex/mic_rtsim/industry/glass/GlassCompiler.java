@@ -8,13 +8,17 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArraySet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -205,6 +209,7 @@ public final class GlassCompiler {
     public void revisionChanged(District d) {
         if (ind.district(d.id) != d) {
             State st = states.remove(d.id);
+            setReached(d.id, null, null);
             if (st != null) {
                 if (job != null && job.st == st)
                     abort("removed");
@@ -483,6 +488,7 @@ public final class GlassCompiler {
         compiles++;
         lastCompileNanos = j.nanos;
         lastGraph.put(st.district, g);
+        setReached(st.district, j.level.dimension(), g.reachedChunks);
         if (MicRtsim.LOGGER.isDebugEnabled())
             MicRtsim.LOGGER.debug("[mic_rtsim] glass: district {} compile {}: {} nodes, {} edges, {} recipes, {} domains{}",
                     st.district, st.compileNo, g.nodeCount(), g.edges().size(), g.recipeCount(), g.domains().size(),
@@ -501,6 +507,7 @@ public final class GlassCompiler {
         st.compiledHash = new Long2LongOpenHashMap(j.chunkHash);
         sends.add(new Send(st, st.records, st.end, false));
         lastGraph.remove(st.district);
+        setReached(st.district, null, null);
     }
 
     private GraphBuilder.Encoded end(State st, int flags, int records, int nodes, int edges, int recipes, int domains, int reason,
@@ -520,6 +527,43 @@ public final class GlassCompiler {
         b.putInt(GlassRecords.End.REVISION, revision);
         b.putInt(GlassRecords.End.COMPILE_TICKS, compileTicks);
         return new GraphBuilder.Encoded(GlassRecords.IND_GRAPH_END, flags, b.array());
+    }
+
+    /**
+     * Per dimension and chunk outside a district, the districts whose last compile has a kinetic network
+     * reaching it (choice SC77), and per district the chunks it was listed at: a player's edit in such a chunk
+     * that no district holds is an edit of those districts too. This session's compiles only; a district's
+     * entries go with its next compile, a compile that fails, or its removal.
+     */
+    private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<LongArraySet>> reachedBy = new HashMap<>();
+    private final Map<Long, Reached> reached = new HashMap<>();
+
+    private record Reached(ResourceKey<Level> dim, long[] chunks) {}
+
+    /** The districts whose last compile has a kinetic network reaching chunk {@code chunk} of {@code dim} (SC77). */
+    public long[] reachedBy(ResourceKey<Level> dim, long chunk) {
+        Long2ObjectOpenHashMap<LongArraySet> m = reachedBy.get(dim);
+        LongArraySet s = m == null ? null : m.get(chunk);
+        return s == null ? new long[0] : s.toLongArray();
+    }
+
+    private void setReached(long district, ResourceKey<Level> dim, LongOpenHashSet chunks) {
+        Reached old = reached.remove(district);
+        if (old != null) {
+            Long2ObjectOpenHashMap<LongArraySet> m = reachedBy.get(old.dim);
+            for (long c : old.chunks) {
+                LongArraySet s = m.get(c);
+                if (s != null && s.remove(district) && s.isEmpty())
+                    m.remove(c);
+            }
+        }
+        if (chunks == null || chunks.isEmpty())
+            return;
+        long[] cs = chunks.toLongArray();
+        reached.put(district, new Reached(dim, cs));
+        Long2ObjectOpenHashMap<LongArraySet> m = reachedBy.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>());
+        for (long c : cs)
+            m.computeIfAbsent(c, k -> new LongArraySet(2)).add(district);
     }
 
     /** The last graph compiled per district, this session (GameTests; dropped with the next compile). */

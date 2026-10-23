@@ -491,14 +491,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
             // every other district on it (choice SC11), the boiler's district included. Members whose chunk
             // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
-            // member outside, or a link out of the district from a listed member inside (reachesOut)
+            // member outside, or a link out of the district from a listed member inside (reachesOut). The
+            // chunks outside it reaches are kept for edits there (choice SC77).
             boolean crossing = false;
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
                 if (listed(net, s)) {
                     capacity += e.getValue() * Math.abs(s.getGeneratedSpeed());
-                    crossing |= outside(s);
+                    crossing |= reached(s.getBlockPos());
                 }
             }
             for (var e : net.members.entrySet()) {
@@ -506,11 +507,10 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (listed(net, m)) {
                     stress += e.getValue() * Math.abs(m.getTheoreticalSpeed());
                     overstressed |= m.isOverStressed();
-                    crossing |= outside(m);
+                    crossing |= reached(m.getBlockPos());
                 }
             }
-            if (!crossing)
-                crossing = reachesOut(id, net);
+            crossing |= reachesOut(id, net);
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
@@ -611,24 +611,39 @@ final class CreateCompile implements GlassExtractor.Compile {
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
      * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
      * may hold members that never loaded this session) or to a kinetic block entity of the same network.
-     * Reads only loaded chunks.
+     * Each chunk it links into is kept (choice SC77). Reads only loaded chunks.
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
+        boolean out = false;
         for (KineticBlockEntity m : net.members.keySet()) {
             if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
             BlockState state = m.getBlockState();
             IRotate block = state.getBlock() instanceof IRotate r ? r : null;
-            for (Direction f : Direction.values())
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f), block != null && connects(block, p, state, f)))
-                    return true;
+            for (Direction f : Direction.values()) {
+                BlockPos n = p.relative(f);
+                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, n, block != null && connects(block, p, state, f)))
+                    out |= reached(n);
+            }
             if (block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
                     if (linksOutTo(id, n, true))
-                        return true;
+                        out |= reached(n);
         }
-        return false;
+        return out;
+    }
+
+    /**
+     * Whether {@code p} lies outside the district's chunks; if so its chunk is kept as one a network of the
+     * compile reaches (choice SC77: a player's edit there, in no district, is this district's too).
+     */
+    private boolean reached(BlockPos p) {
+        long c = net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4);
+        if (g.district.chunks.contains(c))
+            return false;
+        g.reachedChunks.add(c);
+        return true;
     }
 
     /**

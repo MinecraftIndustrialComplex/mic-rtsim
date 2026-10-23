@@ -367,7 +367,9 @@ public final class Districts {
             edit(d, IndRecords.Edit.PLACED, player, pos);
             if (be != null)
                 markDirty(level.dimension(), chunk.getPos().toLong());
-        } else if (be != null && industrial(level, be, kindCache())) {
+        } else if (be != null)
+            editReached(level, chunk.getPos().toLong(), IndRecords.Edit.PLACED, player, pos);
+        if (d == null && be != null && industrial(level, be, kindCache())) {
             // Industrial but no seed, outside any district: a station (whose track graph forms a moment after it
             // is placed) beside one joins it at the next detection (DS-10); it starts none.
             markDirty(level.dimension(), chunk.getPos().toLong());
@@ -378,10 +380,27 @@ public final class Districts {
     void playerBroke(ServerLevel level, BlockPos pos, UUID player) {
         long c = ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4);
         District d = at(level.dimension(), c);
+        boolean be = level.getBlockEntity(pos) != null;
         if (d != null)
             edit(d, IndRecords.Edit.BROKEN, player, pos);
-        if (level.getBlockEntity(pos) != null)
+        else if (be)
+            editReached(level, c, IndRecords.Edit.BROKEN, player, pos);
+        if (be)
             markDirty(level.dimension(), c);
+    }
+
+    /**
+     * A player's block entity placed or broken in chunk {@code c} of no district: an edit of every district
+     * whose last compile has a kinetic network reaching that chunk (SECTIONS.md §3.6, choice SC77). The
+     * position lies in no node box of theirs, so it stales no section; it drops their open windows and
+     * recompiles them, which updates the network's part.
+     */
+    private void editReached(ServerLevel level, long c, int kind, UUID player, BlockPos pos) {
+        for (long id : ind.glass.reachedBy(level.dimension(), c)) {
+            District o = ind.district(id);
+            if (o != null)
+                edit(o, kind, player, pos);
+        }
     }
 
     public void edit(District d, int kind, UUID player, BlockPos pos) {
