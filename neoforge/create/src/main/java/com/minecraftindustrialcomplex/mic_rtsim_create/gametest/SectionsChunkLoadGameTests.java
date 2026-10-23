@@ -459,8 +459,15 @@ public final class SectionsChunkLoadGameTests {
      * does not tick: its fresh motor exists and has not joined, and a recount still keeps the kept motor.
      * When B is forced, the fresh motor takes the kept one's place as it joins: one source, with no recount
      * in between, the network's unloaded share (set by hand, as a network loaded from a save has one) left
-     * alone, and the network's current stress, not the one B saved at the unload. B then unloads a second time and another millstone in A makes the network recount: one motor kept, the
-     * same capacity (without row 57, the motors of both visits were listed and counted).
+     * alone, and the network's current stress, not the one B saved at the unload. B then unloads a second
+     * time and another millstone in A makes the network recount: one motor kept, the same capacity (without
+     * row 57, the motors of both visits were listed and counted). On a third visit B is FULL and does not
+     * tick, and the fresh motor's generator update ({@code updateGeneratedRotation}, as a neighbour change
+     * runs it) lists it before its first tick: it takes the kept one's place, with the same capacity
+     * (without row 57's update hooks, both were counted until the next recount). On a fourth visit the next
+     * fresh motor joins at a position that joined before: the unloaded share is left alone (without the
+     * joined positions, the recount after the update forgot the position and Create took the motor's share
+     * out a second time).
      */
     @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
     public static void aNetworkRecountKeepsAnUnloadedSource(GameTestHelper helper) {
@@ -613,6 +620,54 @@ public final class SectionsChunkLoadGameTests {
                     check("the same capacity: " + c + " vs " + cap[0], c == cap[0]);
                     watch.check("no chunk two or more from A loaded the second time");
                     watch.on = false;
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
+                })
+                .thenWaitUntil(io(() -> {
+                    KineticBlockEntity fresh = kinetic(level, motor);
+                    check("the third motor loads", fresh != null && fresh != oldMotor[1]);
+                }))
+                .thenExecute(() -> {
+                    KineticBlockEntity fresh = kinetic(level, motor);
+                    KineticNetwork n = net.get();
+                    check("B's chunk does not tick", !Loaded.ticks(level, motor));
+                    check("the third motor has not joined", !n.members.containsKey(fresh));
+                    // a neighbour change runs this on a generator in a chunk that is FULL and does not tick
+                    ((CreativeMotorBlockEntity) fresh).updateGeneratedRotation();
+                    float c = n.calculateCapacity();
+                    record(t, "a generator update before the first tick: capacity, sources, members, distinct positions",
+                            c + ", " + n.sources.size() + ", " + n.members.size() + ", " + positions(n));
+                    check("the third motor takes the kept one's place: " + n.sources.size() + " sources",
+                            n.sources.size() == 1 && n.sources.containsKey(fresh) && n.members.containsKey(fresh) && !n.members.containsKey(oldMotor[1]));
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
+                    check("the same capacity: " + c + " vs " + cap[0], c == cap[0]);
+                    oldMotor[1] = fresh;
+                    unloadedShare(n, new float[] {100f, 50f, 3f});
+                    level.getChunkSource().removeRegionTicket(FULL_ONLY, b, 0, b);
+                    level.setChunkForced(bx, az, true);
+                })
+                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, motor))))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    // its first tick: Create's addSilently finds it a member and returns
+                    float[] u = unloadedShare(net.get(), new float[] {100f, 50f, 3f});
+                    check("the third motor's join leaves the unloaded share: " + u[0] + ", " + u[1] + ", " + u[2], u[0] == 100f && u[1] == 50f && u[2] == 3f);
+                    level.setChunkForced(bx, az, false);
+                })
+                .thenWaitUntil(io(() -> check("B unloads a third time: " + loadedChunks(ids[1]), unloaded(level, bx, az, ids[1]))))
+                .thenWaitUntil(io(() -> check("the chunks two or more from A are below FULL", !anyLoaded(level, ax + 2, bx, az))))
+                .thenExecute(() -> level.setChunkForced(bx, az, true))
+                .thenWaitUntil(io(() -> {
+                    KineticBlockEntity fresh = kinetic(level, motor);
+                    check("the fourth motor joins", fresh != null && fresh != oldMotor[1] && net.get().sources.containsKey(fresh));
+                }))
+                .thenExecute(() -> {
+                    KineticNetwork n = net.get();
+                    float[] u = unloadedShare(n, new float[] {0f, 0f, 0f});
+                    record(t, "the unloaded share after the fourth join (set 100, 50, 3)", u[0] + ", " + u[1] + ", " + u[2]);
+                    check("a join where one joined before leaves the unloaded share: " + u[0] + ", " + u[1] + ", " + u[2],
+                            u[0] == 100f && u[1] == 50f && u[2] == 3f);
+                    check("one source: " + n.sources.size(), n.sources.size() == 1);
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
                 })
                 .thenExecute(() -> force(level, ax, bx, az, true))
                 .thenWaitUntil(io(() -> check("the fourteen chunks load for the clean-up", allLoaded(level, ax, bx, az))))
