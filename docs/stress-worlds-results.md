@@ -1262,3 +1262,67 @@ adds the district's work, the later ones recount; so it should drain between dis
 re-run reads it in the perf line (detections, ticks per detection) and the declarations during the
 adopt loop.
 
+
+#### The one-call rescan (finding 2)
+
+`rtsim district rescan`, `merge`, `split`, `exclude` and `include` ran `rescanNow`, a whole detection in
+the command's tick: 493 to 1,088 ms at 200 districts in 10.9, against 232 to 448 ms in sg200. Profiled
+first, then spread over ticks as DS-12 spread the adopts (DS-16).
+
+The profile is the generator's own: `MIC_STRESS_PROFILE=<runs>` adds a phase after the scene's adopts that
+runs the one-call detection `<runs>` times on the server thread with a sampling profiler on it (a 200 us
+stack sample, the frames above `rescanNow`; safepoint-biased, so shares, not times), and reads the
+detection's phases. Dev and test code only.
+
+| Profile of one call | 24 districts (768 factories, 504 chunks, no trains), 15 runs | 200 districts |
+|---|---|---|
+| Detection, one call | min 26 ms, median 37 ms, max 57 ms | min 124 ms, median 128 ms, max 146 ms (10 runs) |
+| Block entities looked at | 8,970 (4.1 us each at the median) | 75,491 (1.7 us each at the median) |
+| Where the time goes | roots 1.0 ms, walks 23.6 ms, commit 1.8 ms (walks are 92%) | roots 4.8 ms, walks 114.5 ms, commit 8.0 ms (walks are 90%) |
+| Inclusive, of the samples | `scanChunk` 90%; `FanLinks.links` 57% (`fromHost` 51%, of which `Level.getBlockState` 43%); `describe` 13%; `FanLinks.stops` 12%; capability lookups 14% | `scanChunk` 89%; `FanLinks.links` 55% (`fromHost` 53%, of which `Level.getBlockState` 40%); `FanLinks.stops` 16%; 5,921 samples |
+| Leaves | `PalettedContainer.get` 20%, `Level.getChunk` 15%, `ImmutableCollections$SetN.probe` 10% | `PalettedContainer.get` 29%, `ImmutableCollections$SetN.probe` 14%, `scanChunk` 9%, `ServerChunkCache.getChunk` 7% |
+
+- The cost is linear in block entities, in the walk. Nothing in it grows with the district count: the
+  commit is 6% and the roots 4% at 200 districts, and a block entity costs less at 200 districts (1.7 us)
+  than at 24 (4.1 us, a colder JIT in 15 short runs). One call at 200 districts is 128 ms in this
+  world (75,491 block entities, no trains, the laptop at a load average of about 70); 10.9's 493 to
+  1,088 ms were the same call in the bench's world on a server at 7 to 8 TPS. The profile does not
+  say which part of the gap is the bench world's size and which is its load, only that the walk
+  itself, at 1.7 us a block entity, is not 4 to 8 times slower than it was measured here.
+- Half of it is `FanLinks.fromHost` (the fan air currents of G2-73 to G2-76, de7b4735): every
+  belt-like host block entity casts four horizontal rays of the fan reach out from two heights,
+  one `getBlockState` per block, to find a fan in another chunk. This world has no fan.
+  That code is in every jar set of 10.9 and of sg200, so it does not explain the 2 to 3 times; the
+  syn200r world has more block entities a district than sg200's (about 285 against an unknown
+  number) and the bench ran at a load of 9 to 67 on 7 to 8 TPS.
+  Reported, not changed here: an early out when the dimension has no fan, or a ray count bounded by
+  the loaded fans, is the cheap fix, and a detection that is spread over ticks pays it unnoticed.
+
+| # | Choice | Why |
+|---|---|---|
+| SG60 | `MIC_STRESS_PROFILE`: a phase of the generator that adopts like the scene and times the one-call detection with a stack sampler (`StackSampler`) | 10.10 item 2 asked to profile one call first; the generator already has the districts |
+| SG61 | The profile is reported, and the commands are budgeted, not made cheaper | the cost is walk time proportional to block entities; the brief asked for the commands spread over ticks as adopts were |
+| SG62 | The commands call `Districts.rescanSoon`: a full pass at the front of the queue from the next tick, at the ticked budget; a detection of the dimension under way is restarted with its callbacks carried | one rule, no lost edit: the detection under way recorded the set from before the edit |
+| SG63 | Each command replies at once ("the detection runs over the next ticks and the result follows") and again, to the same source and to the log, when the districts have changed | the replies stay correct; an RCON client reads the log or `perf` |
+| SG64 | `merge` and `split` are refused while a command's detection of the dimension is pending; `rescan`, `exclude` and `include` stack | they read the district set; an `exclude` then `split` of one chunk pinned a district that never existed |
+| SG65 | `perf` shows the last detection's phases (roots, walks, commit) and "detection under way or waiting|idle"; the commands' slices count in the longest tick | the profile's split is kept in the line the bench reads; the commands are ticked now |
+| SG66 | Five command GameTests (`RescanBudgetGameTests` 6 to 10) check the call does no work, the report comes in a later tick, the districts change once, a second command restarts the detection and both are answered by it, and a merge during a detection is refused; `@AfterBatch` hooks restore the budget | a command test that fails must not leave 10 block entities a tick to every later batch |
+
+#### The bench scene (finding 5)
+
+Three things in 10.9's pairs came from the bench, not from the engine.
+
+- A glass verdict needs 6,000 quiet ticks after a district's last recompile. The 6,000-tick window closed
+  near the end of the busy window, a district declared late (a deferred adopt) recompiled late, and
+  the unload came before its verdict: `rtsim district info` sampled 0 to 5 of 12 with one, and the
+  reconcile count of a run depended on it (10.9 item 5).
+- The rescan was timed as the one RCON call. After the commands were spread over ticks (DS-16) the call
+  returns at once, and the time is the detection's.
+- A laptop suspend shows as one tick of minutes on every statistic: 10.9 (SG47) dropped it by hand.
+
+| # | Choice | Why |
+|---|---|---|
+| SG80 | `swticks` counts a tick whose gap is over 10 s while its own tick time is under half the gap as a suspend (`suspends`, `suspend_max_ms`), in none of the ring, gap or top statistics, and the dump line carries both | a minutes-long tick was the maximum, p999 and mean of the whole window; the tick time is monotonic and does not run while the laptop sleeps, so a suspend has a long gap and a short tick, and a real stall of the server (a long tick, however long) stays in the statistics. 10 s is far above any tick the bench saw and far below the suspends it dropped (238 s and 1,726 s, SG47) |
+| SG81 | The scene's `rescan` polls `rtsim district perf` until the detection is idle and counted one more, and keeps the engine's own work, ticks, phases and longest tick with the wall time, the game ticks and the `swticks` numbers of the span (`sw-result.json` `rescan`) | DS-16: the command returns when it has recorded the edit, so its wall time says nothing; the span's per-tick numbers are the detection's cost to the server |
+| SG82 | The scene key `unload_after_adopts` (game ticks, 8,000 in the generated scene) holds the unload until every arm has run that many ticks since its adopts, then takes a `verdicts` report; the generated scene also carries the `ticks` section of the 10.9 scene | 6,000 quiet ticks plus the recompile after the last late declaration; every arm waits by ticks so the pair stays level, and the off arm, which has no adopts, takes the same point |
+| SG83 | No full syn200 pair is run for these fixes | the brief: the pair is the main session's; a short smoke run only when `free -g` allows |
