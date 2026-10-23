@@ -26,25 +26,27 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * The re-sync of a part of a kinetic network that comes back stale (SECTIONS.md §2.8, choice SC37; PATCHES.md
- * rows 56 and 57). Rotation stops at a chunk that is not loaded ({@code RotationPropagatorMixin}), so a part
- * in such a chunk keeps its last speed while its source, in another chunk that ticks, changes. It comes back
- * two ways:
- * <ul>
- *   <li>loaded anew: each block entity's first attach ({@code KineticBlockEntityMixin}) re-syncs it;</li>
- *   <li>FULL again without loading (it dropped below FULL and stayed in memory, ticket level 34 to 44): no
- *       block entity attaches, so the chunk is noted at its demotion and queued at its promotion
- *       ({@code ChunkMapPromotionMixin}), and re-synced here at the next server tick's start or end
- *       ({@link #chunkFull}), before Create's next propagation can meet the stale part and break it.</li>
- * </ul>
+ * The re-sync of a part of a kinetic network that comes back stale (SECTIONS.md §2.8, choices SC37 and SC73;
+ * PATCHES.md rows 56 and 58). Rotation stops at a chunk that is not loaded ({@code RotationPropagatorMixin}),
+ * so a part in such a chunk keeps its last speed while its source, in another chunk that ticks, changes. It
+ * comes back FULL in one of two ways, loaded anew or (it dropped below FULL and stayed in memory, ticket level
+ * 34 to 44) without loading. Either way the chunk is noted (at its load, or at its demotion) and queued when
+ * its holder reports it FULL ({@code ChunkMapPromotionMixin}), and re-synced here at the next server tick's
+ * start or end ({@link #chunkFull}), before Create's next propagation can meet the stale part.
+ * {@code KineticBlockEntityMixin}'s re-sync at a block entity's first attach stays for a chunk that loaded
+ * off the server thread (left out here); in a chunk that is FULL and does not tick nothing attaches, so this
+ * is its only re-sync.
  */
 public final class StaleKinetics {
     private StaleKinetics() {}
 
     private static int resyncs;
-    /** Chunks that dropped below FULL and are still in memory, per level (server thread only). */
+    /**
+     * Chunks that dropped below FULL and are still in memory, or loaded and not yet reported FULL, per level
+     * (server thread only).
+     */
     private static final Map<ServerLevel, LongOpenHashSet> AWAY = new IdentityHashMap<>();
-    /** Chunks of {@link #AWAY} that are FULL again, per level, until the next drain (server thread only). */
+    /** Chunks of {@link #AWAY} reported FULL, per level, until the next drain (server thread only). */
     private static final Map<ServerLevel, LongLinkedOpenHashSet> FULL_AGAIN = new IdentityHashMap<>();
 
     /** Re-syncs since the server started (for tests). */
@@ -55,9 +57,15 @@ public final class StaleKinetics {
     static void register() {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Pre e) -> drain());
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> drain());
-        // a chunk that unloads, or loads anew (its block entities attach, which re-syncs them), is no longer away
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Unload e) -> forget(e));
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Load e) -> forget(e));
+        // a chunk that unloads is no longer away; one that loads anew is noted, so that its FULL report queues it
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Unload e) -> {
+            if (serverThread(e) instanceof ServerLevel level && AWAY.get(level) instanceof LongOpenHashSet away)
+                away.remove(e.getChunk().getPos().toLong());
+        });
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Load e) -> {
+            if (serverThread(e) instanceof ServerLevel level)
+                AWAY.computeIfAbsent(level, l -> new LongOpenHashSet()).add(e.getChunk().getPos().toLong());
+        });
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerStoppedEvent e) -> {
             AWAY.clear();
             FULL_AGAIN.clear();
@@ -65,24 +73,23 @@ public final class StaleKinetics {
     }
 
     /**
+     * The event's level when it is a server level and the event runs on its server's thread; null otherwise.
      * The maps are the server thread's: an event another thread posts (a chunk system that loads off it) is
-     * left out, which at worst costs one spurious {@link #chunkFull} pass over a chunk that loaded anew.
+     * left out, which at worst leaves a chunk that loaded there to {@code KineticBlockEntityMixin}'s re-sync
+     * at the first attach, or costs one spurious {@link #chunkFull} pass over a chunk that unloaded and loaded.
      */
-    private static void forget(ChunkEvent e) {
-        if (e.getLevel() instanceof ServerLevel level && level.getServer().isSameThread()) {
-            LongOpenHashSet away = AWAY.get(level);
-            if (away != null)
-                away.remove(e.getChunk().getPos().toLong());
-        }
+    private static ServerLevel serverThread(ChunkEvent e) {
+        return e.getLevel() instanceof ServerLevel level && level.getServer().isSameThread() ? level : null;
     }
 
     /**
-     * {@code ChunkMap.onFullChunkStatusChange}: a chunk below FULL is noted away until it unloads or loads
-     * anew; one that is FULL or more again while noted is queued for {@link #chunkFull}. A promotion by
-     * several steps at once reports only its last status (each step cancels the one before), so any status
-     * from FULL on counts. A promotion is reported later, from the main thread's task queue, and a demotion
-     * can come between (it is reported at once): a promotion reported for a chunk that is no longer FULL
-     * leaves it noted, for its next promotion.
+     * {@code ChunkMap.onFullChunkStatusChange}: a chunk below FULL is noted away until it unloads; one that is
+     * FULL or more while noted (since its demotion or its load) is queued for {@link #chunkFull}. A load comes
+     * before the chunk's first FULL report ({@code ChunkStatusTasks.full} posts it, and the report waits on
+     * the holder's full chunk future, which waits on that task). A promotion by several steps at once reports
+     * only its last status (each step cancels the one before), so any status from FULL on counts. A promotion
+     * is reported later, from the main thread's task queue, and a demotion can come between (it is reported at
+     * once): a promotion reported for a chunk that is no longer FULL leaves it noted, for its next promotion.
      */
     public static void fullStatusChanged(ServerLevel level, ChunkPos pos, FullChunkStatus status) {
         long c = pos.toLong();
@@ -108,27 +115,23 @@ public final class StaleKinetics {
     }
 
     /**
-     * A chunk that is FULL: every kinetic block entity in it that has attached (one that has not re-syncs at
-     * its first attach) gets a network update held back while the chunk was not loaded, and is re-synced when
+     * A chunk that is FULL: every kinetic block entity in it, attached or not (one in a chunk that has not
+     * ticked has not), gets a network update held back while the chunk was not loaded, and is re-synced when
      * its source, in another chunk, no longer gives it its speed or network; then every block entity in
      * another chunk that takes its speed from one here is checked the same way (the source's chunk was the
-     * one away). A chunk whose block entities are in step costs one pass over them.
+     * one away). Before its first re-sync, every block entity of the re-synced part's chunk joins its network
+     * as its first tick would ({@link KineticJoin}), as {@code KineticBlockEntityMixin}'s re-sync waits for it
+     * to: the re-sync lists the part again through Create's {@code add}, which would leave one that has not
+     * joined counted in the network's unloaded share too. A chunk whose block entities are in step costs one
+     * pass over them.
      */
     public static void chunkFull(ServerLevel level, int cx, int cz) {
-        LevelChunk c = level.getChunkSource().getChunkNow(cx, cz);
-        if (c == null)
+        List<KineticBlockEntity> ks = kinetics(level.getChunkSource().getChunkNow(cx, cz));
+        if (ks.isEmpty())
             return;
-        List<KineticBlockEntity> ks = null;
-        for (BlockEntity be : c.getBlockEntities().values())
-            if (be instanceof KineticBlockEntity k) {
-                if (ks == null)
-                    ks = new ArrayList<>();
-                ks.add(k);
-            }
-        if (ks == null)
-            return;
+        boolean joined = false;
         for (KineticBlockEntity k : ks) {
-            if (k.isRemoved() || k.updateSpeed)
+            if (k.isRemoved())
                 continue;
             KineticSyncPending p = (KineticSyncPending) k;
             if (p.mic_rtsim$syncPending()) {
@@ -138,20 +141,41 @@ public final class StaleKinetics {
                     ((KineticNetworkInvoker) net).mic_rtsim$updateFromNetwork(k);
             }
             KineticBlockEntity s = staleSource(k);
-            if (s != null)
+            if (s != null) {
+                if (!joined)
+                    join(ks);
+                joined = true;
                 resync(k, s);
+            }
         }
         for (KineticBlockEntity k : ks) {
-            if (k.isRemoved() || k.updateSpeed || k.getTheoreticalSpeed() == 0)
+            if (k.isRemoved() || k.getTheoreticalSpeed() == 0)
                 continue;
             for (BlockPos n : linksOut(k))
-                if (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && !o.updateSpeed
-                        && k.getBlockPos().equals(o.source)) {
+                if (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && k.getBlockPos().equals(o.source)) {
                     KineticBlockEntity s = staleSource(o);
-                    if (s != null)
+                    if (s != null) {
+                        join(kinetics(Loaded.chunk(level, n)));
                         resync(o, s);
+                    }
                 }
         }
+    }
+
+    /** The kinetic block entities of a chunk (none when it is null). */
+    private static List<KineticBlockEntity> kinetics(LevelChunk c) {
+        List<KineticBlockEntity> ks = new ArrayList<>();
+        if (c != null)
+            for (BlockEntity be : c.getBlockEntities().values())
+                if (be instanceof KineticBlockEntity k)
+                    ks.add(k);
+        return ks;
+    }
+
+    private static void join(List<KineticBlockEntity> ks) {
+        for (KineticBlockEntity k : ks)
+            if (!k.isRemoved())
+                ((KineticJoin) k).mic_rtsim$join();
     }
 
     /**
