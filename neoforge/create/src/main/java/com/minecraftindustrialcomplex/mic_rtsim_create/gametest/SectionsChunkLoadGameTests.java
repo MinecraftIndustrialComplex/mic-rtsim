@@ -92,20 +92,9 @@ public final class SectionsChunkLoadGameTests {
 
     // ---- shared helpers --------------------------------------------------------------------------
 
-    /** A wait on the world's IO; while the check fails the tick sleeps 5 ms (ReconcileAheadGameTests.io). */
+    /** A wait on the world's IO or the engine; while the check fails the tick sleeps 5 ms ({@link IndustryKit#paced}). */
     private static Runnable io(Runnable check) {
-        return () -> {
-            try {
-                check.run();
-            } catch (RuntimeException e) {
-                try {
-                    Thread.sleep(5);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                throw e;
-            }
-        };
+        return IndustryKit.paced(check);
     }
 
     private static int farChunk(GameTestHelper helper, boolean x, int offset) {
@@ -766,10 +755,10 @@ public final class SectionsChunkLoadGameTests {
                     mark[1] = g == null ? -1 : g.end().compile();
                     ind().glass().requestCompile(ind().district(f.da()));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     GlassKit.Graph g = GlassKit.latest(f.da());
                     check("a new complete compile of A", g != null && g.complete() && g.end().compile() > mark[1]);
-                })
+                }))
                 .thenExecute(() -> {
                     watch.check("the compile loaded B");
                     GlassKit.Graph g = GlassKit.latest(f.da());
@@ -812,10 +801,10 @@ public final class SectionsChunkLoadGameTests {
                     mark[1] = g == null ? -1 : g.end().compile();
                     ind().glass().requestCompile(ind().district(f.da()));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     GlassKit.Graph g = GlassKit.latest(f.da());
                     check("a new complete compile of A", g != null && g.complete() && g.end().compile() > mark[1]);
-                })
+                }))
                 .thenExecute(() -> {
                     watch.check("the second compile loaded B");
                     watch.on = false;
@@ -1028,12 +1017,12 @@ public final class SectionsChunkLoadGameTests {
                         ind().glass().requestCompile(ind().district(ids[i]));
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     for (int i = 0; i < 2; i++) {
                         GlassKit.Graph g = GlassKit.latest(ids[i]);
                         check("a new complete compile of " + (i == 0 ? "A" : "B"), g != null && g.complete() && g.end().compile() > compiles[i]);
                     }
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         String which = i == 0 ? "A (the boiler's)" : "B";
