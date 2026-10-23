@@ -161,7 +161,8 @@ public abstract class KineticNetworkMixin {
      * the kept one's place, and takes the network's current capacity and stress as at {@code addSilently};
      * its own join later finds it a member (Create's {@code addSilently} returns early). Not marked joined:
      * where nothing joined before, Create never takes its share out of the unloaded share, and the next
-     * object there will.
+     * object there will. A generator's own update joins it first (row 58, {@code GeneratingKineticBlockEntityMixin});
+     * this is for any other caller.
      */
     @Inject(method = "updateStressFor", at = @At("HEAD"))
     private void mic_rtsim$replaceKeptMember(KineticBlockEntity be, float stress, CallbackInfo ci) {
