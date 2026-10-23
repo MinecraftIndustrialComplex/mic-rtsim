@@ -446,8 +446,12 @@ under its own heading.
 - **MZB-165** (pages): the conflict page magic is RTC5 and `META_VERSION` is 4: a camp's ledger
   (slots, retired generations, throne, refill stamp) is saved with its faction, and the stats grew
   six camp counters. No migration (no backward compatibility before release). This changes a page
-  format, so the rtsim-view fixtures test fails naming conflict until the lead regenerates them from
-  fresh GameTest worlds at landing, and the landing waits for M2 (the coordinator's freeze).
+  format, so this branch must not land while the coordinator's format freeze holds (until M2 is on
+  origin/main), and the rtsim-view fixtures are regenerated from fresh GameTest worlds at landing.
+  The fixtures and hashes tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`
+  already fail on M2's head (4b07ea84), with the same messages: the saved phase 1 snapshot has 9
+  goods and the catalogue 10 (`gold_nugget`, MZB-58), and the host test lists the conflict pages
+  among those it drops, so the new magic adds nothing to a run that was already red.
 - **MZB-166** (the emulated plugin and runs 8 and 10): `synth::FakeConflict`'s camp worlds apply a
   reconcile in the tick it arrives if the epoch is the camp's, else answer it stale; answers can be
   late, lost (`lose_answers`, one per order), replayed or dropped at a restart (`drop_queued`).
