@@ -2325,6 +2325,16 @@ impl Conflict {
 
     // ---- tribute, gifts, trade --------------------------------------------------------------
 
+    /// The actor whose open demand names this envoy (`demand.envoy`), among the faction's feuds. An
+    /// envoy going home has no feud of its own any more (`go_home`), and its demand is still open
+    /// (MZB-143).
+    fn demand_actor(&self, f: u32, p: Handle<Party>) -> Option<ActorId> {
+        self.feuds_of(f)
+            .iter()
+            .find(|(_, x)| x.demand.is_some_and(|d| d.envoy == Some(p)))
+            .map(|e| e.0)
+    }
+
     /// Tribute paid to a faction (at its envoy or its camp): the goods enter the world at the
     /// haven's market (players' goods coming in), and the open demand on the payer (or else on the
     /// settlers) counts them. Returns whether a demand was met.
@@ -2357,12 +2367,7 @@ impl Conflict {
         let who = match envoy {
             Some(agent) => Party::of_agent(agent)
                 .filter(|p| self.parties.get(*p).is_some_and(|x| x.faction == f))
-                .and_then(|p| {
-                    self.feuds_of(f)
-                        .iter()
-                        .find(|(_, x)| x.demand.is_some_and(|d| d.envoy == Some(p)))
-                        .map(|e| e.0)
-                }),
+                .and_then(|p| self.demand_actor(f, p)),
             None => [payer, settlers]
                 .into_iter()
                 .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some())),
@@ -4843,7 +4848,9 @@ impl Conflict {
                     return;
                 }
                 let f = self.parties[p].faction;
-                let Some(actor) = self.parties[p].feud else {
+                // The actor its demand is to: its feud, or the demand that names it once it is
+                // going home.
+                let Some(actor) = self.parties[p].feud.or_else(|| self.demand_actor(f, p)) else {
                     return;
                 };
                 match a.answer {
@@ -4851,12 +4858,17 @@ impl Conflict {
                     boundary::ANSWER_ATTACKED => {
                         let insult = self.tun.envoy_insult_kills;
                         let attacker = self.actor_of_uuid(w, a.player);
-                        // Where the envoy stood, against its target's district, as a killing of
-                        // its members is (`casualties`): the camp's own place would point the
-                        // feud, and the scouts the refusal sends, at the camp (MZB-133).
+                        // The demand's own target: the blow is its refusal, and the insult counts
+                        // against its district as a killing of the envoy's members does
+                        // (`casualties`; the camp's own place would point the feud, and the
+                        // scouts the refusal sends, at the camp: MZB-133). Any other player's blow
+                        // is that player's insult alone (MZB-145): at the envoy's place, on their
+                        // own feud, against no district (the target's is not theirs), and it
+                        // refuses nothing: the demand is still to its target.
+                        let own = attacker == actor;
                         let (x, z) = self.party_pos(p, at);
                         let district = match self.parties[p].target {
-                            Target::District(d, _) => Some(d),
+                            Target::District(d, _) if own => Some(d),
                             _ => None,
                         };
                         let sig = Signal {
@@ -4868,7 +4880,9 @@ impl Conflict {
                             district,
                         };
                         self.signal(w, sig, at);
-                        self.refuse(w, f, actor, at, insult);
+                        if own {
+                            self.refuse(w, f, actor, at, insult);
+                        }
                     }
                     _ => {}
                 }

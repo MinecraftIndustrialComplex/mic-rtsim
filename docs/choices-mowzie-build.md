@@ -706,6 +706,29 @@ under its own heading.
   arm now returns at once for a party that is not an `Envoy`, for both answers (ANSWER_REFUSED is
   never sent by the bridge either). Test: ATTACKED for a raid band that serves the player's feud
   changes no grievance and settles nothing; it booked the insult on the old engine.
+- **MZB-145** (a blow from another player; re-review P3-2): the ATTACKED arm used the envoy's feud
+  as the actor to refuse and the striker as the insult's actor, so a second player striking an envoy
+  sent to the first refused the first player's demand and pointed the striker's feud at the first
+  player's district. Ruling: the blow is the striker's insult. If the striker is the demand's target
+  (the feud's actor, found as in MZB-143 for an envoy going home) nothing changes: the Killing
+  signal of `envoy_insult_kills` at the envoy's place against its target's district, then the
+  refusal. Otherwise the same signal is the striker's alone, on the striker's own feud, at the
+  envoy's place, against no district (the target's is not the striker's), and the demand is not
+  refused: it stands to its target, who can still pay it. The settlers' envoy has no player for a
+  target, so any player's blow on it is a stranger's: the insult is booked, the settlers' demand runs
+  to its deadline (it used to be refused at once); a fork, since the old reading made a blow on the
+  villages' envoy a refusal. An answer for an envoy with no feud and no open demand naming it (its
+  demand is over and it is going home) still does nothing. The Java side agreed to the same rule
+  (`ConflictBridge.struck`): any player's blow lifts the guard, because the guards fight whoever
+  strikes; a blow from the demand's player (or from any player when the demand is to none) closes
+  the demand as before (`insulted`: the envoy takes nothing more and says "struck"), answered once;
+  another player's blow is answered once per player (`struckBy`) and leaves the demand open to its
+  player, so the envoy still takes that player's tribute and the engine, which has not refused it,
+  agrees. Before, the first blow of any player closed the demand on the Java side only, and a later
+  blow by the target was never sent. Not run: the GameTests (the lead's order); the Java change
+  compiles. Tests (rtsim-conflict): a stranger's blow leaves the demand open, adds nothing to the
+  target's grievance, gives the stranger an insult with a focus of no district away from the camp,
+  and the target's own blow then refuses it as ever; fails on the old arm (the demand is refused).
 
 ## M4 Camp reconciler, engine
 

@@ -1636,7 +1636,15 @@ and stays abstract, MZB-132): the plugin needs no rule of its own.
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
 of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
 the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
-killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3). Any player's blow
+on the envoy or a guard lifts the guard. A blow from the player the demand is to (or from any
+player, for a demand to none) closes it on the plugin's side (the envoy takes nothing more) and is
+answered once with an ENVOY_ANSWER 3: the engine books the insult against that player's district
+and refuses the demand (DEMAND_SETTLED 4). A blow from another player is answered once per player
+with an ENVOY_ANSWER 3 naming them: the engine books it as their own insult, at the envoy's place
+and against no district, and refuses nothing; the demand stays open to its player and the plugin
+goes on taking that player's tribute (MZB-145). ENVOY_ANSWER is an envoy party's: the engine
+ignores it for any other party (MZB-144).
 
 **The raid director.** A war band that arrives where a player watches materializes in **waves**:
 each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around

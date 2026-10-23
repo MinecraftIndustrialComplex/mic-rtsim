@@ -1393,6 +1393,61 @@ fn an_attacked_answer_for_a_war_band_does_nothing() {
     assert!(settled(&r).is_empty(), "nothing refused");
 }
 
+/// MZB-145 (re-review P3-2): a second player's blow on an envoy that is not theirs is their own
+/// insult, at the envoy's place, on their own feud and against no district. It refuses nothing:
+/// the demand is still to its player, who can still pay it, and whose own blow refuses it as ever.
+/// The old rule used the envoy's feud as the actor, so a stranger's blow refused the player's demand
+/// and booked the insult at the player's district.
+#[test]
+fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
+    let stranger: boundary::Uuid = (0x2222_0000_0000_0002, 0x9999_0000_0000_0009);
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.answer = Answer::Ignore;
+    let e = envoy_met(&mut r);
+    let q = r.c.player(&mut r.w, stranger);
+    assert!(
+        r.c.feud(r.f, q).is_none(),
+        "the stranger has no quarrel yet"
+    );
+    let lambda = r.c.cultures.get(0).lambda;
+    let at = r.c.now() + 5;
+    let owner = |r: &Run| r.c.feud(r.f, r.p).unwrap().g.total_at(at + 100, lambda);
+    let before = owner(&r);
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_ATTACKED,
+        stranger,
+        at,
+    );
+    assert!(settled(&r).is_empty(), "the player's demand is not refused");
+    let d = r.c.feud(r.f, r.p).unwrap().demand.expect("still open");
+    assert_eq!(d.paid, 0);
+    assert_eq!(owner(&r), before, "nor does the insult land on the player");
+    let theirs = r.c.feud(r.f, q).expect("the stranger's own feud");
+    let g = theirs.g.total_at(at + 100, lambda);
+    assert!(g > 0.0, "the insult is held against the stranger: {g}");
+    let focus = theirs.focus.expect("a focus at the envoy's place");
+    assert_eq!(focus.district, None, "against no district");
+    assert_ne!(focus.pos, synth::CAMP_POS, "and not at the camp");
+    // The player's own blow refuses the demand, as it always did.
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_ATTACKED,
+        synth::PLAYER,
+        at + 5,
+    );
+    assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
+    assert_eq!(
+        r.c.feud(r.f, r.p).unwrap().focus.unwrap().district,
+        Some(synth::REFINERY),
+        "at the demand's district"
+    );
+}
+
 /// A raid band on the way, ordered at `Tick(20)` after two killings.
 fn raid_band(r: &mut Run) -> Handle<Party> {
     r.kill(2.0, Tick(10));
