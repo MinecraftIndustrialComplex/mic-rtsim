@@ -53,9 +53,9 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate, PlayerView,
-    Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats,
-    ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate,
+    PlayerView, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange,
+    ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;

@@ -1688,8 +1688,8 @@ impl Ships {
         // navies of a world do not all look on one tick.
         let every = self.assault_ticks();
         if every > 0 {
-            let first = fnv1a64(&[self.seed.to_le_bytes(), u64::from(nv).to_le_bytes()].concat())
-                % every;
+            let first =
+                fnv1a64(&[self.seed.to_le_bytes(), u64::from(nv).to_le_bytes()].concat()) % every;
             self.schedule(at + first + 1, Ev::Assault { navy: nv });
         }
         let touched: BTreeSet<u32> = self.services[sid as usize]
@@ -4067,7 +4067,10 @@ impl Ships {
     /// that never sail again after that still starve it.
     fn wait_on_refits(&mut self, h: u32, at: Tick) {
         let hv = &self.havens[h as usize];
-        if !self.tun.lifecycle || hv.shut.is_some() || hv.broken_at.is_some() || self.starving(h, at)
+        if !self.tun.lifecycle
+            || hv.shut.is_some()
+            || hv.broken_at.is_some()
+            || self.starving(h, at)
         {
             return;
         }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! S8b (EQUILIBRIUM.md §2.4.6a, rules 1, 2, 4 and 5; docs/choices-ports.md PC1 to PC6): havens
-//! that rise and fall. An unwatched hunt pays the square law's toll in crew, a haven with no hunt
-//! for 30 days starves and lays its ships up, a starving haven with no ship shuts, and its site
-//! takes a new band out of every player's view once a fresh band would find prey.
+//! S8b (EQUILIBRIUM.md §2.4.6a; docs/choices-ports.md PC1 to PC8, PC30 on): havens that rise and
+//! fall. An unwatched hunt pays the square law's toll in crew, a haven with no hunt for 30 days
+//! starves and lays its ships up, a starving haven with no ship shuts, a navy breaks a weak haven
+//! that has robbed its patrolled lanes for a year, and a shut haven's site takes a new band out of
+//! every player's view once a fresh band would find prey.
 //!
 //! The rules are judged on the synthetic coast (`synth::coastal`: one haven, a sea and a sky
 //! pirate) and, for the lifecycle over many worlds, on `synth::sea_havens` (3 to 5 havens, 1 or 2
@@ -637,9 +638,10 @@ fn a_navy_breaks_a_weak_haven() {
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
             let held = hunts_the_patrol(s, nv, h);
-            let stays = s.havens[h as usize].ships.iter().all(|&p| {
-                next_change(s, p).is_none_or(|t| t > due)
-            });
+            let stays = s.havens[h as usize]
+                .ships
+                .iter()
+                .all(|&p| next_change(s, p).is_none_or(|t| t > due));
             if held && !cause_served(s, h, due) && stays && in_port(s, h) <= 12.6 {
                 // Weak, but the year is not out.
                 early += 1;
@@ -695,7 +697,10 @@ fn a_navy_breaks_a_weak_haven() {
                 && !x.is_laid_up(),
             "seed {seed}: the ship in port is sunk: {x:?}"
         );
-        assert!(c.ships.ship(sea).unwrap().is_active(), "the ship at sea sails on");
+        assert!(
+            c.ships.ship(sea).unwrap().is_active(),
+            "the ship at sea sails on"
+        );
         let lost: Vec<_> = tape_events(&c.ships, rtsim_archive::kinds::SHIPS_LOST)
             .into_iter()
             .filter(|e| e.tick == due.0)
@@ -800,7 +805,10 @@ fn no_assault_in_view() {
         // Strong until it is a target.
         while !a_target(&c.ships, nv, h, c.ships.now()) {
             let due = to_look(&mut c, &mut fake, nv);
-            assert!(due < Tick::from_days(300), "seed {seed}: no target in 300 days");
+            assert!(
+                due < Tick::from_days(300),
+                "seed {seed}: no target in 300 days"
+            );
             set_pool(&mut c, h, cap);
             idle_by(&mut c, &mut fake, due + 1, 1);
         }
@@ -842,6 +850,140 @@ fn no_assault_in_view() {
     });
 }
 
+/// One run of the coast with navy assaults on and nobody watching (§2.4.6a rule 3).
+#[derive(Debug, Default)]
+struct Cycle {
+    seed: u64,
+    cause_days: u32,
+    years: u64,
+    /// The mean share of slots manned, censused every 24 days.
+    manned: f64,
+    breaks: u64,
+    starved: u64,
+    /// Days from the haven's opening (its founding or refound) to each break.
+    open_to_break: Vec<f64>,
+    /// Days each shut lasted, to its refound.
+    closed: Vec<f64>,
+    /// Hunts in each 5-year window.
+    window_hunts: Vec<u64>,
+}
+
+fn mean(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        0.0
+    } else {
+        v.iter().sum::<f64>() / v.len() as f64
+    }
+}
+
+/// `years` of the coast with assaults on and `assault_cause_days` at `cause_days`, nobody
+/// watching, read every quarter day: no break comes sooner than the cause after the haven opened,
+/// and its one site is never open twice.
+fn coast_cycle(seed: u64, cause_days: u32, years: u64) -> Cycle {
+    let tun = ShipTunables {
+        assault_cause_days: cause_days,
+        ..ShipTunables::default()
+    };
+    let mut c = synth::coastal(seed, tun.clone());
+    let h = c.haven;
+    let mut fake = FakeShips::new(f64::from(tun.view_radius));
+    let mut cy = Cycle {
+        seed,
+        cause_days,
+        years,
+        ..Cycle::default()
+    };
+    let cause = u64::from(cause_days) * TICKS_PER_DAY;
+    let (mut opened, mut was) = (Tick::ZERO, None::<rtsim_ships::engine::Shut>);
+    let mut seen = None;
+    let (mut samples, mut hunts0) = (0u64, 0u64);
+    let window = 5 * YEAR * TICKS_PER_DAY;
+    let mut t = Tick::ZERO;
+    while t < Tick::from_days(years * YEAR) {
+        t += TICKS_PER_DAY / 4;
+        idle(&mut c, &mut fake, t);
+        let hv = &c.ships.havens[h as usize];
+        if let Some(b) = hv.broken_at
+            && seen != Some(b)
+        {
+            seen = Some(b);
+            cy.breaks += 1;
+            assert!(
+                b.0 >= opened.0 + cause,
+                "seed {seed}: broken on day {} after opening on day {}",
+                day(b),
+                day(opened)
+            );
+            cy.open_to_break.push(day(b) - day(opened));
+        }
+        match (was, hv.shut) {
+            (Some(sh), None) => {
+                // Refounded at its look (the look's tick, read before it).
+                opened = sh.back;
+                cy.closed.push(day(sh.back) - day(sh.since));
+            }
+            (_, Some(sh)) if was.is_none() && !sh.broken => cy.starved += 1,
+            _ => {}
+        }
+        was = hv.shut;
+        let open = usize::from(hv.shut.is_none());
+        assert!(open <= 1, "seed {seed}: more open than sites");
+        if t.0.is_multiple_of(24 * TICKS_PER_DAY) {
+            let (up, n) = manned(&c.ships, h);
+            cy.manned += up as f64 / n as f64;
+            samples += 1;
+        }
+        if t.0.is_multiple_of(window) {
+            cy.window_hunts.push(c.ships.stats.hunts - hunts0);
+            hunts0 = c.ships.stats.hunts;
+            c.ships
+                .check(&c.world)
+                .unwrap_or_else(|e| panic!("seed {seed} cause {cause_days} day {}: {e}", day(t)));
+        }
+    }
+    cy.manned /= samples.max(1) as f64;
+    assert_eq!(cy.breaks, c.ships.navy_counts().assaults, "seed {seed}");
+    cy
+}
+
+/// S8b `coast_havens_cycle_with_assaults` (§2.4.6a rule 3, PC31): 30 years of the coast with
+/// nobody watching and Saltmere's navy assaulting, a year of robbery first and with no such wait
+/// (`assault_cause_days` 96 and 0), on seeds 1, 7 and 30. It reports the share of slots manned,
+/// breaks per decade, the mean days from opening to a break and the mean days shut; it asserts
+/// only what holds by construction: a hunt in every 5-year window, no break sooner than the
+/// cause after the haven opened, and never more open havens than sites.
+#[test]
+fn coast_havens_cycle_with_assaults() {
+    let jobs: Vec<u64> = [1u64, 7, 30]
+        .iter()
+        .flat_map(|&s| [2 * s, 2 * s + 1])
+        .collect();
+    let runs = per_seed(&jobs, |j| {
+        coast_cycle(j / 2, if j % 2 == 0 { 96 } else { 0 }, 30)
+    });
+    for cy in &runs {
+        eprintln!(
+            "coast seed {:>2} cause {:>2} days: manned {:.3}, breaks {} ({:.2}/decade), starved \
+             shuts {}, opening to break {:.1} days, shut {:.1} days, fewest hunts in 5 years {}",
+            cy.seed,
+            cy.cause_days,
+            cy.manned,
+            cy.breaks,
+            cy.breaks as f64 * 10.0 / cy.years as f64,
+            cy.starved,
+            mean(&cy.open_to_break),
+            mean(&cy.closed),
+            cy.window_hunts.iter().min().copied().unwrap_or(0),
+        );
+        assert!(
+            cy.window_hunts.iter().all(|&n| n > 0),
+            "seed {} cause {}: a 5-year window with no hunt: {cy:?}",
+            cy.seed,
+            cy.cause_days
+        );
+    }
+}
+
 // ---- many worlds, nobody watching ----------------------------------------------------------------
 
 /// One world's unattended run, summed (§2.4.6a): the lifecycle on or off.
@@ -860,19 +1002,27 @@ struct Life {
     min_open: usize,
     /// Hunts in each window (a century, or a decade in the everyday cut).
     window_hunts: Vec<u64>,
+    /// `assault_cause_days` (PC31; meaningless with the lifecycle off).
+    cause_days: u32,
     shuts: u64,
+    /// Of `shuts`, those of a haven a navy broke (rule 3); the rest starved (rule 2).
+    broken_shuts: u64,
     refounds: u64,
     laid_up: u64,
     hunts: u64,
     toll_men: f64,
     sinkings: u64,
+    /// The navies' looks for a haven to assault, and the assaults made (each broke a haven).
+    looked: u64,
+    assaults: u64,
 }
 
 /// `windows` windows of `years` each of [`synth::sea_havens`] with nobody watching, censused every
 /// 24 days and checked at each window's end.
-fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
+fn unattended(seed: u64, lifecycle: bool, cause_days: u32, windows: u64, years: u64) -> Life {
     let tun = ShipTunables {
         lifecycle,
+        assault_cause_days: cause_days,
         ..ShipTunables::default()
     };
     let SeaHavens {
@@ -891,6 +1041,7 @@ fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
     let mut life = Life {
         seed,
         lifecycle,
+        cause_days,
         sites: havens.len(),
         slots,
         navies: navies.len(),
@@ -934,7 +1085,11 @@ fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
     life.manned /= samples as f64;
     let counts = ships.haven_counts();
     life.shuts = counts.shuts;
+    life.broken_shuts = counts.broken_shuts;
     life.refounds = counts.refounds;
+    let navy = ships.navy_counts();
+    life.looked = navy.looked;
+    life.assaults = navy.assaults;
     life.laid_up = counts.laid_up;
     life.toll_men = counts.toll_milli as f64 / 1000.0;
     life.hunts = ships.stats.hunts;
@@ -945,11 +1100,13 @@ fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
 fn report(runs: &[Life]) {
     for l in runs {
         eprintln!(
-            "seed {:>2} lifecycle {:<5} sites {} slots {} navies {}: open {:.3} (min {}), manned \
-             {:.3}, shuts {}, refounds {}, laid up {}, sinkings {}, hunts/yr {:.1}, toll {:.1} \
-             men ({:.2}/yr), fewest hunts in a window {}",
+            "seed {:>2} lifecycle {:<5} cause {:>2} sites {} slots {} navies {}: open {:.3} (min \
+             {}), manned {:.3}, shuts {} (starved {}, broken {}), assaults {} of {} looks, \
+             refounds {}, laid up {}, sinkings {}, hunts/yr {:.1}, toll {:.1} men ({:.2}/yr), \
+             fewest hunts in a window {}",
             l.seed,
             l.lifecycle,
+            if l.lifecycle { l.cause_days } else { 0 },
             l.sites,
             l.slots,
             l.navies,
@@ -957,6 +1114,10 @@ fn report(runs: &[Life]) {
             l.min_open,
             l.manned,
             l.shuts,
+            l.shuts - l.broken_shuts,
+            l.broken_shuts,
+            l.assaults,
+            l.looked,
             l.refounds,
             l.laid_up,
             l.sinkings,
@@ -991,38 +1152,74 @@ fn check_lives(on: &[Life], off: &[Life]) {
     assert!(refounds > 0, "no site ever refounded: {on:?}");
     for l in off {
         assert_eq!((l.shuts, l.refounds, l.laid_up), (0, 0, 0), "{l:?}");
+        assert_eq!(
+            (l.looked, l.assaults),
+            (0, 0),
+            "no assault with the lifecycle off: {l:?}"
+        );
         assert_eq!(l.toll_men, 0.0);
         assert!(l.window_hunts.iter().all(|&n| n > 0), "{l:?}");
     }
 }
 
-/// Every seed's unattended run with the lifecycle on, then off, `threads` runs at a time.
-fn lives(threads: usize, seeds: &[u64], windows: u64, years: u64) -> (Vec<Life>, Vec<Life>) {
-    let jobs: Vec<u64> = seeds.iter().flat_map(|&s| [2 * s, 2 * s + 1]).collect();
-    let all = per_seed_on(threads, &jobs, |j| {
-        unattended(j / 2, j % 2 == 0, windows, years)
+/// The three arms of the unattended runs.
+struct Lives {
+    /// The lifecycle on, as built (a year of robbery before an assault, PC31).
+    on: Vec<Life>,
+    /// The lifecycle on with no wait before an assault (`assault_cause_days` 0), measured only.
+    no_cause: Vec<Life>,
+    off: Vec<Life>,
+}
+
+/// Every seed's unattended run with the lifecycle on, on with no cause gate, and off, `threads`
+/// runs at a time.
+fn lives(threads: usize, seeds: &[u64], windows: u64, years: u64) -> Lives {
+    let cause = ShipTunables::default().assault_cause_days;
+    let jobs: Vec<u64> = seeds
+        .iter()
+        .flat_map(|&s| [3 * s, 3 * s + 1, 3 * s + 2])
+        .collect();
+    let all = per_seed_on(threads, &jobs, |j| match j % 3 {
+        0 => unattended(j / 3, true, cause, windows, years),
+        1 => unattended(j / 3, true, 0, windows, years),
+        _ => unattended(j / 3, false, cause, windows, years),
     });
-    all.into_iter().partition(|l| l.lifecycle)
+    let mut out = Lives {
+        on: Vec::new(),
+        no_cause: Vec::new(),
+        off: Vec::new(),
+    };
+    for l in all {
+        match (l.lifecycle, l.cause_days) {
+            (false, _) => out.off.push(l),
+            (true, 0) => out.no_cause.push(l),
+            (true, _) => out.on.push(l),
+        }
+    }
+    out
+}
+
+/// Each arm's lines, then the bars on the built arm and the off arm.
+fn report_and_check(l: &Lives) {
+    report(&l.on);
+    report(&l.no_cause);
+    report(&l.off);
+    check_lives(&l.on, &l.off);
 }
 
 /// S8b `unattended_havens_rise_and_fall`, the everyday cut: three decades of three seas, the
-/// lifecycle on and off (seed 2's sea has havens that shut and refound within them).
+/// lifecycle on and off (seed 2's sea has havens that shut and refound within them), and on with
+/// no year of robbery before an assault (reported, not judged).
 #[test]
 fn unattended_havens_rise_and_fall() {
-    let (on, off) = lives(6, &[1, 2, 3], 3, 10);
-    report(&on);
-    report(&off);
-    check_lives(&on, &off);
+    report_and_check(&lives(6, &[1, 2, 3], 3, 10));
 }
 
 /// S8b `unattended_havens_rise_and_fall` in full: ten centuries (96,000 game days) of seeds 1 to
-/// 30, the lifecycle on and off. Release only, for its length (`cargo test --release -p
+/// 30, the lifecycle on and off, and on with no year of robbery before an assault. Release only, for its length (`cargo test --release -p
 /// rtsim-ships --test lifecycle -- --ignored`).
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn unattended_havens_rise_and_fall_1000_years() {
-    let (on, off) = lives(12, &seeds(), 10, 100);
-    report(&on);
-    report(&off);
-    check_lives(&on, &off);
+    report_and_check(&lives(12, &seeds(), 10, 100));
 }
