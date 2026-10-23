@@ -31,8 +31,9 @@ import net.minecraft.world.phys.Vec3;
  *   <li><b>Re-cuts</b> happen when it turns to another of the 16 headings, grows a stage, changes colour or the
  *       tier's step changes, paced by {@link RecutPacer}. A tier with another number of poses starts the dragon
  *       over.</li>
- *   <li><b>The hide test</b> is the trains' ({@link FarHide}): not while the client has the dragon's entity, and
- *       not in a chunk the client has loaded (the band renderer draws it there).</li>
+ *   <li><b>The hide test</b> is the trains' ({@link FarHide#dhDraws}): not while the client has the dragon's
+ *       entity, and not in a chunk the client has loaded (the band renderer draws it there) unless some of it
+ *       could be in DH's vanilla fade; there the band draws this dragon's cut ({@link #shown}).</li>
  *   <li><b>The budget.</b> Dragons are drawn first, nearest first, up to the tier's dragons; each takes two of
  *       the tier's active groups (body and wings) and its boxes. What is left goes to the carriages.</li>
  * </ul>
@@ -71,6 +72,10 @@ final class FarDragonView {
     private record Candidate(FarMover mover, double x, double y, double z, double hx, double hz, double distanceSq) {
     }
 
+    /** What a dragon's groups were cut for: its stage, its heading step and the staircase step. */
+    record Shown(int stage, int heading, double step) {
+    }
+
     /** One dragon's groups and what they were cut for. */
     private static final class Proxy {
         final FarKey key;
@@ -81,6 +86,7 @@ final class FarDragonView {
         int heading, stage, rgb, poses;
         double step;
         int bodyBoxes, wingBoxes;
+        Shown shown;
         long wantedAt;
         long touchedFrame = -1;
         boolean bodyOn;
@@ -153,7 +159,7 @@ final class FarDragonView {
             Proxy p = PROXIES.get(m.key());
             if (p != null)
                 p.wantedAt = now;
-            if (FarHide.entityPresent(m, level, x, y, z) || FarHide.loaded(level, x, z)) {
+            if (!FarHide.dhDraws(m, level, x, y, z, reach(m.size()), cam)) {
                 hidden++;
                 continue;
             }
@@ -234,6 +240,20 @@ final class FarDragonView {
         return new Used(groups, boxes, registered);
     }
 
+    /** The farthest a dragon of size {@code size} reaches from its midpoint: its wingspan. */
+    static double reach(int size) {
+        return DragonModel.length(Math.max(1, Math.min(5, size))) * DragonModel.WINGSPAN;
+    }
+
+    /**
+     * What DH drew this dragon with at the controller's last run, or null when DH did not draw it (render thread
+     * only).
+     */
+    static Shown shown(FarKey key) {
+        Proxy p = PROXIES.get(key);
+        return p != null && p.bodyOn ? p.shown : null;
+    }
+
     /** Dragons with groups registered. */
     static int held() {
         return PROXIES.size();
@@ -284,6 +304,7 @@ final class FarDragonView {
         p.rgb = m.rgb();
         p.poses = poses;
         p.step = step;
+        p.shown = new Shown(stage, heading, step);
         p.bodyBoxes = body.size();
         p.wingBoxes = wingBoxes;
         p.pacer.cut(now);
@@ -323,6 +344,7 @@ final class FarDragonView {
         p.stage = stage;
         p.rgb = m.rgb();
         p.step = step;
+        p.shown = new Shown(stage, heading, step);
         p.bodyBoxes = body.size();
         p.wingBoxes = wingBoxes;
         p.pacer.cut(now);
