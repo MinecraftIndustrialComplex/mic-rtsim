@@ -552,11 +552,11 @@ The conflict engine (rtsim-conflict) exists and runs in Rust tests and `rtsim-cl
 - **Trains:** a war band on its way out ambushes the first train leg it crosses, on a roll under
   `ambush_milli` 500 in 1,000 (`2496-2534`; `tunables.rs:103`), through industry's `raid_train`.
 - **A chief's death** (`chief_killed`, `4124-4196`, which takes a party): the killer gets a
-  severity-4 Killing report that the chief and the heir witness; the chief dies and `succeed` runs at
+  Killing report that the chief and the heir witness (at `SEVERITY_UNIT` since MZB-36; it was the
+  rung code 4, which the knowledge layer read as 4% of a unit); the chief dies and `succeed` runs at
   once: the heir becomes chief and a new heir is named, and for each player the new chief resents,
   0.5 (`heir_grudge_factor`, `tunables.rs:107`) times that resentment is added as a Killing impulse,
-  on top of a grievance that is otherwise unchanged (`1091-1134`; one severity-4 Killing adds about
-  2.5). The faction is cowed for `cowed_days` × 1000 ÷ the chief's boldness bend. One feud steps down
+  on top of a grievance that is otherwise unchanged (`1091-1134`). The faction is cowed for `cowed_days` × 1000 ÷ the chief's boldness bend. One feud steps down
   `chief_rout_steps` (2) rungs, floored at Notice: the party's, else the killer's (`4168-4176`). The
   band routs. The body comes back only when the pool refills.
 - **Old age:** `ensure_chief` runs `succeed` when the chief notable has died of age
