@@ -60,7 +60,9 @@ under its own heading.
   shifts BAND_MARCH's ticks; the fake Java leaves them as they come.
 - **MZB-14** (Peaceful holds the war rungs): on Peaceful `plan_feud` books no climb to a war rung
   (raid, invasion, siege), and the feud wake guards the same way. Notices, envoys and scouts are not
-  war and go on, so a player on Peaceful still learns of a feud; grievance keeps its curve.
+  war and go on, so a player on Peaceful still learns of a feud; grievance keeps its curve. Amended
+  (MZB-132, review item 13): the envoy is held too, since its stand-in cannot exist on Peaceful;
+  notices and scouts still go on.
 - **MZB-15** (Peaceful stops what has left): a war party (plunder included) still mustering stands
   down at its muster's end: its bodies, if any, are recalled, its warriors go back to the pool, and
   the feud it served steps down one rung so that it climbs back once Peaceful ends. Amended
@@ -543,6 +545,29 @@ under its own heading.
   that bump. `FakeConflict::walk_off_deaths` takes that many off a recalled band's survivors, first
   stacks first. The rtsim-jni test fails on the old engine (alive 12, not 10, once the old despawn
   is past) and its second recall (the player gone stale) leaves the count alone.
+- **MZB-132** (envoys on Peaceful; review item 13, amends MZB-14): no envoy leaves on Peaceful
+  either, because the envoy's body is a Mowzie pillager stand-in that cannot exist on Peaceful. One
+  predicate (`peace_holds`: a war rung or the Envoy) now holds the climb to a rung in `plan_feud`
+  and the feud wake, the dwell pause and jitter of MZB-16 on leaving, and the repeat of a war rung
+  as before; a culture that skips the Envoy goes from notice to scouts as ever. Scouts are left
+  untouched (fork: they are not war and carry no stand-in). Notices go on, so the feud holds at its
+  notice with its grievance kept. Entering Peaceful: an envoy in view walks off with RECALL_PASSING
+  toward its next route point (never held in view for a deadline the engine has put off) and stays
+  abstract wherever it is: on its road it still arrives and waits, `seen()` shows no envoy, and the
+  end of its muster or its wait is held (counted in `peace_held`, nothing booked). An open
+  demand's deadline is not booked while Peaceful, and `feud_wake` ignores a deadline passed in it, so
+  nothing expires, settles or climbs. Leaving Peaceful (fork: the demand's clock is paused over the
+  whole span, as MZB-16 pauses a dwell): every open demand's deadline d0 moves to d1 = d0 + the span
+  it lived through (`at - max(made, peaceful_since)`); a withdrawn demand's fresh envoy (MZB-22,
+  `wait_until`) moves by the span too, so none goes in a burst at the end; each held envoy is booked
+  again after the feuds are planned (a muster at its old end or now, a waiting one to d1 with its
+  patience moved by the span), and an envoy a watching player has in view comes back at once,
+  carrying d1 in BAND_ENVOY. Not a page format change (`peaceful_since` and the deadlines were
+  already saved). Tests: rtsim-conflict `mowzie_records` (the two M1 Peaceful tests now hold at the
+  notice, the burst test runs at the notice and, from the scouts, at the raid; an envoy held on its
+  road, waiting, mustering and as a withdrawn demand) and the rtsim-jni test of an envoy in view
+  that walks off, whose deadline moves by the span and comes due not before it; M1's Peaceful jni
+  test now sees no envoy until Normal.
 
 ## M4 Camp reconciler, engine
 

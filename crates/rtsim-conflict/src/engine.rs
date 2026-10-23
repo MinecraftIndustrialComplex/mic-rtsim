@@ -173,6 +173,12 @@ impl Feud {
     }
 }
 
+/// A rung the world's Peaceful holds back: the war rungs, whose parties never leave, and the
+/// Envoy, whose pillager stand-in cannot exist on Peaceful (MZB-132). Scouts go on.
+fn peace_holds(step: Step) -> bool {
+    step.is_war() || step == Step::Envoy
+}
+
 /// A continuous source with no direct actor: a district's or a chunk's emissions. P14 as Ben
 /// changed it: it counts against the player who has spent the most time in its chunks
 /// ([`crate::presence`]), and against the shared settlers only while nobody has.
@@ -1670,19 +1676,24 @@ impl Conflict {
                 next = Some(next.map_or(t, |n: Tick| n.min(t)));
             }
         };
-        // On Peaceful no war party leaves: the climb to a war rung waits for the world to change
-        // (`set_difficulty` plans every feud again then).
+        // On Peaceful no war party and no envoy leaves: the climb to such a rung waits for the
+        // world to change, and so do an open demand's deadline and a withdrawn one's fresh envoy
+        // (`set_difficulty` plans every feud again then, MZB-132).
         let peaceful = self.peaceful;
         if let Some(d) = feud.demand {
-            take(Some(d.deadline));
+            if !peaceful {
+                take(Some(d.deadline));
+            }
         } else if feud.party.is_none() {
             if feud.holds_envoy() {
                 // A withdrawn demand: no climb, a fresh envoy at the old deadline (MZB-22).
-                take(Some(feud.wait_until.max(cowed)));
+                if !peaceful {
+                    take(Some(feud.wait_until.max(cowed)));
+                }
             } else if let Some(up) = self
                 .culture(f)
                 .next_up(feud.step)
-                .filter(|u| !(peaceful && u.is_war()))
+                .filter(|u| !(peaceful && peace_holds(*u)))
             {
                 let dwell = feud.since + self.culture(f).dwell_ticks[feud.step.index()];
                 take(
@@ -1732,7 +1743,8 @@ impl Conflict {
             feud.holds_envoy(),
         );
         if let Some(d) = demand {
-            if at >= d.deadline {
+            // Not on Peaceful: no envoy came, and the deadline is moved when it ends (MZB-132).
+            if at >= d.deadline && !self.peaceful {
                 self.demand_due(w, f, a, at);
             }
         } else if party.is_none() {
@@ -1745,12 +1757,12 @@ impl Conflict {
                 .feud(f, a)
                 .and_then(|feud| self.repeat_after(f, a, feud))
                 .is_some_and(|t| at >= t && g >= self.theta(f, step) * (1.0 - 1e-9));
-            if again && !cowed && at >= wait && g >= self.down_theta(f, step) {
+            if again && !cowed && !self.peaceful && at >= wait && g >= self.down_theta(f, step) {
                 self.envoy_again(w, f, a, at);
             } else if let Some(up) = up.filter(|u| {
                 !again
                     && !cowed
-                    && !(self.peaceful && u.is_war())
+                    && !(self.peaceful && peace_holds(*u))
                     && at >= dwell
                     && at >= wait
                     && g >= self.theta(f, *u) * (1.0 - 1e-9)
@@ -2709,6 +2721,20 @@ impl Conflict {
         match self.parties[p].phase {
             Phase::Mustering if self.peaceful && self.parties[p].kind.is_war() => {
                 self.stand_down(w, p, at);
+            }
+            // An envoy waits out Peaceful where it is, nothing booked: `resume_envoys` books it
+            // again when the world is not (MZB-132).
+            Phase::Mustering | Phase::Waiting
+                if self.peaceful && self.parties[p].kind == PartyKind::Envoy =>
+            {
+                self.stats.peace_held += 1;
+                let f = self.parties[p].faction;
+                self.note(
+                    at,
+                    Some(f),
+                    "peaceful",
+                    "the envoy waits: the world is Peaceful".into(),
+                );
             }
             Phase::Mustering => {
                 self.parties[p].phase = Phase::Out;
@@ -4047,7 +4073,7 @@ impl Conflict {
         let x = &self.parties[p];
         if x.embodied
             || matches!(x.phase, Phase::Home | Phase::Mustering | Phase::Fighting)
-            || (self.peaceful && x.kind.is_war())
+            || (self.peaceful && (x.kind.is_war() || x.kind == PartyKind::Envoy))
         {
             return;
         }
@@ -4297,15 +4323,21 @@ impl Conflict {
     /// The world's difficulty (DIFFICULTY, MOWZIE.md §4.12). While it is Peaceful no war party
     /// leaves (`plan_feud` books no climb to a war rung, a muster's end stands down), and
     /// ambushes, raids and plunder do nothing; feuds keep their grievance and decay as usual.
+    /// No envoy leaves either, and none is in view (its stand-in cannot exist on Peaceful): the
+    /// climb to Envoy waits, an open demand's deadline is not booked, and an envoy that comes to
+    /// the end of its muster or its wait is held where it is (MZB-132). Scouts go on.
     ///
     /// On entering Peaceful every war party already out stops (MZB-15): one on its way or waiting
     /// at its target goes home, a watched fight ends, both with RECALL_SETTLED; one that has not
-    /// arrived steps its feud back a rung, as a muster that stands down does.
+    /// arrived steps its feud back a rung, as a muster that stands down does. An envoy in view
+    /// walks off (RECALL_PASSING) and stays where it is, abstract.
     ///
-    /// When it ends, a feud held below a war rung has its dwell clock paused over the Peaceful
-    /// span, then pushed back by a jitter of its own in [0, that rung's dwell) (MZB-16), and
-    /// every feud is planned again: the held climbs come one by one, never in one burst, and none
-    /// before its dwell. Applied at the engine's present; an unchanged value changes nothing.
+    /// When it ends, a feud held below a war rung or the Envoy has its dwell clock paused over
+    /// the Peaceful span, then pushed back by a jitter of its own in [0, that rung's dwell)
+    /// (MZB-16), every open demand's deadline moves by the span it lived through (a withdrawn
+    /// one's fresh envoy too), and every feud is planned again: the held climbs come one by one,
+    /// never in one burst, and none before its dwell. The envoys held go on to the moved
+    /// deadlines. Applied at the engine's present; an unchanged value changes nothing.
     pub fn set_difficulty(&mut self, w: &mut World, difficulty: u32) {
         let peaceful = difficulty == boundary::DIFFICULTY_PEACEFUL;
         if peaceful == self.peaceful {
@@ -4326,6 +4358,7 @@ impl Conflict {
         if peaceful {
             self.peaceful_since = at;
             self.stop_war_parties(w, at);
+            self.recall_envoys(at);
             return;
         }
         let since = self.peaceful_since;
@@ -4344,19 +4377,26 @@ impl Conflict {
                         .slot(a.to_bits())
                         .below(dwell)
                 };
-                // Held: a climb to a war rung (the culture's next rung up, MZB-50), or the repeat
-                // of the war rung it is on (MZB-51).
+                // Held: a climb to a war rung or the Envoy (the culture's next rung up, MZB-50),
+                // or the repeat of the war rung it is on (MZB-51).
                 let (step, repeats) = {
                     let x = self.feud(f, a).expect("listed");
                     (x.step, self.culture(f).def.repeat_days.is_some())
                 };
-                let war_next = self.culture(f).next_up(step).is_some_and(Step::is_war)
+                let held_next = self.culture(f).next_up(step).is_some_and(peace_holds)
                     || (repeats && matches!(step, Step::Raid | Step::Invasion));
                 let x = self.feud_mut(f, a).expect("listed");
-                let held = x.party.is_none() && x.demand.is_none() && war_next;
+                let held = x.party.is_none() && x.demand.is_none() && held_next;
                 if held {
                     let paused = x.since + at.since(x.since.max(since));
                     x.since = paused.max(Tick(at.0.saturating_sub(dwell))) + jitter;
+                }
+                // An open demand's deadline waits out the span its envoy could not come, and so
+                // does a withdrawn one's fresh envoy (MZB-132).
+                if let Some(d) = x.demand.as_mut() {
+                    d.deadline += at.since(d.made.max(since));
+                } else if x.holds_envoy() {
+                    x.wait_until += at.since(since);
                 }
                 self.plan_feud(f, a, at, false);
             }
@@ -4365,6 +4405,64 @@ impl Conflict {
             }
         }
         self.enforce_budget();
+        self.resume_envoys(w, at, at.since(since));
+    }
+
+    /// Entering Peaceful: embodied envoys walk off with RECALL_PASSING toward their next route
+    /// point, so that Java never holds an envoy for a deadline the engine has put off (MZB-132).
+    /// In handle order.
+    fn recall_envoys(&mut self, at: Tick) {
+        let out: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.kind == PartyKind::Envoy && x.embodied)
+            .map(|(h, _)| h)
+            .collect();
+        for p in out {
+            let x = &self.parties[p];
+            let (f, epoch) = (x.faction, x.epoch);
+            let next = x.route[(x.seg as usize + 1).min(x.route.len() - 1)];
+            self.recall(p, epoch, boundary::RECALL_PASSING, next);
+            self.note(
+                at,
+                Some(f),
+                "peaceful",
+                "the envoy walks off: the world is Peaceful".into(),
+            );
+        }
+    }
+
+    /// Leaving Peaceful after `span` ticks: the envoys held where they were go on. A muster's end
+    /// is booked again; a waiting envoy waits out its demand's deadline, moved by the span, and
+    /// its patience is moved by it too (MZB-132). In handle order, after every feud's demand has
+    /// its new deadline.
+    fn resume_envoys(&mut self, w: &mut World, at: Tick, span: u64) {
+        let held: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| {
+                x.kind == PartyKind::Envoy && matches!(x.phase, Phase::Mustering | Phase::Waiting)
+            })
+            .map(|(h, _)| h)
+            .collect();
+        for p in held {
+            if self.parties[p].phase == Phase::Mustering {
+                let until = self.parties[p].until;
+                let plan = self.bump(p);
+                self.schedule(until.max(at), Ev::Party { party: p, plan });
+                continue;
+            }
+            let (f, feud, until) = {
+                let x = &self.parties[p];
+                (x.faction, x.feud, x.until)
+            };
+            let deadline = feud
+                .and_then(|a| self.feud(f, a))
+                .and_then(|x| x.demand)
+                .map_or(until + span, |d| d.deadline);
+            self.parties[p].bored_at += span;
+            self.wait(w, p, deadline.max(at + 1), at);
+        }
     }
 
     /// Entering Peaceful: every war party out stops (MZB-15). In handle order.

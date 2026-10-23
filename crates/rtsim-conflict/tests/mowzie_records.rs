@@ -159,9 +159,9 @@ fn keep_killing(r: &mut Run, from: f64, to: f64) {
     }
 }
 
-/// MOWZIE.md §4.12: on Peaceful no war party leaves. A feud kept far past the raid rung for
-/// twenty days climbs to scouts and no further, its grievance kept; once the world is not
-/// Peaceful the feud climbs on (every feud planned again), and a raid sets out.
+/// MOWZIE.md §4.12: on Peaceful no war party and no envoy leaves (MZB-132). A feud kept far past
+/// the raid rung for twenty days holds at its notice, its grievance kept; once the world is not
+/// Peaceful the feud climbs on (every feud planned again): an envoy goes, and a raid sets out.
 #[test]
 fn on_peaceful_no_war_party_leaves_and_the_climb_resumes_after() {
     let mut r = Run::new(31, quiet_goblins());
@@ -169,12 +169,10 @@ fn on_peaceful_no_war_party_leaves_and_the_climb_resumes_after() {
     assert!(r.c.peaceful);
     keep_killing(&mut r, 0.0, 20.0);
     assert_eq!(r.war_parties(), 0, "no war party on Peaceful");
-    assert!(
-        r.step() <= Step::Scouts,
-        "held below the raid: {:?}",
-        r.step()
-    );
-    assert!(r.c.stats.demands >= 1, "envoys still go");
+    assert_eq!(r.step(), Step::Notice, "held at its notice");
+    assert_eq!(r.c.stats.demands, 0, "no envoy on Peaceful");
+    assert_eq!(r.c.stats.parties[PartyKind::Envoy.index()], 0);
+    assert!(r.c.feud(r.f, r.p).unwrap().demand.is_none());
     let g = r.c.feud_view(synth::CAMP, r.p).unwrap().grievance;
     assert!(
         g > 70.0,
@@ -184,11 +182,15 @@ fn on_peaceful_no_war_party_leaves_and_the_climb_resumes_after() {
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     assert!(back.peaceful);
     assert_eq!(back.state_hash(), r.c.state_hash());
-    // Normal again: the held feud climbs.
+    // Normal again: the held feud climbs, the envoy first.
     let at = r.c.now();
     r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), at);
     assert!(!r.c.peaceful);
-    keep_killing(&mut r, 20.0, 26.0);
+    keep_killing(&mut r, 20.0, 34.0);
+    assert!(
+        r.c.stats.demands >= 1,
+        "the envoy goes once it is not Peaceful"
+    );
     assert!(
         r.war_parties() >= 1,
         "a raid leaves once it is not Peaceful"
@@ -549,14 +551,13 @@ fn a_notice_to_a_player_known_only_to_the_world_is_cleared_when_shown() {
     assert_eq!(r.c.stats.notices_shown, 1);
 }
 
-/// MZB-16 (review): the end of Peaceful sets off no burst. Several players' feuds are held below
-/// the raid rung across eight days of Peaceful; once the world is Easy, each raids after its own
-/// dwell, paused over the Peaceful span, and a jitter of its own: no two on the same tick, and
-/// none before its dwell.
-#[test]
-fn feuds_held_over_peaceful_raid_one_by_one_after() {
-    let mut r = Run::new(39, quiet_goblins());
-    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(1));
+/// MZB-16 (review), MZB-132: the end of Peaceful sets off no burst. Several players' feuds are
+/// held across eight days of Peaceful, below the Envoy (at the notice: no envoy leaves on
+/// Peaceful) or below the raid (at the scouts, reached before it began); once the world is Easy,
+/// each climbs after its own dwell, paused over the Peaceful span, and a jitter of its own: no
+/// two on the same tick, and none before its dwell.
+fn held_feuds_climb_one_by_one(seed: u64, held: Step, next: Step) {
+    let mut r = Run::new(seed, quiet_goblins());
     let players: Vec<ActorId> = (0..5u64)
         .map(|i| r.c.player(&mut r.w, (0x100 + i, 0x200 + i)))
         .collect();
@@ -573,6 +574,19 @@ fn feuds_held_over_peaceful_raid_one_by_one_after() {
             r.c.signal(&mut r.w, sig, at);
         }
     };
+    if held == Step::Scouts {
+        // Already at the scouts when Peaceful begins, none of them yet planned past it.
+        killings(&mut r, Tick(5));
+        for &p in &players {
+            let x = r.c.feud_mut(r.f, p).unwrap();
+            x.step = Step::Scouts;
+            x.since = Tick(10);
+        }
+        r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(10));
+    } else {
+        r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(1));
+    }
+    assert!(r.c.peaceful);
     let mut d = 0.0;
     while d < 8.0 {
         let at = r.c.now().max(day(d));
@@ -581,50 +595,61 @@ fn feuds_held_over_peaceful_raid_one_by_one_after() {
         r.run(day(d));
     }
     assert_eq!(r.war_parties(), 0, "none on Peaceful");
-    let scouts = r.c.cultures.get(0).dwell_ticks[Step::Scouts.index()];
-    let mut held = Vec::new();
+    assert_eq!(r.c.stats.demands, 0, "no envoy on Peaceful");
+    let dwell = r.c.cultures.get(0).dwell_ticks[held.index()];
     for &p in &players {
         let x = r.c.feud(r.f, p).unwrap();
-        assert_eq!(x.step, Step::Scouts, "held below the raid");
+        assert_eq!(x.step, held, "held below {next:?}");
         assert!(x.party.is_none() && x.demand.is_none());
-        held.push((p, x.since));
     }
     let easy = r.c.now();
     r.ingest(difficulty(boundary::DIFFICULTY_EASY), easy);
     assert!(!r.c.peaceful);
-    // To each raid, event by event, so each tick is exact.
-    let mut raided: Vec<(ActorId, Tick)> = Vec::new();
-    let end = easy + 3 * scouts + TICKS_PER_DAY;
-    while raided.len() < players.len() && r.c.now() < end {
-        let next = r.c.next_due().unwrap_or(end).min(end).max(r.c.now() + 1);
-        r.c.run_until(&mut r.w, &mut NoInfrastructure, next);
-        r.flush(next);
+    // To each climb, event by event, so each tick is exact.
+    let mut climbed: Vec<(ActorId, Tick)> = Vec::new();
+    let end = easy + 3 * dwell + TICKS_PER_DAY;
+    while climbed.len() < players.len() && r.c.now() < end {
+        let next_at = r.c.next_due().unwrap_or(end).min(end).max(r.c.now() + 1);
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, next_at);
+        r.flush(next_at);
         for &p in &players {
             let x = r.c.feud(r.f, p).unwrap();
-            if x.step == Step::Raid && !raided.iter().any(|e| e.0 == p) {
-                raided.push((p, r.c.now()));
+            if x.step == next && !climbed.iter().any(|e| e.0 == p) {
+                climbed.push((p, r.c.now()));
             }
         }
     }
     assert_eq!(
-        raided.len(),
+        climbed.len(),
         players.len(),
-        "every held feud raids: {raided:?}"
+        "every held feud climbs: {climbed:?}"
     );
-    let mut ticks: Vec<Tick> = raided.iter().map(|e| e.1).collect();
+    let mut ticks: Vec<Tick> = climbed.iter().map(|e| e.1).collect();
     ticks.sort();
     ticks.dedup();
-    assert_eq!(ticks.len(), players.len(), "no two on one tick: {raided:?}");
-    for (p, at) in &raided {
-        let since = held.iter().find(|h| h.0 == *p).unwrap().1;
-        // Reached during Peaceful, so the whole dwell comes after it.
-        assert!(since > Tick(1));
+    assert_eq!(
+        ticks.len(),
+        players.len(),
+        "no two on one tick: {climbed:?}"
+    );
+    for (p, at) in &climbed {
+        // Reached before or during Peaceful, so the whole dwell comes after it.
         assert!(
-            *at >= easy + scouts,
-            "{p:?} raided at {at:?}, before its dwell"
+            *at >= easy + dwell,
+            "{p:?} climbed at {at:?}, before its dwell"
         );
-        assert!(*at < easy + 2 * scouts + TICKS_PER_DAY, "{at:?}");
+        assert!(*at < easy + 2 * dwell + TICKS_PER_DAY, "{at:?}");
     }
+}
+
+#[test]
+fn feuds_held_at_the_notice_over_peaceful_send_their_envoys_one_by_one_after() {
+    held_feuds_climb_one_by_one(39, Step::Notice, Step::Envoy);
+}
+
+#[test]
+fn feuds_held_at_the_scouts_over_peaceful_raid_one_by_one_after() {
+    held_feuds_climb_one_by_one(39, Step::Scouts, Step::Raid);
 }
 
 /// MZB-15 (review): Peaceful stops what is already out. A raid on its way goes home at once
@@ -678,6 +703,145 @@ fn entering_peaceful_turns_back_a_raid_already_out() {
         "no war body spawns on Peaceful"
     );
     assert_eq!(r.war_parties(), 1, "only the one ordered");
+}
+
+/// The feud's envoy party, if one is out, with its phase.
+fn envoy_of(r: &Run) -> Option<(Handle<Party>, Phase)> {
+    r.c.parties
+        .iter()
+        .find(|(_, x)| x.kind == PartyKind::Envoy)
+        .map(|(h, x)| (h, x.phase))
+}
+
+/// MZB-132: Peaceful begins with an envoy out (`Out` on its road) or waiting for its answer at
+/// the target, none of it in view. It stays where it is, abstract: no deadline comes due however
+/// long Peaceful lasts, nothing expires, no second envoy goes, and a save in the middle keeps
+/// that. When Peaceful ends the demand's deadline has moved by the span, and it comes due then
+/// and not before.
+fn envoy_held_over_peaceful(seed: u64, phase: Phase) {
+    let mut r = Run::new(seed, quiet_goblins());
+    r.kill(7.0, Tick(10));
+    let mut t = r.c.now();
+    let band = loop {
+        t += 100;
+        assert!(t < day(4.0), "no envoy reached {phase:?}: {:?}", r.step());
+        r.run(t);
+        if let Some((h, ph)) = envoy_of(&r)
+            && ph == phase
+        {
+            break h;
+        }
+    };
+    let d0 =
+        r.c.feud(r.f, r.p)
+            .unwrap()
+            .demand
+            .expect("a demand")
+            .deadline;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), r.c.now() + 1);
+    let since = r.c.peaceful_since;
+    // The killing goes on (a signal that stopped would be cut, not expired, at the deadline).
+    r.kill(1.0, r.c.now() + 5);
+    // Two days past the deadline it never reached.
+    r.run(d0 + 2 * TICKS_PER_DAY);
+    assert!(r.c.parties.contains(band), "the envoy waits where it is");
+    assert_eq!(r.c.parties[band].phase, Phase::Waiting, "at its target");
+    assert!(!r.c.parties[band].embodied);
+    assert!(r.c.stats.peace_held >= 1, "the hold was counted");
+    assert_eq!(r.c.stats.expired, 0, "no demand came due on Peaceful");
+    assert!(settled(&r).is_empty(), "nothing settled: {:?}", settled(&r));
+    assert_eq!(r.c.stats.demands, 1, "no second envoy");
+    assert_eq!(r.step(), Step::Envoy);
+    let x = r.c.feud(r.f, r.p).unwrap();
+    assert_eq!(x.demand.unwrap().deadline, d0, "unmoved while Peaceful");
+    // A save in the middle of it keeps the hold.
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(back.state_hash(), r.c.state_hash());
+    // Normal: the deadline moves by the span; the envoy waits it out.
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), r.c.now() + 10);
+    let span = r.c.now().since(since);
+    assert!(span > 2 * TICKS_PER_DAY, "{span}");
+    let d1 = d0 + span;
+    assert_eq!(r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline, d1);
+    r.run(Tick(d1.0 - 1));
+    assert_eq!(r.c.stats.expired, 0, "not before the moved deadline");
+    assert!(settled(&r).is_empty());
+    r.run(d1 + TICKS_PER_DAY);
+    assert_eq!(r.c.stats.expired, 1, "at the moved deadline");
+    assert_eq!(settled(&r), vec![boundary::SETTLED_EXPIRED]);
+}
+
+#[test]
+fn an_envoy_on_its_road_when_peaceful_begins_waits_out_the_span() {
+    envoy_held_over_peaceful(42, Phase::Out);
+}
+
+#[test]
+fn an_envoy_waiting_at_its_target_when_peaceful_begins_waits_out_the_span() {
+    envoy_held_over_peaceful(43, Phase::Waiting);
+}
+
+/// MZB-132: an envoy whose muster ends on Peaceful is held in it (nothing booked, the hold
+/// counted); the end of Peaceful books its muster again and it goes out.
+#[test]
+fn an_envoy_mustering_when_peaceful_begins_is_held_and_goes_after() {
+    let mut r = Run::new(44, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Envoy,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    assert_eq!(r.c.parties[band].phase, Phase::Mustering);
+    r.c.set_difficulty(&mut r.w, boundary::DIFFICULTY_PEACEFUL);
+    r.run(day(2.0));
+    assert_eq!(
+        r.c.parties[band].phase,
+        Phase::Mustering,
+        "held in its muster"
+    );
+    assert_eq!(r.c.stats.peace_held, 1);
+    assert!(!r.c.parties[band].embodied);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), day(2.0) + 10);
+    r.run(day(3.0));
+    assert_ne!(
+        r.c.parties.get(band).map(|x| x.phase),
+        Some(Phase::Mustering),
+        "it went out once the world was not Peaceful"
+    );
+}
+
+/// MZB-132: a withdrawn demand's fresh envoy (MZB-22) waits out Peaceful too: its old deadline
+/// moves by the span, so no envoy goes on Peaceful and none goes in a burst at its end.
+#[test]
+fn a_withdrawn_demands_fresh_envoy_waits_out_peaceful() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let deadline = r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline;
+    let at = r.c.now() + 20;
+    r.kill(20.0, at);
+    wipe(&mut r, &e, boundary::BY_MOB);
+    r.watch = false;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), r.c.now() + 1);
+    let since = r.c.peaceful_since;
+    r.run(deadline + 2 * TICKS_PER_DAY);
+    assert_eq!(r.c.stats.demands, 1, "no fresh envoy on Peaceful");
+    assert_eq!(r.step(), Step::Envoy);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), r.c.now() + 10);
+    let span = r.c.now().since(since);
+    r.run(Tick((deadline + span).0 - 1));
+    assert_eq!(
+        r.c.stats.demands, 1,
+        "not before the old deadline plus the span"
+    );
+    r.run(deadline + span + TICKS_PER_DAY);
+    assert_eq!(r.c.stats.demands, 2, "a fresh envoy at the moved deadline");
+    assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 0, "no climb");
 }
 
 /// MZB-17 (review): DIFFICULTY is journaled; the engine applies it at its game time and an

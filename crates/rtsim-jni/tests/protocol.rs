@@ -3830,9 +3830,10 @@ mod conflict {
 
     /// MOWZIE.md §4.12 (ledger 14): DIFFICULTY is journaled (MZB-17), applied at its game time
     /// as `Conflict::ingest` applies it; an unchanged value changes nothing. On Peaceful no war
-    /// party leaves however far the grievance climbs, though the notice, the envoy and the scouts
-    /// still come; back on Normal the climb resumes and a raid follows. A DIFFICULTY sent while
-    /// the module is off is ignored, as every journaled record is (U10).
+    /// party and no envoy leaves however far the grievance climbs (MZB-132): the notice still
+    /// comes and the feud holds at it; back on Normal the climb resumes: the envoy, the refused
+    /// demand, the scouts and a raid. A DIFFICULTY sent while the module is off is ignored, as
+    /// every journaled record is (U10).
     #[test]
     fn on_peaceful_no_war_party_leaves_and_on_normal_the_raid_follows() {
         let (_dir, e, mut j) = camp("conflict-peaceful");
@@ -3858,9 +3859,6 @@ mod conflict {
         j.idle();
         let f = feud(&e, PLAYER).expect("a feud with the killer");
         assert!(f.grievance > 400.0, "far past the raid's rung: {f:?}");
-        advance_until(&mut j, 1_000, 3 * DAY, "the demand refused", |j| {
-            cmds(j).any(|c| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_REFUSED))
-        });
         let start = j.game_time;
         advance_until(&mut j, 1_000, 9 * DAY, "eight days of Peaceful", |j| {
             j.game_time >= start + 8 * DAY
@@ -3872,23 +3870,35 @@ mod conflict {
             .sum();
         assert_eq!(war, 0, "no war party on Peaceful: {st:?}");
         assert_eq!(war_bands(&j), 0, "no war band in view");
-        assert!(
-            st.parties[PartyKind::Envoy.index()] >= 1,
-            "the envoy still came: {st:?}"
+        assert_eq!(
+            st.parties[PartyKind::Envoy.index()],
+            0,
+            "no envoy on Peaceful: {st:?}"
         );
+        assert!(!cmds(&j).any(|c| matches!(c, C::Envoy(_))), "none in view");
         let f = feud(&e, PLAYER).unwrap();
-        assert!(
-            !f.step.is_war(),
-            "the feud holds below the war rungs: {f:?}"
-        );
+        assert_eq!(f.step, Step::Notice, "the feud holds at its notice: {f:?}");
+        assert!(f.demand.is_none(), "and asks nothing: {f:?}");
         assert_eq!(link.ignored, 0, "{link:?}");
 
-        // Normal: the climb resumes and a raid comes to the base.
+        // Normal: the climb resumes: the envoy comes, the demand is refused, scouts go, and a
+        // raid comes to the base.
         difficulty(&mut j, cb::DIFFICULTY_NORMAL);
         assert!(!e.with_conflict(|c, _| c.peaceful));
-        advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
+        advance_until(&mut j, 1_000, 4 * DAY, "the demand refused", |j| {
+            cmds(j).any(|c| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_REFUSED))
+        });
+        assert!(
+            e.conflict_stats().0.parties[PartyKind::Envoy.index()] >= 1,
+            "the envoy came"
+        );
+        advance_until(&mut j, 1_000, 12 * DAY, "a war band at the base", |j| {
             war_bands(j) > 0
         });
+        assert!(
+            e.conflict_stats().0.parties[PartyKind::Scouts.index()] >= 1,
+            "the scouts went first"
+        );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
 
@@ -3914,6 +3924,112 @@ mod conflict {
         b[0..2].copy_from_slice(&0x0093u16.to_le_bytes());
         b[2..4].copy_from_slice(&16u16.to_le_bytes());
         assert!(cb::decode_obs(&b).is_err(), "0x0093 is retired");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-132 (item 13): Peaceful begins with an envoy in view. It walks off (RECALL_PASSING) and
+    /// is held where it is: no demand comes due past its deadline, nothing settles, no envoy is
+    /// sent again, however long Peaceful lasts. Back on Normal the deadline d1 is d0 plus the
+    /// span, the envoy is in view again at once carrying d1, and the demand comes due not before
+    /// d1.
+    #[test]
+    fn an_envoy_in_view_when_peaceful_begins_walks_off_and_its_deadline_moves_by_the_span() {
+        let (_dir, e, mut j) = camp("conflict-peaceful-envoy");
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        let demand = |e: &Engine| feud(e, PLAYER).and_then(|f| f.demand).map(|d| d.3 as i64);
+        assert_eq!(
+            demand(&e),
+            Some(d0),
+            "the command carries the demand's deadline"
+        );
+        let held = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.parties
+                    .iter()
+                    .find(|(_, x)| x.kind == PartyKind::Envoy)
+                    .map(|(_, x)| (x.phase, x.embodied))
+            })
+        };
+        assert_eq!(held(&e), Some((Phase::Out, true)), "in view, on its road");
+        // The killing goes on: a demand cut at its deadline would not be an expired one.
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+
+        let from = j.conflict.len();
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        let since = e.with_conflict(|c, _| c.peaceful_since);
+        let walks_off: Vec<u32> = j.conflict[from..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                C::Recall(r) if r.agent == envoy.agent => Some(r.reason),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(walks_off, vec![cb::RECALL_PASSING], "the envoy walks off");
+        j.idle();
+        assert_eq!(held(&e), Some((Phase::Out, false)), "abstract, on its road");
+
+        // Two days past the deadline it never reached, the player in view all along.
+        let limit = d0 - j.game_time + 3 * DAY;
+        advance_until(&mut j, 1_000, limit, "past the deadline", |j| {
+            j.game_time >= d0 + 2 * DAY
+        });
+        assert!(
+            !j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Envoy(_) | C::Settled(_))),
+            "no envoy sent again and nothing settled on Peaceful"
+        );
+        assert_eq!(
+            held(&e),
+            Some((Phase::Waiting, false)),
+            "arrived and held at its target"
+        );
+        assert_eq!(demand(&e), Some(d0), "the deadline is unmoved on Peaceful");
+        assert_eq!(feud(&e, PLAYER).unwrap().step, Step::Envoy);
+        assert_eq!(e.conflict_stats().0.demands, 1);
+
+        // Normal: d1 = d0 + the span.
+        let from = j.conflict.len();
+        let at = rtsim_kernel::clock::Tick(j.game_time as u64);
+        difficulty(&mut j, cb::DIFFICULTY_NORMAL);
+        let d1 = d0 + at.since(since) as i64;
+        assert!(
+            d1 > j.game_time + DAY,
+            "the moved deadline is days off: {d1}"
+        );
+        assert_eq!(demand(&e), Some(d1), "moved by the span");
+        // The envoy is in view again, carrying d1, before the old deadline's second passing.
+        advance_until(&mut j, 100, 4_000, "the envoy in view again", |j| {
+            j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Envoy(_)))
+        });
+        let again = j.conflict[from..]
+            .iter()
+            .find_map(|(_, c)| match c {
+                C::Envoy(x) => Some(x.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(again.deadline, d1, "the next envoy command carries d1");
+        assert_eq!(again.agent, envoy.agent, "the same envoy");
+        assert!(again.epoch > envoy.epoch, "a new embodiment");
+        // The demand comes due not before d1.
+        let limit = d1 - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the demand due", |j| {
+            let due = j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_EXPIRED));
+            assert!(
+                !due || j.game_time >= d1,
+                "expired before d1 ({d1}): {}",
+                j.game_time
+            );
+            due
+        });
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
