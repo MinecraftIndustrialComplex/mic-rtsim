@@ -261,8 +261,9 @@ public final class RibbitTalkGameTests {
                     InteractionResult[] r = click(ben, ribbit[0], true);
                     check("the main hand swings once: " + r[0], r[0] == InteractionResult.SUCCESS);
                     check("the off hand is consumed silently: " + r[1], r[1] == InteractionResult.CONSUME);
+                    // The stub never answers, so on it no ask opens and the talker speaks at once (TK49).
                     check("a resident asks its village what it knows: " + (TalkAsks.INSTANCE.asked - asks[0]) + " ask(s)",
-                            TalkAsks.INSTANCE.asked - asks[0] == 1);
+                            live == null || TalkAsks.INSTANCE.asked - asks[0] == 1);
                 })
                 .thenWaitUntil(() -> check("the gardener's line arrived", ben.heard.size() > heard[0]))
                 .thenExecute(() -> {
@@ -335,11 +336,16 @@ public final class RibbitTalkGameTests {
                             snapshot == null || !snapshot.friend(ben.getUUID()));
                 })
                 .thenExecute(() -> {
-                    // A new day, emulated by rewriting the records (other suites share the game time): Ben's, and the
-                    // gardener's own, which the core wrote.
+                    // The day rolls over, emulated by moving both records back one day (other suites share the game time,
+                    // so game time itself is not advanced): Ben's village entry, and the gardener's own, which the core
+                    // wrote. Both are yesterday's, so only the day comparison lets the next talk through.
                     long d = today(level);
+                    check("Ben's entry was today's before it moves", ben.getData(RibbitTalker.DAYS).creditedOn(RibbitTalker.key(v.id), d)
+                            || ben.getData(RibbitTalker.DAYS).creditedOn(RibbitTalker.key(v.id), d - 1));
                     ben.setData(RibbitTalker.DAYS, TalkDays.EMPTY.with(RibbitTalker.key(v.id), d - 1));
-                    ribbit[0].setData(RtsimAttachments.TALK_DAYS, TalkDays.EMPTY);
+                    ribbit[0].setData(RtsimAttachments.TALK_DAYS, TalkDays.EMPTY.with(ben.getUUID(), d - 1));
+                    check("yesterday's entry does not block a talk today",
+                            Talkers.find(ribbit[0], ben).credits(ribbit[0], ben));
                 })
                 .thenIdle(WINDOW)
                 .thenExecute(() -> {
@@ -354,8 +360,10 @@ public final class RibbitTalkGameTests {
                     check("exactly two TALKED over two days: " + t.size(), t.size() == 2);
                     long a = t.get(0).view().getLong(TalkRecords.Talked.OP_ID), b = t.get(1).view().getLong(TalkRecords.Talked.OP_ID);
                     check("each with its own op id", a != b);
-                    check("the day is Ben's again: " + ben.getData(RibbitTalker.DAYS),
+                    check("the day is Ben's again, today's: " + ben.getData(RibbitTalker.DAYS),
                             ben.getData(RibbitTalker.DAYS).lastDay(RibbitTalker.key(v.id)) >= day[0]);
+                    check("and the gardener's own record moved on from yesterday: " + ribbit[0].getData(RtsimAttachments.TALK_DAYS),
+                            ribbit[0].getData(RtsimAttachments.TALK_DAYS).lastDay(ben.getUUID()) >= day[0]);
                     record("ribbit talk", "TALKED over two days", t.size());
                 })
                 .thenWaitUntil(() -> check("the next day's credit reached the village",
@@ -391,6 +399,8 @@ public final class RibbitTalkGameTests {
                     m[0] = scene.entity(RibbitGameTests.spawn(helper, RtsimTests.centre(helper), RibbitProfessionModule.MERCHANT));
                     m[0].setNoAi(true);
                     check("the merchant has trades", !m[0].getOffers().isEmpty());
+                    // The flag that lets the client cancel the click too: with it no screen opens and no second packet comes.
+                    check("ribbits always talk", Talkers.alwaysTalks(Ribbits.type()));
                 })
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
@@ -437,6 +447,10 @@ public final class RibbitTalkGameTests {
         Scene scene = new Scene();
         scene.arm(helper);
         ScriptedEngine engine = RtsimTests.engine();
+        // The caravan stands inside an adopted ribbit village: a resident there would credit it, so that a puppet
+        // earns nothing is the talker's rule and not an empty arena.
+        Village v = RtsimTests.adoptArena(helper, MicRtsimRibbits.CULTURE);
+        scene.villages.add(v);
         long agent = RtsimTests.newAgent();
         Vec3 c = RtsimTests.centre(helper);
         engine.spawnGroup(agent, 1, RibbitMerchantAdapter.NAME, RtsimTests.dimension(helper), c.x, c.y, c.z, List.of(
@@ -458,11 +472,12 @@ public final class RibbitTalkGameTests {
                     m[0] = (RibbitEntity) RtsimTests.member(g, 0);
                     check("a ribbit merchant", "ribbits:merchant".equals(Ribbits.professionName(m[0])));
                     check("it is a puppet of the caravan", RtsimApi.group(m[0]) == g);
+                    check("and it stands in an adopted ribbit village (a resident here would credit it)", RtsimApi.villageOf(m[0]) == v);
                     check("and the plugin's talker answers for it", Talkers.find(m[0], ben) instanceof RibbitTalker);
                     Talker talker = Talkers.find(m[0], ben);
                     TalkHolder holder = talker.holder(m[0]);
                     check("it speaks from its caravan's board: " + holder, holder != null && holder.kind() == TalkHolder.CARAVAN && holder.id() == agent);
-                    check("a puppet has no home here: " + talker.home(m[0]), talker.home(m[0]) == null);
+                    check("a puppet has no home here, though it stands in a village: " + talker.home(m[0]), talker.home(m[0]) == null);
                     check("and earns no credit", !talker.credits(m[0], ben));
                 })
                 .thenIdle(SETTLE)
@@ -472,7 +487,8 @@ public final class RibbitTalkGameTests {
                     InteractionResult[] r = click(ben, m[0], true);
                     check("the main hand swings: " + r[0], r[0] == InteractionResult.SUCCESS);
                     check("a crouching click opens nothing", ben.containerMenu == ben.inventoryMenu);
-                    check("the caravan was asked: " + (TalkAsks.INSTANCE.asked - asks[0]) + " ask(s)", TalkAsks.INSTANCE.asked - asks[0] == 1);
+                    check("the caravan was asked: " + (TalkAsks.INSTANCE.asked - asks[0]) + " ask(s)",
+                            !(engine instanceof NativeEngine) || TalkAsks.INSTANCE.asked - asks[0] == 1);
                 })
                 .thenWaitUntil(() -> check("the puppet's line arrived", ben.heard.size() > heard[0]))
                 .thenIdle(QUIET)
@@ -614,6 +630,88 @@ public final class RibbitTalkGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A ribbit standing in a village of another culture has no village: the lookup falls back to position, but a
+     * human village's sentiment is not a ribbit's to give or to speak of (TK70). It talks as the plain voice of
+     * its profession, from no board, and credits nothing.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 200, batch = BATCH)
+    public static void ribbit_in_another_cultures_village_has_no_village(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Scene scene = new Scene();
+        scene.arm(helper);
+        Village other = RtsimTests.adoptArena(helper, "human");
+        scene.villages.add(other);
+        FakePlayers.Hearer ben = scene.player(level, helper.absoluteVec(new Vec3(5.5, 2, 8.5)), "ribbit_other_culture");
+        RibbitEntity[] r = new RibbitEntity[1];
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    r[0] = scene.entity(RibbitGameTests.spawn(helper, RtsimTests.centre(helper), RibbitProfessionModule.GARDENER));
+                    r[0].setNoAi(true);
+                })
+                .thenIdle(SETTLE)
+                .thenExecute(() -> {
+                    check("the engine's lookup finds the human village by position: " + RtsimApi.villageOf(r[0]),
+                            RtsimApi.villageOf(r[0]) == other);
+                    Talker t = Talkers.find(r[0], ben);
+                    check("the plugin's talker answers", t instanceof RibbitTalker);
+                    check("it is no village's board: " + t.holder(r[0]), t.holder(r[0]) == null);
+                    check("and no village's home: " + t.home(r[0]), t.home(r[0]) == null);
+                    check("it credits nothing", !t.credits(r[0], ben));
+                    check("it still speaks as a gardener: " + t.voice(r[0], ben), t.voice(r[0], ben).equals("ribbit.gardener"));
+                    TalkCandidates out = new TalkCandidates();
+                    t.candidates(context(level, r[0], ben, t, null), out);
+                    check("and has no village mood to share: " + topics(out), topics(out).isEmpty());
+                    check("asking wrote nothing", ben.getData(RibbitTalker.DAYS).isEmpty());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The player's record of credited villages (TK69): a village already in it is replaced, and when it is over
+     * its cap only entries from before today are dropped, the oldest first, so today's talks are never lost to a
+     * tie the core's rule would break by dropping one of them.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 40, batch = BATCH)
+    public static void ribbit_credit_record_drops_only_older_days(GameTestHelper helper) {
+        helper.startSequence()
+                .thenExecute(() -> {
+                    long today = 100;
+                    TalkDays days = TalkDays.EMPTY;
+                    for (long v = 1; v <= RibbitTalker.KEEP + 4; v++)
+                        days = RibbitTalker.credited(days, RibbitTalker.key(v), today);
+                    check("every village talked to today is kept, past the cap: " + days.entries().size(),
+                            days.entries().size() == RibbitTalker.KEEP + 4);
+                    for (long v = 1; v <= RibbitTalker.KEEP + 4; v++)
+                        check("village " + v + " is kept for today", days.creditedOn(RibbitTalker.key(v), today));
+
+                    // Older entries go first, oldest first, and only down to the cap.
+                    days = TalkDays.EMPTY;
+                    for (long v = 1; v <= RibbitTalker.KEEP; v++)
+                        days = RibbitTalker.credited(days, RibbitTalker.key(v), 90 + (v % 5));
+                    check("full at the cap: " + days.entries().size(), days.entries().size() == RibbitTalker.KEEP);
+                    days = RibbitTalker.credited(days, RibbitTalker.key(1000), today);
+                    check("one more keeps the cap: " + days.entries().size(), days.entries().size() == RibbitTalker.KEEP);
+                    check("and it is today's", days.creditedOn(RibbitTalker.key(1000), today));
+                    long oldest = Long.MAX_VALUE;
+                    for (TalkDays.Entry e : days.entries())
+                        oldest = Math.min(oldest, e.day());
+                    check("the dropped one was an oldest (day 90 is gone, none is older): " + oldest, oldest >= 90);
+                    int day90 = 0;
+                    for (TalkDays.Entry e : days.entries())
+                        if (e.day() == 90)
+                            day90++;
+                    check("one of the day-90 entries went: " + day90, day90 == 2); // v % 5 == 0 for v = 5, 10, 15 (three of 16)
+
+                    // The village already there is replaced, not added.
+                    TalkDays again = RibbitTalker.credited(days, RibbitTalker.key(1000), today + 1);
+                    check("a village already there is replaced: " + again.entries().size(), again.entries().size() == days.entries().size());
+                    check("with the newer day", again.lastDay(RibbitTalker.key(1000)) == today + 1);
+                })
+                .thenSucceed();
+    }
+
     // ---- lines ------------------------------------------------------------------------------------
 
     /** The dedicated server has the plugin's en_us: its lines resolve through the core's fallback chain and count. */
@@ -634,8 +732,9 @@ public final class RibbitTalkGameTests {
                             gardener.size() == 2 && gardener.get(0).prefix().equals("mic_rtsim.talk.ribbit.gardener.fluff")
                                     && gardener.get(1).prefix().equals("mic_rtsim.talk.ribbit.fluff"));
                     java.util.List<Lines.Found> musician = Lines.levels("ribbit.musician", "fluff");
-                    check("a musician draws from the ribbits' fluff: " + musician,
-                            musician.size() == 1 && musician.get(0).prefix().equals("mic_rtsim.talk.ribbit.fluff"));
+                    check("a musician draws from its own fluff and the ribbits': " + musician,
+                            musician.size() == 2 && musician.get(0).prefix().equals("mic_rtsim.talk.ribbit.musician.fluff")
+                                    && musician.get(1).prefix().equals("mic_rtsim.talk.ribbit.fluff"));
                     java.util.List<Lines.Found> liked = Lines.levels("ribbit.sorcerer", "mood.liked");
                     check("a sorcerer has her own fond lines and the ribbits': " + liked, liked.size() == 2);
                     check("a ribbit has disliking lines: " + Lines.find("ribbit.merchant", "mood.disliked"),
@@ -645,8 +744,17 @@ public final class RibbitTalkGameTests {
                             asleep != null && asleep.prefix().equals("mic_rtsim.talk.ribbit.state.asleep"));
                     check("a busy one too", Lines.find("ribbit.nitwit", "state.busy") != null);
                     check("and a hurt one", Lines.find("ribbit.nitwit", "state.hurt") != null);
-                    check("a village's own news in a ribbit's words: " + Lines.find("ribbit.gardener", "news.robbery.us"),
-                            Lines.find("ribbit.gardener", "news.robbery.us") != null);
+                    for (String topic : new String[]{"news.assault.us", "news.robbery.us", "news.trade.us", "news.trade.you", "news.rescue.us", "news.rescue.you"})
+                        check("a village's news in a ribbit's words: " + topic + " " + Lines.find("ribbit.gardener", topic),
+                                Lines.find("ribbit.gardener", topic) != null
+                                        && Lines.find("ribbit.gardener", topic).prefix().equals("mic_rtsim.talk.ribbit." + topic));
+                    // The .us lines say what the doer (%1) did to the village; the .you lines what the player did to a whom (%2).
+                    check("trade.us names the trader: " + Talk.english("mic_rtsim.talk.ribbit.news.trade.us.0"),
+                            Talk.english("mic_rtsim.talk.ribbit.news.trade.us.0").startsWith("%1$s"));
+                    check("trade.you names whom: " + Talk.english("mic_rtsim.talk.ribbit.news.trade.you.0"),
+                            Talk.english("mic_rtsim.talk.ribbit.news.trade.you.0").contains("%2$s"));
+                    check("rescue.you names whom: " + Talk.english("mic_rtsim.talk.ribbit.news.rescue.you.0"),
+                            Talk.english("mic_rtsim.talk.ribbit.news.rescue.you.0").contains("%2$s"));
                     // The name lists: the ribbit's format and its two halves.
                     Set<String> names = new HashSet<>();
                     for (long k = 1; k <= 24; k++) {

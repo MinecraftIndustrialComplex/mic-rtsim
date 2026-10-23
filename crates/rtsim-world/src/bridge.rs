@@ -21,7 +21,7 @@ use crate::observe::Side;
 use crate::world::{CaravanId, Cause, World};
 
 /// What one talk with a village's ribbit adds to the village's sentiment toward the player (TK2): a
-/// first talk of the day per ribbit. TUNABLE (PLACEHOLDER), in this one place. Weak feelings fade
+/// first talk of the day per village and player, the cap kept on the player (TK60). TUNABLE (PLACEHOLDER), in this one place. Weak feelings fade
 /// in hours, so a talk lifts a player a little for the day and never makes a friend alone.
 pub const TALK_CREDIT: i16 = 3;
 
