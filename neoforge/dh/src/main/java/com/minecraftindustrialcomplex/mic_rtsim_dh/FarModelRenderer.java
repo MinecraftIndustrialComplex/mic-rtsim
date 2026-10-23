@@ -34,7 +34,6 @@ import org.joml.FrustumIntersection;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fStack;
 import org.joml.Vector3f;
-import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 
 /**
@@ -125,7 +124,7 @@ final class FarModelRenderer {
     /** The most a dragon model's radius passed the reach its hand-over uses (FarDragonView#reach), blocks. */
     static double overReach = Double.NEGATIVE_INFINITY;
     static long lastVertices;
-    static long dhNanos, bandNanos, prepareNanos, lookNanos, timedFrames;
+    static long dhNanos, bandNanos, prepareNanos, lookNanos, timedFrames, dhMaxNanos, lookMaxNanos;
 
     private FarModelRenderer() {}
 
@@ -157,6 +156,7 @@ final class FarModelRenderer {
         FarLooks.frame();
         long now = System.nanoTime();
         lookNanos += now - frameNanos;
+        lookMaxNanos = Math.max(lookMaxNanos, now - frameNanos);
         if (now - lastPrune > 1_000_000_000L) {
             lastPrune = now;
             WAITING.values().removeIf(t -> frameNanos - t[1] > 5_000_000_000L);
@@ -312,7 +312,9 @@ final class FarModelRenderer {
             if (errors++ < 5)
                 MicRtsimDh.LOGGER.error("mic_rtsim_dh: far models failed in DH's pass this frame", e);
         }
-        dhNanos += System.nanoTime() - t0;
+        long spent = System.nanoTime() - t0;
+        dhNanos += spent;
+        dhMaxNanos = Math.max(dhMaxNanos, spent);
         timedFrames++;
     }
 
@@ -354,7 +356,9 @@ final class FarModelRenderer {
         float fogStart = RenderSystem.getShaderFogStart(), fogEnd = RenderSystem.getShaderFogEnd();
         RenderSystem.setShaderFogStart(Float.MAX_VALUE);
         RenderSystem.setShaderFogEnd(Float.MAX_VALUE);
-        RenderSystem.backupProjectionMatrix();
+        // Saved here, not in RenderSystem's one backup slot, which a caller of DH's may be using
+        Matrix4f savedProj = new Matrix4f(RenderSystem.getProjectionMatrix());
+        VertexSorting savedSorting = RenderSystem.getVertexSorting();
         RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
         Matrix4fStack stack = RenderSystem.getModelViewStack();
         stack.pushMatrix();
@@ -374,18 +378,20 @@ final class FarModelRenderer {
                 DH_GPU.end();
             stack.popMatrix();
             RenderSystem.applyModelViewMatrix();
-            RenderSystem.restoreProjectionMatrix();
+            RenderSystem.setProjectionMatrix(savedProj, savedSorting);
             RenderSystem.setShaderFogStart(fogStart);
             RenderSystem.setShaderFogEnd(fogEnd);
             SAVED.apply();
         }
     }
 
-    /** After a render type's own setup: DH's depth function and DH's framebuffer, whatever the type set. */
+    /**
+     * After a render type's own setup: DH's depth function and DH's framebuffer, whatever the type set. The bind
+     * is unconditional: asking GL which is bound waits for the driver's thread (Mesa's glthread), once a type.
+     */
     static void dhState() {
         RenderSystem.depthFunc(depthFunc);
-        if (GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING) != dhDrawFbo)
-            com.mojang.blaze3d.platform.GlStateManager._glBindFramebuffer(GL30.GL_FRAMEBUFFER, dhDrawFbo);
+        com.mojang.blaze3d.platform.GlStateManager._glBindFramebuffer(GL30.GL_FRAMEBUFFER, dhDrawFbo);
     }
 
     /**
@@ -555,21 +561,25 @@ final class FarModelRenderer {
         double f = Math.max(1, timedFrames);
         out.add(String.format(Locale.ROOT,
                 "models: %d candidates, %d in DH's pass, %d in the band, %d live, %d waiting, %d vertices, dragons "
-                        + "past their reach by %.1f blocks at most; CPU per frame: DH pass %.3f ms, band %.3f ms, of "
-                        + "which placing %.3f ms, bakes %.3f ms; GPU per frame: DH pass %.3f ms over %d, band %.3f ms "
-                        + "over %d",
+                        + "past their reach by %.1f blocks at most; CPU per frame: DH pass %.3f ms (longest %.2f), "
+                        + "band %.3f ms, of which placing %.3f ms, bakes %.3f ms (longest %.2f); GPU per frame: DH "
+                        + "pass %.3f ms over %d, band %.3f ms over %d; RenderSystem's matrices at the band off the "
+                        + "stage's by %.4f (model-view) and %.4f (projection) at most",
                 lastCandidates, lastDh, lastBand, lastLive, lastWaiting, lastVertices, overReach, dhNanos / 1e6 / f,
-                bandNanos / 1e6 / f, prepareNanos / 1e6 / f, lookNanos / 1e6 / f,
+                dhMaxNanos / 1e6, bandNanos / 1e6 / f, prepareNanos / 1e6 / f, lookNanos / 1e6 / f,
+                lookMaxNanos / 1e6,
                 DH_GPU.samples == 0 ? 0.0 : DH_GPU.sumNanos / 1e6 / DH_GPU.samples, DH_GPU.samples,
-                BAND_GPU.samples == 0 ? 0.0 : BAND_GPU.sumNanos / 1e6 / BAND_GPU.samples, BAND_GPU.samples));
+                BAND_GPU.samples == 0 ? 0.0 : BAND_GPU.sumNanos / 1e6 / BAND_GPU.samples, BAND_GPU.samples,
+                FarBandRenderer.mvDrift, FarBandRenderer.projDrift));
         out.addAll(FarLooks.statsAll());
         resetSums();
         return out;
     }
 
     static void resetSums() {
-        dhNanos = bandNanos = prepareNanos = lookNanos = timedFrames = 0;
+        dhNanos = bandNanos = prepareNanos = lookNanos = timedFrames = dhMaxNanos = lookMaxNanos = 0;
         overReach = Double.NEGATIVE_INFINITY;
+        FarBandRenderer.mvDrift = FarBandRenderer.projDrift = 0f;
         DH_GPU.resetSums();
         BAND_GPU.resetSums();
     }

@@ -137,7 +137,9 @@ public final class DragonLook implements FarLook {
     private long clock, lastSweep;
     private int errors;
     private long setsBaked, bakeNanos;
-    private double maxStepMs;
+    private double maxStepMs, maxRenderMs;
+    /** Which render of a bake {@link #maxRenderMs} was. */
+    private String maxRenderWhat = "none";
     private int liveDrawn;
 
     static int key(int species, int variant, int stage) {
@@ -291,9 +293,17 @@ public final class DragonLook implements FarLook {
             }
             long s0 = System.nanoTime();
             try {
-                do
+                do {
+                    long r0 = System.nanoTime();
+                    int was = p.step;
+                    boolean fresh = p.probe == null;
                     step(level, p);
-                while (!p.ready() && System.nanoTime() < deadline);
+                    double ms = (System.nanoTime() - r0) / 1e6;
+                    if (ms > maxRenderMs) {
+                        maxRenderMs = ms;
+                        maxRenderWhat = (fresh ? "a new probe's " : "") + stepName(was);
+                    }
+                } while (!p.ready() && System.nanoTime() < deadline);
             } catch (RuntimeException | LinkageError e) {
                 // A box until the level changes: a renderer that failed once would most likely fail every frame
                 it.remove();
@@ -369,6 +379,43 @@ public final class DragonLook implements FarLook {
             r.render(d, yaw, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
         }
         return loop;
+    }
+
+    private static String stepName(int s) {
+        return s < WARM ? "warm-up" : s < WARM + FRAMES ? "frame " + (s - WARM) : s < WARM + FRAMES + REST_WARM
+                ? "rest warm-up" : "rest";
+    }
+
+    /**
+     * Behind the loading screen: a probe of each species, drawn flying and at rest, so the first bake inside a
+     * frame finds Ice and Fire's renderers and GeckoLib's animation code warm (cold, the first render took about
+     * 90 ms). The probes stay for {@link #renderSize}.
+     */
+    @Override
+    public void prewarm() {
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level == null)
+            return;
+        if (level != levelOf) {
+            clear();
+            levelOf = level;
+        }
+        long t0 = System.nanoTime();
+        for (int species = 0; species < probes.length; species++) {
+            try {
+                DragonBaseEntity d = probes[species] != null ? probes[species] : (probes[species] = newStandIn(level, species));
+                EntityRenderer<DragonBaseEntity> r = renderer(d);
+                for (int i = 0; i < 2; i++) {
+                    pose(d, 0, ageFor(3), i == 0, 0f, T0 + i * 10.0);
+                    r.render(d, 0f, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
+                }
+            } catch (RuntimeException | LinkageError e) {
+                if (errors++ < 5)
+                    MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] a far dragon's probe would not warm up", e);
+            }
+        }
+        MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] far dragons warmed up in {} ms",
+                String.format(Locale.ROOT, "%.1f", (System.nanoTime() - t0) / 1e6));
     }
 
     /** One render of a bake: a warm-up, a frame of the flight loop, a warm-up at rest, or the rest pose. */
@@ -555,11 +602,13 @@ public final class DragonLook implements FarLook {
             }
         String s = String.format(Locale.ROOT,
                 "dragons: %d pose sets (%d vertices, %.1f MiB), %d wanted, %d failed, %d stand-ins, %d live draws; "
-                        + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms",
+                        + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms, longest render %.2f ms (%s)",
                 ready, vertices, bytes / (double) (1 << 20), wanted.size(), failed.size(), standIns.size(), liveDrawn,
                 setsBaked,
-                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs);
+                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs, maxRenderMs, maxRenderWhat);
         maxStepMs = 0;
+        maxRenderMs = 0;
+        maxRenderWhat = "none";
         liveDrawn = 0;
         return s;
     }
