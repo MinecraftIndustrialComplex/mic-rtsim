@@ -74,7 +74,7 @@ use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
 
 mod blockade;
-pub use blockade::{HEAT_FLOOR_MILLI, PortState};
+pub use blockade::{HEAT_FLOOR_MILLI, PortChange, PortState};
 
 pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
@@ -2408,8 +2408,9 @@ impl Ships {
         if x.promoted.is_some_and(|p| p.voyage == voyage) || !matches!(x.role, Role::Merchant) {
             return x.cargo.clone();
         }
-        // A laid-up service carries nothing new (PC23): its ship in view shows empty holds.
-        if x.service.is_some_and(|s| self.service_laid_up(s)) {
+        // A laid-up service carries nothing new (PC23, PC81): its ship in view shows empty holds
+        // from the first voyage that departs after the closure.
+        if self.voyage_laid_up(id, voyage) {
             return BTreeMap::new();
         }
         let Some((edge, dir, lo, hi)) = self.window(w, id, voyage) else {
@@ -2726,8 +2727,9 @@ impl Ships {
         if x.promoted.is_some_and(|p| p.voyage == fix.voyage) {
             return true;
         }
-        // A laid-up service's ship still in view sails with empty holds (PC23).
-        if self.service_laid_up(s) {
+        // A laid-up service's ship still in view sails with empty holds (PC23): only a voyage
+        // under way when the port closed has consignments to take (PC81).
+        if self.voyage_laid_up(id, fix.voyage) {
             return false;
         }
         let Some((edge, dir, lo, hi)) = self.window(w, id, fix.voyage) else {
