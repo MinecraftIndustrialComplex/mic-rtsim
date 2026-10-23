@@ -435,17 +435,9 @@ public final class FarFeed {
      * that names them: on the same connection they arrive after it, so the client's RESET does not drop them.
      */
     private static void sendShapes(ServerPlayer p, Sub s, List<FarItem> chosen) {
-        int budget = SHAPE_BYTES_PER_SWEEP;
-        for (FarItem i : chosen) {
-            FarShape sh = i.shape();
-            if (sh == null || s.sentShapes.contains(sh.hash()))
-                continue;
-            int n = sh.bytes().length;
-            if (n > budget && budget < SHAPE_BYTES_PER_SWEEP)
-                break; // the rest next sweep (one shape bigger than the budget still goes, alone)
+        for (FarShape sh : FarShape.pick(chosen, s.sentShapes, SHAPE_BYTES_PER_SWEEP)) {
             sink.shape(p, sh.hash(), sh.bytes());
-            s.sentShapes.add(sh.hash());
-            budget -= n;
+            int n = sh.bytes().length;
             s.shapes++;
             s.shapeBytes += n;
             shapes++;

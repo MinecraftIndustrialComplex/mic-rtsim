@@ -28,4 +28,17 @@ class FarShapeStoreTest {
         assertEquals(0, s.bytes());
         assertFalse(s.put(6L, new byte[FarShapeStore.MAX_BYTES + 1]), "past the bytes");
     }
+
+    @Test
+    void manyShapesFillTheBytesAndNoMore() {
+        FarShapeStore s = new FarShapeStore();
+        byte[] mib = new byte[1 << 20];
+        int n = FarShapeStore.MAX_BYTES / mib.length;
+        for (long h = 1; h <= n; h++)
+            assertTrue(s.put(h, mib), "shape " + h);
+        assertEquals((long) n * mib.length, s.bytes());
+        assertFalse(s.put(n + 1L, new byte[1]), "one byte past");
+        assertTrue(s.put(1L, new byte[1]), "a smaller copy of a held one fits");
+        assertTrue(s.put(n + 1L, new byte[1]), "and so does one more now");
+    }
 }

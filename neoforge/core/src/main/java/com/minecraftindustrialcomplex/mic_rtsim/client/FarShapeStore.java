@@ -7,14 +7,16 @@ import java.util.Map;
  * The far shapes the server sent this client since its view last started over (docs/choices-dh-feed.md DHT62):
  * a shape's hash to its deflated bytes, as {@link com.minecraftindustrialcomplex.mic_rtsim.far.FarShape} has
  * them. The server sends each shape once per view and forgets what it sent on a RESET; the store forgets on the
- * RESET too, so the two agree. A far renderer reads a mover's shape here by its hash. Plain Java.
+ * RESET too, so the two agree. A far renderer reads a mover's shape here by its hash. The client's main thread
+ * only (the payload handler and the render thread are that thread). Plain Java.
  */
 public final class FarShapeStore {
     /**
-     * The most shapes and bytes kept: above the server's own bound on what it holds a client to have, so only a
-     * misbehaving server reaches it. Past it, a new shape is dropped (its objects stay boxes).
+     * The most shapes and bytes kept: above the server's own bound on what it holds a client to have (1,024
+     * shapes of at most 32 KiB, and the few more one sweep sends before it checks), so only a misbehaving server
+     * reaches it. Past it, a new shape is dropped (its objects stay boxes).
      */
-    static final int MAX_SHAPES = 4096, MAX_BYTES = 32 << 20;
+    static final int MAX_SHAPES = 4096, MAX_BYTES = 40 << 20;
 
     private final Map<Long, byte[]> shapes = new HashMap<>();
     private long bytes;

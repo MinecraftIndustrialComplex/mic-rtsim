@@ -1,6 +1,9 @@
 package com.minecraftindustrialcomplex.mic_rtsim.far;
 
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -36,6 +39,28 @@ public final class FarShape {
             return null;
         byte[] z = deflate(raw);
         return z.length > MAX_BYTES ? null : new FarShape(hash(raw), z, raw.length);
+    }
+
+    /**
+     * The shapes to send a subscriber this sweep (DHT62): those of {@code chosen} not in {@code sent}, in
+     * {@code chosen}'s order (the filter's, nearest first), each once, until their bytes would pass
+     * {@code budget} (one bigger than the whole budget still goes, alone). Adds them to {@code sent}.
+     */
+    public static List<FarShape> pick(List<FarItem> chosen, Set<Long> sent, int budget) {
+        List<FarShape> out = new ArrayList<>();
+        int left = budget;
+        for (FarItem i : chosen) {
+            FarShape sh = i.shape();
+            if (sh == null || sent.contains(sh.hash()))
+                continue;
+            int n = sh.bytes().length;
+            if (n > left && left < budget)
+                break; // the rest next sweep
+            out.add(sh);
+            sent.add(sh.hash());
+            left -= n;
+        }
+        return out;
     }
 
     /** The content hash; never 0 (the wire's "no shape"). */

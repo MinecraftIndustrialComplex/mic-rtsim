@@ -1881,11 +1881,12 @@ GONE   5: handle
 zlib header); its hash is over the raw bytes: FNV-1a 64, then `h ^= h >>> 33; h *= 0xff51afd7ed558ccd;
 h ^= h >>> 33`, and 0 becomes 1. The server sends each shape to a subscriber once, after the message whose
 INTRO first names it, nearest object first and at most 64 KiB a sweep (PLACEHOLDER; the rest go the next
-sweep, and the object is a box until they come). A RESET starts over on both sides: the server sends the
+sweep; until they come the client draws nothing for the object for a short grace, about 2 s, then its box,
+DHT63). A RESET starts over on both sides: the server sends the
 shapes again after it, and the client forgets the ones it had when it reads it. Past 1,024 shapes sent
 (PLACEHOLDER) the server starts the subscriber's view over with a RESET, so neither side's set grows for a
-whole session. A client checks the hash when it inflates a shape (at most 1 MiB raw) and drops one that
-does not match. A carriage's raw layout (`far/CarriageShape.java`, version 1, plain bytes as the message's):
+whole session. A client inflates each shape as it arrives (at most 1 MiB raw), checks the hash and the
+layout, and drops one that fails. A carriage's raw layout (`far/CarriageShape.java`, version 1, plain bytes as the message's):
 
 ```
 u8 version (1), u8 assembly (Direction 3D data value: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),

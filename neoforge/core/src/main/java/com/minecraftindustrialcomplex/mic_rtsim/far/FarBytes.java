@@ -85,7 +85,7 @@ final class FarBytes {
         }
 
         private void need(int k) {
-            if (k < 0 || at + k > b.length)
+            if (k < 0 || k > b.length - at)
                 throw new IllegalArgumentException(what + " ends early, at byte " + at);
         }
 

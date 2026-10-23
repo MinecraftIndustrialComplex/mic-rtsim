@@ -27,8 +27,12 @@ public record CarriageShape(int assembly, List<Block> blocks, List<Bogey> bogeys
     /** Limits a decoder holds a layout to (a malformed or hostile one is refused, not allocated). */
     public static final int MAX_PALETTE = 4096, MAX_SIDE = 1024, MAX_BLOCKS = 1 << 16, MAX_BOGEYS = 4, MAX_ID = 256;
 
-    /** One block at (x, y, z), contraption coordinates, of global block state id {@code state}. */
+    /** One block at (x, y, z), contraption coordinates, of global block state id {@code state} (never negative). */
     public record Block(int x, int y, int z, int state) {
+        public Block {
+            if (state < 0)
+                throw new IllegalArgumentException("a block state id of " + state);
+        }
     }
 
     /** A bogey at (x, y, z), contraption coordinates; {@code style} and {@code size} are Create's ids. */
@@ -141,6 +145,9 @@ public record CarriageShape(int assembly, List<Block> blocks, List<Bogey> bogeys
         int sx = in.len(MAX_SIDE, "blocks wide"), sy = in.len(MAX_SIDE, "blocks high"), sz = in.len(MAX_SIDE, "blocks long");
         if (sx == 0 || sy == 0 || sz == 0)
             throw new IllegalArgumentException("a carriage box of " + sx + " by " + sy + " by " + sz);
+        if ((long) minX + sx - 1 > Integer.MAX_VALUE || (long) minY + sy - 1 > Integer.MAX_VALUE
+                || (long) minZ + sz - 1 > Integer.MAX_VALUE)
+            throw new IllegalArgumentException("a carriage box past the coordinates' end");
         long volume = (long) sx * sy * sz;
         int n = in.len(MAX_BLOCKS, "blocks");
         if (n > volume)

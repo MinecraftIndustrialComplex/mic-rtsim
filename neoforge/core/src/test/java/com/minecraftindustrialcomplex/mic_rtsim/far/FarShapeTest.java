@@ -2,8 +2,10 @@ package com.minecraftindustrialcomplex.mic_rtsim.far;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -163,6 +165,34 @@ class FarShapeTest {
         assertEquals(1, rebuilt.size());
         assertEquals(b.hash(), ((FarWire.Intro) rebuilt.get(0)).shape());
         assertEquals(5, ((FarWire.Intro) v.step(List.of(carriage(100, b, 5))).get(0)).age());
+    }
+
+    @Test
+    void shapesGoNearestFirstOnceAndWithinTheSweepsBudget() {
+        Random r = new Random(7);
+        List<FarShape> big = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            byte[] raw = new byte[20_000];
+            r.nextBytes(raw);
+            big.add(FarShape.of(raw));
+        }
+        assertTrue(big.get(0).bytes().length > 19_000, "random bytes do not deflate");
+        int budget = FarFeed.SHAPE_BYTES_PER_SWEEP;
+        assertTrue(3 * big.get(0).bytes().length < budget && 4 * big.get(0).bytes().length > budget);
+        Set<Long> sent = new HashSet<>();
+        // The filter's order is nearest first; a second carriage of the first design is not sent again
+        List<FarItem> chosen = List.of(carriage(1, big.get(0), -1), carriage(2, big.get(0), -1),
+                carriage(3, big.get(1), -1), carriage(4, null, -1), carriage(5, big.get(2), -1),
+                carriage(6, big.get(3), -1));
+        assertEquals(big.subList(0, 3), FarShape.pick(chosen, sent, budget));
+        assertEquals(List.of(big.get(3)), FarShape.pick(chosen, sent, budget));
+        assertTrue(FarShape.pick(chosen, sent, budget).isEmpty());
+        assertEquals(4, sent.size());
+        // A RESET empties what the subscriber holds, and they go again
+        sent.clear();
+        assertEquals(big.subList(0, 3), FarShape.pick(chosen, sent, budget));
+        // One bigger than the whole budget goes alone
+        assertEquals(List.of(big.get(3)), FarShape.pick(chosen, sent, 100));
     }
 
     private static FarItem carriage(long id, FarShape shape, int age) {
