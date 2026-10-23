@@ -50,6 +50,9 @@ import net.minecraft.world.phys.Vec3;
  *       starts a fresh set.</li>
  * </ul>
  *
+ * <p>A carriage whose look has its model ({@link FarModelRenderer}, docs/choices-dh-feed.md DHT63) is drawn as that,
+ * not here: these boxes are for the rest.
+ *
  * <p>Everything here runs on the render thread, except {@link #levelChanged()}, which only sets a flag.
  */
 final class FarTrainView {
@@ -231,6 +234,9 @@ final class FarTrainView {
             double dx = mx - cam.x, dz = mz - cam.z;
             double d2 = dx * dx + dz * dz;
             if (!(d2 <= radiusSq))
+                continue;
+            // The real carriage's look, where it has one (FarModelRenderer); its group, if any, goes dark
+            if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
                 continue;
             Proxy p = PROXIES.get(m.key());
             if (p != null)

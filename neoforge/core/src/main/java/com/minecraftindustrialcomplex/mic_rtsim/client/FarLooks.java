@@ -2,7 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim.client;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The far looks, one per kind of far mover (docs/choices-dh-feed.md DHT63): plugins register theirs as they load,
@@ -45,6 +47,28 @@ public final class FarLooks {
                     MicRtsim.LOGGER.error("[mic_rtsim] a far look's bake failed this frame", e);
             }
         }
+    }
+
+    /** Each look's {@link FarLook#prewarm} (the client is joining a world). Render thread. */
+    public static void prewarmAll() {
+        for (FarLook look : looks) {
+            if (look == null)
+                continue;
+            try {
+                look.prewarm();
+            } catch (RuntimeException | LinkageError e) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] a far look would not prewarm", e);
+            }
+        }
+    }
+
+    /** What every look holds and has done, a line each, for the bench's log. */
+    public static List<String> statsAll() {
+        List<String> out = new ArrayList<>();
+        for (FarLook look : looks)
+            if (look != null)
+                out.add(look.stats());
+        return out;
     }
 
     /** Frees every look's meshes (the client left its world). Render thread. */

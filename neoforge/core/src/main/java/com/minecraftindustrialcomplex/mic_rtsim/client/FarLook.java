@@ -42,6 +42,13 @@ public interface FarLook {
     /** Frees everything it holds (the client left its world). */
     void clear();
 
+    /**
+     * Loads, behind the loading screen as the client joins a world, what would make a first bake slow inside a
+     * frame (Create's bogey renderer, about 180 ms cold). Nothing by default.
+     */
+    default void prewarm() {
+    }
+
     /** What it holds and has done, for the bench's log. */
     String stats();
 }

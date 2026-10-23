@@ -38,6 +38,9 @@ import net.minecraft.world.phys.Vec3;
  *       the tier's active groups (body and wings) and its boxes. What is left goes to the carriages.</li>
  * </ul>
  *
+ * <p>A dragon whose look has its model ({@link FarModelRenderer}, docs/choices-dh-feed.md DHT65) is drawn as that,
+ * not here: these boxes are for the rest.
+ *
  * <p>Render thread only.
  */
 final class FarDragonView {
@@ -155,6 +158,9 @@ final class FarDragonView {
             double dx = x - cam.x, dz = z - cam.z;
             double d2 = dx * dx + dz * dz;
             if (!(d2 <= radiusSq))
+                continue;
+            // Ice and Fire's own model, where the look has it (FarModelRenderer); its groups, if any, go dark
+            if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
                 continue;
             Proxy p = PROXIES.get(m.key());
             if (p != null)
