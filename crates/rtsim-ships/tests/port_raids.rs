@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::{NodeKind, Pos};
+use rtsim_ships::engine::PState;
 use rtsim_ships::synth::{self, FakeShips, SeaHavens};
 use rtsim_ships::{ShipTunables, Ships};
 use rtsim_world::World;
@@ -107,6 +108,8 @@ struct Seen {
     raids: u64,
     items: u64,
     lost_milli: u64,
+    /// Coins taken, thousandths (PC43: a treasury is taken like any stock).
+    coins: i128,
 }
 
 /// S8b-3 `a_port_raid_conserves_goods`. Nobody watches, so pirates never fight a merchant and
@@ -161,7 +164,15 @@ fn a_port_raid_conserves_goods() {
             items <= total && total - items <= i128::from(st.port_raids),
             "seed {seed}: {items} items in the stats, {total} in the ledger"
         );
+        // Coins are goods like the rest: the identity above covered them, and they are counted.
+        let currencies: std::collections::BTreeSet<usize> = village_nodes(&s.world)
+            .iter()
+            .filter_map(|&v| s.world.nodes[v].currency)
+            .map(|g| g.index())
+            .collect();
+        let coins = currencies.iter().map(|&g| took[g]).sum::<i128>();
         Seen {
+            coins,
             raids: st.port_raids,
             items: st.items_from_ports,
             lost_milli: st.port_raid_lost_milli,
@@ -176,6 +187,10 @@ fn a_port_raid_conserves_goods() {
         runs.iter().map(|r| r.lost_milli).sum::<u64>() as f64 / 1000.0
     );
     assert!(raids > 0, "the raids happened");
+    assert!(
+        runs.iter().any(|r| r.coins > 0),
+        "pirates take coins like any other good"
+    );
     assert!(landed_somewhere >= 3, "in several seas: {landed_somewhere}");
 }
 
@@ -350,51 +365,304 @@ fn port_raids_off_changes_nothing() {
     });
 }
 
-/// S8b-3 `a_raid_hits_the_nearer_end` (PC40): of the hunted lane's two docks, the village raided
-/// is the one nearer the raiding haven's dock, in straight distance, the lane's `a` on a tie.
-/// (Every port of `sea_havens` is a village, so the other end is never needed.)
+/// Every port raid in `s`'s log: (the raiding haven, the village's key, the lane).
+fn raids_logged(s: &SeaHavens) -> Vec<(usize, u64, u32)> {
+    let mut owner = BTreeMap::new();
+    for (h, hv) in s.ships.havens.iter().enumerate() {
+        for &p in &hv.ships {
+            owner.insert(s.ships.ship_name(p), h);
+        }
+    }
+    s.ships
+        .log
+        .iter()
+        .filter(|e| e.kind == "port raid")
+        .map(|e| {
+            let w: Vec<&str> = e.what.split_whitespace().collect();
+            (
+                owner[e.ship.as_ref().expect("a ship")],
+                w[3].parse().expect("the village key"),
+                w[6].trim_end_matches(':').parse().expect("the lane"),
+            )
+        })
+        .collect()
+}
+
+/// S8b-3 `a_raid_hits_the_nearer_end` (PC40). Of the hunted lane's two docks the village raided
+/// is the one nearer the raiding haven's dock (`Ships::raid_dock`, here checked against the
+/// straight distance in the test), the lane's `a` on a tie. And a watched or a too-strong nearer
+/// end is declined, never handed to the far end: with every other village made too strong, and
+/// with a player at the dock of every third village, each raid still hits the nearer end.
 #[test]
 fn a_raid_hits_the_nearer_end() {
     let seen = per_seed(&[1, 2, 3, 4, 5, 6, 7, 8], |seed| {
         let tun = ShipTunables::default();
-        let mut s = synth::sea_havens(seed, tun.clone());
-        s.ships.log_enabled = true;
-        let mut fake = FakeShips::new(f64::from(tun.view_radius));
-        drive(&mut s, &mut fake, Tick::from_days(150), TICKS_PER_DAY / 4);
-        let mut owner = BTreeMap::new();
-        for (h, hv) in s.ships.havens.iter().enumerate() {
-            for &p in &hv.ships {
-                owner.insert(s.ships.ship_name(p), h);
-            }
-        }
         let d2 = |a: (i32, i32), b: (i32, i32)| {
             let (dx, dz) = (i64::from(a.0 - b.0), i64::from(a.1 - b.1));
             dx * dx + dz * dz
         };
         let mut n = 0;
-        for e in s.ships.log.iter().filter(|e| e.kind == "port raid") {
-            let w: Vec<&str> = e.what.split_whitespace().collect();
-            let key: u64 = w[3].parse().expect("the village key");
-            let lane: usize = w[6].trim_end_matches(':').parse().expect("the lane");
-            let h = owner[e.ship.as_ref().expect("a ship")];
-            let hv = &s.ships.havens[h];
-            let ln = &s.ships.lanes[lane];
-            let from = (hv.dock.0, hv.dock.2);
-            let (a, b) = (&s.ships.docks[ln.a as usize], &s.ships.docks[ln.b as usize]);
-            let nearer = if d2(b.xz(), from) < d2(a.xz(), from) {
-                b
-            } else {
-                a
-            };
-            assert_eq!(
-                s.world.nodes[nearer.node].key, key,
-                "seed {seed}: lane {lane} from haven {h}"
-            );
-            n += 1;
+        for case in 0..3 {
+            let mut s = synth::sea_havens(seed, tun.clone());
+            s.ships.log_enabled = true;
+            let villages = village_nodes(&s.world);
+            match case {
+                // Every village with an odd key is too strong to raid.
+                1 => {
+                    for &v in &villages {
+                        if s.world.nodes[v].key % 2 == 1 {
+                            let id = s.world.nodes[v].settlement;
+                            s.world.settlements.get_mut(id).unwrap().pop = 100;
+                        }
+                    }
+                }
+                // A player at the dock of every third village, all through the run.
+                2 => {
+                    for (i, &v) in villages.iter().enumerate().filter(|(i, _)| i % 3 == 0) {
+                        let dock = s.ships.docks.iter().find(|d| d.node == v).unwrap();
+                        s.ships.player_stays(
+                            &mut s.world,
+                            (0xFAE0 + i as u64, seed),
+                            Pos::new(dock.frame, dock.x, dock.z),
+                            Tick::ZERO,
+                            Tick::from_days(160),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            let mut fake = FakeShips::new(f64::from(tun.view_radius));
+            drive(&mut s, &mut fake, Tick::from_days(150), TICKS_PER_DAY / 4);
+            for (h, key, lane) in raids_logged(&s) {
+                let hv = &s.ships.havens[h];
+                let ln = &s.ships.lanes[lane as usize];
+                let from = (hv.dock.0, hv.dock.2);
+                let (a, b) = (&s.ships.docks[ln.a as usize], &s.ships.docks[ln.b as usize]);
+                let nearer = if d2(b.xz(), from) < d2(a.xz(), from) {
+                    b
+                } else {
+                    a
+                };
+                assert_eq!(
+                    s.world.nodes[nearer.node].key, key,
+                    "seed {seed} case {case}: lane {lane} from haven {h}"
+                );
+                let dock = s.ships.raid_dock(&s.world, h as u32, lane).unwrap();
+                assert_eq!(s.ships.docks[dock as usize].node, nearer.node);
+                if case == 1 {
+                    assert_eq!(key % 2, 0, "seed {seed}: a strong village was raided");
+                }
+                n += 1;
+            }
         }
         n
     });
     assert!(seen.iter().sum::<usize>() > 20, "{seen:?}");
+}
+
+/// S8b-3 `the_far_end_is_tried_when_the_nearer_is_no_trade_port` (PC40). On a lane whose nearer
+/// dock is not a village (made a player base, then a haven, by the test) the far end is the
+/// target if it is a village; with neither end a village there is no target. The tie goes to
+/// the lane's `a`.
+#[test]
+fn the_far_end_is_tried_when_the_nearer_is_no_trade_port() {
+    let tun = ShipTunables::default();
+    let mut s = synth::sea_havens(3, tun.clone());
+    let mut tried = 0;
+    for h in 0..s.ships.havens.len() as u32 {
+        for lane in s.ships.havens[h as usize].lanes.clone() {
+            let ln = s.ships.lanes[lane as usize].clone();
+            let both = [ln.a, ln.b];
+            let near = s
+                .ships
+                .raid_dock(&s.world, h, lane)
+                .expect("a village at both ends");
+            assert!(both.contains(&near));
+            let far = if near == ln.a { ln.b } else { ln.a };
+            let (nn, fnode) = (
+                s.ships.docks[near as usize].node,
+                s.ships.docks[far as usize].node,
+            );
+            let (nk, fk) = (s.world.nodes[nn].kind, s.world.nodes[fnode].kind);
+            s.world.nodes[nn].kind = NodeKind::PlayerBase { owner: 7 };
+            assert_eq!(s.ships.raid_dock(&s.world, h, lane), Some(far));
+            s.world.nodes[nn].kind = NodeKind::Haven(rtsim_settle::Culture::Human);
+            assert_eq!(s.ships.raid_dock(&s.world, h, lane), Some(far));
+            s.world.nodes[fnode].kind = NodeKind::PlayerBase { owner: 7 };
+            assert_eq!(s.ships.raid_dock(&s.world, h, lane), None);
+            s.world.nodes[nn].kind = nk;
+            s.world.nodes[fnode].kind = fk;
+            assert_eq!(s.ships.raid_dock(&s.world, h, lane), Some(near));
+            tried += 1;
+        }
+    }
+    assert!(tried >= 5, "{tried}");
+}
+
+/// S8b-3 `a_hold_never_passes_its_capacity_and_a_sunk_pirate_loses_its_port_loot`. After every
+/// step of the run no pirate's hold is over `pirate_hold_slots` (by the hold's own measure, a
+/// floor per good of the merged cargo), whatever the raids stacked. Then a pirate carrying port
+/// loot is sunk (the plugin's record): the loot is destroyed through the world's books, goes to
+/// the ledger's `sunk`, and the identity (took = landed + aboard + sunk) and the world's check
+/// hold.
+#[test]
+fn a_hold_never_passes_its_capacity_and_a_sunk_pirate_loses_its_port_loot() {
+    // A raid's loot is under a slot (about 50 items), so a hold of one slot is what makes the
+    // room bind; at the default 27 no hold ever fills.
+    let small = ShipTunables {
+        pirate_hold_slots: 1,
+        ..ShipTunables::default()
+    };
+    let cap = i64::from(small.pirate_hold_slots) * 1000;
+    let hold = |s: &SeaHavens, cargo: &BTreeMap<rtsim_trade::GoodId, i64>| -> i64 {
+        cargo
+            .iter()
+            .map(|(g, a)| *a / i64::from(s.world.goods.get(*g).stack.max(1)))
+            .sum()
+    };
+    let sunk = per_seed(&seeds(), |seed| {
+        let tun = small.clone();
+        let mut s = synth::sea_havens(seed, tun.clone());
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut t = Tick::ZERO;
+        let mut fullest = 0;
+        let mut done = false;
+        let mut op = 0xB0A7_0000 + seed * 1000;
+        while t < Tick::from_days(150) {
+            t += TICKS_PER_DAY / 4;
+            drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+            for hv in &s.ships.havens {
+                for &p in &hv.ships {
+                    let x = s.ships.ship(p).unwrap();
+                    let v = hold(&s, &x.cargo);
+                    assert!(v <= cap, "seed {seed}: a hold of {v} over {cap}");
+                    fullest = fullest.max(v);
+                }
+            }
+            if done {
+                continue;
+            }
+            // The first pirate to carry loot while hunting is sunk where it stands.
+            let victim = s
+                .ships
+                .havens
+                .iter()
+                .flat_map(|hv| hv.ships.iter())
+                .find(|&&p| {
+                    s.ships
+                        .ship(p)
+                        .is_some_and(|x| x.is_active() && !x.cargo.is_empty())
+                });
+            if let Some(&p) = victim {
+                let before = s.ships.ledger.sunk.values().sum::<i128>();
+                op += 1;
+                s.ships.ingest(
+                    &mut s.world,
+                    &rtsim_ships::boundary::Obs::Sunk(rtsim_ships::boundary::Sunk {
+                        agent: rtsim_ships::engine::Ship::agent(p),
+                        epoch: s.ships.ship(p).unwrap().epoch,
+                        by: rtsim_ships::boundary::By::None,
+                        dimension: 0,
+                        player: (0, 0),
+                        ship: 0,
+                        op,
+                        pos: (0.0, 63.0, 0.0),
+                    }),
+                    &s.mask,
+                    t,
+                );
+                assert!(!s.ships.ship(p).unwrap().is_active());
+                assert!(
+                    s.ships.ledger.sunk.values().sum::<i128>() > before,
+                    "seed {seed}: the loot sank"
+                );
+                s.ships.check(&s.world).expect("check after the sinking");
+                done = true;
+            }
+        }
+        s.ships.check(&s.world).expect("check");
+        let n = s.world.market(0).lines.len();
+        let l = &s.ships.ledger;
+        let (took, landed, sunk, held) = (
+            by_good(&l.looted_from_ports, n),
+            by_good(&l.landed_at_havens, n),
+            by_good(&l.sunk, n),
+            aboard(&s.ships, n),
+        );
+        for g in 0..n {
+            assert_eq!(
+                took[g],
+                landed[g] + sunk[g] + held[g],
+                "seed {seed} good {g}"
+            );
+        }
+        (done, fullest)
+    });
+    assert!(sunk.iter().filter(|r| r.0).count() >= 10, "{sunk:?}");
+    assert!(
+        sunk.iter().filter(|r| r.1 > cap * 9 / 10).count() >= 10,
+        "a hold filled: {sunk:?}"
+    );
+}
+
+/// S8b-3 `a_save_mid_hunt_with_port_loot_aboard_continues_exactly`. At a moment when a pirate
+/// carries port loot, the ships and the world are saved and loaded; both runs then go on, one on
+/// the loaded copy, and match to the byte at the end (state hashes, the ledger's port loot, the
+/// stats), with the world's check holding.
+#[test]
+fn a_save_mid_hunt_with_port_loot_aboard_continues_exactly() {
+    per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let tun = ShipTunables::default();
+        let mut s = synth::sea_havens(seed, tun.clone());
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut t = Tick::ZERO;
+        loop {
+            t += TICKS_PER_DAY / 4;
+            assert!(t < Tick::from_days(150), "seed {seed}: no loot aboard");
+            drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+            let aboard_now = s
+                .ships
+                .havens
+                .iter()
+                .flat_map(|h| h.ships.iter())
+                .any(|&p| {
+                    s.ships.ship(p).is_some_and(|x| {
+                        x.cargo.values().sum::<i64>() > 0
+                            && matches!(
+                                x.pirate.as_ref().map(|q| q.state),
+                                Some(PState::Hunting { .. })
+                            )
+                    })
+                });
+            if aboard_now {
+                break;
+            }
+        }
+        // The copy: load the saved world and ships (the fake plugin has no state to carry here).
+        let (goods, ids) = rtsim_world::synth::goods();
+        let book = rtsim_world::synth::recipes(&ids);
+        let mut w2 = World::load(synth::world_config(seed), goods, book, &s.world.save())
+            .expect("the world loads");
+        let mut s2 = Ships::load(tun.clone(), &s.ships.save()).expect("the ships load");
+        assert_eq!(s2.state_hash(), s.ships.state_hash());
+        let mut fake2 = FakeShips::new(f64::from(tun.view_radius));
+        let end = t + 40 * TICKS_PER_DAY;
+        drive(&mut s, &mut fake, end, TICKS_PER_DAY / 4);
+        synth::drive(
+            &mut w2,
+            &mut s2,
+            &mut fake2,
+            &mut NoInfrastructure,
+            &s.mask,
+            end,
+            TICKS_PER_DAY / 4,
+        );
+        s2.check(&w2).expect("the copy checks");
+        assert_eq!(s2.stats, s.ships.stats, "seed {seed}");
+        assert_eq!(s2.ledger, s.ships.ledger, "seed {seed}");
+        assert_eq!(s2.state_hash(), s.ships.state_hash(), "seed {seed}");
+        assert_eq!(w2.state_hash(), s.world.state_hash(), "seed {seed}");
+    });
 }
 
 // ---- the measurement -----------------------------------------------------------------------------
@@ -463,8 +731,10 @@ fn run_measure<M: rtsim_ships::water::WaterMask>(
     for e in ships.log.iter().filter(|e| e.kind == "port raid") {
         // "raids port village K from lane L: N of S items there; ..."
         let w: Vec<&str> = e.what.split_whitespace().collect();
-        let (n, stock): (f64, f64) = (w[7].parse().unwrap(), w[9].parse().unwrap());
-        m.shares.push(if stock > 0.0 { n / stock } else { 0.0 });
+        // "... took T of S thousandths in the village; ...", both in thousandths of an item.
+        let k = w.iter().position(|x| *x == "took").unwrap();
+        let (took, stock): (f64, f64) = (w[k + 1].parse().unwrap(), w[k + 3].parse().unwrap());
+        m.shares.push(if stock > 0.0 { took / stock } else { 0.0 });
     }
     m
 }
@@ -528,4 +798,85 @@ fn port_raids_measured() {
             mean(&off, |m| m.manned),
         );
     }
+}
+
+/// S8b-3 `a_raid_fills_a_part_full_hold_exactly_to_its_capacity` (PC51). A pirate whose hold
+/// already holds goods (taken from a village into its hold by the test, as any held goods) raids
+/// a port: the merged hold, by the hold's own floor-per-good measure, never passes its capacity,
+/// across many part-full holds, and the world's check holds. Port raids alone never meet a part
+/// full hold (a hunt has one raid and the hold is emptied at home), so this makes one.
+#[test]
+fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
+    let tun = ShipTunables {
+        pirate_hold_slots: 1,
+        ..ShipTunables::default()
+    };
+    let cap = i64::from(tun.pirate_hold_slots) * 1000;
+    let mut filled = 0;
+    let mut raided = 0;
+    for seed in 1..=12u64 {
+        let mut s = synth::sea_havens(seed, tun.clone());
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut t = Tick::ZERO;
+        let (p, lane, h) = loop {
+            t += TICKS_PER_DAY / 4;
+            assert!(t < Tick::from_days(100), "seed {seed}: no hunt");
+            drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+            let hit = s.ships.havens.iter().enumerate().find_map(|(h, hv)| {
+                hv.ships
+                    .iter()
+                    .find_map(|&p| match s.ships.ship(p)?.pirate.as_ref()?.state {
+                        PState::Hunting { lane, .. } => Some((p, lane, h as u32)),
+                        _ => None,
+                    })
+            });
+            if let Some(hit) = hit {
+                break hit;
+            }
+        };
+        let dock = s.ships.raid_dock(&s.world, h, lane).expect("a port");
+        let node = s.ships.docks[dock as usize].node;
+        let goods: Vec<_> = s.world.goods.ids().collect();
+        for trial in 0..24u64 {
+            // A part-full hold: some of one good, of another, the amounts stepping through
+            // every remainder of the stack so rounding goes both ways.
+            let before = s.ships.ship(p).unwrap().cargo.clone();
+            let mut want = BTreeMap::new();
+            for (k, g) in goods
+                .iter()
+                .enumerate()
+                .skip(trial as usize % 3)
+                .step_by(3)
+                .take(2)
+            {
+                want.insert(*g, (trial as i64 * 37 + k as i64 * 11 + 1) * 40);
+            }
+            let got = s.world.stock_to_held(node, &want, t);
+            let x = s.ships.ships.get_mut(p).unwrap();
+            for (g, a) in got {
+                *x.cargo.entry(g).or_default() += a;
+            }
+            x.crew = tun.medium(x.medium).pirate_crew;
+            let raids = s.ships.stats.port_raids;
+            s.ships.port_raid(&mut s.world, p, lane, t);
+            raided += (s.ships.stats.port_raids - raids) as usize;
+            let x = s.ships.ship(p).unwrap();
+            let v: i64 = x
+                .cargo
+                .iter()
+                .map(|(g, a)| *a / i64::from(s.world.goods.get(*g).stack.max(1)))
+                .sum();
+            assert!(
+                v <= cap || x.cargo == before,
+                "seed {seed} trial {trial}: {v} over {cap}"
+            );
+            filled += usize::from(v > cap * 9 / 10);
+            // Back to an empty hold for the next trial: what was aboard sinks with nothing
+            // owed (it is destroyed through the world's books).
+            let cargo = std::mem::take(&mut s.ships.ships.get_mut(p).unwrap().cargo);
+            s.world.destroy_held(&cargo);
+        }
+    }
+    assert!(raided > 100, "{raided} raids");
+    assert!(filled > 20, "{filled} holds filled to the brim");
 }
