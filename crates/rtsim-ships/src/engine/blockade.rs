@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ports that close under blockade (EQUILIBRIUM.md §2.4.6a rule 7, slice S8b-4; choices PC20 to
-//! PC25 and PC80 to PC100). The ships engine's half: the world's lanes close and open with
+//! PC25 and PC80 to PC103). The ships engine's half: the world's lanes close and open with
 //! `World::close_lane` and `World::open_lane` (S8b-4a).
 //!
 //! - **Heat** (PC20). Each lane's threat row keeps an exponential average of its applied hazard
@@ -31,6 +31,12 @@
 //!   `relaunch_time`), never in a player's view: a watched home dock puts it off to the slot's
 //!   next stay there (PC90). Laying up and relaunching each make the slot's old body stale
 //!   (PC95), and a slot laid up gives up its booked voyages (PC92).
+//! - **The switch** (PC101, PC103). Switching the ships off lifts every closure at once
+//!   ([`Ships::lift_closures`]): the ports and their lanes open, blockades and open spells clear
+//!   and the heat drops to 0, with no tape row and no news. Nothing that falls due while the
+//!   ships are off is decided in the time they missed: at the switch-on's catch-up a port check
+//!   comes again a check interval after the world's present (so ports decide only on live time),
+//!   and a relaunch waits for its slot's first home-dock stay after the world's present.
 
 use rtsim_settle::NodeKind;
 
@@ -77,6 +83,25 @@ pub enum PortChange {
     Reopened = 3,
     /// Open, and no lane is above an eighth.
     Lifted = 4,
+}
+
+/// What [`Ships::lift_closures`] lifted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lifted {
+    /// Ports that were closed: open again, their lanes too, their laid-up slots booked to
+    /// relaunch.
+    pub closed: u32,
+    /// Ports that were closed, blockaded or within their minimum open spell.
+    pub ports: u32,
+    /// Lanes whose heat dropped to 0.
+    pub lanes: u32,
+}
+
+impl Lifted {
+    /// Whether anything changed.
+    pub fn any(&self) -> bool {
+        self.ports > 0 || self.lanes > 0
+    }
 }
 
 impl PortState {
@@ -307,6 +332,15 @@ impl Ships {
             self.stats.stale += 1;
             return;
         }
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): nothing is decided in the time the
+            // ships missed. The check comes again an interval after the world's present, so the
+            // port changes only on live time (it starts open after a lift, PC101) and no tape row
+            // or news is dated in the missed time.
+            let when = w.now() + self.check_ticks();
+            self.book_check(d, when);
+            return;
+        }
         p.check = None;
         self.stats.port_checks += 1;
         let full = self.full_share(self.docks[d as usize].medium);
@@ -491,9 +525,9 @@ impl Ships {
             return;
         }
         let ok = if want {
-            w.close_lane(edge, at)
+            w.close_lane(edge, world_at(w, at))
         } else {
-            w.open_lane(edge, at)
+            w.open_lane(edge, world_at(w, at))
         };
         debug_assert!(ok, "lane {l}'s edge {edge} is a ships' lane");
         self.note(
@@ -591,7 +625,10 @@ impl Ships {
 
     /// A laid-up slot's relaunch is due (PC90). Its service laid up again since: it stays in port
     /// ([`Self::respawn`] lays it up). A player watching where it would appear: it waits for the
-    /// slot's next stay at its home dock, and again, until nobody watches. Otherwise the new ship
+    /// slot's next stay at its home dock, and again, until nobody watches. Due at a time the
+    /// world has already passed (the ships were switched off over it, and this is the switch-on's
+    /// catch-up: C25, PC103): the areas of that time are gone, so it waits for the slot's first
+    /// stay at its home dock after the world's present and is judged then. Otherwise the new ship
     /// takes the slot.
     pub(crate) fn relaunch(&mut self, w: &mut World, s: ShipId, at: Tick) {
         let Some(x) = self.ships.get(s) else {
@@ -602,19 +639,20 @@ impl Ships {
             return;
         }
         let laid = x.service.is_some_and(|v| self.service_laid_up(v));
-        if !laid && self.relaunch_in_view(w, s, at) {
-            let back = self.relaunch_time(s, at + 1);
+        let missed = missed(w, at);
+        if !laid && (missed || self.relaunch_in_view(w, s, at)) {
+            let back = self.relaunch_time(s, if missed { w.now() } else { at + 1 });
             if let Status::Lost { back: b, .. } = &mut self.ships[s].status {
                 *b = back;
             }
             self.stats.relaunches_put_off += 1;
             self.wait_to_relaunch(s, back);
-            self.note(
-                at,
-                "relaunch_put_off",
-                Some(s),
-                "a player watches its home dock: it waits for its next stay there".into(),
-            );
+            let why = if missed {
+                "it fell due while the ships were switched off: it waits for its next stay there"
+            } else {
+                "a player watches its home dock: it waits for its next stay there"
+            };
+            self.note(at, "relaunch_put_off", Some(s), why.into());
             return;
         }
         self.respawn(w, s, at);
@@ -627,15 +665,11 @@ impl Ships {
         let frame = self.ships[s].frame;
         let here = self.position(w, s, at);
         let reach = u64::from(self.tun.view_radius) + u64::from(self.tun.body_radius);
-        self.players.values().any(|v| {
-            v.interest
-                .and_then(|st| w.legs.get(st.leg).filter(|r| r.generation == st.generation))
-                .is_some_and(|r| {
-                    r.path.frame == frame
-                        && r.path.t0 <= at
-                        && at <= r.path.t1
-                        && self.sdist(frame, (r.path.x0, r.path.z0), here) <= reach
-                })
+        self.view_areas(w).any(|r| {
+            r.path.frame == frame
+                && r.path.t0 <= at
+                && at <= r.path.t1
+                && self.sdist(frame, (r.path.x0, r.path.z0), here) <= reach
         })
     }
 
@@ -665,6 +699,91 @@ impl Ships {
             Some(s),
             format!("finds lane {lane} closed and turns for haven {h}"),
         );
+        true
+    }
+
+    // ---- the switch -----------------------------------------------------------------------------
+
+    /// The ships are switched off (C25), or a session starts with them off (PC101): every port's
+    /// blockade is lifted, as if it had never been, at the world's present (the ships' own time
+    /// if that is later), so no lane opens at a time the world has passed. A closed port reopens
+    /// through the reopening's path ([`Self::resettle`]: its lanes open in the world, its laid-up
+    /// slots are booked to relaunch at their home docks by PC90's rule, which the switch-on's
+    /// catch-up then applies, PC103), a blockade and a minimum open spell end, and every lane's
+    /// heat drops to 0 at the ships' own time, so on the switch-on the heat builds again from
+    /// the lanes' shares as usual. Each port keeps its live check (its tick and epoch), so the
+    /// wheel holds no stale one: a port left with nothing to check loses its state there (PC96).
+    /// No tape row and no news: nothing happened at the port. A closure lifted counts as a
+    /// reopening in `stats` (with its closed days), so every closure counted still ends in one.
+    /// A pass over the ports with a state and the lanes with a threat row.
+    pub fn lift_closures(&mut self, w: &mut World) -> Lifted {
+        let at = self.now.max(w.now());
+        let mut out = Lifted::default();
+        let mut reopened = Vec::new();
+        for (&d, p) in &mut self.ports {
+            if let Some(since) = p.closed {
+                reopened.push(d);
+                self.stats.reopenings += 1;
+                self.stats.closed_dock_days += at.0.saturating_sub(since.0) / TICKS_PER_DAY;
+            }
+            if p.closed.is_some() || p.blockaded.is_some() || p.reopened.is_some() {
+                out.ports += 1;
+            }
+            *p = PortState {
+                check: p.check,
+                epoch: p.epoch,
+                ..PortState::default()
+            };
+        }
+        out.closed = reopened.len() as u32;
+        let (now, tau) = (self.now, self.heat_tau());
+        let warm: Vec<u32> = self
+            .lane_threats()
+            .into_iter()
+            .filter(|(_, t)| t.heat_nano_at(now, tau) != 0 || t.heat_nano != 0)
+            .map(|(l, _)| l)
+            .collect();
+        for l in warm {
+            let t = self.threat_mut(l);
+            t.heat_nano = 0;
+            t.heat_at = t.heat_at.max(now);
+            out.lanes += 1;
+        }
+        for d in reopened {
+            let node = self.docks[d as usize].node;
+            self.note(
+                at,
+                "port",
+                None,
+                format!("dock {d} (node {node}) is open: the ships were switched off"),
+            );
+            self.resettle(w, d, at);
+        }
+        out
+    }
+
+    /// Closes trade port `d` now, as a check that found its every lane at half of full would
+    /// (blockaded and closed now, its minimum open spell forgotten, its next check booked unless
+    /// one is), with no tape row and no news. For tests that need a closed port without pirates
+    /// (rtsim-jni's switch tests). `false` when closures are off, `d` is no trade port or it is
+    /// closed already.
+    #[doc(hidden)]
+    pub fn close_port(&mut self, w: &mut World, d: u32) -> bool {
+        if !self.blockades_on() || !self.is_trade_port(w, d) || self.port_closed(d) {
+            return false;
+        }
+        let at = self.now;
+        let p = self.ports.entry(d).or_default();
+        p.reopened = None;
+        p.blockaded = p.blockaded.or(Some(at));
+        p.closed = Some(at);
+        let booked = p.check.is_some();
+        self.stats.closures += 1;
+        if !booked {
+            let when = at + self.check_ticks();
+            self.book_check(d, when);
+        }
+        self.resettle(w, d, at);
         true
     }
 
@@ -1467,5 +1586,44 @@ mod tests {
             beyond > 0,
             "no patrolled lane away from a closed port was judged"
         );
+    }
+
+    /// The view rules read the world's shared areas (U8). In the native link the ships keep no
+    /// area of their own, so a player whose area only the world holds (booked while the ships
+    /// were switched off and never routed to them) must still keep a relaunch, a launch and a
+    /// raid out of his sight. Quiet coast, seed 1: a slot laid up by a closure, and a shared area
+    /// booked at its home dock.
+    #[test]
+    fn the_view_rules_see_a_shared_area() {
+        let mut c = quiet_coast(1);
+        let (v, a, _) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let s = c.ships.service_ships[v as usize]
+            .ids()
+            .find(|&id| c.ships.ships[id].is_laid_up())
+            .expect("a laid-up slot");
+        let at = c.ships.now();
+        let here = c.ships.position(&c.world, s, at);
+        let frame = c.ships.ships[s].frame;
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at));
+        assert!(!c.ships.point_in_view(&c.world, frame, here, at));
+        let radius = c.ships.tun.view_radius;
+        let pos = rtsim_settle::Pos::new(frame, here.0, here.1);
+        let (p, area) = c.world.observe_area((7, 7), pos, at, radius);
+        assert!(area.is_some(), "a new area");
+        assert!(
+            !c.ships.players.contains_key(&p),
+            "never routed to the ships"
+        );
+        assert!(c.ships.relaunch_in_view(&c.world, s, at));
+        assert!(c.ships.point_in_view(&c.world, frame, here, at));
+        assert_eq!(
+            c.ships.viewer_pos(&c.world, p),
+            Some((i64::from(here.0), i64::from(here.1)))
+        );
+        // Before the area begins, nobody watched.
+        assert!(!c.ships.point_in_view(&c.world, frame, here, Tick(at.0 - 1)));
     }
 }
