@@ -2,7 +2,6 @@ package com.minecraftindustrialcomplex.mic_rtsim.far;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -18,7 +17,7 @@ import java.util.List;
  *
  * <pre>
  *   u8 version, varint flags, varlong gameTime, string dimension, zigzag ox, oy, oz, varint count, records
- *   INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb
+ *   INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb, i64 shape, zig age
  *   LEG    2: handle, u8 state, zig y-oy, zig x0-ox, zig z0-oz, zig x1-ox, zig z1-oz, zig t0-gameTime,
  *             varlong t1-t0, varint radius
  *   SAMPLE 3: handle, u8 state, zig lx-8ox, zig ly-8oy, zig lz-8oz, zig tx-lx, zig ty-ly, zig tz-lz
@@ -26,9 +25,13 @@ import java.util.List;
  *   GONE   5: handle
  * </pre>
  * Handles, counts and lengths are unsigned LEB128 varints; {@code zig} is a zigzag varint.
+ *
+ * <p>Version 2 (docs/choices-dh-feed.md DHT60) added the INTRO's {@code shape}, the content hash of what the
+ * object looks like ({@link FarShape}, 0 for none: drawn as a box), whose bytes go out in their own payload,
+ * and its {@code age} (a dragon's age in days, for its size between stages; -1 when the source does not say).
  */
 public final class FarWire {
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     /** A message flag: forget every object of the feed before applying this one (a new view). */
     public static final int RESET = 1;
     /** Sample coordinates are in eighths of a block. */
@@ -43,8 +46,16 @@ public final class FarWire {
         int handle();
     }
 
-    /** A new object: what it is. Its position follows in a LEG or a SAMPLE of the same message. */
-    public record Intro(int handle, long id, int kind, int style, int variant, int size, int rgb) implements Rec {
+    /**
+     * A new object: what it is. Its position follows in a LEG or a SAMPLE of the same message. {@code shape} is
+     * its look's content hash ({@link FarShape}), 0 for none; {@code age} its age in days, -1 for unknown.
+     */
+    public record Intro(int handle, long id, int kind, int style, int variant, int size, int rgb, long shape, int age)
+            implements Rec {
+        /** An object with no shape and no age. */
+        public Intro(int handle, long id, int kind, int style, int variant, int size, int rgb) {
+            this(handle, id, kind, style, variant, size, rgb, 0L, -1);
+        }
     }
 
     /** A leg in game time: from (x0, y, z0) at t0 to (x1, y, z1) at t1; a hunt circles (x0, z0) at radius. */
@@ -89,7 +100,7 @@ public final class FarWire {
     // Encoding
 
     public static byte[] encode(Message m) {
-        Out o = new Out(32 + m.recs().size() * 20);
+        FarBytes.Out o = new FarBytes.Out(32 + m.recs().size() * 24);
         o.u8(VERSION);
         o.var(m.flags());
         o.var(m.gameTime());
@@ -112,6 +123,8 @@ public final class FarWire {
                     o.u8(i.variant());
                     o.u8(i.size());
                     o.var(i.rgb() & 0xFFFF_FFFFL);
+                    o.i64(i.shape());
+                    o.zig(i.age());
                 }
                 case Leg l -> {
                     o.u8(LEG);
@@ -156,7 +169,7 @@ public final class FarWire {
 
     /** Reads a message; throws IllegalArgumentException when it is not one (a short or unknown record). */
     public static Message decode(byte[] b) {
-        In in = new In(b);
+        FarBytes.In in = new FarBytes.In(b, "the far feed message");
         int version = in.u8();
         if (version != VERSION)
             throw new IllegalArgumentException("far feed version " + version + ", this side reads " + VERSION);
@@ -172,7 +185,8 @@ public final class FarWire {
             int type = in.u8();
             int handle = in.len();
             recs.add(switch (type) {
-                case INTRO -> new Intro(handle, in.i64(), in.u8(), in.u8(), in.u8(), in.u8(), (int) in.var());
+                case INTRO -> new Intro(handle, in.i64(), in.u8(), in.u8(), in.u8(), in.u8(), (int) in.var(), in.i64(),
+                        in.zigInt());
                 case LEG -> {
                     int state = in.u8();
                     int y = (int) (in.zig() + oy);
@@ -193,117 +207,8 @@ public final class FarWire {
                 default -> throw new IllegalArgumentException("far feed record type " + type + " at record " + k);
             });
         }
-        if (in.at != b.length)
-            throw new IllegalArgumentException((b.length - in.at) + " bytes after the far feed's last record");
+        if (!in.done())
+            throw new IllegalArgumentException(in.left() + " bytes after the far feed's last record");
         return new Message(flags, gameTime, dimension, ox, oy, oz, recs);
-    }
-
-    // ---------------------------------------------------------------------------------------------------------
-    // Bytes
-
-    private static final class Out {
-        byte[] b;
-        int n;
-
-        Out(int cap) {
-            b = new byte[Math.max(16, cap)];
-        }
-
-        void room(int k) {
-            if (n + k > b.length)
-                b = Arrays.copyOf(b, Math.max(b.length * 2, n + k));
-        }
-
-        void u8(int v) {
-            room(1);
-            b[n++] = (byte) v;
-        }
-
-        void bytes(byte[] v) {
-            room(v.length);
-            System.arraycopy(v, 0, b, n, v.length);
-            n += v.length;
-        }
-
-        void var(long v) {
-            room(10);
-            while ((v & ~0x7FL) != 0) {
-                b[n++] = (byte) ((v & 0x7F) | 0x80);
-                v >>>= 7;
-            }
-            b[n++] = (byte) v;
-        }
-
-        void zig(long v) {
-            var((v << 1) ^ (v >> 63));
-        }
-
-        void i64(long v) {
-            room(8);
-            for (int k = 0; k < 8; k++)
-                b[n++] = (byte) (v >>> (8 * k));
-        }
-
-        byte[] done() {
-            return Arrays.copyOf(b, n);
-        }
-    }
-
-    private static final class In {
-        final byte[] b;
-        int at;
-
-        In(byte[] b) {
-            this.b = b;
-        }
-
-        private void need(int k) {
-            if (at + k > b.length)
-                throw new IllegalArgumentException("the far feed message ends early, at byte " + at);
-        }
-
-        int u8() {
-            need(1);
-            return b[at++] & 0xFF;
-        }
-
-        byte[] bytes(int k) {
-            need(k);
-            byte[] v = Arrays.copyOfRange(b, at, at + k);
-            at += k;
-            return v;
-        }
-
-        long var() {
-            long v = 0;
-            for (int shift = 0; shift < 64; shift += 7) {
-                int x = u8();
-                v |= (long) (x & 0x7F) << shift;
-                if ((x & 0x80) == 0)
-                    return v;
-            }
-            throw new IllegalArgumentException("a far feed varint runs past 10 bytes, at byte " + at);
-        }
-
-        /** A varint that must be a count or a handle (0 to 2^31 - 1). */
-        int len() {
-            long v = var();
-            if (v < 0 || v > Integer.MAX_VALUE)
-                throw new IllegalArgumentException("a far feed count of " + v);
-            return (int) v;
-        }
-
-        long zig() {
-            long v = var();
-            return (v >>> 1) ^ -(v & 1);
-        }
-
-        long i64() {
-            need(8);
-            long v = 0;
-            for (int k = 0; k < 8; k++)
-                v |= (long) (b[at++] & 0xFF) << (8 * k);
-            return v;
-        }
     }
 }

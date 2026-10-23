@@ -331,7 +331,8 @@ pub struct CultureDef {
     /// Mean days between plunder raids on what it hates, if it plunders.
     pub plunder_mean_days: Option<f64>,
     pub plunder_reach_blocks: u32,
-    /// The most of each good of a village's stock one raid carries off, thousandths.
+    /// The most of each line's surplus over its target (a village's or a rival camp's, coins
+    /// included) one raid carries off, thousandths (CONFLICT-LIFE.md CL-D58).
     pub loot_share_milli: i64,
     /// A band routs after losing this share of its units.
     pub rout_share: f64,

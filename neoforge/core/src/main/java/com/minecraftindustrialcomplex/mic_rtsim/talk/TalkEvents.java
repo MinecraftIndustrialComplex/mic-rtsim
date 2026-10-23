@@ -34,6 +34,7 @@ public final class TalkEvents {
 
     public static void register() {
         registerBuiltins();
+        com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerPlugin(TalkAsks.INSTANCE);
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.EntityInteract.class, TalkEvents::onInteract);
         bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.RightClickItem.class, TalkEvents::onUseItem);
@@ -115,6 +116,7 @@ public final class TalkEvents {
 
     private static void clear() {
         GUARD.clear();
+        TalkAsks.INSTANCE.reset();
         Talk.clear();
     }
 }
