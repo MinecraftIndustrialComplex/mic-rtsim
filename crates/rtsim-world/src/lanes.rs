@@ -402,6 +402,54 @@ impl World {
         true
     }
 
+    /// Closes ships' lane `edge` at `at` (a blockaded port, EQUILIBRIUM.md §2.4.6a rule 7, choice
+    /// PC22): the allocation offers no new goods on either direction from the next boundary, so
+    /// each direction's rates (and its raided share) wind down at once through the ends'
+    /// re-allocation. Consignments already sailing land, payments for them travel the closed lane
+    /// as ever, and news is untouched. Idempotent: closing a closed lane does nothing. Only a
+    /// ships' lane can close: a road, or an edge that does not exist, is refused with `false`
+    /// (and left as it was); `true` when the lane is closed afterwards.
+    pub fn close_lane(&mut self, edge: u32, at: Tick) -> bool {
+        self.set_lane_closed(edge, true, at)
+    }
+
+    /// Reopens ships' lane `edge` at `at`: both ends re-allocate at once and the lane carries
+    /// goods again from the next boundary. Idempotent. `false` for a road or a missing edge,
+    /// `true` when the lane is open afterwards.
+    pub fn open_lane(&mut self, edge: u32, at: Tick) -> bool {
+        self.set_lane_closed(edge, false, at)
+    }
+
+    fn set_lane_closed(&mut self, edge: u32, closed: bool, at: Tick) -> bool {
+        self.run_until(at);
+        let Some(e) = self.edges.get_mut(edge as usize) else {
+            return false;
+        };
+        if e.medium == Medium::Road {
+            return false;
+        }
+        if e.closed == closed {
+            return true;
+        }
+        e.closed = closed;
+        let (a, b) = (e.a, e.b);
+        // The same wake a market change makes (`set_lane_hazard` uses it too): the node's
+        // allocation re-runs now and books its changed pipelines' arrivals at the far ends.
+        self.market_event(a, at, Cause::Lane);
+        self.market_event(b, at, Cause::Lane);
+        if closed && self.cfg.check_every_event {
+            if let Err(e) = self.check_lanes() {
+                panic!("{e} at {at:?}");
+            }
+        }
+        true
+    }
+
+    /// Whether lane `edge` is closed (false for a missing edge).
+    pub fn lane_closed(&self, edge: u32) -> bool {
+        self.edges.get(edge as usize).is_some_and(|e| e.closed)
+    }
+
     /// The current hazard on a lane direction: (haven, share in thousandths), if any.
     pub fn lane_hazard(&self, edge: u32, dir: u8) -> Option<(usize, i64)> {
         let d = self.edges.get(edge as usize)?.dirs.get(usize::from(dir))?;
