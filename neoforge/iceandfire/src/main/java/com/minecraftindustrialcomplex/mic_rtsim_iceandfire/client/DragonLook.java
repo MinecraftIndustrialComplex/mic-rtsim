@@ -141,6 +141,7 @@ public final class DragonLook implements FarLook {
     private double maxStepMs, maxRenderMs;
     /** Which render of a bake {@link #maxRenderMs} was. */
     private String maxRenderWhat = "none";
+    /** Live models placed since the last stats (once a frame each, however many passes draw them). */
     private int liveDrawn;
 
     static int key(int species, int variant, int stage) {
@@ -245,8 +246,8 @@ public final class DragonLook implements FarLook {
                 ps.translate(0f, -centre, 0f);
                 r.render(d, yawDeg, frac, ps, buffers, SKY_LIGHT);
                 ps.popPose();
-                liveDrawn++;
             };
+            liveDrawn++;
             return true;
         }
         List<FarModel.Part> parts;
@@ -611,7 +612,7 @@ public final class DragonLook implements FarLook {
                 bytes += p.bytes;
             }
         String s = String.format(Locale.ROOT,
-                "dragons: %d pose sets (%d vertices, %.1f MiB), %d wanted, %d failed, %d stand-ins, %d live draws; "
+                "dragons: %d pose sets (%d vertices, %.1f MiB), %d wanted, %d failed, %d stand-ins, %d live frames; "
                         + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms, longest render %.2f ms (%s)",
                 ready, vertices, bytes / (double) (1 << 20), wanted.size(), failed.size(), standIns.size(), liveDrawn,
                 setsBaked,

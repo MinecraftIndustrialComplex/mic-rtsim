@@ -70,7 +70,7 @@ import org.lwjgl.opengl.GL30;
  *       both passes draw, both render it live: one pose placed once a frame and rendered twice at the same time
  *       (GeckoLib skips the second as a re-render, or runs the animation again at that time when another dragon
  *       of the species drew between), as a body's copy is, so the fade mixes it toward itself and the wings beat
- *       on up to the hand-over. A mover whose live render threw is drawn from its baked frames from then on.</li>
+ *       on up to the hand-over. A mover whose live placement or render threw is drawn baked from then on.</li>
  * </ul>
  *
  * <p>Render thread only.
@@ -131,7 +131,7 @@ final class FarModelRenderer {
     private static final Vector3f L0 = new Vector3f(), L1 = new Vector3f();
     /** Bodies whose copy threw: never copied again in this level (vanilla still draws them; they fade as before). */
     private static final Set<Integer> FAILED_COPIES = new HashSet<>();
-    /** Movers whose live render threw: drawn from their baked frames from then on, in this level. */
+    /** Movers whose live placement or render threw: drawn from their baked frames from then on, in this level. */
     private static final Set<FarKey> FAILED_LIVE = new HashSet<>();
     /** The pass being drawn is in a level lit as the Nether is. */
     private static boolean netherLight;
@@ -379,6 +379,9 @@ final class FarModelRenderer {
         try {
             return look != null && look.place(m, SEG, clock, live, out);
         } catch (RuntimeException | LinkageError e) {
+            // The baked placement came first this frame: a throw on the live one is the live path's
+            if (live)
+                FAILED_LIVE.add(m.key());
             if (errors++ < 5)
                 MicRtsimDh.LOGGER.error("mic_rtsim_dh: a far look would not place its model", e);
             return false;
@@ -444,8 +447,9 @@ final class FarModelRenderer {
             if (it.placeholder)
                 continue;
             // Live in both passes where the band draws it too (DH's vanilla fade): one pose, rendered twice at the
-            // same time, so the fade mixes it toward itself and the wings keep beating up to the body's hand-over
-            it.drawLive = it.live;
+            // same time, so the fade mixes it toward itself and the wings keep beating up to the body's hand-over.
+            // One that threw in the other pass this frame draws its baked frame here
+            it.drawLive = it.live && !FAILED_LIVE.contains(m.key());
             float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
@@ -559,7 +563,7 @@ final class FarModelRenderer {
                 continue;
             if (it.placeholder)
                 continue;
-            it.drawLive = it.live;
+            it.drawLive = it.live && !FAILED_LIVE.contains(m.key());
             double r = it.model.radius;
             if (!frustum.isVisible(new AABB(it.x - r, it.y - r, it.z - r, it.x + r, it.y + r, it.z + r)))
                 continue;
