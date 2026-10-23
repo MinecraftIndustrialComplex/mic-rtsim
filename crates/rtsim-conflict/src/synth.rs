@@ -232,6 +232,11 @@ pub struct FakeConflict {
     pub commands: Vec<(u64, String)>,
     /// Ticks a recalled band takes to leave view. PLACEHOLDER 300.
     pub leave_ticks: u64,
+    /// Plays every notice and answers NOTICE_SHOWN a tick later (MOWZIE.md §4.11); off, the
+    /// notices stay unplayed and the engine sends them again each session.
+    pub play_notices: bool,
+    /// The world's difficulty, sent as DIFFICULTY at each [`FakeConflict::session_start`].
+    pub difficulty: u32,
 }
 
 const SYS_FAKE: SystemId = SystemId::named("conflict.fake_plugin");
@@ -251,7 +256,15 @@ impl FakeConflict {
             wire_bytes: 0,
             commands: Vec::new(),
             leave_ticks: 300,
+            play_notices: true,
+            difficulty: boundary::DIFFICULTY_NORMAL,
         }
+    }
+
+    /// A session's start, as the plugin's: the world's difficulty, at `at`.
+    pub fn session_start(&mut self, at: Tick) {
+        let difficulty = self.difficulty;
+        self.push(at, Obs::Difficulty(boundary::Difficulty { difficulty }));
     }
 
     pub fn push(&mut self, at: Tick, o: Obs) {
@@ -328,6 +341,28 @@ impl FakeConflict {
             Cmd::Steer(s) => format!("steer {:x} to ({:.0}, {:.0})", s.agent, s.pos.0, s.pos.2),
             Cmd::Recall(r) => format!("recall {:x}, reason {}", r.agent, r.reason),
             Cmd::Settled(s) => format!("demand of {:x} settled, outcome {}", s.faction, s.outcome),
+            Cmd::AmbushSpot(a) => format!(
+                "ambush spot of {:x} at ({:.0}, {:.0}), flags {}",
+                a.agent, a.spot.0, a.spot.2, a.flags
+            ),
+            Cmd::Reconcile(r) => format!(
+                "camp {:x} epoch {}: {} lines",
+                r.faction,
+                r.epoch,
+                r.lines.len()
+            ),
+            Cmd::TrainRobbed(t) => format!("train {:x} robbed by {:x}", t.train, t.faction),
+            Cmd::ChiefBody(b) => format!(
+                "chief of {:x} with {:x}, health {:.1}",
+                b.faction, b.agent, b.health
+            ),
+            Cmd::March(m) => format!(
+                "march {:x} kind {} phase {}: {} waypoints",
+                m.agent,
+                m.kind,
+                m.phase,
+                m.waypoints.len()
+            ),
         };
         self.commands.push((at.0, format!("{}: {gist}", c.name())));
         match c {
@@ -467,7 +502,25 @@ impl FakeConflict {
                     );
                 }
             }
-            Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Steer(_) | Cmd::Settled(_) => {}
+            Cmd::Notice(n) if self.play_notices => {
+                self.push(
+                    at + 1,
+                    Obs::NoticeShown(boundary::NoticeShown {
+                        faction: n.faction,
+                        step: n.step,
+                        player: n.player,
+                    }),
+                );
+            }
+            Cmd::Territory(_)
+            | Cmd::Notice(_)
+            | Cmd::Steer(_)
+            | Cmd::Settled(_)
+            | Cmd::AmbushSpot(_)
+            | Cmd::Reconcile(_)
+            | Cmd::TrainRobbed(_)
+            | Cmd::ChiefBody(_)
+            | Cmd::March(_) => {}
         }
     }
 

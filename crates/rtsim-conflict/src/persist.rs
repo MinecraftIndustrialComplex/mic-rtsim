@@ -38,7 +38,7 @@ use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 use rtsim_travel::legs::{Meeting, Stamp};
 
-use crate::boundary;
+use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus, Party, Phase,
@@ -55,12 +55,14 @@ use crate::tunables::ConflictTunables;
 
 /// The blob ([`Conflict::save`]). RTC2: rows by `PagedRows::encode_all` (RTC1 held a vector of
 /// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
-/// of the resident state (docs/choices-paging-followups.md PF10).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC3");
+/// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag follows
+/// presence, and a feud carries its kept notice (MOWZIE.md ledger 14).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC4");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
-/// are in pages of their own, their headers after the row counts (PF10).
+/// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
+/// ends with the Peaceful flag.
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 2;
+const META_VERSION: u16 = 3;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -403,6 +405,11 @@ fn put_feud(w: &mut Writer, x: &Feud) {
     put_opt(w, &x.focus, put_focus);
     w.u64(x.wait_until.0);
     w.var_u64(u64::from(x.raids));
+    put_opt(w, &x.notice, |w, n| {
+        let mut b = Vec::new();
+        boundary::encode_cmd(0, &Cmd::Notice(**n), &mut b);
+        w.bytes(&b);
+    });
 }
 
 fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
@@ -423,6 +430,10 @@ fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
         focus: get_opt(r, get_focus)?,
         wait_until: Tick(r.u64()?),
         raids: get_u32(r)?,
+        notice: get_opt(r, |r| match boundary::decode_cmd(r.bytes()?) {
+            Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
+            _ => bad("a kept notice that is not FACTION_NOTICE".into()),
+        })?,
     })
 }
 
@@ -707,6 +718,9 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.blocks_destroyed,
         s.feuds_forgotten,
         s.reattributed,
+        s.withdrawn,
+        s.peace_held,
+        s.notices_shown,
     ]);
     v
 }
@@ -753,6 +767,9 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.blocks_destroyed = n();
     s.feuds_forgotten = n();
     s.reattributed = n();
+    s.withdrawn = n();
+    s.peace_held = n();
+    s.notices_shown = n();
     s
 }
 
@@ -953,6 +970,7 @@ impl Conflict {
             w.bytes(&b);
         }
         put_presence(w, &self.presence);
+        w.u8(u8::from(self.peaceful));
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1003,6 +1021,7 @@ impl Conflict {
             c.outbox.push(cmd);
         }
         get_presence(r, &mut c.presence)?;
+        c.peaceful = r.u8()? != 0;
         Ok(c)
     }
 
