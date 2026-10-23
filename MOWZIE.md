@@ -466,13 +466,13 @@ checking other branches for the same ids):
 | 0x080E | CAMP_DEATH | Java to engine | faction, body kind, its slot and generation (none for a stray), chief flag, killer kind (a player, a mob, taken by Carry On, none) and UUID, op id; sent once per body UUID (§4.5); carried on a marker where the body was until acknowledged (§4.9) |
 | 0x080F | CAMP_CENSUS | Java to engine | faction, a new epoch, the footprint's bodies of the camp's kinds, each by slot and generation or as a stray by UUID; the camp's tagged bodies loaded elsewhere; chief present, crystal held, health; for the Umvuthi, its position and direction (the throne spot, §4.6), and the players it has traded with, with that body's slot and generation (§4.5) |
 | 0x0810 | TRADED | Java to engine | faction, player, gold nuggets that changed hands (the engine values them in coins at the grove market's price, as `Conflict::traded` takes coins), op id |
-| 0x0811 | NOTICE_SHOWN | Java to engine | faction, player |
+| 0x0811 | NOTICE_SHOWN | Java to engine | faction, player, the notice's serial (FACTION_NOTICE carries it) |
 | 0x0812 | CAMP_BODIES | Java to engine | the answer to a CAMP_RECONCILE: faction, epoch, the reconcile's op id, and per line its slot, generation and outcome (done, nothing to do, stale); carried on the bodies and markers it changed until acknowledged (§4.9) |
 | 0x0813 | CAMP_OUT | Java to engine | faction, the epoch that ended: a footprint chunk dropped below FULL (§4.9) |
 | 0x0814 | CHIEF_PAID | Java to engine | faction, the paid Umvuthi body's slot and generation (none for a stray), player, op id, the items paid; sent by the `rememberTrade` mixin on a player's first payment to that body (§4.5) |
+| 0x0815 | DIFFICULTY (journaled; 0x0093 retired, MZB-17) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x0091 | CHIEF_STATE (latest-wins) | Java to engine | faction, health, crystal held |
 | 0x0092 | HAVEN_CHEST (latest-wins) | Java to engine | faction, dimension, a grove chest's position, its free slots (as `LAIR_CHEST`) |
-| 0x0093 | DIFFICULTY (latest-wins) | Java to engine | the world's difficulty, sent at session start and on change |
 | 0x8807 | AMBUSH_SPOT | engine to Java | agent, epoch, faction, dimension, the track point, the body's spot, reach; flag removed (sent whenever the lurk ends, ledger 8) |
 | 0x8808 | CAMP_RECONCILE | engine to Java | faction, epoch, an op id derived from the faction, epoch and decision, and lines: slot, generation, kind, and an action (spawn, adopt a stray by UUID, take, set out with the party's agent and epoch, hand back a party's puppet by its agent and epoch, remove a slot's body or a stray by UUID, seat the heir in place of a dead slot's throne body), chief flag, crystal; for an Umvuthi's spawn, the throne spot and direction (§4.6) (§4.9) |
 | 0x8809 | TRAIN_ROBBED | engine to Java | faction, train id |

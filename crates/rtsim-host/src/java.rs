@@ -947,7 +947,12 @@ impl Java {
                     cb::Cmd::Territory(_)
                     | cb::Cmd::Notice(_)
                     | cb::Cmd::Steer(_)
-                    | cb::Cmd::Settled(_) => {}
+                    | cb::Cmd::Settled(_)
+                    | cb::Cmd::AmbushSpot(_)
+                    | cb::Cmd::Reconcile(_)
+                    | cb::Cmd::TrainRobbed(_)
+                    | cb::Cmd::ChiefBody(_)
+                    | cb::Cmd::March(_) => {}
                 },
                 Err(_) => self.undecoded += 1,
             },
@@ -1580,7 +1585,22 @@ impl Java {
                     st.body = self.java_of_engine(wire::DICT_BODY, st.body);
                 }
             }
-            C::Steer(_) | C::Recall(_) | C::Settled(_) => {}
+            C::AmbushSpot(a) => a.dimension = self.java_dim(a.dimension),
+            C::Reconcile(r) => {
+                for l in r.lines.iter_mut().filter(|l| l.body != 0) {
+                    l.body = self.java_of_engine(wire::DICT_BODY, l.body);
+                }
+            }
+            C::March(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                if m.culture != 0 {
+                    m.culture = self.java_of_engine(wire::DICT_CULTURE, m.culture);
+                }
+                for u in &mut m.units {
+                    u.0 = self.java_of_engine(wire::DICT_BODY, u.0);
+                }
+            }
+            C::Steer(_) | C::Recall(_) | C::Settled(_) | C::TrainRobbed(_) | C::ChiefBody(_) => {}
         }
         let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
         self.conflict_plugin.apply(vec![c.clone()], at);
