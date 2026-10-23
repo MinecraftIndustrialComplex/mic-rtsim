@@ -2474,4 +2474,359 @@ mod tests {
         let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
         assert_eq!(answer_one(&mut st, a).sentiment, 0);
     }
+    // ---- a camp (slice 4, TK71 to TK77) ------------------------------------------------------
+
+    /// A state with the two villages and the goblin camp 55 at (1300, 1000), found at [`NOW`];
+    /// the camp's index.
+    fn camp_world() -> (State, u32) {
+        let mut st = world();
+        let f = st
+            .conflict
+            .engine
+            .add_faction(
+                &mut st.phase1.world,
+                55,
+                "goblin",
+                Pos::new(0, 1_300, 1_000),
+                Tick(NOW),
+            )
+            .expect("goblins are a culture");
+        (st, f)
+    }
+
+    fn camp_actor(key: u64) -> TalkActor {
+        TalkActor {
+            class: class::CAMP,
+            a: key,
+            b: 0,
+        }
+    }
+
+    /// An order posting onto the board of the holder `key` names (a village or a camp).
+    fn cmd_on(key: u64, c: TalkReportCmd) -> TalkReportCmd {
+        TalkReportCmd { village: key, ..c }
+    }
+
+    const CAMP_ASK: u32 = ask::NEWS | ask::FACTION;
+
+    /// A camp's answer reads its chief's board: news from the camp's side is by us, news of the
+    /// camp's own losses to us, the player's own acts toward it are told as theirs, and the block
+    /// follows the news.
+    #[test]
+    fn a_camp_answers_with_its_chiefs_news_and_the_faction_block() {
+        let (mut st, f) = camp_world();
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Assault, 100, player(5), camp_actor(55), DAY),
+            ),
+        );
+        assert_eq!(st.talk.stats.posted, 2, "a camp's board takes TEST posts");
+        assert_eq!(st.talk.stats.post_refused, 0);
+
+        let f_ = answer_one(&mut st, ask_of(41, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f_.ask_id, 41);
+        assert_eq!(f_.flags, facts::HOLDER | facts::FACTION);
+        assert!(
+            f_.sentiment < 0,
+            "the chief saw the player assault the camp: {}",
+            f_.sentiment
+        );
+        assert_eq!((f_.scarcest, f_.glutted), (0, 0), "a camp talks no prices");
+        assert_eq!(f_.news.len(), 2);
+        let by_us = f_
+            .news
+            .iter()
+            .find(|n| n.kind == ReportKind::Raid as u16)
+            .unwrap();
+        assert_eq!(by_us.talk_flags & (news::BY_US | news::TO_US), news::BY_US);
+        assert_eq!((by_us.who.class, by_us.who.a), (class::CAMP, 55));
+        assert_eq!((by_us.whom.class, by_us.whom.a), (class::VILLAGE, 7));
+        let to_us = f_
+            .news
+            .iter()
+            .find(|n| n.kind == ReportKind::Assault as u16)
+            .unwrap();
+        assert_eq!(
+            to_us.talk_flags & (news::YOU_DID | news::TO_US | news::BY_US),
+            news::YOU_DID | news::TO_US,
+            "the camp itself is us, whatever the chief or the heir"
+        );
+
+        let b = f_.faction.expect("the ask wanted the block");
+        let x = &st.conflict.engine.factions[f as usize];
+        assert_eq!((b.rung, b.signal), (0, facts::faction::NO_SIGNAL));
+        assert_eq!(b.grievance, 0.0);
+        assert_eq!((b.cowed_ticks, b.plunders), (0, x.plunders));
+        assert_eq!(b.chief, Ref::default(), "M9's, never set yet");
+        assert_eq!(
+            b.mood,
+            facts::faction::mood::STRONG,
+            "a new camp has all its warriors and nothing else to say"
+        );
+        assert_eq!(st.talk.stats.with_faction, 1);
+        assert_eq!(st.talk.stats.with_holder, 1);
+        // The record carries the block after the news, and nothing else changed.
+        assert_eq!(f_.size(), facts::record_size(2, true), "48 + 2 x 120 + 48");
+    }
+
+    #[test]
+    fn the_faction_block_comes_only_when_asked_for_and_only_for_a_camp() {
+        let (mut st, _) = camp_world();
+        let plain = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, ask::NEWS));
+        assert_eq!(
+            plain.flags,
+            facts::HOLDER,
+            "no FACTION without the ask flag"
+        );
+        assert_eq!(plain.faction, None);
+        assert_eq!(plain.size(), facts::record_size(0, false));
+        // The block alone, without news.
+        let only = answer_one(
+            &mut st,
+            ask_of(2, ask::holder::FACTION, 55, 5, ask::FACTION),
+        );
+        assert_eq!(only.flags, facts::HOLDER | facts::FACTION);
+        assert!(only.news.is_empty());
+        assert!(only.faction.is_some());
+        assert_eq!(only.size(), 96);
+        // A village asked with the flag gets none: the flag is meant for camps.
+        let v = answer_one(&mut st, ask_of(3, ask::holder::VILLAGE, 7, 5, CAMP_ASK));
+        assert_eq!(v.flags, facts::HOLDER);
+        assert_eq!(v.faction, None);
+        // Nor does a caravan or a camp that is no camp.
+        let nobody = answer_one(&mut st, ask_of(4, ask::holder::FACTION, 56, 5, CAMP_ASK));
+        assert_eq!((nobody.flags, nobody.faction), (0, None));
+        assert_eq!(st.talk.stats.with_faction, 1);
+    }
+
+    #[test]
+    fn a_camp_is_unknown_while_the_conflict_is_off() {
+        let (mut st, _) = camp_world();
+        st.conflict.enabled = false;
+        let f = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f.flags, 0);
+        assert_eq!(f.faction, None);
+        assert!(f.news.is_empty());
+        // And the TEST order has no camp's board to post on.
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        assert_eq!(st.talk.stats.post_refused, 1);
+        st.conflict.enabled = true;
+        let f = answer_one(&mut st, ask_of(2, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(f.flags, facts::HOLDER | facts::FACTION);
+    }
+
+    #[test]
+    fn a_camp_with_no_chief_answers_from_its_heir_and_with_neither_from_nobody() {
+        let (mut st, f) = camp_world();
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Raid, 3, camp_actor(55), village(7), DAY),
+            ),
+        );
+        let (chief, heir) = {
+            let x = &st.conflict.engine.factions[f as usize];
+            (x.chief, x.heir)
+        };
+        // The chief falls, and what it held (the raid it told of) passes to the heir.
+        st.phase1.world.knowledge.die(chief, Tick(NOW));
+        let a = answer_one(&mut st, ask_of(1, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(a.flags, facts::HOLDER | facts::FACTION);
+        assert_eq!(a.news.len(), 1, "the heir inherited the chief's board");
+        assert_eq!(a.news[0].talk_flags & news::BY_US, news::BY_US);
+        // The heir too: the camp is still known, with nothing to tell.
+        st.phase1.world.knowledge.die(heir, Tick(NOW));
+        let n = answer_one(&mut st, ask_of(2, ask::holder::FACTION, 55, 5, CAMP_ASK));
+        assert_eq!(n.flags, facts::HOLDER | facts::FACTION);
+        assert_eq!(n.sentiment, 0);
+        assert!(n.news.is_empty());
+        assert!(n.faction.is_some());
+    }
+
+    /// A feud against the asker shows in the block; another player is a stranger to it.
+    #[test]
+    fn the_block_carries_the_feud_against_the_asker_and_not_against_another() {
+        use rtsim_conflict::SignalKind;
+        use rtsim_conflict::engine::Signal;
+        let (mut st, _) = camp_world();
+        // The player is known to phase 1 once something names them.
+        post(
+            &mut st,
+            &cmd_on(
+                55,
+                cmd(ReportKind::Assault, 100, player(5), camp_actor(55), DAY),
+            ),
+        );
+        let uuid = (5, 6);
+        let p = st.phase1.world.player_uuid(uuid.0, uuid.1);
+        let w = &mut st.phase1.world;
+        st.conflict.engine.player(w, uuid);
+        st.conflict.engine.signal(
+            w,
+            Signal {
+                faction: Some(55),
+                kind: SignalKind::Killing,
+                amount: 3.0,
+                actor: p,
+                pos: Pos::new(0, 1_300, 1_000),
+                district: None,
+            },
+            Tick(NOW),
+        );
+        let b = answer_one(
+            &mut st,
+            ask_of(1, ask::holder::FACTION, 55, 5, ask::FACTION),
+        )
+        .faction
+        .unwrap();
+        let view = st.conflict.engine.feud_view(55, p).unwrap();
+        assert_eq!(b.rung, view.step as u8);
+        assert_eq!(b.signal, SignalKind::Killing as u16);
+        assert!(b.grievance > 0.0);
+        assert!((f64::from(b.grievance) - view.grievance).abs() < 1e-3 * view.grievance);
+        // A player the camp has no feud with.
+        let q = answer_one(
+            &mut st,
+            ask_of(2, ask::holder::FACTION, 55, 9, ask::FACTION),
+        )
+        .faction
+        .unwrap();
+        assert_eq!((q.rung, q.signal, q.grievance), (0, 0xFFFF, 0.0));
+    }
+
+    /// The moods of a camp, read at the engine's time, through the real tables.
+    #[test]
+    fn the_block_gives_a_camps_moods_through_the_real_engine() {
+        use facts::faction::mood;
+        let (mut st, f) = camp_world();
+        let ask = |id| ask_of(id, ask::holder::FACTION, 55, 5, ask::FACTION);
+        let moods = |st: &mut State, id| answer_one(st, ask(id)).faction.unwrap();
+        // Cowed for 5,000 more ticks, with the war chief out, the pool a quarter of its cap.
+        {
+            let x = &mut st.conflict.engine.factions[f as usize];
+            x.cowed_until = Tick(NOW + 5_000);
+            x.chief_out = true;
+            x.pool = 10.0;
+            x.pool_at = Tick(NOW);
+        }
+        let b = moods(&mut st, 1);
+        assert_eq!(b.mood, mood::COWED | mood::CHIEF_OUT | mood::LEAN);
+        assert_eq!(b.cowed_ticks, 5_000);
+        // A succession in the last ten days: a new chief.
+        st.conflict.engine.factions[f as usize].chiefs = 3;
+        let b = moods(&mut st, 2);
+        assert_eq!(
+            b.mood,
+            mood::COWED | mood::CHIEF_OUT | mood::LEAN | mood::NEW_CHIEF
+        );
+        // Time passes: not cowed, not new once ten days are over; the pool recruited back.
+        st.phase1.world.run_until(Tick(NOW + NEW_CHIEF_TICKS + 1));
+        {
+            let x = &mut st.conflict.engine.factions[f as usize];
+            x.chief_out = false;
+            x.pool = 60.0;
+            x.pool_at = Tick(NOW);
+        }
+        let b = moods(&mut st, 3);
+        assert_eq!(b.mood, mood::STRONG);
+        assert_eq!(b.cowed_ticks, 0);
+    }
+
+    // The moods themselves, at their edges.
+
+    fn facts_of(chiefs: u32, pool: f64, cap: f64) -> FactionFacts {
+        let (st, _) = camp_world();
+        let mut ff = faction_facts(&st.conflict.engine, 55, None).unwrap();
+        ff.chiefs = chiefs;
+        ff.pool = pool;
+        ff.pool_cap = cap;
+        ff.now = Tick(NOW);
+        ff
+    }
+
+    #[test]
+    fn lean_is_under_a_third_of_the_cap_and_strong_is_the_cap_within_half_a_warrior() {
+        use facts::faction::mood::{LEAN, STRONG};
+        let m = |pool, cap| faction_block(&facts_of(2, pool, cap), None, Tick(NOW)).mood;
+        assert_eq!(m(19.9, 60.0), LEAN);
+        assert_eq!(m(20.0, 60.0), 0, "exactly a third is not lean");
+        assert_eq!(m(0.0, 60.0), LEAN);
+        assert_eq!(m(59.5, 60.0), STRONG);
+        assert_eq!(m(59.4, 60.0), 0);
+        assert_eq!(m(60.0, 60.0), STRONG);
+        // A culture with no cap has neither.
+        assert_eq!(m(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_chief_is_new_for_ten_days_after_a_succession_and_never_before_one() {
+        use facts::faction::mood::NEW_CHIEF;
+        let now = Tick(NOW);
+        let m = |chiefs, born: Option<u64>| {
+            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), now).mood & NEW_CHIEF
+        };
+        assert_eq!(m(3, Some(NOW)), NEW_CHIEF);
+        assert_eq!(
+            m(3, Some(NOW + 1)),
+            NEW_CHIEF,
+            "a heir born in the future: not past"
+        );
+        assert_eq!(m(3, Some(NOW - NEW_CHIEF_TICKS + 1)), NEW_CHIEF);
+        assert_eq!(m(3, Some(NOW - NEW_CHIEF_TICKS)), 0);
+        assert_eq!(
+            m(2, Some(NOW)),
+            0,
+            "the founding chief was never succeeded to"
+        );
+        assert_eq!(m(3, None), 0, "a heir that is gone says nothing");
+        assert_eq!(NEW_CHIEF_TICKS, 10 * DAY);
+    }
+
+    #[test]
+    fn the_block_codes_the_rung_the_signal_and_the_cowing_and_never_says_you_killed_the_chief() {
+        use rtsim_conflict::{SignalKind, Step};
+        let mut ff = facts_of(2, 30.0, 60.0);
+        ff.step = Step::Siege;
+        ff.signal = Some(SignalKind::Building);
+        ff.grievance = 12.5;
+        ff.plunders = 7;
+        ff.cowed_until = Tick(u64::MAX);
+        let b = faction_block(&ff, None, Tick(NOW));
+        assert_eq!(b.rung, 6);
+        assert_eq!(b.signal, 5);
+        assert_eq!(b.grievance, 12.5);
+        assert_eq!(b.plunders, 7);
+        assert_eq!(b.cowed_ticks, u32::MAX, "saturates");
+        assert_eq!(b.mood & facts::faction::mood::YOU_KILLED_CHIEF, 0);
+        assert_eq!(
+            b.mood & facts::faction::mood::COWED,
+            facts::faction::mood::COWED
+        );
+        for (kind, code) in SignalKind::ALL.iter().zip(0u16..) {
+            ff.signal = Some(*kind);
+            assert_eq!(faction_block(&ff, None, Tick(NOW)).signal, code);
+        }
+        ff.signal = None;
+        ff.cowed_until = Tick(NOW);
+        let b = faction_block(&ff, None, Tick(NOW));
+        assert_eq!(b.signal, 0xFFFF);
+        assert_eq!(b.cowed_ticks, 0, "cowed until now is not cowed");
+        assert_eq!(b.mood & facts::faction::mood::COWED, 0);
+    }
 }

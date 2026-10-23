@@ -3991,6 +3991,133 @@ mod conflict {
         (dir, e, j)
     }
 
+    /// One TALK_ASK in the open buffer, a step, and the answer: its record's size and its facts.
+    fn ask_holder(
+        j: &mut Java,
+        id: u64,
+        kind: u32,
+        holder: u64,
+        player: (u64, u64),
+        flags: u32,
+    ) -> Option<(usize, rtsim_jni::talk_wire::Facts)> {
+        use rtsim_jni::talk_wire::{Ask, Facts, encode_asks};
+        let dimension = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let rec = encode_asks(&[Ask {
+            id,
+            player,
+            holder_kind: kind,
+            dimension,
+            holder,
+            x: CAMP_AT.0,
+            z: CAMP_AT.1,
+            flags,
+        }]);
+        if j.preamble() {
+            assert!(j.copy(&rec), "room for a TALK_ASK");
+        }
+        j.idle();
+        j.talk_facts.iter().find_map(|b| {
+            Facts::decode(b)
+                .ok()
+                .filter(|(_, f)| f.ask_id == id)
+                .map(|(_, f)| (b.len(), f))
+        })
+    }
+
+    /// TALK slice 4 (docs/boundary.md §13.2, §13.3): a camp is asked about by its faction key
+    /// (holder kind 3) and answers, over the real protocol, with its chief's news and the 48-byte
+    /// faction block after the news. A stranger finds the camp at rung 0 with no signal; after a
+    /// killing the block carries the feud as the engine's own view has it; the chief's board takes
+    /// a TEST post, and the news comes back told from the camp's side.
+    #[test]
+    fn a_camp_is_asked_about_and_answers_with_its_chiefs_news_and_the_faction_block() {
+        use rtsim_jni::orders::{TalkActor, TalkReportCmd};
+        use rtsim_jni::talk_wire::{ask, facts, news, reference};
+        let (_dir, e, mut j) = camp("conflict-talk-camp");
+        let both = ask::NEWS | ask::FACTION;
+        let kind = ask::holder::FACTION;
+
+        // A stranger: the camp is known, nobody has any quarrel, no news.
+        let (len, f) = ask_holder(&mut j, 1, kind, CAMP, PLAYER2, both).expect("answered");
+        assert_eq!(f.flags, facts::HOLDER | facts::FACTION);
+        assert!(f.news.is_empty());
+        assert_eq!(len, facts::record_size(0, true), "48 + 48");
+        let b = f.faction.expect("the block");
+        assert_eq!(
+            (b.rung, b.signal, b.grievance),
+            (0, facts::faction::NO_SIGNAL, 0.0)
+        );
+        assert_eq!(
+            b.chief,
+            rtsim_jni::talk_wire::Ref::default(),
+            "M9's, never set yet"
+        );
+        assert_eq!(b.mood & facts::faction::mood::YOU_KILLED_CHIEF, 0);
+        assert_eq!(e.talk_stats().with_faction, 1);
+
+        // Without the flag there is no block: the record is what it was before slice 4.
+        let (len, f) = ask_holder(&mut j, 2, kind, CAMP, PLAYER2, ask::NEWS).unwrap();
+        assert_eq!((f.flags, f.faction, len), (facts::HOLDER, None, 48));
+
+        // Not a camp: a village asked by the camp's key, and a camp nobody founded.
+        let (_, f) = ask_holder(&mut j, 3, ask::holder::VILLAGE, CAMP, PLAYER2, both).unwrap();
+        assert_eq!((f.flags, f.faction), (0, None));
+        let (_, f) = ask_holder(&mut j, 4, kind, CAMP + 1, PLAYER2, both).unwrap();
+        assert_eq!((f.flags, f.faction), (0, None));
+
+        // A killing at the camp: the block carries the feud as the engine's view has it.
+        signal(&mut j, 4, 60, PLAYER);
+        j.idle();
+        let view = feud(&e, PLAYER).expect("a feud with the killer");
+        let (_, f) = ask_holder(&mut j, 5, kind, CAMP, PLAYER, both).unwrap();
+        let b = f.faction.unwrap();
+        assert_eq!(b.signal, 4, "killing, FACTION_NOTICE's code");
+        assert_eq!(b.rung, view.step as u8);
+        assert!(
+            (f64::from(b.grievance) - view.grievance).abs() <= 0.02 * view.grievance,
+            "{} against {}",
+            b.grievance,
+            view.grievance
+        );
+        // Another player is still a stranger to it.
+        let (_, f) = ask_holder(&mut j, 6, kind, CAMP, PLAYER2, both).unwrap();
+        assert_eq!(f.faction.unwrap().rung, 0);
+
+        // The chief's board takes a TEST post, and the camp tells it as its own.
+        e.order(vec![Order::TalkReport(TalkReportCmd {
+            village: CAMP,
+            kind: rtsim_knowledge::ReportKind::Raid as u16,
+            severity: 3,
+            flags: 0,
+            who: TalkActor {
+                class: reference::class::CAMP,
+                a: CAMP,
+                b: 0,
+            },
+            whom: TalkActor {
+                class: reference::class::UNKNOWN,
+                a: 0,
+                b: 0,
+            },
+            x: CAMP_AT.0,
+            z: CAMP_AT.1,
+            ago: 1_000,
+        })])
+        .unwrap();
+        j.idle();
+        assert_eq!(e.talk_stats().posted, 1);
+        let (len, f) = ask_holder(&mut j, 7, kind, CAMP, PLAYER2, both).unwrap();
+        assert_eq!(f.news.len(), 1);
+        assert_eq!(len, facts::record_size(1, true), "48 + 120 + 48");
+        let n = &f.news[0];
+        assert_eq!(n.kind, rtsim_knowledge::ReportKind::Raid as u16);
+        assert_eq!(n.talk_flags & (news::BY_US | news::TO_US), news::BY_US);
+        assert_eq!((n.who.class, n.who.a), (reference::class::CAMP, CAMP));
+        assert!(f.faction.is_some());
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// DIFFICULTY, journaled at the present game time (MZB-17).
     fn difficulty(j: &mut Java, difficulty: u32) {
         let seq = j.conflict_obs(&O::Difficulty(cb::Difficulty { difficulty }));
