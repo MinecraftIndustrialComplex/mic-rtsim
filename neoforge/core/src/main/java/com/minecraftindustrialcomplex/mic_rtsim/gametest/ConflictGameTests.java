@@ -341,6 +341,8 @@ public final class ConflictGameTests {
                     check("two stacks", p.stacks().size() == 2);
                     for (ConflictBridge.Stack s : p.stacks())
                         check("stack " + s.index + " placed", s.state() == ConflictBridge.StackState.PLACED);
+                    // Journaled at the placing; it reaches received() at the next hand-over.
+                    check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty());
                 })
                 .thenExecute(() -> {
                     ConflictBridge.Party p = party(agent);
@@ -515,6 +517,8 @@ public final class ConflictGameTests {
                 .thenWaitUntil(() -> {
                     check("party A placed", party(a).stacks().size() == 1 && party(a).stacks().get(0).bodies().size() == 3);
                     check("party B placed", party(b).stacks().size() == 1 && party(b).stacks().get(0).bodies().size() == 1);
+                    // Journaled at the placing; it reaches received() at the next hand-over.
+                    check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, a).isEmpty());
                 })
                 .thenExecute(() -> {
                     check("one group: one stack", party(a).stacks().get(0).state() == ConflictBridge.StackState.PLACED);
@@ -908,7 +912,7 @@ public final class ConflictGameTests {
      * The feud driven to a raid on the native engine (MOWZIE.md §9 M3), at a place far from every earlier
      * run's with forced chunks standing in for the simulation distance. A goblin camp reported (a structure
      * the goblin culture claims) gets its territory back (TERRITORY, radius 400). A player 40 blocks off
-     * kills sixteen of the camp's kin there: one TERRITORY_SIGNAL (killing, 4), and the tribe takes notice
+     * kills 32 of the camp's kin there: one TERRITORY_SIGNAL (killing, 4), and the tribe takes notice
      * (FACTION_NOTICE, its sound played to the player, who stands inside). The phase 1 world's clock, which
      * the conflict runs on, is moved on 1,200 ticks at a time (P1_ADVANCE) with the player reporting where
      * it stands before each: the envoy comes into view (ENVOY_MATERIALIZE) asking emeralds or the killing
@@ -931,7 +935,10 @@ public final class ConflictGameTests {
         int bx = base[0] + 8, bz = base[1] + 8; // the camp; the player 40 blocks east
         int px = bx + 40;
         String kinTag = "mic_rtsim_test_goblin_kin";
-        int kills = 16; // killing weighs 8: grievance 128, past the raid's 70 after the climb's days of decay
+        // Killing weighs 8: grievance 256. The chief's temper bends each rung's threshold up to 1/0.6 of
+        // the culture's (the raid's 70 to 117), and the climb to the raid takes about three days of a
+        // six-day half-life (to 181): past it for any chief. Sixteen kills (128) fell short of a meek one.
+        int kills = 32;
         int step = 1_200; // under the conflict's player_stale_ticks (2,400): the player keeps watching
         List<Long> forced = new ArrayList<>();
         java.util.function.BiConsumer<Integer, Integer> force = (cx, cz) -> {
