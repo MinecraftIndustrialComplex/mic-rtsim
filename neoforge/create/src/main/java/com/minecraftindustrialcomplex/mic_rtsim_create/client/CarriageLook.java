@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.client;
 
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLookReset;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarModel;
 import com.minecraftindustrialcomplex.mic_rtsim.far.CarriageShape;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
@@ -127,6 +128,8 @@ public final class CarriageLook implements FarLook {
     /** Shapes that would not decode or bake: drawn as boxes until the client leaves the world. */
     private final LongOpenHashSet failed = new LongOpenHashSet();
     private Job job;
+    /** The far feed's last RESET, until what nobody asked for again since is freed (DHT70). */
+    private final FarLookReset resets = new FarLookReset();
     private long clock, lastSweep;
     private int errors;
     private long bakes, bakeNanos, uploadNanos, bakeFrames, badBlocks;
@@ -180,6 +183,8 @@ public final class CarriageLook implements FarLook {
             lastSweep = now;
             sweep(now);
         }
+        if (resets.due(now))
+            freeUnasked();
         long t0 = System.nanoTime();
         while (System.nanoTime() < deadline) {
             if (job == null && (job = next()) == null)
@@ -396,18 +401,6 @@ public final class CarriageLook implements FarLook {
 
     @Override
     public void clear() {
-        reset();
-        failed.clear();
-        BogeyMeshes.clear();
-    }
-
-    /**
-     * The far feed started over (docs/choices-dh-feed.md DHT70): the bake under way and every carriage's mesh go;
-     * the bogeys' meshes the prewarm drew stay, so the next bake pays no cold first draw, as do the shapes that
-     * would not bake (a hash names its blocks, so they would not bake again).
-     */
-    @Override
-    public void reset() {
         if (job != null) {
             job.abandon();
             job = null;
@@ -416,6 +409,32 @@ public final class CarriageLook implements FarLook {
             m.close();
         meshes.clear();
         wanted.clear();
+        resets.clear();
+        failed.clear();
+        BogeyMeshes.clear();
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the meshes and asks of carriages no mover asks for
+     * again within {@link FarLookReset#GRACE_NANOS} go then ({@link #freeUnasked}); the bogeys' meshes the prewarm
+     * drew stay, so the next bake pays no cold first draw, as do the shapes that would not bake (a hash names its
+     * blocks, so they would not bake again).
+     */
+    @Override
+    public void reset() {
+        resets.reset(clock);
+    }
+
+    /** A RESET's grace is over: frees the meshes and forgets the asks no mover asked for since. */
+    private void freeUnasked() {
+        for (var it = meshes.long2ObjectEntrySet().fastIterator(); it.hasNext(); ) {
+            Long2ObjectMap.Entry<Mesh> e = it.next();
+            if (resets.stale(e.getValue().used)) {
+                e.getValue().close();
+                it.remove();
+            }
+        }
+        wanted.long2LongEntrySet().removeIf(e -> resets.stale(e.getLongValue()));
     }
 
     @Override
