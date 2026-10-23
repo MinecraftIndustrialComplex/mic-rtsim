@@ -212,7 +212,10 @@ fn kill_all_pirates() {
                 )
             });
             let n = c.ships.havens[h as usize].counts;
-            assert_eq!(n.shuts, 0, "seed {seed}: a kill-all is answered by refits (PC4)");
+            assert_eq!(
+                n.shuts, 0,
+                "seed {seed}: a kill-all is answered by refits (PC4)"
+            );
             let col = [0, 0, 3, 3][i];
             if harsh {
                 out[col + 2] = all;

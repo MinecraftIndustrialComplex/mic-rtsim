@@ -853,11 +853,16 @@ fn a_lane_passed_to_another_haven_keeps_its_raids_in_transit() {
             if !passed[usize::from(dir)] {
                 passed[usize::from(dir)] = c.world.set_lane_hazard(edge, dir, second, 300, 4, t);
                 refused += u32::from(!passed[usize::from(dir)]);
-                c.world.check_conserved(t).expect("conserved at the hand-over");
+                c.world
+                    .check_conserved(t)
+                    .expect("conserved at the hand-over");
             }
         }
     }
-    assert!(refused > 0, "raids were in transit when the first haven left");
+    assert!(
+        refused > 0,
+        "raids were in transit when the first haven left"
+    );
     let end = Tick::from_days(8);
     c.world.run_until(end);
     c.world.check_conserved(end).expect("conserved");
