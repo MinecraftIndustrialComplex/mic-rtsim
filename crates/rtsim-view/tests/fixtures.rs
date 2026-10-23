@@ -4,8 +4,10 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit dd15c3f
-//!   (EQUILIBRIUM.md S2 on main a92c5f3: the herds' pages are VERSION 4, each herd row its range's
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 5df24a7
+//!   (Mowzie M2 on main f1b769c: the phase 1 world's catalogue has 10 goods, `gold_nugget` last;
+//!   the conflict page saves each faction's crystal, the destroyed loot and the repeats; a node
+//!   may be a lair, tag 3. From dd15c3f, EQUILIBRIUM.md S2: the herds' pages are VERSION 4, each herd row its range's
 //!   K, range, home and vacancy; an industry district's glass state is a page of table 0x4903
 //!   starting with IGL1, and the industry globals end with the glass counters and records
 //!   received; the dragons' pages are RTD6 and RTN6, the nest table; an industry district page
@@ -16,7 +18,7 @@
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
-//!   dd15c3f (the same formats). Every module's pages, mostly empty: herds, districts with their
+//!   5df24a7 (the same formats). Every module's pages, mostly empty: herds, districts with their
 //!   glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
