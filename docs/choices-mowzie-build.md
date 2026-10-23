@@ -673,6 +673,22 @@ under its own heading.
   with 1,500 filler records between the recall and the despawn on a `MIN_CAPACITY` engine; fails on
   the old `simulate` (12, not 10). The jni test helper `reopen_with` takes the capacity and hands
   the journal over until Java has sent it all.
+- **MZB-142** (a walk-off death counts live as in the replay; re-review P2-2): MZB-138 counted a
+  BAND_CASUALTIES for a band that is not embodied off its recalled stack only while `replaying`.
+  Live, the same record after a recall (the player left, the band walks off, a mob or the player
+  kills a member before the despawn) was dropped at the `embodied` check, so a restart's replay
+  counted a death, a killing signal and a breaker the session itself never did (casualties 0 vs 1,
+  grievance 15.999 vs 23.999, breaker None vs Some, in the reviewer's run). The `replaying` term is
+  gone: a casualty for a band not embodied counts when it holds a recalled stack of the record's
+  epoch, replaying or not. The despawn removes the stack, so a straggler after it is still no
+  death, and the despawn counts only the dead nobody reported (units and stack went down together,
+  no double count). The decision is to count it in both (the member did die, and a player's kill is
+  an act against the faction wherever it happens). The rout and boredom branches of `casualties` need
+  Phase::Fighting, which the player-left recall turns into Waiting at once, so a walk-off death
+  never routs a band live either (as in a replay, MZB-138). `replaying` now only says that the
+  stacks kept by a session start are dropped at `replay_done`. Test: the same player's killing of a
+  recalled band ingested live and by a restart (casualties, alive, breaker, grievance equal and
+  not zero), the despawn after it and a straggler after that; fails on the old rule (casualties 0).
 
 ## M4 Camp reconciler, engine
 
