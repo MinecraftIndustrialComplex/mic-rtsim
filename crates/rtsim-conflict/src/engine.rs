@@ -4912,11 +4912,12 @@ impl Conflict {
         let Some(p) = self.party_of(cs.agent, cs.epoch) else {
             return;
         };
-        // A casualty of the last session's bodies, replayed: the session start kept them as a
-        // recalled stack of their epoch, and these deaths are counted off it (MZB-138).
-        let replayed = !self.parties[p].embodied
-            && self.replaying
-            && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
+        // A casualty of bodies kept as a recalled stack of their epoch: the walk-off's deaths of a
+        // band the player left, and a replay's, whose session start kept the last session's
+        // bodies the same way (MZB-138). Both are counted off that stack, whether replaying or
+        // live (MZB-142). The despawn removes the stack, so a straggler after it is no death.
+        let replayed =
+            !self.parties[p].embodied && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
         if !self.parties[p].embodied && !replayed {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;

@@ -1540,6 +1540,76 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
     );
 }
 
+/// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
+/// and before its despawn, counts the same live as in a replay. The live run used to return at
+/// once (the band is not embodied), so the replay of the same record counted a death, a signal
+/// and a breaker the session itself never did.
+#[test]
+fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch
+    };
+    let alive = r.c.parties[band].alive();
+    assert!(alive >= 4, "a band to lose members from ({alive})");
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    let killing = Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_PLAYER,
+        body,
+        count: 2,
+        killer: synth::PLAYER,
+    });
+    // The restart that replays it: the bodies the pages held are a recalled stack.
+    let mut replayed = restarted(&r);
+    assert!(replayed.replaying);
+    // The session that went on: the player left, the band was recalled, its bodies walk off.
+    let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    {
+        let x = &mut live.parties[band];
+        x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
+        x.embodied = false;
+    }
+    assert!(!live.replaying);
+    let at = r.c.now() + 1;
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at);
+    }
+    let grievance = |c: &Conflict| c.feud_view(synth::CAMP, r.p).unwrap().grievance;
+    assert_eq!(live.stats.casualties, 2, "the walk-off's dead are counted");
+    assert_eq!(replayed.stats.casualties, live.stats.casualties);
+    assert_eq!(live.parties[band].alive(), alive - 2);
+    assert_eq!(replayed.parties[band].alive(), live.parties[band].alive());
+    assert_eq!(live.parties[band].breaker, Some(r.p), "the killer is known");
+    assert_eq!(replayed.parties[band].breaker, live.parties[band].breaker);
+    assert!(
+        grievance(&live) > grievance(&r.c),
+        "and the killing is held against them"
+    );
+    assert_eq!(grievance(&replayed), grievance(&live));
+    // The despawn then counts only the dead nobody reported: no double count, live or replayed.
+    let despawn = despawn_with(&r, band, epoch, 3);
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at + 1);
+        assert_eq!(c.parties[band].alive(), alive - 3);
+        assert!(c.parties[band].recalled.is_empty());
+    }
+    // A straggler after the despawn is no death.
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at + 2);
+        assert_eq!(c.parties[band].alive(), alive - 3);
+    }
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
