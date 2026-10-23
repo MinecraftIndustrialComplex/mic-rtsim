@@ -542,6 +542,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    // A record of an earlier session is a replay: a camp's census in it only marks its camp out
+    // (MOWZIE.md §4.9), its bodies not being the world as it is now.
+    let replaying = wire::u64_at(rec.bytes, obs::OBS_SEQ) < st.session_first;
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
@@ -563,7 +566,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
     let at = Tick(phase1::world_tick(st, gt));
+    st.conflict.engine.replaying = replaying;
     ingest(st, &o, at);
+    st.conflict.engine.replaying = false;
 }
 
 /// Applies one record at `at` (the modules were run to its time by the caller: the shared clock).
