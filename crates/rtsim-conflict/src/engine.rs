@@ -230,8 +230,11 @@ pub struct Party {
     pub units: Vec<(u8, u32)>,
     /// In Minecraft now, by unit index.
     pub spawned: Vec<(u8, u32)>,
-    /// In Minecraft when the engine recalled it, until the plugin counts the survivors.
-    pub recalled: Vec<(u8, u32)>,
+    /// In Minecraft when the engine recalled it, by the epoch recalled, until the plugin counts
+    /// that epoch's survivors (BAND_DEMATERIALIZED names the epoch it despawns). A band seen
+    /// again at a new epoch while an older one walks off keeps both, so each epoch's dead are
+    /// counted once, against its own bodies (MZB-131).
+    pub recalled: Vec<(u32, Vec<(u8, u32)>)>,
     pub start_units: u32,
     pub target: Target,
     pub frame: u16,
@@ -3541,10 +3544,19 @@ impl Conflict {
         let x = &mut self.parties[p];
         if x.embodied && x.epoch == epoch {
             let s = std::mem::take(&mut x.spawned);
-            for (u, n) in s {
-                match x.recalled.iter_mut().find(|e| e.0 == u) {
-                    Some(e) => e.1 += n,
-                    None => x.recalled.push((u, n)),
+            if !s.is_empty() {
+                let i = match x.recalled.iter().position(|e| e.0 == epoch) {
+                    Some(i) => i,
+                    None => {
+                        x.recalled.push((epoch, Vec::new()));
+                        x.recalled.len() - 1
+                    }
+                };
+                for (u, n) in s {
+                    match x.recalled[i].1.iter_mut().find(|e| e.0 == u) {
+                        Some(e) => e.1 += n,
+                        None => x.recalled[i].1.push((u, n)),
+                    }
                 }
             }
             x.embodied = false;
@@ -4586,9 +4598,20 @@ impl Conflict {
                 }
             }
             Obs::Dematerialized(d) => {
-                let Some(p) = self.party_of(d.agent, d.epoch) else {
+                // By the party, not through `party_of`: a band recalled at one epoch and seen
+                // again at the next has its old epoch's despawn still to come (MZB-131).
+                let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
                     return;
                 };
+                let live = {
+                    let x = &self.parties[p];
+                    x.embodied && x.epoch == d.epoch
+                };
+                let entry = self.parties[p].recalled.iter().position(|e| e.0 == d.epoch);
+                if !live && entry.is_none() {
+                    // Nothing of that epoch is in Minecraft by the engine's books: stale.
+                    return;
+                }
                 let f = self.parties[p].faction;
                 let c = self.culture(f).clone();
                 let back_of =
@@ -4607,7 +4630,7 @@ impl Conflict {
                     .map(|&u| back_of(u, &self.java_dict, &self.cultures))
                     .collect();
                 let x = &mut self.parties[p];
-                if x.embodied {
+                if live {
                     // The plugin despawned it (its chunks unloaded): alive are those never
                     // spawned plus the survivors it counts.
                     for (k, e) in x.units.iter_mut().enumerate() {
@@ -4617,14 +4640,20 @@ impl Conflict {
                     x.spawned.clear();
                     x.embodied = false;
                     x.seen_by = None;
-                } else {
-                    // After the engine's recall: only those that died on the way out go.
+                } else if let Some(i) = entry {
+                    // After the engine's recall: only those that died on the way out go. The
+                    // band may be in view again at a newer epoch, spawned from the counts before
+                    // these deaths were known: its bodies are clamped to who is alive.
+                    let (_, recalled) = x.recalled.remove(i);
                     for (k, e) in x.units.iter_mut().enumerate() {
-                        let r = x.recalled.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
+                        let r = recalled.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
                         e.1 = e.1.saturating_sub(r.saturating_sub(backs[k]));
                     }
+                    for s in &mut x.spawned {
+                        let alive = x.units.iter().find(|e| e.0 == s.0).map_or(0, |e| e.1);
+                        s.1 = s.1.min(alive);
+                    }
                 }
-                x.recalled.clear();
             }
             Obs::Casualties(cs) => self.casualties(w, cs, at),
             Obs::ChiefKilled(ck) => {

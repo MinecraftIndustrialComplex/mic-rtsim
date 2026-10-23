@@ -512,6 +512,22 @@ under its own heading.
   checks it with a bystander after the settlers' demand (to anyone) is withdrawn: the guard chats with
   him, is WARY, and says no reason line and no insult; it does not chat with the player it has a reason
   against, and the envoy chats with no one.
+- **MZB-131** (a band seen again while an old epoch walks off; review item 12): a band recalled with
+  RECALL_PASSING and seen again at the next epoch (a player ahead of it on its road) has its old
+  epoch's BAND_DEMATERIALIZED still to come. The engine matched a despawn to the party's current epoch
+  only, so the old one was dropped and `recalled` never cleared: the members who died on the walk came
+  back, and the next recall, adding its bodies to the stale count, took the whole band's alive count
+  with it. Now `Party::recalled` is `(epoch, stacks)` per epoch recalled (`recall` merges the bodies it
+  takes out of view into its epoch's entry); a despawn names its party by agent and is read three ways:
+  the current epoch in view is the plugin despawning it (as before), an epoch with an entry has the
+  entry removed and its dead (`recalled - survivors`) taken off the alive counts, with the bodies in
+  view now clamped to who is left, and any other is stale and ignored. Fork: the live branch no longer
+  clears `recalled` (older epochs' walk-offs are still to come); a session start still does. The conflict
+  pages are RTC5 with meta version 4 (the party row's `recalled` is a count of epochs, each a var epoch
+  and its stacks), with no migration; M2's unbumped changes (crystal, destroyed loot, repeats) ride on
+  that bump. `FakeConflict::walk_off_deaths` takes that many off a recalled band's survivors, first
+  stacks first. The rtsim-jni test fails on the old engine (alive 12, not 10, once the old despawn
+  is past) and its second recall (the player gone stale) leaves the count alone.
 
 ## M4 Camp reconciler, engine
 

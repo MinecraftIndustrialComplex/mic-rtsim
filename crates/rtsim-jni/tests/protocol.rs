@@ -4153,6 +4153,17 @@ mod conflict {
     /// Orders a war party of `kind` from the camp at `BASE` for `PLAYER`'s feud, now, the feud on
     /// `step` (made first by a small signal).
     fn order(e: &Engine, j: &mut Java, kind: PartyKind, step: Step) -> Handle<Party> {
+        order_to(e, j, kind, step, BASE)
+    }
+
+    /// [`order`] toward a place of its own.
+    fn order_to(
+        e: &Engine,
+        j: &mut Java,
+        kind: PartyKind,
+        step: Step,
+        to: (i32, i32),
+    ) -> Handle<Party> {
         signal(j, 2, 30, PLAYER);
         j.idle();
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD) as u16;
@@ -4160,7 +4171,7 @@ mod conflict {
         let p = e.with_conflict_mut(|c, w| {
             let a = c.player(w, PLAYER);
             let at = at.max(c.now());
-            let target = Target::Pos(Pos::new(dim, BASE.0, BASE.1));
+            let target = Target::Pos(Pos::new(dim, to.0, to.1));
             let p = c
                 .order_party(w, CAMP, kind, target, Some(a), at)
                 .expect("ordered");
@@ -4280,6 +4291,105 @@ mod conflict {
         assert!(recalls(&j, from, p).is_empty(), "nothing to recall");
         assert_eq!(e.conflict_stats().0.peace_held, held + 1);
         assert_eq!(feud(&e, PLAYER).unwrap().step, Step::Siege);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The party's alive count, its epoch, whether it is in view, whether the engine still
+    /// waits for a walk-off's count, and its bodies in Minecraft by the engine's books.
+    fn books(e: &Engine, p: Handle<Party>) -> (u32, u32, bool, bool, u32) {
+        e.with_conflict(|c, _| {
+            let x = &c.parties[p];
+            (
+                x.alive(),
+                x.epoch,
+                x.embodied,
+                !x.recalled.is_empty(),
+                x.spawned.iter().map(|s| s.1).sum(),
+            )
+        })
+    }
+
+    /// MZB-131 (item 12): a band passing by is recalled (RECALL_PASSING) and the plugin walks its
+    /// bodies off; a player ahead sees it again before the despawn, at the next epoch. Two of the
+    /// old epoch's members die on the walk, so its BAND_DEMATERIALIZED, which comes while the
+    /// new epoch is in view, counts them: the engine had dropped it for its old epoch and never
+    /// cleared the recall, so the dead came back, and a later recall (the player gone stale) took
+    /// the whole band's count with it.
+    #[test]
+    fn a_band_seen_again_while_it_walks_off_still_counts_the_walks_dead_once() {
+        let (_dir, e, mut j) = camp("conflict-walk-off");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        // The walk off outlasts the band's next sighting.
+        j.conflict_plugin.leave_ticks = 3_000;
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let epoch1 = books(&e, p).1;
+        assert_eq!(books(&e, p).4, n, "all of it in Minecraft");
+
+        // It leaves the player's view: RECALL_PASSING, and two die on the way out.
+        let from = j.conflict.len();
+        j.conflict_plugin.walk_off_deaths = 2;
+        advance_until(&mut j, 100, 3 * DAY, "RECALL_PASSING", |j| {
+            recalls(j, from, p).contains(&cb::RECALL_PASSING)
+        });
+        j.conflict_plugin.walk_off_deaths = 0;
+        let recalled_at = j.game_time;
+        assert!(!books(&e, p).2, "recalled: out of view");
+        assert!(books(&e, p).3, "its epoch's walk-off to count");
+
+        // A player ahead on its road sees it again, a new epoch, with the walk-off in flight.
+        let ahead = e.with_conflict(|c, _| c.party_pos(p, c.now() + 3_000));
+        j.players = vec![(
+            PLAYER,
+            dim,
+            [f64::from(ahead.0) + 0.5, 64.0, f64::from(ahead.1) + 0.5],
+        )];
+        advance_until(&mut j, 100, 2_000, "in view again at a new epoch", |j| {
+            let b = books(&j.e, p);
+            b.2 && b.1 > epoch1
+        });
+        assert!(
+            j.game_time < recalled_at + 3_000,
+            "seen again before the old epoch's despawn came"
+        );
+        assert_eq!(books(&e, p).0, n, "the walk's dead are not known yet");
+        assert_eq!(books(&e, p).4, n, "spawned from the count before");
+
+        // The old epoch's BAND_DEMATERIALIZED: the dead are counted, the new bodies clamped.
+        advance_until(&mut j, 100, 4_000, "past the old walk-off", |j| {
+            j.game_time >= recalled_at + 3_000 + 200
+        });
+        let (alive, epoch2, embodied, recalled, spawned) = books(&e, p);
+        assert_eq!(alive, n - 2, "the two that died on the walk are dead");
+        assert!(
+            embodied && epoch2 > epoch1,
+            "still in view at the new epoch"
+        );
+        assert!(!recalled, "the old epoch's walk-off is counted");
+        assert!(spawned <= alive, "its bodies are clamped to who is alive");
+
+        // The player goes stale: the second recall counts nothing it did not lose.
+        let second = j.conflict.len();
+        j.players.clear();
+        advance_until(&mut j, 100, 2_000, "the second recall", |j| {
+            !recalls(j, second, p).is_empty()
+        });
+        assert_eq!(recalls(&j, second, p), vec![cb::RECALL_PLAYER_LEFT]);
+        let second_at = j.game_time;
+        advance_until(&mut j, 100, 4_000, "past the second walk-off", |j| {
+            j.game_time >= second_at + 3_000 + 200
+        });
+        let (alive, _, embodied, recalled, _) = books(&e, p);
+        assert_eq!(alive, n - 2, "no one else is lost");
+        assert!(!embodied);
+        assert!(!recalled, "the second walk-off is counted too");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
