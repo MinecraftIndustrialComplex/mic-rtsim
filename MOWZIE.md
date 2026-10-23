@@ -1830,9 +1830,11 @@ near 52.
   usual. The jar's Frostmaw never wakes on Peaceful (`EntityFrostmaw.java:582`, `600`), so unwatched
   losses with no fight possible would be unfair. Councils still sit, and a pact may be sworn (words
   between camps); no ally is called and no joint party leaves (CONFLICT-LIFE.md §2.16, CL-D53).
-- **A pact against a player is told** (CONFLICT-LIFE.md §2.16, CL-D55): the caller's notice plays for
-  him with the ally named ("the Sun Grove and Mudhollow have sworn against you"), kept until shown as
-  every notice is; FACTION_NOTICE and ENVOY_MATERIALIZE carry the ally's actor (8 bytes each).
+- **No notice carries a line of text** (CONFLICT-LIFE.md §2.17, CL-D56; Ben, 2026-10-22: "All faction
+  news in-world"). The roar and the gong are cues in the world and stay, kept until shown as above.
+  A pact against a player, and every other pact, a feud, a raid and a death, reach him as news that
+  traders, caravans and villagers carry; ENVOY_MATERIALIZE carries the ally's actor (8 bytes) so a
+  joint envoy can name it in person, and FACTION_NOTICE carries nothing new.
 
 ### 4.13 Strength
 
@@ -2717,8 +2719,10 @@ Three things are left out of this order on purpose:
   - BAND_MARCH (ledger 23). Its joint flag and partner agent are written as zero until alliances
     land.
   - The walk-in from the ticking edge (CL-D35, ledger 25).
-- **No pact notices.** Pact news stays out of chat (CL-9, Ben, 2026-10-22), and §4.12's told pact is
-  revised with CONFLICT-LIFE.md.
+- **No chat notices, and no pact notices.** Conflict news stays out of chat and is told in the world
+  (CL-9 widened, Ben, 2026-10-22: "All faction news in-world"; CONFLICT-LIFE.md §2.17). §4.12's told
+  pact is revised, and no slice here builds a text notice: NOTICE_SHOWN keeps only the roar and the
+  gong.
 
 | Slice | What it builds | Ledger | Tests | Needs |
 |---|---|---|---|---|
