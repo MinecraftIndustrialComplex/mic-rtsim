@@ -3657,6 +3657,141 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The Mowzie commands (MOWZIE.md §2) through CONFLICT_COMMAND: BAND_MARCH's dimension,
+    /// culture (dictionary kind 5) and unit bodies, CAMP_RECONCILE's line bodies and AMBUSH_SPOT's
+    /// dimension go out in the engine's dictionary, the rest as given.
+    #[test]
+    fn the_mowzie_commands_go_out_in_the_engines_dictionary() {
+        let dir = tmpdir("conflict-order-mowzie");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.idle();
+        let (warrior, culture) = (41, 7);
+        let agent = 0x43 << 56 | 0xD0D;
+        let march = C::March(cb::BandMarch {
+            agent,
+            revision: 2,
+            dimension: dim,
+            faction: CAMP,
+            culture,
+            kind: 3,
+            phase: cb::MARCH_OUT,
+            flags: cb::MARCH_CHIEF,
+            partner: 0,
+            muster_end: 5_000,
+            units: vec![(warrior, 6)],
+            waypoints: vec![(10, 20, 6_000), (300, -40, 9_000)],
+        });
+        let reconcile = C::Reconcile(cb::CampReconcile {
+            faction: CAMP,
+            epoch: (1 << 63) | 9,
+            op: 0x43 << 56 | 0x55,
+            flags: 0,
+            throne: (0.0, 0.0, 0.0),
+            direction: 0.0,
+            lines: vec![
+                cb::ReconcileLine {
+                    slot: 1,
+                    generation: 1,
+                    body: warrior,
+                    action: cb::ACTION_SPAWN,
+                    flags: 0,
+                    a: 0,
+                    b: 0,
+                },
+                cb::ReconcileLine {
+                    slot: 0,
+                    generation: 0,
+                    body: 0,
+                    action: cb::ACTION_REMOVE,
+                    flags: 0,
+                    a: 0x1234,
+                    b: 0x5678,
+                },
+            ],
+        });
+        let spot = C::AmbushSpot(cb::AmbushSpot {
+            agent,
+            epoch: 1,
+            flags: 0,
+            dimension: dim,
+            faction: CAMP,
+            track: (1.0, 64.0, 2.0),
+            spot: (5.0, 64.0, 6.0),
+            reach: 8.0,
+        });
+        let names = vec![
+            (
+                wire::DICT_BODY,
+                warrior,
+                "mic_rtsim:conflict/goblin/warrior".to_string(),
+            ),
+            (
+                wire::DICT_CULTURE,
+                culture,
+                "mic_rtsim:conflict/goblin".to_string(),
+            ),
+        ];
+        for cmd in [&march, &reconcile, &spot] {
+            let mut record = Vec::new();
+            cb::encode_cmd(0, cmd, &mut record);
+            e.order(vec![Order::ConflictCommand {
+                names: names.clone(),
+                record,
+            }])
+            .unwrap();
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::March(m) => Some(m.clone()),
+                _ => None,
+            })
+            .expect("the ordered BAND_MARCH");
+        assert_eq!(
+            java_name(&j, wire::DICT_CULTURE, got.culture).as_deref(),
+            Some("mic_rtsim:conflict/goblin")
+        );
+        assert_eq!(
+            java_name(&j, wire::DICT_BODY, got.units[0].0).as_deref(),
+            Some("mic_rtsim:conflict/goblin/warrior")
+        );
+        assert_eq!(got.dimension, dim);
+        assert_eq!(
+            (got.muster_end, got.waypoints.clone(), got.partner),
+            (5_000, vec![(10, 20, 6_000), (300, -40, 9_000)], 0),
+            "a test's order is in game time already"
+        );
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::Reconcile(r) => Some(r.clone()),
+                _ => None,
+            })
+            .expect("the ordered CAMP_RECONCILE");
+        assert_eq!(
+            java_name(&j, wire::DICT_BODY, got.lines[0].body).as_deref(),
+            Some("mic_rtsim:conflict/goblin/warrior")
+        );
+        assert_eq!(
+            (got.lines[1].body, got.lines[1].a, got.lines[1].b),
+            (0, 0x1234, 0x5678),
+            "a line with no body keeps 0"
+        );
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::AmbushSpot(a) => Some(*a),
+                _ => None,
+            })
+            .expect("the ordered AMBUSH_SPOT");
+        assert_eq!((got.dimension, got.reach), (dim, 8.0));
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.commands_written, 3);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// A conflict session with the camp founded, its territory back, the fake plugin answering
     /// as `PLAYER` and the player standing in the territory.
     fn camp(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
