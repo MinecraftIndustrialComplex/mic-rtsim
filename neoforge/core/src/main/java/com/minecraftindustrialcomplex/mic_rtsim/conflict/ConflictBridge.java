@@ -165,6 +165,8 @@ public final class ConflictBridge implements SessionPlugin {
         Demand demand;
         UUID player;
         boolean guarded, insulted, refused;
+        /** The envoy's: DEMAND_SETTLED's outcome once its demand is closed, 0 while open (the envoy then says it). */
+        int settled;
 
         Party(long agent, int epoch, ResourceKey<Level> dimension, long faction, boolean envoy, int purpose, int flags) {
             this.agent = agent;
@@ -194,6 +196,10 @@ public final class ConflictBridge implements SessionPlugin {
 
         public boolean attack() {
             return attack;
+        }
+
+        public int settled() {
+            return settled;
         }
     }
 
@@ -628,7 +634,10 @@ public final class ConflictBridge implements SessionPlugin {
     private Kind kind(EngineNames names, int id) {
         String body = names.name(Obs.DICT_BODY, id);
         EntityType<?> type = body == null ? null : ConflictBodies.type(session.server().overworld(), body);
-        return type == null ? null : new Kind(body, session.dictId(Obs.DICT_BODY, body), type);
+        if (type == null)
+            return null;
+        ConflictTalker.ensure(type);
+        return new Kind(body, session.dictId(Obs.DICT_BODY, body), type);
     }
 
     /**
@@ -932,6 +941,7 @@ public final class ConflictBridge implements SessionPlugin {
         Party p = byAgent.get(b.getLong(at + ConflictRecords.Settled.AGENT));
         if (p != null && p.envoy) {
             p.demand = null;
+            p.settled = outcome;
             nameEnvoy(p);
         }
         ConflictNews.post(ConflictNews.Event.DEMAND_SETTLED, faction, player);
@@ -1553,6 +1563,18 @@ public final class ConflictBridge implements SessionPlugin {
 
     // ---- the envoy: guard, answers, payment -----------------------------------------------------
 
+    /**
+     * Why a faction is at odds with a player, for its band's warning (MZB-124): the signal of an open
+     * demand of that faction's envoy to them (or to anyone), else of a notice kept for them; -1 for none.
+     */
+    int reasonFor(long faction, UUID player) {
+        for (Party q : byAgent.values())
+            if (q.envoy && q.faction == faction && q.demand != null && (q.player == null || q.player.equals(player)))
+                return q.demand.signal;
+        Notice n = notices.get(new NoticeKey(faction, player));
+        return n != null ? n.signal() : -1;
+    }
+
     /** The guarded party member an entity is, or null. */
     Slot guarded(Entity e) {
         Slot sl = live(e);
@@ -1627,8 +1649,9 @@ public final class ConflictBridge implements SessionPlugin {
     /**
      * A player right-clicks the envoy with the main hand (EntityInteract, highest): with the demanded item,
      * pays what is still owed of the stack in hand (TRIBUTE_PAID, a Java op id; taken even in creative);
-     * sneaking with an empty hand refuses (ENVOY_ANSWER 2, once; MZB-110). Only the player the demand is
-     * to, or anyone for the settlers. True when the click was the envoy's (cancel the interaction).
+     * an empty hand, standing, refuses (ENVOY_ANSWER 2, once; MZB-110). Crouching with an empty hand is
+     * TALK's gesture (the envoy says its demand, MZB-122), so it is left alone. Only the player the demand
+     * is to, or anyone for the settlers. True when the click was the envoy's (cancel the interaction).
      */
     boolean interact(Player player, Entity target, InteractionHand hand, long now) {
         Slot sl = live(target);
@@ -1640,7 +1663,7 @@ public final class ConflictBridge implements SessionPlugin {
             return false;
         ItemStack inHand = player.getItemInHand(hand);
         if (inHand.isEmpty()) {
-            if (!player.isShiftKeyDown())
+            if (player.isSecondaryUseActive())
                 return false;
             if (!p.refused) {
                 p.refused = true;
@@ -1701,7 +1724,7 @@ public final class ConflictBridge implements SessionPlugin {
         return null;
     }
 
-    private static Component signalWord(int signal) {
+    static Component signalWord(int signal) {
         String name = ConflictRecords.signalName(signal);
         return Component.translatableWithFallback("mic_rtsim.conflict.signal." + name.replace(' ', '_'), name);
     }
