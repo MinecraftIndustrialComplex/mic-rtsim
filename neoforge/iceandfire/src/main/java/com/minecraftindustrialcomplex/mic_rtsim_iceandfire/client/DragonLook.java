@@ -57,7 +57,7 @@ import net.minecraft.world.entity.EntityType;
 public final class DragonLook implements FarLook {
     /** Points of the flight loop baked; renders before them let the animation settle into the loop. */
     static final int FRAMES = 12, WARM = 2, REST_WARM = 2;
-    /** Ice and Fire's flight loop: 1.2 s at its animation speed, in ticks. */
+    /** Ice and Fire's flight loop in ticks: its 1.2 s flight animation played at 0.4 (DragonBaseEntity's controller). */
     static final double LOOP = 60.0;
     private static final int T0 = 200_000;
     /** Open sky, no block light: the lightmap darkens them at night as it does DH's terrain. */

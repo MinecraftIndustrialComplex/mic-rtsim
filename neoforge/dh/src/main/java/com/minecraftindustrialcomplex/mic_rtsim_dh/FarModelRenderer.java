@@ -66,8 +66,10 @@ import org.lwjgl.opengl.GL30;
  *       model in {@link FarDragonView}'s, so in DH's pass the models and the boxes together keep to it. The
  *       band's boxes have no count of their own, so there only the models keep to it.</li>
  *   <li><b>Live</b>: the nearest {@link #LIVE_DRAGONS} dragons within {@link #LIVE_DISTANCE} blocks are drawn by
- *       their own renderer each frame (smooth wings), the rest from baked frames. Live once a frame: in DH's
- *       vanilla fade, where both passes draw, both draw the baked frame the live one is at, never two poses.</li>
+ *       their own renderer each frame (smooth wings), the rest from baked frames. In DH's vanilla fade, where
+ *       both passes draw, both render it live: one pose placed once a frame and rendered twice (GeckoLib keeps a
+ *       re-render at the same time to the pose it has), as a body's copy is, so the fade mixes it toward itself and
+ *       the wings beat on up to the hand-over.</li>
  * </ul>
  *
  * <p>Render thread only.
@@ -435,8 +437,9 @@ final class FarModelRenderer {
                 continue;
             if (it.placeholder)
                 continue;
-            // Live once a frame, and where the band draws it too (DH's vanilla fade) both draw the baked frame
-            it.drawLive = it.live && !FarHide.bandDraws(m, level, it.x, it.y, it.z, cam);
+            // Live in both passes where the band draws it too (DH's vanilla fade): one pose, rendered twice, so the
+            // fade mixes it toward itself and the wings keep beating up to the body's hand-over
+            it.drawLive = it.live;
             float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
@@ -550,7 +553,7 @@ final class FarModelRenderer {
                 continue;
             if (it.placeholder)
                 continue;
-            it.drawLive = it.live && !FarHide.dhDraws(m, level, it.x, it.y, it.z, reach(it), cam);
+            it.drawLive = it.live;
             double r = it.model.radius;
             if (!frustum.isVisible(new AABB(it.x - r, it.y - r, it.z - r, it.x + r, it.y + r, it.z + r)))
                 continue;
