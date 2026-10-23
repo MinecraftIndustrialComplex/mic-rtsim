@@ -330,6 +330,21 @@ under its own heading.
   dragon lair by the ecology's key and resolves back through the dragons engine, so naming a
   Mowzie lair with it would send the plugin a key it cannot find. The lair's Java side, and its
   class if it gets one, wait for M5 and M6. A test in `talk.rs` pins it.
+- **MZB-66** (raids under CL-D58 with M2's cultures): merging main's CL-D58 (a raid takes only the
+  culture's share of each line's surplus over its target, and a band that could not carry off one
+  whole item does not fight) into M2. A culture whose loot is destroyed (MZB-55) destroys the same
+  capped shares that another culture would carry off, so destroying never reaches below a line's
+  target. `carry_milli`, which CL-D58 added for the cap and the take, reads each unit as its
+  chief's crystal has it fight now (`unit_row`, MOWZIE.md ledger 9), as M2's raid did before the
+  merge. A lair has no stock over a target, so a band never fights at one for loot (MZB-59 still
+  sets its defence).
+- **MZB-67** (the blockade test's parent world hashes, re-pinned): `blockade_off_changes_nothing`
+  (`crates/rtsim-ships/tests/blockade.rs`) pins the ships' and the world's save hashes of three runs
+  with closures off to the parent's. M2's catalogue adds `gold_nugget` (MZB-58) to every market's
+  encoding, so the three world hashes move. On M2 merged with main 4b207a37 the ships' hashes are
+  the parent's, and with `gold_nugget` left out of the catalogue the world's are too (the test
+  passes unchanged), so the new good is the whole difference. The world hashes are re-pinned to
+  the merged head's, and the test's doc says why.
 
 ## M3 ConflictBridge
 
