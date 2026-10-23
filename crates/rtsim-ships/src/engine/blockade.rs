@@ -433,19 +433,17 @@ impl Ships {
             at,
             "lane",
             None,
-            format!(
-                "lane {l} is {}",
-                if want { "closed" } else { "open again" }
-            ),
+            format!("lane {l} is {}", if want { "closed" } else { "open again" }),
         );
     }
 
     /// Lays up ship `s` if it is a merchant of a laid-up service that no longer has a reason to
     /// sail: out of view and holding no promoted cargo.
     pub(crate) fn lay_up_if_waiting(&mut self, s: ShipId, at: Tick) {
-        let idle = self.ships.get(s).is_some_and(|x| {
-            !x.embodied && x.promoted.is_none() && x.cargo.is_empty()
-        });
+        let idle = self
+            .ships
+            .get(s)
+            .is_some_and(|x| !x.embodied && x.promoted.is_none() && x.cargo.is_empty());
         if idle && self.waiting_to_lay_up(s) {
             self.lay_up_merchant(s, at);
         }
@@ -495,10 +493,13 @@ impl Ships {
         let now = self.now();
         if !self.blockades_on() {
             if !self.ports.is_empty() {
-                return Err(format!("closures are off but {} ports have a state", self.ports.len()));
+                return Err(format!(
+                    "closures are off but {} ports have a state",
+                    self.ports.len()
+                ));
             }
             for (l, t) in self.lane_threats() {
-                if t.heat_milli != 0 || t.heat_at != Tick(0) {
+                if t.heat_nano != 0 || t.heat_at != Tick(0) {
                     return Err(format!("closures are off but lane {l} keeps a heat"));
                 }
             }
@@ -507,18 +508,22 @@ impl Ships {
         let tau = self.heat_tau();
         for (l, t) in self.lane_threats() {
             if t.heat_at > now {
-                return Err(format!("lane {l}'s heat is stamped {:?}, after now", t.heat_at));
+                return Err(format!(
+                    "lane {l}'s heat is stamped {:?}, after now",
+                    t.heat_at
+                ));
             }
-            if !(0..=self.tun.max_share_milli).contains(&t.heat_milli) {
-                return Err(format!("lane {l}'s heat {}‰ is out of range", t.heat_milli));
+            if !(0..=self.tun.max_share_milli * HEAT_PER_MILLI).contains(&t.heat_nano) {
+                return Err(format!("lane {l}'s heat {} is out of range", t.heat_nano));
             }
             // Between changes the heat relaxes monotonically from its stored value to the share.
-            let h = t.heat(now, tau);
-            let (lo, hi) = (t.heat_milli.min(t.share), t.heat_milli.max(t.share));
+            let h = t.heat_nano_at(now, tau);
+            let target = t.share * HEAT_PER_MILLI;
+            let (lo, hi) = (t.heat_nano.min(target), t.heat_nano.max(target));
             if h < lo || h > hi {
                 return Err(format!(
-                    "lane {l}'s heat {h}‰ now is not between its stored {}‰ and its share {}‰",
-                    t.heat_milli, t.share
+                    "lane {l}'s heat {h} now is not between its stored {} and its share {}‰",
+                    t.heat_nano, t.share
                 ));
             }
         }
@@ -532,10 +537,14 @@ impl Ships {
         }
         for (&d, p) in &self.ports {
             if !self.is_trade_port(w, d) {
-                return Err(format!("dock {d} has a blockade state but is not a trade port"));
+                return Err(format!(
+                    "dock {d} has a blockade state but is not a trade port"
+                ));
             }
             if p.closed.is_some() && (p.blockaded.is_none() || p.blockaded > p.closed) {
-                return Err(format!("port {d} is closed but was not blockaded first: {p:?}"));
+                return Err(format!(
+                    "port {d} is closed but was not blockaded first: {p:?}"
+                ));
             }
             let checks = live.get(&d).map_or(&[][..], Vec::as_slice);
             match p.check {
@@ -543,7 +552,9 @@ impl Ships {
                     return Err(format!("port {d}'s check at {t:?}, live checks {checks:?}"));
                 }
                 None if !checks.is_empty() => {
-                    return Err(format!("port {d} has no check booked, live checks {checks:?}"));
+                    return Err(format!(
+                        "port {d} has no check booked, live checks {checks:?}"
+                    ));
                 }
                 _ => {}
             }
@@ -557,7 +568,9 @@ impl Ships {
             }
             let warm = self.dock_lanes(d).iter().any(|&l| self.lane_warm(l, now));
             if (warm || p.closed.is_some() || p.blockaded.is_some()) && p.check.is_none() {
-                return Err(format!("port {d} is warm, blockaded or closed with no check: {p:?}"));
+                return Err(format!(
+                    "port {d} is warm, blockaded or closed with no check: {p:?}"
+                ));
             }
         }
         // A warm lane's trade ends have a check, whether or not they have a state yet.

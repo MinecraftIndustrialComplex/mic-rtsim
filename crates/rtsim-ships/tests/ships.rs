@@ -133,7 +133,15 @@ fn nobody_watching_costs_no_ship_events() {
     );
     for (k, _) in c.ships.pending_by_kind() {
         assert!(
-            ["decide", "reach_lane", "bored", "home", "refit", "dock_check"].contains(&k),
+            [
+                "decide",
+                "reach_lane",
+                "bored",
+                "home",
+                "refit",
+                "dock_check"
+            ]
+            .contains(&k),
             "a pending {k} event with nobody watching"
         );
     }
