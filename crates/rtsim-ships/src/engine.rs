@@ -286,25 +286,36 @@ pub struct LaneThreat {
     pub escorts: Vec<(u64, i64)>,
     /// The share last applied, thousandths.
     pub share: i64,
-    /// The lane's heat at `heat_at`, thousandths (§2.4.6a rule 7, PC20): an exponential average
-    /// of `share` with time constant `blockade_days`. Between changes of `share` it relaxes
-    /// toward `share` in closed form ([`Ships::heat_at`]); 0 at tick 0 with closures off.
-    pub heat_milli: i64,
-    /// When `heat_milli` was last brought up to date: the last change of `share`.
+    /// The lane's heat at `heat_at`, billionths ([`HEAT_PER_MILLI`] to the share's thousandth;
+    /// §2.4.6a rule 7, PC20): an exponential average of `share` with time constant
+    /// `blockade_days`. Between changes of `share` it relaxes toward `share` in closed form
+    /// ([`Ships::heat_at`]); 0 at tick 0 with closures off. Kept this fine because each change
+    /// rounds it: in thousandths, a share changing every few hours held the heat still (PC86).
+    pub heat_nano: i64,
+    /// When `heat_nano` was last brought up to date: the last change of `share`.
     pub heat_at: Tick,
 }
 
+/// A lane heat's units to the share's thousandth.
+pub const HEAT_PER_MILLI: i64 = 1_000_000;
+
 impl LaneThreat {
-    /// The heat at `t >= heat_at`, thousandths: the stored heat relaxed toward `share` over the
-    /// elapsed time, with time constant `tau` ticks, rounded to the nearest thousandth. With
-    /// `tau` 0 it is the stored heat (closures off keep no heat).
-    pub fn heat(&self, t: Tick, tau: f64) -> i64 {
-        if tau <= 0.0 || t <= self.heat_at || self.heat_milli == self.share {
-            return self.heat_milli;
+    /// The heat at `t >= heat_at`, billionths: the stored heat relaxed toward `share` over the
+    /// elapsed time, with time constant `tau` ticks, rounded to the nearest unit. With `tau` 0 it
+    /// is the stored heat (closures off keep no heat).
+    pub fn heat_nano_at(&self, t: Tick, tau: f64) -> i64 {
+        let target = self.share * HEAT_PER_MILLI;
+        if tau <= 0.0 || t <= self.heat_at || self.heat_nano == target {
+            return self.heat_nano;
         }
         let k = (-((t.0 - self.heat_at.0) as f64) / tau).exp();
-        let h = self.share as f64 + (self.heat_milli - self.share) as f64 * k;
+        let h = target as f64 + (self.heat_nano - target) as f64 * k;
         h.round() as i64
+    }
+
+    /// The heat at `t >= heat_at`, thousandths, rounded to the nearest.
+    pub fn heat(&self, t: Tick, tau: f64) -> i64 {
+        (self.heat_nano_at(t, tau) + HEAT_PER_MILLI / 2).div_euclid(HEAT_PER_MILLI)
     }
 
     fn defence(&self) -> f64 {
@@ -1875,7 +1886,7 @@ impl Ships {
             let t = self.threats.get_mut(u64::from(l)).expect("checked");
             if tau > 0.0 {
                 let at = at.max(t.heat_at);
-                t.heat_milli = t.heat(at, tau);
+                t.heat_nano = t.heat_nano_at(at, tau);
                 t.heat_at = at;
             }
             t.share = share;

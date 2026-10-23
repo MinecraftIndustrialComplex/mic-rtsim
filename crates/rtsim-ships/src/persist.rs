@@ -53,9 +53,9 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView, PortState,
-    Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats,
-    ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView,
+    PortState, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange,
+    ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -554,7 +554,7 @@ impl Encode for LaneThreat {
     fn encode(&self, w: &mut Writer) {
         // The tag's bit 0 is the haven, bit 1 a heat (S8b-4): a row with no heat encodes as it
         // did before, so closures off leave every save byte for byte as S8b-4a's.
-        let heat = self.heat_milli != 0 || self.heat_at != Tick(0);
+        let heat = self.heat_nano != 0 || self.heat_at != Tick(0);
         w.u8(u8::from(self.haven.is_some()) | u8::from(heat) << 1);
         if let Some(h) = self.haven {
             w.var_u64(u64::from(h));
@@ -569,7 +569,7 @@ impl Encode for LaneThreat {
         }
         w.var_i64(self.share);
         if heat {
-            w.var_i64(self.heat_milli);
+            w.var_i64(self.heat_nano);
             w.u64(self.heat_at.0);
         }
     }
@@ -603,7 +603,7 @@ impl Decode for LaneThreat {
             return bad("a lane's escorts out of order".into());
         }
         let share = r.var_i64()?;
-        let (heat_milli, heat_at) = if tag & 2 == 2 {
+        let (heat_nano, heat_at) = if tag & 2 == 2 {
             (r.var_i64()?, Tick(r.u64()?))
         } else {
             (0, Tick(0))
@@ -614,7 +614,7 @@ impl Decode for LaneThreat {
             patrol_milli,
             escorts,
             share,
-            heat_milli,
+            heat_nano,
             heat_at,
         })
     }
