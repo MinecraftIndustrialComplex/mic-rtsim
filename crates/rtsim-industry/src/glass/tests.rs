@@ -6076,6 +6076,18 @@ mod replay_path {
         /// The district's last pass as if it learned `rate` per tick of `good` in inventory `inv`
         /// that the model does not predict: an unbounded good, so a residual (G-B13).
         fn passed_with_residual(e: &mut Engine, inv: u32, good: Good, rate: f64) {
+            passed_with(e, good, rate, 0.0, &[(inv, good, rate, 0.0)]);
+        }
+
+        /// The district's last pass as if it measured `good` at `measured` per tick against
+        /// `predicted`, an unbounded good, with the per-store slopes `stores`.
+        fn passed_with(
+            e: &mut Engine,
+            good: Good,
+            measured: f64,
+            predicted: f64,
+            stores: &[(u32, Good, f64, f64)],
+        ) {
             let c = e
                 .glass
                 .districts
@@ -6090,10 +6102,10 @@ mod replay_path {
                 in_u: 0.0,
                 out_l: 0.0,
                 out_u: 0.0,
-                predicted: 0.0,
+                predicted,
                 lo: 0.0,
                 hi: 0.0,
-                measured: rate,
+                measured,
                 sigma: 0.0,
                 q: 1.0,
                 verdict: verdict::PASS,
@@ -6104,9 +6116,64 @@ mod replay_path {
                 ticks: 2000,
                 verdict: verdict::PASS,
                 goods: vec![g],
-                stores: vec![(inv, good, rate, 0.0)],
+                stores: stores.to_vec(),
             });
             c.edited = false;
+        }
+
+        /// A freeze in a replay split into parts gives no part a residual: the split started with
+        /// none (B's gated store took the whole's only share), and a part's own stores would hand
+        /// it the share weighed for the whole. Three lines, C a third press line at x 80 to 82;
+        /// with A's brass short and no breakpoint allowed per event, A's stop freezes it at about
+        /// 5,200, and C's crushed ore is what it is with A running on or gated from the start.
+        #[test]
+        fn a_freeze_in_a_split_replay_gives_no_part_a_residual() {
+            let run = |brass: i64, a: u32| {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let (i2, o2) = (b.store(4), b.store(5));
+                let r2 = b.recipe(&[(ORE, 1)], &[(CRUSHED, 1)]);
+                let p2 = b.machine(model::PRESS, r2, 1, 10);
+                b.edge(i2, p2);
+                b.edge(p2, o2);
+                for (v, x) in [(i2, 80), (p2, 81), (o2, 82)] {
+                    b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                let mut invs = lines(brass, (ORE, 1000));
+                invs.push(inv_at(80, &[(ORE, 100_000)]));
+                invs.push(inv_at(82, &[]));
+                let mut tun = Tunables::default();
+                tun.glass.breakpoints_per_event_max = 0;
+                let mut e = engine_with(&b, tun, &invs);
+                judge(&mut e, &[(p0, a), (p1, verdict::FAIL), (p2, verdict::PASS)]);
+                passed_with(
+                    &mut e,
+                    CRUSHED,
+                    0.15,
+                    0.2,
+                    &[(3, CRUSHED, 0.05, 0.1), (5, CRUSHED, 0.1, 0.1)],
+                );
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(201));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let parts = comp(&e.glass, D).cache_parts;
+                e.advance_to(Tick(20_000));
+                let freezes = replay(&e).freezes();
+                let crushed = e.sim_stock(D).expect("replaying").get(CRUSHED);
+                e.check_books().expect("books");
+                (parts, freezes, crushed)
+            };
+            let control = run(100_000, verdict::PASS);
+            let gated = run(100_000, verdict::FAIL);
+            let frozen = run(500, verdict::PASS);
+            assert!(
+                control.0 > 1 && control.1 == 0,
+                "split, no freeze: {control:?}"
+            );
+            assert_eq!(frozen.1, 1, "A froze: {frozen:?}");
+            assert!(
+                (control.2 - frozen.2).abs() <= 2 && (control.2 - gated.2).abs() <= 2,
+                "C's crushed ore does not depend on A: {control:?} {gated:?} {frozen:?}"
+            );
         }
 
         /// The residual learned from the district's last pass books only into the stores of units
