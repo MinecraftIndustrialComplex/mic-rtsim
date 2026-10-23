@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.client;
 
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
+import net.minecraft.world.entity.Entity;
 
 /**
  * How one kind of far mover looks as the real thing (docs/choices-dh-feed.md DHT63): a carriage as the blocks
@@ -47,6 +48,16 @@ public interface FarLook {
      * frame (Create's bogey renderer, about 180 ms cold). Nothing by default.
      */
     default void prewarm() {
+    }
+
+    /**
+     * Whether a copy of {@code body}, the real entity of a mover of this look's kind that vanilla draws, may be
+     * drawn in DH's pass as well this frame (docs/choices-dh-feed.md DHT47): false where its renderer does more
+     * than draw each time it runs (Ice and Fire adds a lightning bolt a render while a lightning dragon breathes,
+     * so a copy would double the breath). True by default.
+     */
+    default boolean copies(Entity body) {
+        return true;
     }
 
     /** What it holds and has done, for the bench's log. */
