@@ -7,6 +7,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarItem;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarState;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
@@ -223,6 +227,8 @@ public final class DragonBridge implements SessionPlugin {
     /** The obsSeq of this session's first OIL_CONFIG (the one sent at session start); -1 before it. */
     public long sessionOilConfigSeq = -1;
     /** The flags of each body's DRAGON_MATERIALIZE this session, the last 1,024 agents (GameTests). */
+    /** Bodies materialized above Ice and Fire's flight ceiling, for the log ({@link #aboveCeiling}). */
+    private int aboveCeiling;
     private final Map<Long, Integer> materializeFlags = new LinkedHashMap<>() {
         @Override
         protected boolean removeEldestEntry(Map.Entry<Long, Integer> eldest) {
@@ -520,9 +526,13 @@ public final class DragonBridge implements SessionPlugin {
         BlockPos home = (flags & Materialize.FLAG_HAS_HOME) != 0
                 ? new BlockPos(b.getInt(at + Materialize.HOME_X), b.getInt(at + Materialize.HOME_Y), b.getInt(at + Materialize.HOME_Z))
                 : null;
-        d.moveTo(x, y, z, level.random.nextFloat() * 360f, 0f);
+        Vec3 target = sleeping ? null
+                : new Vec3(b.getDouble(at + Materialize.TARGET_X), b.getDouble(at + Materialize.TARGET_Y), b.getDouble(at + Materialize.TARGET_Z));
+        float yaw = spawnYaw(level, agent, x, z, target);
+        d.moveTo(x, y, z, yaw, 0f);
         IafDragons.write(d, level, b.getInt(at + Materialize.AGE_TICKS), b.getInt(at + Materialize.HUNGER),
                 b.getInt(at + Materialize.GENDER) == 1, b.getInt(at + Materialize.VARIANT), sleeping, home);
+        IafDragons.face(d, yaw);
         float health = b.getFloat(at + Materialize.HEALTH);
         d.setHealth(health > 0 ? Math.min(health, d.getMaxHealth()) : d.getMaxHealth());
         d.setPersistenceRequired();
@@ -532,17 +542,21 @@ public final class DragonBridge implements SessionPlugin {
             p.oil = Math.max(0, b.getInt(at + Materialize.OIL));
         p.lastBreathFlush = now;
         register(p);
+        if (!sleeping) {
+            // Before it joins, so its spawn packet already says it flies (no frame of a standing pose in the air)
+            p.mode = Mode.STEER;
+            p.target = target;
+            IafDragons.flyTo(d, session.steerImage(d, p.target));
+            aboveCeiling(agent, y, target.y);
+        }
+        // Each far view holding the dragon hides it before the body's spawn packet arrives (DHT40)
+        RtsimApi.farEntityJoining(level, agent, d.getId());
         if (!level.addFreshEntity(d)) {
             unregister(p);
             if (!d.isRemoved())
                 d.discard();
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now);
             return true;
-        }
-        if (!sleeping) {
-            p.mode = Mode.STEER;
-            p.target = new Vec3(b.getDouble(at + Materialize.TARGET_X), b.getDouble(at + Materialize.TARGET_Y), b.getDouble(at + Materialize.TARGET_Z));
-            IafDragons.flyTo(d, session.steerImage(d, p.target));
         }
         if ((flags & Materialize.FLAG_HOSTILE) != 0) {
             UUID target = new UUID(b.getLong(at + Materialize.TARGET_PLAYER_MOST), b.getLong(at + Materialize.TARGET_PLAYER_LEAST));
@@ -555,6 +569,56 @@ public final class DragonBridge implements SessionPlugin {
         materialized++;
         materializeFlags.put(agent, flags);
         return true;
+    }
+
+    /**
+     * The yaw a new body faces: the way the far view drew the dragon until now, so the hand-over shows no turn
+     * (docs/choices-dh-feed.md DHT41). That is the last sweep's leg or sample of it; else the engine's last flown
+     * leg (a dragon drawn at rest faces the way it last flew); else toward its target; else east, the way a
+     * client draws a dragon it never saw fly, when a far view has it, or any way at all when none does.
+     */
+    private float spawnYaw(ServerLevel level, long agent, double x, double z, Vec3 target) {
+        FarItem item = FarFeed.lastItem(level, agent);
+        double hx = 0.0, hz = 0.0;
+        if (item != null && item.seg() != null) {
+            hx = item.seg()[0] - item.seg()[3];
+            hz = item.seg()[2] - item.seg()[5];
+        } else if (item != null && item.leg() != null && item.state() == FarState.FLY) {
+            hx = item.leg().x1() - item.leg().x0();
+            hz = item.leg().z1() - item.leg().z0();
+        }
+        if (hx * hx + hz * hz < 1e-6) {
+            FarLegs.Rec r = session.farLegs.get(agent);
+            if (r != null) {
+                hx = r.hx();
+                hz = r.hz();
+            }
+        }
+        if (hx * hx + hz * hz < 1e-6 && target != null) {
+            hx = target.x - x;
+            hz = target.z - z;
+        }
+        if (hx * hx + hz * hz < 1e-6) {
+            if (item == null)
+                return level.random.nextFloat() * 360f;
+            hx = 1.0;
+        }
+        // Minecraft's yaw: 0 faces +z, 90 faces -x
+        return (float) Math.toDegrees(Math.atan2(-hx, hz));
+    }
+
+    /**
+     * Ice and Fire forces a dragon above its {@code maxFlight} (256 in the pack) down to it, so one embodied or
+     * steered above it dives as it is handed over (docs/choices-dh-feed.md DHT43): said in the log, the first
+     * few times.
+     */
+    private void aboveCeiling(long agent, double y, double targetY) {
+        int ceiling = IafDragons.maxFlight();
+        if ((y <= ceiling && targetY <= ceiling) || aboveCeiling++ >= 3)
+            return;
+        MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] dragon {} materialized at y {} flying to y {}, above Ice and Fire's "
+                + "maxFlight {}: it will dive to {} as soon as it flies", Long.toHexString(agent), Math.round(y),
+                Math.round(targetY), ceiling, ceiling);
     }
 
     private void journalMaterialized(Puppet p, ServerLevel level, long now) {
