@@ -928,8 +928,9 @@ impl Compiled {
         let g = &self.graph;
         let mut queue: Vec<u32> = Vec::new();
         let mut seen = vec![false; g.nodes.len()];
-        for &(e, gd, flow, into) in &self.sol.store_edges {
-            if gd != good || into != produced || flow <= 0.0 {
+        for se in &self.sol.store_edges {
+            let (e, into) = (se.edge, se.into);
+            if se.good != good || into != produced || se.flow <= 0.0 {
                 continue;
             }
             let ed = g.edge(e);

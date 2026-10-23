@@ -30,7 +30,7 @@ use super::records::{
     DomainLevel, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe,
     Member, NodeKind, RateEntry, Term,
 };
-use super::solve::{GoodBound, Regime, Solution};
+use super::solve::{GoodBound, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
@@ -291,6 +291,14 @@ persist_struct!(GoodBound {
     batch,
     why
 });
+persist_struct!(StoreEdge {
+    edge,
+    good,
+    flow,
+    into,
+    class,
+    why
+});
 persist_struct!(Solution {
     goods,
     per_store,
@@ -303,6 +311,8 @@ persist_struct!(Solution {
     dom_level,
     duty,
     fed,
+    src_var,
+    roll_var,
     has_unbounded,
     lp_solves,
     lp_skipped,
