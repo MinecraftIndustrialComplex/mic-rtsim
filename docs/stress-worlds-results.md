@@ -1220,3 +1220,133 @@ Recommended option first in each; none is fixed here (SG49).
    closes before the unload. (b) Leave it and report the count per run, as here.
 6. **The first-tick and first-forceload stalls** (SG36). (a) Recommended: the mic_climate fix of
    10.8 (PA's `BiomeSampler` given the level's own `RandomState`). (b) Leave it: once per region.
+
+### 10.10 Fixes for 10.9's findings
+
+The coordinator relayed Ben's decisions on 10.9's findings: fix them, in this order, each on main
+and pushed alone, each after an adversarial review. Choices are numbered from SG50, with gaps for
+the fixes that follow.
+
+#### Self edges (finding 1)
+
+A train that left a district's station, called at a station outside every district and came back
+made an edge from the first station to itself, carrying the round trip's travel time. The bridge
+now says so when a watched train calls outside every district, and the engine ends the leg there.
+
+| # | Choice | Why |
+|---|---|---|
+| SG50 | New record IND_TRAIN_UNWATCHED (0x0416, train and station), sent by `TrainWatch.arrived` when the station is in no district, once a leg; the engine forgets the train's open leg | finding 1 (a); the leg between a district's station and an unwatched one is not a line the engine can use, and the next departure from a district starts a new leg. A train's second unwatched call sends nothing; a departure from a district re-arms it |
+| SG51 | The engine also refuses to book an edge whose ends are one station, and counts it (`self_edges_refused`) | defense in depth: an engine fed by an older bridge, or a replayed journal from before the record, must not learn a line from a station to itself. A GameTest on the native engine asserts the count stays 0 with the bridge fix, so the guard cannot hide a bridge regression |
+| SG52 | A departure the report flushes before the train's destination is known is journaled with no destination and an ETA of 0, stamped at the unwatched call; reported, not fixed | it needs a train that left and called at an unwatched station with no destination set at any tick between (Create sets one at once); the threat leg it books is one tick long |
+| SG53 | A station with no position or dimension is reported as unwatched too | such a station is in no district, so the leg is over |
+| SG54 | The GameTests read the engine's counts as changes over the journey and look for edges by the journey's own station ids; the report switch is reset by `forget` | the engine's counts run across the whole suite, and a failed control must not leave the switch off for the rest of the run |
+| SG58 | `unwatched_stops` and `self_edges_refused` are the run's counters and not in the globals page (a restore starts them at 0); the page keeps its layout | they were first added to the persisted `Stats`, which changed the page and made every save and every rtsim-view fixture from before unreadable, for two diagnostics the GameTests and the bench read in the session; the paging change of 10.10 (finding 3) is the one format change of these fixes |
+
+#### Deferred adopts (finding 4)
+
+Behind the self edges: the adopts of the scene's loop run west to east while trains run, and
+DS-12's `adoptAround` left an adopt's chunks to the pass after a running detection. At 200
+districts 315 to 358 of the 400 adopts were deferred, and a district stayed undeclared for the
+time a train needed to reach its partner.
+
+| # | Choice | Why |
+|---|---|---|
+| SG55 | The adopted chunks join the running job of their dimension (`Rescan.join`, DS-14): a chunk it has not counted seeds in yet is scheduled as a root (again behind the cursor too, because a root that found the chunk unloaded counted nothing), with the districts owning or touching it, looked at whole as at a job's start | finding 4 (a); the job already works at the budget, and an adopted chunk costs it its own block entities and those of the districts around it, as the adopt's own detection would have |
+| SG56 | A chunk the job counted before the adopt gave it a seed has its seeds counted again where they stand, and is enqueued as a root if it has some now and the walk had not reached it; no pass of its own | the first build queued a pass for these chunks. The review showed that only a chunk's seed count depends on its seeds (stations, inventories, links and the kind cache do not), so a recount is enough and a pass would re-walk a whole district for nothing, newest first, ahead of other dimensions |
+| SG57 | `AdoptGameTests` set the interval to 100,000 ticks for the two deferred cases, so a pass that waits for it cannot finish inside the test, and assert that exactly one detection finished (a stale pass would be a second); a `@AfterBatch` restores the interval and the budget if a test fails | a test with the interval at 1 tick passes with the old code too, which is how the deferral went unseen |
+
+Not measured: a stream of adopts that each add new districts keeps joining one job, which commits only
+when it has drained, so the districts of such a loop are declared at the commits between. At 400
+adopts over about 880 ticks and 256 block entities a tick the budget is about 225,000 against
+roughly 60,000 block entities in the world (285 a district), and only the first adopt of a district
+adds the district's work, the later ones recount; so it should drain between districts. The syn200
+re-run reads it in the perf line (detections, ticks per detection) and the declarations during the
+adopt loop.
+
+
+#### The one-call rescan (finding 2)
+
+`rtsim district rescan`, `merge`, `split`, `exclude` and `include` ran `rescanNow`, a whole detection in
+the command's tick: 493 to 1,088 ms at 200 districts in 10.9, against 232 to 448 ms in sg200. Profiled
+first, then spread over ticks as DS-12 spread the adopts (DS-16).
+
+The profile is the generator's own: `MIC_STRESS_PROFILE=<runs>` adds a phase after the scene's adopts that
+runs the one-call detection `<runs>` times on the server thread with a sampling profiler on it (a 200 us
+stack sample, the frames above `rescanNow`; safepoint-biased, so shares, not times), and reads the
+detection's phases. Dev and test code only.
+
+| Profile of one call | 24 districts (768 factories, 504 chunks, no trains), 15 runs | 200 districts |
+|---|---|---|
+| Detection, one call | min 26 ms, median 37 ms, max 57 ms | min 124 ms, median 128 ms, max 146 ms (10 runs) |
+| Block entities looked at | 8,970 (4.1 us each at the median) | 75,491 (1.7 us each at the median) |
+| Where the time goes | roots 1.0 ms, walks 23.6 ms, commit 1.8 ms (walks are 92%) | roots 4.8 ms, walks 114.5 ms, commit 8.0 ms (walks are 90%) |
+| Inclusive, of the samples | `scanChunk` 90%; `FanLinks.links` 57% (`fromHost` 51%, of which `Level.getBlockState` 43%); `describe` 13%; `FanLinks.stops` 12%; capability lookups 14% | `scanChunk` 89%; `FanLinks.links` 55% (`fromHost` 53%, of which `Level.getBlockState` 40%); `FanLinks.stops` 16%; 5,921 samples |
+| Leaves | `PalettedContainer.get` 20%, `Level.getChunk` 15%, `ImmutableCollections$SetN.probe` 10% | `PalettedContainer.get` 29%, `ImmutableCollections$SetN.probe` 14%, `scanChunk` 9%, `ServerChunkCache.getChunk` 7% |
+
+- The cost is linear in block entities, in the walk. Nothing in it grows with the district count: the
+  commit is 6% and the roots 4% at 200 districts, and a block entity costs less at 200 districts (1.7 us)
+  than at 24 (4.1 us, a colder JIT in 15 short runs). One call at 200 districts is 128 ms in this
+  world (75,491 block entities, no trains, the laptop at a load average of about 70); 10.9's 493 to
+  1,088 ms were the same call in the bench's world on a server at 7 to 8 TPS. The profile does not
+  say which part of the gap is the bench world's size and which is its load, only that the walk
+  itself, at 1.7 us a block entity, is not 4 to 8 times slower than it was measured here.
+- Half of it is `FanLinks.fromHost` (the fan air currents of G2-73 to G2-76, de7b4735): every
+  belt-like host block entity casts four horizontal rays of the fan reach out from two heights,
+  one `getBlockState` per block, to find a fan in another chunk. This world has no fan.
+  That code is in every jar set of 10.9 and of sg200, so it does not explain the 2 to 3 times; the
+  syn200r world has more block entities a district than sg200's (about 285 against an unknown
+  number) and the bench ran at a load of 9 to 67 on 7 to 8 TPS.
+  Reported, not changed here: an early out when the dimension has no fan, or a ray count bounded by
+  the loaded fans, is the cheap fix, and a detection that is spread over ticks pays it unnoticed.
+
+| # | Choice | Why |
+|---|---|---|
+| SG60 | `MIC_STRESS_PROFILE`: a phase of the generator that adopts like the scene and times the one-call detection with a stack sampler (`StackSampler`) | 10.10 item 2 asked to profile one call first; the generator already has the districts |
+| SG61 | The profile is reported, and the commands are budgeted, not made cheaper | the cost is walk time proportional to block entities; the brief asked for the commands spread over ticks as adopts were |
+| SG62 | The commands call `Districts.rescanSoon`: a full pass at the front of the queue from the next tick, at the ticked budget; a detection of the dimension under way is restarted with its callbacks carried | one rule, no lost edit: the detection under way recorded the set from before the edit |
+| SG63 | Each command replies at once ("the detection runs over the next ticks and the result follows") and again, to the same source and to the log, when the districts have changed | the replies stay correct; an RCON client reads the log or `perf` |
+| SG64 | `merge` and `split` are refused while a command's detection of the dimension is pending; `rescan`, `exclude` and `include` stack | they read the district set; an `exclude` then `split` of one chunk pinned a district that never existed |
+| SG65 | `perf` shows the last detection's phases (roots, walks, commit) and "detection under way or waiting|idle"; the commands' slices count in the longest tick | the profile's split is kept in the line the bench reads; the commands are ticked now |
+| SG66 | Five command GameTests (`RescanBudgetGameTests` 6 to 10) check the call does no work, the report comes in a later tick, the districts change once, a second command restarts the detection and both are answered by it, and a merge during a detection is refused; `@AfterBatch` hooks restore the budget | a command test that fails must not leave 10 block entities a tick to every later batch |
+
+#### The bench scene (finding 5)
+
+Three things in 10.9's pairs came from the bench, not from the engine.
+
+- A glass verdict needs 6,000 quiet ticks after a district's last recompile. The 6,000-tick window closed
+  near the end of the busy window, a district declared late (a deferred adopt) recompiled late, and
+  the unload came before its verdict: `rtsim district info` sampled 0 to 5 of 12 with one, and the
+  reconcile count of a run depended on it (10.9 item 5).
+- The rescan was timed as the one RCON call. After the commands were spread over ticks (DS-16) the call
+  returns at once, and the time is the detection's.
+- A laptop suspend shows as one tick of minutes on every statistic: 10.9 (SG47) dropped it by hand.
+
+| # | Choice | Why |
+|---|---|---|
+| SG80 | `swticks` counts a tick whose gap is over 10 s while its own tick time is under half the gap as a suspend (`suspends`, `suspend_max_ms`), in none of the ring, gap or top statistics, and the dump line carries both | a minutes-long tick was the maximum, p999 and mean of the whole window; the tick time is monotonic and does not run while the laptop sleeps, so a suspend has a long gap and a short tick, and a real stall of the server (a long tick, however long) stays in the statistics. 10 s is far above any tick the bench saw and far below the suspends it dropped (238 s and 1,726 s, SG47) |
+| SG81 | The scene's `rescan` polls `rtsim district perf` until the detection is idle and counted one more, and keeps the engine's own work, ticks, phases and longest tick with the wall time, the game ticks and the `swticks` numbers of the span (`sw-result.json` `rescan`) | DS-16: the command returns when it has recorded the edit, so its wall time says nothing; the span's per-tick numbers are the detection's cost to the server |
+| SG82 | The scene key `unload_after_adopts` (game ticks, 8,000 in the generated scene) holds the unload until every arm has run that many ticks since its adopts, then takes a `verdicts` report; the generated scene also carries the `ticks` section of the 10.9 scene | 6,000 quiet ticks plus the recompile after the last late declaration; every arm waits by ticks so the pair stays level, and the off arm, which has no adopts, takes the same point |
+| SG83 | No full syn200 pair is run for these fixes | the brief: the pair is the main session's; a short smoke run only when `free -g` allows |
+
+#### The globals page (finding 3)
+
+The booked train legs were most of the globals page (about 45 to 50 bytes raw a departure, held a game
+day: 91, 383, 636 KB raw), which every save rewrote whole. They are now a table of their own
+(`persist::LEG_TABLE` 0x4904, ID10 in docs/choices-industry-dirty-pages.md), so a save writes only the
+leg pages a booking, a loot or an expiry changed. A format change with no migration, as before release.
+
+| # | Choice | Why |
+|---|---|---|
+| SG70 | Legs are paged by id, 256 to a page (`LEGS_PER_PAGE`), the page of a leg being its id divided by 256; each leg is stored with its dimension and the regions its line crosses | finding 3 (a), the recommended option, paged "by cell or by train" in the brief. Paging by id instead: legs are booked in id order and expire oldest first, so the pages that change are the newest (being filled) and the oldest (thinned by the daily expiry), and the rest are left alone. A cell or a train would put a leg in several pages, and a booking would write all of them |
+| SG71 | The cell lookup (`by_cell`) and the train lookup (`by_train`) are not saved: a restore rebuilds them from the legs in id order, through the insert a booking uses. The next leg id stays in the globals page | the lookups are a function of the legs, so one copy cannot disagree with the other (a unit test asserts a restored index equals the booked one, a seam line included). The counter outlives the legs it numbered, so a restore after an expiry does not reuse an id (tested) |
+| SG72 | A restore refuses a leg page that holds an id of another page, ids out of order, an id at or past the counter, or another magic (`ILEG`); a page with no leg is deleted, never written | a save writes and deletes a page at its own key only, as for a district page (ID8); an id past the counter would be reused by the next booking |
+| SG73 | The viewer's loader (`rtsim-view` `IndustryView::load`) reads the leg pages with the globals; the district inspector still restores from the globals, district and cluster pages alone, which restores the legs as none | the map draws the legs, and a district card does not need them |
+| SG74 | A booked leg lasts at most 30 days (`LEG_MAX_TICKS`) and never ends before it began: `book_on` clamps its ETA, and a restore refuses a leg outside that span | the review of the paging: a stalled train's ETA is distance over a near-zero speed (years), a booking indexes one entry per cell for every day of its span, and a corrupt page with an ETA of `u64::MAX` would have run a restore out of memory instead of returning an error (which starts industry afresh, W23). 30 days is far above any real leg; the clamp changes only the stalled train's window |
+| SG75 | The globals page starts with a magic, `IGB1`, as the district, glass and leg pages do | the page had none: a page of an older layout decoded three fields out of step and failed only where the types happened to clash, so "a save from before fails to decode" held by luck |
+
+Measured by `tests/leg_pages.rs` (`a_leg_page_is_under_a_hundred_bytes_a_leg`): a page of 256 legs of
+four carriages carrying two goods each, over a line of a few regions, is 15,466 bytes raw, 60 a leg
+(the cells included). 10.9 counted 45 to 50 bytes a departure for the whole globals page, so a page of
+256 legs is about 12 to 15 KB. At the 10.9 arms' 636 KB raw of legs, a save that books a few trains
+writes the page being filled, where it wrote the 636 KB. The quiet save (no booking) writes the globals
+page without the legs. Not measured on syn200: the full pair is not run (the brief).

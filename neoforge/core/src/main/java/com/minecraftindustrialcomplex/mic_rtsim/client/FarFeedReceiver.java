@@ -16,8 +16,15 @@ import java.util.UUID;
 
 /**
  * What the far feed's messages say, as far registry movers ({@link FarFeedClient#SOURCE}): the objects by their
- * handles, each a leg on the far clock or a sample it moves to over the next second. Plain Java, apart from
- * {@link FarFeedClient}'s networking, so a unit test can play the hand-over through it.
+ * handles, each a leg on the far clock or a run of samples. Plain Java, apart from {@link FarFeedClient}'s
+ * networking, so a unit test can play the hand-over through it.
+ *
+ * <p>A sample says where the object was when the server swept, a second after the last; drawn as it came, a
+ * mover would trail the real thing by that second. So a moving object is run on (docs/choices-dh-feed.md
+ * DHT44): from its last two samples, its speed along its way, how that speed changes and how it turns, it is
+ * drawn where it will be by the time the next sample comes, from where it is drawn now, and a little past that
+ * should the sample be late. One that stopped (the server sends the same sample once more) or is braking to a
+ * stop stops where it does, and waits there if the run had it a little further on ({@link #HOLD}).
  *
  * <p>A flown leg is timed in game time and drawn on the far clock (client ticks), so the two are tied by an
  * offset: the far clock minus the client's game time, which vanilla keeps to the server's once a second.
@@ -33,6 +40,50 @@ final class FarFeedReceiver {
     static final double JOIN_TICKS = 40.0;
     /** The offset may wander this far, in ticks, before the legs are timed again. */
     static final double RETIME_TICKS = 2.0;
+    /** A sample that comes late: the mover runs on this long past where the next was due, then waits. */
+    static final double RUN_ON_TICKS = 10.0;
+    /** The furthest a mover is run on from its newest sample, in ticks. */
+    static final double MAX_RUN_TICKS = SAMPLE_TICKS + RUN_ON_TICKS + 10.0;
+    /** Slower than this (an eighth of a block a sample, what the server does not send) is standing still. */
+    static final double STILL = 0.125 / SAMPLE_TICKS;
+    /**
+     * Faster than this, blocks a tick, is a jump, not a run (a teleport, or a toroidal world's wrap putting the
+     * object in another image): it is drawn at its new sample at once. No train or dragon moves at 160 m/s.
+     */
+    static final double JUMP = 8.0;
+    /**
+     * A mover run on past where the samples have it waits there rather than rolling back, but once the server has
+     * it standing, only this many blocks past where its run ends (PLACEHOLDER): further than that the run on was
+     * wrong (a dragon that stopped to hover) and it is drawn back, or it would be left standing far from the real
+     * thing.
+     */
+    static final double HOLD = 16.0;
+    /**
+     * A mover the server still has moving (its newest sample moved) may yet reach the box, however its run on
+     * reads its slowing, so the box waits for it up to this many blocks past (PLACEHOLDER), half the 64 blocks
+     * within which a client counts the real thing as there; once the server has it standing, {@link #HOLD}.
+     */
+    static final double WAIT = 32.0;
+    /**
+     * A turn, the heading's change between the last two gaps, is followed only when each gap went at least this
+     * far across the ground (the wire's eighths say little of a heading over less), and only up to
+     * {@link #MAX_TURN} a gap: more than that is a mover going back the way it came, not a turn.
+     */
+    static final double TURN_MIN_BLOCKS = 2.0;
+    static final double MAX_TURN = Math.toRadians(135.0);
+    /**
+     * A turning mover's run turns on past its heading at the sample only this share of the angle it turned between
+     * the last two gaps (PLACEHOLDER), then goes straight on; its box turns on as far as that angle again. A dragon
+     * that swerved once and flew on straight is still seen turning at the next sample: run on turning half the angle
+     * again, a swerve of 135 degrees in half a second drew the box 71 blocks from the dragon at worst over the
+     * second's 20 sample timings, past the 64 within which a client counts the real thing as there (straight on, 65;
+     * a quarter, 63.5), while a quarter still keeps a circling dragon's box within 7 blocks of a circle of radius 40
+     * at 1.5 blocks a tick (straight on, 22). The box turns on further than its run because only its midpoint counts
+     * at a hand-over: on that circle it faces within 2 degrees of the way the dragon flies, on average, against 33
+     * turned as the run is and 15 straight on; weaving it faces worse (a 3 s weave of 30 degrees at 2 blocks a
+     * tick: 47 degrees off on average, 36 straight on).
+     */
+    static final double TURN_ON = 0.25;
 
     private final Map<Integer, Obj> objs = new HashMap<>();
     /** Far clock minus game time, as the legs are timed; NaN until known. */
@@ -43,7 +94,8 @@ final class FarFeedReceiver {
     private static final class Obj {
         long id;
         FarKind kind;
-        int style, variant, size, rgb;
+        int style, variant, size, rgb, age = -1;
+        long shape;
         FarState state = FarState.MOVING;
         double[] prev, cur;
         double sampleTick, interval = 1.0;
@@ -52,6 +104,16 @@ final class FarFeedReceiver {
         double hx = 1.0, hz = 0.0;
         /** A flown leg's start in game time, or Long.MIN_VALUE. */
         long legT0 = Long.MIN_VALUE;
+        /** The newest sample and its time on the far clock; null before the first, and after a leg. */
+        double[] last;
+        double lastTick;
+        /** Its mean velocity since the sample before (blocks a tick, both points), and over how many ticks. */
+        double[] velocity;
+        double velocityTicks;
+        /** The run's change of speed and turn ({@link Run}), for a second sample in the same tick. */
+        double[] acc, turn;
+        /** The way the box last ran, at the end of its run: what a mover that then stops must not go back along. */
+        double[] way;
         String dim;
         FarMover mover;
 
@@ -69,7 +131,7 @@ final class FarFeedReceiver {
             if (kind == null || prev == null)
                 return;
             mover = new FarMover(new FarKey(FarFeedClient.SOURCE, new UUID(id, 0L), 0), kind, dim, prev, cur, sampleTick, interval,
-                    rgb, false, state, style, variant, size, circle, entity);
+                    rgb, false, state, style, variant, size, circle, entity, shape, age);
         }
     }
 
@@ -144,16 +206,24 @@ final class FarFeedReceiver {
             case FarWire.Gone g -> objs.remove(g.handle());
             case FarWire.Intro i -> {
                 Obj o = objs.get(i.handle());
-                if (o == null || o.id != i.id()) {
+                boolean same = o != null && o.id == i.id();
+                if (!same) {
                     o = new Obj();
                     objs.put(i.handle(), o);
                 }
+                // A body says its age, the engine's leg does not: a dragon handed back to its leg keeps the age
+                // its body had, so it is not drawn a size smaller or bigger, while it stays at that stage
+                // (docs/choices-dh-feed.md DHT60); a leg of another stage has outgrown it
+                boolean keepAge = same && i.age() < 0 && o.size == i.size();
                 o.id = i.id();
                 o.kind = FarKind.ofWire(i.kind());
                 o.style = i.style();
                 o.variant = i.variant();
                 o.size = i.size();
                 o.rgb = i.rgb();
+                o.shape = i.shape();
+                if (!keepAge)
+                    o.age = i.age();
                 if (o.kind == null)
                     objs.remove(i.handle()); // a kind this client does not know
                 else
@@ -170,12 +240,7 @@ final class FarFeedReceiver {
                 Obj o = objs.get(s.handle());
                 if (o == null)
                     return;
-                double[] seg = s.segment();
-                double[] drawn = o.drawnAt(now);
-                o.prev = drawn != null ? drawn : seg;
-                o.cur = seg;
-                o.sampleTick = now;
-                o.interval = SAMPLE_TICKS;
+                sample(o, s.segment(), Math.min(now, m.gameTime() + offset), now);
                 o.circle = null;
                 o.legT0 = Long.MIN_VALUE;
                 o.state = stateOf(s.state());
@@ -196,9 +261,306 @@ final class FarFeedReceiver {
         return s == null || s == FarState.GONE ? FarState.MOVING : s;
     }
 
+    /**
+     * A sample {@code seg}, taken at far clock {@code at}, as the mover's next stretch from {@code now}: from where
+     * it is drawn, through where it is expected one sample later, and on at that pace a little longer
+     * (DHT44). Its velocity is from the sample before (or, the first after a leg, the leg's as drawn), and how
+     * its speed changes from the velocity before that; a mover braking to a stop stops there.
+     */
+    private static void sample(Obj o, double[] seg, double at, double now) {
+        double[] drawn = o.drawnAt(now);
+        if ((o.last != null && gap(seg, o.last) > JUMP * Math.max(1.0, at - o.lastTick))
+                || (drawn != null && gap(seg, drawn) > JUMP * SAMPLE_TICKS)) {
+            // A jump: drawn where it is now, standing until the next sample says how it moves
+            o.last = seg;
+            o.lastTick = at;
+            o.velocity = null;
+            o.way = null;
+            o.prev = o.cur = seg.clone();
+            o.sampleTick = now;
+            o.interval = 1.0;
+            return;
+        }
+        double[] before = o.velocity;
+        double[] v = null;
+        double[] acc = null;
+        double[] turn = null;
+        if (o.last != null && at - o.lastTick >= 1.0) {
+            boolean stood = o.velocity == null || still(o.velocity);
+            // A gap after standing: it set off at most a sweep ago, as the server sends every second it moves
+            double dt = stood ? Math.min(at - o.lastTick, SAMPLE_TICKS) : at - o.lastTick;
+            v = new double[6];
+            for (int i = 0; i < 6; i++)
+                v[i] = (seg[i] - o.last[i]) / dt;
+            if (!stood) {
+                // The change of speed, not of velocity: a dragon turning at one speed neither speeds up nor slows
+                double span = (dt + o.velocityTicks) / 2.0;
+                acc = new double[2];
+                for (int p = 0; p < 2; p++)
+                    acc[p] = (speed(v, p) - speed(o.velocity, p)) / span;
+                // A dragon's turn only: a carriage's bogeys keep to the track, each on along its own line
+                if (o.kind == FarKind.DRAGON)
+                    turn = turnOf(o.velocity, o.velocityTicks, v, dt);
+            }
+            o.velocity = v;
+            o.velocityTicks = dt;
+        } else if (o.last == null && drawn != null && o.mover != null) {
+            // The first sample after a leg: it goes on as the leg was taking it
+            double[] back = new double[6];
+            o.mover.segmentAt(now - 1.0, back);
+            v = new double[6];
+            for (int i = 0; i < 6; i++)
+                v[i] = drawn[i] - back[i];
+            o.velocity = v;
+            o.velocityTicks = SAMPLE_TICKS;
+        } else if (o.last == null) {
+            o.velocity = null;
+        } else {
+            // A second sample in the same tick: the run so far
+            v = o.velocity;
+            acc = o.acc;
+            turn = o.kind == FarKind.DRAGON ? o.turn : null;
+        }
+        o.acc = acc;
+        o.turn = turn;
+        o.last = seg;
+        o.lastTick = at;
+        Run run = new Run(seg, at, v, acc, turn, o.velocityTicks);
+        double[] from = drawn != null ? drawn : run.at(now);
+        double due = Math.min(now + SAMPLE_TICKS, at + MAX_RUN_TICKS);
+        double end = Math.min(now + SAMPLE_TICKS + RUN_ON_TICKS, at + MAX_RUN_TICKS);
+        double stop = run.stopTime();
+        if (!run.moving())
+            end = due;
+        else if (stop < end)
+            end = Math.max(due, stop); // it comes to rest there, run on or not
+        boolean late = end - now < 1.0; // too long since the sample to run it on: it holds where the run ends
+        double[] to;
+        if (late || (stop <= end && end > due)) {
+            to = run.at(end); // or where it comes to rest, after the next sample is due
+        } else {
+            double[] there = run.at(due);
+            double k = (end - now) / (due - now);
+            to = new double[6];
+            for (int i = 0; i < 6; i++)
+                to[i] = from[i] + (there[i] - from[i]) * k;
+        }
+        // Never backward along its way (its way now, or the way the box last ran if it stopped): run on a little
+        // past where it stopped short, it waits there for the samples to pass it rather than rolling back. Further
+        // past than WAIT while the server has it moving, or HOLD once it stood, the run on was wrong, and it goes
+        // back to where they have it
+        double[] way = run.moving() ? run.tangent(now) : o.way != null ? o.way : before;
+        boolean goingOn = v != null && !still(v); // the server has it moving yet: it may still reach the box
+        if (way != null && !still(way) && along(to, from, way) < 0.0 && gap(to, from) <= (goingOn ? WAIT : HOLD))
+            to = from;
+        if (run.moving())
+            o.way = run.tangent(end);
+        o.prev = late ? to : from;
+        o.cur = to;
+        o.sampleTick = now;
+        o.interval = late ? 1.0 : end - now;
+    }
+
+    /** The farther of the two points' distances between segments {@code a} and {@code b}. */
+    private static double gap(double[] a, double[] b) {
+        double g = 0.0;
+        for (int p = 0; p < 2; p++) {
+            double dx = a[3 * p] - b[3 * p], dy = a[3 * p + 1] - b[3 * p + 1], dz = a[3 * p + 2] - b[3 * p + 2];
+            g = Math.max(g, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        return g;
+    }
+
+    /** How far the midpoint moves from {@code from} to {@code to} along the midpoint's velocity in {@code v}. */
+    private static double along(double[] to, double[] from, double[] v) {
+        double d = 0.0;
+        for (int i = 0; i < 3; i++)
+            d += (to[i] + to[3 + i] - from[i] - from[3 + i]) * (v[i] + v[3 + i]);
+        return d;
+    }
+
+    private static double speed(double[] v, int p) {
+        return Math.sqrt(v[3 * p] * v[3 * p] + v[3 * p + 1] * v[3 * p + 1] + v[3 * p + 2] * v[3 * p + 2]);
+    }
+
+    private static boolean still(double[] v) {
+        return speed(v, 0) < STILL && speed(v, 1) < STILL;
+    }
+
+    /**
+     * The mover's turn across the ground, from its midpoint's heading over the gap before ({@code prev} over
+     * {@code prevTicks}) to that over the last ({@code v} over {@code ticks}): {radians a block, the angle it turned
+     * between the two gaps}. One turn for the whole mover. A dragon's only: a carriage runs straight on.
+     * Null when it did not turn, or a gap is too short to say.
+     */
+    private static double[] turnOf(double[] prev, double prevTicks, double[] v, double ticks) {
+        double px = prev[0] + prev[3], pz = prev[2] + prev[5], qx = v[0] + v[3], qz = v[2] + v[5];
+        double lp = Math.sqrt(px * px + pz * pz) / 2.0 * prevTicks, lq = Math.sqrt(qx * qx + qz * qz) / 2.0 * ticks;
+        if (lp < TURN_MIN_BLOCKS || lq < TURN_MIN_BLOCKS)
+            return null;
+        double angle = Math.atan2(px * qz - pz * qx, px * qx + pz * qz);
+        if (angle == 0.0 || Math.abs(angle) > MAX_TURN)
+            return null;
+        return new double[]{angle / ((lp + lq) / 2.0), Math.abs(angle)};
+    }
+
+    /**
+     * Where a sampled mover will be: each point on along its velocity since the sample before, at its speed at
+     * the sample, speeding up or slowing down as it was (at most doubling its speed a sample), and stopping where
+     * slowing brings it to rest. A dragon that was turning goes on turning as it was, on an arc across the ground
+     * (its climb or dive kept) from its heading at the sample (half a gap's turn past its heading over the last
+     * gap), {@link #TURN_ON} of its last turn, then straight on; a straight run would take a circling dragon off
+     * on the tangent.
+     *
+     * @param v     the mean velocity over the last gap (6 values), or null for none
+     * @param acc   each point's change of speed, blocks a tick a tick, or null for none
+     * @param turn  the turn across the ground, {radians a block, radians between the gaps} ({@link #turnOf}), or
+     *              null
+     * @param ticks the last gap, over which {@code v} is the mean
+     */
+    private record Run(double[] seg, double at, double[] v, double[] acc, double[] turn, double ticks) {
+        boolean moving() {
+            return v != null && (speedAt(0) >= STILL || speedAt(1) >= STILL);
+        }
+
+        /** When the first point slowing down comes to rest; infinite when none does. */
+        double stopTime() {
+            double t = Double.POSITIVE_INFINITY;
+            for (int p = 0; p < 2 && v != null; p++) {
+                double u = speedAt(p), a = accAt(p, u);
+                if (u >= STILL && a < 0.0)
+                    t = Math.min(t, at + u / -a);
+            }
+            return t;
+        }
+
+        double[] at(double t) {
+            double[] out = seg.clone();
+            if (v == null)
+                return out;
+            if (turn != null) {
+                Arc arc = arc(t);
+                if (arc != null)
+                    return arc.place(seg);
+            }
+            for (int p = 0; p < 2; p++) {
+                double mean = speed(v, p), u = speedAt(p);
+                if (u < STILL || mean < 1e-9)
+                    continue;
+                double d = distance(p, u, t);
+                for (int i = 0; i < 3; i++)
+                    out[3 * p + i] += v[3 * p + i] / mean * d;
+            }
+            return out;
+        }
+
+        /**
+         * Each point's velocity at {@code t} as far as its heading goes: on a turn, the midpoint's over the last
+         * gap turned as the run has turned it by then, for both points (its speed left as it was over the gap).
+         */
+        double[] tangent(double t) {
+            Arc arc = v == null || turn == null ? null : arc(t);
+            if (arc == null)
+                return v;
+            double c = Math.cos(arc.heading), s = Math.sin(arc.heading);
+            double[] out = new double[6];
+            for (int p = 0; p < 2; p++) {
+                out[3 * p] = arc.vx * c - arc.vz * s;
+                out[3 * p + 1] = arc.vy;
+                out[3 * p + 2] = arc.vx * s + arc.vz * c;
+            }
+            return out;
+        }
+
+        /**
+         * A turning run at {@code t}: the midpoint on an arc of {@code turn[0]} radians a block across the ground,
+         * from its heading at the sample (half a gap's turn past its heading over the last gap), turned at most
+         * {@link #TURN_ON} of {@code turn[1]} past that and then straight on; its climb or dive kept. The segment
+         * turns about the midpoint as the arc would turn uncapped, up to {@code turn[1]}, and keeps its length at
+         * the run's points (a straight run's points, each on its own velocity, would stretch it; the drawn box
+         * between them, each end moved apart, does not quite keep it). Null when the midpoint does not move across
+         * the ground.
+         */
+        private Arc arc(double t) {
+            double vx = (v[0] + v[3]) / 2.0, vy = (v[1] + v[4]) / 2.0, vz = (v[2] + v[5]) / 2.0;
+            double mean = Math.sqrt(vx * vx + vy * vy + vz * vz), d = 0.0;
+            for (int p = 0; p < 2; p++) {
+                double u = speedAt(p);
+                if (u >= STILL && speed(v, p) >= 1e-9)
+                    d += distance(p, u, t) / 2.0;
+            }
+            double ground = Math.sqrt(vx * vx + vz * vz) / Math.max(mean, 1e-9);
+            if (mean < 1e-9 || ground < 1e-9)
+                return null;
+            double k = turn[0], cap = turn[1] * TURN_ON;
+            double phi = k * Math.sqrt(vx * vx + vz * vz) * ticks / 2.0, c = Math.cos(phi), s = Math.sin(phi);
+            double hx = (vx * c - vz * s) / (ground * mean), hz = (vx * s + vz * c) / (ground * mean);
+            double sg = ground * d, ks = k * sg, ahead, aside, turned;
+            double faced = Math.copySign(Math.min(Math.abs(ks), turn[1]), ks);
+            if (Math.abs(ks) <= cap) {
+                ahead = Math.sin(ks) / k;
+                aside = (1.0 - Math.cos(ks)) / k;
+                turned = ks;
+            } else {
+                // Turned as far as it may, then straight on
+                double sc = Math.copySign(cap / Math.abs(k), sg), pc = k * sc, r = sg - sc;
+                ahead = Math.sin(pc) / k + r * Math.cos(pc);
+                aside = (1.0 - Math.cos(pc)) / k + r * Math.sin(pc);
+                turned = pc;
+            }
+            // k above 0 turns (hx, hz) toward (-hz, hx), below 0 toward (hz, -hx)
+            return new Arc(hx * ahead - hz * aside, vy / mean * d, hz * ahead + hx * aside, faced, phi + turned,
+                    vx, vy, vz);
+        }
+
+        /**
+         * A turning run's midpoint moved by (dx, dy, dz) and the segment turned by {@code faced} about it;
+         * {@code heading} is how far the run's heading is from the last gap's, for the velocity (vx, vy, vz).
+         */
+        private record Arc(double dx, double dy, double dz, double faced, double heading, double vx, double vy,
+                double vz) {
+            double[] place(double[] seg) {
+                double mx = (seg[0] + seg[3]) / 2.0, mz = (seg[2] + seg[5]) / 2.0;
+                double c = Math.cos(faced), s = Math.sin(faced);
+                double[] out = new double[6];
+                for (int p = 0; p < 2; p++) {
+                    double ox = seg[3 * p] - mx, oz = seg[3 * p + 2] - mz;
+                    out[3 * p] = mx + dx + ox * c - oz * s;
+                    out[3 * p + 1] = seg[3 * p + 1] + dy;
+                    out[3 * p + 2] = mz + dz + ox * s + oz * c;
+                }
+                return out;
+            }
+        }
+
+        /** How far point {@code p}, at speed {@code u} at the sample, has gone along its run by {@code t}. */
+        private double distance(int p, double u, double t) {
+            double tau = Math.max(-SAMPLE_TICKS, Math.min(t - at, MAX_RUN_TICKS));
+            double a = accAt(p, u);
+            if (tau < 0.0)
+                return u * tau;
+            if (a < 0.0 && tau > u / -a)
+                return u * u / (2.0 * -a);
+            return u * tau + 0.5 * a * tau * tau;
+        }
+
+        /** The point's speed at the sample: the mean over the gap and half a gap of its change; 0 if it stopped. */
+        private double speedAt(int p) {
+            double u = speed(v, p) + (acc != null ? acc[p] * ticks / 2.0 : 0.0);
+            return Math.max(0.0, u);
+        }
+
+        private double accAt(int p, double u) {
+            return acc == null ? 0.0 : Math.min(acc[p], u / SAMPLE_TICKS);
+        }
+    }
+
     /** A leg as a mover on the far clock: game time {@code t} is far clock {@code t + offset}. */
     private void leg(Obj o, FarWire.Leg l, double now) {
         FarState state = stateOf(l.state());
+        o.last = null;
+        o.velocity = null;
+        o.way = null;
         double x0 = l.x0() + 0.5, z0 = l.z0() + 0.5, x1 = l.x1() + 0.5, z1 = l.z1() + 0.5, y = l.y();
         double[] before = o.drawnAt(now);
         o.state = state;

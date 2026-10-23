@@ -37,16 +37,21 @@ import net.minecraft.world.phys.Vec3;
  *       paced by {@link RecutPacer}.</li>
  *   <li><b>One controller</b> in {@code DhApiBeforeGenericRenderSetupEvent}, run once per frame (DH fires
  *       that event for both of its generic passes). Groups carry no lambdas of their own.</li>
- *   <li><b>The hide test</b> (§5, {@link FarHide}): a carriage is not drawn while the client has its real
- *       carriage entity, or while its midpoint is in a chunk the client has loaded (vanilla draws over DH
- *       there, so a proxy would show only where vanilla draws sky; {@link FarBandRenderer} draws it there
- *       instead, when it has no entity).</li>
+ *   <li><b>The hide test</b> (§5, {@link FarHide#dhDraws}, {@link HandOverRule}): a carriage is not drawn
+ *       while the client has its real carriage entity, or while its midpoint is in a chunk the client has
+ *       loaded (vanilla draws over DH there, so a proxy would show only where vanilla draws sky;
+ *       {@link FarBandRenderer} draws it there instead, when it has no entity), unless some of it could be in
+ *       DH's vanilla fade ({@link FadeRing}). There both draw it, the band with this group's boxes
+ *       ({@link #shownCut}), so the band's box fades into the same box (DHT45).</li>
  *   <li><b>The budget</b> ({@link FarDetail}): the nearest visible carriages are drawn, up to the tier's
  *       groups and boxes; hidden ones keep their group, inactive, until the registered budget needs it.</li>
  *   <li><b>The register</b> is the one of the level being drawn, from the render parameter (§3.1). DH closes a
  *       level's groups with the level, so a new level (or a level load or unload event, or leaving the world)
  *       starts a fresh set.</li>
  * </ul>
+ *
+ * <p>A carriage whose look has its model ({@link FarModelRenderer}, docs/choices-dh-feed.md DHT63) is drawn as that,
+ * not here: these boxes are for the rest.
  *
  * <p>Everything here runs on the render thread, except {@link #levelChanged()}, which only sets a flag.
  */
@@ -82,6 +87,8 @@ final class FarTrainView {
         final IDhApiRenderableBoxGroup group;
         final RecutPacer pacer = new RecutPacer();
         double cutX, cutY, cutZ;
+        /** The boxes this group was cut with, relative to its origin (the band draws these in the fade). */
+        List<double[]> cut = List.of();
         int boxCount;
         int rgb;
         long wantedAt;
@@ -103,6 +110,20 @@ final class FarTrainView {
 
     private record Candidate(FarMover mover, double lx, double ly, double lz, double tx, double ty, double tz,
             double distanceSq) {
+    }
+
+    /** The farthest a carriage's boxes reach from its run's midpoint, for a run (rx, ry, rz) between bogeys. */
+    static double reach(double rx, double ry, double rz) {
+        return Math.sqrt(rx * rx + ry * ry + rz * rz) / 2.0 + OVERHANG + WIDTH;
+    }
+
+    /**
+     * The boxes DH drew for this carriage at the controller's last run, relative to its midpoint, or null when DH
+     * did not draw it (render thread only; the list is not to be changed).
+     */
+    static List<double[]> shownCut(FarKey key) {
+        Proxy p = PROXIES.get(key);
+        return p != null && p.active ? p.cut : null;
     }
 
     // -----------------------------------------------------------------------------------------------------
@@ -186,6 +207,7 @@ final class FarTrainView {
             register = reg;
         }
 
+        FadeRing.update();
         FarDetail tier = DhFarConfig.detail();
         StaircaseCutter.Shape shape = new StaircaseCutter.Shape(WIDTH, HEIGHT, OVERHANG, tier.step);
         String dimension = level.dimension().location().toString();
@@ -201,7 +223,7 @@ final class FarTrainView {
         int boxCap = Math.max(0, tier.boxes - dragons.boxes());
         int registeredCap = Math.max(0, tier.registeredGroups - dragons.registered());
 
-        // Who could be drawn: in this level, inside DH's radius, and not hidden
+        // Who could be drawn: in this level, inside DH's radius, and DH's to draw
         CANDIDATES.clear();
         int hidden = 0;
         for (FarMover m : FarObjects.movers()) {
@@ -213,10 +235,14 @@ final class FarTrainView {
             double d2 = dx * dx + dz * dz;
             if (!(d2 <= radiusSq))
                 continue;
+            // The real carriage's look, where it has one (FarModelRenderer); its group, if any, goes dark
+            if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
+                continue;
             Proxy p = PROXIES.get(m.key());
             if (p != null)
                 p.wantedAt = now;
-            if (FarHide.entityPresent(m, level, mx, my, mz) || FarHide.loaded(level, mx, mz)) {
+            if (!FarHide.dhDraws(m, level, mx, my, mz, reach(SEG[0] - SEG[3], SEG[1] - SEG[4], SEG[2] - SEG[5]),
+                    cam)) {
                 hidden++;
                 continue;
             }
@@ -298,6 +324,7 @@ final class FarTrainView {
         p.cutX = rx;
         p.cutY = ry;
         p.cutZ = rz;
+        p.cut = cut;
         p.boxCount = cut.size();
         p.rgb = m.rgb();
         p.pacer.cut(now);
@@ -315,6 +342,7 @@ final class FarTrainView {
         p.cutX = rx;
         p.cutY = ry;
         p.cutZ = rz;
+        p.cut = cut;
         p.boxCount = cut.size();
         p.rgb = m.rgb();
         p.pacer.cut(now);

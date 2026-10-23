@@ -11,6 +11,7 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexSorting;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.Minecraft;
@@ -20,6 +21,8 @@ import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fStack;
 
 /**
  * The band renderer (docs/choices-dh-feed.md): far movers inside the chunks the client has loaded that have no
@@ -33,12 +36,19 @@ import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
  * lights its boxes (vanilla's lightmap at full sky light, {@link VanillaLight}) and faded into vanilla's fog as
  * the terrain around them is.
  *
+ * <p>Toward the band's far edge DH draws the mover too ({@link HandOverRule}), and DH's vanilla fade mixes these
+ * boxes toward DH's there. So where DH draws it, the band draws DH's own cut ({@link FarTrainView#shownCut},
+ * {@link FarDragonView#shown}): the two match box for box and the fade shows one (DHT45).
+ *
+ * <p>Movers drawn as the real thing ({@link FarModelRenderer}) are drawn by that in the band too, with the same
+ * hand-over; these boxes are for the rest.
+ *
  * <p>Render thread only.
  */
 final class FarBandRenderer {
     /** Faces' brightness: top, bottom, north and south, east and west (vanilla's block shading). */
     private static final float TOP = 1.0f, BOTTOM = 0.5f, NS = 0.8f, EW = 0.6f;
-    /** The staircase step in the band: it is near, so the finest. */
+    /** The staircase step in the band where DH does not draw the mover too: it is near, so the finest. */
     private static final double STEP = 1.0;
     private static final double[] SEG = new double[6];
     /** This frame's light (red, green, blue) and fog (start, end, shape 0 sphere or 1 cylinder, then its colour). */
@@ -57,16 +67,49 @@ final class FarBandRenderer {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null)
             return;
-        long t0 = System.nanoTime();
-        try {
-            draw(event, level);
-        } catch (RuntimeException e) {
-            if (errors++ < 5)
-                MicRtsimDh.LOGGER.error("mic_rtsim_dh: band renderer failed this frame", e);
+        // The stage's own matrices, not whatever RenderSystem holds by now: what the entities left there need not
+        // be the level's (a zoomed view drew the band's movers off where they are)
+        Matrix4f mv = event.getModelViewMatrix(), proj = event.getProjectionMatrix();
+        if (FarBench.ENABLED) {
+            mvDrift = Math.max(mvDrift, drift(RenderSystem.getModelViewMatrix(), mv));
+            projDrift = Math.max(projDrift, drift(RenderSystem.getProjectionMatrix(), proj));
         }
-        nanos += System.nanoTime() - t0;
-        frames++;
+        Matrix4f savedProj = new Matrix4f(RenderSystem.getProjectionMatrix());
+        VertexSorting savedSorting = RenderSystem.getVertexSorting();
+        Matrix4fStack stack = RenderSystem.getModelViewStack();
+        stack.pushMatrix();
+        try {
+            stack.set(mv);
+            RenderSystem.applyModelViewMatrix();
+            RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
+            FarModelRenderer.onBand(event, level);
+            long t0 = System.nanoTime();
+            try {
+                draw(event, level);
+            } catch (RuntimeException e) {
+                if (errors++ < 5)
+                    MicRtsimDh.LOGGER.error("mic_rtsim_dh: band renderer failed this frame", e);
+            }
+            nanos += System.nanoTime() - t0;
+            frames++;
+        } finally {
+            stack.popMatrix();
+            RenderSystem.applyModelViewMatrix();
+            RenderSystem.setProjectionMatrix(savedProj, savedSorting);
+        }
     }
+
+    /** The largest difference between two matrices' elements (the bench's check of what RenderSystem held). */
+    private static float drift(Matrix4f a, Matrix4f b) {
+        float d = 0;
+        for (int c = 0; c < 4; c++)
+            for (int r = 0; r < 4; r++)
+                d = Math.max(d, Math.abs(a.get(c, r) - b.get(c, r)));
+        return d;
+    }
+
+    /** For the bench: how far RenderSystem's matrices were from the stage's at the band, at most. */
+    static float mvDrift, projDrift;
 
     private static void draw(RenderLevelStageEvent event, ClientLevel level) {
         Vec3 cam = event.getCamera().getPosition();
@@ -95,36 +138,43 @@ final class FarBandRenderer {
             for (FarMover m : FarObjects.movers()) {
                 if (!dimension.equals(m.dimension()))
                     continue;
+                // Drawn as the real thing by the model renderer, or waiting for it a moment
+                if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
+                    continue;
                 m.segmentAt(clock, SEG);
                 double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
-                if (!FarHide.loaded(level, x, z) || FarHide.entityPresent(m, level, x, y, z))
+                if (!FarHide.bandDraws(m, level, x, y, z, cam))
                     continue;
                 List<double[]> cut;
                 int rgb = m.rgb(), wingFrom = Integer.MAX_VALUE, wingRgb = rgb;
                 double reach;
                 if (m.kind() == FarKind.CARRIAGE) {
                     double rx = SEG[0] - SEG[3], ry = SEG[1] - SEG[4], rz = SEG[2] - SEG[5];
-                    reach = Math.sqrt(rx * rx + ry * ry + rz * rz) / 2.0 + FarTrainView.OVERHANG
-                            + FarTrainView.WIDTH;
+                    reach = FarTrainView.reach(rx, ry, rz);
                     if (!frustum.isVisible(new AABB(x - reach, y - 1, z - reach, x + reach,
                             y + FarTrainView.HEIGHT + 1, z + reach)))
                         continue;
-                    cut = StaircaseCutter.cut(rx, ry, rz, new StaircaseCutter.Shape(FarTrainView.WIDTH,
-                            FarTrainView.HEIGHT, FarTrainView.OVERHANG, STEP));
+                    cut = FarTrainView.shownCut(m.key());
+                    if (cut == null)
+                        cut = StaircaseCutter.cut(rx, ry, rz, new StaircaseCutter.Shape(FarTrainView.WIDTH,
+                                FarTrainView.HEIGHT, FarTrainView.OVERHANG, STEP));
                 } else if (m.kind() == FarKind.DRAGON) {
-                    int stage = Math.max(1, Math.min(5, m.size()));
-                    reach = DragonModel.length(stage) * DragonModel.WINGSPAN;
+                    reach = FarDragonView.reach(m.size());
                     if (!frustum.isVisible(new AABB(x - reach, y - reach, z - reach, x + reach, y + reach,
                             z + reach)))
                         continue;
-                    int h = DragonModel.headingStep(SEG[0] - SEG[3], SEG[2] - SEG[5]);
-                    cut = new ArrayList<>(DragonModel.body(stage, h, STEP));
+                    // DH's cut where DH draws it too; the finest, for the heading of the moment, elsewhere
+                    FarDragonView.Shown dh = FarDragonView.shown(m.key());
+                    int stage = dh != null ? dh.stage() : Math.max(1, Math.min(5, m.size()));
+                    int h = dh != null ? dh.heading() : DragonModel.headingStep(SEG[0] - SEG[3], SEG[2] - SEG[5]);
+                    double step = dh != null ? dh.step() : STEP;
+                    cut = new ArrayList<>(DragonModel.body(stage, h, step));
                     DragonModel.Pose pose = DragonModel.poseAt(clock, tier.wingPoses,
                             FarDragonView.flapSeed(m.key()), m.state());
                     if (pose != null) {
                         wingFrom = cut.size();
                         wingRgb = FarDragonView.shade(rgb, FarDragonView.WING_SHADE);
-                        cut.addAll(DragonModel.wings(stage, h, pose, STEP));
+                        cut.addAll(DragonModel.wings(stage, h, pose, step));
                     }
                 } else {
                     continue;

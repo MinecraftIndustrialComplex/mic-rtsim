@@ -103,10 +103,14 @@ public final class Districts {
     /** Ticks the last detection took, its longest tick, and the longest tick of ticked detection work since the module started. */
     int lastRescanSlices;
     long lastRescanLongestNanos;
+    /** Where the last detection's time went: looking at roots (seeds, stations), walking reached chunks, and the commit. */
+    long lastRescanRootNanos, lastRescanWalkNanos, lastRescanCommitNanos;
     long maxSliceNanos;
     /** Block entities the last detection looked at in all, and in its biggest tick (counts, not time: GameTests gate on these). */
     long lastRescanLooked;
     long lastRescanLongestLooked;
+    /** The most one look at one chunk cost in the last detection: the part of a tick the budget does not bound. */
+    long lastRescanLongestItem;
     /** What the longest tick was: the commit's, or a look at this many block entities. */
     String maxSliceWhat = "";
     long declared;
@@ -127,6 +131,11 @@ public final class Districts {
         }
     }
 
+    /** Detections finished since the module started (GameTests count them to tell one detection from two). */
+    public long rescans() {
+        return rescans;
+    }
+
     /** The last detection's wall time, in nanoseconds (/rtsim district perf, GameTests). */
     public long lastRescanNanos() {
         return lastRescanNanos;
@@ -135,6 +144,12 @@ public final class Districts {
     /** The ticks the last detection was spread over. */
     public int lastRescanSlices() {
         return lastRescanSlices;
+    }
+
+    /** Where the last detection's time went, for the perf line and for profiling (SG60). */
+    public String lastRescanPhases() {
+        return "roots " + lastRescanRootNanos / 1000 + " us, walks " + lastRescanWalkNanos / 1000 + " us, commit "
+                + lastRescanCommitNanos / 1000 + " us";
     }
 
     /** The longest single tick of the last detection (a slice, or the commit with it). */
@@ -147,9 +162,14 @@ public final class Districts {
         return lastRescanLooked;
     }
 
-    /** Block entities the last detection looked at in its biggest tick: at most the budget plus one chunk's. */
+    /** Block entities the last detection looked at in its biggest tick: under the budget before the last chunk, and that chunk. */
     public long lastRescanLongestLooked() {
         return lastRescanLongestLooked;
+    }
+
+    /** What the costliest single look at a chunk spent in the last detection (a tick's spend is at most the budget less one, plus this). */
+    public long lastRescanLongestItem() {
+        return lastRescanLongestItem;
     }
 
     /**
@@ -185,16 +205,61 @@ public final class Districts {
         dirty.computeIfAbsent(dim, k -> new LongOpenHashSet()).add(chunk);
     }
 
-    /** Detection now, whatever the interval, in this tick (commands and GameTests). */
+    /** Detection now, whatever the interval, in this tick (GameTests, and the baseline the commands' ticked detection is checked against). */
     public void rescanNow(ServerLevel level) {
         ResourceKey<Level> dim = level.dimension();
-        requeueRescans(dim);
+        List<Runnable> waiters = requeueRescans(dim);
         LongOpenHashSet taken = dirty.remove(dim);
         Rescan r = new Rescan(level, true, taken == null ? new LongOpenHashSet() : taken);
         r.manual = true;
         while (!r.step(Integer.MAX_VALUE))
             ;
         lastRescan = ind.gameTime();
+        fire(waiters);
+    }
+
+    /**
+     * A full detection of {@code level}'s dimension, as {@link #rescanNow} runs it but spread over the next ticks as a
+     * ticked one is (DS-16): what the operator commands that ask for one ({@code rescan}, {@code merge}, {@code split},
+     * {@code exclude}, {@code include}) use, so that none of them is one big tick at a large district count. It starts
+     * at the next tick, not at the next {@code rescanIntervalTicks}, ahead of the passes waiting; a detection of the
+     * dimension under way (or its passes waiting) is put back into the dirty set and covered by this one, with the
+     * callbacks it was to run. {@code done} runs in the tick the detection commits, after the districts changed.
+     * Detections of the dimension that began earlier and are cancelled by this one are not reported done by their
+     * own end: {@code done} callbacks of all of them run at this one's.
+     */
+    public void rescanSoon(ServerLevel level, Runnable done) {
+        ResourceKey<Level> dim = level.dimension();
+        List<Runnable> waiters = requeueRescans(dim);
+        waiters.add(done);
+        LongOpenHashSet taken = dirty.remove(dim);
+        fullDims.remove(dim);
+        passes.addFirst(new Pass(dim, taken == null ? new LongOpenHashSet() : taken, true, waiters));
+    }
+
+    /**
+     * True while a detection of {@code dim} that a command asked for ({@link #rescanSoon}) is under way or waiting:
+     * the district set is not yet what that command's edit makes it, so a command that reads the set ({@code merge},
+     * {@code split}) waits for the result line (DS-16).
+     */
+    public boolean commandPending(ResourceKey<Level> dim) {
+        if (job != null && job.dim == dim && !job.waiters.isEmpty())
+            return true;
+        for (Pass p : passes)
+            if (p.dim == dim && !p.waiters.isEmpty())
+                return true;
+        return false;
+    }
+
+    /** Runs the callbacks of a finished detection; one that throws does not stop the others or the tick. */
+    private static void fire(List<Runnable> waiters) {
+        for (Runnable w : waiters) {
+            try {
+                w.run();
+            } catch (RuntimeException e) {
+                MicRtsim.LOGGER.warn("[industry] a district command's completion report failed", e);
+            }
+        }
     }
 
     // ---- session start --------------------------------------------------------------------------
@@ -352,7 +417,9 @@ public final class Districts {
      * chunks it changed only: the districts owning or touching them, grown as a ticked pass grows, never the
      * whole dimension. That finishes in this call when the neighbourhood is within one tick's block entity
      * budget; else the detection goes on over the next ticks as a ticked one does, and {@code detected} is false.
-     * A detection of the same dimension under way leaves the adopted chunks to the pass after it.
+     * A detection of the same dimension under way takes the adopted chunks into itself ({@link Rescan#join}, SG55,
+     * SG56): the ones it has not counted yet are looked at as roots, with the districts around them, and a chunk it
+     * counted before the adopt has its seeds counted again; it finishes with the others, as one detection.
      */
     public Adopted adoptAround(ServerLevel level, ChunkPos centre, int radius) {
         ResourceKey<Level> dim = level.dimension();
@@ -360,14 +427,17 @@ public final class Districts {
         int n = adopt(level, centre, radius, changed);
         if (changed.isEmpty())
             return new Adopted(n, true);
-        if (job != null && job.dim == dim)
-            return new Adopted(n, false); // adopt() marked the chunks dirty: the next pass has them
         // Only these chunks leave the dirty set; other edits wait for their own pass.
         LongOpenHashSet pending = dirty.get(dim);
         if (pending != null) {
             pending.removeAll(changed);
             if (pending.isEmpty() && !fullDims.contains(dim))
                 dirty.remove(dim);
+        }
+        if (job != null && job.dim == dim) {
+            // The running detection takes the chunks into itself: no second detection, none after it.
+            job.join(changed);
+            return new Adopted(n, false);
         }
         Rescan r = new Rescan(level, false, changed);
         if (r.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK)))
@@ -429,13 +499,19 @@ public final class Districts {
         if (job == null && !passes.isEmpty()) {
             Pass p = passes.poll();
             ServerLevel level = ind.level(p.dim);
-            if (level != null)
+            if (level != null) {
                 job = new Rescan(level, p.full, p.dirtyHere);
+                job.waiters.addAll(p.waiters);
+            } else {
+                fire(p.waiters); // the dimension is gone: a command waiting on it hears that the districts are what they are
+            }
         }
         if (job != null && job.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK))) {
+            List<Runnable> waiters = job.waiters;
             job = null;
             if (passes.isEmpty())
                 lastRescan = now;
+            fire(waiters);
         }
         if (now - lastPeriodic >= IndustryConfig.get(IndustryConfig.PERIODIC_RESCAN)) {
             lastPeriodic = now;
@@ -655,26 +731,41 @@ public final class Districts {
         final LongOpenHashSet stationChunks = new LongOpenHashSet();
     }
 
-    /** One dimension's share of a detection pass: the dirty chunks taken when the pass began. */
-    private record Pass(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full) {}
+    /**
+     * One dimension's share of a detection pass: the dirty chunks taken when the pass began, and what to run when the
+     * detection that does it is done (a command's report, {@link #rescanSoon}).
+     */
+    private record Pass(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full, List<Runnable> waiters) {
+        Pass(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full) {
+            this(dim, dirtyHere, full, new ArrayList<>());
+        }
+    }
 
     /** A detection under way (at most one at a time), and the dimensions waiting behind it. */
     private Rescan job;
     private final java.util.ArrayDeque<Pass> passes = new java.util.ArrayDeque<>();
 
-    /** Puts the detection under way for {@code dim}, and its queued passes, back where edits wait. */
-    private void requeueRescans(ResourceKey<Level> dim) {
+    /**
+     * Puts the detection under way for {@code dim}, and its queued passes, back where edits wait. Returns the
+     * callbacks they were to run (a new list the caller may add to): {@link #rescanNow} and {@link #rescanSoon} run
+     * them with their own detection, the GameTests' helpers that wipe the dimension let them go.
+     */
+    private List<Runnable> requeueRescans(ResourceKey<Level> dim) {
+        List<Runnable> waiters = new ArrayList<>();
         if (job != null && job.dim == dim) {
             requeue(job.dim, job.dirtyHere, job.full);
+            waiters.addAll(job.waiters);
             job = null;
         }
         for (java.util.Iterator<Pass> it = passes.iterator(); it.hasNext(); ) {
             Pass p = it.next();
             if (p.dim == dim) {
                 requeue(p.dim, p.dirtyHere, p.full);
+                waiters.addAll(p.waiters);
                 it.remove();
             }
         }
+        return waiters;
     }
 
     private void requeue(ResourceKey<Level> dim, LongOpenHashSet dirtyHere, boolean full) {
@@ -701,7 +792,8 @@ public final class Districts {
      * recorded. A chunk is looked at whole and what it holds is recorded then (its seeds, inventories, stations,
      * links), so a chunk that unloads after it was looked at still counts as it was, and one that unloads before
      * it is looked at is an unloaded member (it keeps what its district knew). Edits that arrive meanwhile are in
-     * {@link #dirty}, not in this detection's snapshot, and make the next one.
+     * {@link #dirty}, not in this detection's snapshot, and make the next one; the exception is an adopt, whose
+     * chunks join the detection under way ({@link #join}, DS-14).
      */
     private final class Rescan {
         final ServerLevel level;
@@ -725,10 +817,14 @@ public final class Districts {
         long nanos;
         int slices;
         long maxSlice;
+        /** Time in {@link #root}, in {@link #walk}, and in {@link #commit}. */
+        long rootNanos, walkNanos, commitNanosAll;
         /** Block entities looked at in all, and in the biggest step. */
-        long looked, maxLooked;
+        long looked, maxLooked, maxItem;
         /** Run in one call by a command or a test: its one big tick is not a scheduling figure. */
         boolean manual;
+        /** What to run when this detection is done and has committed ({@link #rescanSoon}). */
+        final List<Runnable> waiters = new ArrayList<>();
 
         Rescan(ServerLevel level, boolean full, LongOpenHashSet dirtyHere) {
             this.level = level;
@@ -762,6 +858,45 @@ public final class Districts {
                 pending.add(c);
         }
 
+        /**
+         * Chunks that gained seeds while this detection runs (a deferred adopt, SG55). The detection takes them as it
+         * would have at its start: a chunk it has not counted yet is scheduled as a root (again, if the walk went by
+         * it while it was unloaded and recorded nothing), with the districts owning or touching it (all of the
+         * dimension's already, in a full detection); a chunk it counted before has its seeds counted again in place,
+         * and is enqueued as a root if it has some now and the walk had not reached it (SG56). Nothing but the
+         * seed count of a chunk depends on its seeds, so the rest of what the detection recorded stands. The chunks
+         * go back to the dirty set with the job if the job is put back.
+         */
+        void join(LongOpenHashSet chunks) {
+            Set<Long> near = new HashSet<>();
+            for (long c : chunks) {
+                dirtyHere.add(c);
+                if (!full)
+                    for (int dx = -1; dx <= 1; dx++)
+                        for (int dz = -1; dz <= 1; dz++) {
+                            District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
+                            if (o != null && affected.add(o.id))
+                                near.add(o.id);
+                        }
+                if (!scan.seedCounts.containsKey(c)) {
+                    // Not counted: scheduled behind the cursor too, because a root that found the chunk unloaded counted nothing.
+                    scheduled.add(c);
+                    pending.add(c);
+                    continue;
+                }
+                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+                if (chunk == null)
+                    continue; // unloaded since: its district keeps the seeds it recorded, and the adopt's seeds wait for the chunk
+                scan.seedCounts.remove(c);
+                if (seedsIn(level, chunk, scan) > 0 && visited.add(c)) {
+                    loadedAtTest.add(c);
+                    queue.enqueue(c);
+                }
+            }
+            if (!near.isEmpty())
+                scheduleDistricts(near);
+        }
+
         /** The chunks of these districts, and the chunks pinned to them, are candidates. */
         private void scheduleDistricts(Set<Long> ids) {
             for (long id : ids) {
@@ -788,9 +923,17 @@ public final class Districts {
                 if (progressed && spent >= budget)
                     break;
                 if (cursor < pending.size()) {
-                    spent += root(pending.getLong(cursor++));
+                    long r0 = System.nanoTime();
+                    int cost = root(pending.getLong(cursor++));
+                    spent += cost;
+                    maxItem = Math.max(maxItem, cost);
+                    rootNanos += System.nanoTime() - r0;
                 } else if (!queue.isEmpty()) {
-                    spent += walk(queue.dequeueLong());
+                    long w0 = System.nanoTime();
+                    int cost = walk(queue.dequeueLong());
+                    spent += cost;
+                    maxItem = Math.max(maxItem, cost);
+                    walkNanos += System.nanoTime() - w0;
                 } else {
                     Set<Long> more = full ? Set.of() : grown();
                     if (!more.isEmpty()) {
@@ -801,6 +944,7 @@ public final class Districts {
                     long c0 = System.nanoTime();
                     commit();
                     commitNanos = System.nanoTime() - c0;
+                    commitNanosAll += commitNanos;
                     done = true;
                     break;
                 }
@@ -820,6 +964,10 @@ public final class Districts {
                 lastRescanLongestNanos = maxSlice;
                 lastRescanLooked = looked;
                 lastRescanLongestLooked = maxLooked;
+                lastRescanLongestItem = maxItem;
+                lastRescanRootNanos = rootNanos;
+                lastRescanWalkNanos = walkNanos;
+                lastRescanCommitNanos = commitNanosAll;
             }
             if (!manual && dt > maxSliceNanos) {
                 maxSliceNanos = dt;

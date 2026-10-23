@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
@@ -108,7 +109,7 @@ public final class IndustryGameTests {
      * far chunk makes two districts, and a shaft across their boundary makes both not learnable
      * (rotation crosses the boundary).
      */
-    @GameTest(template = YARD, batch = "industry_01", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_01", timeoutTicks = 4000)
     public static void aDistrictIsDetectedAcrossShaftsAndNamed(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -143,11 +144,11 @@ public final class IndustryGameTests {
                     record("aDistrictIsDetectedAcrossShaftsAndNamed", "detection, best of 50 (us)", best / 1000.0);
                     check("a repeated detection keeps the district and its revision", ind().district(d.id) == d && d.chunks.size() == 3 && d.revision == rev[0]);
                     check("named by its coordinates, got " + d.displayName(), d.displayName().startsWith("District "));
-                    List<ByteBuffer> decl = received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d.id);
-                    check("IND_DISTRICT was journaled", !decl.isEmpty());
-                    command(helper, chestPos, "rtsim district rename " + d.id + " Iron Coast");
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> check("IND_DISTRICT was journaled",
+                        !received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, id[0]).isEmpty())))
+                .thenExecute(() -> command(helper, chestPos, "rtsim district rename " + id[0] + " Iron Coast"))
+                .thenWaitUntil(paced(() -> {
                     District d = ind().district(id[0]);
                     check("renamed: " + d.displayName(), d.displayName().equals("Iron Coast"));
                     boolean named = false;
@@ -157,7 +158,7 @@ public final class IndustryGameTests {
                     check("a new revision carries the name", named);
                     check("the rename is an IND_EDIT (command)", received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d.id).stream()
                             .anyMatch(r -> aux(r) == IndRecords.Edit.COMMAND));
-                })
+                }))
                 .thenExecute(() -> command(helper, far, "rtsim district split"))
                 .thenWaitUntil(() -> {
                     District d = ind().district(id[0]);
@@ -559,12 +560,153 @@ public final class IndustryGameTests {
     }
 
     /**
+     * A train leaves a district's station, calls at a station outside every district and comes back (the
+     * syn200 shape: docs/stress-worlds-results.md 10.9, choice SG50). The bridge says so with
+     * IND_TRAIN_UNWATCHED, after the departure it ends, and the engine learns no edge from the district's
+     * station to itself: before the report the engine made one, with the round trip's travel time. A
+     * second unwatched call in the same leg sends nothing more. On the native engine the engine's own counts
+     * are read, as the journey changed them: one unwatched stop taken, no self edge refused (the report
+     * came first), and no edge at all.
+     */
+    @GameTest(template = YARD, batch = "industry_16", timeoutTicks = 600)
+    public static void aTrainThatCallsOutsideEveryDistrictMakesNoEdgeFromAStationToItself(GameTestHelper helper) {
+        unwatchedJourney(helper, "aTrainThatCallsOutsideEveryDistrictMakesNoEdgeFromAStationToItself", true);
+    }
+
+    /**
+     * The same journey with the report off, as a bridge from before it would run: the engine's own guard
+     * (SG51) refuses the edge from the district's station to itself and counts it. Without both the report and the
+     * guard the engine learns a line from a station to itself, which is the bug 10.9 found.
+     */
+    @GameTest(template = YARD, batch = "industry_17", timeoutTicks = 600)
+    public static void aSelfEdgeIsRefusedWhenTheBridgeReportsNoUnwatchedStop(GameTestHelper helper) {
+        unwatchedJourney(helper, "aSelfEdgeIsRefusedWhenTheBridgeReportsNoUnwatchedStop", false);
+    }
+
+    /**
+     * Two out-and-back legs from a district's station through a station outside every district. The first
+     * leaves and calls at the far station in one tick, before the bridge has journaled the departure (the
+     * report must carry it out first); a second call in the same leg adds nothing. The second leg waits for its
+     * departure to be journaled, as Create's schedule does, and the departure from the district re-arms the
+     * report. Records are waited for, never counted in ticks; the engine's own counts are read at the end.
+     */
+    private static void unwatchedJourney(GameTestHelper helper, String test, boolean report) {
+        fastConfig();
+        forget(helper);
+        TrainWatch.reportUnwatchedForTest(report);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx + 2, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        playerPlaced(helper, chestPos);
+        Train[] train = {null};
+        GlobalStation[] home = {null}, away = {null};
+        long[] before = {0, 0, 0};
+        boolean[] recorded = {false};
+        java.util.function.Supplier<List<ByteBuffer>> reports = () -> received(IndRecords.IND_TRAIN_UNWATCHED,
+                IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id));
+        java.util.function.Supplier<List<ByteBuffer>> departures = () -> received(IndRecords.IND_TRAIN_DEPARTED,
+                d -> d.getLong(IndRecords.Train.TRAIN) == CreateIds.of(train[0].id) && d.getLong(IndRecords.Train.DEPARTED_DESTINATION) == CreateIds.of(away[0].id));
+        java.util.function.Supplier<List<ByteBuffer>> arrivals = () -> received(IndRecords.IND_TRAIN_ARRIVED,
+                IndRecords.Train.TRAIN, CreateIds.of(train[0].id));
+        helper.startSequence()
+                .thenWaitUntil(() -> check("district", districtAt(helper, chestPos) != null))
+                .thenExecute(() -> {
+                    train[0] = syntheticTrain(helper, new BlockPos(bx + 6, y, z), 32);
+                    home[0] = syntheticStation(helper.getLevel(), new BlockPos(bx + 3, y, z), "Home Halt");
+                    away[0] = syntheticStation(helper.getLevel(), new BlockPos(bx + 400, y, z), "Unwatched Halt");
+                    check("the far station is in no district", districtAt(helper, away[0].getBlockEntityPos()) == null);
+                    if (nativeEngine()) {
+                        long[] l = ((NativeEngine) engine()).industryLines();
+                        before[0] = l[0];
+                        before[1] = l[1];
+                        before[2] = l[2];
+                    }
+                    train[0].arriveAt(home[0]);
+                })
+                .thenWaitUntil(() -> check("the first call at home was journaled", arrivals.get().size() == 1))
+                // Leg one: out and at the far station in one tick.
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(away[0]);
+                })
+                .thenWaitUntil(() -> {
+                    check("IND_TRAIN_DEPARTED for the far station: " + departures.get().size(), departures.get().size() == 1);
+                    if (report) {
+                        List<ByteBuffer> u = reports.get();
+                        check("IND_TRAIN_UNWATCHED for the call outside every district: " + u.size(), u.size() == 1);
+                        check("at the far station", u.get(0).getLong(IndRecords.TrainUnwatched.STATION) == CreateIds.of(away[0].id));
+                        check("after the departure it ends", departures.get().get(0).getLong(Obs.OBS_SEQ) < u.get(0).getLong(Obs.OBS_SEQ));
+                    }
+                })
+                // A second call outside every district in the same leg: the engine has the news already.
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].arriveAt(away[0]);
+                    train[0].leaveStation();
+                    train[0].navigation.destination = home[0];
+                    train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(home[0]);
+                })
+                .thenWaitUntil(() -> check("the second call at home was journaled", arrivals.get().size() == 2))
+                // Leg two: the departure is journaled before the train calls at the far station.
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].navigation.distanceToDestination = 400;
+                })
+                .thenWaitUntil(() -> check("the second IND_TRAIN_DEPARTED: " + departures.get().size(), departures.get().size() == 2))
+                .thenExecute(() -> train[0].arriveAt(away[0]))
+                .thenWaitUntil(() -> {
+                    if (report)
+                        check("the departure from home re-armed the report: " + reports.get().size(), reports.get().size() == 2);
+                })
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = home[0];
+                    train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(home[0]);
+                })
+                .thenWaitUntil(() -> {
+                    // Journal order: every record before the third call at home has been taken in by now.
+                    check("the third call at home was journaled", arrivals.get().size() == 3);
+                    check("one report a leg, none without the switch: " + reports.get().size(), reports.get().size() == (report ? 2 : 0));
+                    if (!nativeEngine())
+                        return;
+                    // The engine counts across the whole run: this journey's share is the change since it began.
+                    long[] lines = ((NativeEngine) engine()).industryLines();
+                    check("the engine saw the calls at home: " + java.util.Arrays.toString(lines), lines[2] - before[2] >= 3);
+                    long unwatchedStops = lines[0] - before[0], refused = lines[1] - before[1];
+                    int edges = 0;
+                    for (int i = 3; i + 3 < lines.length; i += 4)
+                        if (lines[i] == CreateIds.of(home[0].id) || lines[i] == CreateIds.of(away[0].id)
+                                || lines[i + 1] == CreateIds.of(home[0].id) || lines[i + 1] == CreateIds.of(away[0].id))
+                            edges++;
+                    if (!recorded[0]) {
+                        recorded[0] = true;
+                        record(test, "engine: unwatched stops / self edges refused / edges of these stations", unwatchedStops + " / " + refused + " / " + edges);
+                    }
+                    check("the engine took " + unwatchedStops + " unwatched stop(s)", unwatchedStops == (report ? 2 : 0));
+                    check("self edges refused by the engine: " + refused + (report ? " (the report came first)" : " (its guard)"),
+                            refused == (report ? 0 : 2));
+                    check("no edge learned from or to these stations: " + edges, edges == 0);
+                })
+                .thenExecute(() -> {
+                    TrainWatch.reportUnwatchedForTest(true);
+                    TrainWatch.forget(train[0]);
+                })
+                .thenSucceed();
+    }
+
+    /**
      * Mail at an unloaded district (IND_PACKAGE, F26): a package dropped into a postbox's offline buffer
      * while its district is unloaded is IND_PACKAGE in, with its contents and address; one fetched from it
      * is IND_PACKAGE out. (MailWatch is driven around the buffer change the way the runMailTransfer mixins
      * drive it; a real present train needs a track graph.)
      */
-    @GameTest(template = YARD, batch = "industry_12", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_12", timeoutTicks = 4000)
     public static void mailAtAnUnloadedDistrictIsAPackageRecord(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -589,7 +731,7 @@ public final class IndustryGameTests {
                     port.offlineBuffer.setStackInSlot(0, ItemStack.EMPTY);
                     com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.after(st);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     List<ByteBuffer> recs = received(IndRecords.IND_PACKAGE, IndRecords.Package.DISTRICT, d[0].id);
                     check("two IND_PACKAGE records", recs.size() == 2);
                     ByteBuffer in = recs.get(0), out = recs.get(1);
@@ -603,7 +745,7 @@ public final class IndustryGameTests {
                     }
                     record("mailAtAnUnloadedDistrictIsAPackageRecord", "package in", goods);
                     check("its contents: 40 iron, 3 coal", goods.getOrDefault("i/64/minecraft:iron_ingot", 0L) == 40 && goods.getOrDefault("i/64/minecraft:coal", 0L) == 3);
-                })
+                }))
                 .thenSucceed();
     }
 

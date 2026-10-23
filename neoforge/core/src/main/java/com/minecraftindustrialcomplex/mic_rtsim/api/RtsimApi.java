@@ -58,6 +58,16 @@ public final class RtsimApi {
     }
 
     /**
+     * A far source's body is joining {@code level} as entity {@code entity} (a dragon materialized, a carriage's
+     * entity spawned): call it before the entity is added, and each subscriber holding far object {@code id} is
+     * told before the entity's spawn packet, so its client never draws both (docs/choices-dh-feed.md DHT40).
+     * Server thread.
+     */
+    public static void farEntityJoining(net.minecraft.server.level.ServerLevel level, long id, int entity) {
+        com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.embodied(level, id, entity);
+    }
+
+    /**
      * Registers a topology source (a world mod that glues a level's edges, Deep Time's layout) asked
      * before Toroidal World's shape and the world border (TP18). Call during mod construction.
      */
@@ -169,5 +179,31 @@ public final class RtsimApi {
         RtsimSession s = RtsimSession.current();
         com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag tag = RtsimAttachments.tag(entity);
         return s == null || tag == null ? null : s.registry().live(tag, entity.getUUID());
+    }
+
+    // ---- TALK (TALK.md §2, §4) -----------------------------------------------------------------
+
+    /**
+     * Registers a talker for an entity type, by its registry id (TK28): so a plugin for a soft
+     * dependency names a type without touching the mod's classes. Callable from mod construction.
+     * Several talkers on one type are asked in registration order; the first whose
+     * {@link Talker#talks} says yes speaks. Plugin talkers are asked before the core's own built-ins
+     * (the villager and wandering trader talkers), so a plugin can take over part of a vanilla type by
+     * answering {@code talks} for the entities it means. {@code alwaysTalks} says every entity of the type talks to
+     * every player, which lets the client cancel the click too (no screen opens, no second packet).
+     */
+    public static void registerTalker(net.minecraft.resources.ResourceLocation entityTypeId, Talker talker, boolean alwaysTalks) {
+        com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers.register(entityTypeId, talker, alwaysTalks);
+    }
+
+    /**
+     * {@link #registerTalker(net.minecraft.resources.ResourceLocation, Talker, boolean)} by the type itself.
+     *
+     * @throws IllegalArgumentException when the type is not in the entity type registry
+     */
+    public static void registerTalker(net.minecraft.world.entity.EntityType<?> type, Talker talker, boolean alwaysTalks) {
+        registerTalker(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getResourceKey(type)
+                .orElseThrow(() -> new IllegalArgumentException("an unregistered entity type has no id: use the ResourceLocation overload of registerTalker"))
+                .location(), talker, alwaysTalks);
     }
 }

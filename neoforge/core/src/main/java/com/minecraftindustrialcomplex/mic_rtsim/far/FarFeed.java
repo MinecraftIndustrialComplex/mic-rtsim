@@ -8,10 +8,12 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
@@ -36,6 +38,9 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *       level a subscriber is in, keeps one item per id (a body beats the engine's leg), moves each to its
  *       image nearest the subscriber (through a seam), filters ({@link FarFilter}) and sends the difference
  *       from what that client holds ({@link FarView}).</li>
+ *   <li><b>Shapes</b> ({@link FarShape}, a carriage's blocks) go to each subscriber once, after the message
+ *       whose INTRO first names them, nearest first and at most {@link #SHAPE_BYTES_PER_SWEEP} a sweep; a
+ *       RESET starts that over, as the client forgets its shapes on one (docs/choices-dh-feed.md DHT62).</li>
  *   <li><b>Nobody subscribed</b>, it does nothing: no source is asked, nothing is sent.</li>
  * </ul>
  *
@@ -50,13 +55,34 @@ public final class FarFeed {
     public static final int RADIUS_MARGIN = 64;
     /** The most objects each tier (OFF, LOW, MEDIUM, HIGH) may ask for. PLACEHOLDER. */
     public static final int[] TIER_BUDGET = {0, 48, 128, 320};
+    /** The most shape bytes a subscriber is sent a sweep (deflated); the rest wait for the next. PLACEHOLDER. */
+    public static final int SHAPE_BYTES_PER_SWEEP = 64 * 1024;
+    /**
+     * The most shapes a subscriber is held to have: past it, its view starts over with a RESET, which empties the
+     * client's shapes too, so neither side's set grows for a whole session. PLACEHOLDER.
+     */
+    public static final int MAX_HELD_SHAPES = 1024;
 
     /** Where the bytes go: the player's connection, or a test's recorder. */
     public interface Sink {
         void send(ServerPlayer player, byte[] message);
+
+        /** A far shape for {@code player} ({@link FarPayloads.Shape}); a test that does not record them drops them. */
+        default void shape(ServerPlayer player, long hash, byte[] bytes) {
+        }
     }
 
-    private static final Sink NETWORK = (p, m) -> PacketDistributor.sendToPlayer(p, new FarPayloads.Feed(m));
+    private static final Sink NETWORK = new Sink() {
+        @Override
+        public void send(ServerPlayer p, byte[] m) {
+            PacketDistributor.sendToPlayer(p, new FarPayloads.Feed(m));
+        }
+
+        @Override
+        public void shape(ServerPlayer p, long hash, byte[] bytes) {
+            PacketDistributor.sendToPlayer(p, new FarPayloads.Shape(hash, bytes));
+        }
+    };
     private static final List<FarSource> SOURCES = new CopyOnWriteArrayList<>();
     private static final Map<UUID, Sub> SUBS = new LinkedHashMap<>();
     private static Sink sink = NETWORK;
@@ -65,9 +91,11 @@ public final class FarFeed {
     private static long ticks;
     private static final Map<String, Integer> SOURCE_ERRORS = new HashMap<>();
     private static int badVersions;
+    /** The last sweep's items by dimension, for {@link #lastItem}: what each subscriber was last sent. */
+    private static final Map<String, List<FarItem>> LAST = new HashMap<>();
 
     // Totals since the server started, for /rtsim perf and the bench
-    static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
+    static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records, shapes, shapeBytes;
     /** The sweeps after the first {@link #WARM_SWEEPS} (class loading and the JIT), for the bench. */
     static long warmSweeps, warmNanos, warmCpuNanos;
     /**
@@ -91,9 +119,11 @@ public final class FarFeed {
         final UUID player;
         int radius, tier, budget, kinds;
         final FarView view = new FarView();
+        /** The shapes this subscriber was sent since its last RESET. */
+        final Set<Long> sentShapes = new HashSet<>();
         String dimension;
         boolean reset = true;
-        long bytes, messages, records, since;
+        long bytes, messages, records, since, shapes, shapeBytes;
 
         Sub(UUID player) {
             this.player = player;
@@ -185,7 +215,7 @@ public final class FarFeed {
                 + (warmSweeps == 0 ? 0 : warmNanos / warmSweeps / 1000) + " us each after the first " + WARM_SWEEPS
                 + (CPU_TIME ? " (" + (warmSweeps == 0 ? 0 : warmCpuNanos / warmSweeps / 1000) + " us of CPU)" : "")
                 + ", at most " + sweepMaxNanos / 1000 + " us" + cpuSplit() + "), " + messages + " messages, " + bytes
-                + " bytes, " + records + " records";
+                + " bytes, " + records + " records, " + shapes + " shapes (" + shapeBytes + " bytes)";
     }
 
     private static String cpuSplit() {
@@ -211,6 +241,8 @@ public final class FarFeed {
 
     private static void onServerTick(ServerTickEvent.Post event) {
         ticks++;
+        if (SUBS.isEmpty() && !LAST.isEmpty())
+            LAST.clear();
         if (SUBS.isEmpty() || ticks % INTERVAL_TICKS != 0)
             return;
         long t0 = System.nanoTime(), c0 = CPU_TIME ? THREADS.getCurrentThreadCpuTime() : 0;
@@ -233,17 +265,69 @@ public final class FarFeed {
         if (sweeps > 0) // the server's cost of the feed, for the bench (neoforge/README.md)
             MicRtsim.LOGGER.info("[mic_rtsim] far feed at stop: {}", describe());
         SUBS.clear();
+        LAST.clear();
         sink = NETWORK;
         players = null;
         sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = sendCpuNanos = 0;
+        shapes = shapeBytes = 0;
         COLLECT_CPU.clear();
         java.util.Arrays.fill(SEND_CPU, 0);
+    }
+
+    /**
+     * A body joined {@code level} as entity {@code entity} for far object {@code id} (a dragon materialized, a
+     * carriage's entity spawned): each subscriber in that level that holds the object is told at once, in a
+     * message of its own (docs/choices-dh-feed.md DHT40). Called before the entity is added, the record goes
+     * out ahead of the entity's spawn packet on the same connection, so the client hides the far object the
+     * frame the entity appears instead of drawing both until the next sweep. Server thread.
+     */
+    public static void embodied(ServerLevel level, long id, int entity) {
+        if (SUBS.isEmpty())
+            return;
+        MinecraftServer server = level.getServer();
+        long gameTime = server.overworld().getGameTime();
+        String dim = level.dimension().location().toString();
+        for (Sub s : SUBS.values()) {
+            if (s.reset || !dim.equals(s.dimension))
+                continue;
+            ServerPlayer p = players != null ? players.apply(s.player) : server.getPlayerList().getPlayer(s.player);
+            if (p == null || p.serverLevel() != level)
+                continue;
+            FarWire.Real r = s.view.real(id, entity);
+            if (r == null)
+                continue;
+            byte[] b = FarWire.encode(new FarWire.Message(0, gameTime, s.dimension, (int) Math.floor(p.getX()),
+                    (int) Math.floor(p.getY()), (int) Math.floor(p.getZ()), List.of(r)));
+            sink.send(p, b);
+            s.messages++;
+            s.bytes += b.length;
+            s.records++;
+            messages++;
+            bytes += b.length;
+            records++;
+        }
+    }
+
+    /**
+     * Far object {@code id} in {@code level} as the last sweep had it (after the dedupe, before a seam moved
+     * it), or null: nobody subscribed in that level then, or no source gave it. What a client was last sent
+     * about it, near enough: a new body faces the way it was drawn.
+     */
+    public static FarItem lastItem(ServerLevel level, long id) {
+        List<FarItem> items = LAST.get(level.dimension().location().toString());
+        if (items == null)
+            return null;
+        for (FarItem i : items)
+            if (i.id() == id)
+                return i;
+        return null;
     }
 
     /** One sweep over every subscriber (a test calls it directly). */
     public static void sweep(MinecraftServer server) {
         long gameTime = server.overworld().getGameTime();
         Map<ServerLevel, List<FarItem>> byLevel = new HashMap<>();
+        LAST.clear();
         RtsimSession session = RtsimSession.current();
         Iterator<Sub> it = SUBS.values().iterator();
         while (it.hasNext()) {
@@ -260,7 +344,11 @@ public final class FarFeed {
                 s.reset = true;
                 s.dimension = dim;
             }
-            List<FarItem> items = byLevel.computeIfAbsent(level, l -> collect(l, gameTime, session));
+            List<FarItem> items = byLevel.computeIfAbsent(level, l -> {
+                List<FarItem> c = collect(l, gameTime, session);
+                LAST.put(dim, c);
+                return c;
+            });
             LevelTopology topo = session != null ? session.topology(level) : LevelTopology.flat();
             long c0 = cpu();
             send(p, s, items, topo, gameTime);
@@ -319,23 +407,45 @@ public final class FarFeed {
             SEND_CPU[0] += c1 - c0;
             SEND_CPU[1] += c2 - c1;
         }
-        if (recs.isEmpty() && !s.reset)
-            return;
-        FarWire.Message m = new FarWire.Message(s.reset ? FarWire.RESET : 0, gameTime, s.dimension,
-                (int) Math.floor(px), (int) Math.floor(p.getY()), (int) Math.floor(pz), recs);
-        byte[] b = FarWire.encode(m);
-        long c3 = cpu();
-        sink.send(p, b);
-        if (split) {
-            SEND_CPU[2] += c3 - c2;
-            SEND_CPU[3] += cpu() - c3;
+        if (!recs.isEmpty() || s.reset) {
+            if (s.reset)
+                s.sentShapes.clear(); // the client forgets its shapes on a RESET
+            FarWire.Message m = new FarWire.Message(s.reset ? FarWire.RESET : 0, gameTime, s.dimension,
+                    (int) Math.floor(px), (int) Math.floor(p.getY()), (int) Math.floor(pz), recs);
+            byte[] b = FarWire.encode(m);
+            long c3 = cpu();
+            sink.send(p, b);
+            if (split) {
+                SEND_CPU[2] += c3 - c2;
+                SEND_CPU[3] += cpu() - c3;
+            }
+            s.reset = false;
+            s.messages++;
+            s.bytes += b.length;
+            s.records += recs.size();
+            messages++;
+            bytes += b.length;
+            records += recs.size();
         }
-        s.reset = false;
-        s.messages++;
-        s.bytes += b.length;
-        s.records += recs.size();
-        messages++;
-        bytes += b.length;
-        records += recs.size();
+        sendShapes(p, s, chosen);
+    }
+
+    /**
+     * The shapes the client lacks of what it holds now, nearest first (the filter's order), after the message
+     * that names them: on the same connection they arrive after it, so the client's RESET does not drop them.
+     */
+    private static void sendShapes(ServerPlayer p, Sub s, List<FarItem> chosen) {
+        for (FarShape sh : FarShape.pick(chosen, s.sentShapes, SHAPE_BYTES_PER_SWEEP)) {
+            sink.shape(p, sh.hash(), sh.bytes());
+            int n = sh.bytes().length;
+            s.shapes++;
+            s.shapeBytes += n;
+            shapes++;
+            shapeBytes += n;
+        }
+        if (s.sentShapes.size() > MAX_HELD_SHAPES) {
+            s.view.clear();
+            s.reset = true;
+        }
     }
 }

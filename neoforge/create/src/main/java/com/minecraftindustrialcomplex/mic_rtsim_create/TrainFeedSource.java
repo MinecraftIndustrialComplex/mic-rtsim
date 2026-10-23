@@ -17,6 +17,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 
 /**
  * Create trains for the far feed (research/distant-horizons-2026-10-21.md §4.1, §13 item 2; docs/boundary.md
@@ -27,7 +28,8 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>Each carriage carries its entity's network id while the server has one, so a client that has the entity
  * hides the proxy, and one that does not (a carriage past the server's simulation distance but inside the
- * client's render distance has none) draws it.
+ * client's render distance has none) draws it. It also carries what the carriage looks like
+ * ({@link CarriageShapes}), so a far renderer draws the player's build rather than a box (DHT61).
  */
 public final class TrainFeedSource implements FarSource {
     /** A carriage far away: dark grey, like the shadowed side of a train (DHT choices). */
@@ -49,9 +51,23 @@ public final class TrainFeedSource implements FarSource {
         return "Create trains";
     }
 
+    /**
+     * A carriage's entity is joining a server level (Create spawns one when its carriage reaches an
+     * entity-ticking chunk): the subscribers holding the carriage hear its id at once, ahead of the entity's
+     * spawn packet, so the client hides the far carriage the frame the real one appears
+     * (docs/choices-dh-feed.md DHT40). The next sweep's item says the same.
+     */
+    static void joining(EntityJoinLevelEvent event) {
+        if (event.getLevel() instanceof ServerLevel level && event.getEntity() instanceof CarriageContraptionEntity cce
+                && cce.trainId != null && cce.carriageIndex >= 0 && cce.carriageIndex < 256)
+            com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.farEntityJoining(level, id(cce.trainId, cce.carriageIndex),
+                    cce.getId());
+    }
+
     @Override
     public void collect(ServerLevel level, long gameTime, Consumer<FarItem> out) {
         ResourceKey<Level> dim = level.dimension();
+        CarriageShapes.sweep();
         for (Train train : Create.RAILWAYS.trains.values()) {
             List<Carriage> carriages = train.carriages;
             for (int i = 0; i < carriages.size() && i < 256; i++) {
@@ -62,7 +78,8 @@ public final class TrainFeedSource implements FarSource {
                 CarriageContraptionEntity e = c.anyAvailableEntity();
                 int entity = e != null && e.level() == level && !e.isRemoved() ? e.getId() : -1;
                 out.accept(new FarItem(id(train.id, i), FarKind.CARRIAGE, 0, 0, 0, COLOUR, FarState.MOVING,
-                        new double[]{ends[0].x, ends[0].y, ends[0].z, ends[1].x, ends[1].y, ends[1].z}, null, entity, 0));
+                        new double[]{ends[0].x, ends[0].y, ends[0].z, ends[1].x, ends[1].y, ends[1].z}, null, entity, 0,
+                        CarriageShapes.of(c, level), -1));
             }
         }
     }

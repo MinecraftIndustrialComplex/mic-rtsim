@@ -249,13 +249,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Camps now decide like people: a council with moods, wants, memories and wrong guesses, so nobody can call a faction's next move</h1>
-  <p class="dek" data-ss-id="dek">The redesign you asked for when you answered EQ-5 with "only faction fighting" and wanted it lifelike: CONFLICT-LIFE.md on mic-rtsim main (ce52e0dc), revised after adversarial reviews and your MZ-15. On 22 October you answered CL-1 to CL-4 as recommended and CL-5 with "Add alliances": the alliances are now designed and measured, <a href="#alliances">below</a>. Later that day you answered the four questions they raised: pacts stay rare and a base is fair game, only camps swear, and all faction news is told in the world, never pushed to chat (<a href="#news">below</a>). Nothing of the council is built yet. The numbers come from a runnable model of one valley that runs today's ladder, the gate you rejected and this design on the same world: 64 worlds of 50 game years each, and 8 left alone for 500. Your news answer raised one more, <a href="#cl10">CL-10</a>, and you answered it too: you hear the news by talking to villagers, ribbits and clans, which is being designed now as TALK. An envoy says why in one line of chat, to you alone, when you talk to it.</p>
+  <p class="dek" data-ss-id="dek">The redesign you asked for when you answered EQ-5 with "only faction fighting" and wanted it lifelike: CONFLICT-LIFE.md on mic-rtsim main (ce52e0dc), revised after adversarial reviews and your MZ-15. On 22 October you answered CL-1 to CL-4 as recommended and CL-5 with "Add alliances": the alliances are now designed and measured, <a href="#alliances">below</a>. Later that day you answered the four questions they raised: pacts stay rare and a base is fair game, only camps swear, and all faction news is told in the world, never pushed to chat (<a href="#news">below</a>). Nothing of the council is built yet. The numbers come from a runnable model of one valley that runs today's ladder, the gate you rejected and this design on the same world: 64 worlds of 50 game years each, and 8 left alone for 500. Your news answer raised one more, <a href="#cl10">CL-10</a>, and you answered it too: you hear the news by talking to villagers, ribbits and clans, which is being designed now as TALK. An envoy says why in one line of chat, to you alone, when you talk to it. On 23 October you answered <a href="#cld61">CL-D61</a>: only real witnesses learn of a rescue first-hand.</p>
   <p class="lead" data-ss-id="lead">A camp is no longer a rule. It is three people, a chief, a war leader and an elder, each with a temper of his own. It gets hungry in winter, angry when you refuse its envoy, proud, restless, afraid. It guesses how strong you are and is sometimes badly wrong, remembers who killed its chief, and decides with one of those guesses in hand. The fight itself stays the engine's, and certain, so every lost raid is a council that guessed wrong, and every fight has a reason it can tell you. Since your CL-5, two camps that share a foe can swear against it and march on it together; such pacts are rare, and a player almost never meets one.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-fortress"><div class="n">1 <small>in 8 years</small></div><div class="t">a fight on a walled base that never pays, each with a reason (today's ladder: 2.7 a year, every one lost)</div></div>
     <div class="tile" data-ss-id="kpi-call"><div class="n">2%</div><div class="t">of a camp's next acts can be called to the day from its last two (ladder 18%, gate 17%)</div></div>
     <div class="tile" data-ss-id="kpi-endless"><div class="n">0 <small>of 64</small></div><div class="t">worlds left alone with an endless war (ladder: all 64)</div></div>
-    <div class="tile" data-ss-id="kpi-wait"><div class="n">0</div><div class="t">questions wait for you; how you hear the news is in design as TALK, and you answered its three questions</div></div>
+    <div class="tile" data-ss-id="kpi-wait"><div class="n">0</div><div class="t">questions wait for you; how you hear the news is being built as TALK, and you answered its three questions and CL-D61</div></div>
   </div>
 </header>
 
@@ -608,7 +608,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <ul class="wants" data-ss-id="news-how">
     <li data-ss-id="news-stays"><b>What stays</b>The cues: the howl, the roar, the gong and a war band shown at the edge of your land, which are sounds and sights and carry no text. And the envoy, who says why in one line of chat, to you alone, when you talk to it (CL-1, "Speaks to you in chat").</li>
     <li data-ss-id="news-what"><b>What is news</b>A feud opening or climbing; a pact sworn, broken or betrayed; a raid, an invasion or a skirmish; a chief or a champion falling. Each is a report with the day, the place and the two sides, and its words are written from the camp's reasons when it is read.</li>
-    <li data-ss-id="news-travel"><b>How it travels</b>As all rtsim news does. Those who saw it learn it at once: the camp itself, and the village or base it fell on. Everyone else learns it only from a traveller: messengers walk each road four times a day, and caravans and bands carry gossip on their circuits. News spreads at the speed of trade, and a village nobody trades with learns nothing.</li>
+    <li data-ss-id="news-travel"><b>How it travels</b>As all rtsim news does. Those who saw it learn it at once: the camp itself, and the village or base it fell on. Everyone else learns it only from a traveller: messengers walk each road four times a day, and caravans and bands carry gossip on their circuits. News spreads at the speed of trade, and a village nobody trades with learns nothing. A rescue follows the same rule (<a href="#cld61">CL-D61</a>).</li>
     <li data-ss-id="news-life"><b>How long it lasts</b>A feud 10 days, a pact or a betrayal 30, a raid 20, a death 30. These are placeholders.</li>
     <li data-ss-id="news-not"><b>What it does not do</b>News changes no one's feelings and never enters vanilla villager gossip: a rumour of a feud between two camps is not a villager's grudge. Your own deeds still move a village, as today.</li>
     <li data-ss-id="news-gone"><b>What goes</b>The text of every conflict notice, the told pact, the pact notices CL-9 (a) offered, and every line of chat pushed at a player. Chat you start, by talking to someone, is fine. A player who lives near both camps and talks to no one hears nothing, which is the point.</li>
@@ -673,8 +673,21 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
   <h2 data-ss-id="waiting-h">Your answers</h2>
-  <p data-ss-id="waiting-p">Nothing on this page waits for you. CL-10 came from your news answer, and you answered it the same evening, and then the three questions its design, TALK, asked you.</p>
+  <p data-ss-id="waiting-p">Nothing on this page waits for you. CL-10 came from your news answer, and you answered it the same evening, and then the three questions its design, TALK, asked you. On 23 October you answered CL-D61, raised while building the rescue report.</p>
 
+
+  <h3 data-ss-id="answered23-h">Answered on 23 October</h3>
+
+  <div class="decision" id="cld61" data-ss-id="cld61">
+    <h3>CL-D61: only real witnesses learn of a rescue first-hand <span class="done-tag">Answered</span></h3>
+    <p class="rec">Your answer: <span class="why">"Only real witnesses"</span></p>
+    <p>When you break a war band on its way to a village, that is a rescue, and the villages that learn of it think better of you: fully if they saw it, about half as much if they only heard of it. The design documents disagreed on who sees it. One let every village up to 2,000 blocks away that hates the band's camp see it, wherever the band broke; the other, the rule all news follows (<a href="#news">above</a>), let only those who were there. You chose real witnesses:</p>
+    <ul data-ss-id="cld61-who">
+      <li><strong>Who sees it:</strong> the village you rescued, always, and any village within 160 blocks of where the band broke that hates the band.</li>
+      <li><strong>Everyone else</strong> hears it later, from travellers, as news: messengers, caravans and bands carry it at the speed of trade, and a village nobody trades with never hears.</li>
+    </ul>
+    <p><strong>Being built</strong> by the agent building the Mowzie plan, after its slice M2. The engine today records one rescue report for each rout (CL-D60), and this changes who sees it.</p>
+  </div>
 
   <h3 data-ss-id="answered-h">Answered on 22 October</h3>
 
@@ -682,7 +695,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <h3>CL-10: you hear the news by talking <span class="done-tag">Answered</span></h3>
     <p class="rec">Your answer: <span class="why">"Shift + Click to speak to a viller, have them output fluff lines, lines based on how they are feeling, and lines based on what they might have seen. Players should be able to do the same withi ribbits, and other clans as well. Talking with a villager should mildly increase a players 'relationship' with them"</span></p>
     <p>None of the options offered. Chat is fine for talk you start; what you ruled out is chat pushed at you. Shift-click a villager and it answers with small talk, with lines from how it feels, and with lines about what it may have seen, which is where the news it holds reaches you. Ribbits and other clans talk the same way. Talking to a villager mildly raises your standing with it.</p>
-    <p><strong>In design:</strong> an agent is designing and building it as TALK (TALK.md, on branch feat/talk at f23c1b60, not landed yet). It asked you three questions, and you answered all three:</p>
+    <p><strong>Being built</strong> as TALK (TALK.md on main), in four slices. Its slice 1 landed (08622772): crouch-click a villager or a wandering trader and it talks, with small talk and lines from how it feels, and talking raises your standing with it at most once a game day. News, ribbits and clans are slices 2 to 4. It asked you three questions, and you answered all three:</p>
     <ul data-ss-id="cl10-tq">
       <li><strong>TQ-1, Carry On and talk share Shift + right-click: "Talk wins on talkers"</strong>, as recommended. Shift + right-click on a villager, a wandering trader or a ribbit always talks. Carry On can no longer pick those up, and still carries every other mob and every block.</li>
       <li><strong>TQ-2, how players find out they can talk: "Nothing".</strong> No hint and no guide line; players find it for themselves.</li>
@@ -735,14 +748,15 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li>CONFLICT-LIFE.md on mic-rtsim main at ce52e0dc: the model (§2), alliances (§2.16), news in the world (§2.17), the walkthroughs (§3, the alliance stories in §3.6), the numbers (§4, alliances in §4.5), cost (§5), tests (§6), choices CL-D1 to CL-D57 (§7), and your answers, the questions and CL-10 (§8).</li>
     <li>EQUILIBRIUM.md: §2.2's 128-block rule as reworded for MZ-15, and §2.6 item 11, the census.</li>
     <li>research/conflict-life-2026-10-21/results: summary.md, walkthroughs.md as it stood at 9775d54 (the four stories: seeds 1000, 1002, 1003 and 1000, which the alliances-off runs reproduce exactly), stories.md, results.json, and alliances.txt for the alliance measurements.</li>
-    <li>DECISIONS.md: EQ-5, MZ-15, CL-1 to CL-9, and CL-9 widened to all conflict. Your CL-10 and envoy answers of 22 October, sent by the coordinator. TALK.md and your TQ-1 to TQ-3 answers: branch feat/talk (f23c1b60), not landed yet.</li>
+    <li>DECISIONS.md: EQ-5, MZ-15, CL-1 to CL-9, and CL-9 widened to all conflict. Your CL-10 and envoy answers of 22 October, sent by the coordinator. TALK.md and your TQ-1 to TQ-3 answers on main; TALK slice 1 landed (08622772).</li>
+    <li>CONFLICT-LIFE.md §7 on main as of 23 October: CL-D60, one rescue report for each rout, and CL-D61, the open choice of who sees it; your answer, "Only real witnesses", sent by the coordinator.</li>
   </ul>
 </details>
 
 </main>
 
 <footer data-ss-react="off">
-  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at ce52e0dc. Private page for Ben, 22 October 2026, updated for alliances and then for your answers on news, CL-10, the envoy and TALK's three questions.</p>
+  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at ce52e0dc. Private page for Ben, 22 October 2026, updated for alliances and then for your answers on news, CL-10, the envoy and TALK's three questions, and on 23 October for CL-D61.</p>
 </footer>
 
 </body>

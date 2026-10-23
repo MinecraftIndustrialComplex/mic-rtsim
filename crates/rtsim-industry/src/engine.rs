@@ -46,6 +46,7 @@ use crate::learn::{LinkKey, Sample};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
     Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -180,6 +181,12 @@ pub struct Stats {
     /// Simulated calls at a station with an exchange rule but no known ports: nothing moved
     /// (choice SG33).
     pub exchanges_portless: u64,
+    /// Calls at a station outside every district (IND_TRAIN_UNWATCHED, choice SG50): each ended
+    /// the train's leg. Not saved (choice SG58): a restore starts it at 0.
+    pub unwatched_stops: u64,
+    /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
+    /// (choice SG51). Not saved (choice SG58): a restore starts it at 0.
+    pub self_edges_refused: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -350,12 +357,13 @@ pub struct SaveTicket {
     districts: Vec<DistrictId>,
     glass: Vec<DistrictId>,
     clusters: Vec<(u64, RegionId<Cluster>)>,
+    legs: Vec<u64>,
 }
 
 impl SaveTicket {
     /// Pages the save wrote or deleted, the globals page not counted.
     pub fn len(&self) -> usize {
-        self.districts.len() + self.glass.len() + self.clusters.len()
+        self.districts.len() + self.glass.len() + self.clusters.len() + self.legs.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -994,6 +1002,7 @@ impl Engine {
             Obs::Port(p) => self.port(at, p),
             Obs::TrainArrived(c) => self.train_arrived(at, c),
             Obs::TrainDeparted(d) => self.train_departed(at, d),
+            Obs::TrainUnwatched(u) => self.train_unwatched(u),
             Obs::Station(s) => {
                 if let Some(d) = s.district {
                     self.district_mut(d).stations.insert(s.station);
@@ -2586,35 +2595,60 @@ impl Engine {
         dist.ports.merge(&p.goods);
     }
 
-    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
-        // Line edges (§8.8).
-        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
-            let e = self.lines.entry((from, c.station)).or_default();
-            let first = e.trips == 0;
-            if first {
-                e.first = at;
+    /// A train's call outside every district (IND_TRAIN_UNWATCHED, choice SG50): the leg it began at
+    /// its last district station ends here. The next district station it reaches is no edge from
+    /// that one, and never an edge from that station to itself.
+    fn train_unwatched(&mut self, u: &UnwatchedStop) {
+        self.last_departure.remove(&u.train);
+        self.stats.unwatched_stops += 1;
+    }
+
+    /// One trip along the edge `(from, c.station)`: `from` is where the train's leg began at `depart`.
+    fn line_edge(
+        &mut self,
+        at: Tick,
+        c: &TrainCall,
+        from: StationId,
+        depart: Tick,
+        cargo: GoodVec,
+    ) {
+        let e = self.lines.entry((from, c.station)).or_default();
+        let first = e.trips == 0;
+        if first {
+            e.first = at;
+        }
+        e.trips += 1;
+        e.cargo.merge(&cargo);
+        e.travel_ticks += at.since(depart);
+        e.last = at;
+        if first && self.tape.is_on() {
+            // At the station it arrived at, or where it left from if that one was not declared.
+            let station = self
+                .stations
+                .get(&c.station)
+                .or_else(|| self.stations.get(&from));
+            if let Some(s) = station {
+                let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
+                let items = item_count(&self.goods, &cargo);
+                self.tape.event(
+                    kinds::INDUSTRY_LINE,
+                    p,
+                    u128::from(from.0),
+                    u128::from(c.station.0),
+                    items,
+                );
             }
-            e.trips += 1;
-            e.cargo.merge(&cargo);
-            e.travel_ticks += at.since(depart);
-            e.last = at;
-            if first && self.tape.is_on() {
-                // At the station it arrived at, or where it left from if that one was not declared.
-                let station = self
-                    .stations
-                    .get(&c.station)
-                    .or_else(|| self.stations.get(&from));
-                if let Some(s) = station {
-                    let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
-                    let items = item_count(&self.goods, &cargo);
-                    self.tape.event(
-                        kinds::INDUSTRY_LINE,
-                        p,
-                        u128::from(from.0),
-                        u128::from(c.station.0),
-                        items,
-                    );
-                }
+        }
+    }
+
+    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
+        // Line edges (§8.8). A leg that ends where it began is no edge (choice SG51): the train went
+        // out and back through stops nothing watched, so its travel time is a round trip's.
+        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
+            if from == c.station {
+                self.stats.self_edges_refused += 1;
+            } else {
+                self.line_edge(at, c, from, depart, cargo);
             }
         }
         if !c.simulated {
@@ -3010,7 +3044,7 @@ impl Engine {
                     from: dep.station,
                     to: dep.destination,
                     depart: at,
-                    eta: at + dep.eta_ticks.max(1),
+                    eta: at + dep.eta_ticks.clamp(1, threat::LEG_MAX_TICKS),
                     cargo: dep
                         .carriages
                         .iter()
@@ -4176,7 +4210,7 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, Persist, from_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, from_bytes,
         persist_struct, to_bytes,
     };
 
@@ -4187,27 +4221,58 @@ mod persist_impls {
         first,
         last
     });
-    persist_struct!(Stats {
-        observations,
-        models_adopted,
-        sims_started,
-        reconciles,
-        chunk_commands,
-        duplicate_results,
-        trims,
-        exchanges,
-        attacks,
-        attacks_skipped,
-        packages_written,
-        breakpoints,
-        cluster_settles,
-        reconciles_ahead,
-        pollution_pushes,
-        arrivals_approach,
-        arrivals_departure,
-        arrivals_late,
-        exchanges_portless,
-    });
+    // The counters a run keeps for its own readout (`unwatched_stops`, `self_edges_refused`, choice
+    // SG58) are not in the page: adding them would change the globals layout, and a save written
+    // before them would no longer read. A restore starts them at 0, like the session's own counts
+    // in the host.
+    impl Persist for Stats {
+        fn put(&self, w: &mut Writer) {
+            self.observations.put(w);
+            self.models_adopted.put(w);
+            self.sims_started.put(w);
+            self.reconciles.put(w);
+            self.chunk_commands.put(w);
+            self.duplicate_results.put(w);
+            self.trims.put(w);
+            self.exchanges.put(w);
+            self.attacks.put(w);
+            self.attacks_skipped.put(w);
+            self.packages_written.put(w);
+            self.breakpoints.put(w);
+            self.cluster_settles.put(w);
+            self.reconciles_ahead.put(w);
+            self.pollution_pushes.put(w);
+            self.arrivals_approach.put(w);
+            self.arrivals_departure.put(w);
+            self.arrivals_late.put(w);
+            self.exchanges_portless.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(Self {
+                observations: Persist::get(r)?,
+                models_adopted: Persist::get(r)?,
+                sims_started: Persist::get(r)?,
+                reconciles: Persist::get(r)?,
+                chunk_commands: Persist::get(r)?,
+                duplicate_results: Persist::get(r)?,
+                trims: Persist::get(r)?,
+                exchanges: Persist::get(r)?,
+                attacks: Persist::get(r)?,
+                attacks_skipped: Persist::get(r)?,
+                packages_written: Persist::get(r)?,
+                breakpoints: Persist::get(r)?,
+                cluster_settles: Persist::get(r)?,
+                reconciles_ahead: Persist::get(r)?,
+                pollution_pushes: Persist::get(r)?,
+                arrivals_approach: Persist::get(r)?,
+                arrivals_departure: Persist::get(r)?,
+                arrivals_late: Persist::get(r)?,
+                exchanges_portless: Persist::get(r)?,
+                unwatched_stops: 0,
+                self_edges_refused: 0,
+            })
+        }
+    }
     persist_struct!(Books {
         minted,
         burned,
@@ -4249,7 +4314,12 @@ mod persist_impls {
         ports
     });
 
+    /// The globals page starts with this, so a page of another format fails by name, not by whatever
+    /// field its bytes happen to decode as (ID10).
+    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB1");
+
     fn globals(e: &Engine, w: &mut Writer) {
+        w.u32(GLOBAL_MAGIC);
         e.world_seed.put(w);
         e.goods.put(w);
         e.next_cluster.put(w);
@@ -4257,7 +4327,7 @@ mod persist_impls {
         e.lines.put(w);
         e.last_departure.put(w);
         e.arrivals.put(w);
-        e.legs.put(w);
+        e.legs.next_id().put(w);
         e.legs_swept.put(w);
         e.sinks_of.put(w);
         e.conditions.put(w);
@@ -4301,6 +4371,10 @@ mod persist_impls {
         PageKey::new(GLASS_TABLE, key48(id.0, "district"))
     }
 
+    fn leg_key(page: u64) -> PageKey {
+        PageKey::new(LEG_TABLE, key48(page, "leg page"))
+    }
+
     fn cluster_page(region: &rtsim_kernel::lazy::Region<Cluster>) -> (PageKey, Vec<u8>) {
         let mut w = Writer::new();
         region.cell().model().put(&mut w);
@@ -4319,7 +4393,10 @@ mod persist_impls {
         /// is the whole state, for a fresh store, tests and state hashes.
         pub fn snapshot(&self) -> Vec<(PageKey, Vec<u8>)> {
             let mut out = Vec::with_capacity(
-                1 + self.districts.len() + self.clusters.len() + self.glass.districts.len(),
+                1 + self.districts.len()
+                    + self.clusters.len()
+                    + self.glass.districts.len()
+                    + self.legs.len() / 128,
             );
             out.push(globals_page(self));
             for (id, d) in self.districts.iter() {
@@ -4330,6 +4407,9 @@ mod persist_impls {
             }
             for (id, dg) in self.glass.districts.iter() {
                 out.push((glass_key(*id), crate::glass::page::district_page(dg)));
+            }
+            for (page, bytes) in self.legs.pages() {
+                out.push((leg_key(page), bytes));
             }
             out
         }
@@ -4363,6 +4443,13 @@ mod persist_impls {
                     None => delete.push(glass_key(id)),
                 }
                 ticket.glass.push(id);
+            }
+            for page in self.legs.take_changed() {
+                match self.legs.page_bytes(page) {
+                    Some(b) => put.push((leg_key(page), b)),
+                    None => delete.push(leg_key(page)),
+                }
+                ticket.legs.push(page);
             }
             if self.page_check.is_some() {
                 self.check_pages(&put, &delete);
@@ -4402,6 +4489,9 @@ mod persist_impls {
             for (key, h) in t.clusters {
                 self.clusters.mark(key, h);
             }
+            for page in t.legs {
+                self.legs.mark(page);
+            }
         }
 
         /// Pages changed since the last save, waiting for the next one (the globals page not
@@ -4410,6 +4500,7 @@ mod persist_impls {
             self.districts.changed().len()
                 + self.clusters.changed().len()
                 + self.glass.districts.changed().len()
+                + self.legs.changed().len()
         }
 
         /// What the page check found, if it is on (ID5).
@@ -4479,6 +4570,7 @@ mod persist_impls {
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
             let mut glass = BTreeMap::new();
+            let mut leg_pages = Vec::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
             let mut hashes = page_check_on().then(BTreeMap::new);
@@ -4486,7 +4578,7 @@ mod persist_impls {
                 if let Some(h) = hashes.as_mut()
                     && matches!(
                         k.table(),
-                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE
+                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE | LEG_TABLE
                     )
                 {
                     h.insert(k, page_hash(&bytes));
@@ -4518,11 +4610,18 @@ mod persist_impls {
                         let dg = crate::glass::page::read_district_page(&bytes)?;
                         glass.insert(DistrictId(k.id()), dg);
                     }
+                    LEG_TABLE => leg_pages.push((k.id(), bytes)),
                     _ => {}
                 }
             }
             let g = global.ok_or_else(|| CodecError::Invalid("no globals page".into()))?;
             let mut r = Reader::new(&g);
+            let magic = r.u32()?;
+            if magic != GLOBAL_MAGIC {
+                return Err(CodecError::Invalid(format!(
+                    "globals page magic {magic:#010x}, not {GLOBAL_MAGIC:#010x}: an older format"
+                )));
+            }
             let world_seed = u64::get(&mut r)?;
             let mut e = Engine::new(world_seed, tun, Tick::ZERO);
             e.goods = Persist::get(&mut r)?;
@@ -4531,7 +4630,7 @@ mod persist_impls {
             e.lines = Persist::get(&mut r)?;
             e.last_departure = Persist::get(&mut r)?;
             e.arrivals = Persist::get(&mut r)?;
-            e.legs = Persist::get(&mut r)?;
+            let legs_next = u64::get(&mut r)?;
             e.legs_swept = Persist::get(&mut r)?;
             e.sinks_of = Persist::get(&mut r)?;
             e.conditions = Persist::get(&mut r)?;
@@ -4552,6 +4651,7 @@ mod persist_impls {
             e.glass.records = Persist::get(&mut r)?;
             e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
+            e.legs = LegIndex::from_pages(legs_next, leg_pages)?;
             e.glass.districts = Tracked::restored(glass);
             e.districts = Tracked::restored(districts);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);

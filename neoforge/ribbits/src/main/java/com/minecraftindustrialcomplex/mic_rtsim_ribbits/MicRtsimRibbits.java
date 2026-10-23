@@ -57,6 +57,7 @@ public final class MicRtsimRibbits {
 
     public MicRtsimRibbits(IEventBus modBus) {
         RibbitCargo.register(modBus);
+        RibbitTalker.register(modBus);
         RtsimApi.registerCulture(h -> h.is(RIBBIT_VILLAGE), CULTURE, RESIDENT_POOL);
         RtsimApi.registerBody(MERCHANT);
         RtsimApi.registerBody(MUSICIAN);
@@ -71,6 +72,8 @@ public final class MicRtsimRibbits {
             var prof = profession == null ? RibbitProfessionModule.NITWIT : RibbitProfessionModule.getProfession(ResourceLocation.tryParse(profession));
             return prof == null ? null : Ribbits.create(level, pos, prof, Ribbits.umbrella(-1));
         });
+        // Ribbits talk (TALK.md section 4): always, like a villager, and a talk with a resident credits its village.
+        RtsimApi.registerTalker(Ribbits.RIBBIT, new RibbitTalker(), true);
         modBus.addListener(MicRtsimRibbits::setup);
         NeoForge.EVENT_BUS.addListener(MicRtsimRibbits::onDrops);
     }

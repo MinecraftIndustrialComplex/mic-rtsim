@@ -1422,6 +1422,12 @@ drive through this codec. The native engine routes them (§5 item 15, choices C2
 `docs/overnight-choices-conflict.md`. Nothing below about a
 body mod is verified: it is the contract a plugin would have to meet.
 
+**Mowzie's Mobs** (2026-10-22: MOWZIE.md §2, §4.12 and ledger 14; slice M1, choices MZB-1 to MZB-49 in
+`docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
+conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
+plugin. The engine half of most of the new kinds comes with a later slice (§9.6); until then the
+engine decodes them, counts them as deferred and drops them, and sends none of the new commands.
+
 ### 9.1 Kind ranges (reserved)
 
 | Range | Direction | Class |
@@ -1432,8 +1438,11 @@ body mod is verified: it is the contract a plugin would have to meet.
 
 The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
-stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (each direction, as
-§2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12 are untouched.
+stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 and 0x0092
+(latest-wins; 0x0093 is retired, DIFFICULTY's before it was journaled), 0x080C to 0x0815 (journaled)
+and 0x8807 to 0x880B (commands). **Dictionary kind 0x20**
+(each direction, as §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12
+are untouched.
 **Pages**: table 0x4300 ('C'), the meta page at id 0 and the rows at 0x4310 and up, as the ships'
 0x5300 (§5 item 15).
 
@@ -1455,30 +1464,67 @@ stay as they are; these three are next to the herds'. **Dictionary kind 0x20** (
   `minecraft:pillager_outpost`, `illagerinvasion:illager_fort`, `mic_rtsim:conflict/bandit_camp`;
   the mod ids are UNVERIFIED).
 - **Items** (kind 2): tribute, gifts and loot, mapped to the phase 1 catalogue's goods by name.
+- **Cultures** (kind 5, as §4's, engine to Java only: BAND_MARCH) are named
+  `mic_rtsim:conflict/<culture>` after the culture data's `name` (`mic_rtsim:conflict/goblin`), so
+  they never meet phase 1's village cultures (`human`) in the one dictionary (MZB-12).
 - **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
   shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
-  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED; the engine applies each once. The engine's
-  commands move no items, so they carry no op ids.
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID; the engine
+  applies each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). The
+  engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is the
+  engine's, allocator 0x43 in bits 56 to 62 (§2.2) over 56 bits derived from the faction, the epoch
+  and the decision, and CAMP_BODIES carries it back so that an answer is booked once (MOWZIE.md §4.9).
+- **Camps** (MOWZIE.md §4.9). A camp's **epoch** is a Java op id (top bit set) that the plugin takes
+  each time the camp comes in (CAMP_CENSUS) and ends with CAMP_OUT; CAMP_BODIES, CAMP_RECONCILE and
+  a CHIEF_BODY at home carry it. A camp body is known by its **slot and generation**; one found with
+  neither (slot 0, generation 0) is a **stray**, known by its UUID.
+- **Trains** are SplitMix64 of Create's train UUID, as the industry's (`docs/industry-boundary.md`
+  H19).
+- **Difficulty** is Minecraft's `Difficulty` id: 0 Peaceful, 1 Easy, 2 Normal, 3 Hard.
 
 ### 9.3 Observations
 
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
 | 0x0090 | BAND_STATE (latest-wins) | flags: 1 ticking, 2 fighting | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied party (PLACEHOLDER) | 56 |
-| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 reserved | 56 |
+| 0x0091 | CHIEF_STATE (latest-wins) | flags: 1 crystal held | 8 u64 faction, 16 f32 health, 20 reserved | 24 |
+| 0x0092 | HAVEN_CHEST (latest-wins) | 0 | 8 u64 faction, 16 u32 dimension, 20 i32 x, 24 y, 28 z, 32 u32 free slots (as LAIR_CHEST), 36 reserved | 40 |
+| 0x0093 | retired (DIFFICULTY's until MZB-17 journaled it as 0x0815; never reuse) | | | |
+| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
 | 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
 | 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
 | 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
 | 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
-| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
 | 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
 | 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x080A | GIFT_GIVEN | n | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u64 opId, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
 | 0x080B | BAND_LOOTED | n | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 opId, 48 n × (u32 item, i32 count, u64 reserved) | 48 + 16n |
+| 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the sampled point nearest the camp), 88 i64 entryTick, 96 i64 exitTick | 104 |
+| 0x080D | TRAIN_PASSED | flags: 1 watched | 24 u64 agent, 32 u32 epoch, 36 u32 carriage (the nearest the track point, from 0), 40 u64 train | 48 |
+| 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
+| 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
+| 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
+| 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
+| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u32 outcome: 1 done, 2 nothing to do, 3 stale) | 48 + 16n |
+| 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
+| 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
-All of 0x0800 to 0x080B are journaled.
+All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
+deferred (§9.6).
+
+**List caps.** Every list of a variable-length record (observations and commands alike: members,
+items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
+entries (`boundary::MAX_ENTRIES`). At the cap every kind still fits the header's u16 size: the
+largest, CAMP_CENSUS with both its lists full, is 88 + 32 × 1,024 + 16 × 1,024 = 49,240 bytes. An
+encoder writes the first 1,024 entries of a longer list, and the count it writes is theirs; a decoder
+refuses a count above the cap (`CodecError::TooMany`) and a record cut short of its lists
+(`CodecError::Short`). Framing a record over 65,535 bytes is a bug the encoder asserts against
+(MZB-35).
 
 - **TERRITORY_SIGNAL** is what the plugin counts inside a territory the engine told it about
   (TERRITORY): logs broken (2), ore broken (3), blocks placed on the faction's plots (5), members
@@ -1493,24 +1539,67 @@ All of 0x0800 to 0x080B are journaled.
 - **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
   on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
-  that player (P14). CHIEF_KILLED routs the band (§9.5).
+  that player (P14). CHIEF_KILLED routs the band (§9.5). Casualties that leave an envoy party with
+  no member, none of the party's casualties or its chief's death having named a player, withdraw its
+  demand (DEMAND_SETTLED 5, §9.4).
+- **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
+  journaled (MZB-17), so the engine applies it at its game time and its replay after a crash applies
+  it again in the same order as the rest; one with the value the engine already has changes nothing.
+  Like every journaled record it is ignored while the module is off (U10); the session start's
+  sends it again (MZB-30).
+- **NOTICE_SHOWN** says the plugin has played a FACTION_NOTICE in the world: its serial in aux and
+  its faction and player as the notice's. One with a serial other than the kept notice's (an older
+  notice) changes nothing (MZB-10, MZB-28).
+- **CAMP_CENSUS**, **CAMP_OUT**, **CAMP_BODIES** and **CAMP_DEATH** are the camp reconciler's
+  (MOWZIE.md §4.9): a census when every chunk of a camp's footprint is FULL, under a new epoch, with
+  every body of the camp's kinds in the footprint (by slot and generation, or a stray by UUID), the
+  camp's tagged bodies loaded elsewhere, and for an Umvuthi its throne spot and trade memory; CAMP_OUT
+  when a footprint chunk drops below FULL; CAMP_BODIES as the answer to a CAMP_RECONCILE, line by
+  line; CAMP_DEATH once per body UUID, at home or left behind. CAMP_BODIES and CAMP_DEATH are carried
+  on the bodies and markers they changed until acknowledged, and journaled again at load.
+- **CHIEF_STATE** is a chief's health and crystal at home (the Frostmaw's steal, MOWZIE.md §4.5);
+  **CHIEF_PAID** a player's first payment to an Umvuthi body (its `rememberTrade`), with that body's
+  slot and generation; **TRADED** a masked trade with the grove's minions; **HAVEN_CHEST** a grove
+  chest tribute can go into.
+- **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
+  camp (MOWZIE.md §4.3); **TRAIN_PASSED** a train passing a lurking party's AMBUSH_SPOT (§4.4).
 
 ### 9.4 Commands
 
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
-| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 reserved | 64 | |
+| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
-| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 the demand was settled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
-| 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
+| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
+| 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
+| 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
+| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir; u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
+| 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
+| 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
+| 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
 
 Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
-U4), so none is kept or resent; TERRITORY is sent again for every faction at a session start
-(`Conflict::session_start`, C2-9). DEMAND_SETTLED 4 (refused) answers an ENVOY_ANSWER refusal or an
-attack: a refused demand is never a cut signal (C2-12).
+U4), so none is kept or resent, with three exceptions. TERRITORY is sent again for every faction at a
+session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that no NOTICE_SHOWN has
+answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
+notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). BAND_MARCH goes again for
+every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
+session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
+(refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
+(C2-12). DEMAND_SETTLED 5 (withdrawn) follows the last member of an envoy party falling when no
+player killed any of it (BAND_CASUALTIES or CHIEF_KILLED with killer kind 1): no relief, no refusal
+and no climb. The feud holds on Envoy until the withdrawn demand's deadline, then sends a fresh envoy
+with a new demand (MOWZIE.md ledger 14, MZB-22). No BAND_RECALL follows when nobody is left in
+Minecraft; one for members still spawned has reason 6 (MZB-32). The plugin drops the demand it held
+and plays nothing for it.
+
+**BAND_MARCH** replaces the agent's earlier ones (the higher revision wins). The engine's ticks in it
+(musterEndTick, each waypoint's) are game time, as ENVOY_MATERIALIZE's deadline; its waypoints are the
+party's route from the segment it is on (`route[seg]` and `times[seg]`), in chart coordinates. Its
+joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16).
 
 ### 9.5 How Java would apply them
 
@@ -1518,8 +1607,19 @@ attack: a refused demand is never a cut signal (C2-12).
 names (TERRITORY_SIGNAL). It needs no body mod for this: block break and place events and a mixin
 or event for kills are vanilla and NeoForge.
 
-**A notice** is the faction showing it has noticed: the plugin may place a sign (a banner, a totem
-from the body mod) at the place, or show nothing; it changes nothing the engine keeps.
+**A notice** is the faction showing it has noticed, in the world only: no faction news goes to chat
+or the action bar (Ben, 2026-10-22); feuds, raids and deaths reach players as gossip (the news
+system). The plugin plays it when the player it names is in range (the Frostmaw's roar from toward
+its den, MOWZIE.md §4.11; for a culture with nothing to play, a sign at the place or nothing) and
+then journals NOTICE_SHOWN with the notice's serial (FACTION_NOTICE's 60). Until then it holds the
+notice for the session. A notice the session ends on unplayed comes again at the next session start,
+after its faction's TERRITORY and the journal's replay, so across logouts and restarts it waits for
+the player's next entry. A plugin that plays
+nothing answers NOTICE_SHOWN at once.
+
+**Difficulty.** The plugin journals DIFFICULTY at every session start and on every change of the
+world's difficulty. On Peaceful the engine sends no war band and recalls the ones in the world
+(BAND_RECALL 6): the plugin needs no rule of its own.
 
 **An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
@@ -1545,6 +1645,16 @@ abstract raids there.
 place (`arcRadius` 0) and steered along its road (BAND_STEER, one per waypoint, with the tick it
 should get there); it is recalled (reason 4) where its walk leaves the view. Bands on their way home
 are not materialized.
+
+**Mowzie's later records** (MOWZIE.md §4; the Java half of each comes with the slice that builds its
+engine half, §9.6). The train sampler reports RAIL_PASS for each Create train through a camp's range
+(§4.3). Against an AMBUSH_SPOT it samples the track point, sends TRAIN_PASSED for each train within
+the reach (watched when a player watches the spot), and stops at the removed flag; it plays the
+robbed-train roar for TRAIN_ROBBED when that train next reaches a station with a player near (§4.4).
+The camp reconciler (§4.9) sends a census when a camp comes in and CAMP_OUT when it goes out, applies
+a CAMP_RECONCILE's lines only while its epoch is in and answers with CAMP_BODIES, and reports each
+camp body's death once (CAMP_DEATH). CHIEF_BODY is written into a chief's body (health, crystal, trade
+memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back (§4.5).
 
 ### 9.6 What the engine side does with them (rtsim-conflict)
 
@@ -1572,6 +1682,30 @@ are not materialized.
   engine's per-class tunables. **Watched**, the director above.
 - **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
   and remember the raids on them (a robbery report against the faction).
+- **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
+  `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
+  down at its muster's end (its warriors back in the pool, its feud a rung down, so that it climbs
+  again later). When Peaceful begins, every war party already out stops at once (MZB-15): one on the
+  road goes home, its feud a rung down (MZB-29); a watched fight ends; a siege waiting at its target
+  goes home. Those in Minecraft get BAND_RECALL 6. No war body spawns while it is Peaceful, and an
+  ambush booked before never falls. Notices, envoys and scouts go on, and grievance keeps its curve.
+  When Peaceful ends every feud is planned again, its dwell clock paused over the Peaceful span and
+  shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so no burst
+  of raids follows. The flag and the span's start are saved (MZB-14 to MZB-17).
+- **Kept notices** (ledger 14). A feud's last FACTION_NOTICE is kept in its row until a NOTICE_SHOWN
+  for its serial, faction and player, or until the feud is forgotten; a later notice replaces it.
+  Serials are engine-wide, so a forgotten and re-made feud never reuses one (MZB-28). Each session
+  sends it again after its faction's TERRITORY and the journal's replay (MZB-18 to MZB-21, MZB-31).
+- **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
+  deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
+  (MZB-22).
+- **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
+  (M9), RAIL_PASS (M7), TRAIN_PASSED (M8) and the camp records (M4) come later, as do the commands,
+  which the engine does not send yet, and FACTION_FOUND's census (M4). Until then rtsim-jni decodes
+  each, translates its ids, counts it (`ConflictLinkStats::deferred`) and drops it before the shared
+  clock runs for it: no module catches up for a deferred record. One with an op id spends it in
+  the engine, in rtsim-jni as in `Conflict::ingest`, so the same record again is not counted twice
+  (MZB-23).
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
@@ -1772,8 +1906,8 @@ what changed in its view (§12.2). Choices are DHT25 and up in `docs/choices-dh-
 | 0x0C00 to 0x0CFF | Java to engine | far view journaled observations (none yet) |
 | 0x8C00 to 0x8CFF | engine to Java | far view commands (`cmdSeq` at 8) |
 
-0x00C0 to 0x00CF, 0x0A00 to 0x0BFF and 0x8A00 to 0x8BFF stay free for the next simulation families
-(DHT26).
+0x00C0 to 0x00CF, 0x0A00 to 0x0AFF and 0x8A00 to 0x8AFF are TALK's (§13, TALK.md §9, TK10); 0x0B00 to
+0x0BFF and 0x8B00 to 0x8BFF stay free for the next simulation families (DHT26).
 
 **FAR_LEG (0x8C00, aux = state, size 80).** Reference codec `crates/rtsim-ecology/src/far.rs`, read by
 the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides (`far::tests` and
@@ -1788,7 +1922,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 33 | u8 | variant: the colour, 0 to 3 within the species |
 | 34 | u8 | stage, 1 to 5, at the record's time |
 | 35 | u8 | reserved |
-| 36 | i32 | y |
+| 36 | i32 | y: the dragon's feet, as its entity's y (the far feed's LEG draws its middle, §12.2) |
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
@@ -1818,28 +1952,34 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 
 ### 12.2 The payloads and the far feed's message
 
-Two NeoForge payloads, both registered optional (`PayloadRegistrar.optional()`), so a client without them
-joins a server with them and the other way round. Neither goes through the engine.
+Three NeoForge payloads, all registered optional (`PayloadRegistrar.optional()`), so a client without them
+joins a server with them and the other way round. None goes through the engine.
 
-- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (1), `radius` (blocks, at most
+- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (2), `radius` (blocks, at most
   16,384, PLACEHOLDER), `tier` (0 OFF, 1 LOW, 2 MEDIUM, 3 HIGH), `budget` (objects, capped by the tier at
   0, 48, 128 and 320, PLACEHOLDER) and `kinds` (a mask of `1 << kind`: 2 dragons, 4 carriages). Radius,
   budget or kinds 0 unsubscribes. A subscription of another version is ignored. A client sends it only
   when the server has the channel, at most once a second, and only when it changed.
 - **`mic_rtsim:far`**, server to client: one byte array (at most 1 MiB), a far feed message, once a second
   while subscribed and something changed (the first one always).
+- **`mic_rtsim:far_shape`**, server to client: `i64 hash` (big-endian, as `FriendlyByteBuf.writeLong`) and
+  one byte array (at most 32 KiB, PLACEHOLDER): a far shape, what an object looks like (DHT61, DHT62).
 
 The message (`far/FarWire.java`; unsigned LEB128 varints, `zig` a zigzag varint):
 
 ```
-u8 version (1), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
-INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb
+u8 version (2), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
+INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb, i64 shape, zig age
 LEG    2: handle, u8 state, zig y-oy, zig x0-ox, zig z0-oz, zig x1-ox, zig z1-oz, zig t0-gameTime, varlong t1-t0, varint radius
 SAMPLE 3: handle, u8 state, zig lx-8ox, zig ly-8oy, zig lz-8oz, zig tx-lx, zig ty-ly, zig tz-lz
 REAL   4: handle, zig entity (-1: none)
 GONE   5: handle
 ```
 
+- **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
+  none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
+  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE
   frees the handle, and GONE records come first in a message so their handles can be reused in it. The
@@ -1847,18 +1987,54 @@ GONE   5: handle
   engine's next leg lands, and comes back on its own handle.
 - **Positions** are relative to the header's origin (the subscriber's block): legs in whole blocks,
   samples in eighths of a block with the trailing point relative to the leading one. Times are relative
-  to the header's game time.
+  to the header's game time. A position is the object's middle, as a body source samples it: a LEG's y
+  is FAR_LEG's (the feet) plus the species' centre for the stage, which its plugin registers
+  (`FarLegs.Style`; DHT42).
 - **Only what changed** (`far/FarView.java`): an INTRO when an object is new or its looks changed, a LEG
-  when the leg changed, a SAMPLE when it moved by an eighth of a block, a REAL when its entity id changed.
-  RESET tells the client to forget every object first. The server sends it on every subscription (a
-  client subscribes again when its wants change or a message did not decode) and on a new dimension,
+  when the leg changed, a SAMPLE when it moved by an eighth of a block, and the same SAMPLE once more the
+  first sweep it did not (it stopped: the client stops running it on, DHT44), a REAL when its entity id
+  changed. RESET tells the client to forget every object first. The server sends it on every subscription
+  (a client subscribes again when its wants change or a message did not decode) and on a new dimension,
   and then everything the filter chose.
+- **A body joining a level** (`FarFeed.embodied`, through `RtsimApi.farEntityJoining`): as a dragon's body
+  or a carriage's entity joins a server level, each subscriber holding that object gets a message of its
+  own at once (flags 0, one REAL), ahead of the entity's spawn packet, so the client hides its far object
+  the frame the entity arrives rather than at the next sweep (DHT40). The sweep's item then carries the
+  same id and sends nothing more.
 - **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock,
   timed through the client's game time; a hunt circles at 0.5 blocks a tick (PLACEHOLDER), spiralling
   onto its circle over 40 ticks from where the dragon was drawn and turning the way it was flying. A
-  mover moves from where it was drawn to each new sample over the next second, so the view runs a second
-  behind the server. A message that does not decode drops every object, and the client subscribes again,
-  so the server's RESET brings them back.
+  sampled mover is run on (DHT44): from where it is drawn, it heads for where its last two samples say
+  it will be when the next one comes, and 10 ticks on past that (PLACEHOLDER) should the next be late,
+  then waits; one that stopped or brakes to a stop stops there. A message that does not decode drops
+  every object, and the client subscribes again, so the server's RESET brings them back. A dragon whose
+  INTRO says age -1 keeps the age an earlier INTRO of the same object gave (its body's, handed back to
+  its leg).
+
+**Shapes** (`far/FarShape.java`, DHT61, DHT62). A shape is a kind's raw layout, deflated (raw DEFLATE, no
+zlib header); its hash is over the raw bytes: FNV-1a 64, then `h ^= h >>> 33; h *= 0xff51afd7ed558ccd;
+h ^= h >>> 33`, and 0 becomes 1. The server sends each shape to a subscriber once, after the message whose
+INTRO first names it, nearest object first and at most 64 KiB a sweep (PLACEHOLDER; the rest go the next
+sweep; until they come the client draws nothing for the object for a short grace, about 2 s, then its box,
+DHT63). A RESET starts over on both sides: the server sends the
+shapes again after it, and the client forgets the ones it had when it reads it. Past 1,024 shapes sent
+(PLACEHOLDER) the server starts the subscriber's view over with a RESET, so neither side's set grows for a
+whole session. A client inflates each shape as it arrives (at most 1 MiB raw), checks the hash and the
+layout, and drops one that fails. A carriage's raw layout (`far/CarriageShape.java`, version 1, plain bytes as the message's):
+
+```
+u8 version (1), u8 assembly (Direction 3D data value: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
+varint palette size (at most 4,096), palette: varint global block state id each,
+zig min x, y, z, varint size x, y, z (1 to 1,024 each), varint block count (at most 65,536),
+per block, in (y, z, x) order: varint gap in the box's linear index ((y * sz + z) * sx + x) since the
+  last block (the first from -1), varint palette index,
+u8 bogey count (at most 4), per bogey: zig x, y, z, string style id, string size id (each at most 256
+  bytes), u8 upside down (0 or 1)
+```
+
+Coordinates are the contraption's own (Create's `Contraption.Blocks`, relative to its anchor, the leading
+bogey). The block state ids are the global ids chunk packets use, so they hold between one server and the
+clients joined to it. Block entity data, actors, storage, seats and glue are left out.
 
 ### 12.3 Sources and the filter
 
@@ -1868,8 +2044,8 @@ for each level a subscriber is in, and none when nobody is subscribed.
 | Source | Ids | What it gives |
 |---|---|---|
 | the engine's legs (core, priority 0) | the dragon's agent id | FLY, HUNT and ROOST legs from FAR_LEG |
-| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id |
-| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one |
+| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id and its age in days |
+| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one, and its shape (its blocks and bogeys, DHT61) |
 
 - **One item per id**: the highest priority wins, so a dragon's body replaces its leg on the same handle
   and gives it back when it goes (the hand-over, research note §5).
@@ -1879,4 +2055,178 @@ for each level a subscriber is in, and none when nobody is subscribed.
   at this game time, dragons first and then nearest first, up to its budget.
 - **The entity id** lets a client hide the proxy while it has the real entity near it; a carriage
   between the server's simulation distance and the client's render distance has no entity, and the
-  client draws it there itself (DHT33).
+  client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
+  the sweep.
+
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
+
+What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
+(a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
+market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
+did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
+section is the wire. A ribbit's credited talk goes the other way, as TALKED (§13.7).
+
+Reference codec `crates/rtsim-jni/src/talk_wire.rs` (every record's bytes are pinned by its tests).
+The Java codec is `talk/TalkRecords.java`, pure (no Minecraft types), and `TalkRecordsTest` pins the
+same bytes as the Rust tests. The engine side is `engine/talk.rs`; the Java side is §13.6.
+
+### 13.1 Kind ranges
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x00C0 to 0x00CF | Java to engine | TALK latest-wins observations: TALK_ASK (0x00C0) |
+| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, §13.7) |
+| 0x8A00 to 0x8AFF | engine to Java | TALK commands (`cmdSeq` at 8): TALK_FACTS (0x8A00) |
+
+0x0B00 to 0x0BFF and 0x8B00 to 0x8BFF stay free.
+
+### 13.2 TALK_ASK (0x00C0, latest wins, aux = n)
+
+Java's open questions, sent each tick until answered (dropped and sent again when a buffer is full,
+as every latest-wins kind is). Size 8 + 56n; each ask starts at 8 + 56i:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u64 | askId (Java's, per session, never 0) |
+| 8, 16 | u64 | playerMost, playerLeast |
+| 24 | u32 | holder kind: 1 village (Java's village id), 2 caravan (a puppet's agent), 3 faction (the camp's key), 4 ship (an agent) |
+| 28 | u32 | dimension (dictionary 1); the engine's frame is its id, so one above 65,535 is refused |
+| 32 | u64 | holder |
+| 40, 44 | i32 | the talker's x, z |
+| 48 | u32 | flags: 1 news, 2 faction facts |
+| 52 | u32 | reserved |
+
+### 13.3 TALK_FACTS (0x8A00, aux = news n, at most 4; per session)
+
+The answer to one ask, one tick or more later. No op id, never kept, never resent after a restart:
+its sequence is the session's (`session_seq`), and Java drops an ask's wait when it lands or after
+20 ticks (TK5). Size 48 + 120n:
+
+| Offset | Type | Field |
+|---|---|---|
+| 8 | u64 | cmdSeq |
+| 16 | u64 | askId |
+| 24 | u32 | flags: 1 HOLDER (the engine knows the holder), 2 PORT_CLOSED, 4 BLOCKADED, 8 FACTION (a faction block follows; slice 4) |
+| 28 | i32 | the holder's sentiment toward the player (rtsim-knowledge's scale; 0 for a player it has never met) |
+| 32 | u32 | scarcest good (dictionary 2; 0 none) |
+| 36 | u32 | its stock per target, thousandths |
+| 40 | u32 | most glutted good (0 none) |
+| 44 | u32 | its stock per target, thousandths |
+| 48 | n x 120 | news, best first |
+
+Without HOLDER everything after the flags is zero and n is 0 (TK32, TK38). News comes only when the
+ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way.
+
+A **news item** (120 bytes, offsets from its start): 0 u16 report kind, 2 u8 severity, 3 u8 the
+report's flags, 4 u32 talk flags (1 YOU_DID, 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago
+(saturating), 12 i32 dx, 16 i32 dz (the place from the talker, the short way round a seam, in the talker's own chart,
+TK47; 0 and 0 across frames, TK34), 20 reserved, 24 ref who, 56 ref whom, 88 ref near (the village nearest the
+place, TK35).
+
+A **ref** (32 bytes): 0 u8 class, 1 u8 flags (1 DEAD, 2 POS), 2 reserved, 4 u32 what (dictionary 5
+culture for villages, camps and chiefs; dictionary 3 body for dragons and lairs), 8 u64 a, 16 u64 b,
+24 i32 dx, 28 i32 dz (where it is from the talker, the short way round, in the talker's chart, when POS). Classes: 0
+unknown, 1 player (a, b the UUID), 2 village (a Java's village id), 3 player base, 4 caravan (a its
+seed, b its home village), 5 camp (a the faction key), 6 chief or notable (a its seed, b its camp),
+7 dragon (a its seed, b its lair key), 8 lair (a its key), 9 haven, 10 ship. How each is found, and
+when one is class 0 or DEAD, is TK36 and TK37.
+
+### 13.4 What the engine side does with them
+
+- **Observe:** each ask with a new askId is queued (at most 256 wait; the last 1,024 answered ids are
+  remembered; all cleared at SESSION_START, TK39). One that is already answered or waiting is
+  ignored when it comes again. An askId of 0, a dimension no frame can be and a record that does
+  not decode are refused and counted.
+- **Write point:** after the step's simulate, after the world model's commands, so the answer reads
+  the world as it stands at this hand-over (TK43). Each answer's dictionary names go out first; a
+  buffer that cannot hold the next answer keeps its ask for the next one.
+- **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
+  without HOLDER (TK32).
+- **TALKED** is the one record that does change it, and is journaled: §13.7.
+
+### 13.5 Test order 40: `TalkReport`
+
+TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
+since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
+z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
+it does to the knowledge tables, are TK40.
+
+### 13.6 What the Java side does with them
+
+- **The plugin.** `talk/TalkAsks` is a `SessionPlugin` that owns 0x00C0 to 0x00CF and 0x8A00 to 0x8AFF
+  (`TalkRecords.isTalkCommand`). A talker's click opens an ask with a Java id (per session, from 1);
+  at the end of every tick all open asks go out as one TALK_ASK through `boundary().direct` (the
+  dimension is defined first, `dimId` before `direct`; a full buffer drops the record and the next tick
+  writes it again). An ask closes on its TALK_FACTS, after 20 ticks, or when the session starts, stops or
+  fails; its callback runs once, with the answer or with null. At most 32 are open. On the pure-Java stub,
+  with no session or a failed one, no ask opens and the talker speaks at once (TK49).
+- **The answer.** `accept` decodes the record (a malformed one is counted and dropped, an answer for an
+  ask already closed counts as late) and resolves the dictionary names from the session's `EngineNames`
+  once, by the ref's class: dictionary 5 for a village, camp or chief (the culture), dictionary 3 for a
+  dragon, lair or ship (the body entity id), dictionary 2 for the goods. The talk reads it as a
+  `TalkAnswer`; a talker's candidates see only `api/TalkFacts` (no wire types).
+- **Holders.** A villager (not a child, TK16) of an adopted village asks as holder kind 1 with Java's village id; a wandering
+  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. Kinds 3 and 4 are
+  not asked by Java yet (TK38).
+- **Test hooks.** `TalkReport` is `NativeEngine.talkReport(...)` (`NativeCodec.Orders.talkReport`), with
+  `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
+  ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are
+  `gametest/TalkNewsGameTests`, each in a batch of its own because of the process-wide hooks.
+- **Nothing is written back by an ask.** An ask changes nothing in the world; a villager's daily credit
+  stays where slice 1 put it (TK1, vanilla gossip), and the engine hears of a talk only with TALKED
+  (§13.7), which the Ribbits plugin sends for a credited talk with a resident ribbit (TK60).
+
+### 13.7 TALKED (0x0A00, journaled, aux 0): a ribbit's talk credits its village
+
+A player's first talk of a game day with a resident of a ribbit-culture village (TK60, TK70). The village's feeling
+toward the player rises by `TALK_CREDIT`, 3 (TK2). Not a report: nothing happened that news could carry.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | u16 | kind 0x0A00 |
+| 2 | u16 | size, 64 |
+| 4 | u16 | aux, 0 |
+| 6 | u16 | reserved |
+| 8 | u64 | obsSeq |
+| 16 | i64 | game time |
+| 24 | u64 | op id: 63 random bits with `Obs.JAVA_OP_BIT` set, drawn by the journal's `commitWithOpId` |
+| 32 | u64 | the village's Java id |
+| 40 | u64 | the player's UUID, most significant bits |
+| 48 | u64 | the player's UUID, least significant bits |
+| 56 | u32 | the talker's body: its entity type's name in dictionary 3 (`ribbits:ribbit`); the engine does not read it |
+| 60 | u32 | reserved, 0 |
+
+Pinned by `talk_wire::tests::the_talked_bytes_are_pinned` and Java's `TalkRecordsTest.theTalkedBytesArePinned`,
+the same 64 bytes for obsSeq 0x1234, game time 123456, op id 0x0A0B0C0D0E0F1011, village 0x0102030405060708
+and player (0x1111222233334444, 0x5555666677778888); `TalkRecordsTest` also builds it at the literal offsets above.
+
+**Exactly once.** Three layers, none of them new:
+
+1. Java sends at most one per village, player and game day (TK60), and writes that day on the player before it
+   journals; a talk with no session, a failed one or phase 1 off writes nothing (TK66).
+2. The kernel's `Replay` admits each journaled observation once, by its sequence and by its op id (the
+   `op_of` hook for TALKED returns the op id at 24): a record the engine has already seen, which a resent
+   hand-over or a replay after a crash brings again, is `AlreadyApplied`; a copy under a new sequence with
+   the same op id (`recommit`) is `DuplicateOp`. Phase 1 never sees either.
+3. What `Replay` admits becomes the phase 1 input `Talked { key, player }` (persist tag 21), appended to the
+   input log like every other input, so a crash replays it onto the same world once and the +3 is not
+   applied twice.
+
+**The engine side** (`engine/phase1.rs` `talked`, `engine/talk.rs`). It adds `TALK_CREDIT` to the village's
+feeling toward the player through `Knowledge::adjust`, and makes the player's actor if the village has
+never met them, as a trade does (a credited talk is a real meeting, unlike an ask, TK45). A TALKED that does
+not decode, names a village the world does not know or a base, or is by the nil player is refused and
+counted (`talked_refused`, warned in the log at each power of two) and never applied and never put in the input log (TK68). With phase 1
+off it is counted ignored, like every other kind. A scripted village (a test's) is left alone. Applied
+ones count in `talked`. Nothing is answered: the next TALK_ASK for that village reads the new feeling in
+TALK_FACTS.
+
+**The Java side** is `RibbitTalker.credit` in the Ribbits plugin: one `beginJournaled` and `commitWithOpId`
+of 64 bytes, after the day is written on the player.
+
+Tests: `rtsim-world` (the input applies, makes the player, is refused for a village that is not one,
+replays to the same world), `rtsim-jni` (`engine/talk.rs`: the credit shows in the next ask's sentiment,
+refusals, a scripted village), `tests/protocol.rs` `mod talk` (a talk credits live and across a crash;
+a malformed one is refused and the next still applies), and the GameTests `ribbit_talk_credits_the_village_once_a_day`
+and `ribbit_puppet_talks_without_credit` on the Ribbits jar.

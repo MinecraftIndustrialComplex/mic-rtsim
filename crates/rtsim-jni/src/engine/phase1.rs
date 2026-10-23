@@ -35,6 +35,7 @@
 
 mod catalog;
 mod cmds;
+mod view;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -54,11 +55,12 @@ use rtsim_world::bases::CaravanRef;
 use rtsim_world::works::{self, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant};
 use rtsim_world::{CaravanId, Command, Visible, World, WorldConfig, identity_op};
 
-use super::{State, log_info, log_warn};
+use super::{State, log_info, log_warn, shared};
 use crate::orders::{
     GossipCmd, ItemOrder, MarketCmd, MarketGood, MemberOrder, OfferCmd, OffersCmd, Order,
     PlaceHouseCmd, SentimentCmd, SpawnResidentCmd,
 };
+use crate::talk_wire::{TALKED, Talked, talked as talked_at};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 pub(super) use cmds::P1Cmd;
@@ -66,7 +68,7 @@ use rtsim_world::inputs as log;
 use rtsim_world::inputs::{Input, Logged, Uuid};
 
 /// The phase 1 pages: table 0x5000 ('P'; table 1 is the core's and the industry link's key, the
-/// industry engine's are 0x4900 to 0x4903) holds the meta page and the tail's chunks; table
+/// industry engine's are 0x4900 to 0x4904) holds the meta page and the tail's chunks; table
 /// 0x5001 the snapshot: the world's meta page (id 0, PF12) and the link's part in pieces after
 /// it. The world's market rows are its own table, 0x5010.
 pub const TABLE: u16 = 0x5000;
@@ -1033,16 +1035,15 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 log_warn("phase 1: a malformed WORK_CATALOG was ignored");
                 return;
             };
-            let l = &mut st.phase1;
-            if defs != l.world.works_catalog {
+            if defs != st.phase1.world.works_catalog {
                 // Taken while switched off too, at the frozen clock (as HOUSE_PLACED, PR13): the
                 // catalogue is sent once a session.
-                let at = if l.enabled {
-                    l.wt(st.game_time)
+                if st.phase1.enabled {
+                    input_now(st, Input::Works { defs });
                 } else {
-                    l.world.now().0
-                };
-                l.input(Input::Works { defs }, at);
+                    let at = st.phase1.world.now().0;
+                    st.phase1.input(Input::Works { defs }, at);
+                }
                 take_world_commands(st);
             }
         }
@@ -1065,26 +1066,37 @@ fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
         return;
     };
     if l.world.golems(i) != golems {
-        let at = l.wt(st.game_time);
-        l.input(Input::Golems { key, golems }, at);
+        input_now(st, Input::Golems { key, golems });
     }
     if residents == 0 {
         return;
     }
+    let l = &mut st.phase1;
     let pop = l.world.nodes[i].local.pop;
     // The first census is logged even when it changes nothing: the log is what tells a later
     // session which villages had theirs.
     let first = l.censused.insert(key);
     if first || residents > pop {
-        let at = l.wt(st.game_time);
-        l.input(
+        input_now(
+            st,
             Input::Population {
                 key,
                 pop: residents,
             },
-            at,
         );
     }
+}
+
+/// An input from a latest-state record (a census, the works catalogue), at the hand-over's game
+/// time. The modules that share the world run to it first (U7, as [`shared::catch_up`] does for a
+/// journaled record): the input runs the world to its time, and a module whose events in a
+/// hand-over of several ticks had not run yet would meet a world already past them, which the
+/// ships take for time they missed while switched off (PC103) and the world for a change before
+/// its anchor.
+fn input_now(st: &mut State, input: Input) -> log::Applied {
+    let at = st.phase1.wt(st.game_time);
+    shared::run_to(st, Tick(at));
+    st.phase1.input(input, at)
 }
 
 /// The works catalogue a WORK_CATALOG record holds (docs/boundary.md §4.1, SINK.md §4.2), its
@@ -1200,13 +1212,15 @@ fn work_catalog(st: &State, rec: &Rec<'_>) -> Option<Vec<WorkDef>> {
 /// The journaled kinds this module applies (the core's are seen after the core in
 /// [`after_core`]).
 pub(super) fn claims(rec: &Rec<'_>) -> bool {
-    (obs::VILLAGE_ADOPTED..=obs::HOUSE_PLACED).contains(&rec.kind)
+    (obs::VILLAGE_ADOPTED..=obs::HOUSE_PLACED).contains(&rec.kind) || rec.kind == TALKED
 }
 
-/// Op ids the kernel's `Replay` applies once: a trade's and a robbery's transfer.
+/// Op ids the kernel's `Replay` applies once: a trade's and a robbery's transfer, and a talk's
+/// credit (a record of any other size has none: it is refused when applied).
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let b = rec.bytes;
     match rec.kind {
+        TALKED if rec.size() == talked_at::SIZE => wire::u64_at(b, talked_at::OP_ID),
         obs::TRADE if rec.size() >= obs::trade::SIZE => wire::u64_at(b, obs::trade::OP_ID),
         obs::CARGO_CHANGED if rec.size() >= obs::cargo_changed::ITEMS => {
             wire::u64_at(b, obs::cargo_changed::OP_ID)
@@ -1242,6 +1256,7 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
         obs::HURT if rec.size() >= obs::hurt::SIZE => hurt(st, rec, at),
         obs::RESCUE if rec.size() >= obs::rescue::SIZE => rescue(st, rec, at),
+        TALKED => talked(st, rec, at),
         obs::CARGO_CHANGED if rec.size() >= obs::cargo_changed::ITEMS => cargo(st, rec, at),
         obs::BASE if rec.size() >= obs::base::SIZE => {
             let key = wire::u64_at(b, obs::base::BASE);
@@ -1466,6 +1481,49 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
     if !l.input(input, at).refused {
         l.stats[stat::REPORTS] += 1;
     }
+    take_world_commands(st);
+}
+
+/// A TALKED `Replay` admitted (docs/boundary.md §13.7): the village credits the player's talk with
+/// one of its ribbits. A record that does not decode, names a village the world does not know (or
+/// a base), or is by nobody is refused and counted, never applied. A scripted village is skipped
+/// like every other kind's (its sentiment is the test's own).
+fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
+    let t = match Talked::decode(rec.bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            return super::talk::refuse_talked(st, &format!("a TALKED does not decode ({e})"));
+        }
+    };
+    let l = &st.phase1;
+    if l.scripted.contains(&t.village) {
+        return;
+    }
+    let is_village = l
+        .nodes
+        .get(&t.village)
+        .and_then(|&i| l.world.nodes.get(i))
+        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)));
+    if !is_village {
+        return super::talk::refuse_talked(
+            st,
+            &format!(
+                "a TALKED names village {} the world does not know",
+                t.village
+            ),
+        );
+    }
+    let out = st.phase1.input(
+        Input::Talked {
+            key: t.village,
+            player: t.player,
+        },
+        at,
+    );
+    if out.refused {
+        return super::talk::refuse_talked(st, "a TALKED the world refused");
+    }
+    st.talk.stats.talked += 1;
     take_world_commands(st);
 }
 

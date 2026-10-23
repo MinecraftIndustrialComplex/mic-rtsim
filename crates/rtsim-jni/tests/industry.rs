@@ -1092,6 +1092,8 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
         dimension: DIM,
         structure,
         pos: (150, 64, 80),
+        home_bodies: 0,
+        census: 0,
     }));
     j.mc_run_until(Tick(day(1.0).0 - 1));
     let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
@@ -1256,17 +1258,47 @@ fn mills(j: &mut Java, extra: u64) {
 /// engine still holds what it saved. The industry pages it wrote, their bytes, and those it
 /// deleted.
 fn industry_save(j: &mut Java) -> (u64, u64, u64) {
+    industry_save_tries(j, 1)
+}
+
+/// [`industry_save`] straight after a save that failed. A failed commit counts its failure
+/// (`stats_array()[15]`) a moment before it hands its tickets back, and a save the step builds in
+/// that moment is stale: it is not made, it counts as a failure too, and the next save is the one
+/// that writes the pages again (PF14, `paging::Job::stale`). A caller that saw the first failure
+/// cannot tell which side of that moment its next save falls on, so a save that is answered with
+/// a failure is asked for again, up to three times; the one that is made is the one returned.
+fn industry_save_after_failure(j: &mut Java) -> (u64, u64, u64) {
+    industry_save_tries(j, 3)
+}
+
+fn industry_save_tries(j: &mut Java, tries: u32) -> (u64, u64, u64) {
     use std::sync::atomic::Ordering::Acquire;
     let done = j.e.stats.saves_done.load(Acquire);
-    j.e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.mc_tick();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while j.e.stats.saves_done.load(Acquire) == done {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the save never committed"
-        );
-        std::thread::sleep(Duration::from_millis(1));
+    'attempt: for attempt in 1..=tries {
+        let failed = j.e.stats_array()[15];
+        j.e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.mc_tick();
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if j.e.stats.saves_done.load(Acquire) != done {
+                break 'attempt;
+            }
+            if j.e.stats_array()[15] != failed {
+                // This save was answered with a failure, not a commit.
+                assert!(
+                    attempt < tries,
+                    "save {attempt} of {tries} failed too (failed saves {failed} then {})",
+                    j.e.stats_array()[15]
+                );
+                continue 'attempt;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the save never committed (failed saves {failed} then {})",
+                j.e.stats_array()[15]
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     j.e.with_industry(|_, s| (s.save_pages, s.save_bytes, s.save_deleted))
 }
@@ -1393,8 +1425,9 @@ fn a_failed_industry_save_is_written_again_by_the_next() {
     }
     let lost = j.e.with_industry(|_, s| s.save_pages);
     assert!(lost > 2, "the failed save had district pages: {lost}");
-    // A tick from the failed save to the next: it writes the lost pages again.
-    let (pages, _, _) = industry_save(&mut j);
+    // A tick from the failed save to the next: it writes the lost pages again (the first save the
+    // step builds may be a stale one, which is not made).
+    let (pages, _, _) = industry_save_after_failure(&mut j);
     assert!(
         pages >= lost,
         "the next save writes the lost pages again: {pages} of {lost}"

@@ -73,10 +73,43 @@ pub enum ReportKind {
     /// A settlement working near an oil field a dragon refuels on (OILGATE.md §4.5, OG-8): the
     /// dragon notices a district, its oil sample, its fuel stock or its pollution. Negative.
     Encroachment = 9,
+    /// A camp feuds with a target (TALK.md §9.4). `who` is the camp, `whom` its target (a player, a
+    /// camp or a village), severity the feud's rung. News only: no sentiment, no vanilla gossip.
+    Feud = 10,
+    /// A camp swore a pact. `who` is the camp that swore, `whom` its ally; a second row with the
+    /// "against" flag names the foe. News only.
+    PactSworn = 11,
+    /// A camp broke a pact. `who` is the camp that broke it, `whom` its ally; a betrayal is a flag.
+    /// News only.
+    PactBroken = 12,
+    /// A camp raided a target. `who` is the camp, `whom` the target; severity is the outcome (held,
+    /// beaten, plundered) and a joint raid is a flag. News only.
+    Raid = 13,
+    /// A camp's notable fell. `who` is the camp, `whom` the notable (the killer's actor for a
+    /// killing, the camp itself for old age or a fever). News only.
+    Fell = 14,
+    // 15 is a spare for conflict news (TK11); 21 to 31 are reserved. Neither is a kind.
+    /// Pirates raided a port (the ports agent). `who` is the haven, `whom` the port village.
+    /// News only.
+    PortRaided = 16,
+    /// A haven holds most of a port's lanes. `who` is that haven, `whom` the port. News only.
+    Blockade = 17,
+    /// A port closed under a blockade. `who` is the haven that closed it, `whom` the port. News
+    /// only; Java also reads it as the PORT_CLOSED mood.
+    PortClosed = 18,
+    /// A port reopened. `who` is the haven whose blockade lifted, `whom` the port. News only.
+    PortReopened = 19,
+    /// A haven fell. `who` is the navy's home port that broke it, `whom` the haven. News only.
+    HavenFell = 20,
 }
 
 impl ReportKind {
-    pub const COUNT: usize = 9;
+    /// How many kinds there are. The ids have gaps (15 and 21 and up are reserved, TK11), so this
+    /// is the length of [`ReportKind::ALL`] and NOT the size of a per-kind table: size a table by
+    /// [`ReportKind::SLOTS`] and index it with [`ReportKind::index`].
+    pub const COUNT: usize = 19;
+    /// The highest id: the size of every per-kind table, where the gap ids are unused slots.
+    pub const SLOTS: usize = 20;
     pub const ALL: [ReportKind; ReportKind::COUNT] = [
         ReportKind::Assault,
         ReportKind::Killing,
@@ -87,25 +120,88 @@ impl ReportKind {
         ReportKind::ResidentAssault,
         ReportKind::ResidentKilling,
         ReportKind::Encroachment,
+        ReportKind::Feud,
+        ReportKind::PactSworn,
+        ReportKind::PactBroken,
+        ReportKind::Raid,
+        ReportKind::Fell,
+        ReportKind::PortRaided,
+        ReportKind::Blockade,
+        ReportKind::PortClosed,
+        ReportKind::PortReopened,
+        ReportKind::HavenFell,
     ];
 
+    /// The slot of a per-kind table, `id - 1`, always below [`ReportKind::SLOTS`].
     pub const fn index(self) -> usize {
         self as usize - 1
     }
 
+    /// The kind with this id; `None` for 0, the gaps and anything past the highest.
     pub fn from_u16(v: u16) -> Option<ReportKind> {
-        if (1..=ReportKind::COUNT as u16).contains(&v) {
-            Some(ReportKind::ALL[usize::from(v) - 1])
-        } else {
-            None
-        }
+        Some(match v {
+            1 => ReportKind::Assault,
+            2 => ReportKind::Killing,
+            3 => ReportKind::Robbery,
+            4 => ReportKind::Theft,
+            5 => ReportKind::Trade,
+            6 => ReportKind::Rescue,
+            7 => ReportKind::ResidentAssault,
+            8 => ReportKind::ResidentKilling,
+            9 => ReportKind::Encroachment,
+            10 => ReportKind::Feud,
+            11 => ReportKind::PactSworn,
+            12 => ReportKind::PactBroken,
+            13 => ReportKind::Raid,
+            14 => ReportKind::Fell,
+            16 => ReportKind::PortRaided,
+            17 => ReportKind::Blockade,
+            18 => ReportKind::PortClosed,
+            19 => ReportKind::PortReopened,
+            20 => ReportKind::HavenFell,
+            _ => return None,
+        })
     }
 
     /// Kinds that make a holder think better of `who` (C24: rescues count).
     pub const fn is_positive(self) -> bool {
         matches!(self, ReportKind::Trade | ReportKind::Rescue)
     }
+
+    /// Whether this is one of the news kinds (TALK.md §9.4, id [`FIRST_NEWS_KIND`] and up), whose
+    /// severity is always a small code (a rung, an outcome, 1 or 2 for a port) and never a
+    /// multiple of [`crate::SEVERITY_UNIT`].
+    pub const fn is_news(self) -> bool {
+        self as u16 >= FIRST_NEWS_KIND
+    }
+
+    /// How much a report weighs wherever its severity means "how much" in a structure that lasts:
+    /// a notable's memory and the table's importance order. A news kind's rung counts as
+    /// [`rung_weight`]; today's kinds keep their severity on the unit scale, where a mild assault
+    /// of 20 is legitimately small (TK33).
+    pub const fn magnitude(self, severity: u8) -> u8 {
+        if self.is_news() {
+            rung_weight(severity)
+        } else {
+            severity
+        }
+    }
 }
+
+/// The first id of the news kinds (TALK.md §9.4).
+pub const FIRST_NEWS_KIND: u16 = 10;
+
+/// What a rung weighs against the unit scale: 100 plus 25 a step to four, so a rung 1 outweighs a
+/// fair trade's 100, a rung 4 outweighs it by half, and none weighs less than the unit. The one
+/// formula for "a code, not a multiple of the unit": the structures above use it for the news
+/// kinds, and a talker's ranking also for today's kinds whose severity is under 25. Since MZB-36
+/// (b053f0f5) the conflict records its robberies, rescues and killings on the unit scale like
+/// everyone else, so for today's kinds that is only a guard against a stray small code.
+pub const fn rung_weight(rung: u8) -> u8 {
+    100 + 25 * if rung < 4 { rung } else { 4 }
+}
+
+const _: () = assert!(rung_weight(255) == 200);
 
 /// Bit 0 of [`Report::flags`]: `who` or `whom` is a player. Set by `Knowledge::record`, and
 /// what the table's importance order ranks first (SCALE.md §6). Bits 1 to 7 are the caller's.
@@ -234,11 +330,17 @@ pub type ReportId = Handle<ReportEntry>;
 /// older before newer, then milder before more severe, then by handle for a total order.
 pub(crate) type Importance = (bool, u64, u8, u64);
 
+/// A row's magnitude (see [`ReportKind::magnitude`]); the raw severity for a row of no kind.
+fn row_magnitude(row: &ReportRow) -> u8 {
+    row.kind()
+        .map_or(row.severity(), |k| k.magnitude(row.severity()))
+}
+
 fn importance(id: ReportId, row: &ReportRow) -> Importance {
     (
         row.flags() & FLAG_PLAYER != 0,
         row.at().0,
-        row.severity(),
+        row_magnitude(row),
         id.to_bits(),
     )
 }
@@ -287,16 +389,31 @@ impl ReportTable {
         self.arena.get(id).and_then(|e| e.row.unpack())
     }
 
+    /// Whether [`ReportTable::insert`] would keep a row: there is room, or it matters more than
+    /// the least important report held (a tie keeps the resident). Lets a caller refuse before it
+    /// changes anything else.
+    pub fn admits(&self, row: &ReportRow) -> bool {
+        if self.arena.len() < self.cap as usize {
+            return true;
+        }
+        let least = self.order.first().expect("a full table has an order");
+        // The new report would sit at this importance; its id is not known yet, so compare on the
+        // other fields.
+        let new = (
+            row.flags() & FLAG_PLAYER != 0,
+            row.at().0,
+            row_magnitude(row),
+        );
+        new > (least.0, least.1, least.2)
+    }
+
     pub fn insert(&mut self, row: ReportRow, expires: Tick) -> Inserted {
         let mut evicted = None;
+        if !self.admits(&row) {
+            return Inserted::Dropped;
+        }
         if self.arena.len() >= self.cap as usize {
             let least = *self.order.first().expect("a full table has an order");
-            // The new report would sit at this importance; its id is not known yet, so compare
-            // on the other fields and let a tie keep the resident.
-            let new = (row.flags() & FLAG_PLAYER != 0, row.at().0, row.severity());
-            if new <= (least.0, least.1, least.2) {
-                return Inserted::Dropped;
-            }
             self.order.remove(&least);
             let old = Handle::from_bits(least.3);
             let entry = self.arena.remove(old).expect("order names live reports");
@@ -417,14 +534,14 @@ mod tests {
         #[test]
         fn rows_round_trip(
             wi in any::<u32>(), wg in any::<u16>(), mi in any::<u32>(), mg in any::<u16>(),
-            kind in 1u16..=8, severity in any::<u8>(), flags in any::<u8>(),
+            kind in proptest::sample::select(ReportKind::ALL.to_vec()), severity in any::<u8>(), flags in any::<u8>(),
             at in 0u64..(1 << 48), frame in any::<u16>(),
             x in -COORD_LIMIT - 1..=COORD_LIMIT, z in -COORD_LIMIT - 1..=COORD_LIMIT, y in any::<i16>(),
         ) {
             let r = Report {
                 who: Handle::from_parts(wi, wg),
                 whom: Handle::from_parts(mi, mg),
-                kind: ReportKind::from_u16(kind).unwrap(),
+                kind,
                 severity,
                 flags,
                 at: Tick(at),
@@ -461,6 +578,160 @@ mod tests {
             "x = -2 in 24-bit two's complement"
         );
         assert_eq!(&b[27..32], &[0x1b, 0x1c, 0x1d, 0x1e, 0x1f]);
+    }
+
+    /// Every id round-trips through `from_u16` for the real kinds, and the gaps (0, 15, 21 up)
+    /// and everything past the highest are `None` (TK11).
+    #[test]
+    fn ids_round_trip_and_the_gaps_are_none() {
+        let gaps = [0u16, 15, 21, 22, 23, 24, 31, 32, 33, 40, 255, u16::MAX];
+        for id in 0..=40u16 {
+            match ReportKind::from_u16(id) {
+                Some(k) => {
+                    assert_eq!(k as u16, id, "id {id} comes back as {k:?}");
+                    assert!(ReportKind::ALL.contains(&k), "{k:?} is missing from ALL");
+                    assert!(!gaps.contains(&id), "id {id} is a gap");
+                }
+                None => assert!(
+                    id == 0 || id == 15 || id >= 21,
+                    "id {id} is a real kind but from_u16 refuses it"
+                ),
+            }
+        }
+        for g in gaps {
+            assert_eq!(ReportKind::from_u16(g), None, "id {g}");
+        }
+        // ALL is exactly the ids that parse, once each, in id order.
+        let parsed: Vec<ReportKind> = (0..=ReportKind::SLOTS as u16 + 1)
+            .filter_map(ReportKind::from_u16)
+            .collect();
+        assert_eq!(parsed, ReportKind::ALL.to_vec());
+        assert_eq!(ReportKind::COUNT, 19);
+        assert_eq!(ReportKind::SLOTS, 20);
+        for k in ReportKind::ALL {
+            assert_eq!(ReportKind::from_u16(k as u16), Some(k));
+        }
+        // The ids TALK owns, pinned: the packed row's kind field never changes.
+        let want = [
+            (ReportKind::Feud, 10),
+            (ReportKind::PactSworn, 11),
+            (ReportKind::PactBroken, 12),
+            (ReportKind::Raid, 13),
+            (ReportKind::Fell, 14),
+            (ReportKind::PortRaided, 16),
+            (ReportKind::Blockade, 17),
+            (ReportKind::PortClosed, 18),
+            (ReportKind::PortReopened, 19),
+            (ReportKind::HavenFell, 20),
+        ];
+        for (k, id) in want {
+            assert_eq!(k as u16, id, "{k:?}");
+        }
+    }
+
+    /// One formula for a rung (TK33): the news kinds always are rungs, today's kinds keep the unit
+    /// scale in the structures that last.
+    #[test]
+    fn magnitude_counts_news_rungs_on_the_unit_scale() {
+        use ReportKind::*;
+        for (kind, severity, want) in [
+            (Feud, 1, 125),
+            (Feud, 4, 200),
+            (Feud, 9, 200),
+            (Feud, 100, 200),
+            (PortClosed, 0, 100),
+            (Raid, 3, 175),
+            // Today's kinds are on the unit scale: a mild assault of 20 stays small.
+            (Assault, 20, 20),
+            (Assault, 100, 100),
+            (Robbery, 2, 2),
+            (Killing, 255, 255),
+        ] {
+            assert_eq!(kind.magnitude(severity), want, "{kind:?} {severity}");
+        }
+        assert_eq!(rung_weight(0), 100);
+        assert_eq!(rung_weight(2), 150);
+        assert_eq!(rung_weight(4), 200);
+        assert_eq!(rung_weight(200), 200, "past four is four");
+        assert_eq!(FIRST_NEWS_KIND, Feud as u16);
+        assert!(
+            ReportKind::ALL
+                .iter()
+                .all(|k| k.is_news() == (*k as u16 >= 10)),
+            "the news kinds are the ids from 10"
+        );
+    }
+
+    /// The board is full of reports, and a rung 1 feud outranks a fair trade of severity 100: the
+    /// table keeps the feud and evicts the trade. By raw severity (1 against 100) it would have
+    /// dropped the feud.
+    #[test]
+    fn a_rung_is_not_the_least_important_report_on_a_full_table() {
+        let mut t = ReportTable::new(1);
+        let trade = Report {
+            kind: ReportKind::Trade,
+            ..report(50, 100, 0)
+        };
+        let feud = Report {
+            kind: ReportKind::Feud,
+            ..report(50, 1, 0)
+        };
+        assert!(t.admits(&trade.pack()), "room");
+        let Inserted::Stored(_) = t.insert(trade.pack(), Tick(1_000)) else {
+            panic!("stored");
+        };
+        assert!(t.admits(&feud.pack()), "125 outweighs 100 at the same time");
+        match t.insert(feud.pack(), Tick(1_000)) {
+            Inserted::Evicted(_, _, old) => assert_eq!(old.row.kind(), Some(ReportKind::Trade)),
+            _ => panic!("the feud should evict the trade"),
+        }
+        // The other way round: a fair trade does not push a feud out, and `admits` says so
+        // without changing anything.
+        assert!(!t.admits(&trade.pack()));
+        assert!(matches!(
+            t.insert(trade.pack(), Tick(1_000)),
+            Inserted::Dropped
+        ));
+        assert_eq!(t.len(), 1);
+    }
+
+    /// A table indexed by `index()` has a slot for every kind, and no id that parses to a kind can
+    /// reach a gap slot: a gap id parses to `None`, so there is nothing to index with.
+    #[test]
+    fn a_table_indexed_by_a_gap_id_cannot_be_reached() {
+        let mut hit = [false; ReportKind::SLOTS];
+        for id in 0..=u16::MAX {
+            if let Some(k) = ReportKind::from_u16(id) {
+                assert!(k.index() < ReportKind::SLOTS, "{k:?}");
+                hit[k.index()] = true;
+            }
+        }
+        for (slot, reached) in hit.iter().enumerate() {
+            let id = slot + 1;
+            assert_eq!(*reached, id != 15, "slot {slot} (id {id})");
+        }
+    }
+
+    /// Every kind (new ones included) packs into the 32-byte row and unpacks as the same report;
+    /// a row whose kind field holds a gap id is a corrupt page and unpacks to `None`.
+    #[test]
+    fn every_kind_packs_and_a_gap_row_does_not_unpack() {
+        for k in ReportKind::ALL {
+            let r = Report {
+                kind: k,
+                ..report(777, 3, 0)
+            };
+            let row = r.pack();
+            assert_eq!(&row.0[12..14], &(k as u16).to_le_bytes(), "{k:?}");
+            assert_eq!(row.unpack(), Some(r), "{k:?}");
+            assert_eq!(row.kind(), Some(k));
+        }
+        for gap in [0u16, 15, 21, 31, 32, 40] {
+            let mut row = report(1, 1, 0).pack();
+            row.0[12..14].copy_from_slice(&gap.to_le_bytes());
+            assert_eq!(row.unpack(), None, "kind {gap}");
+            assert_eq!(row.kind(), None);
+        }
     }
 
     #[test]

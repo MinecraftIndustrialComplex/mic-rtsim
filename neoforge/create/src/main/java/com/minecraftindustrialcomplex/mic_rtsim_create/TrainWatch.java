@@ -69,6 +69,9 @@ import java.util.UUID;
  *       between arrival and departure went into the district (packages by their contents);</li>
  *   <li><b>IND_TRAIN_DEPARTED</b> once the train has its next destination (or 40 ticks after it left),
  *       with the destination station and the ETA at the train's top speed;</li>
+ *   <li><b>IND_TRAIN_UNWATCHED</b> when a train calls at a station outside every district (SG50): the
+ *       engine ends the leg the train began at its last district station, so the next district station
+ *       is no edge from that one;</li>
  *   <li><b>IND_CARRIAGE_DELTA</b> applied through {@code TrainCargoManager}'s own handlers (whose
  *       {@code changeDetected} resets the idle-cargo counter), answered by IND_CARRIAGE_RESULT.</li>
  * </ul>
@@ -110,6 +113,8 @@ public final class TrainWatch {
     private static final Map<UUID, List<Cargo>> DEPARTED = new HashMap<>();
     private static final Map<UUID, List<LooseDock>> LOOSE = new HashMap<>();
     private static final Map<UUID, Docks> DOCKS = new HashMap<>();
+    /** Trains whose leg an IND_TRAIN_UNWATCHED already ended: the engine needs one per leg (SG50). */
+    private static final Set<UUID> UNWATCHED = new HashSet<>();
     /** IND_STATION_PORTS last journaled per station, with the district revision it numbers (SG32). */
     private static final Map<Long, String> PORTS_SENT = new HashMap<>();
     /** The conveyance walk from an interface: steps and blocks visited (SG32). */
@@ -125,6 +130,14 @@ public final class TrainWatch {
     static long lateArrivals;
     static long docks;
     static long portRecords;
+    static long unwatchedStops;
+    /** Off only in a GameTest that shows what the engine does without the report (the control of SG51's guard). */
+    private static boolean reportUnwatched = true;
+
+    /** GameTests: send no IND_TRAIN_UNWATCHED, as a bridge from before SG50 would not. */
+    public static void reportUnwatchedForTest(boolean on) {
+        reportUnwatched = on;
+    }
 
     /**
      * Mixin: Train.arriveAt(GlobalStation), at its start. {@code arriveAt} runs the station's mail
@@ -211,15 +224,22 @@ public final class TrainWatch {
     public static void arrived(Train train, GlobalStation station) {
         try {
             Industry ind = IndustryApi.current();
-            if (ind == null || station == null || station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null)
+            if (ind == null || station == null)
                 return;
+            if (station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null) {
+                unwatched(ind, train, station); // a station with no place is in no district
+                return;
+            }
             ResourceKey<Level> dim = station.getBlockEntityDimension();
             BlockPos pos = station.getBlockEntityPos();
             District d = ind.districtAt(dim, ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));
-            if (d == null)
+            if (d == null) {
+                unwatched(ind, train, station);
                 return;
+            }
             long trainId = CreateIds.of(train.id);
             SEEN.put(trainId, new WeakReference<>(train));
+            UNWATCHED.remove(train.id);
             boolean simulated = d.loadState() == IndRecords.LoadState.UNLOADED && !hasEntityIn(train, dim);
             List<Cargo> head = ARRIVING.remove(train.id);
             if (head == null)
@@ -275,6 +295,30 @@ public final class TrainWatch {
         }
     }
 
+    /**
+     * A call at a station outside every district (SG50): nothing is watched there, and the engine's leg
+     * for this train (begun at its last district station) ends. Without it, a train that went out and
+     * back through such a station made an edge from its district station to itself, with the round
+     * trip's travel time (docs/stress-worlds-results.md 10.9: adopts that deferred their chunks while a
+     * detection ran left stations outside every district for a while). Once per leg: a train that stops
+     * at several unwatched stations in a row sends one record, until it leaves a district station again.
+     * A departure the bridge has not journaled yet goes first, so the engine sees them in order.
+     */
+    private static void unwatched(Industry ind, Train train, GlobalStation station) {
+        if (!reportUnwatched || !UNWATCHED.add(train.id))
+            return;
+        if (UNWATCHED.size() > 4096) {
+            UNWATCHED.clear();
+            UNWATCHED.add(train.id);
+        }
+        flushLeaving(ind, train);
+        ByteBuffer r = ind.journal(IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.SIZE, 0);
+        r.putLong(IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train.id));
+        r.putLong(IndRecords.TrainUnwatched.STATION, CreateIds.of(station.id));
+        ind.commit(r);
+        unwatchedStops++;
+    }
+
     private static boolean looseNear(List<LooseDock> loose, Train train, GlobalStation station, ResourceKey<Level> dim) {
         if (loose == null)
             return false;
@@ -303,10 +347,14 @@ public final class TrainWatch {
                 BlockPos pos = st == null ? null : st.getBlockEntityPos();
                 District d = pos == null || st.getBlockEntityDimension() == null ? null
                         : ind.districtAt(st.getBlockEntityDimension(), ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));
+                if (d != null)
+                    UNWATCHED.remove(train.id);
                 if (d != null && d.loadState() != IndRecords.LoadState.UNLOADED)
                     ind.districts().discard(d, IndRecords.Discard.OTHER);
                 return;
             }
+            // A leg from a district station begins: its next unwatched stop is reported again (SG50).
+            UNWATCHED.remove(train.id);
             District d = ind.district(stop.district);
             if (d != null && stop.simulated && d.loadState() != IndRecords.LoadState.UNLOADED) {
                 // Simulated at arrival, loaded since: what its interfaces moved after the load is not a
@@ -363,25 +411,44 @@ public final class TrainWatch {
             if (dest == null && now - l.at < 40)
                 continue;
             it.remove();
-            long eta = 0;
-            if (dest != null) {
-                double speed = Math.max(1e-3, train.maxSpeed());
-                eta = (long) Math.ceil(Math.max(0, train.navigation.distanceToDestination) / speed);
-            }
-            List<Cargo> cargo = cargo(ind, train);
-            int size = IndRecords.Train.DEPARTED_CARRIAGES;
-            for (Cargo c : cargo)
-                size += IndRecords.Train.carriageSize(c.goods.nonZeroIds().length);
-            ByteBuffer r = ind.journal(IndRecords.IND_TRAIN_DEPARTED, size, cargo.size());
-            r.putLong(IndRecords.Train.TRAIN, CreateIds.of(train.id));
-            r.putLong(IndRecords.Train.STATION, l.station);
-            r.putLong(IndRecords.Train.DISTRICT, l.district);
-            r.putLong(IndRecords.Train.DEPARTED_DESTINATION, dest == null ? 0 : CreateIds.of(dest.id));
-            r.putLong(IndRecords.Train.DEPARTED_ETA, eta);
-            writeCarriages(r, IndRecords.Train.DEPARTED_CARRIAGES, cargo);
-            ind.commit(r);
-            departures++;
+            departed(ind, l, train, dest);
         }
+    }
+
+    /**
+     * The train's departure not journaled yet goes out now, with the destination it has (SG50: an
+     * unwatched stop must follow the departure it ends, not precede it).
+     */
+    private static void flushLeaving(Industry ind, Train train) {
+        for (Iterator<Leaving> it = LEAVING.iterator(); it.hasNext(); ) {
+            Leaving l = it.next();
+            Train t = l.train.get();
+            if (t == null || !t.id.equals(train.id))
+                continue;
+            it.remove();
+            departed(ind, l, train, train.navigation == null ? null : train.navigation.destination);
+        }
+    }
+
+    private static void departed(Industry ind, Leaving l, Train train, GlobalStation dest) {
+        long eta = 0;
+        if (dest != null) {
+            double speed = Math.max(1e-3, train.maxSpeed());
+            eta = (long) Math.ceil(Math.max(0, train.navigation.distanceToDestination) / speed);
+        }
+        List<Cargo> cargo = cargo(ind, train);
+        int size = IndRecords.Train.DEPARTED_CARRIAGES;
+        for (Cargo c : cargo)
+            size += IndRecords.Train.carriageSize(c.goods.nonZeroIds().length);
+        ByteBuffer r = ind.journal(IndRecords.IND_TRAIN_DEPARTED, size, cargo.size());
+        r.putLong(IndRecords.Train.TRAIN, CreateIds.of(train.id));
+        r.putLong(IndRecords.Train.STATION, l.station);
+        r.putLong(IndRecords.Train.DISTRICT, l.district);
+        r.putLong(IndRecords.Train.DEPARTED_DESTINATION, dest == null ? 0 : CreateIds.of(dest.id));
+        r.putLong(IndRecords.Train.DEPARTED_ETA, eta);
+        writeCarriages(r, IndRecords.Train.DEPARTED_CARRIAGES, cargo);
+        ind.commit(r);
+        departures++;
     }
 
     /**
@@ -615,6 +682,7 @@ public final class TrainWatch {
         DEPARTED.remove(train.id);
         LOOSE.remove(train.id);
         DOCKS.remove(train.id);
+        UNWATCHED.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
     }
 
@@ -645,6 +713,6 @@ public final class TrainWatch {
         return "trains: " + arrivals + " arrivals at district stations (" + simulatedArrivals + " simulated), " + departures
                 + " departures, " + cargoPorts + " cargo ports, " + SEEN.size() + " trains seen, " + AT_STATION.size() + " at a station; "
                 + "cargo read at " + approachArrivals + " approaches, " + departureArrivals + " departures, " + lateArrivals + " late; "
-                + docks + " interface docks, " + portRecords + " station port records";
+                + docks + " interface docks, " + portRecords + " station port records, " + unwatchedStops + " unwatched stops";
     }
 }
