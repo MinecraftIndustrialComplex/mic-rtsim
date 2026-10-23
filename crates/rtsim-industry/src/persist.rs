@@ -5,11 +5,12 @@
 //! - **One page per district** (table [`DISTRICT_TABLE`], id = district id), **one per replay
 //!   cluster** ([`CLUSTER_TABLE`], id = cluster key, with its booked wake, restored as is: DECISIONS.md
 //!   O18), **one per district's glass state** ([`GLASS_TABLE`], id = district id: the compile, its
-//!   passed window and the glass replay, `glass::page`, G2-9), and **one page of globals**
-//!   ([`GLOBAL_TABLE`], id 0).
+//!   passed window and the glass replay, `glass::page`, G2-9), **one per 256 booked train legs**
+//!   ([`LEG_TABLE`], id = the leg ids divided by 256, ID10: the legs grow with the lines, so they
+//!   are not in the globals), and **one page of globals** ([`GLOBAL_TABLE`], id 0).
 //! - **A save writes the globals page and the pages changed since the save before**
 //!   (`Engine::save_changed`, docs/choices-industry-dirty-pages.md): the engine marks a district,
-//!   cluster or glass page on every change, and a marked page whose entry is gone is deleted.
+//!   cluster, glass or leg page on every change, and a marked page whose entry is gone is deleted.
 //!   `Engine::snapshot` is the whole state, for a fresh store.
 //! - **Everything else is saved**, open learning windows and half-assembled sweeps included, so a
 //!   restored engine continues exactly (tested). A real restart then calls
@@ -39,6 +40,8 @@ pub const GLOBAL_TABLE: u16 = 0x4900;
 pub const DISTRICT_TABLE: u16 = 0x4901;
 pub const CLUSTER_TABLE: u16 = 0x4902;
 pub const GLASS_TABLE: u16 = 0x4903;
+/// The booked train legs, [`crate::threat::LEGS_PER_PAGE`] ids to a page (id = the page's number, ID10).
+pub const LEG_TABLE: u16 = 0x4904;
 
 /// A value that can go into an industry page.
 pub trait Persist: Sized {
