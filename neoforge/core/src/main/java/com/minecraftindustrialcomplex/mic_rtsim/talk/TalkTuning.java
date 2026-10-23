@@ -213,5 +213,38 @@ public final class TalkTuning {
         };
     }
 
-    public static final int KIND_ASSAULT = 1, KIND_FEUD = 10;
+    public static final int KIND_ASSAULT = 1, KIND_FEUD = 10, KIND_RAID = 13;
+
+    /**
+     * How a raid went, from the report's severity (TK83): 1 {@code held} (a watched fight the band left
+     * without a rout), 2 {@code beaten} (a rout, or an unwatched raid that took nothing and lost warriors),
+     * 3 {@code plundered}. Null for any other kind and for any other severity (an older raid's, or a test's,
+     * is told as before). The codes are rtsim-knowledge's {@code report::raid::{HELD, BEATEN, PLUNDERED}}.
+     */
+    public static String outcome(int kind, int severity) {
+        if (kind != KIND_RAID)
+            return null;
+        return switch (severity) {
+            case 1 -> "held";
+            case 2 -> "beaten";
+            case 3 -> "plundered";
+            default -> null;
+        };
+    }
+
+    /**
+     * The topics one perspective of a news item is told from, in order of preference (TK83). A raid that was
+     * held or beaten has exactly one, {@code news.raid.<p>.held} or {@code .beaten}: the plain
+     * {@code news.raid.<p>} lines all tell a plunder, so it never falls to them, and it has no {@code .seen}
+     * variant. Everything else, a plundered raid and every other kind included, is today's rule:
+     * {@code news.<kind>.<p>.seen} and then {@code news.<kind>.<p>} for an item the holder saw, else the
+     * latter alone.
+     */
+    public static List<String> topics(String kindName, int kind, int severity, String perspective, boolean seen) {
+        String base = "news." + kindName + "." + perspective;
+        String outcome = outcome(kind, severity);
+        if ("held".equals(outcome) || "beaten".equals(outcome))
+            return List.of(base + "." + outcome);
+        return seen ? List.of(base + ".seen", base) : List.of(base);
+    }
 }
