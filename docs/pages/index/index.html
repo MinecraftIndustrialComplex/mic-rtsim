@@ -54,6 +54,7 @@ section { padding: 30px 0 8px; border-top: 1px solid var(--line); margin-top: 26
 .done > li:last-child { border-bottom: 0; }
 .done a { display: inline-block; min-height: 44px; line-height: 44px; }
 .hold { font-size: 16.5px; }
+.nowrap { white-space: nowrap; }
 .wait { list-style: none; padding: 0; margin: 0; }
 .wait > li { max-width: none; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 6px; margin-bottom: 10px; }
 .wait .head { font-weight: 600; margin-bottom: 4px; }
@@ -85,6 +86,10 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 <section id="pages" data-ss-id="pages" data-ss-section>
   <h2 data-ss-id="pages-h">Pages</h2>
   <ul class="pages" data-ss-id="page-list">
+    <li data-ss-id="page-create-addon">
+      <a href="https://spacesheep.dev/@benmac/rtsim-create-addon">Standalone Create Addon</a><span class="date">23 Oct<span class="new">new</span></span>
+      <span class="what">Your question of 23 October, whether the Create sim can be released on your server or publicly, answered. Publicly, not yet: 3 of the 14 items before the alpha are done, 2 are under way, 7 have not started and 2 need you at release; the last two days went to MIC features instead. On your server, closer: the rehearsal's blocker is guarded and the glass box should no longer need switching off, but nothing landed since 21 October has run on the world's copy, so a re-rehearsal on today's main comes next, then your <span class="nowrap">DR-0</span>. First written 21 October, with your 4 answers: Create: Distant Factories, an alpha on both sites after the 14 items, AGPL and MPL, and the repos opened whole.</span>
+    </li>
     <li data-ss-id="page-dh-morning">
       <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23">Far View, Morning of 23 October</a><span class="date">23 Oct<span class="new">new</span></span>
       <span class="what">The far view's real models, on main: players' trains drawn as the carriages they built and dragons as their real Ice and Fire models, with boxes only as a fallback, at no measurable cost in frame time, filmed against the boxes. Then the hand-over fixes, filmed before and after: the far object and the real train or dragon are never drawn together now. Two choices made, to be built, which you can overrule, and one question you answered: a dragon's age goes into the far route, to be built with them.</span>
@@ -166,10 +171,6 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
     <li data-ss-id="page-any-pack">
       <a href="https://spacesheep.dev/@benmac/rtsim-any-pack">rtsim on Any Pack</a><span class="date">21 Oct</span>
       <span class="what">Already runs non-Create factories with no plugin; the four small fixes for other packs, the top gaps, the plan in slices, and your 4 answers, all as recommended.</span>
-    </li>
-    <li data-ss-id="page-create-addon">
-      <a href="https://spacesheep.dev/@benmac/rtsim-create-addon">Standalone Create addon</a><span class="date">21 Oct</span>
-      <span class="what">Easy to package, not ready to ship: what releasing the native library and the factory sim as a Create addon involves. You answered all 4: Create: Distant Factories, an alpha on both sites after 14 items, AGPL and MPL, and the repos opened whole.</span>
     </li>
     <li data-ss-id="page-briefing">
       <a href="https://spacesheep.dev/@benmac/oil-coin-ships-and-map">Oil, Coin, Ships and Map</a><span class="date">20 Oct</span>
@@ -267,7 +268,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
   <p class="hold" data-ss-id="release-history"><strong>mic-rtsim's history.</strong> The scan before AD-1 found no secrets, but before mic-rtsim can go public its history needs a rewrite to take out the deploy rehearsal doc, the live server's name and facts from the base. mic-native is clean. Your call at the Create addon's release. <a href="https://spacesheep.dev/@benmac/rtsim-today-2026-10-22#history">On the page</a></p>
 
   <h3 data-ss-id="hold-h">On hold</h3>
-  <p class="hold" data-ss-id="hold-deploy"><strong>9 deploy items (DR1 to DR9)</strong> wait under DR-0 until you restart the server deploy. DR1, an Ice and Fire crash, blocks it; the others are heap, watchdog, deploy order, pack scripts and the glass box setting on the host.</p>
+  <p class="hold" data-ss-id="hold-deploy"><strong>The server deploy (<span class="nowrap">DR-0</span> to DR9)</strong> waits until you lift <span class="nowrap">DR-0</span>. Since the rehearsal, DR1, the Ice and Fire crash that blocked it, is guarded; DR9's cause is bounded, so the glass box should no longer need switching off (not yet confirmed on the world's copy); DR4's pack fixes are mostly in. Yours when you lift it: heap, watchdog, deploy order and three smaller choices (DR2, DR3, DR5 to DR8). A re-rehearsal on today's main comes first. <a href="https://spacesheep.dev/@benmac/rtsim-create-addon#server">On the page</a></p>
 
   <h3 data-ss-id="stand-h">Built on my recommendation; each stands unless you object</h3>
 
