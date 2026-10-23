@@ -1335,6 +1335,8 @@ struct Sea {
     seed: u64,
     on: bool,
     years: u64,
+    /// `blockade_min_open_days` the run used.
+    min_open: f64,
     /// Trade ports with at least one lane (only these can close).
     ports: usize,
     navy_ships: usize,
@@ -1367,9 +1369,21 @@ struct Sea {
 /// than its lanes stayed above a quarter plus the 30-day minimum, one check interval and the
 /// day's sampling.
 fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
+    unattended_with(world, seed, on, years, None)
+}
+
+/// [`unattended`] with `blockade_min_open_days` set to `min_open` (the default when `None`).
+fn unattended_with(
+    world: &'static str,
+    seed: u64,
+    on: bool,
+    years: u64,
+    min_open: Option<f64>,
+) -> Sea {
     let base = ShipTunables::default();
     let tun = ShipTunables {
         blockade_days: if on { base.blockade_days } else { 0.0 },
+        blockade_min_open_days: min_open.unwrap_or(base.blockade_min_open_days),
         ..base
     };
     let (mut w, mut ships, mask, havens): (_, _, Box<dyn rtsim_ships::water::WaterMask>, _) =
@@ -1414,6 +1428,7 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
         years,
         ports: ports.len(),
         navy_ships: navy.len(),
+        min_open: tun.blockade_min_open_days,
         ..Sea::default()
     };
     for &k in &kinds {
@@ -1528,7 +1543,7 @@ fn report_seas(runs: &[Sea]) {
         let longest = s.spells.iter().map(|x| x.0).fold(0.0, f64::max);
         let over = s.spells.iter().map(|x| x.0 - x.1).fold(0.0, f64::max);
         eprintln!(
-            "{} {:>2} closures {:<5} ports {:>2} navy ships {}: blockades {}, closures {}, \
+            "{} {:>2} closures {:<5} min-open {} ports {:>2} navy ships {}: blockades {}, closures {}, \
              reopenings {}, laid up {}, port-days closed {} (engine {}; most closed port \
              {:.3}), longest {longest:.0} days (at most {over:.0} past its hot lanes), ports \
              ever closed {}, days every port closed: sea {} of {} ports (navy sailing {}), sky \
@@ -1537,6 +1552,7 @@ fn report_seas(runs: &[Sea]) {
             s.world,
             s.seed,
             s.on,
+            s.min_open,
             s.ports,
             s.navy_ships,
             s.blockades,
@@ -1685,6 +1701,105 @@ fn seas(threads: usize, seeds: std::ops::RangeInclusive<u64>, years: u64) {
         summary_seas(w, &on, &off);
         check_seas(&on, &off);
     }
+}
+
+/// One `blockade_min_open_days` value's seas together (PC99): closures per sea per decade, the
+/// closed spells' mean and longest, the share of port-days closed and the most closed single
+/// port's share, the sea-days with every sea port or every sky port of a sea closed at once,
+/// the havens' open share (mean and lowest sea) and hunts per sea-year. Returns the most closed
+/// port's share.
+fn summary_min_open(min_open: f64, on: &[Sea]) -> f64 {
+    let n = on.len() as f64;
+    let years = on.first().map_or(0, |s| s.years);
+    let sum = |f: &dyn Fn(&Sea) -> f64| on.iter().map(f).sum::<f64>();
+    let spells: Vec<f64> = on
+        .iter()
+        .flat_map(|s| s.spells.iter().map(|x| x.0))
+        .collect();
+    let mean = if spells.is_empty() {
+        0.0
+    } else {
+        spells.iter().sum::<f64>() / spells.len() as f64
+    };
+    let longest = spells.iter().copied().fold(0.0, f64::max);
+    let port_days = sum(&|s| (s.ports as u64 * s.years * YEAR) as f64);
+    let worst = on.iter().map(|s| s.worst_port).fold(0.0, f64::max);
+    let lowest_open = on.iter().map(|s| s.open).fold(f64::INFINITY, f64::min);
+    eprintln!(
+        "MINOPEN {min_open}: {} seas, {years} years each: closures per sea per decade {:.3}, \
+         closed spell mean {mean:.1} days, longest {longest:.0}; port-days closed {:.5}, most \
+         closed port {worst:.3}; sea-days every sea port closed {} (seas {}), every sky port \
+         closed {} (seas {}); havens open {:.3} (lowest sea {lowest_open:.3}); hunts per \
+         sea-year {:.2}",
+        on.len(),
+        sum(&|s| s.closures as f64) * 10.0 / (n * years as f64),
+        sum(&|s| s.closed_days as f64) / port_days,
+        sum(&|s| s.all_closed[0] as f64),
+        on.iter().filter(|s| s.all_closed[0] > 0).count(),
+        sum(&|s| s.all_closed[1] as f64),
+        on.iter().filter(|s| s.all_closed[1] > 0).count(),
+        sum(&|s| s.open) / n,
+        sum(&|s| s.hunts as f64) / (n * years as f64),
+    );
+    worst
+}
+
+/// The `blockade_min_open_days` sweep (PC99): `synth::sea_havens`, seeds 1 to 30, ten centuries
+/// with nobody watching, the defaults (navy assaults and port raids on) with min-open 0, 48, 96
+/// and 192 days. Prints each run, each value's summary and the rule's pick: the smallest value
+/// whose most closed port spends at most a quarter of the days closed, else 192. Release only
+/// (`nice -n 10 cargo test --release -p rtsim-ships --test blockade -- --ignored --exact
+/// blockade_min_open_sweep --nocapture`); `MIN_OPEN_THREADS` sets the threads (default 10).
+#[test]
+#[ignore = "long: run in release with --ignored"]
+fn blockade_min_open_sweep() {
+    let values = [0.0, 48.0, 96.0, 192.0];
+    let threads = std::env::var("MIN_OPEN_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let years = std::env::var("MIN_OPEN_YEARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+    let jobs: Vec<(u64, f64)> = (1..=30u64)
+        .flat_map(|s| values.iter().map(move |&m| (s, m)))
+        .collect();
+    let all = per_job(threads, &jobs, |&(s, m)| {
+        let t0 = std::time::Instant::now();
+        let r = unattended_with("sea_havens", s, true, years, Some(m));
+        eprintln!("done sea_havens {s} min-open {m} in {:.0?}", t0.elapsed());
+        r
+    });
+    report_seas(&all);
+    let mut pick = None;
+    for m in values {
+        let on: Vec<Sea> = all.iter().filter(|s| s.min_open == m).cloned().collect();
+        let worst = summary_min_open(m, &on);
+        if pick.is_none() && worst <= 0.25 {
+            pick = Some(m);
+        }
+    }
+    for seed in [30, 21, 17, 14] {
+        for s in all.iter().filter(|s| s.seed == seed) {
+            eprintln!(
+                "SEED {seed} min-open {}: closures {}, port-days closed {} of {}, most closed \
+                 port {:.3}, every sky port closed {} days, havens open {:.3}, hunts/yr {:.1}",
+                s.min_open,
+                s.closures,
+                s.closed_days,
+                s.ports as u64 * s.years * YEAR,
+                s.worst_port,
+                s.all_closed[1],
+                s.open,
+                s.hunts as f64 / s.years as f64,
+            );
+        }
+    }
+    eprintln!(
+        "PICK: {}",
+        pick.map_or("none at or below 0.25: 192".into(), |m| format!("{m}"))
+    );
 }
 
 /// Rule 7 on many seas: `synth::sea_havens` and `synth::coastal`, seeds 1 to 30, a century with
