@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -34,6 +35,12 @@ import java.util.UUID;
  *   <li>{@code rescan}, {@code perf}.</li>
  * </ul>
  * No new items or blocks (D3). Every edit is an IND_EDIT (aux 4, command) for the districts it touches.
+ *
+ * <p>{@code rescan}, {@code merge}, {@code split}, {@code exclude} and {@code include} record their edit at once and
+ * then ask for a full detection of the dimension that runs over the next ticks like a ticked one, a block entity
+ * budget a tick (DS-16, SG60). Each says so when it replies, and says again, in the same chat or console and in the
+ * server log, when the districts have changed. A source that cannot hear later (an RCON client) reads the log or
+ * {@code perf}.
  */
 public final class IndustryCommands {
     private IndustryCommands() {}
@@ -86,6 +93,22 @@ public final class IndustryCommands {
 
     private static void say(CommandContext<CommandSourceStack> ctx, String text) {
         ctx.getSource().sendSuccess(() -> Component.literal(text), false);
+    }
+
+    /**
+     * The edit is recorded; the districts change when a full detection of the source's dimension has run over the
+     * next ticks (DS-16). Says so now, and {@code done} (what the districts are then) when it is, to the source
+     * and to the log.
+     */
+    private static void detectThenSay(CommandContext<CommandSourceStack> ctx, Industry ind, ServerLevel level, String now,
+                                      java.util.function.Supplier<String> done) {
+        CommandSourceStack src = ctx.getSource();
+        say(ctx, now + "; the detection runs over the next ticks and the result follows");
+        ind.districts.rescanSoon(level, () -> {
+            String text = done.get();
+            MicRtsim.LOGGER.info("[industry] {}", text);
+            src.sendSuccess(() -> Component.literal(text), false);
+        });
     }
 
     private static UUID player(CommandContext<CommandSourceStack> ctx) {
@@ -177,9 +200,12 @@ public final class IndustryCommands {
         ind.districts.edit(b, IndRecords.Edit.COMMAND, player(ctx), net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition()));
         ind.data.setDirty();
         ServerLevel level = ind.level(a.dim);
-        if (level != null)
-            ind.districts.rescanNow(level);
-        say(ctx, "mic_rtsim: merged; " + ind.districts.all().size() + " districts now");
+        if (level == null) {
+            say(ctx, "mic_rtsim: merge recorded; the dimension is not loaded, the next detection joins them");
+            return 1;
+        }
+        detectThenSay(ctx, ind, level, "mic_rtsim: merge recorded",
+                () -> "mic_rtsim: merged; " + ind.districts.all().size() + " districts now");
         return 1;
     }
 
@@ -201,8 +227,9 @@ public final class IndustryCommands {
             }
         ind.districts.edit(d, IndRecords.Edit.COMMAND, player(ctx), net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition()));
         ind.data.setDirty();
-        ind.districts.rescanNow(ctx.getSource().getLevel());
-        say(ctx, "mic_rtsim: " + n + " chunks split off as district " + id);
+        int chunks = n;
+        detectThenSay(ctx, ind, ctx.getSource().getLevel(), "mic_rtsim: " + n + " chunks pinned as district " + id,
+                () -> "mic_rtsim: " + chunks + " chunks split off as district " + id + "; " + ind.districts.all().size() + " districts now");
         return n;
     }
 
@@ -222,8 +249,9 @@ public final class IndustryCommands {
             ind.districts.edit(d, IndRecords.Edit.COMMAND, player(ctx), net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition()));
         ind.data.setDirty();
         ind.districts.markDirty(level.dimension(), here.toLong());
-        ind.districts.rescanNow(level);
-        say(ctx, "mic_rtsim: chunk " + here + (exclude ? " is in no district now" : " is detected again"));
+        detectThenSay(ctx, ind, level, "mic_rtsim: chunk " + here + (exclude ? " is excluded" : " is released"),
+                () -> "mic_rtsim: chunk " + here + (exclude ? " is in no district now" : " is detected again") + "; "
+                        + ind.districts.all().size() + " districts now");
         return 1;
     }
 
@@ -243,8 +271,9 @@ public final class IndustryCommands {
         Industry ind = industry(ctx);
         if (ind == null)
             return 0;
-        ind.districts.rescanNow(ctx.getSource().getLevel());
-        say(ctx, "mic_rtsim: " + ind.districts.all().size() + " districts; last detection " + ind.districts.lastRescanNanos / 1000 + " us");
+        detectThenSay(ctx, ind, ctx.getSource().getLevel(), "mic_rtsim: " + ind.districts.all().size() + " districts",
+                () -> "mic_rtsim: " + ind.districts.all().size() + " districts; the detection took " + ind.districts.lastRescanNanos / 1000
+                        + " us of work over " + ind.districts.lastRescanSlices + " ticks (" + ind.districts.lastRescanPhases() + ")");
         return 1;
     }
 
@@ -257,8 +286,10 @@ public final class IndustryCommands {
         PlayerPorts p = ind.ports;
         say(ctx, String.join("\n",
                 "districts: " + ind.districts.all().size() + "; detections " + ind.districts.rescans + " (" + ind.districts.rescanNanos / 1000
-                        + " us in all, last " + ind.districts.lastRescanNanos / 1000 + " us over " + ind.districts.lastRescanSlices + " ticks, longest tick "
-                        + ind.districts.maxSliceNanos / 1000 + " us: " + ind.districts.maxSliceWhat + "), declarations " + ind.districts.declared,
+                        + " us in all, last " + ind.districts.lastRescanNanos / 1000 + " us over " + ind.districts.lastRescanSlices + " ticks ("
+                        + ind.districts.lastRescanPhases() + "), longest tick " + ind.districts.maxSliceNanos / 1000 + " us: "
+                        + ind.districts.maxSliceWhat + "), declarations " + ind.districts.declared + ", detection "
+                        + (ind.districts.rescanning() ? "under way or waiting" : "idle"),
                 "sweeps: " + s.sweeps + " (" + s.liveSweeps + " live), inventories read " + s.inventoriesRead + ", slots " + s.slotsRead
                         + ", read time " + s.readNanos / 1000 + " us (slowest inventory " + s.maxInventoryNanos / 1000 + " us), records "
                         + s.recordsSent + " sent, " + s.recordsDropped + " dropped",
