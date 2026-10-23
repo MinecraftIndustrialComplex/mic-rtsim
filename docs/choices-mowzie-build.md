@@ -689,6 +689,17 @@ under its own heading.
   stacks kept by a session start are dropped at `replay_done`. Test: the same player's killing of a
   recalled band ingested live and by a restart (casualties, alive, breaker, grievance equal and
   not zero), the despawn after it and a straggler after that; fails on the old rule (casualties 0).
+- **MZB-143** (a tribute to a bored envoy on its way home; re-review P2-3, a regression of
+  MZB-137): MZB-137 found the envoy's demand through `parties[p].feud`, but `go_home` clears an
+  envoy's feud (it serves no feud while it walks home), so a payment to an envoy that got bored and
+  left with its demand still open was a gift: the demand ran out and the feud climbed, though the
+  player had paid. `pay_tribute` now finds the demand that names the envoy (`demand.envoy ==
+  Some(p)`) among the faction's feuds, so it needs no feud on the party; a payment to an envoy whose
+  demand is over (settled, expired, withdrawn) still names none and stays a gift (MZB-137's rule,
+  tested as before). The scan is over one faction's feuds, once per payment. Test: an impatient
+  culture (patience 1 day), the envoy leaves bored with the demand open, 6,600 ticks before its
+  deadline, and a full payment to it settles PAID as a tribute, not a gift; on the MZB-137 lookup it
+  was a gift and nothing settled.
 
 ## M4 Camp reconciler, engine
 

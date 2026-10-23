@@ -1846,6 +1846,48 @@ fn a_late_tribute_to_an_envoy_does_not_settle_the_settlers_demand() {
     assert_eq!(settled(&r).last(), Some(&boundary::SETTLED_PAID));
 }
 
+/// Goblins of a short patience that never plunder: an envoy gets bored a day after it arrives.
+fn impatient_goblins() -> Cultures {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.patience_days = 1.0;
+    Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
+}
+
+/// MZB-143 (re-review P2-3): a tribute paid to a bored envoy on its way home, its demand still
+/// open, settles that demand. `go_home` clears the envoy's `feud`, and the lookup MZB-137 added
+/// went through it, so the payment was a gift and the demand ran out and climbed.
+#[test]
+fn a_tribute_to_a_bored_envoy_on_its_way_home_settles_its_open_demand() {
+    let mut r = Run::new(36, impatient_goblins());
+    let e = envoy_met(&mut r);
+    let d = r.c.feud(r.f, r.p).unwrap().demand.unwrap();
+    let band = Party::of_agent(e.agent).unwrap();
+    // The player does not answer: the envoy gets bored and starts home with the demand open.
+    r.watch = false;
+    let limit = d.deadline;
+    while r.c.parties[band].phase != Phase::Home {
+        assert!(r.c.now() < limit, "the envoy never left");
+        r.run(r.c.now() + 600);
+    }
+    assert_eq!(r.c.parties[band].feud, None, "going home clears its feud");
+    let open =
+        r.c.feud(r.f, r.p)
+            .unwrap()
+            .demand
+            .expect("the demand is open");
+    assert_eq!(open.envoy, Some(band));
+    let before = d.deadline.since(r.c.now());
+    assert!(before > 1_000, "well before the deadline ({before} ticks)");
+    let (tributes, gifts) = (r.c.stats.tributes, r.c.stats.gifts);
+    let at = r.c.now() + 10;
+    pay_to(&mut r, e.agent, e.epoch, d.tribute as i32, d.good, 91, at);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_PAID], "paid");
+    assert_eq!(r.c.stats.tributes, tributes + 1, "a tribute");
+    assert_eq!(r.c.stats.gifts, gifts, "not a gift");
+    assert!(r.c.feud(r.f, r.p).unwrap().demand.is_none());
+}
+
 fn tmpdir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!(
         "rtsim-conflict-mowzie-{tag}-{}-{:?}",
