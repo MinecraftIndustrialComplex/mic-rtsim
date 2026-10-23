@@ -2574,6 +2574,77 @@ mod ships {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// U7, PC103: a phase 1 input from a latest-state record runs the modules to its time first,
+    /// so the world never runs ahead of the ships in normal running and nothing there is taken for
+    /// missed while the ships were off. A hand-over that spans several ticks (the engine's last
+    /// step not yet published, so Java waited to submit) carries a census that changes a village's
+    /// golems: the port check due inside it is decided at its time, as in the same hand-over
+    /// without the census, and the next is booked a check interval after it.
+    #[test]
+    fn a_census_in_a_long_hand_over_leaves_the_ships_their_port_check() {
+        let mut arms = Vec::new();
+        for with_census in [false, true] {
+            let dir = tmpdir(if with_census {
+                "ships-census-on"
+            } else {
+                "ships-census-off"
+            });
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            coast(&mut j);
+            // A quarter of a day a hand-over until a port has a check booked well ahead.
+            let next_check = |e: &Engine| {
+                e.with_ships(|s, _| {
+                    let now = s.now();
+                    s.ports
+                        .iter()
+                        .filter_map(|(d, p)| p.check.map(|t| (t, *d)))
+                        .filter(|(t, _)| t.0 > now.0 + 10)
+                        .min()
+                })
+            };
+            let mut due = None;
+            for _ in 0..4 * 60 {
+                j.game_time += rtsim_kernel::clock::TICKS_PER_DAY as i64 / 4;
+                j.flush();
+                due = next_check(&e);
+                if due.is_some() {
+                    break;
+                }
+            }
+            let (t, d) = due.expect("a port check is booked");
+            // The world's tick for a game time (the test offset, 0 here).
+            let offset = e.with_ships(|_, w| w.now().0) as i64 - (j.game_time - 1);
+            // Hand-overs to two ticks before the check, then one of three ticks across it.
+            j.game_time = t.0 as i64 - offset - 2;
+            j.flush();
+            let before = e.ship_stats().0.port_checks;
+            j.game_time = t.0 as i64 - offset + 1;
+            if with_census {
+                j.census(VILLAGES[0].0, 0, 1);
+            }
+            j.flush();
+            let (checks, check, now) = e.with_ships(|s, w| {
+                (
+                    s.stats.port_checks,
+                    s.ports.get(&d).and_then(|p| p.check),
+                    (s.now(), w.now()),
+                )
+            });
+            assert_eq!(now.0, now.1, "census {with_census}: one clock");
+            assert!(
+                checks > before,
+                "census {with_census}: the check due at {t:?} was not decided ({check:?})"
+            );
+            e.with_ships(|s, w| s.check(w)).expect("the ships check");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            arms.push((t, d, checks - before, check));
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+        assert_eq!(arms[0], arms[1], "a census changes no port check");
+    }
+
     /// One interest area per player across the modules (U2): with a dragon at rest by the lane
     /// and the ships sailing it, the player reported every 20 ticks has one leg in the shared
     /// index, and both the dragon and a ship enter the player's view through it.

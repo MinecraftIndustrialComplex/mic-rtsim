@@ -1784,9 +1784,12 @@ fn a_long_switch_off_decides_nothing_in_the_missed_time() {
                     p.closed.is_none() && p.blockaded.is_none() && p.reopened.is_none(),
                     "seed {seed}: dock {d} {p:?}"
                 );
-                assert!(
-                    p.check.is_some_and(|t| t >= on),
-                    "seed {seed}: dock {d}'s check in the missed time: {p:?}"
+                // Every check was booked before the switch-off, so each fell in the missed
+                // time and comes again exactly a check interval after the switch-on (PC103).
+                assert_eq!(
+                    p.check,
+                    Some(on + 6 * TICKS_PER_DAY),
+                    "seed {seed}: dock {d}'s check is not an interval after the switch-on: {p:?}"
                 );
             }
             assert_eq!(

@@ -55,7 +55,7 @@ use rtsim_world::bases::CaravanRef;
 use rtsim_world::works::{self, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant};
 use rtsim_world::{CaravanId, Command, Visible, World, WorldConfig, identity_op};
 
-use super::{State, log_info, log_warn};
+use super::{State, log_info, log_warn, shared};
 use crate::orders::{
     GossipCmd, ItemOrder, MarketCmd, MarketGood, MemberOrder, OfferCmd, OffersCmd, Order,
     PlaceHouseCmd, SentimentCmd, SpawnResidentCmd,
@@ -1034,16 +1034,15 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 log_warn("phase 1: a malformed WORK_CATALOG was ignored");
                 return;
             };
-            let l = &mut st.phase1;
-            if defs != l.world.works_catalog {
+            if defs != st.phase1.world.works_catalog {
                 // Taken while switched off too, at the frozen clock (as HOUSE_PLACED, PR13): the
                 // catalogue is sent once a session.
-                let at = if l.enabled {
-                    l.wt(st.game_time)
+                if st.phase1.enabled {
+                    input_now(st, Input::Works { defs });
                 } else {
-                    l.world.now().0
-                };
-                l.input(Input::Works { defs }, at);
+                    let at = st.phase1.world.now().0;
+                    st.phase1.input(Input::Works { defs }, at);
+                }
                 take_world_commands(st);
             }
         }
@@ -1066,26 +1065,37 @@ fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
         return;
     };
     if l.world.golems(i) != golems {
-        let at = l.wt(st.game_time);
-        l.input(Input::Golems { key, golems }, at);
+        input_now(st, Input::Golems { key, golems });
     }
     if residents == 0 {
         return;
     }
+    let l = &mut st.phase1;
     let pop = l.world.nodes[i].local.pop;
     // The first census is logged even when it changes nothing: the log is what tells a later
     // session which villages had theirs.
     let first = l.censused.insert(key);
     if first || residents > pop {
-        let at = l.wt(st.game_time);
-        l.input(
+        input_now(
+            st,
             Input::Population {
                 key,
                 pop: residents,
             },
-            at,
         );
     }
+}
+
+/// An input from a latest-state record (a census, the works catalogue), at the hand-over's game
+/// time. The modules that share the world run to it first (U7, as [`shared::catch_up`] does for a
+/// journaled record): the input runs the world to its time, and a module whose events in a
+/// hand-over of several ticks had not run yet would meet a world already past them, which the
+/// ships take for time they missed while switched off (PC103) and the world for a change before
+/// its anchor.
+fn input_now(st: &mut State, input: Input) -> log::Applied {
+    let at = st.phase1.wt(st.game_time);
+    shared::run_to(st, Tick(at));
+    st.phase1.input(input, at)
 }
 
 /// The works catalogue a WORK_CATALOG record holds (docs/boundary.md §4.1, SINK.md §4.2), its
