@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, Party, Phase, Signal, Target};
-use rtsim_conflict::synth::{self, FakeConflict};
+use rtsim_conflict::engine::{Conflict, Demand, Party, Phase, Signal, Target, body_id, item_of};
+use rtsim_conflict::synth::{self, Answer, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures, Step};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -1202,4 +1202,764 @@ fn a_rout_is_one_rescue_report_that_every_hater_in_range_witnesses() {
             "a village that does not hate goblins only hears it later"
         );
     }
+}
+
+// ---- the review of M3 items 12 and 13 (MZB-133 to MZB-138) -------------------------------------
+
+/// TRIBUTE_PAID: `count` of `good` paid by the player to `agent` (0: at the camp).
+fn pay_to(r: &mut Run, agent: u64, epoch: u32, count: i32, good: GoodId, op: u64, at: Tick) {
+    r.ingest(
+        Obs::TributePaid(boundary::TributePaid {
+            faction: synth::CAMP,
+            agent,
+            epoch,
+            player: synth::PLAYER,
+            op,
+            items: vec![boundary::Item {
+                item: item_of(good),
+                count,
+            }],
+        }),
+        at,
+    );
+    r.flush(at);
+}
+
+/// ENVOY_ANSWER from the player at `e`.
+fn answer_to(r: &mut Run, e: &boundary::EnvoyMaterialize, answer: u32, at: Tick) {
+    r.ingest(
+        Obs::EnvoyAnswer(boundary::EnvoyAnswer {
+            agent: e.agent,
+            epoch: e.epoch,
+            answer,
+            player: synth::PLAYER,
+        }),
+        at,
+    );
+    r.flush(at);
+}
+
+/// The targets of the scouts the feud has sent.
+fn scout_targets(r: &Run) -> Vec<Target> {
+    r.c.parties
+        .iter()
+        .filter(|(_, x)| x.kind == PartyKind::Scouts)
+        .map(|(_, x)| x.target)
+        .collect()
+}
+
+/// MZB-133 (review item 1): an insult answer (the player attacks the envoy) is a killing at
+/// the envoy's own place, against its target's district, as the killing of one of its members
+/// is. It used to be at the faction's own camp with no district, which a feud whose focus had no
+/// district took for its new focus: the refusal's scouts then went to their own camp.
+#[test]
+fn an_insult_answer_keeps_the_scouts_aimed_at_the_demands_target() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.answer = Answer::Ignore;
+    let e = envoy_met(&mut r);
+    // The killing goes on, so the refusal's grievance reaches the scouts' rung.
+    let at = r.c.now() + 1;
+    r.kill(60.0, at);
+    answer_to(&mut r, &e, boundary::ANSWER_ATTACKED, at + 5);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
+    assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 1, "it climbed");
+    let focus = r.c.feud(r.f, r.p).unwrap().focus.unwrap();
+    assert_eq!(
+        focus.district,
+        Some(synth::REFINERY),
+        "the demand's district"
+    );
+    assert_ne!(focus.pos, synth::CAMP_POS, "not the camp's own place");
+    let targets = scout_targets(&r);
+    assert!(!targets.is_empty(), "scouts were sent");
+    for t in targets {
+        assert!(
+            matches!(t, Target::District(d, _) if d == synth::REFINERY),
+            "the scouts go where the demand pointed, not to their camp: {t:?}"
+        );
+    }
+}
+
+/// The same for a feud whose focus has no district (the killings were in the wild): the insult
+/// is where the envoy stood, so the focus does not move to the camp and the scouts do not go
+/// there either.
+#[test]
+fn an_insult_answer_on_a_districtless_focus_does_not_point_at_the_camp() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.watch = true;
+    let wild = |n: f64, a: ActorId| Signal {
+        faction: Some(synth::CAMP),
+        kind: SignalKind::Killing,
+        amount: n,
+        actor: a,
+        pos: synth::REFINERY_POS,
+        district: None,
+    };
+    let p = r.p;
+    r.c.signal(&mut r.w, wild(7.0, p), Tick(10));
+    let mut t = r.c.now();
+    let e = loop {
+        t += 600;
+        assert!(t < day(4.0), "no envoy met the player");
+        r.run(t);
+        if let Some(e) = r.cmds.iter().find_map(|(_, c)| match c {
+            Cmd::Envoy(e) => Some(e.clone()),
+            _ => None,
+        }) {
+            break e;
+        }
+    };
+    let at = r.c.now() + 5;
+    r.c.signal(&mut r.w, wild(20.0, p), at);
+    assert!(
+        r.c.feud(r.f, r.p)
+            .unwrap()
+            .focus
+            .unwrap()
+            .district
+            .is_none()
+    );
+    answer_to(&mut r, &e, boundary::ANSWER_ATTACKED, at + 5);
+    let focus = r.c.feud(r.f, r.p).unwrap().focus.unwrap();
+    assert_ne!(
+        focus.pos,
+        synth::CAMP_POS,
+        "the focus did not move to the camp"
+    );
+    let targets = scout_targets(&r);
+    assert!(!targets.is_empty(), "scouts were sent");
+    assert!(
+        !targets.contains(&Target::Pos(synth::CAMP_POS)),
+        "the scouts do not go to their own camp: {targets:?}"
+    );
+}
+
+/// An attack is still a refusal with an insult on top of it: two killings' worth more grievance
+/// than a plain refusal, and no other difference in the outcome.
+#[test]
+fn an_insult_answer_adds_the_insult_to_a_refusal() {
+    let run = |answer: Answer| {
+        let mut r = Run::new(36, quiet_goblins());
+        r.plugin.answer = answer;
+        let _ = envoy_met(&mut r);
+        let t = r.c.now() + 400;
+        r.run(t);
+        let lambda = r.c.cultures.get(0).lambda;
+        let g = r.c.feud(r.f, r.p).unwrap().g.total_at(t, lambda);
+        (settled(&r), g)
+    };
+    let (s_ref, g_ref) = run(Answer::Refuse);
+    let (s_att, g_att) = run(Answer::Attack);
+    assert_eq!(s_ref, vec![boundary::SETTLED_REFUSED]);
+    assert_eq!(s_att, vec![boundary::SETTLED_REFUSED]);
+    let weight = quiet_goblins().get(0).signals[SignalKind::Killing.index()].weight;
+    let insult = g_att - g_ref;
+    assert!(
+        insult > 1.9 * weight && insult <= 2.0 * weight + 1e-9,
+        "the insult is envoy_insult_kills killings: {g_ref} to {g_att} (weight {weight})"
+    );
+}
+
+/// A raid band on the way, ordered at `Tick(20)` after two killings.
+fn raid_band(r: &mut Run) -> Handle<Party> {
+    r.kill(2.0, Tick(10));
+    r.c.order_party(
+        &mut r.w,
+        synth::CAMP,
+        PartyKind::Raid,
+        Target::District(synth::REFINERY, synth::REFINERY_POS),
+        Some(r.p),
+        Tick(20),
+    )
+    .unwrap()
+}
+
+/// BAND_DEMATERIALIZED for `band` at `epoch`: every member survives but `dead` of the first
+/// stack (the walk-off's deaths).
+fn despawn_with(r: &Run, band: Handle<Party>, epoch: u32, dead: u32) -> Obs {
+    let c = r.c.cultures.get(0).clone();
+    let survivors = r.c.parties[band]
+        .units
+        .iter()
+        .enumerate()
+        .map(|(i, &(u, n))| {
+            let n = if i == 0 { n.saturating_sub(dead) } else { n };
+            (body_id(&r.c.cultures, &c.unit(u).body), n)
+        })
+        .collect();
+    Obs::Dematerialized(boundary::BandDematerialized {
+        agent: Party::agent(band),
+        epoch,
+        reason: boundary::RECALL_PASSING,
+        survivors,
+    })
+}
+
+/// A restart: the engine as the pages saved it, loaded again, in its next session.
+fn restarted(r: &Run) -> Conflict {
+    let mut c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    c.session_start();
+    c
+}
+
+/// MZB-138 (review item 2, older than item 12): a band was recalled with RECALL_PASSING before
+/// the last save, its despawn (BAND_DEMATERIALIZED) came after it, in the journal. The restart
+/// replays that record, and the members who died on the walk-off are still dead: the session
+/// start used to clear `recalled`, so the replayed despawn was stale and they came back.
+#[test]
+fn a_replayed_despawn_after_a_restart_takes_the_walk_off_dead() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch
+    };
+    let alive = r.c.parties[band].alive();
+    let o = despawn_with(&r, band, epoch, 2);
+    let mut same = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    let mut back = restarted(&r);
+    assert_eq!(same.parties[band].recalled.len(), 1, "the entry is saved");
+    assert_eq!(
+        back.parties[band].recalled.len(),
+        1,
+        "and a restart keeps it"
+    );
+    let at = r.c.now() + 1;
+    same.ingest(&mut r.w, &mut NoInfrastructure, &o, at);
+    back.ingest(&mut r.w, &mut NoInfrastructure, &o, at);
+    assert_eq!(
+        same.parties[band].alive(),
+        alive - 2,
+        "the session that went on"
+    );
+    assert_eq!(
+        back.parties[band].alive(),
+        alive - 2,
+        "the restart's replay"
+    );
+    assert!(back.parties[band].recalled.is_empty(), "the entry is spent");
+}
+
+/// MZB-138: what no replayed record counted is dropped when the replay has caught up (the host's
+/// `resend_notices`): those bodies are gone with the last session and their members count as
+/// alive, as they always did; a despawn that comes after that is stale.
+#[test]
+fn the_stacks_a_restart_kept_are_dropped_when_the_replay_has_caught_up() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch
+    };
+    let alive = r.c.parties[band].alive();
+    let mut back = restarted(&r);
+    assert!(back.replaying);
+    back.resend_notices();
+    assert!(!back.replaying);
+    assert!(
+        back.parties[band].recalled.is_empty(),
+        "nothing left to count"
+    );
+    assert_eq!(back.parties[band].alive(), alive);
+    let at = r.c.now() + 1;
+    let despawn = despawn_with(&r, band, epoch, 2);
+    back.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    assert_eq!(
+        back.parties[band].alive(),
+        alive,
+        "a despawn after that is stale"
+    );
+}
+
+/// MZB-138: a band in Minecraft when the pages were saved, its casualties and then its despawn
+/// journaled after. The restart's replay counts them as the session that went on counts them:
+/// the bodies the pages held in the world are a recalled stack of their epoch for the replayed
+/// records.
+#[test]
+fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch
+    };
+    let alive = r.c.parties[band].alive();
+    assert!(alive >= 4, "a band to lose members from ({alive})");
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    let casualty = Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_MOB,
+        body,
+        count: 1,
+        killer: (0, 0),
+    });
+    let mut same = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    let mut back = restarted(&r);
+    assert_eq!(
+        back.parties[band].recalled,
+        vec![(epoch, r.c.parties[band].spawned.clone())],
+        "the bodies in the world are kept for the replay"
+    );
+    assert!(!back.parties[band].embodied);
+    assert!(back.parties[band].spawned.is_empty());
+    // One death reported, then one more that died unreported before the chunks unloaded.
+    let despawn = despawn_with(&r, band, epoch, 2);
+    for c in [&mut same, &mut back] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &casualty, r.c.now() + 1);
+        c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, r.c.now() + 2);
+    }
+    assert_eq!(
+        same.parties[band].alive(),
+        alive - 2,
+        "the session that went on"
+    );
+    assert_eq!(
+        back.parties[band].alive(),
+        alive - 2,
+        "the restart's replay"
+    );
+    assert_eq!(same.stats.casualties, 1);
+    assert_eq!(back.stats.casualties, 1, "counted once");
+    assert!(back.parties[band].recalled.is_empty());
+    back.resend_notices();
+    assert_eq!(
+        back.parties[band].alive(),
+        alive - 2,
+        "kept after the replay"
+    );
+}
+
+/// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
+/// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
+/// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
+/// raid; it used to climb on Peaceful, counted its escalation and mustered a band.
+#[test]
+fn a_refusal_on_peaceful_is_recorded_and_its_climb_to_war_waits_for_normal() {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.parties.insert("scouts".into(), vec![]);
+    let cultures = Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap();
+    let mut r = Run::new(36, cultures);
+    r.plugin.answer = Answer::Ignore;
+    let e = envoy_met(&mut r);
+    r.kill(40.0, r.c.now() + 20);
+    r.watch = false;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), r.c.now() + 1);
+    let at = r.c.now() + 5;
+    answer_to(&mut r, &e, boundary::ANSWER_REFUSED, at);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED], "recorded");
+    assert_eq!(r.step(), Step::Envoy, "the feud stays where it is");
+    assert_eq!(r.c.stats.escalations[Step::Raid.index()], 0, "no war climb");
+    assert_eq!(r.war_parties(), 0, "no band mustered on Peaceful");
+    // Peaceful goes on, the killing too: nothing leaves.
+    let more = r.c.now() + 4 * TICKS_PER_DAY;
+    while r.c.now() < more {
+        let t = r.c.now() + TICKS_PER_DAY / 2;
+        r.kill(10.0, t);
+        r.run(t + 10);
+    }
+    assert_eq!(r.step(), Step::Envoy);
+    assert_eq!(r.war_parties(), 0);
+    // Normal: the held climb comes, after its dwell.
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), r.c.now() + 10);
+    let end = r.c.now() + 12 * TICKS_PER_DAY;
+    while r.c.now() < end && r.step() == Step::Envoy {
+        let t = r.c.now() + TICKS_PER_DAY / 2;
+        r.kill(10.0, t);
+        r.run(t + 10);
+    }
+    assert_eq!(r.step(), Step::Raid, "the climb comes with Normal");
+    assert_eq!(r.c.stats.escalations[Step::Raid.index()], 1);
+}
+
+/// The scouts are not war (MZB-132): a refusal on Peaceful still climbs to them, as a feud at the
+/// notice does. A fork, kept: only a war rung or the Envoy is held.
+#[test]
+fn a_refusal_on_peaceful_still_climbs_to_the_scouts() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.answer = Answer::Ignore;
+    let e = envoy_met(&mut r);
+    r.kill(20.0, r.c.now() + 20);
+    r.watch = false;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), r.c.now() + 1);
+    let at = r.c.now() + 5;
+    answer_to(&mut r, &e, boundary::ANSWER_REFUSED, at);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
+    assert_eq!(r.step(), Step::Scouts);
+    assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 1);
+}
+
+/// MZB-135 (review item 4): Peaceful entered and left on the same tick pauses nothing and
+/// jitters nothing: a feud held at its notice keeps its dwell clock. (A span of any length
+/// does move it, the control here.) The walk-off of an envoy in view on entering stays.
+#[test]
+fn peaceful_on_and_off_in_one_tick_leaves_a_held_feuds_dwell_alone() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(2.0, Tick(10));
+    r.run(day(3.0));
+    assert_eq!(
+        r.step(),
+        Step::Notice,
+        "held below the envoy by its grievance or dwell"
+    );
+    // Let the clock sit well past its dwell, so a jitter would show.
+    let since = r.c.feud(r.f, r.p).unwrap().since;
+    let at = r.c.now() + 1;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), at);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), at);
+    assert_eq!(r.c.peaceful_since, at);
+    assert_eq!(
+        r.c.feud(r.f, r.p).unwrap().since,
+        since,
+        "a span of no time moves no dwell"
+    );
+    // The control: the same feud over a span of 1,000 ticks does move.
+    let on = at + 100;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), on);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), on + 1_000);
+    assert_ne!(
+        r.c.feud(r.f, r.p).unwrap().since,
+        since,
+        "a span of some time does (the test is not vacuous)"
+    );
+}
+
+/// The envoy in view on a zero-tick Peaceful still walks off (RECALL_PASSING), and its deadline
+/// does not move.
+#[test]
+fn an_envoy_in_view_still_walks_off_for_a_peaceful_of_no_time() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let d0 = r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline;
+    let from = r.cmds.len();
+    let at = r.c.now() + 1;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), at);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), at);
+    r.flush(at);
+    assert_eq!(r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline, d0);
+    let recalls: Vec<u32> = r.cmds[from..]
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Cmd::Recall(x) if x.agent == e.agent => Some(x.reason),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(recalls, vec![boundary::RECALL_PASSING]);
+}
+
+/// MZB-136 (review item 5): leaving Peaceful moves a waiting envoy's patience by the part of the
+/// span it spent waiting. One waiting when Peaceful began waited all of it; one on its road
+/// arrived part way through (its patience started then) and waited from its arrival.
+fn bored_over_peaceful(seed: u64, phase: Phase) {
+    let mut r = Run::new(seed, quiet_goblins());
+    r.kill(7.0, Tick(10));
+    let mut t = r.c.now();
+    let band = loop {
+        t += 100;
+        assert!(t < day(4.0), "no envoy reached {phase:?}");
+        r.run(t);
+        if let Some((h, ph)) = envoy_of(&r)
+            && ph == phase
+        {
+            break h;
+        }
+    };
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), r.c.now() + 1);
+    let since = r.c.peaceful_since;
+    r.kill(1.0, r.c.now() + 5);
+    // An envoy on its road arrives, still on Peaceful, and waits.
+    let limit = r.c.now() + 20 * TICKS_PER_DAY;
+    while r.c.parties[band].phase != Phase::Waiting {
+        assert!(r.c.now() < limit, "the envoy never arrived");
+        r.run(r.c.now() + TICKS_PER_DAY / 4);
+    }
+    let x = &r.c.parties[band];
+    assert_eq!(x.phase, Phase::Waiting);
+    let arrived = x.times.last().copied().unwrap();
+    let bored = x.bored_at;
+    let waited_from = arrived.max(since);
+    if phase == Phase::Out {
+        assert!(
+            arrived > since,
+            "it arrived on Peaceful ({arrived:?} after {since:?})"
+        );
+    }
+    r.run(r.c.now() + TICKS_PER_DAY);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), r.c.now() + 10);
+    let left = r.c.now();
+    assert_eq!(
+        r.c.parties[band].bored_at,
+        bored + left.since(waited_from),
+        "patience moves by the time spent waiting on Peaceful"
+    );
+}
+
+#[test]
+fn an_envoy_waiting_when_peaceful_begins_has_its_patience_moved_by_the_whole_span() {
+    bored_over_peaceful(43, Phase::Waiting);
+}
+
+#[test]
+fn an_envoy_that_arrived_on_peaceful_has_its_patience_moved_from_its_arrival() {
+    bored_over_peaceful(42, Phase::Out);
+}
+
+/// MZB-137 (review item 6): a tribute paid to an envoy whose demand is over (settled, expired or
+/// withdrawn) is a gift. It used to fall through to the payer's, then the settlers' open demand:
+/// `envoy_home` clears the envoy's feud, so the settlers' demand (made on behalf of the
+/// villages) was paid, and settled, by a payment to a goblin who no longer asked for anything.
+/// A payment at the camp (no envoy) still goes to the payer's demand, then the settlers'.
+#[test]
+fn a_late_tribute_to_an_envoy_does_not_settle_the_settlers_demand() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let d = r.c.feud(r.f, r.p).unwrap().demand.unwrap();
+    // The killing goes on, so the player's demand expires.
+    r.kill(1.0, r.c.now() + 5);
+    r.watch = false;
+    r.run(d.deadline + 1);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_EXPIRED]);
+    assert!(r.c.feud(r.f, r.p).unwrap().demand.is_none());
+    // The settlers have a demand of their own, open.
+    let s = r.c.settlers(&mut r.w);
+    let now = r.c.now();
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(synth::CAMP),
+            kind: SignalKind::Killing,
+            amount: 1.0,
+            actor: s,
+            pos: synth::REFINERY_POS,
+            district: Some(synth::REFINERY),
+        },
+        now + 1,
+    );
+    let tribute = 3;
+    r.c.feud_mut(r.f, s).expect("the settlers' feud").demand = Some(Demand {
+        kind: SignalKind::Killing,
+        good: d.good,
+        tribute,
+        paid: 0,
+        made: now,
+        deadline: now + TICKS_PER_DAY,
+        after: 1.0,
+        envoy: None,
+    });
+    let gifts = r.c.stats.gifts;
+    let at = r.c.now() + 10;
+    pay_to(&mut r, e.agent, e.epoch, tribute as i32, d.good, 77, at);
+    assert_eq!(r.c.stats.tributes, 0, "not a tribute");
+    assert_eq!(r.c.stats.gifts, gifts + 1, "a gift");
+    assert_eq!(
+        settled(&r),
+        vec![boundary::SETTLED_EXPIRED],
+        "nothing settled"
+    );
+    let open = r.c.feud(r.f, s).unwrap().demand.expect("still open");
+    assert_eq!(open.paid, 0, "and nothing counted on it");
+    // The same payment at the camp is for the settlers' demand, as ever.
+    let at = r.c.now() + 10;
+    pay_to(&mut r, 0, 0, tribute as i32, d.good, 78, at);
+    assert_eq!(r.c.stats.tributes, 1, "at the camp it is a tribute");
+    assert_eq!(settled(&r).last(), Some(&boundary::SETTLED_PAID));
+}
+
+fn tmpdir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!(
+        "rtsim-conflict-mowzie-{tag}-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&d);
+    d
+}
+
+/// MZB-131 (review): `recalled` is persisted per epoch, through both save paths (the whole-engine
+/// `save` and the paged `save_paged`): every epoch keeps its own stacks, in order, and a
+/// stack that is empty keeps its entry.
+#[test]
+fn a_band_recalled_at_several_epochs_keeps_every_stack_through_both_saves() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let want = {
+        let x = &mut r.c.parties[band];
+        let full = x.units.clone();
+        let less: Vec<(u8, u32)> = full
+            .iter()
+            .map(|&(u, n)| (u, n.saturating_sub(1)))
+            .collect();
+        let empty: Vec<(u8, u32)> = full.iter().map(|&(u, _)| (u, 0)).collect();
+        x.epoch = 9;
+        x.recalled = vec![(2, full), (5, less), (8, empty)];
+        x.recalled.clone()
+    };
+    assert_eq!(want.len(), 3);
+    // The whole-engine save.
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(back.parties[band].recalled, want);
+    assert_eq!(back.parties[band].epoch, 9);
+    assert_eq!(back.state_hash(), r.c.state_hash());
+    // The paged save, opened again from the store.
+    let dir = tmpdir("recalled");
+    let store = std::sync::Arc::new(std::sync::RwLock::new(
+        rtsim_kernel::page::PageStore::open(&dir, rtsim_kernel::page::Durability::NoSync).unwrap(),
+    ));
+    r.c.attach_store(store.clone(), 64 << 20);
+    let mut b = rtsim_kernel::page::SaveBatch::new();
+    let t = r.c.save_paged(&mut b, rtsim_conflict::scenario::META_KEY);
+    store.write().unwrap().commit(b, 0).unwrap();
+    r.c.saved(t);
+    let paged = Conflict::open_paged(
+        store.clone(),
+        64 << 20,
+        rtsim_conflict::scenario::META_KEY,
+        r.c.tun.clone(),
+        r.c.cultures.clone(),
+    )
+    .unwrap()
+    .expect("a meta page");
+    assert_eq!(paged.parties[band].recalled, want);
+    assert_eq!(paged.parties[band].epoch, 9);
+    assert_eq!(paged.state_hash(), r.c.state_hash());
+    drop(paged);
+    drop(r);
+    drop(store);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Everything the plugin was told after `from`, as the fake plugin logs it, but for the
+/// territories (a session start sends them again, docs/boundary.md §9.4).
+fn told_since(r: &Run, from: Tick) -> Vec<(u64, String)> {
+    r.plugin
+        .commands
+        .iter()
+        .filter(|(t, c)| *t >= from.0 && !c.starts_with("TERRITORY"))
+        .cloned()
+        .collect()
+}
+
+/// MZB-132 (review): a restart in the middle of Peaceful, the world then leaving Peaceful from
+/// the loaded engine, behaves as the engine that kept running: the same deadline, the same
+/// expiry on the same tick, the same commands, not just the same hashes. The envoy held on its
+/// road arrives on Peaceful, so its patience and its wait are in the save.
+#[test]
+fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_kept_going() {
+    let seed = 42;
+    let mut a = Run::new(seed, quiet_goblins());
+    a.kill(7.0, Tick(10));
+    let mut t = a.c.now();
+    loop {
+        t += 100;
+        assert!(t < day(4.0), "no envoy on its road");
+        a.run(t);
+        if envoy_of(&a).is_some_and(|(_, ph)| ph == Phase::Out) {
+            break;
+        }
+    }
+    let d0 = a.c.feud(a.f, a.p).unwrap().demand.unwrap().deadline;
+    a.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), a.c.now() + 1);
+    a.kill(1.0, a.c.now() + 5);
+    a.run(a.c.now() + 2 * TICKS_PER_DAY);
+    a.kill(1.0, a.c.now() + 5);
+    a.run(a.c.now() + TICKS_PER_DAY);
+    // The restart: the engine from its save, in its next session, over a copy of the world.
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let w = World::load(synth::world_config(seed), goods, book, &a.w.save()).unwrap();
+    let mut c = Conflict::load(a.c.tun.clone(), a.c.cultures.clone(), &a.c.save()).unwrap();
+    synth::define_names(&mut c, &w);
+    c.session_start();
+    let mut b = Run {
+        w,
+        c,
+        f: a.f,
+        p: a.p,
+        plugin: FakeConflict::new(synth::PLAYER),
+        cmds: Vec::new(),
+        watch: false,
+        next_obs: Tick::ZERO,
+    };
+    assert!(b.c.peaceful, "still Peaceful after the restart");
+    assert_eq!(b.c.peaceful_since, a.c.peaceful_since);
+    assert_eq!(b.c.now(), a.c.now());
+    assert_eq!(envoy_of(&b).map(|e| e.1), envoy_of(&a).map(|e| e.1));
+    // Both leave Peaceful on the same tick and are run past the moved deadline.
+    let left = a.c.now() + 10;
+    let span = left.since(a.c.peaceful_since);
+    for r in [&mut a, &mut b] {
+        r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), left);
+        r.kill(1.0, left + 5);
+    }
+    let d1 = d0 + span;
+    for r in [&mut a, &mut b] {
+        assert_eq!(r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline, d1);
+        r.run(Tick(d1.0 - 1));
+        assert_eq!(r.c.stats.expired, 0, "not before the moved deadline");
+        r.run(d1 + 4 * TICKS_PER_DAY);
+        assert_eq!(r.c.stats.expired, 1, "at it");
+    }
+    assert_eq!(settled(&a), settled(&b));
+    assert_eq!(settled(&b), vec![boundary::SETTLED_EXPIRED]);
+    assert_eq!(a.step(), b.step());
+    assert_eq!(a.c.stats.demands, b.c.stats.demands);
+    assert_eq!(a.c.stats.peace_held, b.c.stats.peace_held);
+    assert_eq!(
+        told_since(&a, left),
+        told_since(&b, left),
+        "the same commands, tick for tick"
+    );
+    assert_eq!(a.c.state_hash(), b.c.state_hash());
+}
+
+/// Two Peaceful spans before a deadline (review): it moves by both, and the demand comes due
+/// there and not before. Nothing expires inside either span or in the Normal time between them
+/// that the deadline has not reached.
+#[test]
+fn two_peaceful_spans_move_a_deadline_by_both_and_it_comes_due_there() {
+    let mut r = Run::new(43, quiet_goblins());
+    r.kill(7.0, Tick(10));
+    let mut t = r.c.now();
+    while r.c.feud(r.f, r.p).unwrap().demand.is_none() {
+        t += 100;
+        assert!(t < day(4.0), "no demand");
+        r.run(t);
+    }
+    let d0 = r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline;
+    let t1 = r.c.now() + 10;
+    let (t2, t3, t4) = (t1 + 1_000, t1 + 1_500, t1 + 3_500);
+    assert!(t4 < d0, "both spans end before the deadline");
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), t1);
+    r.kill(1.0, t1 + 5);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), t2);
+    r.kill(1.0, t2 + 5);
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), t3);
+    r.kill(1.0, t3 + 5);
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), t4);
+    let d1 = d0 + 3_000;
+    assert_eq!(r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline, d1);
+    // The killing goes on (a signal that stopped would be cut, not expired).
+    let mut at = r.c.now();
+    while at + 600 < d1 {
+        at += 600;
+        r.kill(1.0, at);
+        r.run(at + 1);
+    }
+    r.run(Tick(d1.0 - 1));
+    assert_eq!(r.c.stats.expired, 0, "not before the moved deadline");
+    r.kill(1.0, r.c.now() + 1);
+    r.run(d1 + TICKS_PER_DAY);
+    assert_eq!(r.c.stats.expired, 1, "at it");
+    assert_eq!(settled(&r), vec![boundary::SETTLED_EXPIRED]);
 }

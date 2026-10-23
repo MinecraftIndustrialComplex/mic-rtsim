@@ -4509,6 +4509,192 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
+
+    /// MZB-132 (review): a crash in the middle of Peaceful, the envoy held where it arrived, and
+    /// the world leaving Peaceful from the engine the pages loaded: the demand's deadline moves by
+    /// the whole span (the part before the crash and the part after), the envoy comes back
+    /// carrying it, and the demand comes due there and not before.
+    #[test]
+    fn a_crash_in_the_middle_of_peaceful_then_leaving_it_moves_the_deadline_by_the_whole_span() {
+        let (dir, e, mut j) = camp("conflict-peaceful-crash");
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        // The killing goes on: a demand cut at its deadline would not be an expired one.
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        let since = e.with_conflict(|c, _| c.peaceful_since);
+        advance_until(&mut j, 1_000, 4 * DAY, "past the deadline", |j| {
+            j.game_time >= d0 + DAY
+        });
+        let state = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.parties
+                    .iter()
+                    .find(|(_, x)| x.kind == PartyKind::Envoy)
+                    .map(|(_, x)| (x.phase, x.embodied))
+            })
+        };
+        assert_eq!(state(&e), Some((Phase::Waiting, false)), "held, abstract");
+        save(&e, &mut j);
+        j.game_time += DAY / 2;
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(
+            PLAYER,
+            dim,
+            [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5],
+        )];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        assert!(e.with_conflict(|c, _| c.peaceful), "still Peaceful");
+        assert_eq!(e.with_conflict(|c, _| c.peaceful_since), since);
+        assert_eq!(state(&e), Some((Phase::Waiting, false)), "held, abstract");
+        let demand = |e: &Engine| feud(e, PLAYER).and_then(|f| f.demand).map(|d| d.3 as i64);
+        assert_eq!(demand(&e), Some(d0), "unmoved by the restart");
+        // The killing goes on.
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+
+        let from = j.conflict.len();
+        let at = rtsim_kernel::clock::Tick(j.game_time as u64);
+        difficulty(&mut j, cb::DIFFICULTY_NORMAL);
+        let d1 = d0 + at.since(since) as i64;
+        assert_eq!(demand(&e), Some(d1), "moved by the whole span");
+        advance_until(&mut j, 100, 4_000, "the envoy in view again", |j| {
+            j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Envoy(_)))
+        });
+        let again = j.conflict[from..]
+            .iter()
+            .find_map(|(_, c)| match c {
+                C::Envoy(x) => Some(x.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(again.deadline, d1, "it carries the moved deadline");
+        assert_eq!(again.agent, envoy.agent, "the same envoy");
+        let limit = d1 - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the demand due", |j| {
+            let due = j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_EXPIRED));
+            assert!(
+                !due || j.game_time >= d1,
+                "expired before d1 ({d1}): {}",
+                j.game_time
+            );
+            due
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The conflict engine from the pages in `dir`, as the next session opens it over `saved`.
+    fn reopen(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (e, j)
+    }
+
+    /// MZB-138 (review item 2, older than item 12): a raid in view at a save, recalled after it
+    /// (the player left) with two members dying on the walk-off, its BAND_DEMATERIALIZED
+    /// journaled, and then a crash. The restart replays the despawn: the session start used to
+    /// clear the recalled books before the replay, so the despawn was stale and the two dead
+    /// came back. Now the bodies the pages held in Minecraft are kept for the replay, the despawn
+    /// counts the dead, and nothing is left kept once the replay has caught up.
+    #[test]
+    fn a_walk_offs_dead_are_counted_again_by_the_replay_after_a_crash() {
+        let (dir, e, mut j) = camp("conflict-walk-off-crash");
+        j.conflict_plugin.leave_ticks = 1_500;
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert_eq!(books(&e, p).4, n, "all of it in Minecraft at the save");
+        save(&e, &mut j);
+
+        // The player leaves: it is recalled and two die on the walk off; the despawn is
+        // journaled, no page holds it.
+        let from = j.conflict.len();
+        j.conflict_plugin.walk_off_deaths = 2;
+        j.players.clear();
+        advance_until(&mut j, 100, 2 * DAY, "the recall", |j| {
+            !recalls(j, from, p).is_empty()
+        });
+        let recalled_at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the despawn journaled", |j| {
+            j.game_time >= recalled_at + 1_500 + 200
+        });
+        assert_eq!(books(&e, p).0, n - 2, "the session that went on");
+        assert!(!books(&e, p).3, "its walk-off counted");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, _, embodied, recalled, spawned) = books(&e, p);
+        assert_eq!(alive, n - 2, "the replay counts the walk off's dead");
+        assert!(!embodied && spawned == 0, "no body survived the crash");
+        assert!(!recalled, "nothing kept once the replay has caught up");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-138: a raid in view at a save, fought after it (the scripted player kills half of it)
+    /// and then a crash with no despawn journaled: the replayed casualties are counted once, the
+    /// members who died stay dead, and the rest count as alive as they always did.
+    #[test]
+    fn casualties_journaled_after_a_save_of_a_band_in_view_are_counted_by_the_replay() {
+        let (dir, e, mut j) = camp("conflict-casualties-crash");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert_eq!(books(&e, p).0, n, "no one has fallen yet");
+        save(&e, &mut j);
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        let (alive, _, embodied, recalled, _) = books(&e, p);
+        assert_eq!(alive, n - lost, "the replay counts each death once");
+        assert!(!embodied);
+        assert!(!recalled, "nothing kept once the replay has caught up");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine
