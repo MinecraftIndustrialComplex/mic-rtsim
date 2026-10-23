@@ -182,10 +182,10 @@ pub struct Stats {
     /// (choice SG33).
     pub exchanges_portless: u64,
     /// Calls at a station outside every district (IND_TRAIN_UNWATCHED, choice SG50): each ended
-    /// the train's leg.
+    /// the train's leg. Not saved (choice SG58): a restore starts it at 0.
     pub unwatched_stops: u64,
     /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
-    /// (choice SG51).
+    /// (choice SG51). Not saved (choice SG58): a restore starts it at 0.
     pub self_edges_refused: u64,
 }
 
@@ -4220,29 +4220,58 @@ mod persist_impls {
         first,
         last
     });
-    persist_struct!(Stats {
-        observations,
-        models_adopted,
-        sims_started,
-        reconciles,
-        chunk_commands,
-        duplicate_results,
-        trims,
-        exchanges,
-        attacks,
-        attacks_skipped,
-        packages_written,
-        breakpoints,
-        cluster_settles,
-        reconciles_ahead,
-        pollution_pushes,
-        arrivals_approach,
-        arrivals_departure,
-        arrivals_late,
-        exchanges_portless,
-        unwatched_stops,
-        self_edges_refused,
-    });
+    // The counters a run keeps for its own readout (`unwatched_stops`, `self_edges_refused`, choice
+    // SG58) are not in the page: adding them would change the globals layout, and a save written
+    // before them would no longer read. A restore starts them at 0, like the session's own counts
+    // in the host.
+    impl Persist for Stats {
+        fn put(&self, w: &mut Writer) {
+            self.observations.put(w);
+            self.models_adopted.put(w);
+            self.sims_started.put(w);
+            self.reconciles.put(w);
+            self.chunk_commands.put(w);
+            self.duplicate_results.put(w);
+            self.trims.put(w);
+            self.exchanges.put(w);
+            self.attacks.put(w);
+            self.attacks_skipped.put(w);
+            self.packages_written.put(w);
+            self.breakpoints.put(w);
+            self.cluster_settles.put(w);
+            self.reconciles_ahead.put(w);
+            self.pollution_pushes.put(w);
+            self.arrivals_approach.put(w);
+            self.arrivals_departure.put(w);
+            self.arrivals_late.put(w);
+            self.exchanges_portless.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(Self {
+                observations: Persist::get(r)?,
+                models_adopted: Persist::get(r)?,
+                sims_started: Persist::get(r)?,
+                reconciles: Persist::get(r)?,
+                chunk_commands: Persist::get(r)?,
+                duplicate_results: Persist::get(r)?,
+                trims: Persist::get(r)?,
+                exchanges: Persist::get(r)?,
+                attacks: Persist::get(r)?,
+                attacks_skipped: Persist::get(r)?,
+                packages_written: Persist::get(r)?,
+                breakpoints: Persist::get(r)?,
+                cluster_settles: Persist::get(r)?,
+                reconciles_ahead: Persist::get(r)?,
+                pollution_pushes: Persist::get(r)?,
+                arrivals_approach: Persist::get(r)?,
+                arrivals_departure: Persist::get(r)?,
+                arrivals_late: Persist::get(r)?,
+                exchanges_portless: Persist::get(r)?,
+                unwatched_stops: 0,
+                self_edges_refused: 0,
+            })
+        }
+    }
     persist_struct!(Books {
         minted,
         burned,

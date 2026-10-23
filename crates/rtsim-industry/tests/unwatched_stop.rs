@@ -166,3 +166,31 @@ fn an_unwatched_stop_with_no_leg_is_harmless() {
     arrive(&mut e, 100, WEST, D1);
     assert!(e.lines().is_empty());
 }
+
+/// The two counters are the run's own (choice SG58): the saved pages are the same bytes with them
+/// at 0 or not, so they add nothing to the page layout, and a restore starts them at 0.
+#[test]
+fn the_two_counters_are_not_in_the_saved_pages() {
+    use rtsim_kernel::page::PageKey;
+
+    let mut e = engine();
+    arrive(&mut e, 100, WEST, D1);
+    depart(&mut e, 160, WEST, D1, EAST);
+    unwatched(&mut e, 290, EAST);
+    arrive(&mut e, 620, WEST, D1);
+    depart(&mut e, 700, WEST, D1, EAST);
+    arrive(&mut e, 905, WEST, D1);
+    assert_eq!(e.stats.unwatched_stops, 1);
+    assert_eq!(e.stats.self_edges_refused, 1);
+    let with: Vec<(PageKey, Vec<u8>)> = e.snapshot();
+    e.stats.unwatched_stops = 0;
+    e.stats.self_edges_refused = 0;
+    assert_eq!(
+        with,
+        e.snapshot(),
+        "the counters change no page byte (they were in the globals page once)"
+    );
+    let back = Engine::restore(with, Tunables::default()).expect("restore");
+    assert_eq!(back.stats.unwatched_stops, 0);
+    assert_eq!(back.stats.self_edges_refused, 0);
+}
