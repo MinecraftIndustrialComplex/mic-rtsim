@@ -24,6 +24,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * A kinetic network's recount never loads a chunk (SECTIONS.md §2.6 and §2.8, slice S1; PATCHES.md rows 53
@@ -62,7 +63,9 @@ import java.util.Map;
  *       would never recount it, and with the kept block entities such members stay listed. A block entity
  *       removed before it joined takes the one kept for it out with it (Create returns early for a
  *       non-member); one removed during a {@code sync} (an {@code onSpeedChanged} that breaks it) takes it
- *       out once the sync ends, since the sync is iterating {@code members}.</li>
+ *       out once the sync ends, since the sync is iterating {@code members}. So does a join during a
+ *       {@code sync} (row 58, ahead of such a change): its share leaves the unloaded share at once, and it
+ *       becomes a member once the sync ends, unless it left by then.</li>
  * </ul>
  * Server levels only; nothing changes where every chunk of the network is loaded and no position is listed
  * twice.
@@ -75,6 +78,17 @@ public abstract class KineticNetworkMixin {
     public Map<KineticBlockEntity, Float> members;
     @Shadow
     public Long id;
+    @Shadow
+    private float unloadedCapacity;
+    @Shadow
+    private float unloadedStress;
+    @Shadow
+    private int unloadedMembers;
+
+    @Shadow
+    private static float getStressMultiplierForSpeed(float speed) {
+        throw new AssertionError();
+    }
 
     /** The block entity that last joined at each position (runtime only); a recount that drops it forgets it. */
     @Unique
@@ -86,12 +100,12 @@ public abstract class KineticNetworkMixin {
      */
     @Unique
     private LongOpenHashSet mic_rtsim$joined;
-    /** How deep in {@code sync} this network is; removals of kept block entities wait for it to end. */
+    /** How deep in {@code sync} this network is; this mixin's changes to its maps wait for it to end. */
     @Unique
     private int mic_rtsim$syncing;
-    /** Kept block entities to take out once the sync ends (risk of a change to {@code members} while iterated). */
+    /** Changes to {@code members} and {@code sources} that wait for the sync iterating {@code members} to end. */
     @Unique
-    private List<KineticBlockEntity> mic_rtsim$leaving;
+    private List<Runnable> mic_rtsim$afterSync;
 
     @WrapOperation(method = {"calculateCapacity", "calculateStress"}, at = @At(value = "INVOKE",
             target = "Lnet/minecraft/world/level/Level;getBlockEntity(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/entity/BlockEntity;"),
@@ -128,6 +142,11 @@ public abstract class KineticNetworkMixin {
         // a member already (listed by a generator's update before its first tick): Create returns early
         if (!(be.getLevel() instanceof ServerLevel) || members.containsKey(be))
             return;
+        if (mic_rtsim$syncing > 0) {
+            mic_rtsim$joinAfterSync(be, lastCapacity, lastStress);
+            ci.cancel();
+            return;
+        }
         KineticBlockEntity kept = mic_rtsim$join(be);
         if (kept != null) {
             sources.remove(kept);
@@ -140,6 +159,55 @@ public abstract class KineticNetworkMixin {
         members.put(be, be.calculateStressApplied());
         ((KineticNetworkInvoker) (Object) this).mic_rtsim$updateFromNetwork(be);
         ci.cancel();
+    }
+
+    /**
+     * A join during a {@code sync} of this network (row 58's join, ahead of a change an
+     * {@code onSpeedChanged} makes to a block entity that has not ticked): {@code sync} is iterating
+     * {@code members}, so a new key there would end it with a ConcurrentModificationException. The share
+     * leaves the unloaded share now, as Create's {@code addSilently} takes it (once per position, as above);
+     * the block entity becomes a member, in the kept one's place, once the sync ends, unless by then it left
+     * (removed, unsourced, or in another network: Create's {@code remove} returned early for a non-member).
+     */
+    @Unique
+    private void mic_rtsim$joinAfterSync(KineticBlockEntity be, float lastCapacity, float lastStress) {
+        long pos = be.getBlockPos().asLong();
+        KineticBlockEntity kept = mic_rtsim$join(be);
+        if (mic_rtsim$joined.add(pos)) {
+            if (be.isSource())
+                unloadedCapacity -= lastCapacity * getStressMultiplierForSpeed(be.getGeneratedSpeed());
+            unloadedStress -= lastStress * getStressMultiplierForSpeed(be.getTheoreticalSpeed());
+            unloadedMembers = Math.max(0, unloadedMembers - 1);
+            unloadedCapacity = Math.max(0, unloadedCapacity);
+            unloadedStress = Math.max(0, unloadedStress);
+        }
+        mic_rtsim$afterSync(() -> {
+            if (kept != null) {
+                sources.remove(kept);
+                members.remove(kept);
+            }
+            if (!be.isRemoved() && Objects.equals(be.network, id) && !members.containsKey(be)
+                    && mic_rtsim$byPos.get(pos) == be) {
+                if (be.isSource())
+                    sources.put(be, be.calculateAddedStressCapacity());
+                members.put(be, be.calculateStressApplied());
+                ((KineticNetworkInvoker) (Object) this).mic_rtsim$updateFromNetwork(be);
+            }
+            // its share left the unloaded share; if it left the network too, nothing else recounts it
+            mic_rtsim$dirtyTicking();
+        });
+    }
+
+    /** Runs {@code change} now, or once the sync iterating {@code members} ends. */
+    @Unique
+    private void mic_rtsim$afterSync(Runnable change) {
+        if (mic_rtsim$syncing == 0) {
+            change.run();
+            return;
+        }
+        if (mic_rtsim$afterSync == null)
+            mic_rtsim$afterSync = new ArrayList<>();
+        mic_rtsim$afterSync.add(change);
     }
 
     /**
@@ -197,11 +265,11 @@ public abstract class KineticNetworkMixin {
         try {
             original.call();
         } finally {
-            if (--mic_rtsim$syncing == 0 && mic_rtsim$leaving != null && !mic_rtsim$leaving.isEmpty()) {
-                List<KineticBlockEntity> leaving = mic_rtsim$leaving;
-                mic_rtsim$leaving = null;
-                for (KineticBlockEntity kept : leaving)
-                    mic_rtsim$leave(kept);
+            if (--mic_rtsim$syncing == 0 && mic_rtsim$afterSync != null && !mic_rtsim$afterSync.isEmpty()) {
+                List<Runnable> changes = mic_rtsim$afterSync;
+                mic_rtsim$afterSync = null;
+                for (Runnable change : changes)
+                    change.run();
             }
         }
     }
@@ -235,13 +303,7 @@ public abstract class KineticNetworkMixin {
         // the kept one is dead (its chunk unloaded); a live member at the position is never taken out
         if (kept == null || kept == removed || !kept.isRemoved() || !members.containsKey(kept))
             return;
-        if (mic_rtsim$syncing > 0) {
-            if (mic_rtsim$leaving == null)
-                mic_rtsim$leaving = new ArrayList<>();
-            mic_rtsim$leaving.add(kept);
-            return;
-        }
-        mic_rtsim$leave(kept);
+        mic_rtsim$afterSync(() -> mic_rtsim$leave(kept));
     }
 
     /** Takes a dead kept block entity out of the network, if it is listed still. */
