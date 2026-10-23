@@ -539,7 +539,8 @@ under its own heading.
   the current epoch in view is the plugin despawning it (as before), an epoch with an entry has the
   entry removed and its dead (`recalled - survivors`) taken off the alive counts, with the bodies in
   view now clamped to who is left, and any other is stale and ignored. Fork: the live branch no longer
-  clears `recalled` (older epochs' walk-offs are still to come); a session start still does. The conflict
+  clears `recalled` (older epochs' walk-offs are still to come); a session start used to clear it,
+  which review found wrong (MZB-138: it keeps them for the journal's replay). The conflict
   pages are RTC5 with meta version 4 (the party row's `recalled` is a count of epochs, each a var epoch
   and its stacks), with no migration; M2's unbumped changes (crystal, destroyed loot, repeats) ride on
   that bump. `FakeConflict::walk_off_deaths` takes that many off a recalled band's survivors, first
@@ -556,18 +557,82 @@ under its own heading.
   abstract wherever it is: on its road it still arrives and waits, `seen()` shows no envoy, and the
   end of its muster or its wait is held (counted in `peace_held`, nothing booked). An open
   demand's deadline is not booked while Peaceful, and `feud_wake` ignores a deadline passed in it, so
-  nothing expires, settles or climbs. Leaving Peaceful (fork: the demand's clock is paused over the
+  nothing expires, settles or climbs (a refusal in flight is recorded but its climb waits too,
+  MZB-134). Leaving Peaceful (fork: the demand's clock is paused over the
   whole span, as MZB-16 pauses a dwell): every open demand's deadline d0 moves to d1 = d0 + the span
   it lived through (`at - max(made, peaceful_since)`); a withdrawn demand's fresh envoy (MZB-22,
   `wait_until`) moves by the span too, so none goes in a burst at the end; each held envoy is booked
   again after the feuds are planned (a muster at its old end or now, a waiting one to d1 with its
-  patience moved by the span), and an envoy a watching player has in view comes back at once,
+  patience moved by the part of the span it spent waiting, MZB-136), and an envoy a watching player
+  has in view comes back at once,
   carrying d1 in BAND_ENVOY. Not a page format change (`peaceful_since` and the deadlines were
   already saved). Tests: rtsim-conflict `mowzie_records` (the two M1 Peaceful tests now hold at the
   notice, the burst test runs at the notice and, from the scouts, at the raid; an envoy held on its
   road, waiting, mustering and as a withdrawn demand) and the rtsim-jni test of an envoy in view
   that walks off, whose deadline moves by the span and comes due not before it; M1's Peaceful jni
   test now sees no envoy until Normal.
+- **MZB-133** (an insult answer points at the envoy, not the camp; review item 1): ENVOY_ANSWER
+  ATTACKED added its insult (`envoy_insult_kills` killings) at the faction's own camp with no
+  district. `signal` replaces a districtless focus with the signal that outweighs it, so a feud whose
+  focus had no district was retargeted at the camp itself, and the scouts the refusal then sent
+  went there. The insult is now a killing where the envoy stood (`party_pos`), against its target's
+  district, as `casualties` makes one for a killed member. Tests: rtsim-conflict `mowzie_records`
+  (an attack answer keeps the scouts aimed at the demand's district; a districtless focus does not
+  move to the camp; the attack adds exactly the insult to a plain refusal). The camp variant fails
+  on the old rule.
+- **MZB-134** (a refusal on Peaceful; review item 3): `recall_envoys` does not bump the epoch, so an
+  ENVOY_ANSWER sent before Java saw Peaceful (or a dialogue still open) is accepted on Peaceful and
+  `refuse` then `demand_unmet` climbed to the rung above, a war rung when the culture skips the
+  scouts. `demand_unmet` now filters that rung by `!(peaceful && peace_holds(rung))`. Fork
+  (conservative): the refusal is recorded (DEMAND_SETTLED outcome 3, the grievance, the insult) and
+  the feud stays on Envoy, its `since` reset; the climb waits for Normal, when `plan_feud` takes it
+  after its dwell. The scouts are not held (MZB-132), so a refusal on Peaceful still climbs to them.
+  Tests: a no-scouts culture's refusal on Peaceful holds at Envoy through four days of killing, no
+  band mustered, and climbs to the raid after Normal; the scouts climb still happens. Fails on the
+  old rule.
+- **MZB-135** (a Peaceful of no time; review item 4): turning Peaceful on and off on the same tick
+  still jittered every held feud's dwell. Leaving Peaceful now pauses and jitters only when the span
+  is more than 0 ticks (the walk-off of an envoy in view on entering stays, and costs nothing).
+  Tests: a held feud's `since` is unchanged by a same-tick toggle and does move over a 1,000-tick
+  span (not vacuous); the envoy in view still walks off with RECALL_PASSING and its deadline stays.
+  Fails on the old rule.
+- **MZB-136** (patience over Peaceful; review item 5, refines MZB-132): `resume_envoys` added the
+  whole span to a waiting envoy's `bored_at`, also for one that arrived during Peaceful, whose
+  patience clock started at its arrival. It now adds the time since the later of the span's start
+  and its arrival (`times.last()`); an envoy waiting when Peaceful began waited all of it. Tests: one
+  held while waiting moves by the whole span, one that arrived on Peaceful by the part after its
+  arrival. The second fails on the old rule.
+- **MZB-137** (a payment to an envoy settles only its own demand; review item 6): `envoy_home` and
+  `go_home` clear the envoy's `feud`, so a TRIBUTE_PAID naming a finished envoy (late, after the
+  deadline or the settlement) fell through the chain "its feud, the payer's, the settlers'" to a
+  demand open for the settlers, and paid it. Confirmed real by a test that fails on the old chain.
+  Now a payment naming an envoy settles the demand that envoy serves (`demand.envoy == Some(p)`) and
+  no other, else it is a gift (softening the payer's grievance, as a late tribute always did); only
+  a payment at the camp (no envoy) takes the payer's demand then the settlers'.
+- **MZB-138** (a restart replays the walk-off and the fight; review item 2, older than item 12): a
+  session start cleared `recalled`, `spawned` and `embodied` before the journal replayed, so a
+  BAND_DEMATERIALIZED journaled after the last page save found no entry for its epoch and was
+  dropped (the walk-off's dead came back), and the BAND_CASUALTIES of a band in view at the save
+  found it not embodied and were dropped too. Now `session_start` folds the bodies the pages held
+  in Minecraft (`spawned`) into a `recalled` entry of the current epoch (merging with the one it
+  has, `fold_spawned_into_recalled`, also used by `recall`), keeps the existing entries, and sets
+  `Conflict::replaying`. While it is set a casualty for an epoch with an entry is counted off that
+  entry's stack (units and stack both go down, so a later despawn's `entry - survivors` adds only
+  the dead nobody reported: no double count), and a despawn finds its entry as in MZB-131.
+  `replay_done` (called first thing in `resend_notices`, the point the host has caught the replay up
+  at) clears `replaying` and drops whatever entries remain: the bodies are gone with the session,
+  nothing will report them, their members count as alive as before. No rtsim-jni change was needed.
+  Not state, not a page format change. Fork (limit): records for an epoch newer than the page save
+  (a band that was recalled or seen again after it) cannot be matched and are dropped, as they
+  always were; the walk-off and the fight of the epoch the pages hold are the ones counted. Tests:
+  the reviewer's replayed-despawn case (alive 12 drops to 10 after the restart), the entries dropped
+  at `resend_notices` (a later despawn is stale), a band embodied at the crash with a casualty and
+  a despawn replayed (counted once), the multi-epoch `recalled` round trip through `save` and
+  `save_paged`, and two rtsim-jni crash-and-replay tests (a recall with two walk-off deaths; a
+  fight's casualties with no despawn journaled), which fail on the old engine (12, not 10 and 6).
+  Also tested, not a new rule: a restart in the middle of Peaceful goes on exactly as the run that
+  kept going (the same deadline, expiry tick and commands; a jni crash-and-leave test), and two
+  Peaceful spans move a deadline by both.
 
 ## M4 Camp reconciler, engine
 

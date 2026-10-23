@@ -1537,7 +1537,13 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   culture's tolerated rate applies). While a district is unloaded, the composition sets the same
   source's rate from the industry engine's learned rate of the pollution good (choice K2-9).
 - **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
-  on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
+  on the way out go; a despawn the plugin decided (chunks unloaded) sets them. It names its band by
+  agent and epoch, and the engine keeps the bodies of every epoch it recalled until that epoch's
+  despawn comes, so one that arrives while the band is in view again at a newer epoch still counts
+  its dead (MZB-131). Across a restart the bodies the pages held in Minecraft are kept the same way
+  until the journal's replay has caught up, so a BAND_CASUALTIES or a BAND_DEMATERIALIZED journaled
+  after the last page save is counted as the session that wrote it counted it; what the replay
+  did not count is dropped then, its members alive as before (MZB-138).
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5). Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
@@ -1618,8 +1624,9 @@ the player's next entry. A plugin that plays
 nothing answers NOTICE_SHOWN at once.
 
 **Difficulty.** The plugin journals DIFFICULTY at every session start and on every change of the
-world's difficulty. On Peaceful the engine sends no war band and recalls the ones in the world
-(BAND_RECALL 6): the plugin needs no rule of its own.
+world's difficulty. On Peaceful the engine sends no war band and no envoy, and recalls the ones in
+the world: a war band with BAND_RECALL 6, an envoy in view with BAND_RECALL 4 (passing; it walks off
+and stays abstract, MZB-132): the plugin needs no rule of its own.
 
 **An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
@@ -1688,10 +1695,17 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   again later). When Peaceful begins, every war party already out stops at once (MZB-15): one on the
   road goes home, its feud a rung down (MZB-29); a watched fight ends; a siege waiting at its target
   goes home. Those in Minecraft get BAND_RECALL 6. No war body spawns while it is Peaceful, and an
-  ambush booked before never falls. Notices, envoys and scouts go on, and grievance keeps its curve.
-  When Peaceful ends every feud is planned again, its dwell clock paused over the Peaceful span and
-  shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so no burst
-  of raids follows. The flag and the span's start are saved (MZB-14 to MZB-17).
+  ambush booked before never falls. Notices and scouts go on, and grievance keeps its curve. No
+  envoy leaves either, its body being a stand-in that cannot exist on Peaceful (MZB-132): the climb
+  to Envoy waits like a war rung's, an envoy in view walks off (BAND_RECALL 4) and stays where it is,
+  abstract, and its muster's end or its wait is held; no demand is made or comes due, so a feud
+  holds at its notice with its grievance kept. A refusal that reaches the engine on Peaceful is
+  recorded, but its climb to a war rung waits for Normal (MZB-134). When Peaceful ends every feud is
+  planned again, its dwell clock paused over the Peaceful span (a span of no time moves nothing,
+  MZB-135) and shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so
+  no burst of raids follows; every open demand's deadline moves by the span it lived through, and the
+  envoys held go on to it, their patience moved by the part of the span they spent waiting
+  (MZB-132, MZB-136). The flag and the span's start are saved (MZB-14 to MZB-17).
 - **Kept notices** (ledger 14). A feud's last FACTION_NOTICE is kept in its row until a NOTICE_SHOWN
   for its serial, faction and player, or until the feud is forgotten; a later notice replaces it.
   Serials are engine-wide, so a forgotten and re-made feud never reuses one (MZB-28). Each session

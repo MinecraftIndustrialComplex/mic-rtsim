@@ -272,6 +272,29 @@ impl Party {
         self.units.iter().map(|u| u.1).sum()
     }
 
+    /// Moves the bodies in Minecraft (`spawned`) into the recalled stack of the current epoch,
+    /// merging with the one it has (MZB-131, MZB-138). Nothing moves when none is spawned.
+    fn fold_spawned_into_recalled(&mut self) {
+        let s = std::mem::take(&mut self.spawned);
+        if s.is_empty() {
+            return;
+        }
+        let epoch = self.epoch;
+        let i = match self.recalled.iter().position(|e| e.0 == epoch) {
+            Some(i) => i,
+            None => {
+                self.recalled.push((epoch, Vec::new()));
+                self.recalled.len() - 1
+            }
+        };
+        for (u, n) in s {
+            match self.recalled[i].1.iter_mut().find(|e| e.0 == u) {
+                Some(e) => e.1 += n,
+                None => self.recalled[i].1.push((u, n)),
+            }
+        }
+    }
+
     pub fn agent(id: Handle<Party>) -> u64 {
         boundary::AGENT_NAMESPACE << 56 | (id.to_bits() & MASK48)
     }
@@ -652,6 +675,10 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
+    /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
+    /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
+    /// (MZB-138). Not state: a session sets it.
+    pub replaying: bool,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -734,6 +761,7 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
+            replaying: false,
         }
     }
 
@@ -2132,8 +2160,12 @@ impl Conflict {
                 ),
             );
             // The next rung up the culture has (MOWZIE.md ledger 2): Scouts, unless it skips them.
+            // On Peaceful the refusal is recorded all the same (an answer in flight when the
+            // world changed), but a rung it holds back waits for Normal (MZB-134).
             let up = self.culture(f).next_up(Step::Envoy);
-            if let Some(up) = up.filter(|u| g >= self.theta(f, *u) * (1.0 - 1e-9)) {
+            if let Some(up) = up.filter(|u| {
+                g >= self.theta(f, *u) * (1.0 - 1e-9) && !(self.peaceful && peace_holds(*u))
+            }) {
                 self.escalate(w, f, a, up, at, false);
             } else if g < self.down_theta(f, Step::Envoy) {
                 let to = self.culture(f).next_down(Step::Envoy);
@@ -2299,15 +2331,23 @@ impl Conflict {
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
-        let by_envoy = envoy
-            .and_then(Party::of_agent)
-            .and_then(|p| self.parties.get(p))
-            .filter(|x| x.faction == f)
-            .and_then(|x| x.feud);
-        let who = by_envoy
-            .into_iter()
-            .chain([payer, settlers])
-            .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some()));
+        // A payment to an envoy settles that envoy's own demand and no other (MZB-137): one that
+        // reaches an envoy whose demand is over (settled, expired, withdrawn) is a gift, not a
+        // payment on another demand open for the payer or the settlers.
+        let who = match envoy {
+            Some(agent) => Party::of_agent(agent)
+                .filter(|p| self.parties.get(*p).is_some_and(|x| x.faction == f))
+                .and_then(|p| self.parties[p].feud.map(|a| (p, a)))
+                .filter(|&(p, a)| {
+                    self.feud(f, a)
+                        .and_then(|x| x.demand)
+                        .is_some_and(|d| d.envoy == Some(p))
+                })
+                .map(|(_, a)| a),
+            None => [payer, settlers]
+                .into_iter()
+                .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some())),
+        };
         let Some(a) = who else {
             // No demand open: a tribute is a gift.
             self.gift_value(w, f, payer, goods, at);
@@ -3569,22 +3609,7 @@ impl Conflict {
         self.stats.recalls += 1;
         let x = &mut self.parties[p];
         if x.embodied && x.epoch == epoch {
-            let s = std::mem::take(&mut x.spawned);
-            if !s.is_empty() {
-                let i = match x.recalled.iter().position(|e| e.0 == epoch) {
-                    Some(i) => i,
-                    None => {
-                        x.recalled.push((epoch, Vec::new()));
-                        x.recalled.len() - 1
-                    }
-                };
-                for (u, n) in s {
-                    match x.recalled[i].1.iter_mut().find(|e| e.0 == u) {
-                        Some(e) => e.1 += n,
-                        None => x.recalled[i].1.push((u, n)),
-                    }
-                }
-            }
+            x.fold_spawned_into_recalled();
             x.embodied = false;
             x.seen_by = None;
         }
@@ -4268,18 +4293,27 @@ impl Conflict {
     /// leaves), and the plugin hears every faction's territory again (docs/boundary.md §9.4).
     /// The kept notices go again later, from [`Conflict::resend_notices`], once the session's
     /// replay has caught up (MZB-31).
+    ///
+    /// The journal's replay follows, and it may hold what the last session's bodies did after the
+    /// pages were written: their casualties and their despawn. So the bodies the pages held in
+    /// Minecraft become a recalled stack of their epoch, beside the stacks already walking off,
+    /// for those records to count; whatever no record counted is dropped when the replay has
+    /// caught up ([`Conflict::replay_done`], MZB-138).
     pub fn session_start(&mut self) {
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             let x = &mut self.parties[p];
+            if x.embodied {
+                x.fold_spawned_into_recalled();
+            }
             x.embodied = false;
             x.seen_by = None;
             x.spawned.clear();
-            x.recalled.clear();
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
             }
         }
+        self.replaying = true;
         // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
         // again from what is kept, after the replay (`resend_notices`).
         self.outbox.retain(|c| {
@@ -4298,12 +4332,27 @@ impl Conflict {
         self.enforce_budget();
     }
 
+    /// The session's replay has caught up: the bodies no replayed record counted are gone with
+    /// the last session (nothing will report them), so the stacks the session start kept for the
+    /// replay are dropped, and their members count as alive, as they always did (MZB-138).
+    pub fn replay_done(&mut self) {
+        if !self.replaying {
+            return;
+        }
+        self.replaying = false;
+        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
+        for p in ids {
+            self.parties[p].recalled.clear();
+        }
+    }
+
     /// Every notice of a feud not played yet goes to the plugin again, once a session (MOWZIE.md
     /// §4.11). The host calls it after the session's replay has caught up, so a NOTICE_SHOWN
     /// journaled last session and not yet in the pages has cleared its notice first (MZB-31). A
     /// notice still queued (one a replayed record made again) is dropped first: what is kept is
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
+        self.replay_done();
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -4387,7 +4436,8 @@ impl Conflict {
                     || (repeats && matches!(step, Step::Raid | Step::Invasion));
                 let x = self.feud_mut(f, a).expect("listed");
                 let held = x.party.is_none() && x.demand.is_none() && held_next;
-                if held {
+                // A span of no time pauses nothing and jitters nothing (MZB-135).
+                if held && at > since {
                     let paused = x.since + at.since(x.since.max(since));
                     x.since = paused.max(Tick(at.0.saturating_sub(dwell))) + jitter;
                 }
@@ -4405,7 +4455,7 @@ impl Conflict {
             }
         }
         self.enforce_budget();
-        self.resume_envoys(w, at, at.since(since));
+        self.resume_envoys(w, at, since);
     }
 
     /// Entering Peaceful: embodied envoys walk off with RECALL_PASSING toward their next route
@@ -4432,11 +4482,12 @@ impl Conflict {
         }
     }
 
-    /// Leaving Peaceful after `span` ticks: the envoys held where they were go on. A muster's end
-    /// is booked again; a waiting envoy waits out its demand's deadline, moved by the span, and
-    /// its patience is moved by it too (MZB-132). In handle order, after every feud's demand has
+    /// Leaving Peaceful, which began at `since`: the envoys held where they were go on. A muster's
+    /// end is booked again; a waiting envoy waits out its demand's deadline, moved by the span,
+    /// and its patience is moved by the part of the span it spent waiting: from the later of
+    /// `since` and its arrival (MZB-132, MZB-136). In handle order, after every feud's demand has
     /// its new deadline.
-    fn resume_envoys(&mut self, w: &mut World, at: Tick, span: u64) {
+    fn resume_envoys(&mut self, w: &mut World, at: Tick, since: Tick) {
         let held: Vec<Handle<Party>> = self
             .parties
             .iter()
@@ -4452,15 +4503,17 @@ impl Conflict {
                 self.schedule(until.max(at), Ev::Party { party: p, plan });
                 continue;
             }
-            let (f, feud, until) = {
+            let (f, feud, until, arrived) = {
                 let x = &self.parties[p];
-                (x.faction, x.feud, x.until)
+                (x.faction, x.feud, x.until, x.times.last().copied())
             };
             let deadline = feud
                 .and_then(|a| self.feud(f, a))
                 .and_then(|x| x.demand)
-                .map_or(until + span, |d| d.deadline);
-            self.parties[p].bored_at += span;
+                .map_or(until + at.since(since), |d| d.deadline);
+            // It reached its target at the end of its route; only the time since is waiting.
+            let waited = at.since(arrived.map_or(since, |t| t.max(since)));
+            self.parties[p].bored_at += waited;
             self.wait(w, p, deadline.max(at + 1), at);
         }
     }
@@ -4775,13 +4828,21 @@ impl Conflict {
                     boundary::ANSWER_ATTACKED => {
                         let insult = self.tun.envoy_insult_kills;
                         let attacker = self.actor_of_uuid(w, a.player);
+                        // Where the envoy stood, against its target's district, as a killing of
+                        // its members is (`casualties`): the camp's own place would point the
+                        // feud, and the scouts the refusal sends, at the camp (MZB-133).
+                        let (x, z) = self.party_pos(p, at);
+                        let district = match self.parties[p].target {
+                            Target::District(d, _) => Some(d),
+                            _ => None,
+                        };
                         let sig = Signal {
                             faction: Some(self.factions[f as usize].key),
                             kind: SignalKind::Killing,
                             amount: insult,
                             actor: attacker,
-                            pos: self.factions[f as usize].pos,
-                            district: None,
+                            pos: Pos::new(self.parties[p].frame, x, z),
+                            district,
                         };
                         self.signal(w, sig, at);
                         self.refuse(w, f, actor, at, insult);
@@ -4834,7 +4895,12 @@ impl Conflict {
         let Some(p) = self.party_of(cs.agent, cs.epoch) else {
             return;
         };
-        if !self.parties[p].embodied {
+        // A casualty of the last session's bodies, replayed: the session start kept them as a
+        // recalled stack of their epoch, and these deaths are counted off it (MZB-138).
+        let replayed = !self.parties[p].embodied
+            && self.replaying
+            && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
+        if !self.parties[p].embodied && !replayed {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;
         }
@@ -4852,7 +4918,15 @@ impl Conflict {
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
         let u = x.units[k].0;
-        if let Some(s) = x.spawned.iter_mut().find(|s| s.0 == u) {
+        let stacks = if replayed {
+            x.recalled
+                .iter_mut()
+                .find(|e| e.0 == cs.epoch)
+                .map(|e| &mut e.1)
+        } else {
+            Some(&mut x.spawned)
+        };
+        if let Some(s) = stacks.and_then(|v| v.iter_mut().find(|s| s.0 == u)) {
             s.1 = s.1.saturating_sub(t);
         }
         self.stats.casualties += u64::from(t);
