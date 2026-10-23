@@ -633,4 +633,128 @@ mod tests {
         def.thresholds = vec![10.0, 5.0, 20.0, 30.0, 40.0, 50.0];
         assert!(Culture::resolve(def).is_err());
     }
+
+    fn goblin_def() -> CultureDef {
+        serde_json::from_str(GOBLIN_JSON).unwrap()
+    }
+
+    /// Goblins with only the named party kinds kept.
+    fn goblin_with(keep: &[&str]) -> Culture {
+        let mut def = goblin_def();
+        def.parties.retain(|k, _| keep.contains(&k.as_str()));
+        Culture::resolve(def).unwrap()
+    }
+
+    #[test]
+    fn the_mowzie_cultures_resolve() {
+        let c = Cultures::builtin();
+        // The older cultures keep their indices (an index is saved).
+        assert_eq!(c.index_of("goblin"), Some(0));
+        assert_eq!(c.index_of("raider"), Some(2));
+        let fm = c.get(c.index_of("frostmaw").unwrap());
+        assert_eq!(fm.def.source, CampSource::Boss);
+        assert!(!fm.def.haven && fm.def.loot_destroyed);
+        assert_eq!(fm.def.repeat_days, Some(4.0));
+        assert!(fm.def.tribute_good.is_none());
+        assert!(!fm.has_rung(Step::Envoy) && !fm.has_rung(Step::Scouts));
+        assert!(fm.has_rung(Step::Raid) && fm.has_rung(Step::Invasion));
+        assert!(!fm.has_rung(Step::Siege));
+        assert_eq!(fm.next_up(Step::Notice), Some(Step::Raid));
+        assert_eq!(fm.next_up(Step::Invasion), None);
+        assert_eq!(fm.unit_as(0, true).class, UnitClass::GroundRanged);
+        assert_eq!(fm.unit_as(0, false).class, UnitClass::GroundMelee);
+        assert_eq!(fm.unit_as(0, false).body, fm.unit(0).body);
+        assert!(c.of_structure("mowziesmobs:frostmaw_spawn").is_some());
+
+        let um = c.get(c.index_of("umvuthana").unwrap());
+        assert_eq!(um.def.source, CampSource::Bandit);
+        assert!(um.def.haven && um.def.loot_destroyed);
+        assert!(um.def.repeat_days.is_none());
+        assert_eq!(um.def.tribute_good.as_deref(), Some("gold_nugget"));
+        assert_eq!(um.def.tribute_per_coin_fallback, 9.0);
+        assert_eq!(um.next_up(Step::Raid), Some(Step::Invasion));
+        assert_eq!(um.next_up(Step::Invasion), None);
+        assert!(um.hates("human"));
+        assert!(um.def.units.iter().all(|u| u.carry == 0 && u.breaks == 0));
+        assert_eq!(um.unit_as(1, false).name, "raptor");
+        assert!(c.of_structure("mowziesmobs:umvuthana_grove").is_some());
+    }
+
+    #[test]
+    fn absent_fields_keep_the_old_behaviour() {
+        let g = Culture::resolve(goblin_def()).unwrap();
+        assert_eq!(g.def.repeat_days, None);
+        assert_eq!(g.def.source, CampSource::Bandit);
+        assert!(!g.def.loot_destroyed);
+        assert!(g.def.haven);
+        assert_eq!(g.def.tribute_per_coin_fallback, 1.0);
+        for s in Step::ALL {
+            assert_eq!(g.has_rung(s), s != Step::None);
+            assert_eq!(g.next_up(s), s.up());
+            assert_eq!(g.next_down(s), s.down());
+        }
+        assert!((0..4).all(|u| g.bare[u] as usize == u));
+    }
+
+    #[test]
+    fn an_empty_top_rung_ends_the_ladder() {
+        let c = goblin_with(&["envoy", "scouts", "raid", "invasion", "plunder"]);
+        assert!(!c.has_rung(Step::Siege));
+        assert_eq!(c.next_up(Step::Raid), Some(Step::Invasion));
+        assert_eq!(c.next_up(Step::Invasion), None);
+        assert_eq!(c.next_down(Step::Invasion), Step::Raid);
+    }
+
+    #[test]
+    fn only_raid_among_the_war_rungs() {
+        let c = goblin_with(&["raid", "plunder"]);
+        assert_eq!(c.next_up(Step::None), Some(Step::Notice));
+        assert_eq!(c.next_up(Step::Notice), Some(Step::Raid));
+        assert_eq!(c.next_up(Step::Raid), None);
+        assert_eq!(c.next_down(Step::Raid), Step::Notice);
+        assert_eq!(c.next_down(Step::Notice), Step::None);
+        assert_eq!(c.next_down(Step::None), Step::None);
+    }
+
+    #[test]
+    fn a_step_down_crosses_empty_rungs() {
+        // Siege with Invasion and Raid empty: one step down from Siege lands on Scouts.
+        let c = goblin_with(&["envoy", "scouts", "siege", "plunder"]);
+        assert_eq!(c.next_down(Step::Siege), Step::Scouts);
+        assert_eq!(c.next_up(Step::Scouts), Some(Step::Siege));
+        // With every party rung below it empty too, it lands on Notice.
+        let c = goblin_with(&["siege", "plunder"]);
+        assert_eq!(c.next_down(Step::Siege), Step::Notice);
+    }
+
+    #[test]
+    fn a_culture_that_plunders_needs_a_plunder_party() {
+        let mut def = goblin_def();
+        def.parties.remove("plunder");
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.plunder_mean_days = None;
+        assert!(Culture::resolve(def).is_ok());
+    }
+
+    #[test]
+    fn the_new_fields_are_checked() {
+        let mut def = goblin_def();
+        def.repeat_days = Some(0.0);
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.repeat_days = Some(2.0);
+        def.tribute_per_coin_fallback = 0.0;
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.tribute_per_coin_fallback = 9.0;
+        def.units[0].without_crystal = Some("nobody".into());
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.units[0].without_crystal = Some("archer".into());
+        let c = Culture::resolve(def.clone()).unwrap();
+        assert_eq!(c.unit_as(0, false).name, "archer");
+        assert_eq!(c.unit_as(0, true).name, "warrior");
+        // A lair cannot carry loot home: it has no storehouse.
+        def.haven = false;
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.loot_destroyed = true;
+        assert!(Culture::resolve(def).is_ok());
+    }
 }
