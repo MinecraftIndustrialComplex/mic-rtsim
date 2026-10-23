@@ -4217,6 +4217,48 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// One op's answer comes as several records (a holder's, journaled again, and held lines answered
+    /// later): each (op, line) is booked once through the journal, a line twice (a holder's record
+    /// again) booked once, and the camp's records keep no op id (the engine acknowledges by
+    /// sequence).
+    #[test]
+    fn an_answer_in_two_records_books_every_line_and_a_repeated_line_once() {
+        let (_dir, e, mut j) = grove("camp-split", 3);
+        j.conflict_plugin.answer_ticks = 100_000;
+        camp_in(&mut j);
+        assert_eq!(slots(&e), [0, 3, 0, 0, 0]);
+        let record = j
+            .conflict_plugin
+            .queued()
+            .into_iter()
+            .find_map(|o| match o {
+                O::CampBodies(b) => Some(b),
+                _ => None,
+            })
+            .expect("the answer, on its way");
+        let _ = j.conflict_plugin.drop_queued();
+        assert_eq!(record.lines.len(), 3);
+        assert!(record.lines.iter().all(|l| l.action == cb::ACTION_ADOPT));
+        let part = |lines: &[cb::LineAnswer]| {
+            O::CampBodies(cb::CampBodies {
+                lines: lines.to_vec(),
+                ..record.clone()
+            })
+        };
+        j.conflict_obs(&part(&record.lines[..1]));
+        j.conflict_obs(&part(&record.lines[1..]));
+        j.conflict_obs(&part(&record.lines[..1]));
+        j.idle();
+        assert_eq!(slots(&e), [3, 0, 0, 0, 0], "all three lines booked");
+        assert_eq!(e.with_conflict(|c, _| c.stats.camp_answers), 3, "once each");
+        assert!(
+            !e.with_conflict(|c, _| c.op_applied(record.op)),
+            "no op id kept"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// CAMP_OUT ends the epoch: the lines in flight are void, and a late answer for them is booked by
     /// the world fact it reports, not dropped, and a CAMP_OUT for another epoch ends nothing.
     #[test]

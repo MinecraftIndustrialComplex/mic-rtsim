@@ -378,9 +378,9 @@ under its own heading.
   `derive_gen(key, slot, tick, last retired)`, never 0 (0 names a stray) and never the generation the
   slot last retired. The engine's allocator byte for a camp's ops is 0x43; a CAMP_RECONCILE's op is
   `derive_op(key, epoch, seq)`, so a decision made again after a restart has the same op. An answer
-  is booked once by its op (`first_time`, `applied_ops`, which is unbounded: a scaling note for the
-  slice that bounds the others), a CAMP_DEATH once by `Obs::op()` in `ingest` and by Replay's
-  `op_of` in rtsim-jni; a death replayed anyway is absorbed by the generation check.
+  line is booked once by (op, line) (MZB-169) and a CAMP_DEATH by its slot and generation (MZB-170);
+  neither op goes into `applied_ops`, which first held them and grew with every death of a farmed
+  grove.
 - **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` is unchanged,
   so a feud, the bench and a save cost what they did. A read that needs the slots (`camp_sync`,
   called by every ledger entry point and by the audit) first adds one owed slot for each whole
@@ -415,18 +415,17 @@ under its own heading.
 - **MZB-159** (a replayed census): rtsim-jni sets `Conflict::replaying` around `ingest` for a record
   whose `OBS_SEQ` is before the session's first, and a census read that way only marks its camp out:
   the session that took it is over, its epoch is not the plugin's, and it orders nothing. The
-  records that follow it (answers, deaths) are booked by state as usual. A fork (reported): the plan
+  records that follow it (answers, deaths) are booked as usual (an answer by the action it carries,
+  MZB-168), and the census still names its epoch as the camp's latest (MZB-169). A fork (reported): the plan
   says a replay is skipped by op id; a census has no state to book, and booking one against a camp
   that is out would adopt strays on a dead epoch.
 - **MZB-160** (lines are void, never resent): at CAMP_OUT, and at a session start for every camp, a
   camp's lines in flight are voided and nothing is sent again; at most one line is in flight per
   slot (`send_lines` guards it as well as its callers, which makes the guard defence only); orders
   go only to a camp that is in; a CAMP_OUT for an epoch that is not the camp's ends nothing.
-- **MZB-161** (an answer with no line in flight): booked by the action the slot's state implies:
-  Owed means a spawn, Left or Dead means a take; Body and Gone book nothing. This is the replay and
-  the lost-then-found answer (a record journaled again from the marker a body left), and the crash
-  table's "booked by state". An adoption answered "nothing to do" found no stray, so no body is
-  there and none is booked.
+- **MZB-161** (an answer with no line in flight): replaced by MZB-168. M4 first booked it by the
+  action the slot's state implies (Owed a spawn, Left or Dead a take, Body and Gone nothing), which
+  was a guess; the review of 408d4a07 showed it lose members.
 - **MZB-162** (a death books the member wherever the books have it): a CAMP_DEATH for a slot and
   generation the books hold frees it: at home the pool loses a member (the generation retired as
   died), away the party loses that unit in any phase (`member_died`) and a party left with none ends
@@ -445,7 +444,8 @@ under its own heading.
   the tick it arrives, and answers it after `answer_ticks`.
 - **MZB-165** (pages): the conflict page magic is RTC5 and `META_VERSION` is 4: a camp's ledger
   (slots, retired generations, throne, refill stamp) is saved with its faction, and the stats grew
-  six camp counters. No migration (no backward compatibility before release). This changes a page
+  six camp counters; a camp's page also holds the latest epoch a census named and the (op, line)
+  answers booked in it (MZB-169). No migration (no backward compatibility before release). This changes a page
   format, so this branch must not land while the coordinator's format freeze holds (until M2 is on
   origin/main), and the rtsim-view fixtures are regenerated from fresh GameTest worlds at landing.
   The fixtures and hashes tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`
@@ -463,12 +463,48 @@ under its own heading.
 - **MZB-167** (a lost answer is a lost body in the emulation, not in the plugin): an applied take or
   set-out whose answer never reaches the engine (lost, or in the journal's tail at a restart) leaves
   a slot Left though the body is gone; if the party then comes home the slot becomes Body, three
-  censuses miss it and it is written off. The engine books the answer by state when it does arrive
-  (Body, body gone: owed), and the real plugin journals it again from the marker the body left
-  (§4.9), but the fake does not, so the chaos run's bound on write-offs is the members the crash
-  may have lost: deaths never recorded plus takes and set-outs whose answers were lost
-  (`CampRun::lost_members`), not deaths alone. A fork (reported): M5 must keep the marker's
-  re-journal, as the plan says, because the engine cannot tell the cases apart at a homecoming.
+  censuses miss it and it is written off. Amended (review of 408d4a07): M4 first said this was a
+  loss of the emulation and not of the plugin, because the real plugin journals the answer again
+  from the marker the body left (§4.9). That premise was wrong: the marker's record, booked by the
+  state its slot has by then (Body), booked nothing, so the real plugin lost the member too. It is
+  fixed by MZB-168 (the record carries its action and is booked by it, so Body with a set-out done
+  is owed and spawned). The chaos run's bound on write-offs, `CampRun::lost_members`, is still
+  the members the crash may have lost.
+
+- **MZB-168** (CAMP_BODIES' lines carry their action; replaces MZB-161): a line's answer is
+  `u32 line, u32 slot, u32 generation, u8 action, u8 outcome, u16 reserved`, 16 bytes as before (so
+  the record's size is unchanged), with the action of the CAMP_RECONCILE line it answers
+  (`ACTION_*`), and the engine books the world fact by that action: not by the slot's state, which
+  was MZB-161's guess, and not by the line in flight, which a CAMP_OUT or a session start voids
+  while Java still answers it. The reviewer's case: a grove of 9 raids, Java applies the four
+  set-outs, the answer waits in a journal tail past CAMP_OUT, the party gets home abstractly (Left
+  becomes Body), and the answer then books nothing for a Body slot; four censuses miss four bodies
+  and write four members off. By its action the answer says "set out, done": the Body slot is owed
+  and the next census spawns it. The outcome constants are `u8` now. Layout changed in
+  `boundary.rs` (encode, decode, fixture, generator), docs/boundary.md's row 0x0812 and
+  MOWZIE.md's record table; rtsim-jni uses the same codec, so its decoder follows. A fork
+  (reported): the lead's decision after the review, not the plan's wording. MOWZIE.md's §4.9 prose
+  and crash table rows 2 and 3 still say an answer is "booked by state"; they should say "by the
+  action it carries".
+- **MZB-169** (an answer line is booked once by (op, line), and only in the latest census's
+  epoch): one op has several CAMP_BODIES records, since a holder's record is journaled again at load
+  and held lines are answered later, so the skip is per line, not per op (a four-line set-out
+  answered as two records of two lines lost the second under the op-only skip). A camp keeps the
+  latest epoch a census named (`seen`, replayed censuses too) and the (op, line) answers booked in
+  it (`answered`, sorted, saved with the ledger), emptied at each census of a new epoch; an answer
+  of any other epoch books nothing, since a later census read the world after Java applied the
+  lines, and the fact the answer reports is older than the books. That is the prune by epoch: the
+  set holds one epoch's lines (a few dozen a day at a raided camp) and cannot grow without bound.
+  Answers booked by action need the skip: a copy of a set-out answer, delivered after the party is
+  home and the bodies are back, would turn a living body's slot owed and spawn a second body.
+- **MZB-170** (camp records keep no op id): CAMP_DEATH is idempotent by its slot and generation
+  (the first frees the slot, a copy finds none), and CAMP_BODIES by (op, line), so neither goes into
+  `applied_ops`. `Obs::op()` no longer returns the death's op and rtsim-jni's `conflict::op_of` no
+  longer gives it to `Replay`, which kept it for the session. The op stays in the record, as
+  Java's name for it. The engine acknowledges by sequence (`ackedObsSeq`, docs/boundary.md §1), not
+  by op id, so Java's dropping of a marker's record is unaffected. A fork (reported): the lead's
+  decision; a death replayed after a slot was freed and made again under a new generation is
+  absorbed by the generation, which `derive_gen` never repeats for the slot's last life.
 
 ## M5 Camp reconciler, Java
 

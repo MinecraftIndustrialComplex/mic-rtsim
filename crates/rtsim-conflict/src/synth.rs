@@ -260,7 +260,7 @@ pub struct AppliedLine {
     pub op: u64,
     pub line: boundary::ReconcileLine,
     /// `LINE_DONE`, `LINE_NOTHING` or `LINE_STALE`.
-    pub outcome: u32,
+    pub outcome: u8,
 }
 
 /// The plugin's side, headless: commands through the codec in, observations through the codec
@@ -748,6 +748,11 @@ impl FakeConflict {
         })
     }
 
+    /// A copy of the observations not yet delivered, in the order they are queued.
+    pub fn queued(&self) -> Vec<Obs> {
+        self.queue.iter().map(|e| e.2.clone()).collect()
+    }
+
     /// A shutdown before the journal's write: every observation not yet delivered is lost. The
     /// world keeps what it did (a body killed, a line applied), the engine never hears of it.
     pub fn drop_queued(&mut self) -> Vec<Obs> {
@@ -791,6 +796,7 @@ impl FakeConflict {
                 line: i as u32,
                 slot: l.slot,
                 generation: l.generation,
+                action: l.action,
                 outcome,
             });
         }
@@ -828,7 +834,7 @@ impl FakeConflict {
 
     /// One line, applied to the camp's world: its target state, so that applying it twice changes
     /// nothing.
-    fn apply_line(&mut self, faction: u64, l: &boundary::ReconcileLine) -> u32 {
+    fn apply_line(&mut self, faction: u64, l: &boundary::ReconcileLine) -> u8 {
         use boundary::{
             ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN,
             ACTION_TAKE, LINE_DONE, LINE_NOTHING,
