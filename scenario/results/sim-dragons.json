@@ -2,7 +2,7 @@
   "seed": 7,
   "days": 48,
   "starts_in": "Autumn",
-  "wall_ms": 554.7669910000001,
+  "wall_ms": 580.5005050000001,
   "checks": [
     {
       "name": "conservation with predation",
@@ -408,7 +408,11 @@
     "surveys": 0,
     "tributes": 0,
     "tribute_lapses": 0,
-    "tribute_stacks": 0
+    "tribute_stacks": 0,
+    "player_losses": 1,
+    "starved_away": 0,
+    "arrivals_gated": 0,
+    "heirs_sent": 0
   },
   "hunts": [
     {
@@ -3670,8 +3674,17 @@
     "wound_unit_milli": 250,
     "wound_shortens_milli": 3000,
     "raid_wound_milli": 400,
-    "fruitless_before_move": 3,
     "respawn_delay_days": 20,
+    "respawn_cap_days": 192,
+    "respawn_half_life_days": 96,
+    "starve_leave": 0.35,
+    "starve_leave_age_days": 60,
+    "arrive_food": 0.5,
+    "arrive_recheck_days": 24,
+    "fed_tau_days": 30.0,
+    "gate_village": 300.0,
+    "gate_wild": 30.0,
+    "gate_half": 200.0,
     "respawn_age_days": 30,
     "respawn_from_blocks": 3000,
     "view_radius": 160,
