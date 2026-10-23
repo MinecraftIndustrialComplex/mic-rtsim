@@ -90,11 +90,7 @@ fn a_lair_joins_without_news() {
     let lair = w.join(node(77, NodeKind::Lair, 600), at);
     assert_eq!(w.nodes[lair].kind, NodeKind::Lair);
     let village = w.join(
-        node(
-            78,
-            NodeKind::Village(rtsim_settle::Culture::Human),
-            1_200,
-        ),
+        node(78, NodeKind::Village(rtsim_settle::Culture::Human), 1_200),
         at,
     );
     let joined: Vec<u64> = rows_on(&w.tape)
