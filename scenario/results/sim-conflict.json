@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 244.02518600000002,
+      "wall_ms": 242.585191,
       "checks": [
         {
           "name": "conservation",
@@ -178,19 +178,11 @@
           "iron_ingot": 15.0
         },
         "from_villages": {
-          "bread": 3.463,
-          "emerald": 2.359,
-          "leather": 0.172,
-          "wheat": 16.621,
-          "wool": 1.385
+          "emerald": 2.032
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.463,
-          "emerald": 2.359,
-          "leather": 0.172,
-          "wheat": 16.621,
-          "wool": 1.385
+          "emerald": 2.032
         },
         "players_goods_landed_at_haven": {
           "bread": 3.0,
@@ -202,30 +194,30 @@
         "destroy:gasoline_bucket": 2
       },
       "haven_stock": {
-        "bread": 73.75,
-        "emerald": 32.951,
+        "bread": 71.81,
+        "emerald": 32.624,
         "leather": 3.658,
-        "wheat": 217.456,
+        "wheat": 207.534,
         "wool": 3.658
       },
       "feelings": [
         {
           "village": "Brindle",
-          "toward_camp": -24,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 109
           }
         },
         {
           "village": "Oakford",
-          "toward_camp": -24,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 106
           }
         },
         {
           "village": "Highmoor",
-          "toward_camp": -24,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 107
           }
@@ -239,21 +231,21 @@
         },
         {
           "village": "Fernwick",
-          "toward_camp": -25,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 105
           }
         },
         {
           "village": "Coldwell",
-          "toward_camp": -21,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 107
           }
         },
         {
           "village": "Mirewater",
-          "toward_camp": -25,
+          "toward_camp": 0,
           "toward_players": {
             "player b0b": 69
           }
@@ -317,7 +309,7 @@
         "waves": 6,
         "recalls": 5,
         "items_from_districts": 18,
-        "items_from_villages": 22,
+        "items_from_villages": 2,
         "blocks_destroyed": 2,
         "feuds_forgotten": 0,
         "reattributed": 0,
@@ -534,7 +526,7 @@
           "day": 21.084541666666667,
           "faction": "goblin camp 3232825345",
           "kind": "plunder",
-          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 22 items"
+          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 2 items"
         },
         {
           "tick": 513299,
@@ -555,7 +547,7 @@
           "day": 22.044916666666666,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "plunder home with 4 left and 22 items for the haven"
+          "what": "plunder home with 4 left and 2 items for the haven"
         },
         {
           "tick": 543408,
@@ -700,8 +692,8 @@
       ],
       "wire_bytes": 2968,
       "state_hashes": [
-        "8405b0753de685bf",
-        "f0df0d10ff0881a6"
+        "bb8145893dde677f",
+        "50ca9c6ca9a6fbb4"
       ],
       "archive": {
         "rows_per_day": 9.416666666666666,
@@ -715,7 +707,7 @@
           0.2916666666666667
         ],
         "legs_per_day": 6.208333333333333,
-        "payload_bytes_per_day": 44.625,
+        "payload_bytes_per_day": 44.541666666666664,
         "dropped": 0,
         "by_kind": {
           "conflict.chief": 2,
@@ -744,7 +736,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 236.877517,
+      "wall_ms": 243.17579,
       "checks": [
         {
           "name": "conservation",
@@ -835,19 +827,11 @@
       "ledger": {
         "from_players": {},
         "from_villages": {
-          "bread": 3.387,
-          "emerald": 2.831,
-          "leather": 0.168,
-          "wheat": 16.259,
-          "wool": 1.355
+          "emerald": 3.681
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.387,
-          "emerald": 2.831,
-          "leather": 0.168,
-          "wheat": 16.259,
-          "wool": 1.355
+          "emerald": 3.681
         },
         "players_goods_landed_at_haven": {},
         "tribute": {
@@ -856,10 +840,10 @@
       },
       "unmapped_industry_goods": {},
       "haven_stock": {
-        "bread": 73.75,
+        "bread": 72.294,
         "emerald": 68.994,
         "leather": 3.658,
-        "wheat": 221.1,
+        "wheat": 208.278,
         "wool": 3.658
       },
       "feelings": [
@@ -953,7 +937,7 @@
         "waves": 1,
         "recalls": 5,
         "items_from_districts": 0,
-        "items_from_villages": 22,
+        "items_from_villages": 3,
         "blocks_destroyed": 0,
         "feuds_forgotten": 0,
         "reattributed": 0,
@@ -1163,14 +1147,14 @@
           "day": 21.084541666666667,
           "faction": "goblin camp 3232825345",
           "kind": "plunder",
-          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 22 items"
+          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 3 items"
         },
         {
           "tick": 529078,
           "day": 22.044916666666666,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "plunder home with 4 left and 22 items for the haven"
+          "what": "plunder home with 4 left and 3 items for the haven"
         }
       ],
       "plugin_commands": [
@@ -1261,8 +1245,8 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "08abc50aa43a4b84",
-        "bb17141438c1ea10"
+        "cac7bbe17c5375bd",
+        "c4f6454e3243d1fc"
       ],
       "archive": {
         "rows_per_day": 7.791666666666667,
@@ -1276,7 +1260,7 @@
           0.041666666666666664
         ],
         "legs_per_day": 5.375,
-        "payload_bytes_per_day": 20.416666666666668,
+        "payload_bytes_per_day": 20.333333333333332,
         "dropped": 0,
         "by_kind": {
           "conflict.demand": 4,
@@ -1299,7 +1283,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 238.178441,
+      "wall_ms": 236.635267,
       "checks": [
         {
           "name": "conservation",
@@ -1370,30 +1354,22 @@
       "ledger": {
         "from_players": {},
         "from_villages": {
-          "bread": 3.463,
-          "emerald": 2.356,
-          "leather": 0.172,
-          "wheat": 16.624,
-          "wool": 1.385
+          "emerald": 2.022
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.463,
-          "emerald": 2.356,
-          "leather": 0.172,
-          "wheat": 16.624,
-          "wool": 1.385
+          "emerald": 2.022
         },
         "players_goods_landed_at_haven": {},
         "tribute": {}
       },
       "unmapped_industry_goods": {},
       "haven_stock": {
-        "bread": 77.213,
-        "emerald": 32.948,
-        "leather": 3.83,
-        "wheat": 235.613,
-        "wool": 5.043
+        "bread": 73.75,
+        "emerald": 32.614,
+        "leather": 3.658,
+        "wheat": 218.989,
+        "wool": 3.658
       },
       "feelings": [
         {
@@ -1486,7 +1462,7 @@
         "waves": 1,
         "recalls": 3,
         "items_from_districts": 0,
-        "items_from_villages": 22,
+        "items_from_villages": 2,
         "blocks_destroyed": 0,
         "feuds_forgotten": 0,
         "reattributed": 0,
@@ -1633,14 +1609,14 @@
           "day": 21.084541666666667,
           "faction": "goblin camp 3232825345",
           "kind": "plunder",
-          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 22 items"
+          "what": "raids node 4 (defence 3.8 against 7.6): 4 fall, carries off 2 items"
         },
         {
           "tick": 529078,
           "day": 22.044916666666666,
           "faction": "goblin camp 3232825345",
           "kind": "home",
-          "what": "plunder home with 4 left and 22 items for the haven"
+          "what": "plunder home with 4 left and 2 items for the haven"
         }
       ],
       "plugin_commands": [
@@ -1707,8 +1683,8 @@
       ],
       "wire_bytes": 1472,
       "state_hashes": [
-        "73ec9d02d64ae51e",
-        "ad2199e735a2bbed"
+        "898d50ac5d6c30de",
+        "c3625f63df895c66"
       ],
       "archive": {
         "rows_per_day": 7.125,
@@ -1722,7 +1698,7 @@
           0.041666666666666664
         ],
         "legs_per_day": 5.083333333333333,
-        "payload_bytes_per_day": 14.291666666666666,
+        "payload_bytes_per_day": 14.208333333333334,
         "dropped": 0,
         "by_kind": {
           "conflict.calm": 1,
@@ -1749,7 +1725,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 8405b0753de685bf, world f0df0d10ff0881a6 (uninterrupted 8405b0753de685bf, f0df0d10ff0881a6)"
+    "detail": "saved and loaded on day 9.3: conflict bb8145893dde677f, world 50ca9c6ca9a6fbb4 (uninterrupted bb8145893dde677f, 50ca9c6ca9a6fbb4)"
   },
   "archive": {
     "rows_per_day": 9.416666666666666,
@@ -1763,7 +1739,7 @@
       0.2916666666666667
     ],
     "legs_per_day": 6.208333333333333,
-    "payload_bytes_per_day": 44.625,
+    "payload_bytes_per_day": 44.541666666666664,
     "dropped": 0,
     "by_kind": {
       "conflict.chief": 2,
