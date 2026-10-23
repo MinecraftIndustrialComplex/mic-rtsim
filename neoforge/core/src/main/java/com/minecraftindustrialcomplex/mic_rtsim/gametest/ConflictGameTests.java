@@ -1393,6 +1393,17 @@ public final class ConflictGameTests {
                             check("the forced chunks tick entities", RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
                 }))
                 .thenExecute(() -> {
+                    // A reused world's clock, restored from its pages, runs ahead of game time by the last
+                    // run's P1_ADVANCE asks (the offset lives only for a session), and no ask moves it until
+                    // game time plus this session's offset passes it. One ask of the gap catches it up before
+                    // the camp exists (MZB-126).
+                    mark[2] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
+                    long gap = mark[2] - level.getGameTime();
+                    if (gap > 0)
+                        e.phase1Advance(gap);
+                })
+                .thenWaitUntil(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[2]))
+                .thenExecute(() -> {
                     int py = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, px, bz);
                     player[0] = FakePlayers.add(level, new Vec3(px + 0.5, py, bz + 0.5), "conflict_feud");
                     // Creative: the scouts' crossbows find no target in it (the fake player is never ticked).
@@ -1439,8 +1450,8 @@ public final class ConflictGameTests {
                     keep.run();
                     if (partyOf(faction[0], 0) != null)
                         return;
-                    // Two dwells of half a day (20 steps) and the hand-overs: 32 asks on a quiet machine. The
-                    // P1_ADVANCE orders queue when the engine lags, so a loaded machine asks more (MZB-126).
+                    // Two dwells of half a day and the hand-overs: 10 asks on a fresh world. The P1_ADVANCE
+                    // orders queue when the engine lags, so a loaded machine asks more (MZB-126).
                     check("an envoy within 80 steps of " + step + " ticks (asks " + asks[1] + ", world tick "
                             + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] < 80);
                     advance.run();

@@ -311,7 +311,11 @@ under its own heading.
   chunks persist in the reused world), and releases its own through a GameTest listener on pass or fail
   (`ConflictKit.onEnd`); test 18 resets FIGHT_GAP at its start and in such a listener; tests remove their
   fake players the same way. The feud test counts P1_ADVANCE orders, which queue when the engine lags: it
-  allows 80 for the envoy (32 on a quiet machine, more than 40 under load), as it allows 160 for the raid.
+  allows 80 for the envoy, as it allows 160 for the raid. Amended: the high counts (25, 40, then 80 not
+  enough) were mostly a reused world's clock, not load. The phase 1 world restores its tick from the
+  pages, which ran ahead of game time by the last run's asks, while the P1_ADVANCE offset lives only for a
+  session; no ask moved the clock until game time plus the new offset passed it. The test now asks the
+  gap once, before the camp exists, and waits for the clock to move. A fresh world needs 10 asks.
 - **MZB-127** (a war chief with no units left): a chief-flagged stack whose count is 0 is a stack of the
   chief alone, one body of the stack's kind; the first build skipped it, so the chief got no body. Stacks
   keep the record's order otherwise (an empty stack without the chief is still skipped).
