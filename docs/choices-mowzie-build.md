@@ -633,6 +633,31 @@ under its own heading.
   Also tested, not a new rule: a restart in the middle of Peaceful goes on exactly as the run that
   kept going (the same deadline, expiry tick and commands; a jni crash-and-leave test), and two
   Peaceful spans move a deadline by both.
+- **MZB-139** (the party's chief flag goes stale; TALK review): when a chief dies of age while out
+  with a band, the lazy succession (`ensure_chief` on a feud wake or a plunder) cleared only the
+  faction's `chief_out`; the band kept `chief == true`, so a later CHIEF_KILLED for it killed the new
+  chief, who is at home. `succeed` now clears `chief` on every party of the faction (at most one
+  has it: `chief_out` allows one band at a time). Readers of the flag, all conservative: the war
+  chief's extra body (MZB-109) and BAND_CHIEF are written from the flag when a band materializes, so
+  a band materialized afterwards (a new wave, a new epoch) has neither; `chief_killed` returns at
+  once for a band without the flag, so a CHIEF_KILLED for it counts nothing (no `chiefs_killed`, no
+  rout, no second succession) and the new chief lives; the band-home path cleared `chief_out` for a
+  stale flag, which could free the new chief's place while his own band was out, and no longer
+  does; `ensure_chief` reads the faction's chief, not the flag. So the band carries on without a
+  chief. What Java sees: nothing new is sent at the succession. A chief body already spawned in
+  Minecraft stays until the band despawns; killing it sends a CHIEF_KILLED the engine drops (it is
+  no longer a chief body to the engine). Later BAND_MATERIALIZE commands of that band have no
+  BAND_CHIEF and no MEMBER_CHIEF stack. Tests: rtsim-conflict `mowzie_records` (the old chief dies
+  of age out with the band, then CHIEF_KILLED, the new chief at home lives; the control, a living
+  chief, still falls; a band materializing after the death has no chief body where the control has
+  one; the old band coming home leaves `chief_out` while the new chief's band is out); the first,
+  third and fourth fail on the old rule.
+- **MZB-140** (the heir's text, killed or aged): `succeed` told a death of age from a killing by the
+  killer alone, so a chief killed by a mob (BY_MOB, BY_OTHER) was logged as dying of age. It takes
+  `killed: bool` as its last parameter (the TALK branch adds the same parameter in the same place:
+  `chief_killed` passes true, `ensure_chief` false). The text is "dies of age" for false, "is
+  killed; the heir takes over, holding the grudge" for a player's kill, and "is killed, by no
+  player; the heir takes over" for a kill with none. Test: the three texts. Fails on the old text.
 
 ## M4 Camp reconciler, engine
 

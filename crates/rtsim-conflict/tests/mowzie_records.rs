@@ -1963,3 +1963,290 @@ fn two_peaceful_spans_move_a_deadline_by_both_and_it_comes_due_there() {
     assert_eq!(r.c.stats.expired, 1, "at it");
     assert_eq!(settled(&r), vec![boundary::SETTLED_EXPIRED]);
 }
+
+/// CHIEF_KILLED for `band`, by a mob (no player).
+fn chief_killed_by_mob(band: Handle<Party>, epoch: u32, op: u64) -> Obs {
+    Obs::ChiefKilled(boundary::ChiefKilled {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_MOB,
+        killer: (0, 0),
+        op,
+    })
+}
+
+/// The old chief dies of age while out with `band`, and the engine finds out (the lazy
+/// succession, on the next feud wake).
+fn chief_dies_of_age_out(r: &mut Run, band: Handle<Party>) -> ActorId {
+    assert!(r.c.parties[band].chief, "the chief rides with the band");
+    assert!(r.c.factions[r.f as usize].chief_out);
+    let old = r.c.factions[r.f as usize].chief;
+    let at = r.c.now() + 10;
+    r.w.knowledge.die(old, at);
+    let before = r.c.stats.successions;
+    // Another feud's wake (the settlers' climb) asks for the chief.
+    let settlers = r.c.settlers(&mut r.w);
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(synth::CAMP),
+            kind: SignalKind::Killing,
+            amount: 7.0,
+            actor: settlers,
+            pos: synth::REFINERY_POS,
+            district: Some(synth::REFINERY),
+        },
+        at + 5,
+    );
+    let limit = at + 6 * TICKS_PER_DAY;
+    while r.c.stats.successions == before && r.c.now() < limit {
+        r.run(r.c.now() + 600);
+    }
+    assert_eq!(r.c.stats.successions, before + 1, "the heir took over");
+    assert!(
+        r.c.parties
+            .get(band)
+            .is_some_and(|x| x.phase != Phase::Home),
+        "the band is still out"
+    );
+    old
+}
+
+/// MZB-139 (TALK review): a chief that dies of age while out with a band is replaced by the lazy
+/// succession, which cleared only the faction's `chief_out`; the band kept the chief flag, and a
+/// later CHIEF_KILLED for it killed the new chief, who is at home. The band now carries on
+/// without a chief: the flag is gone, the CHIEF_KILLED is stale (nothing counted, no rout, no
+/// second succession), and the new chief lives.
+#[test]
+fn a_chief_dead_of_age_while_out_leaves_no_chief_flag_on_the_band() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let old = chief_dies_of_age_out(&mut r, band);
+    let new = r.c.factions[r.f as usize].chief;
+    assert_ne!(new, old);
+    assert!(!r.c.parties[band].chief, "the band's chief is gone");
+    assert!(!r.c.factions[r.f as usize].chief_out);
+    assert!(r.c.parties.contains(band), "the band carries on");
+    let phase = r.c.parties[band].phase;
+    // The old chief's body, still in Minecraft, is killed: nothing happens to the new chief.
+    let successions = r.c.stats.successions;
+    let at = r.c.now() + 10;
+    r.ingest(chief_killed_by_mob(band, r.c.parties[band].epoch, 91), at);
+    assert_eq!(r.c.stats.chiefs_killed, 0, "no chief fell");
+    assert_eq!(r.c.stats.routs, 0, "no rout");
+    assert_eq!(r.c.stats.successions, successions, "no second succession");
+    assert_eq!(
+        r.c.factions[r.f as usize].chief, new,
+        "the new chief is the chief"
+    );
+    assert!(
+        r.w.knowledge.notable(new).is_some(),
+        "the new chief at home lives"
+    );
+    assert_eq!(r.c.parties[band].phase, phase, "the band carries on");
+}
+
+/// Control: with the chief alive, the same CHIEF_KILLED does kill him and the heir succeeds.
+#[test]
+fn a_chief_killed_with_his_band_still_falls_with_it() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let old = r.c.factions[r.f as usize].chief;
+    let at = r.c.now() + 10;
+    r.ingest(chief_killed_by_mob(band, r.c.parties[band].epoch, 92), at);
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_ne!(r.c.factions[r.f as usize].chief, old, "the heir is chief");
+    assert!(!r.c.parties[band].chief);
+}
+
+/// MZB-139: a band whose chief died of age before it materialized spawns without a chief body
+/// (no BAND_CHIEF, no MEMBER_CHIEF), where the control, the chief alive, spawns him (MZB-109).
+#[test]
+fn a_band_whose_chief_died_of_age_materializes_without_a_chief_body() {
+    let spawned = |dies: bool| {
+        let mut r = Run::new(37, quiet_goblins());
+        r.watch = true;
+        r.kill(20.0, Tick(10));
+        let band =
+            r.c.order_party(
+                &mut r.w,
+                synth::CAMP,
+                PartyKind::Raid,
+                Target::District(synth::REFINERY, synth::REFINERY_POS),
+                Some(r.p),
+                Tick(20),
+            )
+            .unwrap();
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        if dies {
+            chief_dies_of_age_out(&mut r, band);
+        }
+        let limit = r.c.now() + 4 * TICKS_PER_DAY;
+        let agent = Party::agent(band);
+        let mut got = None;
+        while got.is_none() && r.c.now() < limit {
+            r.kill(20.0, r.c.now() + 5);
+            r.run(r.c.now() + 600);
+            got = r.cmds.iter().find_map(|(_, c)| match c {
+                Cmd::Materialize(m) if m.agent == agent => Some(m.clone()),
+                _ => None,
+            });
+        }
+        got.expect("the band came into view")
+    };
+    let alive = spawned(false);
+    assert!(
+        alive.flags & boundary::BAND_CHIEF != 0,
+        "control: the chief"
+    );
+    assert!(
+        alive
+            .members
+            .iter()
+            .any(|s| s.flags & boundary::MEMBER_CHIEF != 0),
+        "control: his body"
+    );
+    let dead = spawned(true);
+    assert_eq!(dead.flags & boundary::BAND_CHIEF, 0, "no chief flag");
+    assert!(
+        dead.members
+            .iter()
+            .all(|s| s.flags & boundary::MEMBER_CHIEF == 0),
+        "no chief body"
+    );
+}
+
+/// MZB-139: the band that came home with the stale flag cleared `chief_out` while the new
+/// chief's own band was out, so a second band could carry the new chief at once. With the flag
+/// gone it cannot.
+#[test]
+fn an_old_band_coming_home_does_not_free_the_new_chiefs_place() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let old_band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    chief_dies_of_age_out(&mut r, old_band);
+    // The new chief rides out with another band.
+    let new_band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            r.c.now() + 1,
+        )
+        .unwrap();
+    assert!(r.c.parties[new_band].chief, "the new chief rides with it");
+    assert!(r.c.factions[r.f as usize].chief_out);
+    // The old band comes home, and the new chief is still out with his: his place stays taken.
+    let mut seen = 0;
+    let limit = r.c.now() + 8 * TICKS_PER_DAY;
+    while r.c.now() < limit && r.c.parties.contains(new_band) {
+        r.kill(1.0, r.c.now() + 5);
+        r.run(r.c.now() + 100);
+        if !r.c.parties.contains(old_band) && r.c.parties.contains(new_band) {
+            seen += 1;
+            assert!(
+                r.c.factions[r.f as usize].chief_out,
+                "the old band is home and the new chief's band is not"
+            );
+        }
+    }
+    assert!(seen > 0, "the old band came home first");
+}
+
+/// MZB-140 (TALK review): the heir's tape text tells a chief dead of age from one killed with no
+/// player killer (a mob, `/kill`), and from one a player killed.
+#[test]
+fn the_heirs_text_tells_a_death_of_age_from_a_killing() {
+    let text = |how: u8| {
+        let mut r = Run::new(36, quiet_goblins());
+        r.c.log_enabled = true;
+        r.kill(20.0, Tick(10));
+        let band =
+            r.c.order_party(
+                &mut r.w,
+                synth::CAMP,
+                PartyKind::Raid,
+                Target::District(synth::REFINERY, synth::REFINERY_POS),
+                Some(r.p),
+                Tick(20),
+            )
+            .unwrap();
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        match how {
+            0 => {
+                chief_dies_of_age_out(&mut r, band);
+            }
+            1 => {
+                let at = r.c.now() + 10;
+                r.ingest(chief_killed_by_mob(band, 0, 93), at);
+            }
+            _ => {
+                let at = r.c.now() + 10;
+                r.ingest(
+                    Obs::ChiefKilled(boundary::ChiefKilled {
+                        agent: Party::agent(band),
+                        epoch: 0,
+                        by: boundary::BY_PLAYER,
+                        killer: synth::PLAYER,
+                        op: 94,
+                    }),
+                    at,
+                );
+            }
+        }
+        let heirs: Vec<String> =
+            r.c.log
+                .iter()
+                .filter(|l| l.kind == "heir")
+                .map(|l| l.what.clone())
+                .collect();
+        assert_eq!(heirs.len(), 1, "one succession: {heirs:?}");
+        heirs[0].clone()
+    };
+    let age = text(0);
+    assert!(age.contains("dies of age"), "{age}");
+    let mob = text(1);
+    assert!(mob.contains("killed"), "{mob}");
+    assert!(!mob.contains("age"), "a mob's kill is not old age: {mob}");
+    assert!(mob.contains("no player"), "{mob}");
+    let player = text(2);
+    assert!(
+        player.contains("killed") && player.contains("holding the grudge"),
+        "{player}"
+    );
+    assert!(!player.contains("age"), "{player}");
+}
