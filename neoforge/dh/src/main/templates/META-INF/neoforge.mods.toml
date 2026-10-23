@@ -2,6 +2,11 @@ modLoader     = "javafml"
 loaderVersion = "${loader_version_range}"
 license       = "${mod_license}"
 
+# A dragon's body past DH's vanilla fade is left out while its far box is drawn (docs/choices-dh-feed.md DHT47).
+# defaultRequire 1: a mixin that no longer matches its target fails the launch.
+[[mixins]]
+config = "mic_rtsim_dh.mixins.json"
+
 [[mods]]
 modId       = "${mod_id}"
 version     = "${mod_version}"
