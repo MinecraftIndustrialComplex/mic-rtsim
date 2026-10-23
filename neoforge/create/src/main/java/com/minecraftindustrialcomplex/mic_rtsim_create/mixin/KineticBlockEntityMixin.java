@@ -1,0 +1,58 @@
+package com.minecraftindustrialcomplex.mic_rtsim_create.mixin;
+
+import com.minecraftindustrialcomplex.mic_rtsim_create.StaleKinetics;
+import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+/**
+ * A part of a kinetic network that comes back stale takes its source's speed instead of breaking
+ * (SECTIONS.md §2.8, slice S1; PATCHES.md row 56). Rotation no longer propagates into a chunk that is not
+ * loaded ({@link RotationPropagatorMixin}), so a chain conveyor in an away chunk keeps its last speed while
+ * the loaded end's source changes: a boiler's level, a motor's setting, a reversal. When the chunk loads,
+ * each block entity's first tick attaches it ({@code attachKinetics}, Create's
+ * {@code propagateNewSource}), which on a speed that no longer matches a neighbour in the same network,
+ * or on opposite signs, breaks the block ({@code Level.destroyBlock}). Create already does this to a shaft
+ * across a chunk border whose source changed while the chunk was not loaded; for a chain it never
+ * happened, because Create loaded the far chunk.
+ *
+ * <p>At a block entity's first attach, when it takes its speed from a block entity in another chunk that
+ * is loaded and no longer gives it that speed or network ({@link StaleKinetics#staleSource}), it is
+ * re-synced instead: Create's own {@code propagateMissingSource} clears it and everything that takes its
+ * speed from it, then {@code propagateNewSource} from the source gives the part the source's speed, as
+ * Create does when a source changes. The re-sync waits one tick, so that every block entity of the chunk
+ * that loaded has joined its network first ({@code initialize}, which counts it out of the network's
+ * unloaded share). Every other attach is Create's own.
+ */
+@Mixin(value = KineticBlockEntity.class, remap = false)
+public abstract class KineticBlockEntityMixin {
+    @Unique
+    private boolean mic_rtsim$attached;
+    @Unique
+    private boolean mic_rtsim$deferred;
+
+    @Inject(method = "attachKinetics", at = @At("HEAD"), cancellable = true)
+    private void mic_rtsim$resyncStale(CallbackInfo ci) {
+        if (mic_rtsim$attached)
+            return;
+        KineticBlockEntity self = (KineticBlockEntity) (Object) this;
+        KineticBlockEntity source = StaleKinetics.staleSource(self);
+        if (source == null) {
+            mic_rtsim$attached = true;
+            return;
+        }
+        if (!mic_rtsim$deferred) {
+            // updateSpeed stays true: the next tick attaches again
+            mic_rtsim$deferred = true;
+            ci.cancel();
+            return;
+        }
+        mic_rtsim$attached = true;
+        self.updateSpeed = false;
+        StaleKinetics.resync(self, source);
+        ci.cancel();
+    }
+}

@@ -7,8 +7,10 @@
     "ChainConveyorBlockEntityMixin",
     "ChainConveyorFrogportTargetMixin",
     "GlobalStationMixin",
+    "KineticBlockEntityMixin",
     "KineticNetworkMixin",
     "PortableStorageInterfaceMixin",
+    "RotationPropagatorInvoker",
     "RotationPropagatorMixin",
     "TrainMixin"
   ],
