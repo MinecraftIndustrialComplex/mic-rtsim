@@ -817,22 +817,33 @@ fn blockade_off_changes_nothing() {
 /// The model's year (four 24-day seasons), as in `equilibrium.rs`.
 const YEAR: u64 = 96;
 
-/// `f` on each job, up to `threads` at a time on their own threads, in job order.
+/// `f` on each job, up to `threads` at a time on their own threads, each thread taking the next
+/// job when it is free (the seas' runs differ a lot in length); the results in job order.
 fn per_job<J: Sync, T: Send>(threads: usize, jobs: &[J], f: impl Fn(&J) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, threads));
-    let chunk = jobs.len().div_ceil(threads).max(1);
-    std::thread::scope(|sc| {
-        let hs: Vec<_> = jobs
-            .chunks(chunk)
-            .map(|c| {
-                let f = &f;
-                sc.spawn(move || c.iter().map(f).collect::<Vec<T>>())
+    let next = AtomicUsize::new(0);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                let (f, next) = (&f, &next);
+                sc.spawn(move || {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(j) = jobs.get(i) else { break };
+                        mine.push((i, f(j)));
+                    }
+                    mine
+                })
             })
             .collect();
         hs.into_iter()
             .flat_map(|h| h.join().expect("a sea's run panicked"))
             .collect()
-    })
+    });
+    out.sort_by_key(|(i, _)| *i);
+    out.into_iter().map(|(_, t)| t).collect()
 }
 
 /// One sea's unattended run with closures on or off, sampled every day.
