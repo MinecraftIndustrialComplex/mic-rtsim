@@ -353,6 +353,7 @@ fn code_tables(out: &mut String) {
         let b = obs_bytes(Obs::Discard {
             district: d,
             reason,
+            station: None,
         });
         (format!("{reason:?}"), u32_at(&b, 4))
     })
@@ -881,9 +882,14 @@ fn main() {
         let seq = f.u64("obs_seq", g.u64());
         let at = game_time(&mut f, &mut g);
         let district = district(&mut f, &mut g);
-        let reason = DiscardReason::ProgressiveContraption;
+        let reason = DiscardReason::Other;
         f.sym("discard_reason", format!("{reason:?}"));
-        let o = Obs::Discard { district, reason };
+        let station = Some(StationId(f.u64("station", g.u64())));
+        let o = Obs::Discard {
+            district,
+            reason,
+            station,
+        };
         obs(
             &mut out,
             name,

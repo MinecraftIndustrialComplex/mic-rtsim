@@ -477,6 +477,91 @@ impl Glass {
         c.ports_at.insert(inv, v);
     }
 
+    /// A train's cargo at a station whose last ports named `inventories` (SECTIONS.md §4.4, choice
+    /// SC75): with judging units, cargo whose named inventories all lie in one unit is that unit's
+    /// port, booked at the first of them; cargo naming inventories of several units, or of a unit
+    /// and of none, cannot be split between them, and those units lose their open windows (S3's
+    /// judging groups by residue would judge them together). Cargo naming no inventory, or none a
+    /// unit holds, is the district's alone, as before.
+    pub fn cargo(
+        &mut self,
+        at: Tick,
+        district: DistrictId,
+        revision: u32,
+        inventories: &[u32],
+        goods: &GoodVec,
+        tun: &GlassTunables,
+    ) {
+        if goods.is_empty() || inventories.is_empty() {
+            return;
+        }
+        let Some(c) = self
+            .districts
+            .get(&district)
+            .and_then(|dg| dg.compiled.as_ref())
+        else {
+            return;
+        };
+        if !c.units.active() || c.graph.end.revision != revision {
+            return;
+        }
+        let of: Vec<Option<u16>> = inventories.iter().map(|&i| c.units.unit_of_inv(i)).collect();
+        let mut hit: Vec<u16> = of.iter().flatten().copied().collect();
+        hit.sort_unstable();
+        hit.dedup();
+        if hit.is_empty() {
+            return;
+        }
+        if hit.len() == 1 && of.iter().all(Option::is_some) {
+            let inv = inventories[0];
+            self.port(district, revision, inv, goods);
+            return;
+        }
+        let Some(dg) = self.districts.get_mut(&district) else {
+            return;
+        };
+        dg.note(at, discard::STATION);
+        if let Some(c) = dg.compiled.as_mut() {
+            for u in hit {
+                c.discard_unit(u, at, tun);
+            }
+        }
+        self.recount(district, tun);
+    }
+
+    /// A station's `Other` discard (SECTIONS.md §3.6): the district's window, and the units holding
+    /// the inventories its last ports named; every unit when it named none.
+    pub fn station_discard(
+        &mut self,
+        at: Tick,
+        district: DistrictId,
+        inventories: &[u32],
+        tun: &GlassTunables,
+    ) {
+        let Some(dg) = self.districts.get_mut(&district) else {
+            return;
+        };
+        let Some(c) = dg.compiled.as_mut() else {
+            return;
+        };
+        let mut hit: Vec<u16> = inventories
+            .iter()
+            .filter_map(|&i| c.units.unit_of_inv(i))
+            .collect();
+        hit.sort_unstable();
+        hit.dedup();
+        if inventories.is_empty() {
+            c.discard(at, tun);
+        } else {
+            for u in hit {
+                c.discard_unit(u, at, tun);
+            }
+            c.discard_district(at, tun);
+        }
+        dg.note(at, discard::STATION);
+        self.recount(district, tun);
+    }
+
     /// One good ported into (positive) or out of an inventory: [`Glass::port`] for one good.
     pub fn port_one(
         &mut self,

@@ -18,8 +18,9 @@
 //! - **Sections** (SECTIONS.md §5, slice S2): the compile's sections are not saved but recomputed
 //!   from its records, and the page keeps their fingerprints. A page whose fingerprints are not
 //!   those its compile cuts into now (a changed `glass.sectionsMax`, or a changed fold), or one of
-//!   the format before sections ([`GLASS_MAGIC_IGL1`]) or before unit windows
-//!   ([`GLASS_MAGIC_IGL2`]), drops that district's glass state alone ([`PageRead::Dropped`]): the
+//!   the format before sections ([`GLASS_MAGIC_IGL1`]), before unit windows
+//!   ([`GLASS_MAGIC_IGL2`]) or before the station discards ([`GLASS_MAGIC_IGL3`]), drops that
+//!   district's glass state alone ([`PageRead::Dropped`]): the
 //!   district learns again. The judging units are recomputed with the sections (a row cap's cut
 //!   held, `DistrictGlass::sections_cap`), their bounds from the solve, and their saved windows are
 //!   checked against them.
@@ -37,8 +38,13 @@ use super::solve::{GoodBound, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL3": the glass page with judging units' windows, SECTIONS.md §5).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL3");
+/// The glass page's magic ("IGL4": the glass page with judging units' windows and the station
+/// discards' count, SECTIONS.md §5, choice SC63).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL4");
+
+/// The magic of the glass page before the station discards' count (slices S2b, S2c): read as a
+/// dropped district, never decoded.
+pub const GLASS_MAGIC_IGL3: u32 = u32::from_le_bytes(*b"IGL3");
 
 /// The magic of the glass page before sections (G2-9): read as a dropped district, never decoded.
 pub const GLASS_MAGIC_IGL1: u32 = u32::from_le_bytes(*b"IGL1");
@@ -92,6 +98,11 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
     if magic == GLASS_MAGIC_IGL2 {
         return Ok(PageRead::Dropped(
             "a page of the format before unit windows (IGL2)",
+        ));
+    }
+    if magic == GLASS_MAGIC_IGL3 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before the station discards (IGL3)",
         ));
     }
     if magic != GLASS_MAGIC {

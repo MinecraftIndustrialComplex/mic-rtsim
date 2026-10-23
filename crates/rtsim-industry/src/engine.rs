@@ -928,7 +928,25 @@ impl Engine {
                     self.district_event(kinds::INDUSTRY_STALE, *district, at, STALE_EDIT);
                 }
             }
-            Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
+            Obs::Discard {
+                district,
+                reason,
+                station,
+            } => {
+                self.district_mut(*district).learner.discard();
+                if let (crate::obs::DiscardReason::Other, Some(s)) = (reason, station) {
+                    // A station's call moved cargo no one measured (SECTIONS.md §3.6): the units
+                    // its last ports named lose their windows, every unit when it named none.
+                    let ports = self
+                        .district_mut(*district)
+                        .exchange
+                        .get(s)
+                        .map(|r| r.ports.clone())
+                        .unwrap_or_default();
+                    self.glass
+                        .station_discard(at, *district, &ports, &self.tun.glass);
+                }
+            }
             Obs::LoadState {
                 district, state, ..
             } => {
@@ -2639,12 +2657,27 @@ impl Engine {
 
     /// Goods that crossed the boundary while loaded (§3.3). Ender Transmission channels cross no
     /// boundary: their endpoints are one district's (I13 as corrected), so they have no port kind.
-    fn port(&mut self, _at: Tick, p: &crate::obs::PortTransfer) {
+    fn port(&mut self, at: Tick, p: &crate::obs::PortTransfer) {
         let dist = self.district_mut(p.district);
         dist.ports.merge(&p.goods);
         let revision = dist.revision;
         if let Some(inv) = p.inventory {
             self.glass.port(p.district, revision, inv, &p.goods);
+        } else if p.kind == crate::obs::PortKind::TrainCargo {
+            // The train's whole change at the station it stands at, a loaded call (§4.4): mapped
+            // through that station's ports, which Java sends before the cargo (choice SC75).
+            let train = TrainId(p.counterpart);
+            let station = self
+                .arrivals
+                .range((train, StationId(0))..=(train, StationId(u64::MAX)))
+                .map(|(&(_, s), _)| s)
+                .next();
+            let ports = station
+                .and_then(|s| self.district_mut(p.district).exchange.get(&s))
+                .map(|r| r.ports.clone())
+                .unwrap_or_default();
+            self.glass
+                .cargo(at, p.district, revision, &ports, &p.goods, &self.tun.glass);
         }
     }
 
