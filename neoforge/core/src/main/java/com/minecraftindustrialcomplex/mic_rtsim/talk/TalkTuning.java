@@ -28,6 +28,18 @@ public final class TalkTuning {
     public static final double MOOD_PRICES = 1.5;
     /** A closed port or a blockade (TK56). */
     public static final double MOOD_PORT = 2.0;
+    /** A cowed camp (its chief fell lately): as loud as fear. TK78. */
+    public static final double MOOD_COWED = 4.0;
+    /** A camp whose chief changed lately. TK78. */
+    public static final double MOOD_NEW_CHIEF = 3.0;
+    /** A camp whose war chief is out with a band. TK78. */
+    public static final double MOOD_CHIEF_OUT = 3.0;
+    /** A camp that has noticed the asking player (its feud is at rung 1 or more). TK78. */
+    public static final double MOOD_GRUDGE = 3.0;
+    /** A camp short of warriors. TK78. */
+    public static final double MOOD_LEAN = 2.0;
+    /** A camp at its full strength. TK78. */
+    public static final double MOOD_STRONG = 1.5;
 
     // ---- mood thresholds (TUNABLE) ----
 
