@@ -331,6 +331,15 @@ impl Ships {
             self.stats.stale += 1;
             return;
         }
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): nothing is decided in the time the
+            // ships missed. The check comes again an interval after the world's present, so the
+            // port changes only on live time (it starts open after a lift, PC101) and no tape row
+            // or news is dated in the missed time.
+            let when = w.now() + self.check_ticks();
+            self.book_check(d, when);
+            return;
+        }
         p.check = None;
         self.stats.port_checks += 1;
         let full = self.full_share(self.docks[d as usize].medium);
@@ -629,7 +638,7 @@ impl Ships {
             return;
         }
         let laid = x.service.is_some_and(|v| self.service_laid_up(v));
-        let missed = w.now() > at;
+        let missed = missed(w, at);
         if !laid && (missed || self.relaunch_in_view(w, s, at)) {
             let back = self.relaunch_time(s, if missed { w.now() } else { at + 1 });
             if let Status::Lost { back: b, .. } = &mut self.ships[s].status {

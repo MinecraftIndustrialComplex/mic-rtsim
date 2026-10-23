@@ -745,6 +745,15 @@ fn world_at(w: &World, at: Tick) -> Tick {
     at.max(w.now())
 }
 
+/// Whether an event due at `at` is missed: the world has passed it, which happens only in the
+/// switch-on's catch-up (C25, U10; see [`world_at`]). The interest areas of that time are gone,
+/// so nothing judged against them may be decided there: a missed relaunch, port check, refound
+/// or navy assault is put off to the world's present and decided on live time against the live
+/// areas (PC103).
+fn missed(w: &World, at: Tick) -> bool {
+    w.now() > at
+}
+
 /// An event's place for the archive: a block position, the frame being the dimension.
 fn spot(at: Tick, frame: u16, x: i32, z: i32) -> At {
     At::new(at.0, u32::from(frame), x, z)
