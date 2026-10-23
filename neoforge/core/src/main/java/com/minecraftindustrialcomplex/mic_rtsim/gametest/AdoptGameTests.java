@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
@@ -240,7 +241,7 @@ public final class AdoptGameTests {
      * A detection of the dimension is already under way, and has not looked at the adopted chunks: the adopt does
      * not start a second one beside it, the chunks join the one under way (SG55), and the districts end up a full
      * detection's. The interval between passes is a long one, so a pass of their own after the running one
-     * would not come in time.
+     * would not come in time; and the one detection is the only one that finishes.
      */
     @GameTest(template = YARD, batch = "adopt_3", timeoutTicks = 1200)
     public static void anAdoptBesideARunningDetectionJoinsIt(GameTestHelper helper) {
@@ -249,7 +250,7 @@ public final class AdoptGameTests {
         ServerLevel level = helper.getLevel();
         List<ChunkPos> forced = new ArrayList<>();
         BlockPos[][] ms = new BlockPos[1][];
-        boolean[] acted = {false};
+        long[] rescans = {0};
         helper.startSequence()
                 .thenExecute(() -> ms[0] = build(helper, level, forced))
                 .thenWaitUntil(() -> checkBefore(helper, ms[0]))
@@ -257,16 +258,16 @@ public final class AdoptGameTests {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
                     ind().districts().markDirty(level.dimension(), chunk(ms[0][3]));
                 })
+                .thenWaitUntil(() -> check("a detection of Z is under way", ind().districts().rescanning()))
+                .thenExecute(() -> {
+                    rescans[0] = ind().districts().rescans();
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 100_000);
+                    Districts.Adopted a = adopt(helper, level);
+                    check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
+                    check("not detected in the call", !a.detected());
+                    check("the one detection goes on", ind().districts().rescanning());
+                })
                 .thenWaitUntil(() -> {
-                    if (!acted[0]) {
-                        check("a detection of Z is under way", ind().districts().rescanning());
-                        IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 100_000);
-                        acted[0] = true;
-                        Districts.Adopted a = adopt(helper, level);
-                        check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
-                        check("not detected in the call", !a.detected());
-                        check("the one detection goes on", ind().districts().rescanning());
-                    }
                     District xy = districtAt(helper, ms[0][0]);
                     check("the running detection made the district of X, the bridge and Y",
                             !ind().districts().rescanning() && xy != null && xy.chunks.size() == 4 && districtAt(helper, ms[0][PLACED.length + 1]) != null);
@@ -274,6 +275,9 @@ public final class AdoptGameTests {
                 .thenExecute(() -> {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
+                    check("one detection finished, not " + (ind().districts().rescans() - rescans[0]), ind().districts().rescans() - rescans[0] == 1);
+                    check("it looked at the adopted chunks and the districts around them: " + ind().districts().lastRescanLooked(),
+                            ind().districts().lastRescanLooked() >= 6 * FILLER);
                     List<String> local = snapshot();
                     ind().districts().rescanNow(level);
                     List<String> full = snapshot();
@@ -285,17 +289,18 @@ public final class AdoptGameTests {
 
     /**
      * The detection under way has counted a chunk's seeds already (the bridge, a dirty chunk of its own) when the
-     * adopt gives it one: that chunk cannot join, and has a pass of its own the moment the running one is done,
-     * not after the interval, which is a long one here. The lone machine's chunk, not looked at yet, joins.
+     * adopt gives it one: the chunk's seeds are counted again where they stand, and the chunk is rooted, in the same
+     * detection: no pass of its own, after the running one or after the interval, which is a long one here. The
+     * lone machine's chunk, not looked at yet, joins as a root.
      */
     @GameTest(template = YARD, batch = "adopt_4", timeoutTicks = 1200)
-    public static void anAdoptOfAChunkTheRunningDetectionCountedGetsAPassAtOnce(GameTestHelper helper) {
+    public static void anAdoptOfAChunkTheRunningDetectionCountedIsCountedAgain(GameTestHelper helper) {
         fastConfig();
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         List<ChunkPos> forced = new ArrayList<>();
         BlockPos[][] ms = new BlockPos[1][];
-        boolean[] acted = {false};
+        long[] rescans = {0};
         helper.startSequence()
                 .thenExecute(() -> ms[0] = build(helper, level, forced))
                 .thenWaitUntil(() -> checkBefore(helper, ms[0]))
@@ -304,22 +309,24 @@ public final class AdoptGameTests {
                     // The bridge's chunk is the first one the detection looks at: it counts its seeds (none) in its first tick.
                     ind().districts().markDirty(level.dimension(), chunk(ms[0][PLACED.length]));
                 })
+                .thenWaitUntil(() -> check("a detection around the bridge is under way", ind().districts().rescanning()))
+                .thenExecute(() -> {
+                    rescans[0] = ind().districts().rescans();
+                    IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 100_000);
+                    Districts.Adopted a = adopt(helper, level);
+                    check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
+                    check("not detected in the call", !a.detected());
+                    check("the one detection goes on", ind().districts().rescanning());
+                })
                 .thenWaitUntil(() -> {
-                    if (!acted[0]) {
-                        check("a detection around the bridge is under way", ind().districts().rescanning());
-                        IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 100_000);
-                        acted[0] = true;
-                        Districts.Adopted a = adopt(helper, level);
-                        check("two machines adopted, not " + a.seeds(), a.seeds() == 2);
-                        check("not detected in the call", !a.detected());
-                    }
                     District xy = districtAt(helper, ms[0][0]);
-                    check("the pass after the running one made the district of X, the bridge and Y",
+                    check("the running detection made the district of X, the bridge and Y",
                             !ind().districts().rescanning() && xy != null && xy.chunks.size() == 4 && districtAt(helper, ms[0][PLACED.length + 1]) != null);
                 })
                 .thenExecute(() -> {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
+                    check("one detection finished, not " + (ind().districts().rescans() - rescans[0]), ind().districts().rescans() - rescans[0] == 1);
                     List<String> local = snapshot();
                     ind().districts().rescanNow(level);
                     List<String> full = snapshot();
@@ -327,5 +334,17 @@ public final class AdoptGameTests {
                     freeChunks(level, forced);
                 })
                 .thenSucceed();
+    }
+
+    /** A failed test leaves its overrides behind: the next batch starts from the fast configuration the other tests assume. */
+    @AfterBatch(batch = "adopt_3")
+    public static void resetAfterJoin(ServerLevel level) {
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
+    }
+
+    @AfterBatch(batch = "adopt_4")
+    public static void resetAfterRecount(ServerLevel level) {
+        resetAfterJoin(level);
     }
 }
