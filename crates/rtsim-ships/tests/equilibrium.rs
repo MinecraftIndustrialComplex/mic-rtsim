@@ -6,7 +6,10 @@
 //! with nobody watching.
 //!
 //! Each rule is judged on seeds 1 to 30 of the synthetic coast (`synth::coastal`: one haven with
-//! a sea and a sky pirate, two slots).
+//! a sea and a sky pirate, two slots) at the defaults, S8b's lifecycle and its navy assaults
+//! (§2.4.6a rule 3) included, unless a test turns them off. The thirty-year unattended run alone
+//! has no assaults (docs/choices-ports.md PC34, PC38): it holds §3.6's band, set before rule 3 and
+//! by century, to each decade. `lifecycle.rs` judges the assaults.
 
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -22,6 +25,28 @@ const SEEDS: std::ops::RangeInclusive<u64> = 1..=30;
 
 fn coast(seed: u64) -> Coastal {
     synth::coastal(seed, ShipTunables::default())
+}
+
+/// The tunables [`pirates_survive_unattended_thirty_years`] is judged with: the defaults with no
+/// navy assaults (§2.4.6a rule 3, PC34, PC38). With them, a navy breaks the coast's haven 2 or 3
+/// times a decade (`assault_cause_days` 192), each break leaving a slot empty from the break until
+/// the site refounds 48 days after the shut, so a decade's share manned falls to 0.80 on seeds 1,
+/// 7 and 30, under §3.6's floor of 0.83, which was set before rule 3 and is a century's: a decade
+/// would measure the navy's breaks, not S8's refits. A century holds it with them (0.845 at the
+/// least, [`pirates_survive_unattended_1000_years`]).
+fn no_assaults() -> ShipTunables {
+    ShipTunables {
+        assault_every_days: 0,
+        ..ShipTunables::default()
+    }
+}
+
+/// The tunables with S8b's lifecycle (§2.4.6a) off: S8's havens, for the rules S8 set alone.
+fn s8_only() -> ShipTunables {
+    ShipTunables {
+        lifecycle: false,
+        ..ShipTunables::default()
+    }
 }
 
 /// `f` on each seed, a few seeds at a time on their own threads, in seed order.
@@ -76,8 +101,8 @@ fn idle(c: &mut Coastal, fake: &mut FakeShips, to: Tick) {
 /// The scripted player (it watches, follows the hunted lane, fights in view and sinks one pirate
 /// on day 9) for `days`; then it logs off, the bodies leave with it, and the haven mans every
 /// slot again (within 120 days) before the coast is handed back.
-fn scripted(seed: u64, days: u64) -> (Coastal, FakeShips) {
-    let mut c = coast(seed);
+fn scripted(seed: u64, days: u64, tun: &ShipTunables) -> (Coastal, FakeShips) {
+    let mut c = synth::coastal(seed, tun.clone());
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     let mut script = Script::default();
     script.run(&mut c, &mut fake, Tick::ZERO, Tick::from_days(days));
@@ -162,13 +187,23 @@ fn refit_wait(s: &Ships, p: ShipId) -> Option<f64> {
 /// Every seed has both slots back within 180 days, and so does the model's harsher kill-all,
 /// which also empties the pool and adds 1 to the pressure. A second kill-all as soon as the fleet
 /// is back waits longer: the pressure is remembered.
+///
+/// Each kill-all runs with S8b's lifecycle (§2.4.6a) on and off. On, the toll (PC1) keeps the
+/// pool low while every slot is manned, so the slots wait longer for crews; a haven whose ships
+/// were all sunk is not shut (PC4) and stays fed until a month after its first refit is due
+/// (PC13), so a kill-all is still answered by refits and the 180-day band holds. Navy assaults
+/// are on at their defaults (PC38): every slot is back before the haven's cause clock could have
+/// run `assault_cause_days`, so no navy breaks it.
 #[test]
 fn kill_all_pirates() {
     let tun = ShipTunables::default();
+    let off = s8_only();
     let runs = per_seed(&seeds(), |seed| {
-        let mut out = [0.0; 3];
-        for harsh in [false, true] {
-            let (mut c, mut fake) = scripted(seed, 12);
+        // Lifecycle on: half back, all back, all back after the harsh kill-all; then off.
+        let mut out = [0.0; 6];
+        let variants = [(false, &tun), (true, &tun), (false, &off), (true, &off)];
+        for (i, (harsh, tun)) in variants.into_iter().enumerate() {
+            let (mut c, mut fake) = scripted(seed, 12, tun);
             let h = c.haven;
             let at = c.ships.now();
             let mut op = 0;
@@ -190,13 +225,22 @@ fn kill_all_pirates() {
                 .collect();
             let (half, all) = days_back(&mut c, &mut fake, at, 180);
             let all = all.unwrap_or_else(|| {
-                panic!("seed {seed} harsh {harsh}: not every slot back within 180 days")
+                panic!(
+                    "seed {seed} harsh {harsh} lifecycle {}: not every slot back within 180 days",
+                    tun.lifecycle
+                )
             });
+            let n = c.ships.havens[h as usize].counts;
+            assert_eq!(
+                n.shuts, 0,
+                "seed {seed}: a kill-all is answered by refits (PC4)"
+            );
+            let col = [0, 0, 3, 3][i];
             if harsh {
-                out[2] = all;
+                out[col + 2] = all;
             } else {
-                out[0] = half.expect("half before all");
-                out[1] = all;
+                out[col] = half.expect("half before all");
+                out[col + 1] = all;
                 // Again, as soon as they are back: the wait is longer.
                 let at = c.ships.now();
                 sink_all(&mut c, &mut op, at);
@@ -231,25 +275,31 @@ fn kill_all_pirates() {
             quantile(v, 0.95)
         )
     };
-    println!(
-        "kill-all, seeds 1 to 30 (days): half back {}, all back {}; with the pool emptied and \
-         P + 1, all back {}",
-        q(&col(0)),
-        q(&col(1)),
-        q(&col(2)),
-    );
+    for (on, c) in [("on", 0), ("off", 3)] {
+        println!(
+            "kill-all, seeds 1 to 30 (days), lifecycle {on}: half back {}, all back {}; with the \
+             pool emptied and P + 1, all back {}",
+            q(&col(c)),
+            q(&col(c + 1)),
+            q(&col(c + 2)),
+        );
+    }
 }
 
 /// S8 `crew_pool_is_bounded`: hires follow the closed form `cap - (cap - pool) e^(-r t / cap)`
 /// toward 18 (from the founding crew of 6), captures add crew up to the cap and never past it,
 /// and the pool and pressure read back exactly after a restart.
+///
+/// With the lifecycle off: S8's pool. With it on, every unwatched hunt start draws its toll on
+/// the pool (§2.4.6a rule 1, PC1) and a haven that starves deserts (rule 2, PC2), so the pool is
+/// no longer this one closed form from day 0; `lifecycle.rs` tests the toll and the turn.
 #[test]
 fn crew_pool_is_bounded() {
-    let tun = ShipTunables::default();
+    let tun = s8_only();
     let cap = tun.crew_pool_cap * 1000;
     let k = tun.hires_per_day / f64::from(tun.crew_pool_cap);
     per_seed(&seeds(), |seed| {
-        let mut c = coast(seed);
+        let mut c = synth::coastal(seed, tun.clone());
         let h = c.haven;
         let start = c.ships.havens[h as usize].pool_milli;
         assert_eq!(
@@ -388,6 +438,8 @@ fn a_haven_with_no_lane_worth_hunting_rests() {
 /// late report once made the pirate's homecoming stale (the fight sent it home again, and a
 /// pirate not hunting ignores that), so it idled forever with nothing booked: seed 4 of
 /// `sim ships` lost both its pirates that way. Now the pirate gets home, rests and sails again.
+/// At the defaults, navy assaults included (PC38): the run ends inside `assault_cause_days`, so no
+/// navy breaks the haven (a broken haven lays its pirate up at home, which is not this bug).
 #[test]
 fn a_late_fight_report_never_strands_a_pirate() {
     let out = per_seed(&seeds(), |seed| {
@@ -468,11 +520,11 @@ struct Stretch {
     save_bytes: usize,
 }
 
-/// `stretches` of `years` each of the coast with nobody watching, censused every 24 days (the
-/// model's grid).
-fn unattended(seed: u64, stretches: u64, years: u64) -> Vec<Stretch> {
+/// `stretches` of `years` each of the coast with nobody watching, with tunables `tun`, censused
+/// every 24 days (the model's grid).
+fn unattended(seed: u64, stretches: u64, years: u64, tun: &ShipTunables) -> Vec<Stretch> {
     const YEAR: u64 = 96;
-    let mut c = coast(seed);
+    let mut c = synth::coastal(seed, tun.clone());
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     let h = c.haven;
     let mut out = Vec::new();
@@ -524,12 +576,15 @@ fn check_unattended(seed: u64, ss: &[Stretch]) {
 /// seeds 1 to 30, censused on the model's 24-day grid. Every century every seed's haven still
 /// hunts, its slots are manned, its pool is within the cap, and the event queue and the save stay
 /// flat. Release only, for its length (`cargo test --release -p rtsim-ships --test equilibrium
-/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut.
+/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut. At the
+/// defaults, navy assaults included (PC38): Saltmere's navy breaks the haven from time to time,
+/// and every century still holds 0.845 of the slots at the least (measured at
+/// `assault_cause_days` 192).
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn pirates_survive_unattended_1000_years() {
     let runs = per_seed(&seeds(), |seed| {
-        let ss = unattended(seed, 10, 100);
+        let ss = unattended(seed, 10, 100, &ShipTunables::default());
         assert_eq!(ss.len(), 10);
         check_unattended(seed, &ss);
         ss
@@ -545,11 +600,13 @@ fn pirates_survive_unattended_1000_years() {
     );
 }
 
-/// [`pirates_survive_unattended_1000_years`]'s rule over three decades on seeds 1, 7 and 30.
+/// [`pirates_survive_unattended_1000_years`]'s rule over three decades on seeds 1, 7 and 30, with
+/// no navy assaults ([`no_assaults`], PC34, PC38: a decade is too short to hold §3.6's century
+/// band through the navy's breaks).
 #[test]
 fn pirates_survive_unattended_thirty_years() {
     per_seed(&[1, 7, 30], |seed| {
-        let ss = unattended(seed, 3, 10);
+        let ss = unattended(seed, 3, 10, &no_assaults());
         assert_eq!(ss.len(), 3);
         check_unattended(seed, &ss);
     });

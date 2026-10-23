@@ -113,9 +113,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#ds12">Adopt</a>
   <a href="#climate">Climate</a>
   <a href="#s8">Ships</a>
+  <a href="#s8b1">Havens</a>
+  <a href="#s8b3">Port raids</a>
+  <a href="#s4">Dragons</a>
   <a href="#g2-9">Glass and saves</a>
   <a href="#sec1">SEC-1</a>
   <a href="#talk">TALK</a>
+  <a href="#talk1">Talking</a>
+  <a href="#dh-fix">Far view fixes</a>
   <a href="#syn200">Stress run</a>
   <a href="#history">History</a>
   <a href="#progress">In progress</a>
@@ -126,17 +131,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <p class="dek" data-ss-id="dek">One card for each thing that landed today, with its commit on mic-rtsim main (mic-climate's on its own repo). Three of them asked you something, and you answered all three this evening, with SEC-1's six questions and those on the pages below. The far view, alliances and news, and the Mowzie build have pages of their own, linked below.</p>
   <p class="lead" data-ss-id="lead">The oil's Death Worm nests are in and on by default. Two sim stories that had been failing unseen pass again. Adopting a district now costs the same on any world. mic_climate's first-tick stall is fixed and released in 0.2.1. Pirates now sail for the whole thousand-day run. Each district's glass state is its own page, and since this evening a save writes only the pages that changed, so a quiet world's save is about 17 KB at any size.</p>
   <div class="tiles" data-ss-id="tiles">
-    <div class="tile" data-ss-id="kpi-landed"><div class="n">7</div><div class="t">changes landed, plus a history scan and a 200-district stress run</div></div>
+    <div class="tile" data-ss-id="kpi-landed"><div class="n">12</div><div class="t">changes landed, plus a history scan and a 200-district stress run</div></div>
     <div class="tile" data-ss-id="kpi-ask"><div class="n">0</div><div class="t">wait on you from today: all answered, among them SEC-1's six, CL-10, TALK's three and the ports</div></div>
-    <div class="tile" data-ss-id="kpi-prog"><div class="n">6</div><div class="t">in progress: the Mowzie build, news in place of chat notices, TALK, ports, the far view gallery, the stress run's fixes</div></div>
+    <div class="tile" data-ss-id="kpi-prog"><div class="n">7</div><div class="t">in progress: the Mowzie build, news in place of chat notices, TALK, ports, the SEC-1 build, the far view's new look, the stress run's fixes</div></div>
   </div>
 </header>
 
 <section id="elsewhere" data-ss-id="elsewhere" data-ss-section>
   <h2 data-ss-id="elsewhere-h">Also today, on their own pages</h2>
   <ul class="elsewhere" data-ss-id="elsewhere-list">
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; pictures and video are being captured for a gallery.</li>
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices pushed for conflict. You hear the news by talking to villagers, ribbits and clans (CL-10, being designed as TALK; you answered its three questions, <a href="#talk">below</a>), and an envoy speaks to you in chat when you talk to it.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; the pictures and video are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>, 12 stills and 6 clips. You were unhappy with the box look, so it is being replaced: trains drawn as the carriages players built, dragons as the real Ice and Fire dragon. A test runs first, and if it passes it is built overnight.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices pushed for conflict. You hear the news by talking to villagers, ribbits and clans (CL-10, being built as TALK, villagers and traders first; you answered its three questions, <a href="#talk">below</a>), and an envoy speaks to you in chat when you talk to it.</li>
     <li><a href="https://spacesheep.dev/@benmac/rtsim-mowzie"><strong>The Umvuthi aloft, and the Mowzie build</strong></a>: you chose aloft and answered "All three" for the rest. The build has started: M1 to M3 of 12 slices are being built, each reviewed before it lands.</li>
   </ul>
 </section>
@@ -191,8 +196,43 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <li><strong>PORTS-1, "Navies too".</strong> A navy can break a pirate haven while nobody watches, but only when it believes it will win, and the result is certain, not rolled. A broken haven is founded again at its site after up to 384 days. This is an exception to "only players break a faction", for havens only.</li>
       <li><strong>PORTS-2, "Close under blockade".</strong> A trade port whose every lane has been at a haven's full danger for 30 days lays up its ships until the blockade lifts. Pirates also raid port villages for their market stock.</li>
     </ul>
-    <p>An agent is building it now.</p>
+    <p>Two parts landed this evening: havens that starve, shut and are founded again (<a href="#s8b1">S8b-1</a>), and port raids (<a href="#s8b3">S8b-3</a>). Navies and closing under blockade are being built.</p>
   </div>
+</section>
+
+<section id="s8b1" data-ss-id="s8b1" data-ss-section>
+  <h2 data-ss-id="s8b1-h">S8b-1: pirate havens that rise and fall <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="s8b1-meta">966d7a93, choices PC1 to PC6 and PC11 to PC19 in <code>docs/choices-ports.md</code>; EQUILIBRIUM.md section 2.4.6a, rules 1, 2, 4 and 5.</p>
+  <ul data-ss-id="s8b1-list">
+    <li><strong>The toll:</strong> a hunt nobody watches now costs crew, the losses of the fight the pirate judged its lane by. A 6-man sea pirate on an unpatrolled lane loses about a third of a man a hunt; under a patrol, about one and a half.</li>
+    <li><strong>Starving:</strong> a haven where no pirate has begun a hunt for 30 days starves. It hires nobody, its men ashore desert, and a pirate with no lane worth hunting is laid up until the haven is fed again.</li>
+    <li><strong>Shut and refounded:</strong> a starving haven with no ship out shuts down. A new band refounds the site after <code>min(384, 48 x 2<sup>P</sup>)</code> days, the camps' rule, only out of every player's view and only if it would find prey. P rises only with players' kills.</li>
+    <li><strong>On 30 synthetic seas over 1,000 years each:</strong> havens shut in 4 of the 30; 98% of sites are open on average, at least 3 at every census; every sea hunts in every century; the toll costs 4.5% of hunts.</li>
+    <li><strong>Not yet:</strong> navies breaking havens (your PORTS-1) and ports closing under blockade (your PORTS-2) are being built.</li>
+  </ul>
+</section>
+
+<section id="s8b3" data-ss-id="s8b3" data-ss-section>
+  <h2 data-ss-id="s8b3-h">S8b-3: pirates raid port villages <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="s8b3-meta">c1aa6554, choices PC40 to PC49, PC70 and PC71; EQUILIBRIUM.md section 2.4.6a, rule 6, kept with your PORTS-2.</p>
+  <ul data-ss-id="s8b3-list">
+    <li><strong>Where:</strong> a quarter of hunts open with a raid on the coast. With no player district or train in reach, it now hits the port village at the hunted lane's nearer end, never one someone is watching.</li>
+    <li><strong>When:</strong> only when the pirates believe they beat the village's defence. A pirate in view never raids a port.</li>
+    <li><strong>The loot:</strong> 10 items a man, at most 60% of each stock and no more than the hold takes, landed at the haven's market when the ship comes home. Every item is accounted for.</li>
+    <li><strong>On 30 synthetic seas over 10 years:</strong> 15.5 port raids a year a sea, 52 items a raid, about a quarter of a village's stock a raid, and 0.82 men lost a raid. On the synthetic coast, whose ports are bigger, there are none at the defaults.</li>
+  </ul>
+</section>
+
+<section id="s4" data-ss-id="s4" data-ss-section>
+  <h2 data-ss-id="s4-h">EQUILIBRIUM S4: dragons come back to empty lairs, slower where you hunt them <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="s4-meta">bac9ff80, choices EQC22 to EQC33 in <code>docs/overnight-choices-equilibrium.md</code>. S1 (a4cd627) and S2 (2d5b07b) landed earlier.</p>
+  <ul data-ss-id="s4-list">
+    <li><strong>The wait:</strong> a lair that loses its dragon waits <code>min(192, 20 x 2<sup>P</sup>)</code> days for a new one, where P rises with each dragon players kill there. A lair nobody hunts waits 20 days; the most is 192.</li>
+    <li><strong>Starving:</strong> a dragon whose fed share has stayed below 0.35 for 30 days leaves, for an empty lair nearby or off the map.</li>
+    <li><strong>Arrivals:</strong> a newcomer comes only if the region around the lair can feed it, from a village or from herds.</li>
+    <li><strong>On 30 seeds:</strong> lairs are held 83% of the time with a roaming player, against the model's 89%. After every dragon is killed, half are back in 48 days, as the model predicts.</li>
+    <li><strong>Not yet:</strong> one GameTest waits on S3, the site ledger and kill credit, which is not built. The Mowzie build adds those pieces when it reaches its last slice.</li>
+  </ul>
 </section>
 
 <section id="g2-9" data-ss-id="g2-9" data-ss-section>
@@ -219,7 +259,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="sec1" data-ss-id="sec1" data-ss-section>
-  <h2 data-ss-id="sec1-h">SEC-1: factories split into sections at their links and stores <span class="state plan">Approved, not built</span></h2>
+  <h2 data-ss-id="sec1-h">SEC-1: factories split into sections at their links and stores <span class="state plan">Being built</span></h2>
   <p class="meta" data-ss-id="sec1-meta">SECTIONS.md on mic-rtsim main; your answers recorded there and in DECISIONS.md (9e1457ff).</p>
   <p data-ss-id="sec1-p">The design for your "Cut at links and stores" came back today, and you answered its six questions, each with the recommended option. Districts stop joining merely because their chunks touch: only a physical link joins them. Inside a district the factory is cut at its stores into sections, each a working line between stores. A section learns, replays and goes stale on its own, and the district stays the unit of loading. An edit stales only the sections around it, and a replay that fails freezes only the sections it names while the rest go on.</p>
   <h3 data-ss-id="sec1-answers-h">Your six answers</h3>
@@ -231,12 +271,12 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><strong>A chain with one end loaded:</strong> packages are modelled both ways, the G2-11 way. They wait on the last loaded conveyor and the far district's replay draws them; a reset leaves at worst a duplicate, never a loss.</li>
     <li><strong>Packagers are not cuts:</strong> the cut is at the chain, and a packager's packages are counted at the frogport or postbox they pass through.</li>
   </ol>
-  <p data-ss-id="sec1-next">Nothing is built yet. The first of seven slices stops the compile, Create's chain conveyors and Create's network recount from loading chunks, which today can pull a district nobody is near into a partial load. Saves get new formats with a loud reset and no migration, as for everything before release.</p>
+  <p data-ss-id="sec1-next">The build has started, slice by slice. The first of seven slices, under way now, stops the compile, Create's chain conveyors and Create's network recount from loading chunks, which today can pull a district nobody is near into a partial load. Saves get new formats with a loud reset and no migration, as for everything before release.</p>
 </section>
 
 <section id="talk" data-ss-id="talk" data-ss-section>
-  <h2 data-ss-id="talk-h">TALK: talking to villagers, and its first three questions <span class="state plan">In design</span></h2>
-  <p class="meta" data-ss-id="talk-meta">TALK.md on branch feat/talk (f23c1b60), not landed yet.</p>
+  <h2 data-ss-id="talk-h">TALK: talking to villagers, and its first three questions <span class="state plan">Being built</span></h2>
+  <p class="meta" data-ss-id="talk-meta">TALK.md on main; its slice 1 landed (08622772): crouch-click a villager or a wandering trader and it talks, with small talk and lines from how it feels, and talking raises your standing with it at most once a game day. News, ribbits and clans are slices 2 to 4.</p>
   <p data-ss-id="talk-p">Your CL-10 answer is being designed and built as TALK: shift-click a villager, a ribbit or a clan member and it answers with small talk, with how it feels and with what it may have seen, and talking raises your standing with it a little. The design asked you three things, and you answered all three:</p>
   <ol data-ss-id="talk-answers">
     <li><strong>TQ-1, sharing the gesture with Carry On: "Talk wins on talkers"</strong>, as recommended. Shift + right-click on a villager, a wandering trader or a ribbit always talks. Carry On can no longer pick those up, and still carries every other mob and every block.</li>
@@ -244,6 +284,31 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><strong>TQ-3, names: "Generated names and directions, both are cool ideas!"</strong> Villages, camps and chiefs get generated two-part names, the same for every player. Lines mix naming with a direction and distance, "Mudhollow raided Lowmarsh, a day's ride east", and describing by place, "the goblins in the hills raided the village a day's ride east".</li>
   </ol>
   <p data-ss-id="talk-ports">Villagers will talk about <a href="#s8">port</a> news too: raids, blockades, closures, reopenings and havens falling. Any further questions from TALK will come to you.</p>
+</section>
+
+<section id="talk1" data-ss-id="talk1" data-ss-section>
+  <h2 data-ss-id="talk1-h">TALK slice 1: talk to villagers and wandering traders <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="talk1-meta">08622772; TALK.md section 12, slice 1; your TQ-1 to TQ-3 recorded in DECISIONS.md and <code>docs/choices-talk.md</code>.</p>
+  <ul data-ss-id="talk1-list">
+    <li><strong>The gesture:</strong> crouch with an empty main hand and right-click a villager or a wandering trader. It says a line to you only, and no trade screen opens. Talk takes the gesture before Carry On (your TQ-1), and nothing tells players about it (your TQ-2).</li>
+    <li><strong>The lines:</strong> small talk about who it is and its day, and lines from how it feels, with no line repeated back to back.</li>
+    <li><strong>Standing:</strong> your standing with it rises a little, at most once a game day.</li>
+    <li><strong>Tests:</strong> 88 of 88 core GameTests passed.</li>
+    <li><strong>Next:</strong> news (slice 2), ribbits (slice 3) and clans (slice 4, with the Mowzie build's conflict bridge).</li>
+  </ul>
+</section>
+
+<section id="dh-fix" data-ss-id="dh-fix" data-ss-section>
+  <h2 data-ss-id="dh-fix-h">The far view's hand-over fixes <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="dh-fix-meta">e9f4eccc, choices DHT40 to DHT45. More landed early on 23 October (e9db40cb: DHT46 and a second round of DHT44), all filmed before and after on <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23">the morning page</a>.</p>
+  <ul data-ss-id="dh-fix-list">
+    <li>The far object and the real body both showed for up to about 0.85 s. Now the far object goes in the frame the real one appears.</li>
+    <li>A real dragon spawned facing another way from its far object, and about 3 blocks higher. Now it faces the way its box flew, and the box is drawn at the body's middle.</li>
+    <li>A train vanished for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hid the near box there. Now Distant Horizons draws on into its own fade, so the near box fades into the same box.</li>
+    <li>The far object trailed the real train by about half a second. Now it runs on from its last positions.</li>
+  </ul>
+  <p data-ss-id="dh-fix-meaning">No byte of the far view's messages changed, but three meanings did: a far dragon's height now marks the middle of its body; a train that stops sends its position once more; and the game is told the moment a real body appears. The coordinator judged these did not need you, because the mod is unreleased and you approved a larger format change tonight.</p>
+  <p class="cap" data-ss-id="dh-fix-cap">The two fixes that only resized boxes were dropped, because the boxes are being replaced (<a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons#gallery">the new look</a>).</p>
 </section>
 
 <section id="syn200" data-ss-id="syn200" data-ss-section>
@@ -277,14 +342,15 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <ul data-ss-id="progress-list">
     <li><strong>The Mowzie build:</strong> M1 records, M2 cultures and M3 the conflict bridge are being built, each reviewed before it lands (MOWZIE.md section 9, b11a3cab). <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#build">The slices</a>.</li>
     <li><strong>No chat notices for conflict:</strong> an agent is removing the chat notices the game sends today and routing them to news. <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#news">How news travels</a>.</li>
-    <li><strong>Ports:</strong> the port lifecycle is being built, with your PORTS-1 and PORTS-2 answers (<a href="#s8">above</a>).</li>
-    <li><strong>TALK:</strong> shift-click a villager, a ribbit or a clan member to talk to it, your CL-10 answer. In design (TALK.md, on branch feat/talk); you answered its first three questions (<a href="#talk">above</a>), and any more will come to you.</li>
+    <li><strong>Ports:</strong> havens that rise and fall and port raids landed (<a href="#s8b1">above</a>); navies and closing under blockade, your PORTS-1 and PORTS-2, are being built.</li>
+    <li><strong>TALK:</strong> shift-click a villager, a ribbit or a clan member to talk to it, your CL-10 answer. Being built in four slices; slice 1, villagers and wandering traders, landed (<a href="#talk1">08622772</a>). You answered its first three questions (<a href="#talk">above</a>), and any more will come to you.</li>
+    <li><strong>SEC-1:</strong> the build has started, slice by slice, beginning with the one that stops Create's chain conveyors and network recount from loading chunks (<a href="#sec1">above</a>).</li>
     <li><strong>The stress run's fixes:</strong> the three in <a href="#syn200">its card</a>.</li>
-    <li><strong>The far view gallery:</strong> trains and dragons in Distant Horizons are being recorded on worlds we generated ourselves, for a separate private page.</li>
-    <li><strong>EQUILIBRIUM:</strong> S1, the census of who is alive, is built (a4cd627), and now S2, herds that settle and come back, is built too (2d5b07b2). The 30-seed checks sit inside the model's bands.</li>
+    <li><strong>The far view:</strong> <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the gallery</a> is done, 12 stills and 6 clips on two worlds we generated ourselves. You were "Really unhappy with how the DH stuff looks: A) Trains don't match the trains players built they are just black boxes. B) Dragons look like a blocky mess and not like dragons." The box look is being replaced, with your approval: trains as one textured model of each carriage players built, at its true angle, hidden by hills and faded by fog; dragons as pictures of the real Ice and Fire dragon far away, its own model nearer, the real dragon close up. A test runs first; if it passes, it is built and landed overnight, and <a href="https://spacesheep.dev/@benmac/rtsim-dh-morning-2026-10-23">the morning page</a> will show before and after. Four hand-over fixes landed this evening (<a href="#dh-fix">e9f4eccc</a>), the fifth early on 23 October, all filmed before and after on that page; the two that only resized boxes were dropped (<a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons#gallery">on the page</a>).</li>
+    <li><strong>EQUILIBRIUM:</strong> S1, the census of who is alive (a4cd627), S2, herds that settle and come back (2d5b07b), and now S4, dragons (<a href="#s4">above</a>), are built. S3, the site ledger and kill credit, comes with the Mowzie build's last slice.</li>
   </ul>
 </section>
 </main>
-<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers, the stress run and TALK's questions. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers, the stress run, TALK's questions, the dragons and the far view's new look. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
 </body>
 </html>
