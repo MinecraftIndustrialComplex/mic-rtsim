@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.glass;
 
+import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.kinetics.base.DirectionalShaftHalvesBlockEntity;
 import com.simibubi.create.content.kinetics.base.IRotate;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
@@ -41,11 +42,11 @@ final class KineticWalk {
         List<BlockPos> out = new ArrayList<>();
         Level level = be.getLevel();
         BlockPos p = be.getBlockPos();
-        if (level == null || !level.isLoaded(p))
+        if (level == null || !Loaded.at(level, p))
             return out;
         for (Direction d : Direction.values()) {
             BlockPos n = p.relative(d);
-            if (level.isLoaded(n))
+            if (Loaded.at(level, n))
                 out.add(n);
         }
         BlockState s = be.getBlockState();
