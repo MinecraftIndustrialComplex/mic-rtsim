@@ -2257,6 +2257,59 @@ fn a_chief_dead_of_age_while_out_leaves_no_chief_flag_on_the_band() {
     assert_eq!(r.c.parties[band].phase, phase, "the band carries on");
 }
 
+/// MZB-146 (re-review P3-3): the chief died of age out with the band and nothing has asked for the
+/// chief since (no feud wake, no plunder), so the lazy succession has not run and the band still
+/// has the flag. A CHIEF_KILLED for it ran as a killing of the dead chief: a rout, a count and
+/// an heir who took over holding a grudge. The succession runs first, the flag goes, and the
+/// record is dropped.
+#[test]
+fn a_chief_killed_after_dying_of_age_before_any_wake_is_dropped() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    assert!(r.c.parties[band].chief, "the chief rides with the band");
+    // Past the events already due (the feud's wakes ask for the chief): the engine is quiet.
+    r.run(Tick(600));
+    assert!(
+        r.c.parties[band].chief,
+        "the chief still rides with the band"
+    );
+    let old = r.c.factions[r.f as usize].chief;
+    let at = r.c.now() + 1;
+    assert!(
+        r.c.next_due().is_none_or(|d| d > at),
+        "nothing due before the record"
+    );
+    r.w.knowledge.die(old, r.c.now());
+    let successions = r.c.stats.successions;
+    assert!(
+        r.c.parties[band].chief,
+        "nothing has found out yet: the band still has the flag"
+    );
+    r.ingest(chief_killed_by_mob(band, r.c.parties[band].epoch, 92), at);
+    assert_eq!(
+        r.c.stats.successions,
+        successions + 1,
+        "the heir took over, once"
+    );
+    assert_ne!(r.c.factions[r.f as usize].chief, old);
+    assert_eq!(r.c.stats.chiefs_killed, 0, "no chief fell");
+    assert_eq!(r.c.stats.routs, 0, "no rout");
+    assert!(!r.c.parties[band].chief, "the band's flag is gone");
+    let new = r.c.factions[r.f as usize].chief;
+    assert!(r.w.knowledge.notable(new).is_some(), "the new chief lives");
+}
+
 /// Control: with the chief alive, the same CHIEF_KILLED does kill him and the heir succeeds.
 #[test]
 fn a_chief_killed_with_his_band_still_falls_with_it() {

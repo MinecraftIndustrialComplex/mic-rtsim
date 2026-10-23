@@ -5037,6 +5037,10 @@ impl Conflict {
         at: Tick,
     ) {
         let f = self.parties[p].faction;
+        // A chief already dead of age is succeeded first, whatever has asked for the chief yet
+        // (the lazy succession): the band's flag goes with it and this record, for the body of
+        // the old chief, is stale (MZB-146).
+        self.ensure_chief(w, f, at);
         if !self.parties[p].chief {
             return;
         }

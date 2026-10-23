@@ -729,6 +729,18 @@ under its own heading.
   compiles. Tests (rtsim-conflict): a stranger's blow leaves the demand open, adds nothing to the
   target's grievance, gives the stranger an insult with a focus of no district away from the camp,
   and the target's own blow then refuses it as ever; fails on the old arm (the demand is refused).
+- **MZB-146** (the lazy succession before a CHIEF_KILLED; re-review P3-3): `chief_killed` read the
+  band's flag before anything had asked the world's knowledge whether the faction's chief was still
+  alive. A chief who died of age out with the band, with no feud wake or plunder since to run the
+  lazy succession (`ensure_chief`), still had the flag on his band, and a CHIEF_KILLED for his body
+  ran as a killing of a dead man: a count, a rout, an heir taking over holding a grudge for a
+  killing. `chief_killed` now runs `ensure_chief` for the band's faction first (a chief alive in the
+  world's knowledge changes nothing), so the succession is the one for a death of age, `succeed`
+  clears the flag, and the record is dropped as in MZB-139. Test: the chief dies of age out with
+  the band after the engine has run past its due events (so no wake asks for the chief), then a
+  CHIEF_KILLED: one succession, no chief fell, no rout, the flag gone, the heir lives. It fails
+  without the new call (chiefs_killed 1). Replay is unaffected: the order of the journal decides, as
+  it did.
 
 ## M4 Camp reconciler, engine
 
