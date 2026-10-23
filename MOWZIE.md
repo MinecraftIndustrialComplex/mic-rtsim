@@ -940,9 +940,10 @@ in three, for example `loot_table/entities/umvuthana_rage.json`) and lie in grov
 - **Plunder of a village:** a raptor pack takes livestock goods (`leather`, `wool`) from the village's
   stock, up to `loot_share_milli` (150 in 1,000, goblin's), eaten: the village has less to sell. Breaking
   a plundering pack makes the village it marched on, and any village that hates the tribe within
-  the view radius (160 blocks) of where the pack broke (where the player stands, in a watched fight),
-  think better of the player: a rescue report they witness first-hand, as does a player base within
-  that radius or the one the pack marched on (CONFLICT-LIFE.md §7, CL-D61).
+  the view radius (160 blocks) of where the pack broke (where the player stands, in a watched fight
+  within 160 blocks of the pack), think better of the player: a rescue report they witness
+  first-hand, as does a player base within that radius, or the one the pack marched on if it broke
+  fighting at it (CONFLICT-LIFE.md §7, CL-D61).
   Every other village hears it from travellers, at hearsay weight; a base tells them.
 
 **MZ-8, decided: raptor hunts are owed and plunder is eaten.** Reason: C16 to C18 already require
