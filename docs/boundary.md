@@ -1881,7 +1881,7 @@ for each level a subscriber is in, and none when nobody is subscribed.
   between the server's simulation distance and the client's render distance has no entity, and the
   client draws it there itself (DHT33).
 
-## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK46)
+## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK48)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
@@ -1942,13 +1942,13 @@ ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and co
 
 A **news item** (120 bytes, offsets from its start): 0 u16 report kind, 2 u8 severity, 3 u8 the
 report's flags, 4 u32 talk flags (1 YOU_DID, 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago
-(saturating), 12 i32 dx, 16 i32 dz (the place from the talker, the short way round a seam; 0 and 0
-across frames, TK34), 20 reserved, 24 ref who, 56 ref whom, 88 ref near (the village nearest the
+(saturating), 12 i32 dx, 16 i32 dz (the place from the talker, the short way round a seam, in the talker's own chart,
+TK47; 0 and 0 across frames, TK34), 20 reserved, 24 ref who, 56 ref whom, 88 ref near (the village nearest the
 place, TK35).
 
 A **ref** (32 bytes): 0 u8 class, 1 u8 flags (1 DEAD, 2 POS), 2 reserved, 4 u32 what (dictionary 5
 culture for villages, camps and chiefs; dictionary 3 body for dragons and lairs), 8 u64 a, 16 u64 b,
-24 i32 dx, 28 i32 dz (where it is from the talker, the short way round, when POS). Classes: 0
+24 i32 dx, 28 i32 dz (where it is from the talker, the short way round, in the talker's chart, when POS). Classes: 0
 unknown, 1 player (a, b the UUID), 2 village (a Java's village id), 3 player base, 4 caravan (a its
 seed, b its home village), 5 camp (a the faction key), 6 chief or notable (a its seed, b its camp),
 7 dragon (a its seed, b its lair key), 8 lair (a its key), 9 haven, 10 ship. How each is found, and
@@ -1971,4 +1971,5 @@ when one is class 0 or DEAD, is TK36 and TK37.
 TEST mode only (rtsim-host's fake Java keeps no 0x8A00 payloads, and the conflict and ports
 engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
-z i32, ago u32 ticks. Refusals, and what it does to the knowledge tables, are TK40.
+z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
+it does to the knowledge tables, are TK40.
