@@ -63,7 +63,7 @@ use rtsim_settle::NodeKind;
 use rtsim_space::topology::{Iso, SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, Price};
 use rtsim_travel::Medium;
-use rtsim_travel::legs::{LegId, LegIndex, Meeting, Owner, Path, Stamp};
+use rtsim_travel::legs::{LegId, LegIndex, LegRow, Meeting, Owner, Path, Stamp};
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -76,7 +76,7 @@ use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
 
 mod blockade;
-pub use blockade::{HEAT_FLOOR_MILLI, PortChange, PortState};
+pub use blockade::{HEAT_FLOOR_MILLI, Lifted, PortChange, PortState};
 
 pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
@@ -733,6 +733,25 @@ fn day_num(t: Tick) -> u32 {
 
 fn tick_of(t: i64) -> Tick {
     Tick(t.max(0) as u64)
+}
+
+/// When a change the ships make at `at` reaches the world (its markets, stocks, lanes): at `at`,
+/// or at the world's present when the world has already passed it. That happens only in the
+/// switch-on's catch-up (C25, U10: the world ran on while the ships were off, and they run their
+/// missed events at once), and the world cannot change its past: a market stepped at a tick
+/// before its anchor broke the debug build and misbooked the flows (PC103). Elsewhere the world
+/// is run to each event's time first, so this is `at`.
+fn world_at(w: &World, at: Tick) -> Tick {
+    at.max(w.now())
+}
+
+/// Whether an event due at `at` is missed: the world has passed it, which happens only in the
+/// switch-on's catch-up (C25, U10; see [`world_at`]). The interest areas of that time are gone,
+/// so nothing judged against them may be decided there: a missed relaunch, port check, refound
+/// or navy assault is put off to the world's present and decided on live time against the live
+/// areas (PC103).
+fn missed(w: &World, at: Tick) -> bool {
+    w.now() > at
 }
 
 /// An event's place for the archive: a block position, the frame being the dimension.
@@ -1714,7 +1733,7 @@ impl Ships {
             dock_quanta: q.covering(wait.max(1)),
             cap_slot_milli: cap,
         };
-        let e = w.add_lane(spec, at);
+        let e = w.add_lane(spec, world_at(w, at));
         self.lanes[l as usize].edge = e;
     }
 
@@ -2067,7 +2086,7 @@ impl Ships {
         let node = hv.node;
         let mut ok = true;
         for dir in 0..2u8 {
-            ok &= w.set_lane_hazard(edge, dir, node, share, delay, at);
+            ok &= w.set_lane_hazard(edge, dir, node, share, delay, world_at(w, at));
         }
         if ok {
             // The heat follows the applied share (PC20): brought up to now under the old share,
@@ -3044,7 +3063,7 @@ impl Ships {
         }
         let cargo = x.cargo.clone();
         let quotes = x.quotes.clone();
-        let stocked = w.land_held(p.to, Some(p.from), &cargo, &quotes, at);
+        let stocked = w.land_held(p.to, Some(p.from), &cargo, &quotes, world_at(w, at));
         let x = &mut self.ships[id];
         for (g, a) in &stocked {
             if let Some(c) = x.cargo.get_mut(g) {
@@ -3648,7 +3667,9 @@ impl Ships {
             return;
         };
         let dock = self.docks[d as usize].clone();
-        if self.point_in_view(w, dock.frame, dock.xz(), at) {
+        // A raid in the switch-on's catch-up is judged against the areas live at the world's
+        // present, where its stock leaves (PC103).
+        if self.point_in_view(w, dock.frame, dock.xz(), world_at(w, at)) {
             return;
         }
         let node = dock.node;
@@ -3699,7 +3720,7 @@ impl Ships {
         }
         // The loot: what the survivors carry, to the hold's room, at most a share of each surplus.
         let want = self.port_loot(w, s, &caps, room, i64::from(self.ships[s].crew));
-        let got = w.stock_to_held(node, &want, at);
+        let got = w.stock_to_held(node, &want, world_at(w, at));
         for (g, a) in &got {
             *self.ships[s].cargo.entry(*g).or_default() += *a;
             add(&mut self.ledger.looted_from_ports, *g, *a);
@@ -3867,7 +3888,7 @@ impl Ships {
         let cargo = std::mem::take(&mut self.ships[s].cargo);
         self.ships[s].quotes.clear();
         if !cargo.is_empty() {
-            let stocked = w.land_held(node, None, &cargo, &BTreeMap::new(), at);
+            let stocked = w.land_held(node, None, &cargo, &BTreeMap::new(), world_at(w, at));
             let mut left = cargo.clone();
             for (g, a) in &stocked {
                 add(&mut self.ledger.landed_at_havens, *g, *a);
@@ -3893,7 +3914,7 @@ impl Ships {
             .map(|p| std::mem::take(&mut p.district_loot))
             .unwrap_or_default();
         if !dl.is_empty() {
-            for (g, a) in w.stock_from_players(node, &dl, at) {
+            for (g, a) in w.stock_from_players(node, &dl, world_at(w, at)) {
                 add(&mut self.ledger.districts_landed, g, a);
             }
         }
@@ -3922,7 +3943,7 @@ impl Ships {
 
     /// Where a player is, as the centre of its interest area in the shared leg index.
     fn viewer_pos(&self, w: &World, p: ActorId) -> Option<(i64, i64)> {
-        let s = self.players.get(&p)?.interest?;
+        let s = self.area_of(w, p)?;
         let r = w.legs.get(s.leg)?;
         Some((i64::from(r.path.x0), i64::from(r.path.z0)))
     }
@@ -4960,6 +4981,29 @@ impl Ships {
     /// a new ship with its own crew (the band brings them; none come from the pool). Otherwise
     /// the site looks again after `refound.base_days`.
     fn try_refound(&mut self, w: &mut World, h: u32, at: Tick) {
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): the site looks at the world's
+            // present instead, against the areas live then.
+            let now = w.now();
+            let hv = &mut self.havens[h as usize];
+            hv.epoch = hv.epoch.wrapping_add(1);
+            if let Some(sh) = hv.shut.as_mut() {
+                sh.back = now;
+            }
+            let epoch = hv.epoch;
+            self.schedule(now, Ev::Refound { haven: h, epoch });
+            self.note(
+                at,
+                "refound",
+                None,
+                format!(
+                    "haven {h}'s site fell due while the ships were switched off; it looks on day \
+                     {:.2}",
+                    day_of(now)
+                ),
+            );
+            return;
+        }
         let in_view = self.dock_in_view(w, h, at);
         if in_view || !self.has_prey(w, h) {
             let base = f64::from(self.tun.refound.base_days) * TICKS_PER_DAY as f64;
@@ -5036,6 +5080,23 @@ impl Ships {
                 .is_none_or(|n| n.epoch != epoch)
         {
             self.stats.stale += 1;
+            return;
+        }
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): the navy looks at the world's
+            // present instead, against the areas live then, and on from there.
+            let now = w.now();
+            self.schedule(now, Ev::Assault { navy: nv, epoch });
+            self.note(
+                at,
+                "assault",
+                None,
+                format!(
+                    "navy {nv}'s look fell due while the ships were switched off; it looks on day \
+                     {:.2}",
+                    day_of(now)
+                ),
+            );
             return;
         }
         self.schedule(at + every, Ev::Assault { navy: nv, epoch });
@@ -5257,17 +5318,35 @@ impl Ships {
 
     /// Whether a player's interest centre is within `view_radius` of `dock` on `frame` at `at`.
     fn point_in_view(&self, w: &World, frame: u16, dock: (i32, i32), at: Tick) -> bool {
-        self.players.values().any(|v| {
-            v.interest
-                .and_then(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
-                .is_some_and(|r| {
-                    r.path.frame == frame
-                        && r.path.t0 <= at
-                        && at <= r.path.t1
-                        && self.sdist(frame, (r.path.x0, r.path.z0), dock)
-                            <= u64::from(self.tun.view_radius)
-                })
+        self.view_areas(w).any(|r| {
+            r.path.frame == frame
+                && r.path.t0 <= at
+                && at <= r.path.t1
+                && self.sdist(frame, (r.path.x0, r.path.z0), dock)
+                    <= u64::from(self.tun.view_radius)
         })
+    }
+
+    /// Player `p`'s interest area as the view rules read it: the ships' own (their own runs,
+    /// [`Ships::observe_player`]), else the world's shared one (the native link books one area per
+    /// player for every module, and the ships keep none of their own: U8).
+    fn area_of(&self, w: &World, p: ActorId) -> Option<Stamp> {
+        self.players
+            .get(&p)
+            .and_then(|v| v.interest)
+            .or_else(|| w.interest_area(p))
+    }
+
+    /// Every live interest area the rules that keep things out of a player's view weigh (rule 5,
+    /// PC44, PC90): each player's own area in the ships, and each shared area in the world, routed
+    /// to the ships or not (a player who came while they were switched off). The ships' own
+    /// `interest` alone left these rules blind in the native link, where it is always `None`. A
+    /// pass over the players.
+    pub(crate) fn view_areas<'a>(&'a self, w: &'a World) -> impl Iterator<Item = &'a LegRow> + 'a {
+        let own = self.players.values().filter_map(|v| v.interest);
+        let shared = w.players.keys().filter_map(|&p| w.interest_area(p));
+        own.chain(shared)
+            .filter_map(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
     }
 
     // ---- observations --------------------------------------------------------------------------
