@@ -7,19 +7,25 @@
 
 use std::collections::BTreeMap;
 
-use rtsim_conflict::boundary::{self, Obs};
+use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{
     CultureDef, FROSTMAW_JSON, GOBLIN_JSON, PartyKind, SignalKind, UMVUTHANA_JSON,
 };
-use rtsim_conflict::engine::{Conflict, Demand, Party, Signal, Target, item_of};
+use rtsim_conflict::engine::{
+    Conflict, Demand, Party, Phase, Signal, TRIBUTE_PRICE_CAP, Target, item_of,
+};
 use rtsim_conflict::{ConflictTunables, Cultures, Step, synth};
-use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
+use rtsim_ecology::infra::{
+    DistrictIndex, DistrictSite, Infrastructure, IndustryLink, NoInfrastructure, RaidOutcome,
+    TrainSighting,
+};
 use rtsim_industry::fake::Visit;
-use rtsim_industry::threat::{ThreatClass, ThreatSource};
+use rtsim_industry::ids::{Good, GoodVec, TrainId};
+use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_knowledge::{ActorId, Temperament, Trait};
 use rtsim_settle::{Culture as MarketCulture, NodeKind};
-use rtsim_trade::{GoodId, MILLI};
+use rtsim_trade::{GoodId, MILLI, PRICE_ONE, Price};
 use rtsim_world::World;
 
 const HOUR: u64 = TICKS_PER_DAY / 24;
@@ -473,6 +479,14 @@ fn frostmaw_home_on_raid(seed: u64) -> (World, Conflict, u32, ActorId, Tick) {
     let cultures = edited(FROSTMAW_JSON, |d| {
         d.parties.insert("invasion".into(), Vec::new());
     });
+    frostmaw_home_on_raid_with(seed, cultures)
+}
+
+/// A Frostmaw of `cultures` on Raid with its band home.
+fn frostmaw_home_on_raid_with(
+    seed: u64,
+    cultures: Cultures,
+) -> (World, Conflict, u32, ActorId, Tick) {
     let (mut w, mut c, f) = setup_with(seed, cultures, "frostmaw");
     let p = c.player(&mut w, synth::PLAYER);
     let raid = theta(&c, f, Step::Raid);
@@ -722,4 +736,300 @@ fn both_mowzie_cultures_resolve_from_json() {
         .map(|(i, x)| (x.name(), i as u16))
         .collect();
     assert!(names.contains_key("frostmaw") && names.contains_key("umvuthana"));
+}
+
+/// An Umvuthana grove's first demand, its haven's market pricing gold nuggets at `price` (none:
+/// no price), after a kill worth `times` Envoy's threshold. Returns the demand and what it should
+/// be: `tribute_per_grievance` times the grievance at the climb, bent, times the nuggets a coin
+/// buys (MOWZIE.md ledger 12, MZB-57).
+fn grove_demand(
+    seed: u64,
+    price: Option<Price>,
+    times: f64,
+) -> (World, Conflict, u32, ActorId, Demand, i64) {
+    let (mut w, mut c, f) = setup_with(seed, Cultures::builtin(), "umvuthana");
+    let nugget = w.goods.find("gold_nugget").expect("the nugget good");
+    let node = c.factions[f as usize].node;
+    if let Some(pr) = price {
+        synth::set_price(&mut w, node, nugget, pr, Tick(5));
+    }
+    let p = c.player(&mut w, synth::PLAYER);
+    let envoy = theta(&c, f, Step::Envoy);
+    kill(&mut c, &mut w, p, envoy * times / 8.0, Tick(10));
+    let mut t = Tick(10);
+    let d = loop {
+        t = Tick(t.0 + HOUR);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        if let Some(d) = c.feud(f, p).and_then(|x| x.demand) {
+            break d;
+        }
+        assert!(t < Tick::from_days(5), "a demand by now");
+    };
+    assert_eq!(d.good, nugget);
+    assert_eq!(w.market(node).price(nugget), price.unwrap_or(0));
+    let x = c.feud(f, p).unwrap();
+    assert_eq!(x.g.anchor, d.made);
+    let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
+    let g = x.g.total_at(d.made, lambda);
+    let bend =
+        Temperament::from_seed(c.factions[f as usize].chief_seed).bend(Trait::Aggressive, 1000, 50);
+    let per_coin = price.map_or(9.0, |pr| {
+        (PRICE_ONE as f64 / pr as f64).min(TRIBUTE_PRICE_CAP * 9.0)
+    });
+    let want = (0.5 * g * f64::from(bend) / 1000.0 * per_coin).ceil() as i64;
+    (w, c, f, p, d, want)
+}
+
+/// Tribute at the haven market's price (ledger 12): `ceil(base × PRICE_ONE / price)` nuggets, a
+/// price near nothing held to 4 times the fallback (MZB-57).
+#[test]
+fn tribute_at_a_market_price_is_its_worth_in_nuggets() {
+    let mut asked = Vec::new();
+    for price in [PRICE_ONE / 4, PRICE_ONE / 9, PRICE_ONE / 20, PRICE_ONE / 1000] {
+        let (w, c, _, _, d, want) = grove_demand(24, Some(price), 1.2);
+        assert_eq!(d.tribute, want, "at {price}");
+        asked.push(d.tribute);
+        c.check(&w).expect("books");
+    }
+    // The same grievance each time: 4, 9, 20 and (capped) 36 nuggets a coin.
+    let per = |k: usize| asked[k] as f64 / asked[0] as f64;
+    assert!((per(1) - 9.0 / 4.0).abs() < 0.1, "{asked:?}");
+    assert!((per(2) - 5.0).abs() < 0.1, "{asked:?}");
+    assert!((per(3) - 9.0).abs() < 0.1, "capped at 36 a coin: {asked:?}");
+}
+
+/// A tribute paid in full at the camp settles the demand (part of it first does not): back to
+/// Notice with the respite, the nuggets stocked at the haven, and the plugin told it was paid.
+#[test]
+fn a_priced_tribute_paid_in_full_settles() {
+    let (mut w, mut c, f, p, d, want) = grove_demand(25, Some(PRICE_ONE / 4), 1.2);
+    assert_eq!(d.tribute, want);
+    let nugget = d.good;
+    let at = Tick(d.made.0 + HOUR);
+    let _ = c.take_commands();
+    let part = BTreeMap::from([(nugget, (d.tribute - 1) * MILLI)]);
+    assert!(!c.pay_tribute(&mut w, synth::CAMP, p, None, &part, at));
+    assert_eq!(c.feud(f, p).unwrap().demand.unwrap().paid, d.tribute - 1);
+    let rest = BTreeMap::from([(nugget, MILLI)]);
+    assert!(c.pay_tribute(&mut w, synth::CAMP, p, None, &rest, at));
+    let x = c.feud(f, p).unwrap();
+    assert!(x.demand.is_none());
+    assert_eq!(x.step, Step::Notice);
+    let respite = c.cultures.get(c.factions[f as usize].culture).def.respite_days;
+    assert_eq!(
+        x.wait_until,
+        Tick(at.0 + (respite * TICKS_PER_DAY as f64) as u64)
+    );
+    assert_eq!(c.stats.tributes, 1);
+    assert_eq!(
+        c.ledger.tribute.get(&nugget),
+        Some(&i128::from(d.tribute * MILLI))
+    );
+    assert!(c.take_commands().iter().any(
+        |m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_PAID)
+    ));
+    c.check(&w).expect("books");
+}
+
+/// An envoy refused: the demand goes unmet and the grove climbs to Scouts, the next rung up it
+/// has (ledger 2), the plugin told it was refused.
+#[test]
+fn a_refused_envoy_climbs_to_scouts() {
+    let (mut w, mut c, f, p, d, want) = grove_demand(26, Some(PRICE_ONE / 9), 2.0);
+    assert_eq!(d.tribute, want);
+    let envoy = d.envoy.expect("an envoy carries the demand");
+    let epoch = c.parties[envoy].epoch;
+    let _ = c.take_commands();
+    let answer = Obs::EnvoyAnswer(boundary::EnvoyAnswer {
+        agent: Party::agent(envoy),
+        epoch,
+        answer: boundary::ANSWER_REFUSED,
+        player: synth::PLAYER,
+    });
+    let at = Tick(d.made.0 + HOUR);
+    c.ingest(&mut w, &mut NoInfrastructure, &answer, at);
+    let x = c.feud(f, p).unwrap();
+    assert!(x.demand.is_none());
+    assert_eq!(x.step, Step::Scouts);
+    assert_eq!(c.stats.expired, 1);
+    assert_eq!(c.stats.tributes, 0);
+    assert_eq!(c.stats.parties[PartyKind::Scouts.index()], 1);
+    assert!(c.log.iter().any(|e| e.kind == "refused"));
+    assert!(c.take_commands().iter().any(
+        |m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_REFUSED)
+    ));
+    c.check(&w).expect("books");
+}
+
+/// A chief killed while its band walks home (reachable once M6 reports kills): the feud's step
+/// falls two rungs and the feud is booked again (a new stamp), though neither `go_home` nor
+/// `end_fight` runs; the band walks on home.
+#[test]
+fn a_chief_killed_on_the_way_home_replans_the_feud() {
+    let cultures = edited(FROSTMAW_JSON, |d| {
+        d.parties.insert("invasion".into(), Vec::new());
+        d.march_blocks_per_tick = 0.0005;
+    });
+    let (mut w, mut c, f) = setup_with(27, cultures, "frostmaw");
+    let p = c.player(&mut w, synth::PLAYER);
+    let raid = theta(&c, f, Step::Raid);
+    let mut t = Tick(10);
+    let band = loop {
+        let to = Tick(t.0 + HOUR);
+        feed(&mut c, &mut w, f, p, 2.0 * raid, t, to);
+        t = to;
+        if let Some((h, _)) = c
+            .parties
+            .iter()
+            .find(|(_, x)| x.faction == f && x.phase == Phase::Home)
+        {
+            break h;
+        }
+        assert!(t < Tick::from_days(60), "walking home by now");
+    };
+    assert!(c.parties[band].chief, "the Frostmaw is its own chief");
+    let x = c.feud(f, p).unwrap();
+    assert_eq!((x.step, x.party), (Step::Raid, None));
+    let stamp = x.stamp;
+    c.chief_killed(&mut w, band, Some(p), t);
+    let x = c.feud(f, p).unwrap();
+    assert_eq!(x.step, Step::Notice, "Raid, Notice (no rung below it but none)");
+    assert_ne!(x.stamp, stamp, "booked again");
+    assert_eq!(c.parties[band].phase, Phase::Home, "it walks on home");
+    let arrive = *c.parties[band].times.last().unwrap();
+    let wakes = c.stats.feud_wakes;
+    feed(&mut c, &mut w, f, p, 0.0, t, Tick(t.0 + 20 * TICKS_PER_DAY));
+    assert!(c.stats.feud_wakes - wakes < 50, "{:?}", c.stats);
+    assert!(
+        c.log
+            .iter()
+            .any(|e| e.kind == "home" && Tick(e.tick) == arrive),
+        "the band came home when it was to"
+    );
+    c.check(&w).expect("books");
+}
+
+/// A feud on a rung whose party is empty (MZB-64; a save made with other culture data does not
+/// load, so only a culture edit in place gets here): no repeat of it and no wake loop; the climb
+/// to Invasion still comes with the grievance.
+#[test]
+fn an_emptied_rung_neither_repeats_nor_loops() {
+    let cultures = edited(FROSTMAW_JSON, |d| {
+        d.parties.insert("raid".into(), Vec::new());
+    });
+    let (mut w, mut c, f) = setup_with(28, cultures, "frostmaw");
+    let p = c.player(&mut w, synth::PLAYER);
+    let (raid, inv) = (theta(&c, f, Step::Raid), theta(&c, f, Step::Invasion));
+    kill(&mut c, &mut w, p, 2.0 * raid / 8.0, Tick(10));
+    let x = c.feud_mut(f, p).unwrap();
+    x.step = Step::Raid;
+    x.since = Tick(10);
+    let t = Tick(20);
+    let before = c.stats;
+    let mid = Tick(t.0 + 10 * TICKS_PER_DAY);
+    feed(&mut c, &mut w, f, p, 1.5 * raid, t, mid);
+    assert_eq!(c.stats.repeats, before.repeats, "no repeat of an empty rung");
+    assert_eq!(c.stats.parties, before.parties);
+    assert!(c.stats.feud_wakes - before.feud_wakes < 50, "{:?}", c.stats);
+    feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
+        1.5 * inv,
+        mid,
+        Tick(mid.0 + 40 * TICKS_PER_DAY),
+    );
+    assert_eq!(c.stats.escalations[Step::Invasion.index()], 1);
+    assert!(c.stats.repeats >= 1, "the Invasion repeats: {:?}", c.stats);
+    assert!(c.stats.feud_wakes - before.feud_wakes < 500, "{:?}", c.stats);
+    c.check(&w).expect("books");
+}
+
+/// Rails for ambushes: every leg a band walks crosses train 9, and every attack on it loses three
+/// of good 1. Records each threat.
+struct Rails {
+    threats: Vec<Threat>,
+}
+
+impl Infrastructure for Rails {
+    fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
+        Vec::new()
+    }
+
+    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+        None
+    }
+
+    fn good_name(&self, _: Good) -> Option<String> {
+        None
+    }
+
+    fn trains_crossed(
+        &mut self,
+        _: u16,
+        _: &[(i32, i32)],
+        from: Tick,
+        to: Tick,
+    ) -> Vec<TrainSighting> {
+        vec![TrainSighting {
+            train: TrainId(9),
+            from,
+            to,
+        }]
+    }
+
+    fn raid_train(&mut self, t: &Threat) -> Option<GoodVec> {
+        self.threats.push(t.clone());
+        let mut g = GoodVec::new();
+        g.add(Good(1), 3);
+        Some(g)
+    }
+}
+
+/// An ambush is one threat per class of unit (ledger 9, MZB-53), as a district raid is: a goblin
+/// raid with more archers' strength than warriors' still sends its warriors as ground melee and
+/// its archers as ground ranged, each with its own count, strength and carry; one ambush counted.
+#[test]
+fn an_ambush_is_one_threat_per_class() {
+    let cultures = goblins_with(&["raid"], |_| {});
+    let (mut w, mut c, f) = setup_with(29, cultures, "goblin");
+    c.tun.ambush_milli = 1000;
+    let band = c
+        .order_party(
+            &mut w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::Pos(synth::FOREST_POS),
+            None,
+            Tick(10),
+        )
+        .expect("a raid");
+    // Damaged: 2 warriors (strength 2.0) and 4 archers (3.2).
+    c.parties[band].units = vec![(0, 2), (1, 4)];
+    let mut rails = Rails {
+        threats: Vec::new(),
+    };
+    c.run_until(&mut w, &mut rails, Tick::from_days(3));
+    assert!(c.stats.ambushes >= 1, "{:?}", c.stats);
+    let first = rails.threats[0].at;
+    let at_first: Vec<&Threat> = rails.threats.iter().filter(|t| t.at == first).collect();
+    assert_eq!(at_first.len(), 2, "{at_first:?}");
+    let by = |k: ThreatClass| *at_first.iter().find(|t| t.class == k).expect("each class");
+    let (melee, ranged) = (by(ThreatClass::GroundMelee), by(ThreatClass::GroundRanged));
+    assert_eq!((melee.count, ranged.count), (2, 4));
+    assert!((melee.strength - 2.0).abs() < 1e-9 && (ranged.strength - 3.2).abs() < 1e-9);
+    assert_eq!(
+        (melee.loads.unwrap().carry, ranged.loads.unwrap().carry),
+        (16, 16)
+    );
+    assert_ne!(melee.id, ranged.id);
+    for t in &at_first {
+        assert_eq!(t.source, ThreatSource::Bandit);
+        assert_eq!(t.target, ThreatTarget::Train(TrainId(9)));
+    }
+    let times: std::collections::BTreeSet<u64> = rails.threats.iter().map(|t| t.at.0).collect();
+    assert_eq!(c.stats.ambushes, times.len() as u64, "one ambush, two threats");
+    let _ = f;
+    c.check(&w).expect("books");
 }
