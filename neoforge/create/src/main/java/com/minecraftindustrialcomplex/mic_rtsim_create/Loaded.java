@@ -1,7 +1,9 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
+import com.minecraftindustrialcomplex.mic_rtsim_create.mixin.LevelChunkInvoker;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
@@ -20,8 +22,7 @@ import net.neoforged.neoforge.capabilities.BlockCapability;
  * load. Every read here asks {@code getChunkNow} first: a chunk that is not FULL is not read, and the
  * caller sees "not loaded" (null).
  *
- * <p>A chunk "ticks" when vanilla's block entity loop would tick a block entity in it:
- * {@code Level.shouldTickBlocksAt} (the test {@code Level.tickBlockEntities} makes) and the chunk loaded.
+ * <p>A position "ticks" when vanilla's block entity loop would tick a block entity there ({@link #ticks}).
  * Server levels only: on a client or a virtual level (Ponder) every test answers as Create would.
  */
 public final class Loaded {
@@ -62,25 +63,54 @@ public final class Loaded {
     /**
      * {@code Level.getCapability(cap, p, context)} where the chunk is loaded, through the five-argument
      * form with the chunk's state and block entity (which loads nothing itself). Null where the chunk is not
-     * loaded, and for a Create multiblock member whose controller's chunk is not loaded: a vault's or tank's
-     * handler is its controller's ({@code getControllerBE}, a {@code Level.getBlockEntity}).
+     * loaded, and for a Create multiblock (a vault, a tank) with any chunk of its box not loaded: a member's
+     * handler is its controller's ({@code getControllerBE}, a {@code Level.getBlockEntity}), and a vault
+     * controller builds its handler from every member ({@code ConnectivityHandler.partAt}, a
+     * {@code Level.getBlockEntity} per block of the box).
      */
     public static <T, C> T capability(Level level, BlockCapability<T, C> cap, BlockPos p, C context) {
         LevelChunk c = chunk(level, p);
         if (c == null)
             return null;
         BlockEntity be = c.getBlockEntity(p, LevelChunk.EntityCreationType.IMMEDIATE);
-        if (be instanceof IMultiBlockEntityContainer m && !m.isController()) {
-            BlockPos controller = m.getController();
-            if (controller != null && chunk(level, controller) == null)
-                return null;
-        }
+        if (be instanceof IMultiBlockEntityContainer m && !multiblockLoaded(level, p, m))
+            return null;
         return level.getCapability(cap, p, c.getBlockState(p), be, context);
     }
 
-    /** Whether a block entity at {@code p} would tick now: its chunk is loaded and block-ticking. */
+    /**
+     * Whether every chunk of {@code m}'s box is loaded: from its controller, the box's least corner,
+     * {@code getHeight} blocks along its main axis and {@code getWidth} along the other two (as
+     * {@code ConnectivityHandler} lays a multiblock out).
+     */
+    private static boolean multiblockLoaded(Level level, BlockPos p, IMultiBlockEntityContainer m) {
+        BlockPos at = m.isController() ? p : m.getController();
+        if (at == null)
+            return true;
+        if (!(blockEntity(level, at) instanceof IMultiBlockEntityContainer controller))
+            return chunk(level, at) != null;
+        Direction.Axis axis = controller.getMainConnectionAxis();
+        int length = Math.max(1, controller.getHeight()), width = Math.max(1, controller.getWidth());
+        int dx = axis == Direction.Axis.X ? length : width;
+        int dz = axis == Direction.Axis.Z ? length : width;
+        for (int cx = at.getX() >> 4; cx <= (at.getX() + dx - 1) >> 4; cx++)
+            for (int cz = at.getZ() >> 4; cz <= (at.getZ() + dz - 1) >> 4; cz++)
+                if (level.getChunkSource().getChunkNow(cx, cz) == null)
+                    return false;
+        return true;
+    }
+
+    /**
+     * Whether a block entity at {@code p} would tick now: vanilla's two tests for a bound ticker,
+     * {@code Level.shouldTickBlocksAt} (made by {@code Level.tickBlockEntities}) and
+     * {@code LevelChunk.isTicking} (world border, full status at least BLOCK_TICKING, entities loaded, and the
+     * core's reconcile gate), on a chunk that is loaded.
+     */
     public static boolean ticks(Level level, BlockPos p) {
-        return level.shouldTickBlocksAt(ChunkPos.asLong(p)) && chunk(level, p) != null;
+        if (!level.shouldTickBlocksAt(ChunkPos.asLong(p)))
+            return false;
+        LevelChunk c = chunk(level, p);
+        return c != null && ((LevelChunkInvoker) c).mic_rtsim$isTicking(p);
     }
 
     /**

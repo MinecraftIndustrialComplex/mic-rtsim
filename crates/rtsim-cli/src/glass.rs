@@ -37,8 +37,8 @@ pub fn cli(args: &[&str]) -> ExitCode {
     let mut out = Out::Text;
     for a in args {
         match *a {
-            "--json" if out == Out::Text => out = Out::Json,
-            "--graph" if out == Out::Text => out = Out::Graph,
+            "--json" if out != Out::Graph => out = Out::Json,
+            "--graph" if out != Out::Json => out = Out::Graph,
             "--json" | "--graph" => {
                 eprintln!("--json and --graph are one or the other\n{USAGE}");
                 return ExitCode::from(64);

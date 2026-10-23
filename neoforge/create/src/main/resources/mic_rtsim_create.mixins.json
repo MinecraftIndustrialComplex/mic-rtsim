@@ -6,9 +6,12 @@
   "mixins": [
     "ChainConveyorBlockEntityMixin",
     "ChainConveyorFrogportTargetMixin",
+    "ChunkMapPromotionMixin",
     "GlobalStationMixin",
     "KineticBlockEntityMixin",
+    "KineticNetworkInvoker",
     "KineticNetworkMixin",
+    "LevelChunkInvoker",
     "PortableStorageInterfaceMixin",
     "RotationPropagatorInvoker",
     "RotationPropagatorMixin",
