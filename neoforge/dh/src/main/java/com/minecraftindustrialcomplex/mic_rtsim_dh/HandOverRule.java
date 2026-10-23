@@ -1,11 +1,12 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
 /**
- * Who draws a far mover this frame (docs/choices-dh-feed.md DHT40, DHT45): the hand-over rule on its own, apart
- * from how anything is drawn, so another renderer can take the boxes' place and keep it.
+ * Who draws a far mover this frame (docs/choices-dh-feed.md DHT40, DHT45, DHT47): the hand-over rule on its own,
+ * apart from how anything is drawn, so another renderer can take the boxes' place and keep it.
  *
  * <ul>
- *   <li><b>The client has the real thing</b> (its entity, near where the mover is): nobody; vanilla draws it.</li>
+ *   <li><b>The client has the real thing</b> (its entity, near where the mover is) and, for a dragon, it is short
+ *       of DH's vanilla fade ({@link #bodyShown}): nobody; vanilla draws it.</li>
  *   <li><b>Its midpoint is in a chunk the client has not loaded</b>: DH alone.</li>
  *   <li><b>In a loaded chunk</b>: the band renderer, in vanilla's pass. DH draws it too wherever any part of it
  *       could be in DH's vanilla fade ({@link FadeRing}), and {@link #PREPARE} blocks before that: the fade mixes
@@ -35,6 +36,17 @@ public final class HandOverRule {
         if (present)
             return false;
         return !loaded || distance + reach >= fadeStart - SLACK - PREPARE;
+    }
+
+    /**
+     * True when vanilla draws a dragon's body rather than its far box (DHT47): the body's farthest point, its
+     * {@code distance} from the camera in 3D plus the box's {@code reach}, is short of where DH's vanilla fade
+     * starts, less the slack. Past there DH's fade mixes each of the body's pixels toward DH's own image, which
+     * has no body in it, so the body would fade out (or in) across the ring, while the box, drawn by the band
+     * and by DH alike there, keeps its colour. Always true while the ring is nowhere.
+     */
+    public static boolean bodyShown(double distance, double reach, double fadeStart) {
+        return distance + reach < fadeStart - SLACK;
     }
 
     /** True when the band renderer draws the mover: in a loaded chunk, with no entity. */

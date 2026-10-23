@@ -48,4 +48,16 @@ class HandOverRuleTest {
         assertFalse(HandOverRule.dh(false, true, 10_000, REACH, Double.POSITIVE_INFINITY));
         assertTrue(HandOverRule.dh(false, false, 10_000, REACH, Double.POSITIVE_INFINITY));
     }
+
+    @Test
+    void aDragonsBodyIsDrawnOnlyShortOfTheFadeAndTheBoxTakesOverWhereDhDrawsIt() {
+        double edge = START - HandOverRule.SLACK - REACH;
+        assertTrue(HandOverRule.bodyShown(edge - 0.01, REACH, START), "its farthest point short of the fade");
+        assertFalse(HandOverRule.bodyShown(edge, REACH, START), "any part of it could be faded");
+        assertFalse(HandOverRule.bodyShown(START + 20, REACH, START), "in the ring, as at the client's tracking edge");
+        // Where the body gives way, DH already draws the box, so the box the band draws there has a copy to fade into
+        assertTrue(HandOverRule.dh(false, true, edge, REACH, START));
+        assertTrue(HandOverRule.band(false, true));
+        assertTrue(HandOverRule.bodyShown(10_000, REACH, Double.POSITIVE_INFINITY), "no fade: vanilla draws it");
+    }
 }
