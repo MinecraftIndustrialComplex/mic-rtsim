@@ -212,12 +212,14 @@ public final class DragonLook implements FarLook {
             long loop = loopStart(time);
             if (st.entity == null || st.species != species || st.flying != flying || loop < st.loop) {
                 // A fresh stand-in (its animation starts over: a new look, or time run back), started as the
-                // bakes start theirs
-                st.entity = newStandIn(levelOf, species);
+                // bakes start theirs; kept only once started, so a warm-up that throws leaves none half started
+                st.entity = null;
+                DragonBaseEntity fresh = newStandIn(levelOf, species);
+                r = renderer(fresh);
+                st.loop = startOnBakeClock(fresh, r, m.variant(), age, flying, yawDeg, time);
+                st.entity = fresh;
                 st.species = species;
                 st.flying = flying;
-                r = renderer(st.entity);
-                st.loop = startOnBakeClock(st.entity, r, m.variant(), age, flying, yawDeg, time);
             } else {
                 r = renderer(st.entity);
                 if (loop > st.loop) {
