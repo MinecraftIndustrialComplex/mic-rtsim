@@ -1011,7 +1011,7 @@ impl Infrastructure for Rails {
     }
 
     fn raid_train(&mut self, t: &Threat) -> Option<GoodVec> {
-        self.threats.push(t.clone());
+        self.threats.push(*t);
         let mut g = GoodVec::new();
         g.add(Good(1), 3);
         Some(g)
