@@ -672,7 +672,9 @@ broken, and refounding at found sites.
      - no pirate begins a hunt on a closed lane, and one sailing out to it turns home (PC91), so a
        closed port's village is not raided from its lanes;
      - a laid-up ship gives up its booked voyages and its share of the lane's flow until it
-       relaunches, however long a watched home dock puts that off (PC92).
+       relaunches, however long a watched home dock puts that off; each slot keeps its last two
+       such idle spells, so a voyage's window holds from its departure for at least the minimum
+       closure less one period (PC92).
      - Only the ports' states, the tick each laid-up service laid up and each slot's idle spell
        (for the flow, PC92) are stored: which services are laid up and which lanes are closed
        follow from them, whatever order ports closed and reopened in (PC80, PC93).
@@ -688,9 +690,11 @@ broken, and refounding at found sites.
      of its time closed; the band between an eighth and a quarter does the same for the blockade.
      A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
      how a blockade lifts by itself.
-   - **Switched off.** With the ships module off (C25), the world's lanes stay as the ships left
-     them, closed ones too, as the lanes' hazards do, and no check runs. Switched on again, the
-     ships run the time they missed, checks included, and the rule applies from there (PC101).
+   - **Switched off.** With the ships module off (C25), the ships are frozen and catch up when it
+     is switched on again (U10): the world's lanes stay as the ships left them, closed ones too,
+     and no check runs. Switched on again, the ships run the time they missed, checks included,
+     and the rule applies from there, late. A port closed when the module is switched off stays
+     closed for good if it is never switched back on (PC101).
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
    - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
@@ -730,9 +734,9 @@ broken, and refounding at found sites.
 - A sea never has every site shut for longer than the refound base plus one retry (96 days),
   unless looks in that spell found no prey (PC37): a sea the navies clear for a season fills
   again. Every sea with prey hunts in every century.
-- A port closes for at least 30 days and only after about a month of being hunted half the time; it
-  reopens only when no lane of it is above a quarter of the full share (half the closing heat), and
-  once reopened it stays open at least 48 days.
+- While the ships run, a port closes for at least 30 days and only after about a month of being
+  hunted half the time; it reopens only when no lane of it is above a quarter of the full share
+  (half the closing heat), and once reopened it stays open at least 48 days.
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
