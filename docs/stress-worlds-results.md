@@ -1237,3 +1237,17 @@ now says so when a watched train calls outside every district, and the engine en
 |---|---|---|
 | SG50 | New record IND_TRAIN_UNWATCHED (0x0416, train and station), sent by `TrainWatch.arrived` when the station is in no district, once a leg; the engine forgets the train's open leg | finding 1 (a); the leg between a district's station and an unwatched one is not a line the engine can use, and the next departure from a district starts a new leg. A train's second unwatched call sends nothing; a departure from a district re-arms it |
 | SG51 | The engine also refuses to book an edge whose ends are one station, and counts it (`self_edges_refused`) | defense in depth: an engine fed by an older bridge, or a replayed journal from before the record, must not learn a line from a station to itself. A GameTest on the native engine asserts the count stays 0 with the bridge fix, so the guard cannot hide a bridge regression |
+
+#### Deferred adopts (finding 4)
+
+Behind the self edges: the adopts of the scene's loop run west to east while trains run, and
+DS-12's `adoptAround` left an adopt's chunks to the pass after a running detection. At 200
+districts 315 to 358 of the 400 adopts were deferred, and a district stayed undeclared for the
+time a train needed to reach its partner.
+
+| # | Choice | Why |
+|---|---|---|
+| SG55 | The adopted chunks join the running job of their dimension (`Rescan.join`, DS-14): a chunk it has not counted seeds in yet is scheduled as a root, with the districts around it | finding 4 (a); the job already works at the budget, and the adopted chunks cost it only their own block entities |
+| SG56 | A chunk the job counted before the adopt gave it a seed gets a pass of its own, queued first, that starts as soon as the job is done | the job saw the seeds it had before; the old wait for `rescanIntervalTicks` was the deferral. Finding 4's other option, "start a pass at once after it", for the part that cannot join |
+| SG57 | `AdoptGameTests` set the interval to 100,000 ticks for the two deferred cases, so a pass that waits for it cannot finish inside the test | a test with the interval at 1 tick passes with the old code too, which is how the deferral went unseen |
+

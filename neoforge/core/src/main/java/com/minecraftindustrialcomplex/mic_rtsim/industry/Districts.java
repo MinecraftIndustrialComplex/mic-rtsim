@@ -352,7 +352,10 @@ public final class Districts {
      * chunks it changed only: the districts owning or touching them, grown as a ticked pass grows, never the
      * whole dimension. That finishes in this call when the neighbourhood is within one tick's block entity
      * budget; else the detection goes on over the next ticks as a ticked one does, and {@code detected} is false.
-     * A detection of the same dimension under way leaves the adopted chunks to the pass after it.
+     * A detection of the same dimension under way takes the adopted chunks into itself ({@link Rescan#join}, SG55): the
+     * ones it has not counted yet are looked at as roots, with the districts around them, and finish with it; a
+     * chunk it counted before the adopt holds seeds it did not see, and gets a pass of its own the moment the
+     * running one is done, not after {@code rescanIntervalTicks}.
      */
     public Adopted adoptAround(ServerLevel level, ChunkPos centre, int radius) {
         ResourceKey<Level> dim = level.dimension();
@@ -360,14 +363,19 @@ public final class Districts {
         int n = adopt(level, centre, radius, changed);
         if (changed.isEmpty())
             return new Adopted(n, true);
-        if (job != null && job.dim == dim)
-            return new Adopted(n, false); // adopt() marked the chunks dirty: the next pass has them
         // Only these chunks leave the dirty set; other edits wait for their own pass.
         LongOpenHashSet pending = dirty.get(dim);
         if (pending != null) {
             pending.removeAll(changed);
             if (pending.isEmpty() && !fullDims.contains(dim))
                 dirty.remove(dim);
+        }
+        if (job != null && job.dim == dim) {
+            // The running detection takes what it has not looked at; the rest is a pass of its own, next in line.
+            LongOpenHashSet stale = job.join(changed);
+            if (!stale.isEmpty())
+                passes.addFirst(new Pass(dim, stale, false));
+            return new Adopted(n, false);
         }
         Rescan r = new Rescan(level, false, changed);
         if (r.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK)))
@@ -760,6 +768,36 @@ public final class Districts {
         private void schedule(long c) {
             if (scheduled.add(c))
                 pending.add(c);
+        }
+
+        /**
+         * Chunks that gained seeds while this detection runs (a deferred adopt, SG55). A chunk the walk has not
+         * counted yet joins as a dirty one would have at the start: it is scheduled as a root, with the districts
+         * owning or touching it (all of the dimension's already, in a full detection), and goes back to the
+         * dirty set if this detection is put back. Returns the chunks the walk counted before: it saw the seeds
+         * they held then, not the adopted ones, so they need a detection after this one.
+         */
+        LongOpenHashSet join(LongOpenHashSet chunks) {
+            LongOpenHashSet counted = new LongOpenHashSet();
+            Set<Long> near = new HashSet<>();
+            for (long c : chunks) {
+                if (scan.seedCounts.containsKey(c)) {
+                    counted.add(c);
+                    continue;
+                }
+                dirtyHere.add(c);
+                schedule(c);
+                if (!full)
+                    for (int dx = -1; dx <= 1; dx++)
+                        for (int dz = -1; dz <= 1; dz++) {
+                            District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
+                            if (o != null && affected.add(o.id))
+                                near.add(o.id);
+                        }
+            }
+            if (!near.isEmpty())
+                scheduleDistricts(near);
+            return counted;
         }
 
         /** The chunks of these districts, and the chunks pinned to them, are candidates. */
