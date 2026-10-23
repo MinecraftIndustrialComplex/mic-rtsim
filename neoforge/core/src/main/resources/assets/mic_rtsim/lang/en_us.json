@@ -20,6 +20,7 @@
   "mic_rtsim.talk.where.ride": "a day's ride %1$s",
   "mic_rtsim.talk.where.far": "far off to the %1$s",
   "mic_rtsim.talk.where.near": "%1$s, near %2$s",
+  "mic_rtsim.talk.where.elsewhere": "somewhere far from here",
   "mic_rtsim.talk.dir.n": "north",
   "mic_rtsim.talk.dir.ne": "northeast",
   "mic_rtsim.talk.dir.e": "east",
