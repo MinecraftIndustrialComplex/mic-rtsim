@@ -6,7 +6,10 @@
 //! with nobody watching.
 //!
 //! Each rule is judged on seeds 1 to 30 of the synthetic coast (`synth::coastal`: one haven with
-//! a sea and a sky pirate, two slots).
+//! a sea and a sky pirate, two slots), with S8b's lifecycle on (unless a test turns it off) but
+//! no navy assaults (§2.4.6a rule 3): the coast's haven hunts lanes Saltmere's navy patrols, so
+//! with assaults on it is broken at nearly every look its fleet is out, and S8's refits would go
+//! unmeasured (docs/choices-ports.md PC33). `lifecycle.rs` judges the assaults.
 
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -21,7 +24,16 @@ const PLAYER: (u64, u64) = (0xAB, 0xCD);
 const SEEDS: std::ops::RangeInclusive<u64> = 1..=30;
 
 fn coast(seed: u64) -> Coastal {
-    synth::coastal(seed, ShipTunables::default())
+    synth::coastal(seed, s8_tun())
+}
+
+/// The tunables S8's rules are judged with: the defaults with no navy assaults (§2.4.6a rule 3,
+/// PC33).
+fn s8_tun() -> ShipTunables {
+    ShipTunables {
+        assault_every_days: 0,
+        ..ShipTunables::default()
+    }
 }
 
 /// The tunables with S8b's lifecycle (§2.4.6a) off: S8's havens, for the rules S8 set alone.
@@ -174,10 +186,11 @@ fn refit_wait(s: &Ships, p: ShipId) -> Option<f64> {
 /// Each kill-all runs with S8b's lifecycle (§2.4.6a) on and off. On, the toll (PC1) keeps the
 /// pool low while every slot is manned, so the slots wait longer for crews; a haven whose ships
 /// were all sunk is not shut (PC4) and stays fed until a month after its first refit is due
-/// (PC13), so a kill-all is still answered by refits and the 180-day band holds.
+/// (PC13), so a kill-all is still answered by refits and the 180-day band holds. No navy assaults
+/// (PC33): with them, Saltmere's navy breaks the emptied haven instead.
 #[test]
 fn kill_all_pirates() {
-    let tun = ShipTunables::default();
+    let tun = s8_tun();
     let off = s8_only();
     let runs = per_seed(&seeds(), |seed| {
         // Lifecycle on: half back, all back, all back after the harsh kill-all; then off.

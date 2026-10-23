@@ -163,6 +163,10 @@ pub struct ShipTunables {
     /// A navy's home port looks for a haven to assault every this many days (§2.4.6a rule 3,
     /// PC7); 0 never. TUNABLE 24, S1's census grid.
     pub assault_every_days: u32,
+    /// A navy assaults only a haven that has held one of the navies' patrolled lanes for this
+    /// many days since it last opened, its founding or its refound (§2.4.6a rule 3, PC31): a navy
+    /// answers a year of robbery, not one hunt. 0 is no such wait. TUNABLE 96, a game year.
+    pub assault_cause_days: u32,
     /// Navies: ships per patrol. PLACEHOLDER 2.
     pub navy_ships: u32,
     /// Lanes a patrol covers: those within this many lane hops of its base. PLACEHOLDER 2.
@@ -266,6 +270,7 @@ impl Default for ShipTunables {
                 half_life_days: 96.0,
             },
             assault_every_days: 24,
+            assault_cause_days: 96,
             navy_ships: 2,
             patrol_hops: 2,
         }

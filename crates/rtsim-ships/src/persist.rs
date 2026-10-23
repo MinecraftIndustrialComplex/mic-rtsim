@@ -1053,11 +1053,13 @@ impl Ships {
                     w.bool(sh.broken);
                 }
             }
-            match h.broken_at {
-                None => w.u8(0),
-                Some(t) => {
-                    w.u8(1);
-                    w.u64(t.0);
+            for t in [h.broken_at, h.holds_navy_lane_since] {
+                match t {
+                    None => w.u8(0),
+                    Some(t) => {
+                        w.u8(1);
+                        w.u64(t.0);
+                    }
                 }
             }
             w.u32(h.epoch);
@@ -1175,11 +1177,15 @@ impl Ships {
                 }),
                 t => return bad(format!("haven shut tag {t}")),
             };
-            let broken_at = match r.u8()? {
-                0 => None,
-                1 => Some(Tick(r.u64()?)),
-                t => return bad(format!("haven broken tag {t}")),
+            let mut opt_tick = || -> codec::Result<Option<Tick>> {
+                Ok(match r.u8()? {
+                    0 => None,
+                    1 => Some(Tick(r.u64()?)),
+                    t => return bad(format!("haven tick tag {t}")),
+                })
             };
+            let broken_at = opt_tick()?;
+            let holds_navy_lane_since = opt_tick()?;
             let epoch = r.u32()?;
             let counts = HavenCounts {
                 toll_milli: r.var_u64()?,
@@ -1209,6 +1215,7 @@ impl Ships {
                 fed_until,
                 shut,
                 broken_at,
+                holds_navy_lane_since,
                 epoch,
                 counts,
             });
