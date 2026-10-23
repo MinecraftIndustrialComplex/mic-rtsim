@@ -14,7 +14,7 @@
 //!   the module that owns it (phase 1: villages, bases, caravans and players; ecology: lairs and
 //!   dragons; conflict: camps and chiefs). It changes nothing in the world; the only writer is the
 //!   TEST order [`post`].
-//! - **A camp** (holder kind 3, slice 4, TK71 to TK80): the camp's knowledge is its chief's board,
+//! - **A camp** (holder kind 3, slice 4, TK71 to TK82): the camp's knowledge is its chief's board,
 //!   else its heir's (a haven is not a holder), and the conflict is read through
 //!   `rtsim_conflict::view::faction_facts` and nothing else. An ask with the FACTION flag also gets
 //!   the 48-byte faction block after the news: the camp's feud against the asker, and its moods.
@@ -376,10 +376,14 @@ fn camp_holder(st: &State, a: &Ask) -> Option<Holder> {
 }
 
 /// The faction block of an answer (TK72, TK75 to TK77): the camp's feud against the asker, and its moods
-/// at `now`. `heir_born` is when the heir came to be: a succession names a new heir, so it is
-/// when the chief last changed.
-fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, now: Tick) -> Faction {
+/// at the view's own time (`ff.now`, so the block and the feud's projection share one). `heir_born` is
+/// when the heir came to be: a succession names a new heir, so it is when the chief last changed.
+/// `chief_gone` is a chief who has died and an heir who answers in its place: the conflict only
+/// succeeds lazily (a feud wake or a plunder), so until then `chiefs` and `heir_born` trail the death
+/// and the camp's chief is new all the same (TK75).
+fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, chief_gone: bool) -> Faction {
     use facts::faction::{NO_SIGNAL, mood};
+    let now = ff.now;
     let left = ff.cowed_until.0.saturating_sub(now.0);
     let mut flags = 0;
     if left > 0 {
@@ -388,14 +392,16 @@ fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, now: Tick) -> Facti
     if ff.chief_out {
         flags |= mood::CHIEF_OUT;
     }
-    if ff.chiefs > 2 && heir_born.is_some_and(|b| now.0.saturating_sub(b.0) < NEW_CHIEF_TICKS) {
+    if chief_gone
+        || (ff.chiefs > 2 && heir_born.is_some_and(|b| now.0.saturating_sub(b.0) < NEW_CHIEF_TICKS))
+    {
         flags |= mood::NEW_CHIEF;
     }
+    // Never both: with a cap under a warrior and a half the two ranges meet, and lean wins (TK76).
     if ff.pool_cap > 0.0 {
         if ff.pool < ff.pool_cap / 3.0 {
             flags |= mood::LEAN;
-        }
-        if ff.pool >= ff.pool_cap - 0.5 {
+        } else if ff.pool >= ff.pool_cap - 0.5 {
             flags |= mood::STRONG;
         }
     }
@@ -454,7 +460,8 @@ fn answer(st: &State, a: &Ask) -> Answer {
         // Again with the asker, for the feud: the camp itself cannot have gone since.
         if let Some(ff) = faction_facts(&st.conflict.engine, a.holder, player) {
             let heir_born = k.notable(ff.heir).map(|n| n.born);
-            ans.facts.faction = Some(faction_block(&ff, heir_born, now));
+            let chief_gone = k.notable(ff.chief).is_none() && k.notable(ff.heir).is_some();
+            ans.facts.faction = Some(faction_block(&ff, heir_born, chief_gone));
             ans.facts.flags |= facts::FACTION;
         }
     }
@@ -2474,7 +2481,7 @@ mod tests {
         let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
         assert_eq!(answer_one(&mut st, a).sentiment, 0);
     }
-    // ---- a camp (slice 4, TK71 to TK80) ------------------------------------------------------
+    // ---- a camp (slice 4, TK71 to TK82) ------------------------------------------------------
 
     /// A state with the two villages and the goblin camp 55 at (1300, 1000), found at [`NOW`];
     /// the camp's index.
@@ -2735,11 +2742,14 @@ mod tests {
             b.mood,
             mood::COWED | mood::CHIEF_OUT | mood::LEAN | mood::NEW_CHIEF
         );
-        // Time passes: not cowed, not new once ten days are over; the pool recruited back.
-        st.phase1.world.run_until(Tick(NOW + NEW_CHIEF_TICKS + 1));
+        // The cowing is over, the war chief is back and the pool has recruited back to its cap; the
+        // ten days' edge of a new chief is `a_chief_is_new_for_ten_days...`'s (the block reads the
+        // conflict's own time, which only the conflict's events move).
         {
             let x = &mut st.conflict.engine.factions[f as usize];
+            x.cowed_until = Tick(NOW);
             x.chief_out = false;
+            x.chiefs = 2;
             x.pool = 60.0;
             x.pool_at = Tick(NOW);
         }
@@ -2763,13 +2773,17 @@ mod tests {
     #[test]
     fn lean_is_under_a_third_of_the_cap_and_strong_is_the_cap_within_half_a_warrior() {
         use facts::faction::mood::{LEAN, STRONG};
-        let m = |pool, cap| faction_block(&facts_of(2, pool, cap), None, Tick(NOW)).mood;
+        let m = |pool, cap| faction_block(&facts_of(2, pool, cap), None, false).mood;
         assert_eq!(m(19.9, 60.0), LEAN);
         assert_eq!(m(20.0, 60.0), 0, "exactly a third is not lean");
         assert_eq!(m(0.0, 60.0), LEAN);
         assert_eq!(m(59.5, 60.0), STRONG);
         assert_eq!(m(59.4, 60.0), 0);
         assert_eq!(m(60.0, 60.0), STRONG);
+        // A cap under a warrior and a half: the ranges meet, and lean wins; never both.
+        assert_eq!(m(0.0, 1.0), LEAN);
+        assert_eq!(m(0.2, 1.0), LEAN);
+        assert_eq!(m(0.5, 1.0), STRONG);
         // A culture with no cap has neither.
         assert_eq!(m(0.0, 0.0), 0);
     }
@@ -2777,9 +2791,8 @@ mod tests {
     #[test]
     fn a_chief_is_new_for_ten_days_after_a_succession_and_never_before_one() {
         use facts::faction::mood::NEW_CHIEF;
-        let now = Tick(NOW);
         let m = |chiefs, born: Option<u64>| {
-            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), now).mood & NEW_CHIEF
+            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), false).mood & NEW_CHIEF
         };
         assert_eq!(m(3, Some(NOW)), NEW_CHIEF);
         assert_eq!(
@@ -2796,6 +2809,46 @@ mod tests {
         );
         assert_eq!(m(3, None), 0, "a heir that is gone says nothing");
         assert_eq!(NEW_CHIEF_TICKS, 10 * DAY);
+        // A chief who has died with the heir answering: new, whatever `chiefs` and the heir's birth
+        // still say (the succession is lazy).
+        let gone = |chiefs, born: Option<u64>| {
+            faction_block(&facts_of(chiefs, 30.0, 60.0), born.map(Tick), true).mood & NEW_CHIEF
+        };
+        assert_eq!(gone(2, Some(0)), NEW_CHIEF, "born ages ago");
+        assert_eq!(gone(2, None), NEW_CHIEF);
+    }
+
+    /// An old-age death is not a succession until the conflict next wakes: the heir answers and the
+    /// block already says the chief is new; with the chief alive it does not.
+    #[test]
+    fn a_dead_chief_with_the_heir_answering_is_a_new_chief_before_the_succession_runs() {
+        use facts::faction::mood::NEW_CHIEF;
+        let (mut st, f) = camp_world();
+        let block = |st: &mut State, id| {
+            answer_one(st, ask_of(id, ask::holder::FACTION, 55, 5, CAMP_ASK))
+                .faction
+                .expect("a camp's block")
+        };
+        assert_eq!(
+            block(&mut st, 1).mood & NEW_CHIEF,
+            0,
+            "the founding chief lives"
+        );
+        let (chief, heir) = {
+            let x = &st.conflict.engine.factions[f as usize];
+            (x.chief, x.heir)
+        };
+        st.phase1.world.knowledge.die(chief, Tick(NOW));
+        let x = &st.conflict.engine.factions[f as usize];
+        assert_eq!(
+            (x.chief, x.heir, x.chiefs),
+            (chief, heir, 2),
+            "no succession yet"
+        );
+        assert_eq!(block(&mut st, 2).mood & NEW_CHIEF, NEW_CHIEF);
+        // With the heir gone too nobody answers, and a camp with no chief and no heir is not "new".
+        st.phase1.world.knowledge.die(heir, Tick(NOW));
+        assert_eq!(block(&mut st, 3).mood & NEW_CHIEF, 0);
     }
 
     #[test]
@@ -2807,7 +2860,7 @@ mod tests {
         ff.grievance = 12.5;
         ff.plunders = 7;
         ff.cowed_until = Tick(u64::MAX);
-        let b = faction_block(&ff, None, Tick(NOW));
+        let b = faction_block(&ff, None, false);
         assert_eq!(b.rung, 6);
         assert_eq!(b.signal, 5);
         assert_eq!(b.grievance, 12.5);
@@ -2820,11 +2873,11 @@ mod tests {
         );
         for (kind, code) in SignalKind::ALL.iter().zip(0u16..) {
             ff.signal = Some(*kind);
-            assert_eq!(faction_block(&ff, None, Tick(NOW)).signal, code);
+            assert_eq!(faction_block(&ff, None, false).signal, code);
         }
         ff.signal = None;
         ff.cowed_until = Tick(NOW);
-        let b = faction_block(&ff, None, Tick(NOW));
+        let b = faction_block(&ff, None, false);
         assert_eq!(b.signal, 0xFFFF);
         assert_eq!(b.cowed_ticks, 0, "cowed until now is not cowed");
         assert_eq!(b.mood & facts::faction::mood::COWED, 0);
