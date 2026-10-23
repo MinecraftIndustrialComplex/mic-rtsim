@@ -27,9 +27,19 @@
 //! shared store (a hub) is in every part it feeds; the cluster keeps it safe between them (a
 //! cycle's steepest drain is its envelope there). A cut or a residual keeps the district whole.
 //!
+//! **Units** (SECTIONS.md §3.5, SEC-1 slice S2c). With two judging units or more, only the units
+//! that may replay run: every other unit's simulated machines are gated off, as controllers gate
+//! nodes, so its stores are pools only replaying neighbours touch, and a gated boiler stops every
+//! simulated node on its domain. Parts are solve units, not freeze units.
+//!
 //! **Fallback.** A regime with no fixed point, a process that stays blocked, or more than
-//! `glass.breakpointsPerEventMax` breakpoints between outside events ends the glass replay
-//! (§4.5, G2-7); the engine falls back to the black box or freezes.
+//! `glass.breakpointsPerEventMax` breakpoints between outside events (§4.5, G2-7) freezes the units
+//! it names: those whose stores and controllers fired most since the last outside event (a stop
+//! or an oscillation), or whose flags flipped most in the regime that did not settle. Their nodes
+//! are gated off and every part they gate is rebuilt at the fallback's tick, keeping what was
+//! booked; a unit freezes once per replay. A fallback that names none, or names every unit
+//! replaying in its part, ends that part's replay (its units freeze); only when no unit replays
+//! does the glass replay end, and the engine falls back to the black box or freezes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -40,6 +50,7 @@ use super::check::{Burn, Compiled, gates, holding_threshold};
 use super::q::Q;
 use super::records::NodeKind;
 use super::report;
+use super::sections::NONE;
 use super::solve::{Regime, Solution, burn};
 use crate::cluster::{
     Cluster, CycleFire, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run, SpaceSpec,
@@ -117,6 +128,8 @@ pub struct ReplayCounts {
     pub regimes: u32,
     pub breakpoints: u32,
     pub cycles: u32,
+    /// Fallbacks that froze units and rebuilt the replay (SECTIONS.md §3.5).
+    pub freezes: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -268,9 +281,28 @@ struct Part {
     /// Breakpoints since the last outside event or cycle.
     steps: u32,
     counts: ReplayCounts,
+    /// Per node: its judging unit, [`NONE`] for none (and for every node with one unit or none).
+    unit_of: Vec<u16>,
+    /// Each inventory a unit holds, and that unit.
+    unit_inv: BTreeMap<u32, u16>,
+    /// Per node: gated off because its unit does not replay, or its domain's driver's does not.
+    gated: Vec<bool>,
+    /// Per unit: stops and watches of its stores and controllers that fired since the last outside
+    /// event or rebuild, which an oscillation or a stuck stop names.
+    hits: BTreeMap<u16, u32>,
+    /// Per unit: flags of its stores and controllers that flipped in the last regime build, which
+    /// a regime with no fixed point names.
+    flips: BTreeMap<u16, u32>,
 }
 
 type Levels = BTreeMap<PoolKey, i64>;
+
+/// A flag of inventory `inv` flipped while a regime settles: a flip of the unit holding it.
+fn flip_inv(flips: &mut BTreeMap<u16, u32>, unit_inv: &BTreeMap<u32, u16>, inv: u32) {
+    if let Some(&u) = unit_inv.get(&inv) {
+        *flips.entry(u).or_insert(0) += 1;
+    }
+}
 
 /// 32.32 of an exact rate: rises round down, falls round away from zero (never above).
 fn to_fixed(q: Q) -> i64 {
@@ -391,11 +423,46 @@ pub struct Replay {
     pub started: Tick,
     parts: Vec<Part>,
     covered: BTreeSet<u32>,
+    /// Per judging unit (the compile's at the start; empty with one unit or none): it may replay
+    /// (SECTIONS.md §3.4).
+    replays: Vec<bool>,
+    /// Per judging unit: a fallback froze it (§3.5).
+    frozen: Vec<bool>,
+    /// Fallbacks that froze units.
+    freezes: u32,
+}
+
+/// Per node: gated off in a replay whose units replay as `on` says (SECTIONS.md §3.5): a
+/// simulated node other than a store whose unit does not, and every simulated node on a domain a
+/// gated node drives (a boiler of a unit that does not replay stops its network).
+fn gate_of(comp: &Compiled, sim: &[bool], unit_of: &[u16], on: &[bool]) -> Vec<bool> {
+    let g = &comp.graph;
+    let n = g.nodes.len();
+    let runs = |v: usize| sim[v] && g.nodes[v].kind != NodeKind::Store;
+    let mut gate: Vec<bool> = (0..n)
+        .map(|v| {
+            runs(v) && unit_of[v] != NONE && !on.get(unit_of[v] as usize).copied().unwrap_or(false)
+        })
+        .collect();
+    let stopped: BTreeSet<u32> = (0..n)
+        .filter(|&v| gate[v])
+        .filter_map(|v| g.drives[v])
+        .collect();
+    if !stopped.is_empty() {
+        for v in 0..n {
+            if runs(v) && g.nodes[v].domain.is_some_and(|d| stopped.contains(&d)) {
+                gate[v] = true;
+            }
+        }
+    }
+    gate
 }
 
 impl Replay {
     /// Starts a replay: its member (pools at the engine's levels, each part's first regime's
-    /// process and bounds) for a new cluster.
+    /// process and bounds) for a new cluster. With judging units, only those that may replay run;
+    /// a fallback in a first regime freezes the units it names and the start is tried again
+    /// without them (SECTIONS.md §3.5).
     pub fn start(
         comp: &mut Compiled,
         setup: Setup,
@@ -403,8 +470,45 @@ impl Replay {
         tun: &GlassTunables,
         at: Tick,
     ) -> Result<(Replay, MemberSpec), Fallback> {
+        let mut frozen = vec![false; comp.unit_state.len()];
+        let mut freezes = 0;
+        loop {
+            match Self::try_start(comp, &setup, goods, tun, at, &frozen) {
+                Ok((mut rp, spec)) => {
+                    rp.freezes = freezes;
+                    return Ok((rp, spec));
+                }
+                Err((i, f, mut rp)) => {
+                    if !rp.freeze_for(i, f, comp) {
+                        return Err(f);
+                    }
+                    frozen = rp.frozen;
+                    freezes += 1;
+                }
+            }
+        }
+    }
+
+    /// One try at a start with the units in `frozen` gated off: the replay, or which part fell
+    /// back and how, with the replay as far as it got.
+    #[allow(clippy::type_complexity)]
+    fn try_start(
+        comp: &mut Compiled,
+        setup: &Setup,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+        at: Tick,
+        frozen: &[bool],
+    ) -> Result<(Replay, MemberSpec), (usize, Fallback, Replay)> {
         let d = setup.district;
-        let (mut whole, levels) = Part::new(comp, &setup, goods, tun, at);
+        let (mut whole, levels) = Part::new(comp, setup, goods, tun, at);
+        if !comp.unit_state.is_empty() {
+            whole.unit_of = comp.units.of_node.clone();
+            whole.unit_inv = comp.units.of_inv.iter().map(|(&i, &u)| (i, u)).collect();
+        }
+        let replays = comp.units_replaying();
+        let on: Vec<bool> = replays.iter().zip(frozen).map(|(&r, &f)| r && !f).collect();
+        whole.gated = gate_of(comp, &whole.sim, &whole.unit_of, &on);
         whole.residual(comp, tun);
         let mut parts = Vec::new();
         // A part runs apart only where nothing couples it to another: no cut (the live side's
@@ -421,12 +525,24 @@ impl Replay {
             parts.push(whole);
         }
         comp.cache_parts = parts.len();
-        let mut procs = Vec::with_capacity(parts.len());
+        let mut rp = Replay {
+            started: at,
+            parts,
+            covered: setup.covered.keys().copied().collect(),
+            replays,
+            frozen: frozen.to_vec(),
+            freezes: 0,
+        };
+        let mut procs = Vec::with_capacity(rp.parts.len());
         let mut bounds = Vec::new();
-        for p in &mut parts {
-            let (proc, b) = p.build(comp, &levels, at, None, false, goods, tun)?;
-            procs.push(proc);
-            bounds.extend(b);
+        for i in 0..rp.parts.len() {
+            match rp.parts[i].build(comp, &levels, at, None, false, goods, tun) {
+                Ok((proc, b)) => {
+                    procs.push(proc);
+                    bounds.extend(b);
+                }
+                Err(f) => return Err((i, f, rp)),
+            }
         }
         let spec = MemberSpec {
             district: d,
@@ -435,12 +551,154 @@ impl Replay {
             space: None,
             bounds,
         };
-        let rp = Replay {
-            started: at,
-            parts,
-            covered: setup.covered.keys().copied().collect(),
-        };
         Ok((rp, spec))
+    }
+
+    /// Per unit: replaying now (may replay, not frozen).
+    fn on(&self) -> Vec<bool> {
+        self.replays
+            .iter()
+            .zip(&self.frozen)
+            .map(|(&r, &f)| r && !f)
+            .collect()
+    }
+
+    /// The units that replay in part `i`: on, with a simulated node other than a store there that
+    /// runs.
+    fn replaying_in(&self, i: usize, comp: &Compiled) -> BTreeSet<u16> {
+        let on = self.on();
+        let p = &self.parts[i];
+        (0..comp.graph.nodes.len())
+            .filter(|&v| {
+                p.mine[v] && p.sim[v] && comp.graph.nodes[v].kind != NodeKind::Store && !p.gated[v]
+            })
+            .map(|v| p.unit_of[v])
+            .filter(|&u| u != NONE && on.get(u as usize).copied().unwrap_or(false))
+            .collect()
+    }
+
+    /// Part `i` fell back with `f`: freezes the units it names among those replaying in it, or all
+    /// of them when it names none or every one (SECTIONS.md §3.5). False when nothing was left to
+    /// freeze there or no unit replays after: the replay ends.
+    fn freeze_for(&mut self, i: usize, f: Fallback, comp: &Compiled) -> bool {
+        let cand = self.replaying_in(i, comp);
+        if cand.is_empty() {
+            return false;
+        }
+        let empty = BTreeMap::new();
+        let score = match f {
+            Fallback::Oscillating | Fallback::Stuck => &self.parts[i].hits,
+            Fallback::Unsettled => &self.parts[i].flips,
+            Fallback::Unexpected => &empty,
+        };
+        let top = cand.iter().filter_map(|u| score.get(u)).copied().max();
+        let named: Vec<u16> = match top {
+            Some(m) if m > 0 => cand
+                .iter()
+                .copied()
+                .filter(|u| score.get(u) == Some(&m))
+                .collect(),
+            _ => cand.iter().copied().collect(),
+        };
+        for u in named {
+            self.frozen[u as usize] = true;
+        }
+        self.freezes += 1;
+        self.some_unit_runs(comp)
+    }
+
+    /// Under the gates the units replaying now would set: does a simulated node of some unit
+    /// still run anywhere?
+    fn some_unit_runs(&self, comp: &Compiled) -> bool {
+        let p = &self.parts[0];
+        let gate = gate_of(comp, &p.sim, &p.unit_of, &self.on());
+        (0..comp.graph.nodes.len()).any(|v| {
+            p.sim[v]
+                && comp.graph.nodes[v].kind != NodeKind::Store
+                && p.unit_of[v] != NONE
+                && !gate[v]
+        })
+    }
+
+    /// Sets every part's gates from the units replaying now; returns the parts whose gates changed.
+    fn set_gates(&mut self, comp: &Compiled) -> Vec<usize> {
+        let p = &self.parts[0];
+        let gate = gate_of(comp, &p.sim, &p.unit_of, &self.on());
+        let mut changed = Vec::new();
+        for (i, p) in self.parts.iter_mut().enumerate() {
+            if p.gated != gate {
+                p.gated.clone_from(&gate);
+                changed.push(i);
+            }
+        }
+        changed
+    }
+
+    /// Part `i` fell back with `f` at `at`: the units it names freeze and every part they gate is
+    /// rebuilt now, from the levels as they are, keeping every booking made so far (the cluster
+    /// replaces a process from a tick on). A part that falls back in its rebuild freezes the units
+    /// it names in turn. Err when no unit is left to replay.
+    #[allow(clippy::too_many_arguments)]
+    fn recover(
+        &mut self,
+        i: usize,
+        f: Fallback,
+        comp: &mut Compiled,
+        c: &mut Cluster,
+        at: Tick,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+    ) -> Result<(), Fallback> {
+        let (mut i, mut f) = (i, f);
+        let mut pending: BTreeSet<usize> = BTreeSet::new();
+        loop {
+            if !self.freeze_for(i, f, comp) {
+                return Err(f);
+            }
+            pending.extend(self.set_gates(comp));
+            pending.insert(i);
+            let mut failed = None;
+            while let Some(j) = pending.pop_first() {
+                if let Err(e) = self.parts[j].run(comp, c, None, at, goods, tun) {
+                    failed = Some((j, e));
+                    break;
+                }
+            }
+            match failed {
+                None => return Ok(()),
+                Some((j, e)) => {
+                    i = j;
+                    f = e;
+                }
+            }
+        }
+    }
+
+    /// Per unit: it may replay and no fallback froze it; empty with one unit or none.
+    pub fn units_on(&self) -> Vec<bool> {
+        self.on()
+    }
+
+    /// Per unit: a fallback froze it.
+    pub fn frozen(&self) -> &[bool] {
+        &self.frozen
+    }
+
+    /// Does the replay gate its units as `comp` would start one now: the same units, the same
+    /// ones allowed? A unit that went stale, failed, or was cut anew needs a new start.
+    pub fn same_units(&self, comp: &Compiled) -> bool {
+        let p = &self.parts[0];
+        let unit_of: &[u16] = if comp.unit_state.is_empty() {
+            &[]
+        } else {
+            &comp.units.of_node
+        };
+        let same_nodes = if unit_of.is_empty() {
+            p.unit_of.iter().all(|&u| u == NONE)
+        } else {
+            p.unit_of == unit_of
+        };
+        same_nodes && self.replays == comp.units_replaying()
     }
 
     pub fn compile(&self) -> u32 {
@@ -457,7 +715,9 @@ impl Replay {
 
     /// Does a restored replay index a graph of `n` nodes (a page check, G2-80)?
     pub fn fits(&self, n: usize) -> bool {
+        let nu = self.replays.len();
         !self.parts.is_empty()
+            && self.frozen.len() == nu
             && self.parts.iter().all(|p| {
                 [
                     p.mine.len(),
@@ -466,11 +726,15 @@ impl Replay {
                     p.inv_of.len(),
                     p.flow.len(),
                     p.st.ctrl_on.len(),
+                    p.unit_of.len(),
+                    p.gated.len(),
                 ]
                 .iter()
                 .all(|&l| l == n)
                     && p.fed.len() == p.heaters.len()
                     && p.heaters.iter().all(|b| (b.node as usize) < n)
+                    && p.unit_of.iter().all(|&u| u == NONE || (u as usize) < nu)
+                    && p.unit_inv.values().all(|&u| (u as usize) < nu)
             })
     }
 
@@ -506,7 +770,10 @@ impl Replay {
 
     /// Counters since the replay started, over its parts.
     pub fn counts(&self) -> ReplayCounts {
-        let mut c = ReplayCounts::default();
+        let mut c = ReplayCounts {
+            freezes: self.freezes,
+            ..ReplayCounts::default()
+        };
         for p in &self.parts {
             c.regimes += p.counts.regimes;
             c.breakpoints += p.counts.breakpoints;
@@ -534,7 +801,10 @@ impl Replay {
         if c.run_of(p.d, id) != Some(Run::Stopped(why)) {
             return Ok(());
         }
-        p.run(comp, c, Some(why), at, goods, tun)
+        match p.run(comp, c, Some(why), at, goods, tun) {
+            Ok(()) => Ok(()),
+            Err(f) => self.recover(id as usize, f, comp, c, at, goods, tun),
+        }
     }
 
     /// Something outside the replay changed its pools or the district (an import, an export, a
@@ -551,8 +821,10 @@ impl Replay {
         for p in &self.parts {
             p.absorb_imports(comp, c, at);
         }
-        for p in &mut self.parts {
-            p.run(comp, c, None, at, goods, tun)?;
+        for i in 0..self.parts.len() {
+            if let Err(f) = self.parts[i].run(comp, c, None, at, goods, tun) {
+                self.recover(i, f, comp, c, at, goods, tun)?;
+            }
         }
         Ok(())
     }
@@ -840,6 +1112,11 @@ impl Part {
             cycle: None,
             steps: 0,
             counts: ReplayCounts::default(),
+            unit_of: vec![NONE; n],
+            unit_inv: BTreeMap::new(),
+            gated: vec![false; n],
+            hits: BTreeMap::new(),
+            flips: BTreeMap::new(),
         };
         // A store below its holding threshold passes on what it receives (GB100), as the
         // compile's own regime read it.
@@ -883,6 +1160,37 @@ impl Part {
         p
     }
 
+    /// The unit holding inventory `inv`, if one does.
+    fn unit_of_inv(&self, inv: u32) -> Option<u16> {
+        self.unit_inv.get(&inv).copied()
+    }
+
+    /// The unit a stop names: the unit of the store it emptied, or of the store or controller its
+    /// watch looks at. A cut's supply, a seal, a timer and the rest name none.
+    fn unit_of_stop(&self, w: Stop) -> Option<u16> {
+        match w {
+            Stop::InputEmpty(PoolKey::Store(_, inv, _)) => self.unit_of_inv(inv),
+            Stop::Bound(_, tag) if bound_part(tag) == self.id => {
+                let (watch, _) = self
+                    .watches
+                    .get((bound_index(tag) as usize).wrapping_sub(1))?;
+                match *watch {
+                    Watch::Room { inv, .. } | Watch::Frees { inv, .. } => self.unit_of_inv(inv),
+                    Watch::Refill {
+                        key: PoolKey::Store(_, inv, _),
+                    } => self.unit_of_inv(inv),
+                    Watch::Switch { node, .. } => self
+                        .unit_of
+                        .get(node as usize)
+                        .copied()
+                        .filter(|&u| u != NONE),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn run(
         &mut self,
         comp: &mut Compiled,
@@ -897,6 +1205,7 @@ impl Part {
             self.leave_cycle(at);
             self.steps = 0;
             self.marks.clear();
+            self.hits.clear();
         } else if self.cycle.is_some()
             && let Some(w) = why
             && !matches!(w, Stop::Timer | Stop::Disabled)
@@ -948,6 +1257,9 @@ impl Part {
                 }
                 if self.steps > tun.breakpoints_per_event_max {
                     return Err(Fallback::Oscillating);
+                }
+                if let Some(u) = self.unit_of_stop(w) {
+                    *self.hits.entry(u).or_insert(0) += 1;
                 }
                 match w {
                     Stop::InputEmpty(k @ PoolKey::Store(_, inv, g)) => {
@@ -1116,6 +1428,12 @@ impl Part {
             }
         }
         gates(graph, &self.st.ctrl_on, &mut rg.gate_off);
+        // A unit that does not replay runs nothing (SECTIONS.md §3.5).
+        for (v, &x) in self.gated.iter().enumerate() {
+            if x {
+                rg.gate_off[v] = true;
+            }
+        }
         // Another part's nodes run in its own process.
         for (v, &m) in self.mine.iter().enumerate() {
             if !m && self.sim[v] && graph.node(v as u32).kind != NodeKind::Store {
@@ -1476,6 +1794,7 @@ impl Part {
         // Holds that came due: those nodes run now. Their potential did not change, so they are
         // not held again.
         self.st.hold.retain(|_, t| *t > at);
+        self.flips.clear();
         let cap = 2 * (lv.len() + self.stores.len() + n_ctrl) + 8 + comp.graph.nodes.len();
         let mut settled = false;
         let mut sol = Solution::default();
@@ -1720,6 +2039,7 @@ impl Part {
         }
         for x in unflag {
             self.st.empty.remove(&x);
+            flip_inv(&mut self.flips, &self.unit_inv, x.0);
             changed = true;
         }
         // (b) Empties: a drained pool that cannot run a tick of its drain. A pool nothing drains
@@ -1735,6 +2055,7 @@ impl Part {
                     let r = net(k);
                     if r < 0 && l < reach(r) {
                         self.st.empty.insert((inv, g), l.max(0));
+                        flip_inv(&mut self.flips, &self.unit_inv, inv);
                         changed = true;
                     }
                 }
@@ -1774,6 +2095,7 @@ impl Part {
                 .map(|(k, &a)| (k.good(), a))
                 .collect();
             self.st.full.insert(inv, flv);
+            flip_inv(&mut self.flips, &self.unit_inv, inv);
             changed = true;
         }
         // (d) Frees: a full store whose good drained a stack (a bucket).
@@ -1796,6 +2118,7 @@ impl Part {
         }
         for inv in freed {
             self.st.full.remove(&inv);
+            flip_inv(&mut self.flips, &self.unit_inv, inv);
             changed = true;
         }
         // (e) Controllers: hysteresis on the observed level, a tick ahead.
@@ -1820,6 +2143,9 @@ impl Part {
                 .sum();
             if dist <= 0 || (ahead > 0 && dist <= ahead) {
                 self.st.ctrl_on[v as usize] = !on;
+                if let Some(&u) = self.unit_of.get(v as usize).filter(|&&u| u != NONE) {
+                    *self.flips.entry(u).or_insert(0) += 1;
+                }
                 changed = true;
             }
         }
@@ -2386,7 +2712,8 @@ mod persist_impls {
     persist_struct!(ReplayCounts {
         regimes,
         breakpoints,
-        cycles
+        cycles,
+        freezes
     });
     persist_struct!(StoreInfo { fluid, cap, nodes });
 
@@ -2506,7 +2833,12 @@ mod persist_impls {
         marks,
         cycle,
         steps,
-        counts
+        counts,
+        unit_of,
+        unit_inv,
+        gated,
+        hits,
+        flips
     });
     /// A replay has at least one part ([`Replay::compile`] reads the first).
     impl Persist for Replay {
@@ -2514,12 +2846,18 @@ mod persist_impls {
             self.started.put(w);
             self.parts.put(w);
             self.covered.put(w);
+            self.replays.put(w);
+            self.frozen.put(w);
+            self.freezes.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             let rp = Replay {
                 started: Persist::get(r)?,
                 parts: Persist::get(r)?,
                 covered: Persist::get(r)?,
+                replays: Persist::get(r)?,
+                frozen: Persist::get(r)?,
+                freezes: Persist::get(r)?,
             };
             if rp.parts.is_empty() {
                 return invalid("glass replay without parts");

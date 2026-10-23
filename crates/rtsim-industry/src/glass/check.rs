@@ -130,6 +130,16 @@ struct UnitWin {
     stt: f64,
 }
 
+/// The least capacity at which a unit's window saw one of its kinetic domains run (SECTIONS.md
+/// §3.3): the solve's running level there, by its selector, and that level's capacity. The domain
+/// is its compile's index; a recompile that carries the unit maps it by the unit's own nodes on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DomCap {
+    pub domain: u32,
+    pub selector: u32,
+    pub capacity: f64,
+}
+
 /// One judging unit's learning state (SECTIONS.md §3.3, §3.4): the district's window fields, per
 /// unit. Saved by unit index: the units are a function of the compile and its sections, which the
 /// page's reader recomputes and checks.
@@ -149,6 +159,10 @@ pub struct UnitState {
     /// Failed windows in a row.
     pub strikes: u32,
     pub windows_completed: u32,
+    /// The open window's least capacity run at, per domain that ran in it, by domain.
+    caps: Vec<DomCap>,
+    /// Its latest passed window's, for the domain check (§3.6).
+    pub passed_caps: Vec<DomCap>,
 }
 
 /// Which chunks ran through a sweep, for the units' liveness (SECTIONS.md §3.4).
@@ -574,6 +588,81 @@ fn row_mut(rows: &mut Vec<Row>, unit: u16, good: Good, fresh: impl FnOnce() -> C
     &mut rows[i]
 }
 
+/// The domains unit `u`'s sections are members of or drive, ascending.
+fn unit_domains(s: &Sections, units: &Units, u: u16) -> Vec<u32> {
+    let mut out: Vec<u32> = units
+        .sections
+        .get(u as usize)
+        .into_iter()
+        .flatten()
+        .flat_map(|&x| s.list[x as usize].domains.iter().copied())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Per domain unit `u` is on: its lowest node position there and whether that node drives it
+/// rather than turns with it, which a recompile finds the domain again by (a domain's index is
+/// its compile's; Create's network id changes with its root). A domain whose anchor another
+/// domain of the unit shares is left out: it cannot be found again.
+fn domain_anchors(
+    g: &Graph,
+    s: &Sections,
+    units: &Units,
+    u: u16,
+) -> BTreeMap<u32, (BlockPos, bool)> {
+    let mut best: BTreeMap<u32, (BlockPos, bool)> = BTreeMap::new();
+    for &x in units.sections.get(u as usize).into_iter().flatten() {
+        for &v in &s.list[x as usize].nodes {
+            if super::sections::is_virtual(g.node(v)) {
+                continue;
+            }
+            let pos = g.node(v).pos;
+            let roles = g
+                .node(v)
+                .domain
+                .map(|d| (d, false))
+                .into_iter()
+                .chain(g.drives[v as usize].map(|d| (d, true)));
+            for (d, drives) in roles {
+                let e = best.entry(d).or_insert((pos, drives));
+                if (pos, drives) < *e {
+                    *e = (pos, drives);
+                }
+            }
+        }
+    }
+    let mut seen: BTreeMap<(BlockPos, bool), u32> = BTreeMap::new();
+    for a in best.values() {
+        *seen.entry(*a).or_insert(0) += 1;
+    }
+    best.retain(|_, a| seen[a] == 1);
+    best
+}
+
+/// Would domain `c.domain` of `g` stop at the level its unit's passed window ran at least
+/// capacity on (§3.6's domain check): Create's stress at that level's speed above that capacity.
+/// A domain with stress disabled never does; one without that level does (it cannot be checked).
+fn over_capacity(g: &Graph, c: &DomCap) -> bool {
+    let Some(dom) = g.domains.get(c.domain as usize) else {
+        return true;
+    };
+    if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
+        return false;
+    }
+    let Some(lv) = dom.levels.iter().find(|l| l.selector == c.selector) else {
+        return true;
+    };
+    let speed = f64::from(lv.speed_num) / f64::from(lv.speed_den.max(1));
+    let mut stress = 0.0f64;
+    for m in &dom.members {
+        let ratio = f64::from(m.ratio_num) / f64::from(m.ratio_den.max(1));
+        stress += f64::from(m.count) * (ratio * speed).abs() * m.impact;
+    }
+    c.capacity < stress
+}
+
 /// The span of `unit`'s rows.
 fn rows_of(rows: &[Row], unit: u16) -> std::ops::Range<usize> {
     rows.partition_point(|r| r.unit < unit)..rows.partition_point(|r| r.unit <= unit)
@@ -750,9 +839,9 @@ impl Compiled {
         mut old_state: Vec<UnitState>,
         old_rows: Vec<Row>,
         recompiled: bool,
-    ) {
+    ) -> BTreeMap<u16, u16> {
         if !self.units.active() || old_state.len() != old_units.len() {
-            return;
+            return BTreeMap::new();
         }
         let once = |keys: &[Vec<u64>]| {
             let mut n: BTreeMap<&[u64], (u32, u16)> = BTreeMap::new();
@@ -790,6 +879,7 @@ impl Compiled {
             .collect();
         rows.sort_by_key(|r| (r.unit, r.good));
         self.rows = rows;
+        to
     }
 
     /// With every unit window closed, the interval clock and the drain clamp go, as the district's
@@ -812,10 +902,60 @@ impl Compiled {
         self.ports_at = std::mem::take(&mut old.ports_at);
         let old_state = std::mem::take(&mut old.unit_state);
         let old_rows = std::mem::take(&mut old.rows);
-        self.adopt(&old.units, old_state, old_rows, true);
+        let to = self.adopt(&old.units, old_state, old_rows, true);
+        self.check_domains(old, &to, at, tun);
         if self.unit_state.iter().any(|s| s.win.is_some()) {
             self.last_sweep = old.last_sweep;
             self.stock_est = std::mem::take(&mut old.stock_est);
+        }
+    }
+
+    /// The units a recompile carried (`to`, old unit to new): their domains found again by their
+    /// own nodes, then the domain check (SECTIONS.md §3.6). A unit whose passed window ran a domain
+    /// at a capacity below the new compile's stress there, or a domain the new compile does not
+    /// hold, goes stale, as an edit in its box makes it: it stops replaying and learns again.
+    fn check_domains(
+        &mut self,
+        old: &Compiled,
+        to: &BTreeMap<u16, u16>,
+        at: Tick,
+        tun: &GlassTunables,
+    ) {
+        for (&o, &u) in to {
+            let from = domain_anchors(&old.graph, &old.sections, &old.units, o);
+            let back: BTreeMap<(BlockPos, bool), u32> =
+                domain_anchors(&self.graph, &self.sections, &self.units, u)
+                    .into_iter()
+                    .map(|(d, a)| (a, d))
+                    .collect();
+            let map = |c: &DomCap| {
+                let d = *back.get(from.get(&c.domain)?)?;
+                Some(DomCap { domain: d, ..*c })
+            };
+            let st = &mut self.unit_state[u as usize];
+            let open: Option<Vec<DomCap>> = st.caps.iter().map(map).collect();
+            let passed: Option<Vec<DomCap>> = st.passed_caps.iter().map(map).collect();
+            let mut stale = false;
+            match open {
+                Some(mut c) => {
+                    c.sort_by_key(|x| x.domain);
+                    st.caps = c;
+                }
+                None => stale = true,
+            }
+            match passed {
+                Some(mut c) => {
+                    c.sort_by_key(|x| x.domain);
+                    stale |= st.passed.is_some() && c.iter().any(|x| over_capacity(&self.graph, x));
+                    st.passed_caps = c;
+                }
+                None => stale = true,
+            }
+            if stale {
+                st.edited = true;
+                st.passed_caps.clear();
+                self.discard_unit(u, at, tun);
+            }
         }
     }
 
@@ -983,6 +1123,22 @@ impl Compiled {
         self.passed.is_some() && !self.edited
     }
 
+    /// May the district replay at all (SECTIONS.md §3.5): with judging units, while one of them may
+    /// ([`Compiled::unit_may_replay`]); with one unit or none, by the district's rule.
+    pub fn replayable(&self) -> bool {
+        if self.unit_state.is_empty() {
+            return self.eligible();
+        }
+        (0..self.unit_state.len() as u16).any(|u| self.unit_may_replay(u))
+    }
+
+    /// Per unit: may it replay now ([`Compiled::unit_may_replay`]); empty with one unit or none.
+    pub fn units_replaying(&self) -> Vec<bool> {
+        (0..self.unit_state.len() as u16)
+            .map(|u| self.unit_may_replay(u))
+            .collect()
+    }
+
     /// The first solve, at acceptance, from what the engine knows of the inventories.
     pub fn start(&mut self, view: &View<'_>, goods: &dyn GoodLookup, tun: &GlassTunables) {
         self.read_state(view, goods, tun);
@@ -1014,6 +1170,7 @@ impl Compiled {
             return;
         };
         st.win = None;
+        st.caps.clear();
         st.ready_at = st
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
@@ -1304,6 +1461,36 @@ impl Compiled {
             w.last = at;
             times[u] = t;
         }
+        // The least capacity each unit's domains ran at in this sample's regime (§3.3).
+        for u in 0..take.len() {
+            if !take[u] || self.unit_state[u].win.is_none() {
+                continue;
+            }
+            for d in unit_domains(&self.sections, &self.units, u as u16) {
+                let Some(Some(l)) = self.sol.dom_level.get(d as usize) else {
+                    continue;
+                };
+                let Some(lv) = self.graph.domains[d as usize].levels.get(*l as usize) else {
+                    continue;
+                };
+                let caps = &mut self.unit_state[u].caps;
+                match caps.binary_search_by_key(&d, |c| c.domain) {
+                    Ok(i) if caps[i].capacity <= lv.capacity => {}
+                    Ok(i) => {
+                        caps[i].selector = lv.selector;
+                        caps[i].capacity = lv.capacity;
+                    }
+                    Err(i) => caps.insert(
+                        i,
+                        DomCap {
+                            domain: d,
+                            selector: lv.selector,
+                            capacity: lv.capacity,
+                        },
+                    ),
+                }
+            }
+        }
         for r in self.rows.iter_mut() {
             let u = r.unit as usize;
             if !take[u] || self.unit_state[u].win.is_none() {
@@ -1397,10 +1584,12 @@ impl Compiled {
             st.windows_completed += 1;
             if res.verdict == report::verdict::PASS {
                 st.passed = Some((res.start, res.ticks));
+                st.passed_caps = std::mem::take(&mut st.caps);
                 st.edited = false;
                 st.strikes = 0;
             } else {
                 st.strikes += 1;
+                st.caps.clear();
             }
             st.last = Some(res);
             st.win = Some(UnitWin {
@@ -1663,6 +1852,7 @@ impl Compiled {
                     start: at,
                     ..UnitWin::default()
                 });
+                st.caps.clear();
                 *f = true;
             }
         }
@@ -1834,7 +2024,7 @@ impl Compiled {
                 breakpoints: self.replay_breakpoints,
                 oscillations: self.replay_oscillations,
                 cut_edges: dg.replay.as_ref().map_or(0, |r| r.cut_edges()),
-                eligible: self.eligible(),
+                eligible: self.replayable(),
                 learned_sources: dg.replay.as_ref().map_or(0, |r| r.learned_sources()),
             },
             goods: goods.into_values().collect(),
@@ -1970,11 +2160,20 @@ impl Compiled {
             .rows
             .windows(2)
             .all(|p| (p[0].unit, p[0].good) < (p[1].unit, p[1].good));
+        let nd = self.graph.domains.len() as u32;
+        let caps_fit = |c: &[DomCap]| {
+            c.iter().all(|x| x.domain < nd) && c.windows(2).all(|p| p[0].domain < p[1].domain)
+        };
         sorted
             && self.rows.iter().all(|r| {
                 self.unit_state
                     .get(r.unit as usize)
                     .is_some_and(|s| s.win.is_some())
+            })
+            && self.unit_state.iter().all(|s| {
+                caps_fit(&s.caps)
+                    && caps_fit(&s.passed_caps)
+                    && (s.win.is_some() || s.caps.is_empty())
             })
     }
 
@@ -2129,6 +2328,11 @@ mod persist_impls {
         st,
         stt
     });
+    persist_struct!(DomCap {
+        domain,
+        selector,
+        capacity
+    });
     persist_struct!(UnitState {
         win,
         ready_at,
@@ -2136,7 +2340,9 @@ mod persist_impls {
         passed,
         edited,
         strikes,
-        windows_completed
+        windows_completed,
+        caps,
+        passed_caps
     });
 
     impl Persist for GlassEvent {
