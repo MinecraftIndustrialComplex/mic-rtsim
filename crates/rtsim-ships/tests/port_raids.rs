@@ -506,7 +506,7 @@ fn port_raids_measured() {
         let items: u64 = on.iter().map(|m| m.items).sum();
         let shares: Vec<f64> = on.iter().flat_map(|m| m.shares.iter().copied()).collect();
         let (smean, smax) = (
-            shares.iter().sum::<f64>() / shares.len().max(1) as f64,
+            shares.iter().sum::<f64>() / shares.len().max(1) as f64 + 0.0,
             shares.iter().copied().fold(0.0, f64::max),
         );
         eprintln!(

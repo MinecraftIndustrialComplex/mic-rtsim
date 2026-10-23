@@ -634,11 +634,13 @@ broken, and refounding at found sites.
      train is in reach, the raid now hits the port village at the hunted lane's nearer end, unless
      someone is watching it.
    - **The fight.** Pirates go only when they believe they win (p > 2/3 against `pop x 0.25`, the
-     conflict engine's village defence). The square law decides the losses, and the pool makes them
-     good, as in rule 1.
-   - **The loot.** Survivors carry off 10 items a man, at most 600‰ of each stock. This is the
-     conflict engine's plunder: `World::stock_to_held`, apportioned. The loot is landed at the
-     haven's market when the ship comes home (C24).
+     conflict engine's village defence; A is the pirate's strength after the hunt's toll). The square
+     law decides the losses, and the pool makes them good, as in rule 1. A pirate in view never
+     raids a port.
+   - **The loot.** Survivors carry off 10 items a man, at most 600‰ of each stock, and no more than
+     fits the hold (a full hold ends the hunt). This is the conflict engine's plunder:
+     `World::stock_to_held`, apportioned; no coins. The loot is landed at the haven's market when the
+     ship comes home (C24).
 7. **A blockaded port closes and reopens** (PORTS-2 (b), Ben 2026-10-22: "Close under blockade").
    - **The gauge.** Each lane keeps its *heat*: the hazard share it has carried, averaged over the
      last month (an exponential average with a 30-day time constant, updated in closed form at each
@@ -741,7 +743,9 @@ With P8's bodies, the same events gain ships and crews.
 - The toll is arithmetic at an event that already exists (reaching the lane).
 - Nothing scans the world: only docks with a hot lane are checked.
 
-**Built.** S8b-1, rules 1, 2, 4 and 5 (PC1 to PC6, PC11 to PC19), on branch `ports/lifecycle`: `ShipTunables::{lifecycle, starve_days, refound}`; in `rtsim-ships`' engine the toll, `fed_until` and the starving pool's closed form, laying up, shutting and refounding; the haven rows' new fields saved in `RTS2` with no migration; `check()` holds that a shut haven has no active ship, that each pool is within its cap and that each shut haven has exactly one live look. Tests (`tests/lifecycle.rs`): `a_hunt_pays_its_toll`, `a_starving_haven_shuts_and_refounds`, `no_refound_in_view`, `unattended_havens_rise_and_fall` and its thousand-year run on `synth::sea_havens` seeds 1 to 30. Measured over 1,000 years with the lifecycle on: havens shut in 4 of 30 seas (seed 2: 64 shuts, 63 refounds; seed 9: 14 and 13; seed 25: 1 and 1; seed 21: 1 and none, its site having no lane worth hunting); 0.980 of the sites open on average (lowest 0.785); every sea hunts in every century; tolls of 14 to 69 men a year a sea; 4.5% fewer hunts than with the lifecycle off (up to 25% in one sea, all in seas where nothing shut, so from the toll). With it off nothing shuts. With it on, S8's kill-all brings every slot back in 52.8 days [52.5, 52.8] (off: 52.5 [47.0, 52.8]) and `pirates_survive_unattended_1000_years` keeps every slot manned every century. Rules 3, 6, 7 and 8 are not built.
+**Built.** S8b-1, rules 1, 2, 4 and 5 (PC1 to PC6, PC11 to PC19), on branch `ports/lifecycle`: `ShipTunables::{lifecycle, starve_days, refound}`; in `rtsim-ships`' engine the toll, `fed_until` and the starving pool's closed form, laying up, shutting and refounding; the haven rows' new fields saved in `RTS2` with no migration; `check()` holds that a shut haven has no active ship, that each pool is within its cap and that each shut haven has exactly one live look. Tests (`tests/lifecycle.rs`): `a_hunt_pays_its_toll`, `a_starving_haven_shuts_and_refounds`, `no_refound_in_view`, `unattended_havens_rise_and_fall` and its thousand-year run on `synth::sea_havens` seeds 1 to 30. Measured over 1,000 years with the lifecycle on: havens shut in 4 of 30 seas (seed 2: 64 shuts, 63 refounds; seed 9: 14 and 13; seed 25: 1 and 1; seed 21: 1 and none, its site having no lane worth hunting); 0.980 of the sites open on average (lowest 0.785); every sea hunts in every century; tolls of 14 to 69 men a year a sea; 4.5% fewer hunts than with the lifecycle off (up to 25% in one sea, all in seas where nothing shut, so from the toll). With it off nothing shuts. With it on, S8's kill-all brings every slot back in 52.8 days [52.5, 52.8] (off: 52.5 [47.0, 52.8]) and `pirates_survive_unattended_1000_years` keeps every slot manned every century. Rules 3, 6, 7 and 8 are not built here (6 is S8b-3, below).
+
+**Built (S8b-3).** Rule 6 (PC40 to PC49), on branch `ports/raids`: `ShipTunables::{port_raid_carry, port_village_defence_per_pop}`; `Ships::port_raid` takes the third target of a hunt's coast raid; `ShipLedger::looted_from_ports`; `ShipStats::{port_raids, items_from_ports, port_raid_lost_milli}`; the toll's booking factored into `book_loss`. Tests (`tests/port_raids.rs`): `a_port_raid_conserves_goods` (exact ledger identity, the villages' `lump_out` and the havens' `lump_in`), `a_watched_port_is_never_raided`, `a_strong_village_is_not_raided` (mutation checked), `a_raid_hits_the_nearer_end`, `port_raids_off_changes_nothing`, and the ignored `port_raids_measured`. Measured on seeds 1 to 30 over 10 model years, carry 10 against 0: on `synth::sea_havens` 15.5 port raids a year a sea, 52.1 items a raid, 0.25 of a village's stock a raid on average (largest 0.625), 0.82 men lost a raid, hunts 83.7 a year against 92.5 and the havens' manned share 0.961 against 0.984; on `synth::coastal` no raid at the defaults (its ports hold 30 to 72, against a sea crew's limit of 16), and with its ports set to 12 people 1.14 a year, 53.0 items, 0.034 of the stock, hunts 23.6 a year against 38.6. No existing test changed. The knowledge report (PortRaided, 16) is not recorded yet.
 
 #### 2.4.7 Frostmaw and Umvuthana (MOWZIE)
 
