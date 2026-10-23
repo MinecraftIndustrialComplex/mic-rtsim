@@ -38,6 +38,57 @@ public final class BodyKinds {
                 new GroupKind.Slot(TRADER_LLAMA, new Vec3(-2, 0, 0)))));
     }
 
+    // ---- conflict stand-ins (MZB-102) -------------------------------------------------------------
+
+    /**
+     * The entity a conflict body kind is embodied as when no plugin gives it one: a culture's abstract
+     * body ({@code mic_rtsim:conflict/<culture>/<unit>}, crates/rtsim-conflict/data/cultures) stands in
+     * as the vanilla illager of its class. A name that is none of these and not an entity type falls
+     * back to {@link #STAND_IN_FALLBACK}.
+     */
+    public static final String STAND_IN_FALLBACK = "minecraft:pillager";
+    private static final String CONFLICT_PREFIX = "mic_rtsim:conflict/";
+    private static final Map<String, String> STAND_INS = new LinkedHashMap<>();
+
+    static {
+        // Melee to the vindicator, ranged and envoys to the pillager, siege to the ravager, by the unit
+        // names of the three built-in cultures (raider, goblin, bandit).
+        for (String unit : List.of("vindicator", "warrior", "thug"))
+            STAND_INS.put(unit, "minecraft:vindicator");
+        for (String unit : List.of("pillager", "archer", "crossbowman", "herald", "emissary", "messenger"))
+            STAND_INS.put(unit, "minecraft:pillager");
+        for (String unit : List.of("ravager", "brute"))
+            STAND_INS.put(unit, "minecraft:ravager");
+    }
+
+    /**
+     * Gives a conflict body kind the entity type it is embodied as: a full body name
+     * ({@code mic_rtsim:conflict/goblin/brute}) or a bare unit name every culture's unit of that name
+     * takes ({@code brute}). A later call replaces an earlier one, so a plugin may give a culture's
+     * units their own mod's bodies. Call during mod construction.
+     */
+    public static synchronized void registerStandIn(String body, String entityType) {
+        STAND_INS.put(body, entityType);
+    }
+
+    /**
+     * The entity type id a conflict body kind is embodied as: a registered stand-in for the full name,
+     * then for its unit name, then {@link #STAND_IN_FALLBACK} for a culture body; any other name is
+     * itself (a plugin's body, an entity type). Null for null.
+     */
+    public static synchronized String standIn(String body) {
+        if (body == null)
+            return null;
+        String s = STAND_INS.get(body);
+        if (s != null)
+            return s;
+        if (body.startsWith(CONFLICT_PREFIX)) {
+            String unit = body.substring(body.lastIndexOf('/') + 1);
+            return STAND_INS.getOrDefault(unit, STAND_IN_FALLBACK);
+        }
+        return body;
+    }
+
     public static synchronized void registerBody(BodyAdapter adapter) {
         if (BODIES.putIfAbsent(adapter.name(), adapter) != null)
             throw new IllegalStateException("body kind " + adapter.name() + " registered twice");
