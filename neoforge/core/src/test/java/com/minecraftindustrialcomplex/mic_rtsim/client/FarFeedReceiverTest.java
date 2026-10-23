@@ -200,6 +200,212 @@ class FarFeedReceiverTest {
         forwardOnly(200, drawn);
     }
 
+    /** A dragon's segment, one block along the heading (hx, hz), centred on (x, 200, z). */
+    private static double[] dragon(double x, double z, double hx, double hz) {
+        return new double[]{x + hx * 0.5, 200, z + hz * 0.5, x - hx * 0.5, 200, z - hz * 0.5};
+    }
+
+    private static double centreZ(FarMover m, double at) {
+        double[] s = new double[6];
+        m.segmentAt(at, s);
+        return (s[2] + s[5]) / 2.0;
+    }
+
+    @Test
+    void aDragonStoppingToHoverFarPastWhereItWasRunOnToGoesBackToIt() {
+        long g0 = 20_000;
+        // East at 2 blocks a tick, sampled at x 0, 40 and 80
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566),
+                FarWire.Sample.of(0, FarState.FLY.wire, dragon(0, 0, 1, 0)));
+        for (int k = 1; k <= 2; k++) {
+            advance(20);
+            send(0, g0 + 20L * k, FarWire.Sample.of(0, FarState.FLY.wire, dragon(40 * k, 0, 1, 0)));
+        }
+        // It stops to hover two blocks on, where the server finds it a second later and again the second after;
+        // the run on had it 40 blocks on by then, too far past to wait there (HOLD)
+        advance(20);
+        double ranOnTo = centreX(mover(), FarClock.ticks());
+        assertTrue(ranOnTo - 82.0 > FarFeedReceiver.HOLD, "run on to " + ranOnTo);
+        send(0, g0 + 60, FarWire.Sample.of(0, FarState.FLY.wire, dragon(82, 0, 1, 0)));
+        advance(20);
+        send(0, g0 + 80, FarWire.Sample.of(0, FarState.FLY.wire, dragon(82, 0, 1, 0)));
+        advance(100);
+        assertEquals(82.0, centreX(mover(), FarClock.ticks()), 1e-6, "back where it hovers, not left 40 blocks on");
+    }
+
+    /**
+     * Flies a dragon along {@code path} (tick to {x, z, heading x, heading z} at y 200), sampled every second as the
+     * server does (and once more, unchanged, the first second it stands), for {@code ticks} ticks. Returns how far
+     * the box's midpoint was from the dragon's at worst from tick {@code after} on, and the mean angle in degrees
+     * between the box's facing and the dragon's heading.
+     */
+    private double[] worstOff(int ticks, int after, java.util.function.IntFunction<double[]> path) {
+        long g0 = 40_000 + (long) FarClock.ticks(); // one receiver: its clock offset is the first message's
+        double[] sent = null;
+        boolean moved = false;
+        double worst = 0.0, facing = 0.0;
+        for (int t = 0; t <= ticks; t++) {
+            if (t > 0)
+                FarClock.advance();
+            double[] p = path.apply(t);
+            double[] seg = dragon(p[0], p[1], p[2], p[3]);
+            if (t % 20 == 0) {
+                boolean moves = sent == null || Math.abs(seg[0] - sent[0]) + Math.abs(seg[2] - sent[2]) >= 0.125;
+                FarWire.Rec s = moves || moved ? FarWire.Sample.of(0, FarState.FLY.wire, moves ? seg : sent) : null;
+                if (moves)
+                    sent = seg;
+                moved = moves;
+                if (t == 0)
+                    send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566), s);
+                else if (s != null)
+                    send(0, g0 + t, s);
+            }
+            if (t < after)
+                continue;
+            double now = FarClock.ticks();
+            double dx = centreX(mover(), now) - p[0], dz = centreZ(mover(), now) - p[1];
+            worst = Math.max(worst, Math.sqrt(dx * dx + dz * dz));
+            double[] b = new double[6];
+            mover().segmentAt(now, b);
+            double off = Math.atan2(b[2] - b[5], b[0] - b[3]) - Math.atan2(p[3], p[2]);
+            facing += Math.toDegrees(Math.abs(Math.IEEEremainder(off, 2.0 * Math.PI))) / (ticks + 1 - after);
+        }
+        return new double[]{worst, facing};
+    }
+
+    /** Round a circle of radius r about the origin at u blocks a tick. */
+    private static java.util.function.IntFunction<double[]> circle(double r, double u) {
+        return t -> {
+            double a = u / r * t;
+            return new double[]{r * Math.cos(a), r * Math.sin(a), -Math.sin(a), Math.cos(a)};
+        };
+    }
+
+    @Test
+    void aCirclingDragonIsDrawnOnItsCircleNotOffOnTheTangent() {
+        // Run on along a straight line instead, it was drawn up to 22 blocks off a circle of radius 40 at 1.5
+        // blocks a tick (the turn is known from the third sample), and facing 15 degrees off on average
+        double[] wide = worstOff(400, 60, circle(40.0, 1.5));
+        assertTrue(wide[0] < 8.0, "off the wide circle by " + wide[0]);
+        assertTrue(wide[1] < 5.0, "facing off by " + wide[1] + " degrees");
+        FarObjects.clearAll();
+        // A tight, slow circle, as a hunt: the box must not wait for a dragon it takes to be behind it
+        double[] tight = worstOff(400, 60, circle(12.0, 0.5));
+        assertTrue(tight[0] < 3.0, "off the tight circle by " + tight[0]);
+    }
+
+    @Test
+    void aDragonThatSwervedOnceIsNotDrawnTurningOnAndOn() {
+        // East at 2 blocks a tick, then through 135 degrees in half a second, then straight on, starting the swerve
+        // at each tick of a second (how the samples fall across it matters): the run turns on only a quarter again
+        // past where the dragon was heading at the sample, so the box never strays 64 blocks (where a client stops
+        // counting the body as there); turned on half again, 71
+        for (int start = 100; start < 120; start++) {
+            FarObjects.clearAll();
+            int t0 = start;
+            double worst = worstOff(400, 0, t -> {
+                double x = 0.0, z = 0.0, h = 0.0;
+                for (int i = 0; i <= t; i++) {
+                    h = i < t0 ? 0.0 : i > t0 + 10 ? 0.75 * Math.PI : 0.75 * Math.PI * (i - t0) / 10.0;
+                    if (i < t) {
+                        x += 2.0 * Math.cos(h);
+                        z += 2.0 * Math.sin(h);
+                    }
+                }
+                return new double[]{x, z, Math.cos(h), Math.sin(h)};
+            })[0];
+            assertTrue(worst < 64.0, "strayed " + worst + " swerving from tick " + start);
+        }
+    }
+
+    /**
+     * A carriage 10 blocks between bogeys at 0.7 blocks a tick (Create's top speed on a curve) along a track that
+     * runs east, through {@code turns} (each {radius, degrees, left above 0}), then straight on, sampled every
+     * second. Returns how far either bogey was drawn from where it is at worst, and the mean angle in degrees
+     * between the drawn carriage and the real one, from tick 60 on.
+     */
+    private double[] onTrack(double[]... turns) {
+        int n = 6_400;
+        double step = 0.05, x = -150.0, z = 0.0, h = 0.0;
+        double[][] track = new double[n][];
+        for (int i = 0; i < n; i++) {
+            track[i] = new double[]{x, z};
+            double s = i * step - 150.0, turned = 0.0, at = 0.0;
+            // Heading at arc length s past the track's start of turns, at 0
+            for (double[] t : turns) {
+                double len = Math.toRadians(Math.abs(t[1])) * t[0];
+                if (s > at)
+                    turned += Math.copySign(Math.min(s - at, len) / t[0], t[1]);
+                at += len;
+            }
+            h = turned;
+            x += step * Math.cos(h);
+            z += step * Math.sin(h);
+        }
+        double[][] t2 = track;
+        java.util.function.DoubleFunction<double[]> point = s -> t2[(int) Math.round((s + 150.0) / step)];
+        long g0 = 60_000 + (long) FarClock.ticks();
+        double worst = 0.0, facing = 0.0;
+        int counted = 0;
+        for (int t = 0; t <= 300; t++) {
+            if (t > 0)
+                FarClock.advance();
+            double lead = -60.0 + 0.7 * t;
+            double[] a = point.apply(lead), b = point.apply(lead - 10.0);
+            double[] seg = {a[0], 64, a[1], b[0], 64, b[1]};
+            if (t % 20 == 0) {
+                FarWire.Rec rec = FarWire.Sample.of(0, FarState.MOVING.wire, seg);
+                if (t == 0)
+                    send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.CARRIAGE.wire, 0, 0, 0, 0x808080), rec);
+                else
+                    send(0, g0 + t, rec);
+            }
+            if (t < 60)
+                continue;
+            double[] d = new double[6];
+            mover().segmentAt(FarClock.ticks(), d);
+            for (int p = 0; p < 2; p++)
+                worst = Math.max(worst, Math.hypot(d[3 * p] - seg[3 * p], d[3 * p + 2] - seg[3 * p + 2]));
+            double off = Math.atan2(d[2] - d[5], d[0] - d[3]) - Math.atan2(seg[2] - seg[5], seg[0] - seg[3]);
+            facing += Math.toDegrees(Math.abs(Math.IEEEremainder(off, 2.0 * Math.PI)));
+            counted++;
+        }
+        return new double[]{worst, facing / counted};
+    }
+
+    @Test
+    void aCarriageOnACurveKeepsToItsTrack() {
+        // Its bogeys keep to the track, so each runs on along its own line; turned on an arc as a dragon is, a
+        // carriage faced 7.2 degrees off on average over a 90 degree curve of radius 25 and the straight after it
+        // (4.6 straight on), and
+        // its ends strayed 9.6 blocks on an S of two 45 degree curves of radius 30 (6.2 straight on)
+        double[] curve = onTrack(new double[]{25.0, 90.0});
+        FarObjects.clearAll();
+        double[] s = onTrack(new double[]{30.0, 45.0}, new double[]{30.0, -45.0});
+        assertTrue(curve[1] < 5.0, "faced off by " + curve[1] + " degrees on the curve");
+        assertTrue(s[0] < 8.0, "strayed " + s[0] + " on the S");
+    }
+
+    @Test
+    void aDragonSlowingHardWaitsForItInsteadOfGoingBack() {
+        long g0 = 50_000;
+        // East at 2 blocks a tick, sampled at x 0, 40 and 80; then it slows to 0.5 within the next 10 ticks and
+        // flies on at that: x 92.5 at the next sample, 102.5 the one after
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566),
+                FarWire.Sample.of(0, FarState.FLY.wire, dragon(0, 0, 1, 0)));
+        for (int k = 1; k <= 2; k++) {
+            advance(20);
+            send(0, g0 + 20L * k, FarWire.Sample.of(0, FarState.FLY.wire, dragon(40 * k, 0, 1, 0)));
+        }
+        double drawn = forwardOnly(20, centreX(mover(), FarClock.ticks()));
+        double[] x = {92.5, 102.5, 112.5, 122.5, 132.5};
+        for (int k = 0; k < x.length; k++) {
+            send(0, g0 + 60 + 20L * k, FarWire.Sample.of(0, FarState.FLY.wire, dragon(x[k], 0, 1, 0)));
+            drawn = forwardOnly(20, drawn);
+        }
+        assertTrue(Math.abs(drawn - 132.5 - 10.0) < 3.0, "with it again at " + drawn);
+    }
+
     @Test
     void aJumpIsDrawnAtOnce() {
         long g = steadyTrain(10_000);
