@@ -1083,6 +1083,33 @@ impl CampRun {
         p
     }
 
+    /// The engine to `to` with its commands held back: what it decided, for a crash test to apply
+    /// (or lose) as it likes. The plugin's own queue is not delivered.
+    pub fn decide(&mut self, to: Tick) -> Vec<Cmd> {
+        self.c.run_until(
+            &mut self.w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            to,
+        );
+        self.c.take_commands()
+    }
+
+    /// The camp comes in and the census reaches the engine, whose commands are held back (as
+    /// [`CampRun::decide`]).
+    pub fn census_held(&mut self) -> Vec<Cmd> {
+        let at = self.c.now() + 1;
+        self.plugin.camp_in(self.key, at);
+        for (t, o) in self.plugin.due(at) {
+            self.c.ingest(
+                &mut self.w,
+                &mut rtsim_ecology::infra::NoInfrastructure,
+                &o,
+                t,
+            );
+        }
+        self.decide(at)
+    }
+
     /// The player kills `n` of the camp's members at the refinery, a signal against the camp: the
     /// feud's grievance (and with it a war party, in time).
     pub fn kill(&mut self, n: f64) {
