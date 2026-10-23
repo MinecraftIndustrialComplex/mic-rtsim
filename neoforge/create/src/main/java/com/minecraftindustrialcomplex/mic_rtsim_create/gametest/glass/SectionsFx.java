@@ -127,10 +127,14 @@ final class SectionsFx {
 
     /** A check that must hold: logged, and a failure of the test when it does not. */
     static boolean check(GlassReplayGameTests.Run run, String what, boolean ok, Object detail) {
-        MicRtsim.LOGGER.info("[gametest] sec1fx {}: check {}: {} ({})", id(run), what, ok ? "ok" : "FAIL", detail);
-        IndustryKit.record(run.test, "check", what + ": " + (ok ? "ok" : "FAIL") + " (" + detail + ")");
+        return check(id(run), run.f.name(), run.test, run.failures, what, ok, detail);
+    }
+
+    static boolean check(String id, String factory, String test, List<String> failures, String what, boolean ok, Object detail) {
+        MicRtsim.LOGGER.info("[gametest] sec1fx {}: check {}: {} ({})", id, what, ok ? "ok" : "FAIL", detail);
+        IndustryKit.record(test, "check", what + ": " + (ok ? "ok" : "FAIL") + " (" + detail + ")");
         if (!ok)
-            run.failures.add(run.f.name() + ": " + what + " (" + detail + ")");
+            failures.add(factory + ": " + what + " (" + detail + ")");
         return ok;
     }
 
@@ -139,13 +143,21 @@ final class SectionsFx {
      * test; when it holds after all it logs {@code ok}, so a closed gap shows.
      */
     static void gap(GlassReplayGameTests.Run run, String what, boolean ok, String todo, Object detail) {
-        MicRtsim.LOGGER.info("[gametest] sec1fx {}: check {}: {} ({}){}", id(run), what, ok ? "ok" : "GAP", detail, ok ? "" : " TODO " + todo);
-        IndustryKit.record(run.test, "check", what + ": " + (ok ? "ok" : "GAP, TODO " + todo) + " (" + detail + ")");
+        gap(id(run), run.test, what, ok, todo, detail);
+    }
+
+    static void gap(String id, String test, String what, boolean ok, String todo, Object detail) {
+        MicRtsim.LOGGER.info("[gametest] sec1fx {}: check {}: {} ({}){}", id, what, ok ? "ok" : "GAP", detail, ok ? "" : " TODO " + todo);
+        IndustryKit.record(test, "check", what + ": " + (ok ? "ok" : "GAP, TODO " + todo) + " (" + detail + ")");
     }
 
     static void info(GlassReplayGameTests.Run run, String what, Object detail) {
-        MicRtsim.LOGGER.info("[gametest] sec1fx {}: {}: {}", id(run), what, detail);
-        IndustryKit.record(run.test, what, String.valueOf(detail));
+        info(id(run), run.test, what, detail);
+    }
+
+    static void info(String id, String test, String what, Object detail) {
+        MicRtsim.LOGGER.info("[gametest] sec1fx {}: {}: {}", id, what, detail);
+        IndustryKit.record(test, what, String.valueOf(detail));
     }
 
     /** {@code rel} in the far copy's frame (its offset and, for the partial variant, its shift included). */

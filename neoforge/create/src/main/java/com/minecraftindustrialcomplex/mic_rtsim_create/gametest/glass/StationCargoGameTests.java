@@ -124,7 +124,13 @@ public final class StationCargoGameTests {
         final GameTestHelper helper;
         final GlassReplayGameTests.Far far;
         final CorpusFactory f;
-        final String test = "station cargo";
+        final String test;
+        /** The fixture's own verdict at the end of the settle (null: this test's). SEC-1's {@code StationPressLineGameTests}. */
+        java.util.function.Consumer<Run> verdict;
+        /** What the fixture keeps between ticks. */
+        final Map<String, Object> mine = new java.util.HashMap<>();
+        /** What the trains carry: the partner's cargo on the simulated call. */
+        Item cargo = Items.GOLD_INGOT;
         final GlassExitKit.Recorder rec;
         final boolean judge;
         final boolean stub;
@@ -152,9 +158,14 @@ public final class StationCargoGameTests {
         final List<String> failures = new ArrayList<>();
 
         Run(GameTestHelper helper, CorpusFactory f) {
+            this(helper, f, "station cargo", FAR_CHUNKS);
+        }
+
+        Run(GameTestHelper helper, CorpusFactory f, String test, int farChunksAlongX) {
             this.helper = helper;
             this.f = f;
-            this.far = new GlassReplayGameTests.Far(helper, new BlockPos(16 * FAR_CHUNKS, 0, 0));
+            this.test = test;
+            this.far = new GlassReplayGameTests.Far(helper, new BlockPos(16 * farChunksAlongX, 0, 0));
             this.rec = GlassExitKit.start(helper.getLevel());
             this.judge = GlassExitKit.canJudge();
             this.stub = !IndustryKit.nativeEngine();
@@ -305,7 +316,7 @@ public final class StationCargoGameTests {
         run.stage(Stage.DISTRICT);
     }
 
-    private static void vault(ServerLevel level, BlockPos corner) {
+    static void vault(ServerLevel level, BlockPos corner) {
         BlockState v = AllBlocks.ITEM_VAULT.getDefaultState().setValue(ItemVaultBlock.HORIZONTAL_AXIS, Direction.Axis.X);
         for (int dx = 0; dx < 2; dx++)
             for (int dy = 0; dy < 2; dy++)
@@ -494,7 +505,7 @@ public final class StationCargoGameTests {
             IItemHandler car = run.train.carriages.get(0).storage.getAllItems();
             for (int s = 0; s < car.getSlots(); s++)
                 car.extractItem(s, car.getStackInSlot(s).getCount(), false);
-            ItemHandlerHelper.insertItemStacked(car, new ItemStack(Items.GOLD_INGOT, LEARNED), false);
+            ItemHandlerHelper.insertItemStacked(car, new ItemStack(run.cargo, LEARNED), false);
             run.arrivedAt = run.now();
             run.train.arriveAt(run.station);
             return;
@@ -588,7 +599,10 @@ public final class StationCargoGameTests {
                 fail(run, "the far site never settled (" + run.last + ")");
             return;
         }
-        judge(run);
+        if (run.verdict != null)
+            run.verdict.accept(run);
+        else
+            judge(run);
         run.stage(Stage.DONE);
     }
 
