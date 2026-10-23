@@ -125,7 +125,8 @@ pub struct ShipTunables {
     pub coast_raid_milli: u32,
     /// A coast raid that finds no player district or train raids the port village at the lane's
     /// nearer end (§2.4.6a rule 6, PC9, PC40): the survivors carry off this many items a man, at
-    /// most `loot_share_milli` of each stock. 0 turns port raids off. TUNABLE 10 (between the
+    /// most `loot_share_milli` of each line's surplus over its target (PC72). 0 turns port raids
+    /// off. TUNABLE 10 (between the
     /// conflict engine's bandit thug, 12, and crossbowman, 8).
     pub port_raid_carry: u32,
     /// A port village's defence against pirates, per resident (§2.4.6a rule 6, PC9): the
