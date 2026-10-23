@@ -2398,15 +2398,15 @@ impl Compiled {
         if st.edited || st.derated_at.is_some_and(|d| own.start < d) {
             return false;
         }
-        // A window of unbounded goods alone (a black box, a port, a model demoted here) judged
-        // nothing: such a unit leans on the district's pass, as a district alone does (G-B4,
-        // choice SC66).
+        // A window of unbounded goods alone (a black box, a port, a model demoted here), or of none
+        // (a unit with no store: a boiler its pumps fill from a source, which only drives a
+        // network), judged nothing: such a unit leans on the district's pass, as a district alone
+        // does (G-B4, choice SC66). Gated, it would stop every unit on the network it drives.
         let judged = own.goods.iter().any(|g| g.verdict == report::verdict::PASS);
-        let leans = !own.goods.is_empty()
-            && own
-                .goods
-                .iter()
-                .all(|g| g.class == report::class::UNBOUNDED)
+        let leans = own
+            .goods
+            .iter()
+            .all(|g| g.class == report::class::UNBOUNDED)
             && self.eligible();
         if !judged && !leans {
             return false;
