@@ -111,6 +111,8 @@ final class FarModelRenderer {
     private static final Vector3f L0 = new Vector3f(), L1 = new Vector3f();
 
     private static long frameNanos, lastPrune;
+    /** The level the items were made in (replaced the frame it changes, so it never outlives it). */
+    private static ClientLevel lastLevel;
     /** The looks' cold first draws are done (Create's bogeys): at the first frame the far view runs. */
     private static boolean prewarmed;
     private static long preparedFrame = -1, dhDrawnFrame = -1;
@@ -120,6 +122,8 @@ final class FarModelRenderer {
     // What the last frame did, for the bench
     static final GpuTimer DH_GPU = new GpuTimer(), BAND_GPU = new GpuTimer();
     static int lastCandidates, lastDh, lastBand, lastLive, lastWaiting;
+    /** The most a dragon model's radius passed the reach its hand-over uses (FarDragonView#reach), blocks. */
+    static double overReach = Double.NEGATIVE_INFINITY;
     static long lastVertices;
     static long dhNanos, bandNanos, prepareNanos, lookNanos, timedFrames;
 
@@ -134,6 +138,15 @@ final class FarModelRenderer {
      */
     static void newFrame() {
         frameNanos = System.nanoTime();
+        ClientLevel level = Minecraft.getInstance().level;
+        if (level != lastLevel) {
+            // A new level (another dimension, another world): nothing here holds the old one (its stand-ins)
+            lastLevel = level;
+            POOL.clear();
+            ITEMS.clear();
+            DRAWN.clear();
+            WAITING.clear();
+        }
         if (OFF || !FarGates.ready())
             return;
         if (!prewarmed) {
@@ -231,6 +244,8 @@ final class FarModelRenderer {
             it.live = false;
             it.liveModel.reset();
             it.placeholder = placeholder;
+            if (!placeholder && m.kind() == FarKind.DRAGON)
+                overReach = Math.max(overReach, it.model.radius - FarDragonView.reach(m.size()));
             ITEMS.add(it);
         }
         ITEMS.sort((a, b) -> Double.compare(a.d2, b.d2));
@@ -539,10 +554,11 @@ final class FarModelRenderer {
         BAND_GPU.collect();
         double f = Math.max(1, timedFrames);
         out.add(String.format(Locale.ROOT,
-                "models: %d candidates, %d in DH's pass, %d in the band, %d live, %d waiting, %d vertices; CPU per "
-                        + "frame: DH pass %.3f ms, band %.3f ms, of which placing %.3f ms, bakes %.3f ms; GPU per "
-                        + "frame: DH pass %.3f ms over %d, band %.3f ms over %d",
-                lastCandidates, lastDh, lastBand, lastLive, lastWaiting, lastVertices, dhNanos / 1e6 / f,
+                "models: %d candidates, %d in DH's pass, %d in the band, %d live, %d waiting, %d vertices, dragons "
+                        + "past their reach by %.1f blocks at most; CPU per frame: DH pass %.3f ms, band %.3f ms, of "
+                        + "which placing %.3f ms, bakes %.3f ms; GPU per frame: DH pass %.3f ms over %d, band %.3f ms "
+                        + "over %d",
+                lastCandidates, lastDh, lastBand, lastLive, lastWaiting, lastVertices, overReach, dhNanos / 1e6 / f,
                 bandNanos / 1e6 / f, prepareNanos / 1e6 / f, lookNanos / 1e6 / f,
                 DH_GPU.samples == 0 ? 0.0 : DH_GPU.sumNanos / 1e6 / DH_GPU.samples, DH_GPU.samples,
                 BAND_GPU.samples == 0 ? 0.0 : BAND_GPU.sumNanos / 1e6 / BAND_GPU.samples, BAND_GPU.samples));
@@ -553,6 +569,7 @@ final class FarModelRenderer {
 
     static void resetSums() {
         dhNanos = bandNanos = prepareNanos = lookNanos = timedFrames = 0;
+        overReach = Double.NEGATIVE_INFINITY;
         DH_GPU.resetSums();
         BAND_GPU.resetSums();
     }
