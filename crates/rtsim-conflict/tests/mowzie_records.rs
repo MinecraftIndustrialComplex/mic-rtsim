@@ -315,7 +315,7 @@ fn envoy_met(r: &mut Run) -> boundary::EnvoyMaterialize {
     r.kill(7.0, Tick(10));
     let mut t = r.c.now();
     while t < day(4.0) {
-        t = t + 600;
+        t += 600;
         r.run(t);
         if let Some(e) = r.cmds.iter().find_map(|(_, c)| match c {
             Cmd::Envoy(e) => Some(e.clone()),
