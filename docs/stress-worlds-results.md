@@ -1241,3 +1241,23 @@ now says so when a watched train calls outside every district, and the engine en
 | SG53 | A station with no position or dimension is reported as unwatched too | such a station is in no district, so the leg is over |
 | SG54 | The GameTests read the engine's counts as changes over the journey and look for edges by the journey's own station ids; the report switch is reset by `forget` | the engine's counts run across the whole suite, and a failed control must not leave the switch off for the rest of the run |
 
+
+#### The globals page (finding 3)
+
+The booked train legs were most of the globals page (about 45 to 50 bytes raw a departure, held a game
+day: 91, 383, 636 KB raw), which every save rewrote whole. They are now a table of their own
+(`persist::LEG_TABLE` 0x4904, ID10 in docs/choices-industry-dirty-pages.md), so a save writes only the
+leg pages a booking, a loot or an expiry changed. A format change with no migration, as before release.
+
+| # | Choice | Why |
+|---|---|---|
+| SG70 | Legs are paged by id, 256 to a page (`LEGS_PER_PAGE`), the page of a leg being its id divided by 256; each leg is stored with its dimension and the regions its line crosses | finding 3 (a), the recommended option, paged "by cell or by train" in the brief. Paging by id instead: legs are booked in id order and expire oldest first, so the pages that change are the newest (being filled) and the oldest (thinned by the daily expiry), and the rest are left alone. A cell or a train would put a leg in several pages, and a booking would write all of them |
+| SG71 | The cell lookup (`by_cell`) and the train lookup (`by_train`) are not saved: a restore rebuilds them from the legs in id order, through the insert a booking uses. The next leg id stays in the globals page | the lookups are a function of the legs, so one copy cannot disagree with the other (a unit test asserts a restored index equals the booked one, a seam line included). The counter outlives the legs it numbered, so a restore after an expiry does not reuse an id (tested) |
+| SG72 | A restore refuses a leg page that holds an id of another page, ids out of order, an id at or past the counter, or another magic (`ILEG`); a page with no leg is deleted, never written | a save writes and deletes a page at its own key only, as for a district page (ID8); an id past the counter would be reused by the next booking |
+| SG73 | The viewer's loader (`rtsim-view` `IndustryView::load`) reads the leg pages with the globals; the district inspector still restores from the globals, district and cluster pages alone, which restores the legs as none | the map draws the legs, and a district card does not need them |
+
+Measured, a leg of four carriages carrying two goods each: about 77 to 80 bytes raw a leg in the page
+(the cells included), so a page of 256 legs is about 20 KB. At the 10.9 arms' 636 KB raw of legs, a save
+that books a few trains writes the page being filled, about 20 KB, where it wrote the 636 KB. The
+quiet save (no booking) writes the globals page without the legs. Not measured on syn200: the full
+pair is not run (the brief); the counts above are the engine's, from the unit tests' pages.

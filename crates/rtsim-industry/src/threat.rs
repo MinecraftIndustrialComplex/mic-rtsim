@@ -664,15 +664,44 @@ pub struct Leg {
     pub cargo: Vec<(u32, GoodVec)>,
 }
 
+/// Legs per page of the leg table (`persist::LEG_TABLE`, ID10): the page of a leg is its id divided
+/// by this, so a save rewrites the page being filled and the pages a looted or expired leg sits in,
+/// never every leg. TUNABLE: a page is about 256 legs of a few dozen bytes.
+pub const LEGS_PER_PAGE: u64 = 256;
+
+/// A leg with where it was booked: the dimension and the regions its line crosses, in the order
+/// they were booked, so the cell and train indexes are rebuilt from the legs alone ([`LegIndex::from_pages`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Booked {
+    leg: Leg,
+    dim: u32,
+    cells: Vec<(i32, i32)>,
+}
+
 /// Booked train legs by (dimension, region, time window), so a threat leg finds what it crosses
 /// with one lookup per region it passes (A15, INDUSTRY.md §13.3), never a scan.
-#[derive(Clone, Debug, Default, PartialEq)]
+///
+/// The legs are the state; they are saved in pages of [`LEGS_PER_PAGE`] ids (ID10), which the
+/// index marks as it changes ([`LegIndex::take_changed`]). The two lookups are rebuilt from the
+/// legs on a restore.
+#[derive(Clone, Debug, Default)]
 pub struct LegIndex {
-    legs: BTreeMap<u64, Leg>,
+    legs: BTreeMap<u64, Booked>,
     by_cell: BTreeMap<(u32, i32, i32, u64), Vec<u64>>,
     /// Each train's legs, oldest first, so finding a train's leg never scans every leg.
     by_train: BTreeMap<TrainId, Vec<u64>>,
     next: u64,
+    /// Pages changed since the last [`LegIndex::take_changed`]. Not part of equality.
+    changed: BTreeSet<u64>,
+}
+
+impl PartialEq for LegIndex {
+    fn eq(&self, o: &Self) -> bool {
+        self.legs == o.legs
+            && self.by_cell == o.by_cell
+            && self.by_train == o.by_train
+            && self.next == o.next
+    }
 }
 
 impl LegIndex {
@@ -712,17 +741,7 @@ impl LegIndex {
                 .collect();
             cells.sort_unstable();
             cells.dedup();
-            let (w0, w1) = (
-                leg.depart.0 / LEG_WINDOW_TICKS,
-                leg.eta.0 / LEG_WINDOW_TICKS,
-            );
-            for (x, z) in cells {
-                for w in w0..=w1 {
-                    self.by_cell.entry((dim, x, z, w)).or_default().push(id);
-                }
-            }
-            self.by_train.entry(leg.train).or_default().push(id);
-            self.legs.insert(id, leg);
+            self.insert(id, leg, dim, cells);
             return id;
         }
         let id = self.next;
@@ -745,18 +764,51 @@ impl LegIndex {
             cells.push((x, z));
         }
         cells.dedup();
+        self.insert(id, leg, dim, cells);
+        id
+    }
+
+    /// Enters a leg under `id`: its cells and windows in the cell index, its train in the train
+    /// index. The one path a booking and a restore both take, so a restored index is the booked one.
+    fn insert(&mut self, id: u64, leg: Leg, dim: u32, cells: Vec<(i32, i32)>) {
         let (w0, w1) = (
             leg.depart.0 / LEG_WINDOW_TICKS,
             leg.eta.0 / LEG_WINDOW_TICKS,
         );
-        for (x, z) in cells {
+        for &(x, z) in &cells {
             for w in w0..=w1 {
                 self.by_cell.entry((dim, x, z, w)).or_default().push(id);
             }
         }
         self.by_train.entry(leg.train).or_default().push(id);
-        self.legs.insert(id, leg);
-        id
+        self.changed.insert(Self::page_of(id));
+        self.legs.insert(id, Booked { leg, dim, cells });
+    }
+
+    /// The page a leg id is saved in (ID10).
+    pub fn page_of(id: u64) -> u64 {
+        id / LEGS_PER_PAGE
+    }
+
+    /// The id the next booking takes (a globals field: it outlives the legs it numbered).
+    pub fn next_id(&self) -> u64 {
+        self.next
+    }
+
+    /// Pages changed since the last call (booked into, looted, or emptied by an expiry): each
+    /// one's page is written, or deleted when it holds no leg ([`LegIndex::page_bytes`]).
+    pub fn take_changed(&mut self) -> BTreeSet<u64> {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Pages waiting for the next save.
+    pub fn changed(&self) -> &BTreeSet<u64> {
+        &self.changed
+    }
+
+    /// Marks a page (a failed save's page, written again by the next one).
+    pub fn mark(&mut self, page: u64) {
+        self.changed.insert(page);
     }
 
     /// Legs booked in a region during a window that overlaps `[from, to]`.
@@ -765,7 +817,7 @@ impl LegIndex {
         for w in from.0 / LEG_WINDOW_TICKS..=to.0 / LEG_WINDOW_TICKS {
             if let Some(v) = self.by_cell.get(&(dim, region.0, region.1, w)) {
                 for &id in v {
-                    let l = &self.legs[&id];
+                    let l = &self.legs[&id].leg;
                     if l.depart <= to && l.eta >= from && !out.contains(&id) {
                         out.push(id);
                     }
@@ -776,17 +828,17 @@ impl LegIndex {
     }
 
     pub fn get(&self, id: u64) -> Option<&Leg> {
-        self.legs.get(&id)
+        self.legs.get(&id).map(|b| &b.leg)
     }
 
     /// Every booked leg by id, in id order (a viewer's map, VIEWER.md §7).
     pub fn iter(&self) -> impl Iterator<Item = (u64, &Leg)> {
-        self.legs.iter().map(|(id, l)| (*id, l))
+        self.legs.iter().map(|(id, b)| (*id, &b.leg))
     }
 
     /// The legs with ids in `ids`, in id order.
     pub fn range(&self, ids: std::ops::Range<u64>) -> impl Iterator<Item = (u64, &Leg)> {
-        self.legs.range(ids).map(|(id, l)| (*id, l))
+        self.legs.range(ids).map(|(id, b)| (*id, &b.leg))
     }
 
     /// The most recent leg of a train that is under way at `at`.
@@ -794,25 +846,29 @@ impl LegIndex {
         self.by_train.get(&train)?.iter().rev().copied().find(|id| {
             self.legs
                 .get(id)
-                .is_some_and(|l| l.depart <= at && l.eta >= at)
+                .is_some_and(|b| b.leg.depart <= at && b.leg.eta >= at)
         })
     }
 
     /// Takes looted cargo off a booked leg.
     pub fn take_cargo(&mut self, id: u64, carriage: u32, g: Good, n: i64) {
-        if let Some(l) = self.legs.get_mut(&id)
-            && let Some(c) = l.cargo.iter_mut().find(|c| c.0 == carriage)
+        if let Some(b) = self.legs.get_mut(&id)
+            && let Some(c) = b.leg.cargo.iter_mut().find(|c| c.0 == carriage)
         {
-            c.1.add(g, -n.min(c.1.get(g)));
+            let k = n.min(c.1.get(g));
+            if k != 0 {
+                c.1.add(g, -k);
+                self.changed.insert(Self::page_of(id));
+            }
         }
     }
 
-    /// Drops legs that ended before `before`, with their cells. Cost: the legs dropped.
+    /// Drops legs that ended before `before`, with their cells. Cost: the legs and cells held.
     pub fn expire(&mut self, before: Tick) {
-        let old: Vec<u64> = self
+        let old: BTreeSet<u64> = self
             .legs
             .iter()
-            .filter(|(_, l)| l.eta < before)
+            .filter(|(_, b)| b.leg.eta < before)
             .map(|(&id, _)| id)
             .collect();
         if old.is_empty() {
@@ -820,6 +876,7 @@ impl LegIndex {
         }
         for id in &old {
             self.legs.remove(id);
+            self.changed.insert(Self::page_of(*id));
         }
         self.by_cell.retain(|_, v| {
             v.retain(|id| !old.contains(id));
@@ -1352,6 +1409,81 @@ mod tests {
         );
     }
 
+    fn booked(train: u64, depart: u64, eta: u64) -> Leg {
+        Leg {
+            train: TrainId(train),
+            from: StationId(1),
+            to: Some(StationId(2)),
+            depart: Tick(depart),
+            eta: Tick(eta),
+            cargo: vec![(0, GoodVec::from_pairs([(Good(1), 640)]))],
+        }
+    }
+
+    /// The leg pages mark exactly the pages a booking, a loot and an expiry change, and the index
+    /// the pages describe is the booked one, in the order the lookups were built (ID10).
+    #[test]
+    fn leg_pages_follow_the_changes_and_rebuild_the_index() {
+        let mut idx = LegIndex::default();
+        let n = 3 * LEGS_PER_PAGE;
+        for i in 0..n {
+            // Day 0 for the first half, day 3 for the rest; some cross a region and a window.
+            let d = if i < n / 2 { 100 } else { 3 * TICKS_PER_DAY + 100 };
+            idx.book(booked(i % 5, d, d + TICKS_PER_DAY / 2 + i), 0, (0, 0), (1_100 + i as i32, 0));
+        }
+        assert_eq!(idx.take_changed().into_iter().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert!(idx.take_changed().is_empty());
+        let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
+        assert_eq!(back, idx, "restored legs, cell index and train index");
+        assert!(back.changed().is_empty(), "a restored index has nothing to save");
+
+        // A loot marks the page of the leg, and only when something is taken.
+        let id = LEGS_PER_PAGE + 3;
+        idx.take_cargo(id, 0, Good(1), 100);
+        assert_eq!(idx.take_changed().into_iter().collect::<Vec<_>>(), vec![1]);
+        idx.take_cargo(id, 0, Good(2), 100);
+        idx.take_cargo(id, 9, Good(1), 100);
+        idx.take_cargo(n + 5, 0, Good(1), 100);
+        assert!(idx.take_changed().is_empty(), "nothing taken, nothing marked");
+        let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
+        assert_eq!(back, idx);
+        assert_eq!(back.get(id).unwrap().cargo[0].1.get(Good(1)), 540);
+
+        // An expiry marks the pages it takes legs from; a page it empties has no bytes.
+        idx.expire(Tick(2 * TICKS_PER_DAY));
+        let first_half = n / 2;
+        assert_eq!(idx.len() as u64, n - first_half);
+        let marked: Vec<u64> = idx.take_changed().into_iter().collect();
+        assert_eq!(marked, vec![0, 1], "legs 0..{first_half} sit in pages 0 and 1");
+        assert!(idx.page_bytes(0).is_none(), "page 0 holds no leg any more");
+        assert!(idx.page_bytes(1).is_some(), "page 1 keeps its second half");
+        assert!(idx.page_bytes(2).is_some());
+        assert!(idx.page_bytes(3).is_none());
+        let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
+        assert_eq!(back, idx);
+        // The lookups still answer for what is left, and a booking goes on from the counter.
+        assert!(!back.in_region(0, (1, 0), Tick(3 * TICKS_PER_DAY), Tick(4 * TICKS_PER_DAY)).is_empty());
+        let mut back = back;
+        assert_eq!(back.book(booked(1, 5, 9), 0, (0, 0), (0, 0)), n);
+    }
+
+    /// A line across a seam is booked where it runs and restores to the same cells.
+    #[test]
+    fn leg_pages_keep_the_cells_of_a_line_across_a_seam() {
+        use rtsim_space::topology::{Rect, layout};
+        let topo = layout::torus(Rect::new(-1_024, -1_024, 1_024, 1_024));
+        let mut idx = LegIndex::default();
+        for i in 0..4 {
+            idx.book_on(&topo, booked(i, 10, 5_000), 0, (900, 100 * i as i32), (-900, 100 * i as i32));
+        }
+        let cells = idx.in_region(0, (-2, 0), Tick(0), Tick(10_000));
+        assert!(!cells.is_empty(), "the short way from x 900 to x -900 crosses the seam into region -2");
+        let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
+        assert_eq!(back, idx);
+        assert_eq!(back.in_region(0, (-2, 0), Tick(0), Tick(10_000)), cells);
+        assert!(back.in_region(0, (0, 0), Tick(0), Tick(10_000)).is_empty(), "the long way is not booked");
+    }
+
     #[test]
     fn synthetic_threats_are_reproducible() {
         let st = SynthStream {
@@ -1446,7 +1578,8 @@ mod tests {
 
 mod persist_impls {
     use super::*;
-    use crate::persist::{persist_struct, persist_unit_enum};
+    use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
+    use rtsim_kernel::codec::{Reader, Result, Writer};
 
     persist_unit_enum!(
         ThreatClass,
@@ -1522,10 +1655,87 @@ mod persist_impls {
         eta,
         cargo
     });
-    persist_struct!(LegIndex {
-        legs,
-        by_cell,
-        by_train,
-        next
-    });
+    persist_struct!(Booked { leg, dim, cells });
+
+    /// A leg page starts with this, so an older format fails by name.
+    pub const LEG_MAGIC: u32 = u32::from_le_bytes(*b"ILEG");
+
+    impl LegIndex {
+        /// The bytes of a page of the leg table (ID10): its legs in id order, each with where it was
+        /// booked. `None` for a page with no leg, which a save deletes.
+        pub fn page_bytes(&self, page: u64) -> Option<Vec<u8>> {
+            let lo = page.checked_mul(LEGS_PER_PAGE)?;
+            let rows: Vec<(&u64, &Booked)> = self
+                .legs
+                .range(lo..lo.saturating_add(LEGS_PER_PAGE))
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            let mut w = Writer::new();
+            w.u32(LEG_MAGIC);
+            w.var_u64(rows.len() as u64);
+            for (id, b) in rows {
+                id.put(&mut w);
+                b.put(&mut w);
+            }
+            Some(w.into_bytes())
+        }
+
+        /// Every page of the index in page order (a snapshot).
+        pub fn pages(&self) -> Vec<(u64, Vec<u8>)> {
+            let mut out = Vec::new();
+            let mut last = None;
+            for &id in self.legs.keys() {
+                let p = Self::page_of(id);
+                if last.replace(p) != Some(p) {
+                    out.extend(self.page_bytes(p).map(|b| (p, b)));
+                }
+            }
+            out
+        }
+
+        /// The index its pages and id counter describe: the cell and train indexes rebuilt from the
+        /// legs in id order, as the bookings made them. A page must hold only its own ids (a save
+        /// writes and deletes a page at its own key only), in order, below `next`.
+        pub fn from_pages(
+            next: u64,
+            pages: impl IntoIterator<Item = (u64, Vec<u8>)>,
+        ) -> Result<LegIndex> {
+            let mut rows = BTreeMap::new();
+            for (page, bytes) in pages {
+                let mut r = Reader::new(&bytes);
+                let magic = r.u32()?;
+                if magic != LEG_MAGIC {
+                    return invalid(&format!(
+                        "leg page magic {magic:#010x}, not {LEG_MAGIC:#010x}: an older format"
+                    ));
+                }
+                let n = r.var_u64()?;
+                if n == 0 || n > r.remaining() as u64 {
+                    return invalid("leg page length");
+                }
+                let mut prev = None;
+                for _ in 0..n {
+                    let id = u64::get(&mut r)?;
+                    if LegIndex::page_of(id) != page || id >= next || prev.is_some_and(|p| p >= id)
+                    {
+                        return invalid(&format!("leg {id} in the leg page {page} (next {next})"));
+                    }
+                    prev = Some(id);
+                    rows.insert(id, Booked::get(&mut r)?);
+                }
+                r.finish()?;
+            }
+            let mut idx = LegIndex {
+                next,
+                ..LegIndex::default()
+            };
+            for (id, b) in rows {
+                idx.insert(id, b.leg, b.dim, b.cells);
+            }
+            idx.changed.clear();
+            Ok(idx)
+        }
+    }
 }
