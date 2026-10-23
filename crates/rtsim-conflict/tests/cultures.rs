@@ -646,6 +646,16 @@ fn destroyed_loot_leaves_the_books() {
             Tick(10),
         )
         .expect("plunderers");
+    // Ashby stands 40 items over each line's target, so the plunderers find something to destroy:
+    // a raid takes only the surplus over a target (CL-D58, MZB-66).
+    let m = w.market(ashby);
+    let rich: BTreeMap<GoodId, i64> = w
+        .goods
+        .ids()
+        .map(|g| (g, m.line(g).target + 40 * MILLI - m.stock(g)))
+        .filter(|e| e.1 > 0)
+        .collect();
+    w.stock_from_players(ashby, &rich, Tick(10));
     // A watched band carries items off from a player's containers.
     let iron = w
         .goods
