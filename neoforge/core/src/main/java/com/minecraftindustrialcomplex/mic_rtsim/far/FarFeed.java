@@ -65,6 +65,8 @@ public final class FarFeed {
     private static long ticks;
     private static final Map<String, Integer> SOURCE_ERRORS = new HashMap<>();
     private static int badVersions;
+    /** The last sweep's items by dimension, for {@link #lastItem}: what each subscriber was last sent. */
+    private static final Map<String, List<FarItem>> LAST = new HashMap<>();
 
     // Totals since the server started, for /rtsim perf and the bench
     static long sweeps, sweepNanos, sweepMaxNanos, messages, bytes, records;
@@ -211,6 +213,8 @@ public final class FarFeed {
 
     private static void onServerTick(ServerTickEvent.Post event) {
         ticks++;
+        if (SUBS.isEmpty() && !LAST.isEmpty())
+            LAST.clear();
         if (SUBS.isEmpty() || ticks % INTERVAL_TICKS != 0)
             return;
         long t0 = System.nanoTime(), c0 = CPU_TIME ? THREADS.getCurrentThreadCpuTime() : 0;
@@ -233,6 +237,7 @@ public final class FarFeed {
         if (sweeps > 0) // the server's cost of the feed, for the bench (neoforge/README.md)
             MicRtsim.LOGGER.info("[mic_rtsim] far feed at stop: {}", describe());
         SUBS.clear();
+        LAST.clear();
         sink = NETWORK;
         players = null;
         sweeps = sweepNanos = sweepMaxNanos = messages = bytes = records = warmSweeps = warmNanos = warmCpuNanos = sendCpuNanos = 0;
@@ -240,10 +245,60 @@ public final class FarFeed {
         java.util.Arrays.fill(SEND_CPU, 0);
     }
 
+    /**
+     * A body joined {@code level} as entity {@code entity} for far object {@code id} (a dragon materialized, a
+     * carriage's entity spawned): each subscriber in that level that holds the object is told at once, in a
+     * message of its own (docs/choices-dh-feed.md DHT40). Called before the entity is added, the record goes
+     * out ahead of the entity's spawn packet on the same connection, so the client hides the far object the
+     * frame the entity appears instead of drawing both until the next sweep. Server thread.
+     */
+    public static void embodied(ServerLevel level, long id, int entity) {
+        if (SUBS.isEmpty())
+            return;
+        MinecraftServer server = level.getServer();
+        long gameTime = server.overworld().getGameTime();
+        String dim = level.dimension().location().toString();
+        for (Sub s : SUBS.values()) {
+            if (s.reset || !dim.equals(s.dimension))
+                continue;
+            ServerPlayer p = players != null ? players.apply(s.player) : server.getPlayerList().getPlayer(s.player);
+            if (p == null || p.serverLevel() != level)
+                continue;
+            FarWire.Real r = s.view.real(id, entity);
+            if (r == null)
+                continue;
+            byte[] b = FarWire.encode(new FarWire.Message(0, gameTime, s.dimension, (int) Math.floor(p.getX()),
+                    (int) Math.floor(p.getY()), (int) Math.floor(p.getZ()), List.of(r)));
+            sink.send(p, b);
+            s.messages++;
+            s.bytes += b.length;
+            s.records++;
+            messages++;
+            bytes += b.length;
+            records++;
+        }
+    }
+
+    /**
+     * Far object {@code id} in {@code level} as the last sweep had it (after the dedupe, before a seam moved
+     * it), or null: nobody subscribed in that level then, or no source gave it. What a client was last sent
+     * about it, near enough: a new body faces the way it was drawn.
+     */
+    public static FarItem lastItem(ServerLevel level, long id) {
+        List<FarItem> items = LAST.get(level.dimension().location().toString());
+        if (items == null)
+            return null;
+        for (FarItem i : items)
+            if (i.id() == id)
+                return i;
+        return null;
+    }
+
     /** One sweep over every subscriber (a test calls it directly). */
     public static void sweep(MinecraftServer server) {
         long gameTime = server.overworld().getGameTime();
         Map<ServerLevel, List<FarItem>> byLevel = new HashMap<>();
+        LAST.clear();
         RtsimSession session = RtsimSession.current();
         Iterator<Sub> it = SUBS.values().iterator();
         while (it.hasNext()) {
@@ -260,7 +315,11 @@ public final class FarFeed {
                 s.reset = true;
                 s.dimension = dim;
             }
-            List<FarItem> items = byLevel.computeIfAbsent(level, l -> collect(l, gameTime, session));
+            List<FarItem> items = byLevel.computeIfAbsent(level, l -> {
+                List<FarItem> c = collect(l, gameTime, session);
+                LAST.put(dim, c);
+                return c;
+            });
             LevelTopology topo = session != null ? session.topology(level) : LevelTopology.flat();
             long c0 = cpu();
             send(p, s, items, topo, gameTime);

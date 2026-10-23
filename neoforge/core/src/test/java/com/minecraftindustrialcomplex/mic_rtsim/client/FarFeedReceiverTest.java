@@ -70,7 +70,8 @@ class FarFeedReceiverTest {
         double t1 = FarClock.ticks() + 100;
         assertEquals(100.5, centreX(leg, t1), 1e-6);
 
-        // Embodied at x 103: the mover starts from where it was drawn and reaches the sample in a second
+        // Embodied at x 103: the mover starts from where it was drawn and goes on at the leg's pace, so a second
+        // later it is where the body will be, 20 blocks past the sample (DHT44), not a second behind it
         advance(100);
         double now = FarClock.ticks();
         double drawn = centreX(leg, now);
@@ -80,7 +81,7 @@ class FarFeedReceiverTest {
         assertEquals(leg.key(), body.key(), "the same mover");
         assertEquals(42, body.entity(), "it carries the body's entity id");
         assertEquals(drawn, centreX(body, now), 1e-6, "no jump at the hand-over");
-        assertEquals(103.0, centreX(body, now + 20), 1e-6, "a second later it is at the sample");
+        assertEquals(123.0, centreX(body, now + 20), 1e-6, "a second later it is where the body is");
 
         // Back to the engine: its leg starts at x 120, with no entity
         advance(20);
@@ -94,6 +95,123 @@ class FarFeedReceiverTest {
 
         send(0, g0 + 121, new FarWire.Gone(0));
         assertNull(mover(), "gone");
+    }
+
+    /** A carriage centred on x, 10 blocks between bogeys, running along x. */
+    private static double[] carriage(double x) {
+        return new double[]{x + 5.5, 64, 0.5, x - 4.5, 64, 0.5};
+    }
+
+    private void sample(long gameTime, double x) {
+        send(0, gameTime, FarWire.Sample.of(0, FarState.MOVING.wire, carriage(x)));
+    }
+
+    /** A carriage at 1 block a tick, sampled at x 0, 20 and 40 a second apart; returns the game time of the last. */
+    private long steadyTrain(long g0) {
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.CARRIAGE.wire, 0, 0, 0, 0x808080),
+                FarWire.Sample.of(0, FarState.MOVING.wire, carriage(0)));
+        advance(20);
+        sample(g0 + 20, 20);
+        advance(20);
+        sample(g0 + 40, 40);
+        return g0 + 40;
+    }
+
+    @Test
+    void aSteadyTrainIsDrawnWhereItIsNotASecondBehind() {
+        long g = steadyTrain(10_000);
+        double now = FarClock.ticks();
+        assertEquals(40.5, centreX(mover(), now), 1e-6, "at its newest sample as it comes");
+        assertEquals(60.5, centreX(mover(), now + 20), 1e-6, "a second on, where the next sample will put it");
+        advance(20);
+        double drawn = centreX(mover(), FarClock.ticks());
+        sample(g + 20, 60);
+        assertEquals(drawn, centreX(mover(), FarClock.ticks()), 1e-6, "no jump when it comes");
+        assertEquals(80.5, centreX(mover(), FarClock.ticks() + 20), 1e-6);
+    }
+
+    @Test
+    void aLateSampleRunsItOnALittleThenItWaits() {
+        steadyTrain(10_000);
+        double now = FarClock.ticks();
+        assertEquals(40.5 + 20 + FarFeedReceiver.RUN_ON_TICKS, centreX(mover(), now + 20 + FarFeedReceiver.RUN_ON_TICKS),
+                1e-6, "on at its pace past where the next sample was due");
+        assertEquals(40.5 + 20 + FarFeedReceiver.RUN_ON_TICKS, centreX(mover(), now + 200), 1e-6, "then it waits");
+    }
+
+    /** Draws the mover a tick at a time for {@code ticks} ticks; fails if it ever goes back along x. */
+    private static double forwardOnly(int ticks, double last) {
+        for (int t = 0; t < ticks; t++) {
+            FarClock.advance();
+            double x = centreX(mover(), FarClock.ticks());
+            assertTrue(x >= last - 1e-9, "backward from " + last + " to " + x);
+            last = x;
+        }
+        return last;
+    }
+
+    @Test
+    void aTrainBrakingToAStopStopsNearWhereItStoodNeverRollingBack() {
+        long g = steadyTrain(10_000);
+        // It brakes at 1/40 block a tick a tick: 15 blocks in the next second, 5 in the one after, then it
+        // stands (the server sends the last sample once more)
+        double drawn = centreX(mover(), FarClock.ticks());
+        long[] at = {g + 20, g + 40, g + 60};
+        double[] x = {55, 60, 60};
+        for (int k = 0; k < 3; k++) {
+            drawn = forwardOnly(20, drawn);
+            sample(at[k], x[k]);
+        }
+        drawn = forwardOnly(200, drawn);
+        // Run on at the speed it had, it passes the stop by a few blocks, and waits there
+        assertTrue(drawn >= 60.5 && drawn - 60.5 < 6.0, "stopped at " + drawn);
+    }
+
+    @Test
+    void aTrainStoppingDeadWaitsWhereItRanOnToInsteadOfRollingBack() {
+        long g = steadyTrain(10_000);
+        // It stops within the next second at x 50 (the run on had it at 60), and stands
+        double drawn = forwardOnly(20, centreX(mover(), FarClock.ticks()));
+        sample(g + 20, 50);
+        drawn = forwardOnly(20, drawn);
+        sample(g + 40, 50);
+        drawn = forwardOnly(100, drawn);
+        assertEquals(60.5, drawn, 1e-6, "where the run on had it, not back at 50.5");
+    }
+
+    @Test
+    void aTrainComingToRestAfterTheNextSampleIsDueRunsOnToWhereItRests() {
+        long g = steadyTrain(10_000);
+        // From x 40 it brakes at 1/65 block a tick a tick: x 56.92 a second on, 67.69 two seconds on, at rest at
+        // 72.5 65 ticks on. At the second sample it has 25 ticks to go: past the due tick, inside the run on
+        double a = 1.0 / 65.0;
+        double drawn = forwardOnly(20, centreX(mover(), FarClock.ticks()));
+        sample(g + 20, 40 + 20 - 0.5 * a * 400);
+        drawn = forwardOnly(20, drawn);
+        sample(g + 40, 40 + 40 - 0.5 * a * 1600);
+        double now = FarClock.ticks();
+        // (the wire rounds positions, so the run's rest is near the true one, 73.0, not on it)
+        double rest = centreX(mover(), now + 200);
+        assertEquals(40.5 + 0.5 / a, rest, 0.5, "it rests about where the train does");
+        assertTrue(centreX(mover(), now) < rest, "behind where it rests as the sample comes");
+        assertTrue(centreX(mover(), now + 20) < rest - 0.05, "still moving when the next sample is due");
+        assertEquals(rest, centreX(mover(), now + 20 + FarFeedReceiver.RUN_ON_TICKS), 1e-9,
+                "at rest within the run on, where the run comes to rest, not short of it");
+        forwardOnly(200, drawn);
+    }
+
+    @Test
+    void aJumpIsDrawnAtOnce() {
+        long g = steadyTrain(10_000);
+        advance(20);
+        // A teleport: 1,000 blocks on in a second
+        sample(g + 20, 1_060);
+        double now = FarClock.ticks();
+        assertEquals(1_060.5, centreX(mover(), now), 1e-6, "at its new place at once");
+        assertEquals(1_060.5, centreX(mover(), now + 20), 1e-6, "standing until it is seen to move");
+        advance(20);
+        sample(g + 40, 1_080);
+        assertEquals(1_080.5 + 20, centreX(mover(), FarClock.ticks() + 20), 1.0, "then it runs on again");
     }
 
     @Test
