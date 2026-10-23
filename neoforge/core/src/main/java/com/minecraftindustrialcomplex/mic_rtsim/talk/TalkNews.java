@@ -65,7 +65,7 @@ final class TalkNews {
                     break;
                 }
             }
-            if (topic == null)
+            if (topic == null || !TalkTuning.tellable(n.talkFlags(), chosen))
                 continue;
             // An item about the holder told in the third person (the topic fell back to "other"): its own place reads "us".
             boolean us = chosen.equals("other") && (n.has(TalkRecords.TO_US) || n.has(TalkRecords.BY_US));
@@ -83,7 +83,8 @@ final class TalkNews {
      * talker would name it ("a short walk north, near Oakford").
      */
     static Component where(Refs.Env env, News n) {
-        if (n.dx() == 0 && n.dz() == 0)
+        // 0 and 0 is "no direction" (another frame, TK34); a SEEN item at the talker's own spot is right here.
+        if (n.dx() == 0 && n.dz() == 0 && !n.has(TalkRecords.SEEN))
             return Talk.tr(Lines.ROOT + "where.elsewhere");
         String band = TalkTuning.where(n.dx(), n.dz());
         Component phrase = band.equals("here") ? Talk.tr(Lines.ROOT + "where.here")
@@ -91,8 +92,7 @@ final class TalkNews {
         TalkRecords.Ref near = n.near();
         if (near.cls() != TalkRecords.C_VILLAGE || band.equals("here") || sameVillage(near, n.who()) || sameVillage(near, n.whom()))
             return phrase;
-        boolean own = env.holder() != null && env.holder().kind() == com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.VILLAGE
-                && near.a() == env.holder().id();
+        boolean own = env.ownVillages().contains(near.a());
         boolean named = switch (Refs.force) {
             case NAMED -> true;
             case DESCRIBED -> false;

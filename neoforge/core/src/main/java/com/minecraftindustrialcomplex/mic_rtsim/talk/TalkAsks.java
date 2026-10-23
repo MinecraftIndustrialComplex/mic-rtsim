@@ -159,27 +159,37 @@ public final class TalkAsks implements SessionPlugin {
 
     @Override
     public boolean accept(RtsimSession s, ByteBuffer b, int at, int kind, int size, int aux, EngineNames names) {
-        if (kind != TalkRecords.TALK_FACTS)
+        if (kind != TalkRecords.TALK_FACTS || s != session)
             return true;
         TalkRecords.Facts facts = TalkRecords.decodeFacts(b, at, size, aux);
         if (facts == null) {
             malformed++;
             return true;
         }
-        Open o = open.remove(facts.askId());
+        Open o = open.get(facts.askId());
         if (o == null) {
             // Closed by the timeout already, or never ours (a session ago): nobody is waiting.
             lateAnswers++;
             return true;
         }
-        answered++;
-        finish(o, TalkAnswer.resolve(facts, names));
+        // Resolved before the ask closes: a throw here still lets the talker speak, without facts.
+        TalkAnswer answer = null;
+        try {
+            answer = TalkAnswer.resolve(facts, names);
+        } catch (RuntimeException e) {
+            malformed++;
+            Talk.failed(this, "resolve", e);
+        }
+        open.remove(o.id);
+        if (answer != null)
+            answered++;
+        finish(o, answer);
         return true;
     }
 
     @Override
     public void endOfTick(RtsimSession s, long now) {
-        if (open.isEmpty())
+        if (open.isEmpty() || s != session)
             return;
         // The timeout first: an ask this old speaks without facts and is not sent again.
         List<Open> late = null;
@@ -221,5 +231,6 @@ public final class TalkAsks implements SessionPlugin {
     /** Forgets everything without calling anyone back (server start and stop clear, the talks' own state goes with it). */
     public void reset() {
         open.clear();
+        session = null;
     }
 }

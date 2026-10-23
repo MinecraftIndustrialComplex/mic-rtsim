@@ -78,6 +78,27 @@ public record TalkAnswer(Facts facts, Map<Long, String> names) {
         return name(Obs.DICT_ITEM, facts.glutted());
     }
 
+    /**
+     * The villages that are the holder's own side, told as "us" and always named. A village holder's is its
+     * own id. A caravan's home village is not on the wire or known to Java, but the engine counts it as "us"
+     * (TK36), so the villages this answer flags as the holder's side (the whom of a TO_US item, the who of a
+     * BY_US one) are it.
+     */
+    public java.util.Set<Long> ownVillages(int holderKind, long holderId) {
+        java.util.Set<Long> out = new java.util.HashSet<>();
+        if (holderKind == com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.VILLAGE) {
+            out.add(holderId);
+            return out;
+        }
+        for (News n : facts.news()) {
+            if (n.has(TalkRecords.TO_US) && n.whom().cls() == TalkRecords.C_VILLAGE)
+                out.add(n.whom().a());
+            if (n.has(TalkRecords.BY_US) && n.who().cls() == TalkRecords.C_VILLAGE)
+                out.add(n.who().a());
+        }
+        return out;
+    }
+
     /** The slice of the answer a talker's own candidates may read. */
     public TalkFacts forTalkers() {
         return new TalkFacts(facts.holder(), facts.sentiment(), facts.portClosed(), facts.blockaded(),

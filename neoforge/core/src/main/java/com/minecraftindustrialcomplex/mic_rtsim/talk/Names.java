@@ -11,9 +11,13 @@ public final class Names {
     private Names() {}
 
     private static final ConcurrentHashMap<Long, String> VILLAGES = new ConcurrentHashMap<>();
+    /** A cache this large is emptied: a name is a pure function of its key, so only the work is lost. */
+    private static final int BOUND = 4096;
 
     /** The name of the village with this Java id: "Oak" + "ford". */
     public static String village(long id) {
+        if (VILLAGES.size() >= BOUND)
+            VILLAGES.clear();
         return VILLAGES.computeIfAbsent(id, Names::compose);
     }
 
@@ -52,6 +56,8 @@ public final class Names {
     public static String chief(String culture, long seed) {
         if (culture == null)
             return null;
+        if (OTHERS.size() >= BOUND)
+            OTHERS.clear();
         String name = OTHERS.computeIfAbsent("chief|" + culture + "|" + seed, k -> {
             String base = Lines.ROOT + "name.chief." + culture;
             int n = Lines.count(base);
@@ -63,6 +69,8 @@ public final class Names {
     }
 
     private static String twoPart(String kind, String people, long key) {
+        if (OTHERS.size() >= BOUND)
+            OTHERS.clear();
         String name = OTHERS.computeIfAbsent(kind + "|" + people + "|" + key, k -> {
             String a = Lines.ROOT + "name." + people + ".a";
             String b = Lines.ROOT + "name." + people + ".b";

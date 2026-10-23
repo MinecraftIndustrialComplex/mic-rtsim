@@ -141,7 +141,8 @@ public final class Talk {
 
     /**
      * A line's arguments with each one that opens a sentence capitalised: a described ref is lower case
-     * ("the goblins in the hills") and "Did you hear? %1$s attacked us" needs it capital (TK55).
+     * ("the goblins in the hills") and "Did you hear? %1$s attacked us" needs it capital (TK55). An argument
+     * that is already capital is left as it is.
      */
     static Object[] capitalised(String template, Object[] args) {
         java.util.BitSet starts = Sentences.startsAt(template);
@@ -150,9 +151,13 @@ public final class Talk {
         Object[] out = args.clone();
         for (int i = starts.nextSetBit(0); i >= 0 && i < out.length; i = starts.nextSetBit(i + 1)) {
             Object a = out[i];
-            if (a instanceof Component c)
-                out[i] = Component.literal(Sentences.capitalise(c.getString()));
-            else if (a instanceof String s)
+            if (a instanceof Component c) {
+                // A component that already opens with a capital keeps its style and translation; only a
+                // lower-case one (a described ref) is rewritten.
+                String text = c.getString();
+                if (!text.isEmpty() && Character.isLowerCase(text.codePointAt(0)))
+                    out[i] = Component.literal(Sentences.capitalise(text));
+            } else if (a instanceof String s)
                 out[i] = Sentences.capitalise(s);
         }
         return out;
