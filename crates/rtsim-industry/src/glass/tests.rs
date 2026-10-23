@@ -5205,6 +5205,57 @@ mod replay_path {
             assert!(c.window().is_none());
         }
 
+        /// A derate on a unit's node (choice SC61) stales the unit's pass from before it, and the
+        /// unit does not carry across a recompile, whose model has no derates; the district's
+        /// derate tick carries, so no unit window from before it names a node.
+        #[test]
+        fn a_derate_stales_its_units_pass_and_its_carry() {
+            let (mut c, p0, p1, _) = both_passed((ORE, CRUSHED));
+            let (ua, ub) = (unit_of(&c, p0), unit_of(&c, p1));
+            let start = c.unit_state[ua as usize]
+                .last
+                .as_ref()
+                .expect("passed")
+                .start;
+            c.unit_state[ua as usize].derated_at = Some(Tick(start.0 + 1));
+            assert!(!c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            c.unit_state[ua as usize].derated_at = Some(start);
+            assert!(
+                c.unit_may_replay(ua),
+                "a window from the derate on was judged against it"
+            );
+
+            let tun = GlassTunables::default();
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= 3500 {
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+                t += 100;
+            }
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            {
+                let c = g.districts.get_mut(&D).unwrap().compiled.as_mut().unwrap();
+                assert!(c.unit_state[ua as usize].passed.is_some());
+                c.unit_state[ua as usize].derated_at = Some(Tick(3300));
+                c.derated_at = Some(Tick(3300));
+            }
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            ingest_seen(&mut g, 3550, &b.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            let (a, bs) = (&c.unit_state[ua as usize], &c.unit_state[ub as usize]);
+            assert_eq!(
+                (a.passed, a.windows_completed, a.derated_at),
+                (None, 0, None)
+            );
+            assert!(bs.passed.is_some(), "the unit with no derate carries");
+            assert_eq!(c.derated_at, Some(Tick(3300)));
+        }
+
         /// An open window carried across a recompile goes on and passes: the old compile's model
         /// integrated it to the recompile, the new one from there.
         #[test]
@@ -5609,8 +5660,9 @@ mod replay_path {
             );
         }
 
-        /// The first sweep after the district went away runs no unit (choice SC59): each warms up
-        /// afresh from it, not from the unload.
+        /// No unit runs while the district is away (choice SC59), whatever a sweep still in flight
+        /// at the unload says (live or not); each warms up afresh from its return, not from the
+        /// unload nor from the sweep in flight.
         #[test]
         fn a_district_back_from_away_warms_its_units_up_afresh() {
             let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
@@ -5625,6 +5677,24 @@ mod replay_path {
             }
             g.away(Tick(2050), D, &tun);
             assert!(g.districts[&D].away);
+            // The sweeps in flight end after the unload: one whose reads ran (live) and one with
+            // nothing loaded.
+            let empty: BTreeSet<ChunkPos> = BTreeSet::new();
+            glass_sweep(&mut g, D, 2060, &inv(2060), &ports, &Liveness::All, &tun);
+            glass_sweep(
+                &mut g,
+                D,
+                2070,
+                &inv(2070),
+                &ports,
+                &Liveness::Partial {
+                    loaded: &empty,
+                    dim: 0,
+                },
+                &tun,
+            );
+            assert!(g.districts[&D].away, "a sweep in flight is no return");
+            g.back(Tick(8950), D, &tun);
             for t in [9000, 9100] {
                 glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
                 let c = comp(&g, D);
@@ -5633,7 +5703,7 @@ mod replay_path {
                     assert_eq!(c.unit_window(u), None, "t {t}");
                     assert_eq!(
                         c.unit_state[u as usize].ready_at,
-                        Tick(9000 + tun.warmup_ticks)
+                        Tick(8950 + tun.warmup_ticks)
                     );
                 }
             }
@@ -5742,7 +5812,8 @@ mod replay_path {
         }
 
         /// A model demoted here leaves the rows of the units holding it unbounded (G-B14), as a
-        /// black box does: nothing in them is judged, and they may not replay.
+        /// black box does: nothing in them is judged, and they lean on the district's pass, as a
+        /// district alone does (G-B4, choice SC66).
         #[test]
         fn a_demoted_model_leaves_its_units_unjudged() {
             let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
@@ -5768,7 +5839,14 @@ mod replay_path {
                 "{:?}",
                 last.goods
             );
-            assert!(!c.unit_may_replay(ua));
+            assert!(
+                c.eligible(),
+                "the district passed: {:?}",
+                c.last.as_ref().map(|r| r.verdict)
+            );
+            assert!(c.unit_may_replay(ua), "it leans on the district's pass");
+            c.edited = true;
+            assert!(!c.unit_may_replay(ua), "and not on one an edit staled");
         }
 
         /// The extra rows are recounted at a session start (the windows' rows went), and ports
