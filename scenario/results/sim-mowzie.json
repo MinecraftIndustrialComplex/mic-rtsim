@@ -44,7 +44,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 88daebd7ace3c6e4"
+          "detail": "state hash c705e2c7bdb20218"
         }
       ],
       "rungs": [
@@ -124,7 +124,13 @@
         "withdrawn": 0,
         "peace_held": 0,
         "notices_shown": 0,
-        "repeats": 7
+        "repeats": 7,
+        "camp_censuses": 0,
+        "camp_orders": 0,
+        "camp_lines": 0,
+        "camp_answers": 0,
+        "camp_deaths": 0,
+        "camp_written_off": 0
       },
       "log": [
         {
@@ -471,7 +477,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 29e8bdcac5241e51"
+          "detail": "state hash 46deaab0bfb474c9"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -557,7 +563,13 @@
         "withdrawn": 0,
         "peace_held": 0,
         "notices_shown": 0,
-        "repeats": 0
+        "repeats": 0,
+        "camp_censuses": 0,
+        "camp_orders": 0,
+        "camp_lines": 0,
+        "camp_answers": 0,
+        "camp_deaths": 0,
+        "camp_written_off": 0
       },
       "log": [
         {
@@ -744,8 +756,39 @@
     {
       "run": 8,
       "built": false,
-      "slice": "M8, M4",
-      "checks": [],
+      "slice": "the lurk, a cowed time and a meter's decay M8",
+      "checks": [
+        {
+          "name": "a save with nine adopts in flight loads and ends as the run that kept going",
+          "ok": true,
+          "detail": "nine adopts in flight: state 776958c6d4e5a3e5 against 776958c6d4e5a3e5, 9 lines and 9 answers booked"
+        },
+        {
+          "name": "a save with a spawn in flight loads and ends as the run that kept going",
+          "ok": true,
+          "detail": "a spawn in flight: state 81efab52ba889744 against 81efab52ba889744, 1 lines and 1 answers booked"
+        },
+        {
+          "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
+          "ok": true,
+          "detail": "a muster's set-outs in flight: state 43ca3e2d0a68b396 against 43ca3e2d0a68b396, 20 lines and 20 answers booked"
+        },
+        {
+          "name": "a restart with adopts in flight voids them, and the next census adopts each once",
+          "ok": true,
+          "detail": "9 adopts held, 9 in flight, 0 after the restart; then 9 applied, [9, 0, 0, 0, 0]"
+        },
+        {
+          "name": "a restart with a spawn in flight voids it, and the next census spawns once",
+          "ok": true,
+          "detail": "1 spawn held, none applied before the restart: true; then 1 applied, 1 body"
+        },
+        {
+          "name": "a restart with a muster's set-outs in flight voids them, and the next census takes the bodies left behind",
+          "ok": true,
+          "detail": "4 set-outs held, nine bodies stood: true; then 4 takes, [5, 0, 0, 4, 0], 5 bodies"
+        }
+      ],
       "rungs": [],
       "stats": null,
       "log": []
@@ -762,8 +805,89 @@
     {
       "run": 10,
       "built": false,
-      "slice": "M4",
-      "checks": [],
+      "slice": "the Umvuthi's marches M10, held lines M5 and M9, heirs M9 and M11",
+      "checks": [
+        {
+          "name": "a first census adopts the jar's bodies and spawns none",
+          "ok": true,
+          "detail": "found [0, 9, 0, 0, 0], then [9, 0, 0, 0, 0]: 9 adopts, 0 spawns, 9 bodies"
+        },
+        {
+          "name": "strays over the cap are removed, those under it adopted",
+          "ok": true,
+          "detail": "cap 3 with two strays: ([3, 0, 0, 0, 0], 2, 3) (slots, removes, bodies); a death and two more strays: [3, 0, 0, 0, 0], 3 bodies"
+        },
+        {
+          "name": "a raid leaves in its members' bodies and comes home owed, spawned once",
+          "ok": true,
+          "detail": "drawn ([5, 0, 4, 0, 0], 4); out Some(([5, 0, 0, 4, 0], 5)) (slots, bodies); home [9, 0, 0, 0, 0], 4 set-outs, 4 spawns, 9 bodies"
+        },
+        {
+          "name": "a party home in its puppets has each handed back (forged state, M10 walks them home)",
+          "ok": true,
+          "detail": "4 hand-backs, 0 spawns, [9, 0, 0, 0, 0], 9 bodies"
+        },
+        {
+          "name": "a member drawn owed is spawned once at home and never taken or booked dead while away",
+          "ok": true,
+          "detail": "owed [0, 1, 0, 0, 0], drawn [0, 0, 0, 1, 0], two censuses while away ([0, 0, 0, 1, 0], 0, 0) (slots, orders, bodies), home [1, 0, 0, 0, 0] with 1 Frostmaw"
+        },
+        {
+          "name": "a grove's refill is spawned at its next census, none ordered while it is out",
+          "ok": true,
+          "detail": "four died, [5, 0, 0, 0, 0]; none ordered over the day: true; 2 owed after it; then [7, 0, 0, 0, 0] with 2 spawns"
+        },
+        {
+          "name": "a death at home costs the pool a member, one CAMP_DEATH booked",
+          "ok": true,
+          "detail": "[8, 0, 0, 0, 0], 1 deaths booked"
+        },
+        {
+          "name": "a body killed in a muster is its member's unit lost, and an emptied party ends",
+          "ok": true,
+          "detail": "3 alive after one, ([0, 0, 3, 0, 0], 3); every body killed: 0 parties, 0 away"
+        },
+        {
+          "name": "a body left behind by a party that is out dies with its unit",
+          "ok": true,
+          "detail": "4 left behind; one died: 3 units, [5, 0, 3, 0, 0]"
+        },
+        {
+          "name": "a feud waits for the lines in flight, books no wake for it, and goes when they land",
+          "ok": true,
+          "detail": "blocked on 5 of 16 days, 1 parties after the answer, 4 feud wakes"
+        },
+        {
+          "name": "a lost answer is repaired by the next census without a second body",
+          "ok": true,
+          "detail": "1 line still in flight; then [1, 0, 0, 0, 0], 1 spawn, 1 body"
+        },
+        {
+          "name": "a replayed answer is booked once",
+          "ok": true,
+          "detail": "9 answers booked for nine lines sent twice"
+        },
+        {
+          "name": "a census before the last one's lines has them answered stale, each body taken once",
+          "ok": true,
+          "detail": "8 takes, 4 stale; [5, 0, 0, 4, 0], 5 bodies"
+        },
+        {
+          "name": "a late answer for a generation the slot no longer holds books nothing",
+          "ok": true,
+          "detail": "the slot freed by a death while its adopt was on the way (2 slots left); [2, 0, 0, 0, 0] once every answer landed"
+        },
+        {
+          "name": "a session start voids the lines and the next census orders them again, once",
+          "ok": true,
+          "detail": "9 adopts in flight, then void and the camp out ((0, false)), nothing resent (true); the next census: [9, 0, 0, 0, 0], 9 adopts"
+        },
+        {
+          "name": "chaos holds I1 to I6 after every event, no member has two bodies, no living one is booked dead unless its body was lost, no draw passes its bound",
+          "ok": true,
+          "detail": "64 camps of 220 events each; 874 camp in, 381 camp out, 1142 kill slot, 849 lose the next, 429 raid true, 884 replay answers, 917 restart, 816 save and load, 905 stray; 830 censuses, 1978 lines, 643 answers, 633 deaths, 1 written off"
+        }
+      ],
       "rungs": [],
       "stats": null,
       "log": []
