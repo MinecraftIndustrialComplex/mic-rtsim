@@ -18,8 +18,11 @@
 //! - **Sections** (SECTIONS.md §5, slice S2): the compile's sections are not saved but recomputed
 //!   from its records, and the page keeps their fingerprints. A page whose fingerprints are not
 //!   those its compile cuts into now (a changed `glass.sectionsMax`, or a changed fold), or one of
-//!   the format before sections ([`GLASS_MAGIC_IGL1`]), drops that district's glass state alone
-//!   ([`PageRead::Dropped`]): the district learns again.
+//!   the format before sections ([`GLASS_MAGIC_IGL1`]) or before unit windows
+//!   ([`GLASS_MAGIC_IGL2`]), drops that district's glass state alone ([`PageRead::Dropped`]): the
+//!   district learns again. The judging units are recomputed with the sections (a row cap's cut
+//!   held, `DistrictGlass::sections_cap`), their bounds from the solve, and their saved windows are
+//!   checked against them.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
@@ -34,11 +37,15 @@ use super::solve::{GoodBound, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL2": the glass page with sections, SECTIONS.md §5).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL2");
+/// The glass page's magic ("IGL3": the glass page with judging units' windows, SECTIONS.md §5).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL3");
 
 /// The magic of the glass page before sections (G2-9): read as a dropped district, never decoded.
 pub const GLASS_MAGIC_IGL1: u32 = u32::from_le_bytes(*b"IGL1");
+
+/// The magic of the glass page with sections but no unit windows (slice S2a): read as a dropped
+/// district, never decoded.
+pub const GLASS_MAGIC_IGL2: u32 = u32::from_le_bytes(*b"IGL2");
 
 /// A district's glass page: the state, then its compile's section fingerprints (none without a
 /// compile).
@@ -81,6 +88,11 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
             "a page of the format before sections (IGL1)",
         ));
     }
+    if magic == GLASS_MAGIC_IGL2 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before unit windows (IGL2)",
+        ));
+    }
     if magic != GLASS_MAGIC {
         return Err(CodecError::Invalid(format!(
             "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: another format"
@@ -92,11 +104,18 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
     match (dg.compiled.as_mut(), stored) {
         (None, None) => {}
         (Some(c), Some(fps)) => {
-            c.sections = super::sections::Sections::compute(&c.graph, sections_max);
+            // A row cap's cut holds below `glass.sectionsMax` (choice SC57).
+            let max = dg
+                .sections_cap
+                .map_or(sections_max, |cap| (cap as usize).min(sections_max));
+            c.sections = super::sections::Sections::compute(&c.graph, max);
             if c.sections.fingerprints() != fps {
                 return Ok(PageRead::Dropped(
                     "sections that are not those its compile cuts into now",
                 ));
+            }
+            if !c.restore_units() {
+                return invalid("glass unit windows of other units");
             }
         }
         _ => return invalid("glass page sections without their compile"),
@@ -354,6 +373,8 @@ impl Persist for DistrictGlass {
         self.replay_since.put(w);
         self.fallback.put(w);
         self.numbers_reset.put(w);
+        self.sections_cap.put(w);
+        self.stopped.put(w);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self> {
         let dg = DistrictGlass {
@@ -369,6 +390,8 @@ impl Persist for DistrictGlass {
             replay_since: Persist::get(r)?,
             fallback: Persist::get(r)?,
             numbers_reset: Persist::get(r)?,
+            sections_cap: Persist::get(r)?,
+            stopped: Persist::get(r)?,
         };
         // The replay indexes its compile's nodes: a page whose two disagree is refused.
         if let (Some(c), Some(rp)) = (&dg.compiled, &dg.replay)
