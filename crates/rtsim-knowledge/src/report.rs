@@ -194,8 +194,9 @@ pub const FIRST_NEWS_KIND: u16 = 10;
 /// What a rung weighs against the unit scale: 100 plus 25 a step to four, so a rung 1 outweighs a
 /// fair trade's 100, a rung 4 outweighs it by half, and none weighs less than the unit. The one
 /// formula for "a code, not a multiple of the unit": the structures above use it for the news
-/// kinds, and a talker's ranking also for today's kinds whose severity is under 25, because the
-/// conflict records rungs on those too (a robbery of 2, a killing of 4).
+/// kinds, and a talker's ranking also for today's kinds whose severity is under 25. Since MZB-36
+/// (b053f0f5) the conflict records its robberies, rescues and killings on the unit scale like
+/// everyone else, so for today's kinds that is only a guard against a stray small code.
 pub const fn rung_weight(rung: u8) -> u8 {
     100 + 25 * if rung < 4 { rung } else { 4 }
 }
