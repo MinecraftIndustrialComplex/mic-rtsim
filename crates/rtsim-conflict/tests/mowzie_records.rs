@@ -1810,3 +1810,79 @@ fn a_breaker_who_has_walked_off_did_not_see_the_band_break() {
         }
     }
 }
+
+/// The band of [`band_on_the_road_to_ashby`], on the road at [`fight_at`], with a player base
+/// marked `offset` blocks east of where it is, and, when `aimed`, the base the band's target (a
+/// district at the base, as a raid on the player's works there would be). Returns the run, the
+/// band, the base's actor and where the band is.
+fn road_band_near_a_base(offset: i32, aimed: bool) -> (Run, Handle<Party>, ActorId, (i32, i32)) {
+    let (mut r, band, _) = band_on_the_road_to_ashby(9);
+    let at = fight_at();
+    let broke = r.c.party_pos(band, at);
+    let base_at = Pos::new(0, broke.0 + offset, broke.1);
+    let node = r.w.mark_base(BASE, base_at, r.p, at);
+    if aimed {
+        r.c.parties[band].target = Target::District(synth::REFINERY, base_at);
+    }
+    let base = r.w.nodes[node].actor;
+    (r, band, base, broke)
+}
+
+/// CL-D61 (the second review): a band routed on the road was not at its target, so the base it
+/// marched on does not witness from any distance: "a band broken at a player's base" is a band
+/// that was fighting at it. On the road a base witnesses only if it is within `view_radius` of
+/// where the band broke, the raw distance, the edge included, whatever the band was after. A road
+/// rout 297 blocks from the base the band marched on is seen by no one: no report, so no village
+/// ever hears it, from travellers or otherwise. The same rout within view of the base is a
+/// report that base has first-hand.
+#[test]
+fn a_road_rout_is_seen_only_by_a_base_in_view_not_by_the_one_the_band_marched_on() {
+    let view = f64::from(Run::new(9, quiet_goblins()).c.tun.view_radius);
+    // (blocks from the band to the base, the base is the band's target, the base saw it). A band
+    // that is not aimed at the base is still after Ashby, so Ashby, the rescued village, always
+    // witnesses and there is a report whether or not the base saw it.
+    let cases = [
+        (297, true, false),
+        (297, false, false),
+        (100, true, true),
+        (100, false, true),
+        (160, true, true),
+        (161, true, false),
+    ];
+    for (offset, aimed, seen) in cases {
+        let (mut r, band, base, broke) = road_band_near_a_base(offset, aimed);
+        let at = fight_at();
+        assert!(
+            villages(&r)
+                .iter()
+                .all(|&(_, pos, _)| blocks_between(pos, broke) > view),
+            "no village is in view of the band on the road"
+        );
+        assert_eq!(r.c.parties[band].phase, Phase::Out);
+        r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+        assert_eq!(r.c.stats.routs, 1);
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(seen || !aimed),
+            "a road rout {offset} blocks from the base (the band's target: {aimed}): recorded"
+        );
+        assert_eq!(
+            reps.iter().any(|id| r.w.knowledge.knows(base, *id)),
+            seen,
+            "the base {offset} blocks off (the band's target: {aimed}) has it first-hand: {seen}"
+        );
+        // A rout nobody saw is heard of by nobody, at once or later.
+        r.w.run_until(at + 5 * TICKS_PER_DAY);
+        if reps.is_empty() {
+            for (a, _, _) in villages(&r) {
+                assert!(
+                    !rescue_reports(&r)
+                        .iter()
+                        .any(|id| r.w.knowledge.knows(a, *id)),
+                    "a village hears a rout nobody saw"
+                );
+            }
+        }
+    }
+}

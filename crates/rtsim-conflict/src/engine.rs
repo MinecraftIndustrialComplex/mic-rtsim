@@ -3968,12 +3968,14 @@ impl Conflict {
     /// - the village the band marched on, always (it was the one rescued);
     /// - every village that hates the faction within `view_radius` of where the band broke, read
     ///   as [`Conflict::watcher`] reads a player's view (the raw distance, the edge included);
-    /// - the player's base the band marched on, always, and every player base within that radius
-    ///   of where it broke (CL-D61, "Base carries the news"): it is the market node the player's
-    ///   district or dwell place is. The engine has no link from a district to a base, so the
-    ///   base a district or position target names is the one within `view_radius` of it. A base
-    ///   has no culture, so no hate test; it carries the news the way a caravan carries a rescue
-    ///   home.
+    /// - every player base within that radius of where it broke (CL-D61, "Base carries the
+    ///   news"), and, for a band that was Fighting at its target, the player's base it marched on
+    ///   whatever the distance: it is the market node the player's district or dwell place is.
+    ///   The engine has no link from a district to a base, so the base a district or position
+    ///   target names is the one within `view_radius` of it. A band routed on the road was not at
+    ///   its target: only a base in view of where it broke saw it. A base has no culture, so no
+    ///   hate test; an abandoned one (no player marks it) is no witness. It carries the news the
+    ///   way a caravan carries a rescue home.
     ///
     /// Every other village hears it later from a traveller, at hearsay weight, through the
     /// knowledge layer's news: a base's board goes out in a packet with the next messenger on each
@@ -3988,9 +3990,9 @@ impl Conflict {
     fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
-        let (frame, target, feud) = {
+        let (frame, target, feud, fighting) = {
             let x = &self.parties[p];
-            (x.frame, x.target, x.feud)
+            (x.frame, x.target, x.feud, x.phase == Phase::Fighting)
         };
         let (bx, bz) = self.break_point(w, p, player, at);
         let aim = self.target_pos(w, target);
@@ -4029,19 +4031,25 @@ impl Conflict {
             }
         }
         // The base the band marched on: the node itself, else the base at the district or place.
-        match target {
-            Target::Node(i)
-                if w.nodes
-                    .get(i)
-                    .is_some_and(|n| matches!(n.kind, NodeKind::PlayerBase { .. })) =>
-            {
-                bases.insert(i);
-            }
-            Target::Node(_) => {}
-            Target::District(..) | Target::Pos(_) => {
-                for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
-                    if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. }) {
+        // Only a band that was Fighting there was at its target and met the player at it; one
+        // routed on the road was not, and a base far from where it broke saw nothing (the
+        // conservative reading of "a band broken at a player's base"). The village it marched on
+        // keeps its "always", on the road too.
+        if fighting {
+            match target {
+                Target::Node(i) => {
+                    if w.nodes
+                        .get(i)
+                        .is_some_and(|n| matches!(n.kind, NodeKind::PlayerBase { .. }))
+                    {
                         bases.insert(i);
+                    }
+                }
+                Target::District(..) | Target::Pos(_) => {
+                    for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
+                        if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. }) {
+                            bases.insert(i);
+                        }
                     }
                 }
             }
