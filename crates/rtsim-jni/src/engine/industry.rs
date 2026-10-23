@@ -32,7 +32,9 @@ use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
-use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE};
+use rtsim_industry::persist::{
+    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE,
+};
 use rtsim_industry::threat::Threat;
 use rtsim_industry::tunables::Tunables;
 use rtsim_industry::wire as iw;

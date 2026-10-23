@@ -1428,14 +1428,29 @@ mod tests {
         let n = 3 * LEGS_PER_PAGE;
         for i in 0..n {
             // Day 0 for the first half, day 3 for the rest; some cross a region and a window.
-            let d = if i < n / 2 { 100 } else { 3 * TICKS_PER_DAY + 100 };
-            idx.book(booked(i % 5, d, d + TICKS_PER_DAY / 2 + i), 0, (0, 0), (1_100 + i as i32, 0));
+            let d = if i < n / 2 {
+                100
+            } else {
+                3 * TICKS_PER_DAY + 100
+            };
+            idx.book(
+                booked(i % 5, d, d + TICKS_PER_DAY / 2 + i),
+                0,
+                (0, 0),
+                (1_100 + i as i32, 0),
+            );
         }
-        assert_eq!(idx.take_changed().into_iter().collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            idx.take_changed().into_iter().collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         assert!(idx.take_changed().is_empty());
         let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
         assert_eq!(back, idx, "restored legs, cell index and train index");
-        assert!(back.changed().is_empty(), "a restored index has nothing to save");
+        assert!(
+            back.changed().is_empty(),
+            "a restored index has nothing to save"
+        );
 
         // A loot marks the page of the leg, and only when something is taken.
         let id = LEGS_PER_PAGE + 3;
@@ -1444,7 +1459,10 @@ mod tests {
         idx.take_cargo(id, 0, Good(2), 100);
         idx.take_cargo(id, 9, Good(1), 100);
         idx.take_cargo(n + 5, 0, Good(1), 100);
-        assert!(idx.take_changed().is_empty(), "nothing taken, nothing marked");
+        assert!(
+            idx.take_changed().is_empty(),
+            "nothing taken, nothing marked"
+        );
         let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
         assert_eq!(back, idx);
         assert_eq!(back.get(id).unwrap().cargo[0].1.get(Good(1)), 540);
@@ -1454,7 +1472,11 @@ mod tests {
         let first_half = n / 2;
         assert_eq!(idx.len() as u64, n - first_half);
         let marked: Vec<u64> = idx.take_changed().into_iter().collect();
-        assert_eq!(marked, vec![0, 1], "legs 0..{first_half} sit in pages 0 and 1");
+        assert_eq!(
+            marked,
+            vec![0, 1],
+            "legs 0..{first_half} sit in pages 0 and 1"
+        );
         assert!(idx.page_bytes(0).is_none(), "page 0 holds no leg any more");
         assert!(idx.page_bytes(1).is_some(), "page 1 keeps its second half");
         assert!(idx.page_bytes(2).is_some());
@@ -1462,7 +1484,11 @@ mod tests {
         let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
         assert_eq!(back, idx);
         // The lookups still answer for what is left, and a booking goes on from the counter.
-        assert!(!back.in_region(0, (1, 0), Tick(3 * TICKS_PER_DAY), Tick(4 * TICKS_PER_DAY)).is_empty());
+        assert!(
+            !back
+                .in_region(0, (1, 0), Tick(3 * TICKS_PER_DAY), Tick(4 * TICKS_PER_DAY))
+                .is_empty()
+        );
         let mut back = back;
         assert_eq!(back.book(booked(1, 5, 9), 0, (0, 0), (0, 0)), n);
     }
@@ -1474,14 +1500,26 @@ mod tests {
         let topo = layout::torus(Rect::new(-1_024, -1_024, 1_024, 1_024));
         let mut idx = LegIndex::default();
         for i in 0..4 {
-            idx.book_on(&topo, booked(i, 10, 5_000), 0, (900, 100 * i as i32), (-900, 100 * i as i32));
+            idx.book_on(
+                &topo,
+                booked(i, 10, 5_000),
+                0,
+                (900, 100 * i as i32),
+                (-900, 100 * i as i32),
+            );
         }
         let cells = idx.in_region(0, (-2, 0), Tick(0), Tick(10_000));
-        assert!(!cells.is_empty(), "the short way from x 900 to x -900 crosses the seam into region -2");
+        assert!(
+            !cells.is_empty(),
+            "the short way from x 900 to x -900 crosses the seam into region -2"
+        );
         let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
         assert_eq!(back, idx);
         assert_eq!(back.in_region(0, (-2, 0), Tick(0), Tick(10_000)), cells);
-        assert!(back.in_region(0, (0, 0), Tick(0), Tick(10_000)).is_empty(), "the long way is not booked");
+        assert!(
+            back.in_region(0, (0, 0), Tick(0), Tick(10_000)).is_empty(),
+            "the long way is not booked"
+        );
     }
 
     #[test]

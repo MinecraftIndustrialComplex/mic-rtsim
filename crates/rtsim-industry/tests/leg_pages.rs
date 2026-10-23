@@ -74,7 +74,10 @@ fn save(e: &mut Engine, disk: &mut Disk) -> (Vec<u64>, Vec<u64>) {
         disk.insert(k.0, b);
     }
     let whole: Disk = e.snapshot().into_iter().map(|(k, b)| (k.0, b)).collect();
-    assert!(*disk == whole, "the saves' pages are the engine's whole state");
+    assert!(
+        *disk == whole,
+        "the saves' pages are the engine's whole state"
+    );
     if let Some(c) = e.page_check() {
         assert_eq!(c.unmarked, 0, "{:?}", c.first_unmarked);
     }
@@ -85,7 +88,10 @@ fn restore(disk: &Disk) -> Engine {
     let pages = disk.iter().map(|(k, b)| (PageKey(*k), b.clone()));
     let e = Engine::restore(pages, Tunables::default()).expect("restore");
     let back: Disk = e.snapshot().into_iter().map(|(k, b)| (k.0, b)).collect();
-    assert!(back == *disk, "a restored engine saves what it was restored from");
+    assert!(
+        back == *disk,
+        "a restored engine saves what it was restored from"
+    );
     e
 }
 
@@ -126,7 +132,11 @@ fn legs_are_paged_and_the_globals_page_does_not_grow_with_them() {
         "the globals page is {small} bytes with 20 legs and {grown} with {n}"
     );
     let back = restore(&disk);
-    assert_eq!(back.legs(), e.legs(), "the legs and both lookups come back as booked");
+    assert_eq!(
+        back.legs(),
+        e.legs(),
+        "the legs and both lookups come back as booked"
+    );
 }
 
 /// A save after a booking writes the page being filled and no other leg page; a quiet save writes
@@ -141,11 +151,19 @@ fn a_save_writes_only_the_leg_pages_that_changed() {
     }
     save(&mut e, &mut disk);
     let globals = PageKey::new(GLOBAL_TABLE, 0).0;
-    assert_eq!(save(&mut e, &mut disk), (vec![globals], vec![]), "nothing changed");
+    assert_eq!(
+        save(&mut e, &mut disk),
+        (vec![globals], vec![]),
+        "nothing changed"
+    );
     depart(&mut e, 5_000, n);
     let (put, deleted) = save(&mut e, &mut disk);
     assert!(deleted.is_empty());
-    assert_eq!(leg_pages(&put), vec![2], "only the page the new leg went into: {put:?}");
+    assert_eq!(
+        leg_pages(&put),
+        vec![2],
+        "only the page the new leg went into: {put:?}"
+    );
     // Filling the page up and starting the next one writes the two.
     for i in 0..LEGS_PER_PAGE {
         depart(&mut e, 5_001 + i, n + 1 + i);
@@ -169,8 +187,16 @@ fn expired_legs_delete_and_rewrite_their_pages() {
     // Two days on, one more train leaves: the first sweep of the new day drops every old leg.
     depart(&mut e, 2 * TICKS_PER_DAY + 5, n);
     let (put, deleted) = save(&mut e, &mut disk);
-    assert_eq!(leg_pages(&deleted), vec![0, 1], "empty pages are deleted: {deleted:?}");
-    assert_eq!(leg_pages(&put), vec![2], "the page with the one leg left is written again");
+    assert_eq!(
+        leg_pages(&deleted),
+        vec![0, 1],
+        "empty pages are deleted: {deleted:?}"
+    );
+    assert_eq!(
+        leg_pages(&put),
+        vec![2],
+        "the page with the one leg left is written again"
+    );
     assert_eq!(e.legs().len(), 1);
     let back = restore(&disk);
     assert_eq!(back.legs(), e.legs());
@@ -192,10 +218,16 @@ fn a_failed_save_writes_its_leg_pages_again() {
     save(&mut e, &mut disk);
     depart(&mut e, 200, 3);
     let lost = e.save_changed();
-    assert_eq!(leg_pages(&lost.put.iter().map(|(k, _)| k.0).collect::<Vec<_>>()), vec![0]);
+    assert_eq!(
+        leg_pages(&lost.put.iter().map(|(k, _)| k.0).collect::<Vec<_>>()),
+        vec![0]
+    );
     assert!(!lost.ticket.is_empty());
     e.save_failed(lost.ticket);
-    assert!(e.legs().changed().contains(&0), "the lost leg page waits for the next save");
+    assert!(
+        e.legs().changed().contains(&0),
+        "the lost leg page waits for the next save"
+    );
     let (put, _) = save(&mut e, &mut disk);
     assert_eq!(leg_pages(&put), vec![0]);
     restore(&disk);
@@ -211,7 +243,10 @@ fn a_leg_page_that_does_not_fit_its_key_or_counter_is_refused() {
     let pages = e.legs().pages();
     assert_eq!(pages.len(), 2);
     let next = e.legs().next_id();
-    assert_eq!(LegIndex::from_pages(next, pages.clone()).expect("as saved"), *e.legs());
+    assert_eq!(
+        LegIndex::from_pages(next, pages.clone()).expect("as saved"),
+        *e.legs()
+    );
     // Page 1's bytes under page 0's key.
     let swapped = vec![(0, pages[1].1.clone()), (1, pages[0].1.clone())];
     assert!(LegIndex::from_pages(next, swapped).is_err());
