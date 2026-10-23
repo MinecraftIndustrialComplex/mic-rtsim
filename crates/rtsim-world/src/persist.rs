@@ -12,6 +12,10 @@
 //! one meta page and only the market pages changed since the last save, and
 //! [`World::open_paged`] reads the meta and leaves the market pages where they are. Both give
 //! the same `state_hash`.
+//!
+//! **Format** `RTW4` since S8b-4a's closed lanes (2026-10-23): the edge record that every
+//! snapshot carries gained `Edge::closed`. A snapshot of an older format is refused by name
+//! (`check_magic`), never read as a damaged one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -46,9 +50,28 @@ use crate::world::{
 };
 use rtsim_settle::Culture;
 
-/// RTW3: the money sink's works (SINK.md) joined the meta; RTW2 moved the market rows to the
-/// end, as a row table (paging).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTW3");
+/// RTW4: a world lane's edge carries its closed flag (`Edge::closed`, S8b-4a, PC51); RTW3: the
+/// money sink's works (SINK.md) joined the meta; RTW2 moved the market rows to the end, as a row
+/// table (paging). No reader of an older format is kept: nothing is released (no backward
+/// compatibility before a release).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTW4");
+
+/// Whether `magic` is this build's format: an older world format (`RTW` and another digit) is
+/// named, so an old snapshot says which format it is and never reads as a damaged one.
+fn check_magic(magic: u32) -> codec::Result<()> {
+    if magic == MAGIC {
+        return Ok(());
+    }
+    let (b, ours) = (magic.to_le_bytes(), MAGIC.to_le_bytes());
+    if b[..3] == ours[..3] && b[3].is_ascii_digit() {
+        return bad(format!(
+            "a phase 1 world snapshot of format RTW{}; this build reads RTW{} (no older save \
+             opens before a release)",
+            b[3] as char, ours[3] as char
+        ));
+    }
+    bad("not a phase 1 world snapshot".into())
+}
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -979,9 +1002,7 @@ impl World {
         paged: Option<(std::sync::Arc<dyn PageSource>, usize)>,
     ) -> codec::Result<World> {
         let r = &mut Reader::new(bytes);
-        if r.u32()? != MAGIC {
-            return bad("not a phase 1 world snapshot".into());
-        }
+        check_magic(r.u32()?)?;
         let (ng, nr) = (get_usize(r)?, get_usize(r)?);
         if ng != goods.len() || nr != book.recipes.len() {
             return bad(format!(
@@ -1202,6 +1223,9 @@ impl World {
                 && e.stops.iter().all(|&s| node_ok(s));
             if !ok {
                 return bad(format!("edge {i} refers past the world's nodes"));
+            }
+            if e.closed && e.medium == rtsim_travel::Medium::Road {
+                return bad(format!("edge {i} is a closed road"));
             }
         }
         for (h, c) in self.caravans.iter() {

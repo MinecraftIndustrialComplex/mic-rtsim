@@ -214,6 +214,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <nav class="top" data-ss-react="off">
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
   <a href="#build">Built</a>
+  <a href="#ports-built">Ports</a>
   <a href="#back">What comes back</a>
   <a href="#farming">Farming</a>
   <a href="#animals">Animals</a>
@@ -230,7 +231,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Kill every Frostmaw, dragon or villager and new ones come, slower each time you farm them, and the world settles: you answered all 6 decisions</h1>
-  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. You answered its six decisions on 21 October: four as recommended, a faster Frostmaw (EQ-4) and none of the three ways factions fight (EQ-5). Since 22 October 6 of its 12 slices are built, among them the census, herds, dragons and ships, and the ports that rise and fall are being built with your PORTS-1 and PORTS-2 (<a href="#build">the build</a>).</p>
+  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. You answered its six decisions on 21 October: four as recommended, a faster Frostmaw (EQ-4) and none of the three ways factions fight (EQ-5). Since 22 October 6 of its 12 slices are built, among them the census, herds, dragons and ships, and early on 23 October the ports and havens that rise and fall, with your PORTS-1 and PORTS-2 (<a href="#ports-built">what was built</a>, <a href="#build">the build</a>).</p>
   <p class="lead" data-ss-id="lead">You asked for two things: a world that settles into a balance between tribes and animals, and a way for the Frostmaw (your Yetis), dragons and villages a player wipes out to come back. One rule does both. Every place a kind lives (a lair, a den, a grove, a village, a herd's range) remembers how hard players have hit it lately, and the next arrival waits longer for each recent kill. Left alone, it forgets within a few game years. Herds stop booming and crashing, dragons stop eating herds out, factions stop throwing raids at walls they cannot beat, and a server left alone for ten real years keeps every kind at a steady share.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-herds"><div class="n">0</div><div class="t">herd ranges die out in 60 game years, whatever the player does (today 4 to 15 per world, for good)</div></div>
@@ -242,8 +243,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </header>
 
 <section id="build" data-ss-id="built" data-ss-section>
-  <h2 data-ss-id="built-h">The build: 6 of 12 slices are built, and the ports are being built</h2>
-  <p data-ss-id="built-p">EQUILIBRIUM.md section 4 on mic-rtsim main (bac9ff80). Each slice lands with its tests, and the later ones measure themselves with S1's census.</p>
+  <h2 data-ss-id="built-h">The build: 6 of 12 slices are built, and so are the ports (S8b)</h2>
+  <p data-ss-id="built-p">EQUILIBRIUM.md section 4 on mic-rtsim main (5767cb53). Each slice lands with its tests, and the later ones measure themselves with S1's census.</p>
   <div class="scroll" data-ss-id="built-wrap">
   <table class="stack" data-ss-id="built-table">
     <thead><tr><th>Slice</th><th>What</th><th>Where it stands</th></tr></thead>
@@ -257,7 +258,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td data-label="Slice">S6</td><td data-label="What">Villages and Ribbits (EQ-1 a): settlers, growth while unloaded, Ribbit houses refilled first</td><td data-label="Where it stands">Not built</td></tr>
       <tr><td data-label="Slice">S7</td><td data-label="What">Conflict: pressure on recruits, break and refound; when parties go out is the lifelike design</td><td data-label="Where it stands">Not built</td></tr>
       <tr><td data-label="Slice">S8</td><td data-label="What">Ships: hires and a cap, refit pressure, lanes</td><td data-label="Where it stands"><strong>Built</strong> (T32 to T39, the last e442612): both pirates on all 30 seeds still sail near day 1,000</td></tr>
-      <tr><td data-label="Slice">S8b</td><td data-label="What">Ports and havens that rise and fall, an extension of S8</td><td data-label="Where it stands">Part built: S8b-1 (966d7a93) and S8b-3, port raids (c1aa6554); the rest is being built, with your PORTS-1 and PORTS-2 (<a href="#ports">below</a>)</td></tr>
+      <tr><td data-label="Slice">S8b</td><td data-label="What">Ports and havens that rise and fall, an extension of S8</td><td data-label="Where it stands"><strong>Built</strong> (5767cb53): havens, port raids, navies and closing under blockade, with your PORTS-1 and PORTS-2 (<a href="#ports-built">below</a>)</td></tr>
       <tr><td data-label="Slice">S9</td><td data-label="What">The Mowzie factions on the shared rule</td><td data-label="Where it stands">Part of the Mowzie build, under way</td></tr>
       <tr><td data-label="Slice">S10</td><td data-label="What">Oil nests on the shared rule</td><td data-label="Where it stands"><strong>Built</strong>, with the oil gate's fixes</td></tr>
       <tr><td data-label="Slice">S11</td><td data-label="What">The long-horizon suite, and a 262,980-day soak that checks every kind, the state size and the event rate stay flat</td><td data-label="Where it stands">Not built; it comes last</td></tr>
@@ -278,15 +279,105 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
 
   <div class="box" id="ports" data-ss-id="built-ports">
-    <h3>S8b: ports and havens that rise and fall <span class="state plan">Being built</span></h3>
+    <h3>S8b: ports and havens that rise and fall <span class="state">Built</span></h3>
     <p class="meta">An extension of S8: EQUILIBRIUM.md section 2.4.6a and section 5.1, choices in <code>docs/choices-ports.md</code>.</p>
-    <p>The first part, S8b-1, landed on main this evening (966d7a93): an unwatched hunt pays a toll, a haven with no prey starves and lays its ships up, and a shut haven is founded again at its own site, out of view and with prey to hunt. S8b-3 followed (c1aa6554): pirates raid the port village at a hunted lane's nearer end, when nobody watches it and they believe they win. Navies and closing under blockade are being built with your two answers.</p>
+    <p>All of it is on main (5767cb53). S8b-1 landed on 22 October (966d7a93): an unwatched hunt pays a toll, a haven with no prey starves and lays its ships up, and a shut haven is founded again at its own site, out of view and with prey to hunt. S8b-3 followed (c1aa6554): pirates raid the port village at a hunted lane's nearer end, when nobody watches it and they believe they win. Navies and closing under blockade landed early on 23 October, with port raids changed to take only spare stock. The rules, the numbers and the choices made are in <a href="#ports-built">the next section</a>.</p>
     <p>Asked whether havens nobody visits should lose crew, you asked back whether ports should be raided, shut down and form anew. Your two answers:</p>
     <ul>
       <li><strong>PORTS-1, "Navies too".</strong> A navy can break a pirate haven while nobody watches, but only when it believes it will win, and the result is certain, not rolled. A broken haven is founded again at its site after up to 384 days. This is an exception to "only players break a faction", for havens only.</li>
       <li><strong>PORTS-2, "Close under blockade".</strong> A trade port whose every lane has been at a haven's full danger for 30 days lays up its ships until the blockade lifts. Pirates also raid port villages for their market stock.</li>
     </ul>
+    <p>As built, a port closes on a month-long average, when every lane of it has been hunted about half the time, and raids take only spare stock (<a href="#ports-built">next section</a>).</p>
   </div>
+</section>
+
+<section id="ports-built" data-ss-id="ports-built" data-ss-section>
+  <h2 data-ss-id="ports-built-h">Ports and havens: built <span class="state">Built</span></h2>
+  <p class="lead" data-ss-id="ports-built-lead">All of the ports work (S8b) is on mic-rtsim main (5767cb53, early on 23 October): pirate havens that starve, are broken by navies and come back, pirates that raid port villages, and ports that close under blockade and reopen. It is built with your two answers, PORTS-1 ("Navies too") and PORTS-2 ("Close under blockade").</p>
+  <p class="cap" data-ss-id="ports-built-src">The rules are EQUILIBRIUM.md section 2.4.6a; every choice made on the way is logged in <code>docs/choices-ports.md</code>, PC1 to PC101. The numbers below were checked there.</p>
+
+  <h3 data-ss-id="ports-rules-h">How ports and havens rise and fall</h3>
+  <ol data-ss-id="ports-rules">
+    <li><strong>A hunt costs crew.</strong> A pirate hunt nobody watches loses men, as the fight on that lane would.</li>
+    <li><strong>A haven with no prey starves.</strong> When none of its pirates has begun a hunt for 30 days, its men ashore desert, it hires nobody, and its ships lay up until it is fed again.</li>
+    <li><strong>Navies break havens</strong> (PORTS-1, "Navies too"). Every 24 days a navy's home port looks at the havens hunting the lanes it patrols and may attack the weakest. It only goes after a long grievance (a haven that has robbed its lanes for two game years, 192 days), only when it believes it will win, and never while a player can see the haven. The result is certain, not rolled: the navy wins, and the haven's ships in port are lost.</li>
+    <li><strong>A haven shuts</strong> when it is broken or starving and has no ship out.</li>
+    <li><strong>A new band refounds the site</strong> after 48 days, longer the more pirates players have killed there, and never more than 384 days. It only arrives out of every player's view, and only if it would find prey; otherwise it looks again 48 days later.</li>
+    <li><strong>Pirates raid port villages, but only take what the village can spare.</strong> A raid takes at most 60% of what each stock holds over its target. Goods sit at their targets, so in practice the loot is spare coin, and no village goes broke. Pirates raid only when they believe they win, and never a village someone is watching.</li>
+    <li><strong>Ports close under blockade</strong> (PORTS-2, "Close under blockade"). Each lane keeps a month-long average of how hard it is hunted.
+      <ul>
+        <li>When every lane of a port has been hunted about a quarter of the time, the port is under blockade. That is news, not yet a closure.</li>
+        <li>At about half the time, the port closes. Its lanes carry nothing new, its merchant services lay up out of view, and the navy keeps sailing. A ship a player watches or rides keeps its timetable until nobody sees it, so no ship vanishes in front of anyone and nobody is dropped in the sea or the sky.</li>
+        <li>It reopens once every lane has calmed, and not before 30 days. Its ships come back at their home docks, out of sight. It then stays open at least 192 days.</li>
+      </ul>
+    </li>
+    <li><strong>News, never chat.</strong> Raids, blockades, closures, reopenings and fallen havens reach players as things villagers say when you talk to them, carried by messengers, bands and caravans like any other news.</li>
+  </ol>
+  <div class="box" data-ss-id="ports-ur1">
+    <p><strong>Your builds are safe (UR-1).</strong> No block is ever placed, changed or removed. Your stations, docks, contraptions and player-built ships are untouched, and uninstalling rtsim leaves every structure as it stands.</p>
+  </div>
+
+  <h3 data-ss-id="ports-sees-h">What a player at a hunted port sees</h3>
+  <ol data-ss-id="ports-sees">
+    <li>A haven rises nearby: imports at the port cost more, and villagers and traders tell of robberies on the lane, naming a captain.</li>
+    <li>Pirates raid the village: its treasury loses some spare coin, and the villagers talk of it.</li>
+    <li>The pirates keep at it for weeks: a villager says the lanes are watched. If it goes on, the port closes. Merchant ships stop calling, goods that came by sea run short, and prices climb. A ship you watch or ride is never taken from under you.</li>
+    <li>With no trade left to rob, the pirates drift off. A month or more later the port reopens: ships come back out of sight, and prices settle.</li>
+    <li>Or a navy burns the haven: you hear it as gossip, the lane's danger drops, and imports get cheaper. The haven's structure stays exactly as it was.</li>
+  </ol>
+
+  <h3 data-ss-id="ports-num-h">Measured: 1,000 years on 30 synthetic seas</h3>
+  <p class="cap" data-ss-id="ports-num-cap">Our own generated world <code>synth::sea_havens</code>, seeds 1 to 30, nobody watching, navies and port raids at their defaults.</p>
+  <div class="scroll" data-ss-id="ports-num-wrap">
+  <table class="stack" data-ss-id="ports-num">
+    <thead><tr><th>Question</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td data-label="Question">Do ports die out or multiply?</td><td data-label="Result">Neither. 28 of 589 ports ever closed, in 15 of the 30 seas. A closure lasts 38.9 days on average and 48 at the longest, and closures take up 0.16% of all port-days. No sea ever had all its sea ports closed at once; in 3 seas all the sky ports were, for a while, since navies patrol only the sea.</td></tr>
+      <tr><td data-label="Question">Do pirates still exist and matter?</td><td data-label="Result">Yes. Havens are open 95.4% of the time, with 84 hunts a sea-year. With closures off there are 86.6, and with the whole lifecycle off 92.7. Every sea hunts in every century.</td></tr>
+      <tr><td data-label="Question">What do port raids take?</td><td data-label="Result">About 4.8 raids a sea-year, and every item taken is a coin. The most one raid ever took was 4.7% of a village's stock; 2.1% on average.</td></tr>
+      <tr><td data-label="Question">Why only spare stock?</td><td data-label="Result">The first rule took from the whole stock. Nothing in a quiet economy refills a stock pushed below its target, so villages went broke and the havens that preyed on them starved: havens were open only 88.5% of the time, and 33.5% in the worst sea. That rule was replaced.</td></tr>
+      <tr><td data-label="Question">The synthetic coast</td><td data-label="Result">Its navy patrols the lanes, and it never closes a port.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 data-ss-id="ports-know-h">Two things you should know</h3>
+  <div class="two" data-ss-id="ports-know">
+    <div class="box" data-ss-id="ports-know-20">
+      <h3>Seed 20's knife edge</h3>
+      <p>One sea, seed 20, is the only one the raids cost much. Its havens are open 68% of the time at the default loot share of 60%. Moving the share between 55% and 62% swings that anywhere from 40% to 100%, with no trend: 100% at 55%, 40% at 58%, 100% again at 61%. A haven there starves for want of a hunt worth starting and is never refounded. It is a knife edge the raids tip, not a steady drain, and it was not traced further.</p>
+    </div>
+    <div class="box" data-ss-id="ports-know-repeat">
+      <h3>Repeat closures</h3>
+      <p>The most hunted ports close again as soon as the rule allows. At the three most closed (seeds 10, 3 and 15), a player sees the port closed for 36 to 43 days, then open for 192, over and over: 410 to 421 times in 1,000 years. The most closed port is closed 18% of the time; with a 48-day open spell it was 44%.</p>
+    </div>
+  </div>
+
+  <h3 data-ss-id="ports-ch-h">Choices made on the way</h3>
+  <p class="cap" data-ss-id="ports-ch-cap">All reversible, all logged in <code>docs/choices-ports.md</code>.</p>
+  <div class="scroll" data-ss-id="ports-ch-wrap">
+  <table class="stack" data-ss-id="ports-ch">
+    <thead><tr><th>Choice</th><th>What</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td data-label="Choice">PC72</td><td data-label="What">A raid takes at most 60% of a village's surplus, not of its whole stock</td><td data-label="Why">Whole-stock raids left villages broke and starved the havens that preyed on them</td></tr>
+      <tr><td data-label="Choice">PC78</td><td data-label="What">A raid only happens if the crew can carry off at least one whole item</td><td data-label="Why">Without it, 213 of 1,670 raids were fought, cost men and took nothing</td></tr>
+      <tr><td data-label="Choice">PC99</td><td data-label="What">A reopened port stays open at least 192 days</td><td data-label="Why">The shortest open spell, of 48, 96 and 192 days, that keeps the no-flapping rule after the raid change (the most closed port closed at most a quarter of the time): 44% closed at 48 days, 31% at 96, 18% at 192</td></tr>
+      <tr><td data-label="Choice">PC92</td><td data-label="What">A laid-up ship gives up its booked voyages, and a voyage that has left keeps the timetable window a player saw</td><td data-label="Why">A window that moved after the ship left would change what a player was shown</td></tr>
+      <tr><td data-label="Choice">PC100</td><td data-label="What">Blockade, closure and reopening news names the haven that held the blockade</td><td data-label="Why">It is the haven the port suffered most from</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="box" data-ss-id="ports-pc101">
+    <h3>PC101: switching the ships off frees closed ports <span class="state plan">Being built</span></h3>
+    <p>As landed, switching the ships module off froze every closure: a port closed at that moment stayed closed for good if the module was never switched back on. The coordinator's call overnight changes that: switching the ships module off clears every port closure, instead of freezing closed ports shut. This is being built now. You can overrule it.</p>
+  </div>
+
+  <h3 data-ss-id="ports-open-h">Still open</h3>
+  <ul data-ss-id="ports-open">
+    <li>The conflict engine's raids and the dragons still take from a village's whole stock, the same flaw port raids had.</li>
+    <li>Conflict raids get the same fix after the severity fix, which is queued with the Mowzie lead.</li>
+    <li>Dragons are queued separately.</li>
+  </ul>
 </section>
 
 <section id="back" data-ss-id="back" data-ss-section>

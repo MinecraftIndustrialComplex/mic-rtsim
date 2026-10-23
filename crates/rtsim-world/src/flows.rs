@@ -157,6 +157,20 @@ fn step(
             let dir = &e.dirs[d.dir as usize];
             let j = dir.to;
             let had = dir.goods.get(&g).is_some_and(|p| p.current_rate() > 0);
+            if e.closed {
+                // A closed lane (a blockaded port, PC22) offers nothing new: a direction that
+                // was sending is kept as a zero-want candidate, so its rate (and raided share)
+                // winds down through this allocation. What is already on the road lands.
+                if had || dir.raid.get(&g).is_some_and(|p| p.current_rate() > 0) {
+                    cands.push(Candidate {
+                        dir: *d,
+                        margin: -1,
+                        want: 0,
+                        quote: 0,
+                    });
+                }
+                continue;
+            }
             let Some(snap) = node.news.get(j).filter(|s| !s.is_base) else {
                 if had {
                     cands.push(Candidate {
@@ -663,13 +677,26 @@ fn net_changes(
 }
 
 /// Counts, per good, the neighbours that could answer the market's advertisement: those supplying
-/// it now and those whose news says they have it to spare (overnight choice E46).
-fn count_suppliers(s: &mut Snapshot, node: &Node) {
+/// it now and those whose news says they have it to spare (overnight choice E46). A neighbour
+/// whose every edge to this market is closed (a blockaded port, PC22) cannot send anything new, so
+/// it is not counted: the advertisement is split among the suppliers that can answer it (PC60).
+/// Which neighbours can send is weighed once, not per good.
+fn count_suppliers(s: &mut Snapshot, node: &Node, edges: &[rtsim_travel::Edge]) {
     let inflows = std::mem::take(&mut s.inflows);
+    let reachable: Vec<usize> = node
+        .neighbours
+        .iter()
+        .copied()
+        .filter(|&j| {
+            node.out.iter().any(|d| {
+                let e = &edges[d.edge as usize];
+                e.dirs[d.dir as usize].to == j && !e.closed
+            })
+        })
+        .collect();
     for (gi, gn) in s.goods.iter_mut().enumerate() {
         let g = GoodId(gi as u16);
-        let n = node
-            .neighbours
+        let n = reachable
             .iter()
             .filter(|&&j| {
                 inflows
@@ -805,7 +832,7 @@ impl World {
                 );
                 let mut s = Snapshot::of_after(i, m, at, node.last_sent.as_deref());
                 s.inflows = inflows_by_source(node, edges, nb);
-                count_suppliers(&mut s, node);
+                count_suppliers(&mut s, node, edges);
                 if let Some((Some(home), mint_cost)) = works_par {
                     coins = Some(crate::works::coin_lines(m, |g| {
                         crate::works::mint_par(goods, mint_cost, home, g)
@@ -893,7 +920,7 @@ impl World {
         let nb = self.cfg.trade.quantum.index(at) + 1;
         let mut s = Snapshot::of_after(i, &m, at, self.nodes[i].last_sent.as_deref());
         s.inflows = inflows_by_source(&self.nodes[i], &self.edges, nb);
-        count_suppliers(&mut s, &self.nodes[i]);
+        count_suppliers(&mut s, &self.nodes[i], &self.edges);
         let snap = Arc::new(s);
         let differs = self.nodes[i]
             .last_sent

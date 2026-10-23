@@ -6,7 +6,8 @@ grove, two Frostmaw dens), two villages, a caravan road, and per scenario a rail
 players. The same physics (pools, recruits under EQUILIBRIUM's pressure, stores and seasons, the engine's
 deterministic abstract fights, dragons, news) runs under three decision rules:
 
-  ladder  today's grievance ladder (rtsim-conflict at aa898aa: plan_feud and escalate), EQ-5 (c)
+  ladder  today's grievance ladder (rtsim-conflict at aa898aa: plan_feud and escalate), EQ-5 (c),
+          except that every war rung repeats at its dwell; the engine repeats only Siege (CL-D59)
   gate    EQUILIBRIUM.md section 2.5's gate, EQ-5 (a)
   life    CONFLICT-LIFE.md section 2: a council of voices with drives, beliefs and memories that
           wakes on occasions and chooses by a logit (quantal) response
@@ -1117,7 +1118,11 @@ class World:
 
     # ------------------------------------------------------------------------------- ladder
     def ladder_day(self, f):
-        """Today's rule per relation: rungs in turn, war rungs repeat at their dwell."""
+        """Today's rule per relation: rungs in turn, and here every war rung repeats at its dwell.
+
+        The engine does not: each climb sends its rung's party once and only Siege repeats (K2-8,
+        CL-D59 (b)), so this mode overstates today's wars.
+        """
         t = self.t
         c = f.c
         if f.dead:

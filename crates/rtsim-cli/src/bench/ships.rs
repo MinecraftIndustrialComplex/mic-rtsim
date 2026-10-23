@@ -224,12 +224,12 @@ pub fn run(c: &ShipsConfig) -> Measured {
     if st.materialized > 0 || st.voyages_booked > 0 {
         failures.push("a ship materialized or a voyage was booked with nobody watching".into());
     }
-    let pirate_kinds = ["decide", "reach_lane", "bored", "home", "refit"];
-    if let Some((k, _)) = s
-        .pending_by_kind()
-        .into_iter()
-        .find(|(k, _)| !pirate_kinds.contains(k))
-    {
+    // The pirates' own events, the checks of the ports their hunts warm, and the relaunches of
+    // ships a closure laid up once their port reopens (§2.4.6a rule 7).
+    let pirate_kinds = ["decide", "reach_lane", "bored", "home", "refit", "dock_check"];
+    if let Some((k, _)) = s.pending_by_kind().into_iter().find(|&(k, _)| {
+        !pirate_kinds.contains(&k) && !(k == "relaunch" && s.stats.reopenings > 0)
+    }) {
         failures.push(format!("a {k} event pending with nobody watching"));
     }
     let cpu = have_cpu.then_some(ships_ns);

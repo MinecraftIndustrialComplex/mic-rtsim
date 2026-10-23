@@ -5,8 +5,8 @@
 //! still balance. Where it went (eaten, burnt or carried to a hoard) is the predator module's own
 //! ledger (`rtsim-ecology`).
 //!
-//! - [`World::take_stock`]: a raid on a village's stock, such as its livestock (P12's
-//!   recommendation: village livestock counted as market stock).
+//! - [`World::take_stock`] and [`World::take_stocks`]: a raid on a village's stock, such as its
+//!   livestock (P12's recommendation: village livestock counted as market stock).
 //! - [`World::prey_on_traveller`]: an attack on a caravan sampled from a flow. The caravan
 //!   becomes an individual row (SCALE.md §3: "a sampled traveller becomes an individual row when
 //!   something happens to it"), loses a share of its cargo, and goes on with the rest.
@@ -25,26 +25,49 @@ impl World {
     /// in the market's line. The market then re-reads its flows and sends news, as after a trade:
     /// the price moved with the stock. Returns what was taken (0 for a node with no storehouse).
     pub fn take_stock(&mut self, i: usize, g: GoodId, amount: Amount, at: Tick) -> Amount {
+        self.take_stocks(i, &BTreeMap::from([(g, amount)]), at)
+            .get(&g)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// [`World::take_stock`] for several goods at once, with one release, one market update and
+    /// one piece of news (as [`World::stock_to_held`]). Returns what was taken, per good taken.
+    pub fn take_stocks(
+        &mut self,
+        i: usize,
+        goods: &BTreeMap<GoodId, Amount>,
+        at: Tick,
+    ) -> BTreeMap<GoodId, Amount> {
         self.run_until(at);
-        if amount <= 0 || i >= self.nodes.len() {
-            return 0;
+        if i >= self.nodes.len() || goods.values().all(|a| *a <= 0) {
+            return BTreeMap::new();
         }
         self.release(i, at);
         let region = self.nodes[i].region;
         let taken = self
             .markets
             .apply(region, at, |m, _| {
-                if !m.is_storehouse() || g.index() >= m.lines.len() {
-                    return 0;
+                let mut out = BTreeMap::new();
+                if !m.is_storehouse() {
+                    return out;
                 }
-                let l = m.line_mut(g);
-                let t = amount.min(l.stock).max(0);
-                l.stock -= t;
-                l.book.destroyed += t;
-                t
+                for (&g, &a) in goods {
+                    if a <= 0 || g.index() >= m.lines.len() {
+                        continue;
+                    }
+                    let l = m.line_mut(g);
+                    let t = a.min(l.stock).max(0);
+                    if t > 0 {
+                        l.stock -= t;
+                        l.book.destroyed += t;
+                        out.insert(g, t);
+                    }
+                }
+                out
             })
-            .unwrap_or(0);
-        if taken > 0 {
+            .unwrap_or_default();
+        if !taken.is_empty() {
             self.market_event(i, at, crate::world::Cause::Predator);
         }
         taken

@@ -325,6 +325,7 @@ fn put_faction(w: &mut Writer, x: &Faction) {
         w.f64(*v);
     }
     w.bool(x.chief_out);
+    w.bool(x.crystal);
 }
 
 fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
@@ -352,6 +353,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
                 .collect::<codec::Result<_>>()?
         },
         chief_out: r.bool()?,
+        crystal: r.bool()?,
     })
 }
 
@@ -667,6 +669,8 @@ fn put_ledger(w: &mut Writer, l: &ConflictLedger) {
         &l.landed_from_players,
         &l.tribute,
         &l.gifts,
+        &l.destroyed,
+        &l.destroyed_from_players,
     ] {
         put_big(w, m);
     }
@@ -685,6 +689,8 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ConflictLedger> {
         landed_from_players: get_big(r)?,
         tribute: get_big(r)?,
         gifts: get_big(r)?,
+        destroyed: get_big(r)?,
+        destroyed_from_players: get_big(r)?,
         unmapped: BTreeMap::new(),
     };
     let n = r.len_prefix(2)?;
@@ -724,6 +730,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.withdrawn,
         s.peace_held,
         s.notices_shown,
+        s.repeats,
     ]);
     v
 }
@@ -773,6 +780,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.withdrawn = n();
     s.peace_held = n();
     s.notices_shown = n();
+    s.repeats = n();
     s
 }
 

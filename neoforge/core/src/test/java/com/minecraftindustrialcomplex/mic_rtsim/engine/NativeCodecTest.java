@@ -451,6 +451,35 @@ class NativeCodecTest {
         assertEquals(bytes.length, r.b.position());
     }
 
+    /** TALK_REPORT (test order 40), pinned against orders.rs OP_TALK_REPORT: the village, then kind, severity, flags, two unaligned actors, x, z, ago. */
+    @Test
+    void talkReportEncodesEveryFieldInOrder() {
+        byte[] bytes = new NativeCodec.Orders()
+                .talkReport(0x1122334455667788L, 3, 2, 5, NativeEngine.TalkActor.player(new java.util.UUID(0x0102030405060708L, 0x1112131415161718L)),
+                        NativeEngine.TalkActor.village(0x99AABBCCDDEEFF00L), -1_234_567, 7_654_321, 20_000L)
+                .toBytes();
+        Reader r = new Reader(bytes);
+        int start = r.b.position();
+        int end = r.header(NativeCodec.TALK_REPORT);
+        assertEquals(40, NativeCodec.TALK_REPORT, "the agreed opcode");
+        assertEquals(0x1122334455667788L, r.u64(), "village");
+        assertEquals(3, r.u16(), "kind");
+        assertEquals(2, r.b.get(), "severity");
+        assertEquals(5, r.b.get(), "flags");
+        assertEquals(1, r.b.get(), "who: a player");
+        assertEquals(0x0102030405060708L, r.u64(), "who a");
+        assertEquals(0x1112131415161718L, r.u64(), "who b");
+        assertEquals(2, r.b.get(), "whom: a village");
+        assertEquals(0x99AABBCCDDEEFF00L, r.u64(), "whom a");
+        assertEquals(0L, r.u64(), "whom b");
+        assertEquals(-1_234_567, r.u32(), "x");
+        assertEquals(7_654_321, r.u32(), "z");
+        assertEquals(20_000, r.u32(), "ago");
+        assertEquals(end, r.b.position());
+        assertEquals(8 + 8 + 2 + 1 + 1 + 17 + 17 + 4 + 4 + 4, end - start);
+        assertEquals(bytes.length, r.b.position());
+    }
+
     /** One received-log entry as rtsim-jni writes it. */
     private static byte[] entry(long handover, long obsSeq, int flags, byte[] record) {
         ByteBuffer b = ByteBuffer.allocate(NativeCodec.RECEIVED_HEADER + record.length).order(ByteOrder.LITTLE_ENDIAN);
