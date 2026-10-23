@@ -80,6 +80,12 @@ public final class GraphBuilder {
      * slice S1): shown by {@code /rtsim district graph}.
      */
     public int unloadedStops;
+    /**
+     * Chunks outside the district's that a kinetic network of the compile reaches (SECTIONS.md §3.6, choice
+     * SC77): a player's edit in one that no district holds is sent to this district as well. Set by an
+     * extractor.
+     */
+    public final LongOpenHashSet reachedChunks = new LongOpenHashSet();
 
     GraphBuilder(Industry ind, ServerLevel level, District district) {
         this.ind = ind;
