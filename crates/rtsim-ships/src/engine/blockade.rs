@@ -1225,7 +1225,7 @@ mod tests {
     /// since a period before the first closure moves.
     #[test]
     fn a_slot_laid_up_again_soon_after_its_relaunch_keeps_its_windows() {
-        let mut judged = 0;
+        let (mut judged, mut longest) = (0, 0);
         for seed in 1..=3u64 {
             for hours in [0u64, 1, 6, 24, 48, 96] {
                 let mut c = quiet_coast(seed);
@@ -1283,10 +1283,11 @@ mod tests {
                     );
                 }
                 judged += before.len();
+                longest = longest.max(period);
                 c.ships.check(&c.world).expect("checks");
             }
         }
-        eprintln!("{judged} windows judged");
+        eprintln!("{judged} windows judged; the longest period {longest} ticks");
         assert!(judged > 0);
     }
 

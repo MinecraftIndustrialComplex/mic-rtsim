@@ -306,8 +306,8 @@ pub const LAID_UP: Tick = Tick(u64::MAX);
 /// lay-up of the service that started after the first ended and lasted at least the minimum
 /// closure. So the forgotten spell ended at least the minimum closure (30 days) before, and a
 /// voyage's window holds from its departure for at least the minimum closure less one period
-/// (a few days), longer than any voyage takes. [`Ships::lay_up_merchant`] asserts the first
-/// half.
+/// (over 27 days on the quiet coast, whose longest period is under 3 days).
+/// [`Ships::lay_up_merchant`] asserts the first half.
 pub(crate) type Spells = [(Tick, Tick); 2];
 
 /// No spell: `[0, 0)` holds no departure.
