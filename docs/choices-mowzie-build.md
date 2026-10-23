@@ -362,8 +362,9 @@ under its own heading.
   demanded it, and nothing did.
 - **MZB-151** (`camp_bodies`, a culture flag, gates the ledger): the plan keeps a ledger for a camp
   "whose bodies a census counts"; a culture says so with `camp_bodies: true` in its JSON, which
-  `frostmaw.json` and `umvuthana.json` set. Every other culture is untouched (no ledger, no
-  records read, today's pool), so M4 changes no game that has no Mowzie's Mobs camp. A fork
+  `frostmaw.json` and `umvuthana.json` set. Every other culture has no ledger and reads no camp
+  record, but the pool's room (MZB-171) applies to it too, which moved `sim conflict`'s state
+  hashes. Amended (review of 408d4a07): M4 first said every other culture was untouched. A fork
   (reported): the plan does not say how a culture opts in.
 - **MZB-152** (where a ledger starts): at FACTION_FOUND (`camp_found`: the pool is the census's
   home bodies bounded by the culture's `pool_cap`, the camp's cap that count, one at least, bounded
@@ -381,8 +382,10 @@ under its own heading.
   line is booked once by (op, line) (MZB-169) and a CAMP_DEATH by its slot and generation (MZB-170);
   neither op goes into `applied_ops`, which first held them and grew with every death of a farmed
   grove.
-- **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` is unchanged,
-  so a feud, the bench and a save cost what they did. A read that needs the slots (`camp_sync`,
+- **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` stays a closed
+  form, so a feud, the bench and a save cost what they did, but its refill now stops at the cap
+  less the members away for every culture (MZB-171; M4 first said it was unchanged). A read that
+  needs the slots (`camp_sync`,
   called by every ledger entry point and by the audit) first adds one owed slot for each whole
   member the pool gained since the last, each with a generation from the tick it became whole
   (`whole_at`). A camp that is in books `Ev::Refill` (wheel tag 7) with a stamp for its next whole
@@ -505,6 +508,34 @@ under its own heading.
   by op id, so Java's dropping of a marker's record is unaffected. A fork (reported): the lead's
   decision; a death replayed after a slot was freed and made again under a new generation is
   absorbed by the generation, which `derive_gen` never repeats for the slot's last life.
+
+- **MZB-171** (the pool's room is every culture's): MOWZIE.md ledger 6 says `pool_at`'s refill
+  stops at the cap less the members away, "at every camp", and the code does so for every culture,
+  ledger or not: a camp's cap is its culture's `pool_cap` (set at `add_faction`, bounded by a census
+  that finds fewer) and `away` is kept for all. `pool_at` is the refilled pool bounded by that room
+  and never below the smaller of the stored pool and the room, so a pool above the room is clamped
+  to it (the code comment said it stayed; fixed); `pool_add` clamps to the room, and `pool_ready`
+  is `BLOCKED` for a party larger than the room, which only a return can end (`unblock`). MZB-151
+  and MZB-154 said other cultures were untouched and `pool_at` unchanged; both were wrong. What
+  moved: M2's refill went to `pool_cap` from the moment a party left, so a goblin camp of 60 that
+  sent a raid of 12 had the pool back to 60 within 6 days while the band was out (72 members
+  fielded), and the survivors were clamped off the pool when they came home. Now the pool and the
+  members away never pass the cap, and survivors come home to room. A second war party waits for a
+  first one's return only when the room is short of it, which no default culture's numbers do but
+  the two with a ledger (a den's cap is 1; a grove found with 4 of 9 bodies has cap 4); for a
+  goblin the difference is the pool's value. In `sim conflict`'s JSON only the state hashes
+  moved (the three variants and the restore line): the checks, logs, event counts, wire bytes and
+  archive rows are M2's. The page format moved them too (MZB-165), so the room alone was measured,
+  as M2's refill on M4's format against M4's: ignore e5d0d1d99fbe97d5 against e271b3b7af114664,
+  tribute e7a65dc23ea5e53e against 788cce5224a8bb3f, converter 699a30ab49314569 against
+  8f4a3f1dafeb5a7c. At day 24 the goblin camp's pool is 57.92 in the tribute and converter runs
+  (60 less the two warriors lost) where M2's refill left 60.00, and 48.65 against 51.96 in the
+  ignore run, where a plunder party of 8 is still out. Test:
+  `every_cultures_pool_refills_only_to_its_cap_less_the_members_away` (a goblin camp of cap 20 with
+  raids of 12 out for 6 days: pool plus away never passes 20 in 60 days, where M2's formula reached
+  8.08 + 12 on the first day out). A fork (reported): the lead's decision to keep the room for every
+  culture, as the plan's ledger 6 words it, over a flag that would keep M2's pool for a culture
+  with no ledger.
 
 ## M5 Camp reconciler, Java
 

@@ -1166,7 +1166,9 @@ impl Conflict {
 
     /// The faction's warriors at `t` (closed form): recruited back at the culture's rate to the
     /// camp's cap less the members away (MOWZIE.md ledger 6), so a band's survivors always have
-    /// their slots to come home to. A pool already above that room stays where it is.
+    /// their slots to come home to. This holds for every culture, with a ledger or without (a
+    /// camp's cap is its culture's `pool_cap` unless a census says fewer), and a pool above that
+    /// room is clamped to it.
     pub fn pool_at(&self, f: u32, t: Tick) -> f64 {
         let x = &self.factions[f as usize];
         let c = self.culture(f);
