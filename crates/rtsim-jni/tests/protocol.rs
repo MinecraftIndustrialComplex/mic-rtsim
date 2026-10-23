@@ -2510,6 +2510,62 @@ mod ships {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// PC103 (C25, U10): a long switch-off, then the switch-on's catch-up, through the native
+    /// engine. Thirty days on (a haven on the coast, so the pirates hunt), thirty days off, then
+    /// on again: the ships replay what they missed up to the world's present at the switch-on,
+    /// and decide no port in that time. After a day on, no port holds a closure, blockade or open
+    /// spell dated before the switch-on and every booked check is after it; the ships check and
+    /// the protocol holds.
+    #[test]
+    fn switch_on_catch_up_after_a_long_off() {
+        let dir = tmpdir("ships-catchup");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        let days = |j: &mut Java, n: u64| {
+            for _ in 0..n * 20 {
+                j.game_time += 1199;
+                j.tick();
+            }
+            j.idle();
+        };
+        days(&mut j, 30);
+        let (before, _, _, _) = e.ship_stats();
+        j.modules(0b1111);
+        j.idle();
+        let off = e.with_ships(|s, _| s.now());
+        days(&mut j, 30);
+        let on = e.with_ships(|_, w| w.now());
+        assert!(on.0 >= off.0 + 29 * rtsim_kernel::clock::TICKS_PER_DAY, "the world ran on alone");
+        assert_eq!(e.with_ships(|s, _| s.now()), off, "the ships stood still");
+        j.modules(MODULES);
+        j.idle();
+        days(&mut j, 1);
+        let (after, _, _, _) = e.ship_stats();
+        assert!(after.events > before.events, "nothing replayed");
+        let (now, ports) = e.with_ships(|s, _| (s.now(), s.ports.clone()));
+        assert!(now >= on, "the ships caught up: {now:?} < {on:?}");
+        for (d, p) in &ports {
+            for t in [p.closed, p.blockaded, p.reopened].into_iter().flatten() {
+                assert!(t >= on, "dock {d}: dated in the missed time: {p:?}");
+            }
+            assert!(p.check.is_some_and(|t| t >= on), "dock {d}: {p:?}");
+        }
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        eprintln!(
+            "off at {off:?}, on at {on:?}, now {now:?}; events {} -> {}, port checks {} -> {}, \
+             {} ports with a state",
+            before.events,
+            after.events,
+            before.port_checks,
+            after.port_checks,
+            ports.len()
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// One interest area per player across the modules (U2): with a dragon at rest by the lane
     /// and the ships sailing it, the player reported every 20 ticks has one leg in the shared
     /// index, and both the dragon and a ship enter the player's view through it.
