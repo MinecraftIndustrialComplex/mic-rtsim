@@ -24,6 +24,10 @@ public final class ConflictRecords {
     public static final int TRIBUTE_PAID = 0x0809;
     public static final int GIFT_GIVEN = 0x080A;
     public static final int BAND_LOOTED = 0x080B;
+    /** M1 (feat/mowzie-m1): the world's difficulty, latest-wins and sticky, sent as a preamble. */
+    public static final int DIFFICULTY = 0x0093;
+    /** M1: a kept FACTION_NOTICE was played (aux = its step). */
+    public static final int NOTICE_SHOWN = 0x0811;
 
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
@@ -62,6 +66,8 @@ public final class ConflictRecords {
 
     /** DEMAND_SETTLED's aux. */
     public static final int SETTLED_PAID = 1, SETTLED_CUT = 2, SETTLED_EXPIRED = 3, SETTLED_REFUSED = 4;
+    /** M1: the envoy party was gone with no player to blame (it goes home; BAND_RECALL ROUTED follows). */
+    public static final int SETTLED_WITHDRAWN = 5;
 
     /** BAND_RECALL's aux. */
     public static final int RECALL_BORED = 1, RECALL_ROUTED = 2, RECALL_DONE = 3, RECALL_PASSING = 4, RECALL_PLAYER_LEFT = 5,
@@ -78,7 +84,21 @@ public final class ConflictRecords {
     /** FACTION_FOUND (aux = flags). */
     public static final class FactionFound {
         public static final int FACTION = 24, DIM = 32, STRUCTURE = 36, X = 40, Y = 44, Z = 48, SIZE = 56;
+        /** M1: u16 bodies at home and u8 census flags at discovery (main's decoder ignores 52 to 55). */
+        public static final int HOME_BODIES = 52, CENSUS = 54;
         public static final int FLAG_LATE = 1;
+        /** CENSUS flags: the chief is present; it holds its crystal. */
+        public static final int CENSUS_CHIEF = 1, CENSUS_CRYSTAL = 2;
+    }
+
+    /** DIFFICULTY (M1, latest-wins, aux 0): Minecraft's difficulty id, u32. */
+    public static final class DifficultyRecord {
+        public static final int DIFFICULTY = 8, SIZE = 16;
+    }
+
+    /** NOTICE_SHOWN (M1, journaled, aux = the notice's step): the faction and the notice's player ((0,0): the settlers). */
+    public static final class NoticeShown {
+        public static final int FACTION = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIZE = 48;
     }
 
     /** TERRITORY_SIGNAL (aux = signal). */
