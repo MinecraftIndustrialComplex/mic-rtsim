@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
@@ -556,6 +557,129 @@ public final class IndustryGameTests {
                     TrainWatch.forget(train[0]);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * A train leaves a district's station, calls at a station outside every district and comes back (the
+     * syn200 shape: docs/stress-worlds-results.md 10.9, choice SG50). The bridge says so with
+     * IND_TRAIN_UNWATCHED, after the departure it ends, and the engine learns no edge from the district's
+     * station to itself: before the report the engine made one, with the round trip's travel time. A
+     * second unwatched call in the same leg sends nothing more. On the native engine the engine's own counts
+     * are read, as the journey changed them: one unwatched stop taken, no self edge refused (the report
+     * came first), and no edge at all.
+     */
+    @GameTest(template = YARD, batch = "industry_16", timeoutTicks = 600)
+    public static void aTrainThatCallsOutsideEveryDistrictMakesNoEdgeFromAStationToItself(GameTestHelper helper) {
+        unwatchedJourney(helper, "aTrainThatCallsOutsideEveryDistrictMakesNoEdgeFromAStationToItself", true);
+    }
+
+    /**
+     * The same journey with the report off, as a bridge from before it would run: the engine's own guard
+     * (SG51) refuses the edge from the district's station to itself and counts it. Without both the report and the
+     * guard the engine learns a line from a station to itself, which is the bug 10.9 found.
+     */
+    @GameTest(template = YARD, batch = "industry_17", timeoutTicks = 600)
+    public static void aSelfEdgeIsRefusedWhenTheBridgeReportsNoUnwatchedStop(GameTestHelper helper) {
+        unwatchedJourney(helper, "aSelfEdgeIsRefusedWhenTheBridgeReportsNoUnwatchedStop", false);
+    }
+
+    private static void unwatchedJourney(GameTestHelper helper, String test, boolean report) {
+        fastConfig();
+        forget(helper);
+        TrainWatch.reportUnwatchedForTest(report);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos chestPos = new BlockPos(bx + 2, y, z);
+        set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        playerPlaced(helper, chestPos);
+        Train[] train = {null};
+        GlobalStation[] home = {null}, away = {null};
+        long[] before = {0, 0, 0, 0};
+        boolean[] recorded = {false};
+        helper.startSequence()
+                .thenWaitUntil(() -> check("district", districtAt(helper, chestPos) != null))
+                .thenExecute(() -> {
+                    train[0] = syntheticTrain(helper, new BlockPos(bx + 6, y, z), 32);
+                    home[0] = syntheticStation(helper.getLevel(), new BlockPos(bx + 3, y, z), "Home Halt");
+                    away[0] = syntheticStation(helper.getLevel(), new BlockPos(bx + 400, y, z), "Unwatched Halt");
+                    check("the far station is in no district", districtAt(helper, away[0].getBlockEntityPos()) == null);
+                    if (nativeEngine()) {
+                        long[] l = ((NativeEngine) engine()).industryLines();
+                        before[0] = l[0];
+                        before[1] = l[1];
+                        before[2] = l[2];
+                        before[3] = l.length;
+                    }
+                    train[0].arriveAt(home[0]);
+                })
+                .thenWaitUntil(() -> check("the first call at home was journaled",
+                        received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN, CreateIds.of(train[0].id)).size() == 1))
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].navigation.distanceToDestination = 400;
+                })
+                .thenWaitUntil(() -> check("IND_TRAIN_DEPARTED for the far station", received(IndRecords.IND_TRAIN_DEPARTED,
+                        d -> d.getLong(IndRecords.Train.TRAIN) == CreateIds.of(train[0].id)
+                                && d.getLong(IndRecords.Train.DEPARTED_DESTINATION) == CreateIds.of(away[0].id)).size() == 1))
+                .thenExecute(() -> train[0].arriveAt(away[0]))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    List<ByteBuffer> u = received(IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id));
+                    if (report) {
+                        check("IND_TRAIN_UNWATCHED for the call outside every district: " + u.size(), u.size() == 1);
+                        check("at the far station", u.get(0).getLong(IndRecords.TrainUnwatched.STATION) == CreateIds.of(away[0].id));
+                        check("after the departure it ends", seqOf(IndRecords.IND_TRAIN_DEPARTED, train[0]) < u.get(0).getLong(Obs.OBS_SEQ));
+                    } else {
+                        check("no report with the bridge's report off: " + u.size(), u.isEmpty());
+                    }
+                    check("a call outside every district is no IND_TRAIN_ARRIVED", received(IndRecords.IND_TRAIN_ARRIVED,
+                            IndRecords.Train.TRAIN, CreateIds.of(train[0].id)).size() == 1);
+                    // A second call outside every district in the same leg: the engine has the news already.
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].arriveAt(away[0]);
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    int n = received(IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id)).size();
+                    check("one report a leg: " + n, n == (report ? 1 : 0));
+                    train[0].leaveStation();
+                    train[0].navigation.destination = home[0];
+                    train[0].navigation.distanceToDestination = 400;
+                })
+                .thenIdle(5)
+                .thenExecute(() -> train[0].arriveAt(home[0]))
+                .thenWaitUntil(() -> {
+                    check("the second call at home was journaled", received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN,
+                            CreateIds.of(train[0].id)).size() == 2);
+                    if (!nativeEngine())
+                        return;
+                    // The engine counts across the whole run: this journey's share is the change since it began.
+                    long[] lines = ((NativeEngine) engine()).industryLines();
+                    check("the engine saw both calls at home: " + java.util.Arrays.toString(lines), lines[2] - before[2] >= 2);
+                    long unwatchedStops = lines[0] - before[0], refused = lines[1] - before[1];
+                    if (!recorded[0]) {
+                        recorded[0] = true;
+                        record(test, "engine: unwatched stops / self edges refused / edge list length", unwatchedStops + " / " + refused + " / " + lines.length);
+                    }
+                    check("the engine took " + unwatchedStops + " unwatched stop(s)", unwatchedStops == (report ? 1 : 0));
+                    check("self edges refused by the engine: " + refused + (report ? " (the report came first)" : " (its guard)"),
+                            refused == (report ? 0 : 1));
+                    check("no edge learned: " + (lines.length - before[3]) / 4 + " more", lines.length == before[3]);
+                })
+                .thenExecute(() -> {
+                    TrainWatch.reportUnwatchedForTest(true);
+                    TrainWatch.forget(train[0]);
+                })
+                .thenSucceed();
+    }
+
+    private static long seqOf(int kind, Train train) {
+        long seq = -1;
+        for (var r : engine().received(kind))
+            if (!r.skipped() && r.view().getLong(IndRecords.Train.TRAIN) == CreateIds.of(train.id))
+                seq = Math.max(seq, r.view().getLong(Obs.OBS_SEQ));
+        return seq;
     }
 
     /**
