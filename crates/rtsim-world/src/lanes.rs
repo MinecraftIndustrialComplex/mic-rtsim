@@ -437,10 +437,11 @@ impl World {
         // allocation re-runs now and books its changed pipelines' arrivals at the far ends.
         self.market_event(a, at, Cause::Lane);
         self.market_event(b, at, Cause::Lane);
-        if closed && self.cfg.check_every_event {
-            if let Err(e) = self.check_lanes() {
-                panic!("{e} at {at:?}");
-            }
+        if closed
+            && self.cfg.check_every_event
+            && let Err(e) = self.check_lanes()
+        {
+            panic!("{e} at {at:?}");
         }
         true
     }
