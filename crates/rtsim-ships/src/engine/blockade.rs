@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ports that close under blockade (EQUILIBRIUM.md §2.4.6a rule 7, slice S8b-4; choices PC20 to
-//! PC25 and PC80 to PC99). The ships engine's half: the world's lanes close and open with
+//! PC25 and PC80 to PC100). The ships engine's half: the world's lanes close and open with
 //! `World::close_lane` and `World::open_lane` (S8b-4a).
 //!
 //! - **Heat** (PC20). Each lane's threat row keeps an exponential average of its applied hazard
@@ -57,7 +57,7 @@ pub struct PortState {
     pub epoch: u32,
 }
 
-/// What a port's news would tell (rule 8 of the slice): knowledge has no kind for it yet.
+/// What a port's news tells (rule 8 of the slice, PC100): its report kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PortNews {
     Blockade,
@@ -317,11 +317,7 @@ impl Ships {
             .filter(|&l| self.lanes[l as usize].edge != u32::MAX)
             .collect();
         let heats: Vec<i64> = lanes.iter().map(|&l| self.heat_at(l, at)).collect();
-        let hottest = lanes
-            .iter()
-            .zip(&heats)
-            .max_by_key(|(l, h)| (**h, std::cmp::Reverse(**l)))
-            .and_then(|(&l, _)| self.threat(l).and_then(|t| t.haven));
+        let holder = self.heat_holder(&lanes, &heats);
         let was = p.closed;
         let changes = p.step(
             &heats,
@@ -352,7 +348,7 @@ impl Ships {
             self.resettle(w, d, at);
         }
         for &c in &changes {
-            self.port_event(w, d, c, hottest, &heats, at);
+            self.port_event(w, d, c, holder, &heats, at);
         }
         // Checks go on while a lane is warm, or the port is blockaded, closed or within its
         // minimum open spell. Otherwise the port has nothing to keep (PC96): its state goes, so
@@ -364,6 +360,22 @@ impl Ships {
         } else {
             self.ports.remove(&d);
         }
+    }
+
+    /// The haven whose pirates hold the most heat on `lanes` (`heats`, in the same order), the
+    /// one a port's tape row and news name (PC88, PC100): each lane's heat counts for the haven
+    /// its threat row names (the last to claim it, kept after its hunters leave), ties to the
+    /// lower haven. `None` when no lane has ever been claimed.
+    fn heat_holder(&self, lanes: &[u32], heats: &[i64]) -> Option<u32> {
+        let mut by: BTreeMap<u32, i64> = BTreeMap::new();
+        for (&l, &h) in lanes.iter().zip(heats) {
+            if let Some(hv) = self.threat(l).and_then(|t| t.haven) {
+                *by.entry(hv).or_default() += h;
+            }
+        }
+        by.into_iter()
+            .max_by_key(|&(hv, h)| (h, std::cmp::Reverse(hv)))
+            .map(|(hv, _)| hv)
     }
 
     /// The tape row, note and news of a port's change.
@@ -402,20 +414,32 @@ impl Ships {
             None,
             format!("dock {d} (node {node}) is {text}: its lanes' heats {heats:?}‰"),
         );
-        match news {
-            // ReportKind Blockade (17): the port's people learn pirates hold its lanes.
-            Some(PortNews::Blockade) => self.port_news(w, d, PortNews::Blockade, at),
-            // ReportKind PortClosed (18): the port shuts its harbour; its trade stops.
-            Some(PortNews::Closed) => self.port_news(w, d, PortNews::Closed, at),
-            // ReportKind PortReopened (19): ships sail from the port again.
-            Some(PortNews::Reopened) => self.port_news(w, d, PortNews::Reopened, at),
-            None => {}
+        if let Some(news) = news {
+            self.port_news(w, d, news, haven, at);
         }
     }
 
-    /// A port's news for knowledge (rule 8 of the slice): a stub until knowledge defines the
-    /// report kinds Blockade (17), PortClosed (18) and PortReopened (19). Nothing is reported.
-    fn port_news(&mut self, _w: &mut World, _dock: u32, _news: PortNews, _at: Tick) {}
+    /// A port's news (§2.4.6a rules 7 and 8, PC10, PC100), through [`Ships::port_report`]:
+    /// Blockade (17, severity 1) when pirates come to hold its lanes, PortClosed (18, severity 2)
+    /// when it shuts its harbour, PortReopened (19, severity 1) when ships sail from it again.
+    /// `who` is the haven whose pirates hold the most heat on the port's lanes (`haven`, its
+    /// node's actor), or the port's own village when no lane of it was ever claimed; `whom` the
+    /// port's village; `place` the dock. The village and the settlements in sight of the dock
+    /// witness it.
+    fn port_news(&mut self, w: &mut World, d: u32, news: PortNews, haven: Option<u32>, at: Tick) {
+        let dk = &self.docks[d as usize];
+        let (node, place) = (dk.node, Place::new(dk.frame, dk.x, y16(dk.y), dk.z));
+        let whom = w.nodes[node].actor;
+        let who = haven
+            .and_then(|h| self.havens.get(h as usize))
+            .map_or(whom, |hv| w.nodes[hv.node].actor);
+        let (kind, severity) = match news {
+            PortNews::Blockade => (ReportKind::Blockade, 1),
+            PortNews::Closed => (ReportKind::PortClosed, 2),
+            PortNews::Reopened => (ReportKind::PortReopened, 1),
+        };
+        Self::port_report(w, kind, who, whom, node, place, severity, at);
+    }
 
     // ---- what a closure does -------------------------------------------------------------------
 

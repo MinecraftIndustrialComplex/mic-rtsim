@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! S8b-4 (EQUILIBRIUM.md §2.4.6a rule 7; docs/choices-ports.md PC20 to PC25, PC80 to PC99): a
+//! S8b-4 (EQUILIBRIUM.md §2.4.6a rule 7; docs/choices-ports.md PC20 to PC25, PC80 to PC100): a
 //! blockaded trade port closes and reopens.
 //!
 //! The rules are judged on the blockade coast: [`synth::coastal_with`]'s coast with three pirates
@@ -7,6 +7,7 @@
 //! reach, so they hunt dock 3's lanes. The many-worlds measurement runs on `synth::sea_havens`
 //! and `synth::coastal`.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 
 use rtsim_archive::kinds;
@@ -268,6 +269,86 @@ fn a_blockaded_port_closes_and_reopens() {
             day(reopened),
             ships.len(),
             day(back) - day(reopened)
+        );
+    }
+}
+
+/// Each change of a port that rule 7 tells is news in the world (§2.4.6a rule 8, PC10, PC100):
+/// Blockade (17, severity 1), PortClosed (18, severity 2) and PortReopened (19, severity 1), one
+/// report per `ships.port` tape row at the same tick (the lift, magnitude 4, is not news), placed
+/// at the dock, by the haven whose pirates hold the lanes' heat against the port's village, and
+/// known to that village; nothing goes to chat. Seeds 1 to 3 on the blockade coast over 300 days.
+/// A port's news lives 6 days, so it is looked at each day and counted once by `(id, at)`.
+#[test]
+fn a_port_change_is_news() {
+    use rtsim_knowledge::ReportKind;
+    let tun = ShipTunables::default();
+    for seed in 1..=3u64 {
+        let (mut c, mut fake) = blockade_coast(seed, &tun);
+        c.ships.tape.set_on(true);
+        let havens: Vec<_> = c
+            .ships
+            .havens
+            .iter()
+            .map(|h| c.world.nodes[h.node].actor)
+            .collect();
+        let mut seen = BTreeSet::new();
+        let mut news = Vec::new();
+        run_until(&mut c, &mut fake, Tick::from_days(300), |c, _| {
+            if !c.ships.now().0.is_multiple_of(TICKS_PER_DAY) {
+                return false;
+            }
+            let k = &c.world.knowledge;
+            for (id, _) in k.reports().iter() {
+                let r = k.report(id).expect("a known kind");
+                let port = matches!(
+                    r.kind,
+                    ReportKind::Blockade | ReportKind::PortClosed | ReportKind::PortReopened
+                );
+                if port && seen.insert((id, r.at)) {
+                    assert!(k.knows(r.whom, id), "seed {seed}: the village knows {r:?}");
+                    news.push(r);
+                }
+            }
+            false
+        });
+        let mut told = Vec::new();
+        for r in &news {
+            let d = (0..c.ships.docks.len() as u32)
+                .find(|&d| {
+                    let k = &c.ships.docks[d as usize];
+                    (k.frame, k.x, k.z) == (r.place.frame, r.place.x, r.place.z)
+                })
+                .unwrap_or_else(|| panic!("seed {seed}: at a dock: {r:?}"));
+            assert!(c.ships.is_trade_port(&c.world, d), "seed {seed}: {r:?}");
+            let node = c.ships.docks[d as usize].node;
+            assert_eq!(r.whom, c.world.nodes[node].actor, "seed {seed}: the port");
+            assert!(havens.contains(&r.who), "seed {seed}: by a haven: {r:?}");
+            let (magnitude, severity) = match r.kind {
+                ReportKind::Blockade => (1, 1),
+                ReportKind::PortClosed => (2, 2),
+                _ => (3, 1),
+            };
+            assert_eq!((r.severity, r.flags), (severity, 0), "seed {seed}: {r:?}");
+            told.push((d, r.at.0, magnitude));
+        }
+        let mut taped: Vec<_> = (0..c.ships.docks.len() as u32)
+            .flat_map(|d| {
+                port_events(&c.ships, d)
+                    .into_iter()
+                    .filter(|e| e.magnitude != 4)
+                    .map(move |e| (d, e.tick, e.magnitude))
+            })
+            .collect();
+        told.sort();
+        taped.sort();
+        assert_eq!(told, taped, "seed {seed}: one report per change");
+        let st = &c.ships.stats;
+        assert!(st.closures > 0 && st.reopenings > 0, "seed {seed}: {st:?}");
+        assert_eq!(
+            told.len() as u64,
+            st.blockades + st.closures + st.reopenings,
+            "seed {seed}"
         );
     }
 }
@@ -998,7 +1079,9 @@ fn closures_survive_save_and_restore() {
 /// The hashes of the parent for three runs: the coast's scripted player for 30 days (seed 7)
 /// and two seas unattended for 96 days, each over the ships' and the world's save bytes after
 /// the format's magic (so a format bump alone changes nothing here). The parent is main at
-/// 257d2715 (S8b-2 and S8b-3 landed) with this branch's world half (S8b-4a, `crates/rtsim-world`
+/// 18356257 (S8b-2, S8b-3, RTS3, TALK slice 2a and the ports' news landed; both sea runs'
+/// hashes differ from 257d2715's, the coast's do not) with this branch's world half (S8b-4a,
+/// `crates/rtsim-world`
 /// and `crates/rtsim-travel`, which main does not have: its edge record has no closed flag), so
 /// the world hashes compare the same layout. Printed by the same scenarios built on that tree
 /// (`git archive` of main, the world half patched in).
@@ -1010,13 +1093,13 @@ const PARENT: [(&str, u64, u64); 3] = [
     ),
     (
         "sea_havens 1 unattended 96 days",
-        0x546a_ae21_7cb6_ff80,
-        0x04b4_0caa_f7ec_c422,
+        0xb717_8258_8a21_df9f,
+        0xaed4_77ab_b6c2_a2a5,
     ),
     (
         "sea_havens 2 unattended 96 days",
-        0x32cb_1937_9224_f683,
-        0xdce4_0b4a_db68_6e8b,
+        0x6f8d_aca5_c777_938c,
+        0x3ce5_5f9c_732b_0d30,
     ),
 ];
 
