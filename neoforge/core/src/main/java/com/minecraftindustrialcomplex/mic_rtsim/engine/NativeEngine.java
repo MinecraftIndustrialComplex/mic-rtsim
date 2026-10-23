@@ -188,6 +188,9 @@ public final class NativeEngine implements ScriptedEngine {
     /** One district's threat state ({@link #industryThreatProbe}'s layout). */
     private static native double[] nIndustryThreatProbe(long handle, long district);
 
+    /** The industry engine's learned train lines ({@link #industryLines}'s layout). */
+    private static native long[] nIndustryLines(long handle);
+
     /** The glass check of a record stream on a fresh industry engine; null without a complete compile. */
     private static native double[] nGlassOffline(byte[] records, long district);
 
@@ -727,6 +730,16 @@ public final class NativeEngine implements ScriptedEngine {
      */
     public synchronized double[] industryThreatProbe(long district) {
         return nIndustryThreatProbe(live(), district);
+    }
+
+    /**
+     * The industry engine's learned train lines (choices SG50, SG51), flat: the unwatched stops it took, the
+     * self edges it refused, the loaded calls it saw (IND_TRAIN_ARRIVED at a loaded district's station), then
+     * every edge as {@code (from station, to station, trips, travel ticks)}, the stations as the wire carries
+     * them ({@code CreateIds.of}). Between steps.
+     */
+    public synchronized long[] industryLines() {
+        return nIndustryLines(live());
     }
 
     /**
