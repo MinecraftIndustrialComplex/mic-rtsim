@@ -856,10 +856,13 @@ struct Sea {
     /// the port above a quarter of full). A spell still running at the end counts as it stands.
     spells: Vec<(f64, f64)>,
     ever_closed: usize,
-    /// Days on which every trade port of one medium was closed, and of those the days a navy
-    /// ship was sailing.
-    all_closed: u64,
-    all_closed_navy: u64,
+    /// Per medium (sea, sky): the trade ports, the days on which every one was closed, and of
+    /// those the days a navy ship was sailing.
+    media_ports: [usize; 2],
+    all_closed: [u64; 2],
+    all_closed_navy: [u64; 2],
+    /// The largest share of the days one port spent closed.
+    worst_port: f64,
     hunts: u64,
     decade_hunts: Vec<u64>,
     /// The mean share of haven sites open.
@@ -906,6 +909,11 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
         .flat_map(|v| ships.service_ships(v))
         .collect();
     let bound = tun.blockade_min_closed_days + tun.blockade_check_days + 1.0;
+    // Each port's medium: 0 the sea, 1 the sky.
+    let kinds: Vec<usize> = ports
+        .iter()
+        .map(|(d, _)| usize::from(ships.docks[*d as usize].medium != Medium::Sea))
+        .collect();
     let mut sea = Sea {
         world,
         seed,
@@ -915,6 +923,10 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
         navy_ships: navy.len(),
         ..Sea::default()
     };
+    for &k in &kinds {
+        sea.media_ports[k] += 1;
+    }
+    let mut port_days = vec![0u64; ports.len()];
     let mut spell: Vec<Option<(Tick, Tick)>> = vec![None; ports.len()];
     let mut ever = vec![false; ports.len()];
     let mut hunts0 = 0;
@@ -948,11 +960,11 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
                 "{world} {seed}: navy ship {id:?} laid up"
             );
         }
-        let mut medium_open: std::collections::BTreeMap<u8, bool> = Default::default();
+        let mut medium_open = [false; 2];
         for (i, (d, lanes)) in ports.iter().enumerate() {
             let closed = ships.port(*d).and_then(|p| p.closed);
             let m = ships.docks[*d as usize].medium;
-            *medium_open.entry(m as u8).or_default() |= closed.is_none();
+            medium_open[kinds[i]] |= closed.is_none();
             match (closed, spell[i]) {
                 (Some(since), sp) => {
                     let (s0, mut hot) = match sp {
@@ -969,6 +981,7 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
                     }
                     spell[i] = Some((s0, hot));
                     ever[i] = true;
+                    port_days[i] += 1;
                     sea.closed_days += 1;
                 }
                 (None, Some((s0, hot))) => {
@@ -978,10 +991,10 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
                 (None, None) => {}
             }
         }
-        for open in medium_open.values() {
-            if !open {
-                sea.all_closed += 1;
-                sea.all_closed_navy += u64::from(navy_sails);
+        for (k, open) in medium_open.into_iter().enumerate() {
+            if sea.media_ports[k] > 0 && !open {
+                sea.all_closed[k] += 1;
+                sea.all_closed_navy[k] += u64::from(navy_sails);
             }
         }
         let open = havens
@@ -1006,6 +1019,7 @@ fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
     }
     sea.open /= (years * YEAR) as f64;
     sea.ever_closed = ever.iter().filter(|&&e| e).count();
+    sea.worst_port = port_days.iter().copied().max().unwrap_or(0) as f64 / (years * YEAR) as f64;
     let st = &ships.stats;
     sea.blockades = st.blockades;
     sea.closures = st.closures;
@@ -1022,9 +1036,10 @@ fn report_seas(runs: &[Sea]) {
         let over = s.spells.iter().map(|x| x.0 - x.1).fold(0.0, f64::max);
         eprintln!(
             "{} {:>2} closures {:<5} ports {:>2} navy ships {}: blockades {}, closures {}, \
-             reopenings {}, laid up {}, port-days closed {} (engine {}), longest {longest:.0} \
-             days (at most {over:.0} past its hot lanes), ports ever closed {}, days a medium \
-             was all closed {} (navy sailing {}), hunts/yr {:.1}, fewest hunts in a decade {}, \
+             reopenings {}, laid up {}, port-days closed {} (engine {}; most closed port \
+             {:.3}), longest {longest:.0} days (at most {over:.0} past its hot lanes), ports \
+             ever closed {}, days every port closed: sea {} of {} ports (navy sailing {}), sky \
+             {} of {} ports (navy sailing {}), hunts/yr {:.1}, fewest hunts in a decade {}, \
              havens open {:.3}",
             s.world,
             s.seed,
@@ -1037,9 +1052,14 @@ fn report_seas(runs: &[Sea]) {
             s.laid_up,
             s.closed_days,
             s.closed_dock_days,
+            s.worst_port,
             s.ever_closed,
-            s.all_closed,
-            s.all_closed_navy,
+            s.all_closed[0],
+            s.media_ports[0],
+            s.all_closed_navy[0],
+            s.all_closed[1],
+            s.media_ports[1],
+            s.all_closed_navy[1],
             s.hunts as f64 / s.years as f64,
             s.decade_hunts.iter().min().copied().unwrap_or(0),
             s.open,
@@ -1061,20 +1081,23 @@ fn summary_seas(world: &str, on: &[Sea], off: &[Sea]) {
         "ALL {world}: {} seas, {years} years each, closures on: per sea per decade blockades \
          {:.3}, closures {:.3}, reopenings {:.3}, ships laid up {:.2}; days closed mean \
          {mean:.1}, longest {longest:.0} (at most {over:.1} past its hot lanes); port-days \
-         closed {:.5}; ports ever closed {} of {} (seas with a closure {}); days a medium was \
-         all closed {} (navy sailing {}); hunts/yr {:.2} (off {:.2}); havens open {:.3} (off \
-         {:.3})",
+         closed {:.5} (most closed port {:.3}); ports ever closed {} of {} (seas with a \
+         closure {}); days every sea port closed {} (navy sailing {}), every sky port {} (navy \
+         sailing {}); hunts/yr {:.2} (off {:.2}); havens open {:.3} (off {:.3})",
         on.len(),
         sum(on, &|s| s.blockades as f64) * 10.0 / (n * years as f64),
         sum(on, &|s| s.closures as f64) * 10.0 / (n * years as f64),
         sum(on, &|s| s.reopenings as f64) * 10.0 / (n * years as f64),
         sum(on, &|s| s.laid_up as f64) * 10.0 / (n * years as f64),
         sum(on, &|s| s.closed_days as f64) / port_days,
+        on.iter().map(|s| s.worst_port).fold(0.0, f64::max),
         sum(on, &|s| s.ever_closed as f64),
         sum(on, &|s| s.ports as f64),
         on.iter().filter(|s| s.closures > 0).count(),
-        sum(on, &|s| s.all_closed as f64),
-        sum(on, &|s| s.all_closed_navy as f64),
+        sum(on, &|s| s.all_closed[0] as f64),
+        sum(on, &|s| s.all_closed_navy[0] as f64),
+        sum(on, &|s| s.all_closed[1] as f64),
+        sum(on, &|s| s.all_closed_navy[1] as f64),
         sum(on, &|s| s.hunts as f64) / (n * years as f64),
         sum(off, &|s| s.hunts as f64) / (n * years as f64),
         sum(on, &|s| s.open) / n,
@@ -1082,21 +1105,55 @@ fn summary_seas(world: &str, on: &[Sea], off: &[Sea]) {
     );
 }
 
-/// The bars (rule 7 on many seas): the per-run bounds asserted in [`unattended`]; no medium's
-/// ports all closed while a navy sails; pirates hunt in every century; every closure that ended
-/// reopened; and with closures off no port ever closes.
+/// A run's name and counts, without its spells.
+fn brief(s: &Sea) -> String {
+    format!(
+        "{} {} closures {}: closures {}, reopenings {}, every sea port closed {} days (navy \
+         sailing {}), decade hunts {:?}",
+        s.world,
+        s.seed,
+        s.on,
+        s.closures,
+        s.reopenings,
+        s.all_closed[0],
+        s.all_closed_navy[0],
+        s.decade_hunts
+    )
+}
+
+/// The bars (rule 7 on many seas): the per-run bounds asserted in [`unattended`]; never every
+/// sea port closed while a navy sails (a navy patrols the sea, so the sky's ports are reported,
+/// not bounded); pirates hunt in every century; every closure but those still running at the
+/// end reopened; and with closures off no port ever closes.
 fn check_seas(on: &[Sea], off: &[Sea]) {
     for s in on {
-        assert_eq!(s.all_closed_navy, 0, "{s:?}");
+        assert_eq!(s.all_closed_navy[0], 0, "{}", brief(s));
         for c in s.decade_hunts.chunks(10) {
-            assert!(c.iter().sum::<u64>() > 0, "a century with no hunt: {s:?}");
+            assert!(
+                c.iter().sum::<u64>() > 0,
+                "a century with no hunt: {}",
+                brief(s)
+            );
         }
-        assert!(s.reopenings <= s.closures && s.closures <= s.reopenings + s.ports as u64);
+        assert!(
+            s.reopenings <= s.closures && s.closures <= s.reopenings + s.ports as u64,
+            "{}",
+            brief(s)
+        );
     }
     for s in off {
-        assert_eq!((s.blockades, s.closures, s.closed_days), (0, 0, 0), "{s:?}");
+        assert_eq!(
+            (s.blockades, s.closures, s.closed_days),
+            (0, 0, 0),
+            "{}",
+            brief(s)
+        );
         for c in s.decade_hunts.chunks(10) {
-            assert!(c.iter().sum::<u64>() > 0, "a century with no hunt: {s:?}");
+            assert!(
+                c.iter().sum::<u64>() > 0,
+                "a century with no hunt: {}",
+                brief(s)
+            );
         }
     }
 }
