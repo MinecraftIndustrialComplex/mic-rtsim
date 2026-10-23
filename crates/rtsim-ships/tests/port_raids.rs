@@ -337,6 +337,57 @@ fn a_watched_port_is_never_raided() {
     assert!(watched >= 5, "the control raided villages: {watched}");
 }
 
+/// PC103: a port raid in the switch-on's catch-up is judged against the areas live at the
+/// world's present, where its stock would leave. A sea of havens runs 20 days; the ships are
+/// switched off, the world runs on alone 120 days, and at the switch-on a player stands at every
+/// village's dock. The catch-up replays the pirates' hunts and none of them raids a village;
+/// without the players, the same catch-ups raid.
+#[test]
+fn no_port_raid_in_view_in_the_catch_up() {
+    let (off, on) = (Tick::from_days(20), Tick::from_days(140));
+    let raids = |s: &Ships| s.log.iter().filter(|e| e.kind == "port raid").count();
+    let runs = per_seed(&(1..=12).collect::<Vec<u64>>(), |seed| {
+        let catch_up = |watched: bool| {
+            let tun = ShipTunables::default();
+            let mut s = synth::sea_havens(seed, tun.clone());
+            s.ships.log_enabled = true;
+            let mut fake = FakeShips::new(f64::from(tun.view_radius));
+            drive(&mut s, &mut fake, off, TICKS_PER_DAY / 4);
+            s.ships.lift_closures(&mut s.world);
+            s.world.run_until(on);
+            s.ships.session_start();
+            if watched {
+                let villages = village_nodes(&s.world);
+                let docks: Vec<Pos> = s
+                    .ships
+                    .docks
+                    .iter()
+                    .filter(|d| villages.contains(&d.node))
+                    .map(|d| Pos::new(s.world.nodes[d.node].pos.frame, d.x, d.z))
+                    .collect();
+                for (i, pos) in docks.into_iter().enumerate() {
+                    let uuid = (0xD0C0 + i as u64, seed);
+                    s.ships
+                        .player_stays(&mut s.world, uuid, pos, on, on + 10 * TICKS_PER_DAY);
+                }
+            }
+            let before = raids(&s.ships);
+            let hunts = s.ships.stats.hunts;
+            s.ships.run_until(&mut s.world, &mut NoInfrastructure, on);
+            s.ships.check(&s.world).expect("check");
+            assert!(s.ships.stats.hunts > hunts, "seed {seed}: nothing replayed");
+            raids(&s.ships) - before
+        };
+        (catch_up(false), catch_up(true))
+    });
+    for (seed, &(_, watched)) in (1..).zip(&runs) {
+        assert_eq!(watched, 0, "seed {seed}: a raid under a player's eye");
+    }
+    let open: usize = runs.iter().map(|r| r.0).sum();
+    eprintln!("raids in the unwatched catch-ups: {open} ({runs:?})");
+    assert!(open > 0, "the unwatched catch-ups raided nothing");
+}
+
 /// Sets every village's population of `w` to `pop`.
 fn set_pops(w: &mut World, pop: u32) {
     for n in village_nodes(w) {

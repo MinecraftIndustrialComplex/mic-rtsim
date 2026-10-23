@@ -18,9 +18,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The TALK_ASK and TALK_FACTS bytes (docs/boundary.md §13), pinned to the SAME bytes as the Rust side's
- * tests in {@code crates/rtsim-jni/src/talk_wire.rs} ({@code the_ask_bytes_are_pinned} and
- * {@code the_facts_bytes_are_pinned}). A change to either layout fails both.
+ * The TALK_ASK, TALK_FACTS and TALKED bytes (docs/boundary.md §13), pinned to the SAME bytes as the Rust
+ * side's tests in {@code crates/rtsim-jni/src/talk_wire.rs} ({@code the_ask_bytes_are_pinned},
+ * {@code the_facts_bytes_are_pinned} and {@code the_talked_bytes_are_pinned}). A change to a layout fails both.
  */
 class TalkRecordsTest {
     /** talk_wire.rs PINNED_ASK. */
@@ -36,6 +36,11 @@ class TalkRecordsTest {
                     + "18010000ceffffff020200000400000008070605040302010000000000000000"
                     + "f6ffffff05000000000000000000000000000000000000000000000000000000"
                     + "0000000000000000";
+
+    /** talk_wire.rs PINNED_TALKED. */
+    static final String PINNED_TALKED =
+            "000a400000000000341200000000000040e201000000000011100f0e0d0c0b0a"
+                    + "0807060504030201444433332222111188887777666655550300000000000000";
 
     private static String hex(byte[] b) {
         StringBuilder s = new StringBuilder();
@@ -65,6 +70,44 @@ class TalkRecordsTest {
         byte[] rec = TalkRecords.encodeAsks(List.of(pinnedAsk()));
         assertEquals(PINNED_ASK, hex(rec));
         assertEquals(List.of(pinnedAsk()), TalkRecords.decodeAsks(rec));
+    }
+
+    private static TalkRecords.Talked pinnedTalked() {
+        return new TalkRecords.Talked(0x0102_0304_0506_0708L, 0x1111_2222_3333_4444L, 0x5555_6666_7777_8888L, 3);
+    }
+
+    @Test
+    void theTalkedBytesArePinned() {
+        byte[] rec = TalkRecords.encodeTalked(0x1234, 123_456, 0x0A0B_0C0D_0E0F_1011L, pinnedTalked());
+        assertEquals(64, rec.length);
+        assertEquals(PINNED_TALKED, hex(rec));
+    }
+
+    @Test
+    void theTalkedBytesAreAlsoWhatTheLiteralOffsetsSay() {
+        // Built by literal offset (docs/boundary.md §13.7), not through the codec's constants.
+        ByteBuffer w = le(new byte[64]);
+        w.putShort(0, (short) 0x0A00).putShort(2, (short) 64).putInt(4, 0);
+        w.putLong(8, 0x1234).putLong(16, 123_456).putLong(24, 0x0A0B_0C0D_0E0F_1011L);
+        w.putLong(32, 0x0102_0304_0506_0708L).putLong(40, 0x1111_2222_3333_4444L).putLong(48, 0x5555_6666_7777_8888L);
+        w.putInt(56, 3).putInt(60, 0);
+        assertArrayEquals(w.array(), TalkRecords.encodeTalked(0x1234, 123_456, 0x0A0B_0C0D_0E0F_1011L, pinnedTalked()));
+        assertEquals(64, TalkRecords.Talked.SIZE);
+        assertEquals(TalkRecords.Talked.SIZE, TalkRecords.Talked.RESERVED + 4);
+    }
+
+    @Test
+    void writingTheFieldsLeavesTheHeaderAndTheOpIdToTheJournal() {
+        // What the plugin does: the journal wrote the header, obsSeq and game time; the fields go in around the op id.
+        byte[] rec = new byte[64];
+        java.util.Arrays.fill(rec, (byte) 0x7F);
+        ByteBuffer b = le(rec);
+        TalkRecords.writeTalked(b, pinnedTalked());
+        for (int i = 0; i < 32; i++)
+            assertEquals(0x7F, rec[i], "byte " + i + " is the journal's, not the writer's");
+        assertEquals(0x0102_0304_0506_0708L, b.getLong(32));
+        assertEquals(3, b.getInt(56));
+        assertEquals(0, b.getInt(60));
     }
 
     @Test
