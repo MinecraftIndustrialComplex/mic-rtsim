@@ -333,15 +333,18 @@ public final class RescanBudgetGameTests {
     }
 
     /**
-     * The most block entities one tick of a detection may look at: the budget, and the chunk it was in. The chunk is
-     * counted, not assumed: the yard's chunks also hold what earlier tests left (a bound of 45 a chunk failed with 76 in
-     * one chunk of a test run that landed beside them).
+     * The most one tick of a detection may spend ({@code Districts.Rescan.step}): it stops at the first item that takes
+     * the tick to the budget, so it is under the budget before the last chunk and spends that chunk whole. A chunk
+     * costs one, its block entities, and (when it is walked) a candidate inventory for each at most. The chunks are
+     * counted, not assumed: the yard's chunks also hold what earlier tests left (a bound of 45 a chunk failed with 76
+     * in one chunk of a run that landed beside them, and with 60 on the talk tree). The bound depends on the chunks'
+     * contents and the budget alone, so it does not move with the load.
      */
     private static int tickBound(ServerLevel level, BlockPos... in) {
         int biggest = 0;
         for (BlockPos p : in)
             biggest = Math.max(biggest, level.getChunkAt(p).getBlockEntities().size());
-        return BUDGET + biggest;
+        return BUDGET + 2 * biggest;
     }
 
     /**
