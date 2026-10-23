@@ -14,6 +14,7 @@
     "KineticNetworkMixin",
     "LevelChunkInvoker",
     "PortableStorageInterfaceMixin",
+    "PoweredShaftBlockEntityMixin",
     "RotationPropagatorInvoker",
     "RotationPropagatorMixin",
     "TrainMixin"

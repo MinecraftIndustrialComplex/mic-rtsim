@@ -43,7 +43,8 @@ import java.util.Objects;
  * first tick would ({@link KineticJoin}, PATCHES.md row 58) wherever Create lists it again or takes it out
  * first: at {@code removeSource} and {@code setSpeed} (before the speed the join reads changes), at a
  * {@code setNetwork} to another network, at {@code remove} and at {@code clearKineticInformation}; a
- * generator also at {@code updateGeneratedRotation} ({@code GeneratingKineticBlockEntityMixin}). A
+ * generator also at {@code updateGeneratedRotation} ({@code GeneratingKineticBlockEntityMixin}), and a
+ * powered shaft before its engine changes it ({@code PoweredShaftBlockEntityMixin}). A
  * re-sync's frontier reaches such block entities in every FULL chunk around, and Create's {@code add} would
  * list one without counting it out of the network's unloaded share, or its removal would leave its share
  * there.
