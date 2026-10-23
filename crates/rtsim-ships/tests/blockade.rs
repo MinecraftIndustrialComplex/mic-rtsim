@@ -996,31 +996,32 @@ fn closures_survive_save_and_restore() {
 }
 
 /// The hashes of the parent for three runs: the coast's scripted player for 30 days (seed 7)
-/// and two seas unattended for 96 days. The parent is main at 257d2715 (S8b-2 and S8b-3 landed)
-/// with this branch's world half (S8b-4a, `crates/rtsim-world` and `crates/rtsim-travel`, which
-/// main does not have: its edge record has no closed flag), so the world hashes compare the same
-/// save format. Printed by the same scenarios built on that tree (`git archive` of main, the
-/// world half patched in).
+/// and two seas unattended for 96 days, each over the ships' and the world's save bytes after
+/// the format's magic (so a format bump alone changes nothing here). The parent is main at
+/// 257d2715 (S8b-2 and S8b-3 landed) with this branch's world half (S8b-4a, `crates/rtsim-world`
+/// and `crates/rtsim-travel`, which main does not have: its edge record has no closed flag), so
+/// the world hashes compare the same layout. Printed by the same scenarios built on that tree
+/// (`git archive` of main, the world half patched in).
 const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
-        0x9f9e_f581_a35c_2713,
-        0x8543_149d_9ec4_39c2,
+        0xf921_e4e7_d97f_73b0,
+        0xced9_aa1e_7c85_48da,
     ),
     (
         "sea_havens 1 unattended 96 days",
-        0xb077_173b_3774_d83b,
-        0xf609_3b33_aba3_9baa,
+        0x546a_ae21_7cb6_ff80,
+        0x04b4_0caa_f7ec_c422,
     ),
     (
         "sea_havens 2 unattended 96 days",
-        0x6a65_2eff_cf2e_f2c0,
-        0x55fb_2e01_b2b7_0d13,
+        0x32cb_1937_9224_f683,
+        0xdce4_0b4a_db68_6e8b,
     ),
 ];
 
 /// `blockade_days = 0` turns closures off and changes nothing: the ships' and the world's hashes
-/// equal the parent commit's for the same runs, no port has a state, no lane has heat and no
+/// (of the save bytes after the magic) equal the parent's for the same runs, no port has a state, no lane has heat and no
 /// check was ever booked.
 #[test]
 fn blockade_off_changes_nothing() {
@@ -1043,8 +1044,8 @@ fn blockade_off_changes_nothing() {
     quiet(&c.ships);
     got.push((
         "coastal 7 script 30 days".into(),
-        c.ships.state_hash(),
-        fnv1a64(&c.world.save()),
+        fnv1a64(&c.ships.save()[4..]),
+        fnv1a64(&c.world.save()[4..]),
     ));
     for seed in [1u64, 2] {
         let mut sh = synth::sea_havens(seed, tun.clone());
@@ -1053,8 +1054,8 @@ fn blockade_off_changes_nothing() {
         quiet(&sh.ships);
         got.push((
             format!("sea_havens {seed} unattended 96 days"),
-            sh.ships.state_hash(),
-            fnv1a64(&sh.world.save()),
+            fnv1a64(&sh.ships.save()[4..]),
+            fnv1a64(&sh.world.save()[4..]),
         ));
     }
     for ((name, a, b), (pn, pa, pb)) in got.iter().zip(PARENT) {
