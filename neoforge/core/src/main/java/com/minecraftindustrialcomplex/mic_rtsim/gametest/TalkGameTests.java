@@ -92,6 +92,14 @@ public final class TalkGameTests {
         return new InteractionResult[]{main, off};
     }
 
+    /** Every message a hearer got, by key, for failure messages. */
+    private static String keys(FakePlayers.Hearer p) {
+        StringBuilder sb = new StringBuilder("[");
+        for (Component c : p.raw)
+            sb.append(c.getContents() instanceof TranslatableContents t ? t.getKey() : c.getString()).append("; ");
+        return sb.append("]").toString();
+    }
+
     private static TranslatableContents translatable(Component c) {
         check("a translatable component: " + c, c.getContents() instanceof TranslatableContents);
         return (TranslatableContents) c.getContents();
@@ -127,7 +135,7 @@ public final class TalkGameTests {
                     }
                     check("the main hand swings once: " + r[0], r[0] == InteractionResult.SUCCESS);
                     check("the off hand is consumed silently: " + r[1], r[1] == InteractionResult.CONSUME);
-                    check("Ben received exactly one message: " + ben.heard.size(), ben.heard.size() == 1);
+                    check("Ben received exactly one talk line: " + ben.heard.size() + " of " + keys(ben), ben.heard.size() == 1);
                     TranslatableContents say = translatable(ben.heard.get(0));
                     check("it is the say template: " + say.getKey(), say.getKey().equals("mic_rtsim.talk.say"));
                     check("with a speaker and a line", say.getArgs().length == 2 && say.getArgs()[1] instanceof Component);
@@ -136,7 +144,7 @@ public final class TalkGameTests {
                     check("it carries the server's English as the fallback: " + line.getFallback(),
                             line.getFallback() != null && !line.getFallback().equals(line.getKey()));
                     check("the say template carries its English too", say.getFallback() != null && say.getFallback().contains("%2$s"));
-                    check("Alex received nothing: " + alex.heard.size(), alex.heard.isEmpty());
+                    check("Alex received no talk line: " + keys(alex), alex.heard.isEmpty());
                     record("talk", "line", line.getKey() + " = " + line.getFallback());
                     record("talk", "speaker", ((Component) say.getArgs()[0]).getString());
                 })
