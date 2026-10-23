@@ -11,7 +11,7 @@ import java.util.function.IntPredicate;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** The engine-side moods an answer gives (TALK.md §5.2, TK4, TK49, TK53). */
+/** The engine-side moods an answer gives (TALK.md §5.2, TK4, TK53, TK56). */
 class TalkMoodsTest {
     private static final long DAY = TalkTuning.DAY;
     private static final Ref CAMP = new Ref(TalkRecords.C_CAMP, 0, 1, 77, 0, 0, 0);

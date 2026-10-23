@@ -248,7 +248,7 @@ public final class Talk {
         return Picker.pick(options, recent, rnd);
     }
 
-    /** What the engine's answer gives: its moods and its news (TK49 to TK55). */
+    /** What the engine's answer gives: its moods and its news (TK49 to TK56). */
     private static void engine(Talker talker, Refs.Env env, String voice, TalkCandidates out) {
         try {
             TalkNews.moods(env, voice, out);
