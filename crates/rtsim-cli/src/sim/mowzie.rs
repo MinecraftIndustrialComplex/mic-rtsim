@@ -503,3 +503,21 @@ fn books(out: &mut Vec<Check>, c: &Conflict, w: &World) {
         format!("state hash {:016x}", c.state_hash()),
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every built run passes its checks, so a change elsewhere that breaks one fails here, not
+    /// unseen (the dragons' scenario once failed for days because it ran nowhere else).
+    #[test]
+    fn the_built_runs_pass_every_check() {
+        let o = Opts {
+            runs: RUNS.iter().map(|r| r.0).collect(),
+            seed: 7,
+            out: None,
+            quiet: true,
+        };
+        assert_eq!(main(o), 0, "a check failed: run `rtsim-cli sim mowzie`");
+    }
+}
