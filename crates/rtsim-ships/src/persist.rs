@@ -53,7 +53,7 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView, PortState,
     Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats,
     ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
@@ -552,12 +552,12 @@ impl Row for Ship {
 
 impl Encode for LaneThreat {
     fn encode(&self, w: &mut Writer) {
-        match self.haven {
-            Some(h) => {
-                w.u8(1);
-                w.var_u64(u64::from(h));
-            }
-            None => w.u8(0),
+        // The tag's bit 0 is the haven, bit 1 a heat (S8b-4): a row with no heat encodes as it
+        // did before, so closures off leave every save byte for byte as S8b-4a's.
+        let heat = self.heat_milli != 0 || self.heat_at != Tick(0);
+        w.u8(u8::from(self.haven.is_some()) | u8::from(heat) << 1);
+        if let Some(h) = self.haven {
+            w.var_u64(u64::from(h));
         }
         put_usize(w, self.hunters.len());
         self.hunters.iter().for_each(|s| w.u64(s.to_bits()));
@@ -568,15 +568,23 @@ impl Encode for LaneThreat {
             w.var_i64(*v);
         }
         w.var_i64(self.share);
+        if heat {
+            w.var_i64(self.heat_milli);
+            w.u64(self.heat_at.0);
+        }
     }
 }
 
 impl Decode for LaneThreat {
     fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
-        let haven = match r.u8()? {
-            0 => None,
-            1 => Some(get_u32(r)?),
-            t => return bad(format!("option tag {t}")),
+        let tag = r.u8()?;
+        if tag > 3 {
+            return bad(format!("lane threat tag {tag}"));
+        }
+        let haven = if tag & 1 == 1 {
+            Some(get_u32(r)?)
+        } else {
+            None
         };
         let n = r.len_prefix(8)?;
         let hunters = (0..n)
@@ -595,12 +603,19 @@ impl Decode for LaneThreat {
             return bad("a lane's escorts out of order".into());
         }
         let share = r.var_i64()?;
+        let (heat_milli, heat_at) = if tag & 2 == 2 {
+            (r.var_i64()?, Tick(r.u64()?))
+        } else {
+            (0, Tick(0))
+        };
         Ok(LaneThreat {
             haven,
             hunters,
             patrol_milli,
             escorts,
             share,
+            heat_milli,
+            heat_at,
         })
     }
 }
@@ -701,6 +716,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(haven);
             w.u32(epoch);
         }
+        Ev::DockCheck { dock, epoch } => {
+            w.u8(13);
+            w.u32(dock);
+            w.u32(epoch);
+        }
     }
 }
 
@@ -761,6 +781,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         },
         12 => Ev::Refound {
             haven: r.u32()?,
+            epoch: r.u32()?,
+        },
+        13 => Ev::DockCheck {
+            dock: r.u32()?,
             epoch: r.u32()?,
         },
         t => return bad(format!("event tag {t}")),
@@ -843,6 +867,89 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
         rebuilds: v[22],
         captains_died: v[23],
         bored: v[24],
+        ..ShipStats::default()
+    })
+}
+
+/// The ports' blockade states and closures' counters (§2.4.6a rule 7, S8b-4), appended to the
+/// resident state: written only once a port has a state or a counter moved, so a run with
+/// closures off saves exactly the bytes it did before.
+fn put_blockades(w: &mut Writer, ports: &BTreeMap<u32, PortState>, s: &ShipStats) {
+    let counts = [
+        s.blockades,
+        s.closures,
+        s.reopenings,
+        s.ships_laid_up_by_closure,
+        s.closed_dock_days,
+    ];
+    if ports.is_empty() && counts.iter().all(|&c| c == 0) {
+        return;
+    }
+    w.u8(1);
+    put_usize(w, ports.len());
+    for (d, p) in ports {
+        w.var_u64(u64::from(*d));
+        for t in [p.blockaded, p.closed, p.check] {
+            put_opt_tick(w, t);
+        }
+        w.u32(p.epoch);
+    }
+    counts.iter().for_each(|&c| w.var_u64(c));
+}
+
+fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMap<u32, PortState>> {
+    let mut ports = BTreeMap::new();
+    if r.is_empty() {
+        return Ok(ports);
+    }
+    match r.u8()? {
+        1 => {}
+        t => return bad(format!("blockades tag {t}")),
+    }
+    let mut last: Option<u32> = None;
+    for _ in 0..r.len_prefix(5)? {
+        let d = get_u32(r)?;
+        if last.is_some_and(|l| l >= d) {
+            return bad("ports out of order".into());
+        }
+        last = Some(d);
+        let blockaded = get_opt_tick(r)?;
+        let closed = get_opt_tick(r)?;
+        let check = get_opt_tick(r)?;
+        let epoch = r.u32()?;
+        ports.insert(
+            d,
+            PortState {
+                blockaded,
+                closed,
+                check,
+                epoch,
+            },
+        );
+    }
+    s.blockades = r.var_u64()?;
+    s.closures = r.var_u64()?;
+    s.reopenings = r.var_u64()?;
+    s.ships_laid_up_by_closure = r.var_u64()?;
+    s.closed_dock_days = r.var_u64()?;
+    Ok(ports)
+}
+
+fn put_opt_tick(w: &mut Writer, t: Option<Tick>) {
+    match t {
+        Some(t) => {
+            w.u8(1);
+            w.u64(t.0);
+        }
+        None => w.u8(0),
+    }
+}
+
+fn get_opt_tick(r: &mut Reader<'_>) -> codec::Result<Option<Tick>> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some(Tick(r.u64()?)),
+        t => return bad(format!("option tag {t}")),
     })
 }
 
@@ -1104,6 +1211,7 @@ impl Ships {
         put_stats(w, &self.stats);
         put_usize(w, self.outbox.len());
         self.outbox.iter().for_each(|c| put_cmd(w, c));
+        put_blockades(w, &self.ports, &self.stats);
     }
 
     /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with. Its row tables are
@@ -1260,6 +1368,8 @@ impl Ships {
         for _ in 0..r.len_prefix(1)? {
             outbox.push(get_cmd(r)?);
         }
+        let mut stats = stats;
+        let ports = get_blockades(r, &mut stats)?;
         if !r.is_empty() {
             return bad(format!("{} trailing bytes", r.remaining()));
         }
@@ -1277,6 +1387,7 @@ impl Ships {
         s.observed = observed;
         s.ledger = ledger;
         s.stats = stats;
+        s.ports = ports;
         s.outbox = outbox;
         s.built = built;
         Ok(s)
@@ -1313,6 +1424,15 @@ impl Ships {
         self.dock_of.clear();
         for (i, d) in self.docks.iter().enumerate() {
             self.dock_of.insert((d.node, d.medium), i as u32);
+        }
+        self.dock_lanes = vec![Vec::new(); self.docks.len()];
+        for (l, ln) in self.lanes.iter().enumerate() {
+            for d in [ln.a, ln.b] {
+                let Some(v) = self.dock_lanes.get_mut(d as usize) else {
+                    return bad(format!("lane {l} ends at dock {d}"));
+                };
+                v.push(l as u32);
+            }
         }
         let next = u64::from(self.ships.meta().1);
         for (s, r) in self.service_ships.iter().enumerate() {

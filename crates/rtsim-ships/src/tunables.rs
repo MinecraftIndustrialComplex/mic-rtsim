@@ -164,6 +164,19 @@ pub struct ShipTunables {
     pub navy_ships: u32,
     /// Lanes a patrol covers: those within this many lane hops of its base. PLACEHOLDER 2.
     pub patrol_hops: u32,
+
+    // ---- Ports that close under blockade (§2.4.6a rule 7, slice S8b-4) ----
+    /// Each lane's heat is an exponential average of its hazard share with this time constant,
+    /// days (PC20). 0 turns closures off: no heat is kept and no port closes, so the run is the
+    /// one S8b-4a left. TUNABLE 30.
+    pub blockade_days: f64,
+    /// A closed port stays closed at least this many days, however soon its lanes cool (PC21):
+    /// this is what keeps a port from flapping. TUNABLE 30.
+    pub blockade_min_closed_days: f64,
+    /// A port's lanes are weighed every this many days while one of them is warm or the port is
+    /// closed (PC25). TUNABLE 6 (two hunts of three days: a heat rise is seen within one hunt and
+    /// a cooling within the next).
+    pub blockade_check_days: f64,
 }
 
 impl ShipTunables {
@@ -264,6 +277,9 @@ impl Default for ShipTunables {
             },
             navy_ships: 2,
             patrol_hops: 2,
+            blockade_days: 30.0,
+            blockade_min_closed_days: 30.0,
+            blockade_check_days: 6.0,
         }
     }
 }

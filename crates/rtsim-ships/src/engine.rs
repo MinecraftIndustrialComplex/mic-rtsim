@@ -73,6 +73,9 @@ use crate::timetable::{self, Phase, Service, ServiceKind, VoyageTimes};
 use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
 
+mod blockade;
+pub use blockade::{HEAT_FLOOR_MILLI, PortState};
+
 pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
 const SYS_RAID: SystemId = SystemId::named("ships.raid");
@@ -283,9 +286,27 @@ pub struct LaneThreat {
     pub escorts: Vec<(u64, i64)>,
     /// The share last applied, thousandths.
     pub share: i64,
+    /// The lane's heat at `heat_at`, thousandths (§2.4.6a rule 7, PC20): an exponential average
+    /// of `share` with time constant `blockade_days`. Between changes of `share` it relaxes
+    /// toward `share` in closed form ([`Ships::heat_at`]); 0 at tick 0 with closures off.
+    pub heat_milli: i64,
+    /// When `heat_milli` was last brought up to date: the last change of `share`.
+    pub heat_at: Tick,
 }
 
 impl LaneThreat {
+    /// The heat at `t >= heat_at`, thousandths: the stored heat relaxed toward `share` over the
+    /// elapsed time, with time constant `tau` ticks, rounded to the nearest thousandth. With
+    /// `tau` 0 it is the stored heat (closures off keep no heat).
+    pub fn heat(&self, t: Tick, tau: f64) -> i64 {
+        if tau <= 0.0 || t <= self.heat_at || self.heat_milli == self.share {
+            return self.heat_milli;
+        }
+        let k = (-((t.0 - self.heat_at.0) as f64) / tau).exp();
+        let h = self.share as f64 + (self.heat_milli - self.share) as f64 * k;
+        h.round() as i64
+    }
+
     fn defence(&self) -> f64 {
         (self.patrol_milli + self.escorts_milli()) as f64 / 1000.0
     }
@@ -451,6 +472,12 @@ pub(crate) enum Ev {
         haven: u32,
         epoch: u32,
     },
+    /// A trade port's check (§2.4.6a rule 7, PC25): its lanes' heats are weighed, and it is
+    /// blockaded, closed or reopened. `epoch` as the port's: one live check per port.
+    DockCheck {
+        dock: u32,
+        epoch: u32,
+    },
 }
 
 /// Counters for tests, the bench and the CLI.
@@ -481,6 +508,14 @@ pub struct ShipStats {
     pub rebuilds: u64,
     pub captains_died: u64,
     pub bored: u64,
+    /// Ports that close under blockade (§2.4.6a rule 7): blockades begun, ports closed and
+    /// reopened, merchant ships laid up by a closure (each time one is), and the days ports were
+    /// closed (whole days, credited at each reopening).
+    pub blockades: u64,
+    pub closures: u64,
+    pub reopenings: u64,
+    pub ships_laid_up_by_closure: u64,
+    pub closed_dock_days: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -534,6 +569,12 @@ pub struct Ships {
     pub navies: Vec<Navy>,
     /// Lanes' threats, paged rows keyed by lane ([`THREAT_TABLE`]).
     pub threats: PagedRows<LaneThreat>,
+    /// Trade ports' blockade states, by dock (§2.4.6a rule 7): only ports a hunted lane has
+    /// touched have one, so the map grows with the docks pirates hunt near, never with the
+    /// network; empty with closures off.
+    pub ports: BTreeMap<u32, PortState>,
+    /// Per dock: the lanes with it at an end, in lane order (an index, rebuilt on load).
+    pub(crate) dock_lanes: Vec<Vec<u32>>,
     /// Per lane: the (service, hop) pairs that sail it.
     pub(crate) lane_hops: Vec<Vec<(u32, u32)>>,
     /// Per service: its ships, by slot (consecutive keys).
@@ -666,6 +707,8 @@ impl Ships {
             havens: Vec::new(),
             navies: Vec::new(),
             threats: PagedRows::new(THREAT_TABLE, THREAT_ROWS_PER_PAGE),
+            ports: BTreeMap::new(),
+            dock_lanes: Vec::new(),
             lane_hops: Vec::new(),
             service_ships: Vec::new(),
             embodied: BTreeSet::new(),
@@ -932,6 +975,7 @@ impl Ships {
             z,
             berths: berths.max(1),
         });
+        self.dock_lanes.resize(self.docks.len(), Vec::new());
         self.dock_of.insert((node, medium), id);
         if self.built {
             self.connect(w, id, mask, at);
@@ -1338,7 +1382,20 @@ impl Ships {
         });
         self.lane_hops.push(Vec::new());
         self.index_lane(id);
+        self.index_dock_lane(id);
         id
+    }
+
+    /// Adds lane `l` to its end docks' lists.
+    pub(crate) fn index_dock_lane(&mut self, l: u32) {
+        let n = self.docks.len();
+        if self.dock_lanes.len() < n {
+            self.dock_lanes.resize(n, Vec::new());
+        }
+        let ln = &self.lanes[l as usize];
+        for d in [ln.a, ln.b] {
+            self.dock_lanes[d as usize].push(l);
+        }
     }
 
     pub(crate) fn index_lane(&mut self, l: u32) {
@@ -1544,6 +1601,7 @@ impl Ships {
             let Some(c) = c.into_iter().next() else {
                 continue;
             };
+            let ends = [c.a, c.b];
             let l = self.push_lane(c.a, c.b, c.path);
             let lp = Loop {
                 stops: vec![c.a, c.b],
@@ -1568,6 +1626,12 @@ impl Ships {
             }
             for h in 0..self.havens.len() as u32 {
                 self.refresh_haven_lanes(h);
+            }
+            // A shuttle to a closed port is laid up from the start, and its lane closed.
+            for d in ends {
+                if self.port_closed(d) {
+                    self.resettle(w, d, at);
+                }
             }
             return Some(l);
         }
@@ -1626,8 +1690,14 @@ impl Ships {
             .iter()
             .map(|g| g.hop.lane)
             .collect();
-        for l in touched {
+        for &l in &touched {
             self.refresh_patrol(w, l, at);
+        }
+        // A patrol keeps a lane open that only laid-up merchants sailed (PC22).
+        if !self.ports.is_empty() {
+            for &l in &touched {
+                self.settle_lane(w, l, at);
+            }
         }
         self.note(
             at,
@@ -1798,7 +1868,16 @@ impl Ships {
             ok &= w.set_lane_hazard(edge, dir, node, share, delay, at);
         }
         if ok {
-            self.threats.get_mut(u64::from(l)).expect("checked").share = share;
+            // The heat follows the applied share (PC20): brought up to now under the old share,
+            // then relaxing toward the new one.
+            let tau = self.heat_tau();
+            let t = self.threats.get_mut(u64::from(l)).expect("checked");
+            if tau > 0.0 {
+                let at = at.max(t.heat_at);
+                t.heat_milli = t.heat(at, tau);
+                t.heat_at = at;
+            }
+            t.share = share;
             self.stats.hazard_changes += 1;
             // The haven's take of the lane, at the lane's middle; the lane has no key, so its
             // place is its name.
@@ -1819,6 +1898,10 @@ impl Ships {
                     self.threat(l).expect("checked").defence()
                 ),
             );
+            // A lane hunted again: its trade ports are weighed (PC25).
+            if share > 0 && tau > 0.0 {
+                self.book_port_checks(w, l, at);
+            }
         }
     }
 
@@ -2040,12 +2123,18 @@ impl Ships {
     /// voyage may enter a player's view again (its body is gone). For the native link; the
     /// engine's own runs have no sessions.
     pub fn session_start(&mut self) {
-        for id in std::mem::take(&mut self.embodied) {
+        let was = std::mem::take(&mut self.embodied);
+        for &id in &was {
             if let Some(x) = self.ships.get_mut(id) {
                 x.embodied = false;
             }
         }
         self.seen_by.clear();
+        // A ship kept sailing only because it was in view lays up now (§2.4.6a rule 7, PC23).
+        let now = self.now;
+        for id in was {
+            self.lay_up_if_waiting(id, now);
+        }
     }
 
     /// Marks a ship embodied or abstract, keeping the index of embodied ships.
@@ -2262,6 +2351,7 @@ impl Ships {
             Ev::Respawn { ship } => self.respawn(w, ship, at),
             Ev::Refit { ship, plan } => self.refit(w, ship, plan, at),
             Ev::Refound { haven, epoch } => self.haven_look(w, haven, epoch, at),
+            Ev::DockCheck { dock, epoch } => self.dock_check(w, dock, epoch, at),
         }
     }
 
@@ -2316,6 +2406,10 @@ impl Ships {
         };
         if x.promoted.is_some_and(|p| p.voyage == voyage) || !matches!(x.role, Role::Merchant) {
             return x.cargo.clone();
+        }
+        // A laid-up service carries nothing new (PC23): its ship in view shows empty holds.
+        if x.service.is_some_and(|s| self.service_laid_up(s)) {
+            return BTreeMap::new();
         }
         let Some((edge, dir, lo, hi)) = self.window(w, id, voyage) else {
             return BTreeMap::new();
@@ -2631,6 +2725,10 @@ impl Ships {
         if x.promoted.is_some_and(|p| p.voyage == fix.voyage) {
             return true;
         }
+        // A laid-up service's ship still in view sails with empty holds (PC23).
+        if self.service_laid_up(s) {
+            return false;
+        }
         let Some((edge, dir, lo, hi)) = self.window(w, id, fix.voyage) else {
             return false;
         };
@@ -2749,6 +2847,8 @@ impl Ships {
             }
         }
         self.stats.landings += 1;
+        // Its cargo landed: out of view, a ship whose service is laid up lays up now (PC23).
+        self.lay_up_if_waiting(id, at);
     }
 
     // ---- pirates -------------------------------------------------------------------------------
@@ -3799,6 +3899,11 @@ impl Ships {
         if !matches!(x.status, Status::Lost { back, .. } if back <= at) {
             return;
         }
+        // A merchant due back while its service is laid up stays in port (§2.4.6a rule 7).
+        if matches!(x.role, Role::Merchant) && x.service.is_some_and(|v| self.service_laid_up(v)) {
+            self.lay_up_merchant(s, at);
+            return;
+        }
         let mt = self.tun.medium(x.medium);
         let crew = match x.role {
             Role::Navy { .. } => mt.navy_crew,
@@ -4429,6 +4534,7 @@ impl Ships {
             Obs::SpawnRejected(r) => {
                 if let Some(s) = self.ship_of(r.agent, r.epoch) {
                     self.set_embodied(s, false);
+                    self.lay_up_if_waiting(s, at);
                 }
             }
             Obs::Dematerialized(d) => {
@@ -4442,7 +4548,10 @@ impl Ships {
                     let x = &mut self.ships[s];
                     x.hull_milli = d.hull_milli.min(1000);
                     x.crew = d.crew;
-                    self.lose_if_crewless(w, s, 0, None, at);
+                    if !self.lose_if_crewless(w, s, 0, None, at) {
+                        // Out of view, a ship whose service is laid up lays up (PC23).
+                        self.lay_up_if_waiting(s, at);
+                    }
                 }
             }
             Obs::Damaged(d) => {
@@ -4732,7 +4841,8 @@ impl Ships {
                 "ships hold {held:?}, the world counts {world:?} as held"
             ));
         }
-        self.check_indexes()
+        self.check_indexes()?;
+        self.check_ports(w)
     }
 
     /// The resident indexes agree with the rows: embodied ships, services' key ranges, and the
@@ -4857,6 +4967,7 @@ impl Ships {
                 Ev::Respawn { .. } => "respawn",
                 Ev::Refit { .. } => "refit",
                 Ev::Refound { .. } => "refound",
+                Ev::DockCheck { .. } => "dock_check",
             };
             *m.entry(k).or_insert(0) += 1;
         }
@@ -4880,7 +4991,7 @@ impl Ships {
         self.network_breakdown().iter().map(|p| p.1).sum()
     }
 
-    /// The network's bytes by part: docks (with the index from node to dock), lanes (with their
+    /// The network's bytes by part: docks (with the indexes from node to dock and dock to lanes), lanes (with their
     /// paths, their (service, hop) lists and the lane cells), services (with their legs and ship
     /// ranges). Estimates from capacities and sizes, as `heap_bytes` everywhere.
     pub fn network_breakdown(&self) -> [(&'static str, usize); 3] {
@@ -4888,7 +4999,13 @@ impl Ships {
         // A B-tree entry with its share of a node (eleven slots, two thirds full).
         let btree = |k: usize, v: usize| (k + v) * 3 / 2 + 8;
         let docks = self.docks.capacity() * size_of::<Dock>()
-            + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4);
+            + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4)
+            + self.dock_lanes.capacity() * size_of::<Vec<u32>>()
+            + self
+                .dock_lanes
+                .iter()
+                .map(|v| v.capacity() * 4)
+                .sum::<usize>();
         let lanes = self.lanes.capacity() * size_of::<Lane>()
             + self
                 .lanes
@@ -4926,6 +5043,7 @@ impl Ships {
             self.lane_cells.clone(),
             self.dock_of.clone(),
             self.service_ships.clone(),
+            self.dock_lanes.clone(),
         ))
     }
 
