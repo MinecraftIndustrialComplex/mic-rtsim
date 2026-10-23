@@ -127,6 +127,18 @@ under its own heading.
   paid in full (part of it first settles nothing), one at 9 refused at the envoy, which climbs to
   Scouts. Every other run, and the rest of these two, prints the slice that builds it. JSON goes
   to `scenario/results/sim-mowzie.json`, kept in git as the other sims' results are.
+- **MZB-63** (what M2 changes in `sim conflict`): measured on the M2 base (09374322) against the
+  head, a goblin camp and a raider camp in the `sim conflict` scenario (scenario.rs takes the
+  culture from an env var in a throwaway copy only), seeds 7, 8 and 9, all three variants, 24 days:
+  18 runs. In every run the conflict's tape rows, its log, the rungs, the attacks, the blocks
+  broken, the world's stats and every node's stock and price of every old good are identical. What
+  differs, all intended: `ConflictStats` has `repeats` (0 here; MZB-51); the conflict's state hash
+  (its save holds the new stats field, the ledger's `destroyed` maps (MZB-55) and the culture
+  fingerprint, which covers the new culture fields and the two new cultures); the world's state
+  hash (the catalogue's `gold_nugget`, MZB-58, is in every market's encoding). The pool wait's
+  `ceil` (MZB-52) and the per-class ambush (MZB-53) do not show here: neither culture reaches
+  Invasion in 24 days (Raid 3 times at most), and no war band crosses a train in the refinery
+  scenario, so their tests carry them.
 - **MZB-64** (no wake loop on an empty rung; a chief's fall replans): `escalate` to a rung whose
   party is empty is a `debug_assert` and, in release, returns before it books anything, and
   `repeat_after` books no repeat of a rung without a party, so neither can book a wake every tick.
