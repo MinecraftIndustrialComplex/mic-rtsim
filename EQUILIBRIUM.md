@@ -726,9 +726,9 @@ broken, and refounding at found sites.
 - A sea never has every site shut for longer than the refound base plus one retry (96 days),
   unless looks in that spell found no prey (PC37): a sea the navies clear for a season fills
   again. Every sea with prey hunts in every century.
-- A port closes for at least 30 days and only after about a month of blockade; it reopens only
-  when no lane of it is above a quarter of the full share (half the closing heat), and once
-  reopened it stays open at least 48 days.
+- A port closes for at least 30 days and only after about a month of being hunted half the time; it
+  reopens only when no lane of it is above a quarter of the full share (half the closing heat), and
+  once reopened it stays open at least 48 days.
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
