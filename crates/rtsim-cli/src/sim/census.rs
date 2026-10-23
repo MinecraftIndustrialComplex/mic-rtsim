@@ -520,7 +520,7 @@ mod tests {
     /// its capacity and twice its start. The coast runs with no navy assaults: they break havens
     /// with no player (§2.4.6a rule 3, Ben's exception for havens), and its haven, beside
     /// Saltmere's navy, would be broken at nearly every look its fleet is out (choices-ports.md
-    /// PC33).
+    /// PC34).
     #[test]
     fn census_is_flat_with_no_player() {
         for k in Kind::ALL {

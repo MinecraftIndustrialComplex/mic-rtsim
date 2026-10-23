@@ -480,7 +480,7 @@ pub(crate) enum Ev {
         haven: u32,
         epoch: u32,
     },
-    /// A navy's home port looks for a haven to assault (§2.4.6a rule 3, PC7), every
+    /// A navy's home port looks for a haven to assault (§2.4.6a rule 3, PC7, PC30), every
     /// `assault_every_days`: one live look per navy, booked again at each.
     Assault {
         navy: u32,
@@ -4467,7 +4467,7 @@ impl Ships {
         );
     }
 
-    /// Navy `nv`'s port looks for a haven to assault (§2.4.6a rule 3, PC7, PC8; Ben's PORTS-1
+    /// Navy `nv`'s port looks for a haven to assault (§2.4.6a rule 3, PC7, PC8, PC32; Ben's PORTS-1
     /// (a), havens only). Its force is its full complement, `A = navy_ships x navy_crew x
     /// navy_strength`; a haven qualifies if it is open and whole, its pirates hunt a lane the
     /// navy's patrol sails, it has held a patrolled lane for `assault_cause_days` since it last
@@ -4563,7 +4563,7 @@ impl Ships {
         ashore + in_port
     }
 
-    /// Navy `nv` breaks haven `h` (§2.4.6a rule 3, PC7): every ship in port is sunk by the navy
+    /// Navy `nv` breaks haven `h` (§2.4.6a rule 3, PC7, PC33): every ship in port is sunk by the navy
     /// (no player did it, so no pressure, S0), the men ashore are gone (the pool to 0), and the
     /// haven refits nothing while broken. Its ships at sea finish their hunts and are laid up as
     /// they come home ([`Self::home`]); with no active ship left it shuts, broken, and its site
