@@ -63,7 +63,8 @@ pub fn district_page(dg: &DistrictGlass) -> Vec<u8> {
 /// What a glass page reads back to.
 #[derive(Debug)]
 pub enum PageRead {
-    Kept(DistrictGlass),
+    /// The district's glass state, boxed: it is large and a dropped read carries only why.
+    Kept(Box<DistrictGlass>),
     /// The district's glass state is dropped, and why.
     Dropped(&'static str),
 }
@@ -72,7 +73,7 @@ impl PageRead {
     /// The state, or None for a dropped one.
     pub fn kept(self) -> Option<DistrictGlass> {
         match self {
-            PageRead::Kept(dg) => Some(dg),
+            PageRead::Kept(dg) => Some(*dg),
             PageRead::Dropped(_) => None,
         }
     }
@@ -120,7 +121,7 @@ pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
         }
         _ => return invalid("glass page sections without their compile"),
     }
-    Ok(PageRead::Kept(dg))
+    Ok(PageRead::Kept(Box::new(dg)))
 }
 
 // ---- the compile's records (records.rs) ----------------------------------------------------

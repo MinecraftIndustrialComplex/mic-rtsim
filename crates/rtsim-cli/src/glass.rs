@@ -4,7 +4,10 @@
 //! `rtsim-cli lines` reads train lines. Per district: its compile (records and counts), what
 //! replays it, its last and its passed window, its ticking chunks and its compile's sections
 //! (§5, slice S2: each section's nodes, stores, box and fingerprint, the stores they share and
-//! their judging groups). `--graph` writes the compile's records for offline checks (§9.4), with
+//! their judging groups), and its judging units (slice S2b, with two or more: each unit's sections,
+//! stores and chunks, its open window, its last and passed windows, strikes, edit and whether it may
+//! replay; the extra rows they hold and a row cap's cut, §7.2). `--graph` writes the compile's
+//! records for offline checks (§9.4), with
 //! each node's section. A page the engine would drop at its restore (the format before sections,
 //! or sections its compile no longer cuts into, with the default `glass.sectionsMax`) is listed
 //! as dropped, with why.
@@ -13,7 +16,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
-use rtsim_industry::glass::check::{DistrictGlass, WindowResult};
+use rtsim_industry::glass::check::{Compiled, DistrictGlass, WindowResult};
 use rtsim_industry::glass::page::{PageRead, read_district_page};
 use rtsim_industry::glass::report::replay_model;
 use rtsim_industry::glass::sections::{NONE, Sections};
@@ -203,6 +206,10 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         "last_window": c.last.as_ref().map(|w| window(iv, w)),
         "passed_window": c.passed.as_ref().map(|w| window(iv, w)),
         "sections": sections(&c.sections),
+        "sections_cap": dg.sections_cap,
+        "extra_rows": c.extra_rows(),
+        "unit_rows": c.rows_len(),
+        "units": units(iv, c),
     });
     if graph {
         let mut goods = BTreeSet::new();
@@ -212,7 +219,7 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         for r in &g.recipes {
             goods.extend(r.inputs.iter().chain(&r.outputs).map(|t| t.good));
         }
-        compile["end"] = serde_json::to_value(&g.end).expect("serialize");
+        compile["end"] = serde_json::to_value(g.end).expect("serialize");
         compile["graph_nodes"] = serde_json::to_value(&g.nodes).expect("serialize");
         compile["graph_edges"] = serde_json::to_value(&g.edges).expect("serialize");
         compile["graph_recipes"] = serde_json::to_value(&g.recipes).expect("serialize");
@@ -234,6 +241,32 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
     }
     v["compile"] = compile;
     v
+}
+
+/// A compile's judging units (SECTIONS.md §3.4, slice S2b): none listed with fewer than two, as the
+/// district's window is then the one unit's.
+fn units(iv: &IndustryView, c: &Compiled) -> Value {
+    let u = &c.units;
+    (0..c.unit_state.len())
+        .map(|i| {
+            let st = &c.unit_state[i];
+            json!({
+                "sections": u.sections[i],
+                "stores": u.stores[i],
+                "chunks": u.chunks[i],
+                "unbounded": u.unbounded[i],
+                "ready_at": st.ready_at.0,
+                "window": c.unit_window(i as u16).map(|(s, n)| json!({"start": s.0, "samples": n})),
+                "last_window": st.last.as_ref().map(|w| window(iv, w)),
+                "passed": st.passed.map(|(s, t)| json!({"start": s.0, "ticks": t})),
+                "windows_completed": st.windows_completed,
+                "strikes": st.strikes,
+                "edited": st.edited,
+                "may_replay": c.unit_may_replay(i as u16),
+            })
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 fn window(iv: &IndustryView, w: &WindowResult) -> Value {
@@ -342,6 +375,54 @@ fn print_text(v: &Value) {
                 x["low"],
                 x["box"],
                 x["fingerprint"].as_str().unwrap_or("?"),
+            );
+        }
+        let us = c["units"].as_array().cloned().unwrap_or_default();
+        if !us.is_empty() || !c["sections_cap"].is_null() {
+            println!(
+                "    {} judging units, {} extra rows ({} open), cut to {} sections by the row caps",
+                us.len(),
+                c["extra_rows"],
+                c["unit_rows"],
+                if c["sections_cap"].is_null() {
+                    "no fewer".to_string()
+                } else {
+                    c["sections_cap"].to_string()
+                }
+            );
+        }
+        for (i, u) in us.iter().enumerate() {
+            let open = &u["window"];
+            println!(
+                "    unit {i}: sections {}, {} stores; window {}; {} windows, last {}, passed {}; {} strikes{}{}",
+                u["sections"],
+                u["stores"].as_array().map_or(0, Vec::len),
+                if open.is_null() {
+                    format!("none (ready at {})", u["ready_at"])
+                } else {
+                    format!("from {} ({} samples)", open["start"], open["samples"])
+                },
+                u["windows_completed"],
+                verdict(&u["last_window"]),
+                if u["passed"].is_null() {
+                    "none".to_string()
+                } else {
+                    format!(
+                        "at {} ({} ticks)",
+                        u["passed"]["start"], u["passed"]["ticks"]
+                    )
+                },
+                u["strikes"],
+                if u["edited"].as_bool() == Some(true) {
+                    ", stale (edited)"
+                } else {
+                    ""
+                },
+                if u["may_replay"].as_bool() == Some(true) {
+                    ", may replay"
+                } else {
+                    ""
+                },
             );
         }
     }

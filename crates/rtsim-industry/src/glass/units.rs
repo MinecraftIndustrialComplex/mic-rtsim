@@ -174,10 +174,7 @@ impl Units {
         let keys = groups
             .iter()
             .map(|gr| {
-                let mut k: Vec<u64> = gr
-                    .iter()
-                    .map(|&x| s.list[x as usize].fingerprint)
-                    .collect();
+                let mut k: Vec<u64> = gr.iter().map(|&x| s.list[x as usize].fingerprint).collect();
                 k.sort_unstable();
                 k
             })

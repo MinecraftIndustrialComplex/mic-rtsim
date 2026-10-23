@@ -53,7 +53,7 @@ scripts that made them.
 | A replay that cannot go on | the district goes to the black box (`glass_mode`, `engine.rs:1597`, `dg.fallback.is_some()`) | the sections the failure names freeze, and the replay goes on over the rest from the tick of the failure; the black box takes the district only when no section replays (§3.5) |
 | Measurement | one window per district per good | one window per section per good, plus the district's own window as the checksum; flows into stores shared by sections are counted at Create's movers (§4) |
 | Chunk loading | the compile, Create's chain conveyors and Create's network recount read through `Level.getBlockEntity`, which loads chunks and pulls an away district into a partial load | the compile reads through `getChunkNow`, and mixins keep Create's chain and network lookups from loading a chunk (§2.8, slice S1) |
-| Saved state | `IndustryData` format 2; glass page `IGL1` | `IndustryData` format 3 (package stores) then 4 (join pairs); glass page `IGL2` (sections inside the district's page); package store pages; a loud reset on load (§5, §6) |
+| Saved state | `IndustryData` format 2; glass page `IGL1` | `IndustryData` format 3 (package stores) then 4 (join pairs); glass page `IGL2` then `IGL3` (sections, then the judging units' windows, inside the district's page); package store pages; a loud reset on load (§5, §6) |
 
 ---
 
@@ -688,11 +688,12 @@ whole (§3.6).
   table of their own: the per-section fields of §3.3, and the open window rows as one sorted array.
   `section_of` is not saved: it is recomputed from the compile's records on restore, as `Graph::build`
   rebuilds the indices.
-- The page magic becomes `IGL2` (`glass/page.rs:32`), in slice S2. A restored page whose stored
-  fingerprints do not match the sections recomputed from its compile (a changed tunable such as
-  `sectionsMax`, or a changed fold), or one with the old magic `IGL1`, drops **that district's** glass
-  state, and the district learns again; the restore logs one line with the number of districts
-  dropped. Only an undecodable page fails the whole restore, as G2-82 says.
+- The page magic becomes `IGL2` (`glass/page.rs:32`) in slice S2a, with the sections, and `IGL3` in
+  S2b, with the judging units' windows (SC63). A restored page whose stored fingerprints do not match
+  the sections recomputed from its compile (a changed tunable such as `sectionsMax`, or a changed
+  fold), or one with an older magic (`IGL1`, `IGL2`), drops **that district's** glass state, and the
+  district learns again; the restore logs one line with the number of districts dropped. Only an
+  undecodable page fails the whole restore, as G2-82 says.
 - **Package stores** each get one page in the same page store (a new table next to `GLASS_TABLE`, id
   given at build), in slice S4: the pools per destination frogport and the no-route pool, the held
   packages and the drawn keys with the engine's epoch, and what is owed per frogport. Shared kinetic
@@ -757,7 +758,7 @@ No migration code (no backward compatibility before release; G2-85). On load:
   `glass.sectionRowsMax` (TUNABLE, 1,024 extra rows, about 350 KiB, ESTIMATE); per world,
   `glass.sectionRowsWorldMax` (TUNABLE, 16,384 extra rows, about 5.5 MiB, ESTIMATE). Over either, the
   district with the most extra rows (ties by the lowest district id) merges sections by §3.2 step 5,
-  at its next compile, restore or save, until both hold. Merging all of a district's sections reaches
+  at the sweep that passed the cap (SC57), until both hold. Merging all of a district's sections reaches
   no extra rows, so the caps can always be met. A merged section starts learning (§3.2): coarser
   sections, and the merged sections' learning is lost.
 - **Saves.** Every glass page is written whole at every save today (G2-83); the extra rows add to that
@@ -889,8 +890,9 @@ Each runs the corpus cycle: loaded for a window, away for a replay, back for a r
   exporter with a frogport on the way, `*` last and ties by position; room per route; the census and
   the floor at zero; an end in the black box neither books nor draws; held packages, drawn keys,
   epochs and what is owed; `clusterDistrictsMax` and its fallback.
-- The page: `IGL2` round trip; a page whose fingerprints disagree with its compile, or an `IGL1` page,
-  drops only its district's glass state; the row caps count extra rows only, and merging meets them.
+- The page: `IGL3` round trip; a page whose fingerprints disagree with its compile, or an `IGL1` or
+  `IGL2` page, drops only its district's glass state; the row caps count extra rows only, and merging
+  meets them.
 
 ### 9.4 The reference base, offline
 
@@ -1138,6 +1140,16 @@ The options below stay as the record of what was offered.
 | SC53 | A glass page of format `IGL1`, or whose sections are not those its compile cuts into now, is read as absent: the district is restored with no glass state (as `rtsim-view`'s inspect restores one alone), its key is marked so the next save deletes the page, the host logs it, and the district learns again. A page that does not decode still fails the whole restore | §5's per-district drop: every other district's glass state is kept |
 | SC54 | Until S2c the sections are in no `Report` and not in the bridge's `to_f64s`; `rtsim-cli glass` shows them (count, merges by the cap, judging groups, shared stores, each section's nodes, stores, box and fingerprint, and each node's section with `--graph`), cut with the default `glass.sectionsMax` | the bridge's report header is fixed, and Java needs the sections only once they replay |
 | SC55 | Residual groups: the residual positions sorted and joined by their faces and by any plugin's `links` (not only Ender Transmission's) when both ends are residual, numbered by their lowest position; a group's node sits at its lowest corner with params `dx, dy, dz` (its extent) and the FNV-1a hash of its sorted positions, made when a plugin's edge first reaches it; the compile is a black box one when any group node was made | SC14's groups; the hook is the district detection's own, so a mod's wires join here as they join there; the hash tells two groups of one box apart |
+| SC56 | S2b judges a **judging unit** (a judging group of §4.3: in S2, which counts no mover, every section sharing a store with another is in its group) on its own rows, and only with two units or more: one unit's window would be the district's. A unit's bounds per good: L and the class from its own store edges (the solve's class of the component past each edge, which never crosses a store); `U(u) = max(U(d) - (L(d) - L(u)), L(u))`, infinite when the district's U is or when the unit holds a black box or a port; an exact unit is bounded only when the district's own why is `U_INFINITE` (another unit's black box does not loosen it); its variance is its own sources' and rolls', netted by the share of what they made that reaches its stores; its batch the largest into plus out of its stores | §4.1's per-section P, bounds and variance by the same sums, from what `Solution` holds today (`per_store`, the goods' bounds): no per-edge LP per unit |
+| SC57 | The row caps cut at the sweep whose rows passed a cap, to the most sections below the district's count whose units would hold no more extra rows than allowed (the goods of the units each new unit merges, a binary search over `Sections::compute`'s counts: a lower count only merges more). The cut is kept in the district's glass state (`sections_cap`, saved) for its later compiles and its restores, under `glass.sectionsMax`. It is not a `report::discard` reason (that array is Java's report layout): units the cut leaves keep their windows, merged ones start learning | rows only grow at sweeps; keeping the cut stops a district from growing past the cap and merging again at every compile |
+| SC58 | Liveness per unit: a sweep with IND_SWEEP_END's live flag runs every unit; one without runs the units whose chunks are all loaded, block-tick (an empty IND_CHUNK_TICKING set ticks every loaded chunk, G2-17) and did not stop (unload, or stop ticking) since the last sweep that sampled (`DistrictGlass::stopped`, saved, cleared by a session start). A unit whose chunks cannot be listed (a moving frame, a residual group past 256 chunks) never runs on a partial sweep. A partial sweep in which no unit ran is today's discard of everything | §3.4: a chunk that unloaded and loaded again between two sweeps did not run throughout, though it is loaded at both |
+| SC59 | A district that goes away (`Presence::Unloaded`) discards every unit's window; the district window keeps today's rules | Java may send no per-chunk unloads (`per_chunk_unloads`), and a unit's window must not span a stretch its chunks did not run |
+| SC60 | Ports per unit are kept per inventory a unit holds, cumulative since the compile (`Compiled::ports_at`): reconcile results applied to an inventory, a destroyed block's spill (out), port transfers naming an inventory, and packages in or out of an inventory whether the district is loaded or simulated; only for the compile's own revision. A unit's measured series is its stores' stock less them. Ports naming no inventory (a player's toss, cargo mapped to none) are the district's alone, until S2d maps station cargo | §4.4's ports that belong to a section, from the records that carry an inventory today |
+| SC61 | A unit's window follows the district's rules: the district's target length, three samples at least, warm-up from the compile and after each discard of its own, a pass clearing its edit and strikes, a fail adding a strike. A unit's failure derates nothing and probes nothing: the district's window still does that | the verdict rule (§3.4) is what S2b adds; derates and probes act on the one solve the district has |
+| SC62 | A recompile of the same revision carries each unit whose key (its sections' fingerprints, sorted) is unique in both compiles: its passed window, strikes, verdicts and open window, which the old compile's model integrates up to the recompile; the recompile clears its edit (the compile found it as it was). Only when the engine knows the district (the new compile's first solve reads its stores); never across a revision change | §3.6; two units with one key cannot be told apart, so neither carries |
+| SC63 | `IGL3`: the district page adds `sections_cap` and `stopped`, the compile adds each unit's state, the units' rows (one `Vec` sorted by unit and good) and `ports_at`. The units and their bounds are recomputed on restore from the sections and the solve, and the saved unit state is checked against them (a mismatch is an invalid page). `IGL2` pages read as dropped, as `IGL1` pages do (SC53) | §5; nothing derived is saved |
+| SC64 | Extra rows are counted as the (unit, good) pairs open or in a unit's last window, less the district's distinct goods among them; counted per district after each sweep, edit, discard and compile, and summed for the world cap (recounted on restore, not saved) | §7.2's "beyond what one section per district would hold": a good of one unit only costs nothing extra |
+| SC65 | A unit may replay while its own last window passed, no edit staled it since, and the district's last concluded window failed on none of the goods its rows judged; with fewer than two units the district's rule (G-B4). `rtsim-cli glass` lists each unit (sections, stores, chunks, window, last and passed windows, strikes, edit, may replay) with the extra rows and the cut; the units are in no `Report` until S2c | §3.4's verdict rule; S2c's replay reads it |
 
 ---
 
