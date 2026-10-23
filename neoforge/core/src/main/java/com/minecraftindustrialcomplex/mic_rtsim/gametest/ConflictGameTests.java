@@ -1304,8 +1304,10 @@ public final class ConflictGameTests {
                     keep.run();
                     if (partyOf(faction[0], 0) != null)
                         return;
-                    check("an envoy within 40 steps of " + step + " ticks (asks " + asks[1] + ", world tick "
-                            + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] < 40);
+                    // Two dwells of half a day (20 steps) and the hand-overs: 32 asks on a quiet machine. The
+                    // P1_ADVANCE orders queue when the engine lags, so a loaded machine asks more (MZB-126).
+                    check("an envoy within 80 steps of " + step + " ticks (asks " + asks[1] + ", world tick "
+                            + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] < 80);
                     advance.run();
                     check("the envoy comes", false);
                 })
@@ -1316,7 +1318,8 @@ public final class ConflictGameTests {
                     check("placed", envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
                 })
                 .thenExecute(() -> {
-                    record(test, "envoy after", asks[1] + " steps of " + step + " ticks");
+                    record(test, "envoy after", asks[1] + " steps of " + step + " ticks, world tick "
+                            + e.phase1Stats()[NativeEngine.P1_WORLD_TICK]);
                     ConflictBridge.Demand d = envoy[0].demand();
                     check("a demand", d != null);
                     check("emeralds (" + d.itemName + ")", d.item == Items.EMERALD && d.remaining() > 0);

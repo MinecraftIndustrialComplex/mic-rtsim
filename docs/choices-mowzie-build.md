@@ -157,7 +157,8 @@ under its own heading.
   (MZB-103) first releases every chunk forced there (a failed run skipped its own release, and forced
   chunks persist in the reused world), and releases its own through a GameTest listener on pass or fail
   (`ConflictKit.onEnd`); test 18 resets FIGHT_GAP at its start and in such a listener; tests remove their
-  fake players the same way.
+  fake players the same way. The feud test counts P1_ADVANCE orders, which queue when the engine lags: it
+  allows 80 for the envoy (32 on a quiet machine, more than 40 under load), as it allows 160 for the raid.
 - **MZB-127** (a war chief with no units left): a chief-flagged stack whose count is 0 is a stack of the
   chief alone, one body of the stack's kind; the first build skipped it, so the chief got no body. Stacks
   keep the record's order otherwise (an empty stack without the chief is still skipped).
