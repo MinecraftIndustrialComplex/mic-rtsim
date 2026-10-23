@@ -2058,7 +2058,7 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK80)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK82)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, a camp, later a ship) knows; the engine answers with the holder's mood, its
@@ -2144,7 +2144,7 @@ grievance 0):
 
 The moods are worked out in the engine from the conflict's own rows (`rtsim_conflict::view::faction_facts`,
 TK74): COWED while the camp's cowed time is not over, CHIEF_OUT while its war chief is out with a band,
-NEW_CHIEF for ten game days after a succession and never before the first (TK75), LEAN under a third of
+NEW_CHIEF for ten game days after a succession and never before the first, and while the chief is dead and the heir answers (the succession is lazy, TK75), LEAN under a third of
 the culture's warrior cap and STRONG at the cap, within half a warrior (TK76). A fresh camp starts at its
 cap, so it reads STRONG until a raid costs it.
 
@@ -2185,12 +2185,15 @@ when one is class 0 or DEAD, is TK36 and TK37.
 ### 13.5 Test order 40: `TalkReport`
 
 TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
-since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+since slice 3). The conflict records few reports on a camp's board so far (`chief_killed` puts a Killing, who the
+killer and whom the chief, on the chief's and the heir's; Robbery and Rescue go on villages' boards), so a test
+puts the rest there. Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
 it does to the knowledge tables, are TK40. A `village` key that is no adopted village but is a camp's files
 the report on the camp's board, its chief's (else its heir's); a camp with neither is refused as an unadopted
-village (TK79).
+village. A key that is both an adopted village's id and a camp's goes to the village: the village lookup wins
+(TK79).
 
 ### 13.6 What the Java side does with them
 
