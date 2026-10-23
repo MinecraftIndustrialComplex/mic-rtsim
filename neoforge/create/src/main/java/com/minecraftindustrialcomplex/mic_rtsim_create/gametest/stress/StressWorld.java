@@ -25,6 +25,9 @@ import com.simibubi.create.content.trains.station.GlobalStation;
 import com.simibubi.create.content.trains.station.StationBlockEntity;
 import com.simibubi.create.content.trains.track.TrackBlock;
 import com.simibubi.create.content.trains.track.TrackShape;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTestAssertException;
@@ -35,6 +38,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
@@ -150,7 +154,7 @@ final class StressWorld {
         }
     }
 
-    enum Phase { CHUNKS, FACTORIES, TRACKS, STATIONS, NAMES, CARS, ENTER, ASSEMBLE, CALIBRATE, UNFORCE, WRITE, DONE }
+    enum Phase { CHUNKS, FACTORIES, TRACKS, STATIONS, NAMES, CARS, ENTER, ASSEMBLE, CALIBRATE, ADOPT, PROFILE, UNFORCE, WRITE, DONE }
 
     final class Lane {
         final int j, a, b, k, zt, xsA, xsB;
@@ -403,7 +407,7 @@ final class StressWorld {
                         done++;
                 }
                 if (done == lanes.size()) {
-                    next(Phase.UNFORCE);
+                    next(profileReps > 0 ? Phase.ADOPT : Phase.UNFORCE);
                 } else if (inPhase() > VERIFY_TICKS) {
                     List<String> stuck = new ArrayList<>();
                     for (Lane l : lanes)
@@ -411,6 +415,25 @@ final class StressWorld {
                             stuck.add("line " + l.j + " " + l.nameA + " -> " + l.nameB + ": " + l.where());
                     fail((lanes.size() - done) + " of " + lanes.size() + " lines not verified after " + VERIFY_TICKS + " ticks: " + head(stuck));
                 }
+            }
+            case ADOPT -> {
+                // MIC_STRESS_PROFILE: the scene's adopts, as sw.py makes them, so there are districts to time (SG60).
+                Industry ind = IndustryApi.current();
+                if (ind == null)
+                    fail("MIC_STRESS_PROFILE needs the industry module, and there is none in this run");
+                List<List<Integer>> points = adoptPoints();
+                for (int n = 0; n < 40 && cursor < points.size(); n++, cursor++) {
+                    List<Integer> a = points.get(cursor);
+                    ind.districts().adoptAround(level, new ChunkPos(new BlockPos(a.get(0), a.get(1), a.get(2))), a.get(3));
+                }
+                if (cursor >= points.size() && !ind.districts().rescanning())
+                    next(Phase.PROFILE);
+                else if (inPhase() > 6000)
+                    fail("the adopts' detection did not finish in 6000 ticks");
+            }
+            case PROFILE -> {
+                profile(IndustryApi.current());
+                next(Phase.UNFORCE);
             }
             case UNFORCE -> {
                 for (long[] c : chunks)
@@ -430,6 +453,37 @@ final class StressWorld {
             }
         }
         return false;
+    }
+
+    /** MIC_STRESS_PROFILE, the number of timed one-call detections to run, 0 for none. */
+    final int profileReps = Integer.parseInt(System.getenv().getOrDefault("MIC_STRESS_PROFILE", "0").trim());
+
+    /**
+     * Times {@code profileReps} one-call detections ({@link Districts#rescanNow}) on the built world, then
+     * the same number again under a stack sampler, and logs both with where the detection's time went. The
+     * one call is the shape the operator commands have (SG60): one big tick.
+     */
+    private void profile(Industry ind) {
+        Districts ds = ind.districts();
+        LOG.info("[stressgen] profile: {} districts, {} chunks forced", ds.all().size(), chunks.size());
+        for (int i = 0; i < 3; i++)
+            ds.rescanNow(level);
+        long[] ns = new long[profileReps];
+        for (int i = 0; i < profileReps; i++) {
+            long t0 = System.nanoTime();
+            ds.rescanNow(level);
+            ns[i] = System.nanoTime() - t0;
+        }
+        java.util.Arrays.sort(ns);
+        LOG.info("[stressgen] profile: one-call detection, {} runs: min {} ms, median {} ms, max {} ms; {} block entities looked at; {}",
+                profileReps, ns[0] / 1_000_000, ns[ns.length / 2] / 1_000_000, ns[ns.length - 1] / 1_000_000, ds.lastRescanLooked(), ds.lastRescanPhases());
+        try (StackSampler s = new StackSampler(Thread.currentThread(), "rescanNow", 200_000)) {
+            for (int i = 0; i < profileReps; i++)
+                ds.rescanNow(level);
+            s.close();
+            for (String line : s.report(30))
+                LOG.info("[stressgen] profile: {}", line);
+        }
     }
 
     private static String head(List<String> l) {
@@ -745,6 +799,15 @@ final class StressWorld {
         return p == null ? null : List.of(p.getX(), p.getY(), p.getZ());
     }
 
+    /** The scene's adopts: x, y, z and radius of each, along every district's middle row. */
+    private List<List<Integer>> adoptPoints() {
+        List<List<Integer>> adopt = new ArrayList<>();
+        for (int i = 0; i < p.districts; i++)
+            for (int cx = x0(i) + 1; cx - 1 < x0(i) + wc; cx += 3)
+                adopt.add(List.of(Math.min(cx, x0(i) + wc - 1) * 16 + 8, Y, z0(i) * 16 + 8, 1));
+        return adopt;
+    }
+
     /**
      * The sw.py scene: every district row force-loaded (boxes of at most 256 chunks, vanilla's limit), each
      * district adopted with radius-1 adopts every three chunks along its middle, and a busy window past
@@ -760,10 +823,7 @@ final class StressWorld {
                 boxes.add(List.of(cx * 16, cz * 16, cx2 * 16 + 15, (cz + HC) * 16 - 1));
             }
         }
-        List<List<Integer>> adopt = new ArrayList<>();
-        for (int i = 0; i < p.districts; i++)
-            for (int cx = x0(i) + 1; cx - 1 < x0(i) + wc; cx += 3)
-                adopt.add(List.of(Math.min(cx, x0(i) + wc - 1) * 16 + 8, Y, z0(i) * 16 + 8, 1));
+        List<List<Integer>> adopt = adoptPoints();
         Map<String, Object> sc = new LinkedHashMap<>();
         sc.put("forceload", boxes);
         sc.put("adopt", adopt);
@@ -774,6 +834,18 @@ final class StressWorld {
         sc.put("unload_reload", 90);
         sc.put("info_max", 12);
         sc.put("rescan", true);
+        // Phases end by game ticks (the server runs at 7 to 8 TPS here, SG43). A glass verdict needs 6,000 quiet
+        // ticks after a district's last recompile and a deferred adopt recompiles late, so the unload waits until
+        // 8,000 ticks after the adopts, past every district's verdict (SG82).
+        Map<String, Object> ticks = new LinkedHashMap<>();
+        ticks.put("settle", 1200);
+        ticks.put("busy", 6600);
+        ticks.put("unload", 1800);
+        ticks.put("unloaded", 600);
+        ticks.put("reload", 900);
+        ticks.put("reloaded", 600);
+        sc.put("ticks", ticks);
+        sc.put("unload_after_adopts", 8000);
         return sc;
     }
 }
