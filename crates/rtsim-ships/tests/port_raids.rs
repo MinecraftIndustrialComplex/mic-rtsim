@@ -209,6 +209,59 @@ fn a_port_raid_conserves_goods() {
     assert!(landed_somewhere >= 3, "in several seas: {landed_somewhere}");
 }
 
+/// Each port raid is news in the world (§2.4.6a rule 7, PC10): a PortRaided report, the raiding
+/// haven against the port's village at the dock, severity 1, known to the village itself; nothing
+/// goes to chat and no player is named.
+#[test]
+fn a_port_raid_is_news() {
+    use rtsim_knowledge::ReportKind;
+    let days = 150;
+    let raids = per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let tun = ShipTunables::default();
+        let mut s = synth::sea_havens(seed, tun.clone());
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let havens: Vec<_> = haven_nodes(&s.ships)
+            .iter()
+            .map(|&n| s.world.nodes[n].actor)
+            .collect();
+        let villages = village_nodes(&s.world);
+        // A port's news lives 6 days: look each day, and count each report once.
+        let mut seen = std::collections::BTreeSet::new();
+        let mut t = Tick::ZERO;
+        while t < Tick::from_days(days) {
+            t += TICKS_PER_DAY;
+            drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+            let k = &s.world.knowledge;
+            for (id, _) in k.reports().iter() {
+                let r = k.report(id).expect("a known kind");
+                if r.kind != ReportKind::PortRaided || !seen.insert((id, r.at)) {
+                    continue;
+                }
+                assert!(havens.contains(&r.who), "seed {seed}: by a haven: {r:?}");
+                let v = villages
+                    .iter()
+                    .copied()
+                    .find(|&v| s.world.nodes[v].actor == r.whom)
+                    .unwrap_or_else(|| panic!("seed {seed}: against a village: {r:?}"));
+                assert!(
+                    k.knows(s.world.nodes[v].actor, id),
+                    "seed {seed}: the village knows"
+                );
+                assert_eq!((r.severity, r.flags), (1, 0), "seed {seed}: {r:?}");
+            }
+        }
+        let news = seen.len() as u64;
+        let raids = s.ships.stats.port_raids;
+        assert!(news <= raids, "seed {seed}: {news} reports, {raids} raids");
+        assert!(
+            raids == 0 || news > 0,
+            "seed {seed}: {raids} raids and no news"
+        );
+        raids
+    });
+    assert!(raids.iter().sum::<u64>() > 0, "the raids happened");
+}
+
 /// The villages of `s` that pirates raided up to `to`, by node, with a log kept.
 fn raided_nodes(s: &Ships, w: &World) -> Vec<usize> {
     let mut out = Vec::new();
