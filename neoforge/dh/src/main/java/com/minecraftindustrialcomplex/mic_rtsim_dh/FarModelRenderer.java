@@ -27,6 +27,10 @@ import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.client.renderer.culling.Frustum;
+import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.entity.EntityRenderer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
@@ -52,7 +56,8 @@ import org.lwjgl.opengl.GL30;
  *   <li><b>In the band</b> (the loaded chunks where the real thing has no entity): drawn after vanilla's
  *       entities with vanilla's matrices, depth and fog, as the band's boxes were.</li>
  *   <li><b>Who draws what</b> is the boxes' rule ({@link FarHide}, {@link HandOverRule}, {@link FadeRing}): no
- *       model while the client has the real entity; DH's pass beyond the loaded chunks and in DH's vanilla fade;
+ *       model while the client has the real entity (a dragon's body is copied into DH's pass toward the fade,
+ *       {@link FarHide#bodyCopied}); DH's pass beyond the loaded chunks and in DH's vanilla fade;
  *       the band inside them. Each kind is held to the tier's count ({@link FarDetail#dragons},
  *       {@link FarDetail#feedObjects}), nearest first by horizontal distance as the boxes rank theirs, a dragon
  *       reaching as far as its boxes do; a dragon still drawn as a box takes its place in that count here, and a
@@ -98,6 +103,8 @@ final class FarModelRenderer {
         boolean drawLive;
         /** A dragon still drawn as a box: never drawn here, only counted against the tier. */
         boolean placeholder;
+        /** A dragon's body vanilla draws, copied into DH's pass here ({@link FarHide#bodyCopied}); else null. */
+        Entity body;
         final Matrix4f mv = new Matrix4f();
     }
 
@@ -120,7 +127,7 @@ final class FarModelRenderer {
 
     // What the last frame did, for the bench
     static final GpuTimer DH_GPU = new GpuTimer(), BAND_GPU = new GpuTimer();
-    static int lastCandidates, lastDh, lastBand, lastLive, lastWaiting;
+    static int lastCandidates, lastDh, lastBand, lastLive, lastWaiting, lastCopies;
     /** The most a dragon model's radius passed the reach its hand-over uses (FarDragonView#reach), blocks. */
     static double overReach = Double.NEGATIVE_INFINITY;
     static long lastVertices;
@@ -212,6 +219,11 @@ final class FarModelRenderer {
             return;
         preparedFrame = frame;
         long t0 = System.nanoTime();
+        for (Item it : ITEMS) {
+            // Last frame's copies hold their entity, and their live render it: not past this frame
+            it.body = null;
+            it.liveModel.reset();
+        }
         ITEMS.clear();
         String dimension = level.dimension().location().toString();
         double radius = FarGates.radiusBlocks(), radiusSq = radius * radius;
@@ -224,6 +236,11 @@ final class FarModelRenderer {
             double dx = x - cam.x, dy = y - cam.y, dz = z - cam.z;
             if (!(dx * dx + dz * dz <= radiusSq))
                 continue;
+            Entity body = FarHide.bodyCopied(m, level, x, y, z, cam);
+            if (body != null) {
+                copyBody(m, body, cam);
+                continue;
+            }
             Cover c = cover(m);
             if (c == Cover.WAIT)
                 waiting++;
@@ -244,6 +261,7 @@ final class FarModelRenderer {
             it.live = false;
             it.liveModel.reset();
             it.placeholder = placeholder;
+            it.body = null;
             if (!placeholder && m.kind() == FarKind.DRAGON)
                 overReach = Math.max(overReach, it.model.radius - FarDragonView.reach(m.size()));
             ITEMS.add(it);
@@ -251,7 +269,7 @@ final class FarModelRenderer {
         ITEMS.sort((a, b) -> Double.compare(a.d2, b.d2));
         int live = 0, models = 0;
         for (Item it : ITEMS) {
-            if (it.placeholder)
+            if (it.placeholder || it.body != null)
                 continue;
             models++;
             if (live >= LIVE_DRAGONS || it.distance >= LIVE_DISTANCE || it.mover.kind() != FarKind.DRAGON)
@@ -267,6 +285,41 @@ final class FarModelRenderer {
         lastLive = live;
         lastWaiting = waiting;
         prepareNanos += System.nanoTime() - t0;
+    }
+
+    /**
+     * A copy of a dragon's body that vanilla draws, for DH's pass (docs/choices-dh-feed.md DHT47): drawn as
+     * vanilla's entity pass draws it ({@code LevelRenderer.renderEntity}, {@code EntityRenderDispatcher.render}),
+     * at the same partial tick, place, heading and light, with its own renderer, so it is the body's pose to the
+     * pixel. Its fire and shadow are left out: a dragon does not burn, and vanilla's shadow is gone 16 blocks
+     * out. Not held to the tier's count: vanilla draws the body anyway.
+     */
+    private static void copyBody(FarMover m, Entity body, Vec3 cam) {
+        Minecraft mc = Minecraft.getInstance();
+        float partial = mc.getTimer().getGameTimeDeltaPartialTick(!body.level().tickRateManager().isEntityFrozen(body));
+        EntityRenderDispatcher dispatcher = mc.getEntityRenderDispatcher();
+        EntityRenderer<? super Entity> r = dispatcher.getRenderer(body);
+        Vec3 offset = r.getRenderOffset(body, partial);
+        float yaw = Mth.lerp(partial, body.yRotO, body.getYRot());
+        int light = dispatcher.getPackedLightCoords(body, partial);
+        Item it = ITEMS.size() < POOL.size() ? POOL.get(ITEMS.size()) : null;
+        if (it == null)
+            POOL.add(it = new Item());
+        it.mover = m;
+        it.body = body;
+        it.placeholder = false;
+        it.x = Mth.lerp(partial, body.xOld, body.getX()) + offset.x;
+        it.y = Mth.lerp(partial, body.yOld, body.getY()) + offset.y;
+        it.z = Mth.lerp(partial, body.zOld, body.getZ()) + offset.z;
+        double dx = it.x - cam.x, dy = it.y - cam.y, dz = it.z - cam.z;
+        it.d2 = dx * dx + dz * dz;
+        it.distance = Math.sqrt(it.d2 + dy * dy);
+        // For the frustum only: about its feet, the box's wingspan, the most a model's wings reached past it, and
+        // its height
+        it.model.reset().radius = (float) (FarDragonView.reach(m.size()) + 16.0 + body.getBbHeight());
+        it.live = true;
+        it.liveModel.reset().live = (ps, buffers) -> r.render(body, yaw, partial, ps, buffers, light);
+        ITEMS.add(it);
     }
 
     /**
@@ -298,7 +351,7 @@ final class FarModelRenderer {
         if (dhDrawnFrame == frame)
             return;
         dhDrawnFrame = frame;
-        lastDh = 0;
+        lastDh = lastCopies = 0;
         if (OFF || !FarGates.ready())
             return;
         Minecraft mc = Minecraft.getInstance();
@@ -330,6 +383,16 @@ final class FarModelRenderer {
         int dragons = 0, carriages = 0;
         for (Item it : ITEMS) {
             FarMover m = it.mover;
+            if (it.body != null) {
+                // Vanilla draws the body; this is its copy for DH's fade, not a far model of the tier's
+                it.drawLive = true;
+                float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
+                if (frustum.testSphere(rx, ry, rz, it.model.radius)) {
+                    DRAWN.add(it);
+                    lastCopies++;
+                }
+                continue;
+            }
             if (!FarHide.dhDraws(m, level, it.x, it.y, it.z, reach(it), cam))
                 continue;
             if (m.kind() == FarKind.DRAGON ? dragons++ >= tier.dragons : carriages++ >= tier.feedObjects)
@@ -433,7 +496,7 @@ final class FarModelRenderer {
         int dragons = 0, carriages = 0;
         for (Item it : ITEMS) {
             FarMover m = it.mover;
-            if (!FarHide.bandDraws(m, level, it.x, it.y, it.z, cam))
+            if (it.body != null || !FarHide.bandDraws(m, level, it.x, it.y, it.z, cam))
                 continue;
             if (m.kind() == FarKind.DRAGON ? dragons++ >= tier.dragons : carriages++ >= tier.feedObjects)
                 continue;
@@ -560,12 +623,13 @@ final class FarModelRenderer {
         BAND_GPU.collect();
         double f = Math.max(1, timedFrames);
         out.add(String.format(Locale.ROOT,
-                "models: %d candidates, %d in DH's pass, %d in the band, %d live, %d waiting, %d vertices, dragons "
+                "models: %d candidates, %d in DH's pass (%d of them bodies' copies), %d in the band, %d live, %d "
+                        + "waiting, %d vertices, dragons "
                         + "past their reach by %.1f blocks at most; CPU per frame: DH pass %.3f ms (longest %.2f), "
                         + "band %.3f ms, of which placing %.3f ms, bakes %.3f ms (longest %.2f); GPU per frame: DH "
                         + "pass %.3f ms over %d, band %.3f ms over %d; RenderSystem's matrices at the band off the "
                         + "stage's by %.4f (model-view) and %.4f (projection) at most",
-                lastCandidates, lastDh, lastBand, lastLive, lastWaiting, lastVertices, overReach, dhNanos / 1e6 / f,
+                lastCandidates, lastDh, lastCopies, lastBand, lastLive, lastWaiting, lastVertices, overReach, dhNanos / 1e6 / f,
                 dhMaxNanos / 1e6, bandNanos / 1e6 / f, prepareNanos / 1e6 / f, lookNanos / 1e6 / f,
                 lookMaxNanos / 1e6,
                 DH_GPU.samples == 0 ? 0.0 : DH_GPU.sumNanos / 1e6 / DH_GPU.samples, DH_GPU.samples,

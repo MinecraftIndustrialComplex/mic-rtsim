@@ -1,11 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
-import com.minecraftindustrialcomplex.mic_rtsim.far.FarClock;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
-import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
@@ -17,8 +13,8 @@ import net.minecraft.world.phys.Vec3;
  *
  * <ul>
  *   <li><b>The real thing is on the client</b> ({@link #entityPresent}): nobody; vanilla draws the entity. A
- *       dragon's body counts only where vanilla draws it short of DH's vanilla fade; past it vanilla leaves the
- *       body out ({@link #bodyHidden}) and the box is drawn as below.</li>
+ *       dragon's body that reaches toward DH's vanilla fade is also drawn in DH's pass ({@link #bodyCopied}), so
+ *       the fade has the body to mix it toward.</li>
  *   <li><b>Its midpoint is in a chunk the client has loaded</b> ({@link #loaded}): the band renderer
  *       ({@link FarBandRenderer}), in vanilla's own pass with vanilla's depth, because vanilla draws over DH in
  *       loaded chunks. That is the band between the server's simulation distance and the client's render
@@ -27,7 +23,7 @@ import net.minecraft.world.phys.Vec3;
  *   <li><b>Anywhere else in DH's radius</b>: DH ({@link FarTrainView}, {@link FarDragonView}).</li>
  * </ul>
  */
-public final class FarHide {
+final class FarHide {
     /** An entity the server named counts only this near the mover's midpoint: an id is not a promise. */
     static final double ENTITY_NEAR = 64.0;
 
@@ -58,75 +54,54 @@ public final class FarHide {
     static boolean entityPresent(FarMover m, ClientLevel level, double x, double y, double z, Vec3 cam) {
         if (m.real())
             return true;
-        if (m.entity() < 0)
+        Entity e = named(m, level, x, y, z);
+        if (e == null)
             return false;
-        Entity e = level.getEntity(m.entity());
-        if (e == null || e.isRemoved() || e.distanceToSqr(x, y, z) >= ENTITY_NEAR * ENTITY_NEAR)
-            return false;
-        return m.kind() != FarKind.DRAGON || bodyDrawn(m, e, cam.x, cam.y, cam.z);
+        return m.kind() != FarKind.DRAGON || bodyDrawn(e, cam.x, cam.y, cam.z);
     }
 
     /**
      * Whether vanilla draws a dragon's body this frame, the camera at (cx, cy, cz), once the body is near its
-     * mover (docs/choices-dh-feed.md DHT46, DHT47):
-     *
-     * <ul>
-     *   <li><b>Vanilla's distance rule</b> ({@link Entity#shouldRender}: the box's mean edge times 64 times
-     *       vanilla's view scale, render distance over 8 clamped to 1 to 2.5 times the entity distance setting).
-     *       Ice and Fire sets a dragon's size only in its tick, so a new body keeps its type's 0.78 by 1.2 block
-     *       box until its first client tick, and vanilla leaves it out beyond about 74 blocks at render distance
-     *       10, 88 at 12: hidden for its entity then, the far box left a gap of a frame or two.</li>
-     *   <li><b>Short of DH's vanilla fade</b> ({@link HandOverRule#bodyShown}). Past it {@link #bodyHidden}
-     *       leaves the body out and the far box stays, so the fade has the box to mix it toward.</li>
-     * </ul>
+     * mover (docs/choices-dh-feed.md DHT46): vanilla's distance rule ({@link Entity#shouldRender}: the box's
+     * mean edge times 64 times vanilla's view scale, render distance over 8 clamped to 1 to 2.5 times the entity
+     * distance setting). Ice and Fire sets a dragon's size only in its tick, so a new body keeps its type's 0.78
+     * by 1.2 block box until its first client tick, and vanilla leaves it out beyond about 74 blocks at render
+     * distance 10, 88 at 12: hidden for its entity then, the far box left a gap of a frame or two.
      *
      * <p>Not for a carriage: Create hands its carriages to Flywheel, which draws them with no distance rule
      * while a new carriage entity's box is Create's 1 by 1 by 1 until its first client tick, and past
      * vanilla's own entity pass. Render thread only.
      */
-    private static boolean bodyDrawn(FarMover m, Entity e, double cx, double cy, double cz) {
-        return e.shouldRender(cx, cy, cz) && shortOfFade(m, e, cx, cy, cz);
+    private static boolean bodyDrawn(Entity e, double cx, double cy, double cz) {
+        return e.shouldRender(cx, cy, cz);
     }
-
-    /** {@link HandOverRule#bodyShown} for the body of dragon {@code m}, by the body's own position. */
-    private static boolean shortOfFade(FarMover m, Entity e, double cx, double cy, double cz) {
-        double dx = e.getX() - cx, dy = e.getY() - cy, dz = e.getZ() - cz;
-        return HandOverRule.bodyShown(Math.sqrt(dx * dx + dy * dy + dz * dz), FarDragonView.reach(m.size()),
-                FadeRing.start());
-    }
-
-    /** The dragons by their client entity id, at {@link FarObjects#version()} {@code byIdVersion}. */
-    private static final Int2ObjectOpenHashMap<FarMover> DRAGON_BY_ID = new Int2ObjectOpenHashMap<>();
-    private static long byIdVersion = Long.MIN_VALUE;
-    private static final double[] SEG = new double[6];
 
     /**
-     * True when vanilla leaves out entity {@code e} this frame, the camera at (cx, cy, cz): a dragon a far mover
-     * names, near the mover, that vanilla would draw by its distance rule, at or past where DH's fade starts
-     * (docs/choices-dh-feed.md DHT47). The far box is drawn instead, as {@link #entityPresent} is false for it
-     * then. Called for every entity vanilla thinks of drawing, at the head of
-     * {@code EntityRenderDispatcher.shouldRender}: one map lookup when no far dragon names it. Render thread only.
+     * The body of dragon {@code m}, whose midpoint is drawn at (x, y, z), when DH's pass draws a copy of it
+     * (docs/choices-dh-feed.md DHT47), else null: vanilla draws the body ({@link #entityPresent}) and
+     * {@link HandOverRule#bodyCopied} holds for it, by its own place, with the box's reach. Vanilla still draws
+     * the body; the copy, drawn where it is and as it is ({@link FarModelRenderer}), is what DH's vanilla fade
+     * mixes its pixels toward, so the body keeps its colour across the ring. Render thread only.
      */
-    public static boolean bodyHidden(Entity e, double cx, double cy, double cz) {
-        long v = FarObjects.version();
-        if (v != byIdVersion) {
-            byIdVersion = v;
-            DRAGON_BY_ID.clear();
-            for (FarMover m : FarObjects.movers())
-                if (m.kind() == FarKind.DRAGON && m.entity() >= 0 && !m.real())
-                    DRAGON_BY_ID.put(m.entity(), m);
-        }
-        if (DRAGON_BY_ID.isEmpty())
-            return false;
-        FarMover m = DRAGON_BY_ID.get(e.getId());
-        if (m == null || e.isRemoved() || !m.dimension().equals(e.level().dimension().location().toString()))
-            return false;
-        float partial = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
-        m.segmentAt(FarClock.ticks() + partial, SEG);
-        double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
-        if (e.distanceToSqr(x, y, z) >= ENTITY_NEAR * ENTITY_NEAR || !e.shouldRender(cx, cy, cz))
-            return false;
-        return !shortOfFade(m, e, cx, cy, cz);
+    static Entity bodyCopied(FarMover m, ClientLevel level, double x, double y, double z, Vec3 cam) {
+        if (m.kind() != FarKind.DRAGON)
+            return null;
+        Entity e = named(m, level, x, y, z);
+        if (e == null || !bodyDrawn(e, cam.x, cam.y, cam.z))
+            return null;
+        double dx = e.getX() - cam.x, dy = e.getY() - cam.y, dz = e.getZ() - cam.z;
+        return HandOverRule.bodyCopied(loaded(level, e.getX(), e.getZ()), Math.sqrt(dx * dx + dy * dy + dz * dz),
+                FarDragonView.reach(m.size()), FadeRing.start()) ? e : null;
+    }
+
+    /** The entity the server named for {@code m}, when the client has it near where the mover is drawn. */
+    private static Entity named(FarMover m, ClientLevel level, double x, double y, double z) {
+        if (m.entity() < 0)
+            return null;
+        Entity e = level.getEntity(m.entity());
+        if (e == null || e.isRemoved() || e.distanceToSqr(x, y, z) >= ENTITY_NEAR * ENTITY_NEAR)
+            return null;
+        return e;
     }
 
     /** True when the client has loaded the chunk at (x, z). */
