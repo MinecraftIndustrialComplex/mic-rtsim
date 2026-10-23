@@ -14,7 +14,7 @@
 //!   the module that owns it (phase 1: villages, bases, caravans and players; ecology: lairs and
 //!   dragons; conflict: camps and chiefs). It changes nothing in the world; the only writer is the
 //!   TEST order [`post`].
-//! - **A camp** (holder kind 3, slice 4, TK71 to TK76): the camp's knowledge is its chief's board,
+//! - **A camp** (holder kind 3, slice 4, TK71 to TK80): the camp's knowledge is its chief's board,
 //!   else its heir's (a haven is not a holder), and the conflict is read through
 //!   `rtsim_conflict::view::faction_facts` and nothing else. An ask with the FACTION flag also gets
 //!   the 48-byte faction block after the news: the camp's feud against the asker, and its moods.
@@ -283,7 +283,7 @@ impl Answer {
 /// The holder an ask names, as phase 1 knows it.
 struct Holder {
     /// Whose board, feelings and port state answer. A camp has none when its chief and its heir
-    /// are both gone: the camp is known and has nothing to tell (TK72).
+    /// are both gone: the camp is known and has nothing to tell (TK71).
     actor: Option<ActorId>,
     /// Actors news about which is about the holder too: a caravan's home village (TK36); a camp's
     /// own actor, chief, heir and haven (TK73). No nulls, none twice, never `actor`.
@@ -340,7 +340,7 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
     }
 }
 
-/// A camp as a holder (TK71 to TK74): known when the conflict runs and has a faction of this key.
+/// A camp as a holder (TK71, TK73, TK74): known when the conflict runs and has a faction of this key.
 /// Its knowledge is the chief's board, else the heir's; a haven is not a holder in phase 1's
 /// knowledge, so the camp has no board of its own. `us` for its news is the chief, the heir, the
 /// faction's own actor and the haven's.
@@ -375,7 +375,7 @@ fn camp_holder(st: &State, a: &Ask) -> Option<Holder> {
     })
 }
 
-/// The faction block of an answer (TK72 to TK76): the camp's feud against the asker, and its moods
+/// The faction block of an answer (TK72, TK75 to TK77): the camp's feud against the asker, and its moods
 /// at `now`. `heir_born` is when the heir came to be: a succession names a new heir, so it is
 /// when the chief last changed.
 fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, now: Tick) -> Faction {
@@ -952,7 +952,7 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
             let n = &st.phase1.world.nodes[node];
             (n.pos.frame, n.actor)
         }
-        // A key that is no adopted village but is a camp's: the camp's board, its chief's (TK77).
+        // A key that is no adopted village but is a camp's: the camp's board, its chief's (TK79).
         None => camp_board(st, c.village)
             .ok_or_else(|| format!("village {} is not adopted", c.village))?,
     };
@@ -2474,7 +2474,7 @@ mod tests {
         let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
         assert_eq!(answer_one(&mut st, a).sentiment, 0);
     }
-    // ---- a camp (slice 4, TK71 to TK77) ------------------------------------------------------
+    // ---- a camp (slice 4, TK71 to TK80) ------------------------------------------------------
 
     /// A state with the two villages and the goblin camp 55 at (1300, 1000), found at [`NOW`];
     /// the camp's index.

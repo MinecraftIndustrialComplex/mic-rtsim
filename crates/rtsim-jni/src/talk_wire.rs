@@ -1022,7 +1022,21 @@ mod tests {
         assert_eq!(back.faction, Some(block));
         assert_eq!(back.flags, facts::HOLDER | facts::FACTION);
         assert_eq!(back.news.len(), 2);
+        // Java's `TalkRecordsTest` pins the same 48 bytes.
+        let bare = Facts { news: vec![], ..f }.encode(5);
+        assert_eq!(bare.len(), 96);
+        assert_eq!(
+            hex(&bare[48..]),
+            PINNED_FACTION_BLOCK.replace(char::is_whitespace, ""),
+            "the pinned faction block"
+        );
     }
+
+    /// The hex of the faction block [`the_faction_block_sits_after_the_news_at_the_literal_offsets`]
+    /// writes, for the Java side's test to copy.
+    const PINNED_FACTION_BLOCK: &str = "\
+        0409040000004841201c0000030000000600000004000000bbaa000000000000\
+        63000000000000000000000000000000";
 
     #[test]
     fn the_flag_and_the_block_cannot_disagree_on_the_wire() {
