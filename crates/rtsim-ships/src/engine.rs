@@ -1096,7 +1096,10 @@ impl Ships {
         let mut live = vec![false; self.navies.len()];
         for (_, e) in self.wheel.iter() {
             if let Ev::Assault { navy, epoch } = *e
-                && self.navies.get(navy as usize).is_some_and(|n| n.epoch == epoch)
+                && self
+                    .navies
+                    .get(navy as usize)
+                    .is_some_and(|n| n.epoch == epoch)
             {
                 live[navy as usize] = true;
             }
@@ -4614,7 +4617,12 @@ impl Ships {
     /// index). Never a roll: the assault it makes always succeeds ([`Self::break_haven`]).
     fn assault(&mut self, w: &mut World, nv: u32, epoch: u32, at: Tick) {
         let every = self.assault_ticks();
-        if every == 0 || self.navies.get(nv as usize).is_none_or(|n| n.epoch != epoch) {
+        if every == 0
+            || self
+                .navies
+                .get(nv as usize)
+                .is_none_or(|n| n.epoch != epoch)
+        {
             self.stats.stale += 1;
             return;
         }
