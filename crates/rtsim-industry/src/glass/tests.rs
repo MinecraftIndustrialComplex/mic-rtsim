@@ -4049,7 +4049,9 @@ mod replay_path {
     /// of its glass replay replays exactly as one that never stopped, page for page.
     mod paging {
         use super::*;
-        use crate::glass::page::{GLASS_MAGIC, district_page, read_district_page};
+        use crate::glass::page::{
+            GLASS_MAGIC, GLASS_MAGIC_IGL1, PageRead, district_page, read_district_page,
+        };
         use crate::persist::GLASS_TABLE;
         use rtsim_kernel::page::PageKey;
 
@@ -4578,16 +4580,17 @@ mod replay_path {
                 .expect("a glass page");
             assert_eq!(gk.id(), D.0);
             assert!(gb == district_page(&e.glass.districts[&D]));
-            read_district_page(&gb).expect("the page itself");
+            let read = |b: &[u8]| read_district_page(b, MAX);
+            assert!(read(&gb).expect("the page itself").kept().is_some());
             for n in 0..gb.len() {
-                assert!(read_district_page(&gb[..n]).is_err(), "cut at {n}");
+                assert!(read(&gb[..n]).is_err(), "cut at {n}");
             }
             let mut long = gb.clone();
             long.push(0);
-            assert!(read_district_page(&long).is_err());
+            assert!(read(&long).is_err());
             let mut other = gb.clone();
             other[..4].copy_from_slice(&(GLASS_MAGIC + 1).to_le_bytes());
-            assert!(read_district_page(&other).is_err());
+            assert!(read(&other).is_err());
             for bad in [
                 Vec::new(),
                 gb[..gb.len() / 2].to_vec(),
@@ -4611,7 +4614,109 @@ mod replay_path {
             e.advance_to(Tick(6000));
             let mut dg = e.glass.districts[&D].clone();
             dg.compiled.as_mut().expect("a compile").graph = switched_line().graph();
-            assert!(read_district_page(&district_page(&dg)).is_err());
+            assert!(read_district_page(&district_page(&dg), MAX).is_err());
+        }
+
+        /// `glass.sectionsMax` as the engine's tunables have it.
+        const MAX: usize = 64;
+
+        /// The glass pages of a snapshot, by key.
+        fn glass_pages(pages: &Pages) -> Vec<(PageKey, Vec<u8>)> {
+            pages
+                .iter()
+                .filter(|(k, _)| k.table() == GLASS_TABLE)
+                .cloned()
+                .collect()
+        }
+
+        /// A glass page of the format before sections (IGL1), or one whose section fingerprints
+        /// are not those its compile cuts into now, drops its district's glass state alone
+        /// (SECTIONS.md §5): the restore goes on, says which district and why, and the next save
+        /// deletes the page. The district then learns again as one with no glass page.
+        #[test]
+        fn a_glass_page_of_the_old_format_or_other_sections_drops_its_district_alone() {
+            assert_eq!(Tunables::default().glass.sections_max, MAX);
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let pages = e.snapshot();
+            let (gk, gb) = glass_pages(&pages).pop().expect("a glass page");
+            let compiled = e.glass.districts[&D].compiled.as_ref().expect("a compile");
+            assert!(!compiled.sections.is_empty(), "the press is a section");
+            // The page as written: its fingerprints are its compile's.
+            let PageRead::Kept(dg) = read_district_page(&gb, MAX).expect("decodes") else {
+                panic!("the page as written is kept");
+            };
+            assert_eq!(
+                dg.compiled
+                    .as_ref()
+                    .expect("a compile")
+                    .sections
+                    .fingerprints(),
+                compiled.sections.fingerprints()
+            );
+            // An IGL1 page: dropped by its magic alone, whatever follows.
+            let mut old = gb.clone();
+            old[..4].copy_from_slice(&GLASS_MAGIC_IGL1.to_le_bytes());
+            assert!(matches!(
+                read_district_page(&old, MAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            assert!(matches!(
+                read_district_page(&old[..4], MAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            // Fingerprints not the compile's: the last byte is the last fingerprint's.
+            let mut other = gb.clone();
+            *other.last_mut().expect("bytes") ^= 1;
+            assert!(matches!(
+                read_district_page(&other, MAX),
+                Ok(PageRead::Dropped(_))
+            ));
+            for bad in [old, other] {
+                let p: Pages = pages
+                    .iter()
+                    .map(|(k, b)| (*k, if *k == gk { bad.clone() } else { b.clone() }))
+                    .collect();
+                let mut disk: Disk = p.iter().cloned().collect();
+                let mut r = Engine::restore(p, Tunables::default()).expect("the restore goes on");
+                assert!(!r.glass.districts.contains_key(&D), "dropped");
+                assert_eq!(
+                    r.glass
+                        .dropped_on_restore
+                        .iter()
+                        .map(|d| d.0)
+                        .collect::<Vec<_>>(),
+                    vec![D]
+                );
+                assert!(r.district(D).is_some(), "the district itself is kept");
+                save(&mut r, &mut disk);
+                assert!(!disk.contains_key(&gk), "the next save deletes the page");
+                // The district goes on as one restored without its glass page.
+                r.advance_to(Tick(7000));
+                r.check_books().expect("books");
+            }
+        }
+
+        /// A different `glass.sectionsMax` that cuts the compile otherwise drops the page; one
+        /// that cuts it the same keeps it.
+        #[test]
+        fn a_changed_sections_cap_drops_a_page_only_when_it_cuts_otherwise() {
+            let mut e = press();
+            e.advance_to(Tick(6000));
+            let (_, gb) = glass_pages(&e.snapshot()).pop().expect("a glass page");
+            let n = e.glass.districts[&D]
+                .compiled
+                .as_ref()
+                .expect("a compile")
+                .sections
+                .len();
+            assert!(matches!(read_district_page(&gb, n), Ok(PageRead::Kept(_))));
+            if n > 1 {
+                assert!(matches!(
+                    read_district_page(&gb, n - 1),
+                    Ok(PageRead::Dropped(_))
+                ));
+            }
         }
 
         /// Without its glass page (rtsim-view's inspect restores one district alone), a glass span

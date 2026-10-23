@@ -235,7 +235,17 @@ impl Link {
         // afresh, rather than keeping the whole engine, core included, from starting.
         let restored = if has_globals {
             match Industry::restore(pages, Tunables::default()) {
-                Ok(e) => Some(e),
+                Ok(e) => {
+                    // A glass page of another format or other sections drops its district's
+                    // glass state alone (SECTIONS.md §5): that district learns again.
+                    for (d, why) in &e.glass.dropped_on_restore {
+                        log_warn(&format!(
+                            "district {}'s glass page is dropped ({why}): it learns again",
+                            d.0
+                        ));
+                    }
+                    Some(e)
+                }
                 Err(e) => {
                     log_error(&format!(
                         "the industry engine's {count} pages do not decode ({e}): another build's format; the industry engine starts afresh and they are replaced"

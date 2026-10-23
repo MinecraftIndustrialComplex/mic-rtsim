@@ -24,6 +24,7 @@ use super::graph::Graph;
 use super::q::Q;
 use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeSet, model};
 use super::report::{self, GoodReport, Report};
+use super::sections::Sections;
 use super::solve::{self, Regime, Solution, burn};
 use crate::district::Inventory;
 use crate::ids::{DistrictId, Good, GoodClass, GoodVec, VecMap};
@@ -237,6 +238,9 @@ pub struct Compiled {
     pub replay_regimes: u32,
     pub replay_breakpoints: u32,
     pub replay_oscillations: u32,
+    /// The compile cut into sections (SECTIONS.md §3): recomputed from the graph at the accept and
+    /// on restore (`page::read_district_page`), never saved but for the fingerprints the page checks.
+    pub sections: Sections,
 }
 
 /// One district's glass state.
@@ -346,6 +350,7 @@ impl Compiled {
                 }
             })
             .collect();
+        let sections = Sections::compute(&graph, tun.sections_max);
         let mut regime = Regime::new(n);
         regime.demoted = demoted.clone();
         // Heaters lit at the compile spend their burn from here (§9.3); a creative one never does.
@@ -396,6 +401,7 @@ impl Compiled {
             replay_regimes: 0,
             replay_breakpoints: 0,
             replay_oscillations: 0,
+            sections,
         }
     }
 
@@ -1454,8 +1460,10 @@ mod persist_impls {
         }
     }
 
-    /// Every field but `solve_micros` (wall-clock time, restored as 0): the regime cache too, as
-    /// a regime it answers is not a solve, and the replay's settle budget counts solves (G2-61).
+    /// Every field but `solve_micros` (wall-clock time, restored as 0) and `sections` (recomputed
+    /// by the page's reader, which checks them against the fingerprints the page keeps): the regime
+    /// cache too, as a regime it answers is not a solve, and the replay's settle budget counts
+    /// solves (G2-61).
     impl Persist for Compiled {
         fn put(&self, w: &mut Writer) {
             self.graph.put(w);
@@ -1524,6 +1532,7 @@ mod persist_impls {
                 replay_regimes: Persist::get(r)?,
                 replay_breakpoints: Persist::get(r)?,
                 replay_oscillations: Persist::get(r)?,
+                sections: Sections::default(),
             };
             // What the solve and the window index by node must cover the graph's nodes.
             let n = c.graph.nodes.len();
