@@ -3823,7 +3823,7 @@ mod conflict {
             .count()
     }
 
-    /// MOWZIE.md §4.11 (ledger 13): DIFFICULTY is latest-wins. On Peaceful no war party leaves
+    /// MOWZIE.md §4.12 (ledger 14): DIFFICULTY is latest-wins. On Peaceful no war party leaves
     /// however far the grievance climbs, though the notice, the envoy and the scouts still come;
     /// back on Normal the climb resumes and a raid follows. A DIFFICULTY sent while the module is
     /// off is kept and applied when it comes on.
@@ -3834,7 +3834,10 @@ mod conflict {
         difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
         let (_, link) = e.conflict_stats();
         assert_eq!(link.difficulty, Some(cb::DIFFICULTY_PEACEFUL));
-        assert!(e.with_conflict(|c, _| c.peaceful), "the engine is on Peaceful");
+        assert!(
+            e.with_conflict(|c, _| c.peaceful),
+            "the engine is on Peaceful"
+        );
         signal(&mut j, 4, 60, PLAYER);
         j.idle();
         let f = feud(&e, PLAYER).expect("a feud with the killer");
@@ -3858,7 +3861,10 @@ mod conflict {
             "the envoy still came: {st:?}"
         );
         let f = feud(&e, PLAYER).unwrap();
-        assert!(!f.step.is_war(), "the feud holds below the war rungs: {f:?}");
+        assert!(
+            !f.step.is_war(),
+            "the feud holds below the war rungs: {f:?}"
+        );
         assert_eq!(link.difficulty, Some(cb::DIFFICULTY_PEACEFUL));
 
         // Normal: the climb resumes and a raid comes to the base.
@@ -3884,11 +3890,14 @@ mod conflict {
         assert!(!e.with_conflict(|c, _| c.peaceful), "not applied while off");
         j.modules(MODULES);
         j.idle();
-        assert!(e.with_conflict(|c, _| c.peaceful), "applied when switched on");
+        assert!(
+            e.with_conflict(|c, _| c.peaceful),
+            "applied when switched on"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §4.11 (ledger 13): a notice nobody played (no NOTICE_SHOWN) is kept in the feud's
+    /// MOWZIE.md §4.12 (ledger 14): a notice nobody played (no NOTICE_SHOWN) is kept in the feud's
     /// row and sent again after its faction's TERRITORY at each session start, a crash's
     /// included; NOTICE_SHOWN for it (journaled) ends that, and the next session sends none.
     #[test]
@@ -4051,7 +4060,7 @@ mod conflict {
         j.idle();
     }
 
-    /// MOWZIE.md §4.11 (ledger 14): an envoy wiped out by no player (a mob) withdraws its
+    /// MOWZIE.md ledger 14: an envoy wiped out by no player (a mob) withdraws its
     /// demand: DEMAND_SETTLED outcome 5, the feud stays on Envoy with no climb. Killed by a
     /// player, the demand stays open.
     #[test]
@@ -4087,7 +4096,10 @@ mod conflict {
             !cmds(&j).any(|c| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_WITHDRAWN)),
             "a player's killing withdraws nothing"
         );
-        assert!(feud(&e, PLAYER).unwrap().demand.is_some(), "the demand stands");
+        assert!(
+            feud(&e, PLAYER).unwrap().demand.is_some(),
+            "the demand stands"
+        );
         assert_eq!(e.conflict_stats().0.withdrawn, 0);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
