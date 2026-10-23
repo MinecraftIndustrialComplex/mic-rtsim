@@ -1,11 +1,12 @@
 # Mowzie's Mobs: factions and boss encounters
 
-**Status:** design for Ben's review, revised 2026-10-21 after two adversarial reviews that were checked
-against the jars, then reworked the same day for Ben's answers (§8), and again on 2026-10-22 for his
-rejection of the horse: the Umvuthi now travels aloft, provisional, MZ-16's second round (§4.5, §8),
-fixed the same day for a third review against the jar and vanilla's sources. Touched again on
-2026-10-22 for alliances (CONFLICT-LIFE.md §2.16, Ben's CL-5 (b)): §0, §4.5, §4.11, §4.12 and §4.16's
-BAND_MARCH. Nothing is built. Ben approves this design before code.
+**Status:** decided; the build starts 2026-10-22. Revised 2026-10-21 after two adversarial reviews that were
+checked against the jars, then reworked the same day for Ben's answers (§8), and again on 2026-10-22 for
+his rejection of the horse: the Umvuthi travels aloft, MZ-16's second round (§4.5, §8), fixed the same
+day for a third review against the jar and vanilla's sources. Touched again on 2026-10-22 for alliances
+(CONFLICT-LIFE.md §2.16, Ben's CL-5 (b)): §0, §4.5, §4.11, §4.12 and §4.16's BAND_MARCH. Ben answered
+the last open questions the same day (MZ-16's second round, MZ-17, CHIEF_PAID and the UR-1 exposure of
+marches, §8), so nothing is left open. §9 is the build order.
 
 **Decided, and binding here:**
 - **Ben's request:** "go ahead and plan out some support for Mowzie's mobs, creating factions for the
@@ -27,7 +28,10 @@ BAND_MARCH. Nothing is built. Ben approves this design before code.
 - **Ben's answer (2026-10-22, §8):** MZ-16's horse is rejected, and every other animal mount with it:
   "Given the current models for umuthi (sunbirds), them riding horses / most other animals doesn't
   make too much sense." The Umvuthi floats seated above the rear of its column instead, borne by its
-  sun: provisional (a) of MZ-16's second round, awaiting Ben (§4.5).
+  sun: (a) of MZ-16's second round, which Ben chose the same day (§4.5).
+- **Ben's last answers (2026-10-22, §8):** MZ-16's second round, (a) aloft; MZ-17, (a) capture per
+  stack, which amends C25; CHIEF_PAID (0x0814) accepted; and the UR-1 exposure of marches accepted, as
+  §4.9 and §4.16 describe.
 - **The pack's own TODO** (`pack/README.md:17-26`): "Boss raid system", "Natural Boss Spawning",
   "Remove items & progression from boss mods: ... mowzies mobs", "Mowzies mobs: Natty spawns". Ben
   chose to keep Mowzie's items, against the third (MZ-4 (a), §8).
@@ -116,7 +120,7 @@ two camps and arrive together, never fighting each other (CONFLICT-LIFE.md §2.1
 | The chief's healers | `mowziesmobs:umvuthana_crane`: the Umvuthi summons them each time it loses 45 health; they heal only the Umvuthi and give it Sunblock, under which it takes no damage | mowziesmobs |
 | Hunters | `mowziesmobs:umvuthana_raptor` and `umvuthana_follower_raptor`: a raptor leads 4 or 5 followers; the raptor hunts animals and its followers take its target | mowziesmobs |
 | The chief | `mowziesmobs:umvuthi` (`EntityUmvuthi`): 150 health, sun abilities, summons Umvuthana; never walks (no movement goal, `318-358`, `tick` zeroes its horizontal motion, `444`, and it has no walk animation); pushes every living entity within 1.2 blocks away each tick (`449-450`); takes 7 gold blocks once from a masked player, then grants Sun's Blessing, and remembers who paid (`TRADED_PLAYERS`, `729-777`); when it dies, every devoted Umvuthana within 30 blocks dies with it (`die`, `859-871`) | mowziesmobs |
-| The Umvuthi's travel on an Invasion (provisional, MZ-16) | its own body, floated: vanilla `setNoGravity` (a synced flag, `Entity.java:1165-1166`) and `move(MoverType.SELF, …)` (`Entity.java:619`), which collides with blocks, called by the plugin once a tick after the body's own tick, as its `tick` zeroes its horizontal motion before it moves (`EntityUmvuthi.java:444-445`); its height from vanilla's `MOTION_BLOCKING` heightmap, which counts leaves and fluids (`Heightmap.java:144`); with nothing by its feet its legs hang, as on its throne (`checkBlocksByFeet`, `509-516`, `644-671`); its facing turned by a re-pair: a fresh add bundle from a temporary `ServerEntity` (public constructor, `ServerEntity.java:71`; `sendPairingData`, `247-303`) sent with `ServerChunkCache.broadcast` (`482`) to the clients already tracking it, whose `addEntity` drops their old body of that id first (`ClientLevel.java:351-356`), since the jar reads its synced direction only at its first tick (`446-447`), on each client; its motion zeroed and its fall distance reset every tick aloft, as nothing else cancels an upward push with no gravity (`LivingEntity.java:2330-2341`). At the target it settles, and `restrictTo` where it sits as `finalizeSpawn` does for a spawn that is not a structure's (`960-962`); its summons keep to 25 blocks of that centre (`SpawnFollowersAbility`, `997-1060`, `1046`); its boss bar shows to a tracking player once it has that player in line of sight (`MMBossInfoServer.java:40-58`), which vanilla gives only within 128 blocks | minecraft, mowziesmobs |
+| The Umvuthi's travel on an Invasion (MZ-16 (a), Ben, 2026-10-22) | its own body, floated: vanilla `setNoGravity` (a synced flag, `Entity.java:1165-1166`) and `move(MoverType.SELF, …)` (`Entity.java:619`), which collides with blocks, called by the plugin once a tick after the body's own tick, as its `tick` zeroes its horizontal motion before it moves (`EntityUmvuthi.java:444-445`); its height from vanilla's `MOTION_BLOCKING` heightmap, which counts leaves and fluids (`Heightmap.java:144`); with nothing by its feet its legs hang, as on its throne (`checkBlocksByFeet`, `509-516`, `644-671`); its facing turned by a re-pair: a fresh add bundle from a temporary `ServerEntity` (public constructor, `ServerEntity.java:71`; `sendPairingData`, `247-303`) sent with `ServerChunkCache.broadcast` (`482`) to the clients already tracking it, whose `addEntity` drops their old body of that id first (`ClientLevel.java:351-356`), since the jar reads its synced direction only at its first tick (`446-447`), on each client; its motion zeroed and its fall distance reset every tick aloft, as nothing else cancels an upward push with no gravity (`LivingEntity.java:2330-2341`). At the target it settles, and `restrictTo` where it sits as `finalizeSpawn` does for a spawn that is not a structure's (`960-962`); its summons keep to 25 blocks of that centre (`SpawnFollowersAbility`, `997-1060`, `1046`); its boss bar shows to a tracking player once it has that player in line of sight (`MMBossInfoServer.java:40-58`), which vanilla gives only within 128 blocks | minecraft, mowziesmobs |
 | The Umvuthi's prize | `mowziesmobs:sol_visage`, dropped when a player kills it (`loot_table/entities/umvuthi.json`, `killed_by_player`) | mowziesmobs |
 | Peace with the tribe | an Umvuthana mask on the head (`mowziesmobs:umvuthana_mask_*`): Umvuthana, raptors and the Umvuthi do not target the wearer | mowziesmobs |
 | The tribe's warning | sound `mowziesmobs:block.gong` | mowziesmobs |
@@ -363,7 +367,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     the same. So `lose_units` also lowers the matching `spawned` entry while the party is embodied, as
     `casualties` does. With these, a band with its chief is recalled only with no player within 192
     blocks of it (Rule U, §4.5). The edge is the bridge's (ledger 25). About 310.
-24. **The Umvuthi aloft, and the march in Java** (§4.5, §4.16; provisional, MZ-16): its puppet given
+24. **The Umvuthi aloft, and the march in Java** (§4.5, §4.16; MZ-16 (a), Ben): its puppet given
     `setNoGravity(true)` at its spawn and moved once a tick, in the bridge's server-tick pass after the
     level's entities have ticked, which skips a body that `isDeadOrDying()`: its motion set to zero and
     its fall distance reset (`resetFallDistance`), so no explosion, wind charge, shell or fan lifts it
@@ -392,8 +396,8 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     25). Aloft its box's foot is 2 blocks up, within a player's reach: a player who reaches the column
     can strike it, and a masked player can trade with it as at home, the payment booked as CHIEF_PAID
     (ledger 14) (§4.5). About 330.
-25. **One group per stack, in the ConflictBridge** (MZ-17: capture per stack, amends C25, provisional
-    (a), awaiting Ben; §4.16). The ConflictBridge is a session plugin, as `HerdBridge` is, and keeps its
+25. **One group per stack, in the ConflictBridge** (MZ-17 (a), Ben, 2026-10-22: capture per stack,
+    amends C25; §4.16). The ConflictBridge is a session plugin, as `HerdBridge` is, and keeps its
     own groups as HerdBridge does (`HerdBridge.java:70`, its `byAgent` map at `243`), not the core's
     registry, whose only caller is the core's SPAWN_GROUP for caravans (`CommandDispatcher.java:264`);
     the core's join check asks the plugin that owns a tagged agent (`RtsimSession.rejectOnJoin`,
@@ -442,7 +446,7 @@ Sizes are estimates by analogy with code that exists; they are not measured.
     an ordinary Umvuthi, whose Sol Visage drops when it is killed. With the pack's Carry On settings no
     survival player can pick up a band member (hostile mobs are off, and the Umvuthi, 3.2 blocks tall,
     is over the 2.5-block limit); a creative player can. C25 has a band and its master capture and
-    despawn as one unit (`DECISIONS.md:80`); capture by stack amends that, which is Ben's to confirm. No
+    despawn as one unit (`DECISIONS.md:80`); capture by stack amends that (MZ-17 (a), Ben, 2026-10-22). No
     core change and no record change. About 190, in the bridge. The other options (§8, MZ-17): keeping
     C25 for bands, one group that comes in only once wholly ticking and goes whole, costs nothing but
     brings a column's head in up to its length inside the edge, within 128 blocks at s = 8; capture per
@@ -942,7 +946,7 @@ in three, for example `loot_table/entities/umvuthana_rage.json`) and lie in grov
 attacks to land while the owner is away; a tribe raid that did nothing unwatched would break them.
 
 **The Umvuthi leads the Invasion, borne by its sun above its band** (MZ-3 (b), Ben, 2026-10-21; MZ-15,
-Ben, 2026-10-21; how it travels is MZ-16's second round, provisional (a), awaiting Ben, §8). Ben: "I
+Ben, 2026-10-21; how it travels is MZ-16's second round, (a), Ben, 2026-10-22, §8). Ben: "I
 feel like it should be the grove / whoever they send 'walking' towards the player instead of it just
 not working." So the Umvuthi marches with its warriors, from the grove to the target and back, where a
 player can see it, and the far view can draw it the whole way (§4.16). It rides nothing: Ben rejected
@@ -1826,9 +1830,11 @@ near 52.
   usual. The jar's Frostmaw never wakes on Peaceful (`EntityFrostmaw.java:582`, `600`), so unwatched
   losses with no fight possible would be unfair. Councils still sit, and a pact may be sworn (words
   between camps); no ally is called and no joint party leaves (CONFLICT-LIFE.md §2.16, CL-D53).
-- **A pact against a player is told** (CONFLICT-LIFE.md §2.16, CL-D55): the caller's notice plays for
-  him with the ally named ("the Sun Grove and Mudhollow have sworn against you"), kept until shown as
-  every notice is; FACTION_NOTICE and ENVOY_MATERIALIZE carry the ally's actor (8 bytes each).
+- **No notice carries a line of text** (CONFLICT-LIFE.md §2.17, CL-D56; Ben, 2026-10-22: "All faction
+  news in-world"). The roar and the gong are cues in the world and stay, kept until shown as above.
+  A pact against a player, and every other pact, a feud, a raid and a death, reach him as news that
+  traders, caravans and villagers carry; ENVOY_MATERIALIZE carries the ally's actor (8 bytes) so a
+  joint envoy can name it in person, and FACTION_NOTICE carries nothing new.
 
 ### 4.13 Strength
 
@@ -1863,7 +1869,7 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 | Strength rule | health × attack ÷ 60 | TUNABLE | Lanchester inputs | GameTest fights through `IND_FIGHT` |
 | Animals owed per raptor pack | 2 | PLACEHOLDER | herd loss to a won raid | GameTest: animals killed in a watched raid |
 | Notice and cue distance | 32 blocks toward the den; cue within 64 of a station | PLACEHOLDER | where the roar or gong comes from | listen in game |
-| Aloft (provisional, MZ-16) | 2 blocks over the highest `MOTION_BLOCKING` block under its box and 8 blocks ahead; rise up to 0.1 and sink up to 0.05 blocks a tick; pace up to 0.1 blocks a tick; settle within 32 blocks of the target with the attack flag, or on a player target in sight; rise once the flag has dropped and it has had no player target for 200 ticks; height read every 10 ticks; over a fluid, fight where it floats only within 8 blocks of the target; re-pair when 55 degrees off, at most once in 200 ticks; stuck after 100 ticks with no headway more than 8 blocks from its place, then up to 24 blocks higher, then moved out of sight or after 1,200 ticks; the trail every 10 ticks, on | PLACEHOLDER | how high and how closely it keeps to its band, where and when it settles and rises, how often it turns, and whether it reads as borne by its sun | tests 23, 31, 35 |
+| Aloft (MZ-16 (a), Ben) | 2 blocks over the highest `MOTION_BLOCKING` block under its box and 8 blocks ahead; rise up to 0.1 and sink up to 0.05 blocks a tick; pace up to 0.1 blocks a tick; settle within 32 blocks of the target with the attack flag, or on a player target in sight; rise once the flag has dropped and it has had no player target for 200 ticks; height read every 10 ticks; over a fluid, fight where it floats only within 8 blocks of the target; re-pair when 55 degrees off, at most once in 200 ticks; stuck after 100 ticks with no headway more than 8 blocks from its place, then up to 24 blocks higher, then moved out of sight or after 1,200 ticks; the trail every 10 ticks, on | PLACEHOLDER | how high and how closely it keeps to its band, where and when it settles and rises, how often it turns, and whether it reads as borne by its sun | tests 23, 31, 35 |
 | The column | two abreast, 1.5 blocks a row, laid back from the march's position; raptor packs beside, the chief at the rear | PLACEHOLDER; the DH note's column | where a band met on the march stands, matching the far view | test 34 |
 | Pending stacks | a stack not wholly entity-ticking is tried again at its column position when a chunk it waits on changes its entity-ticking state or its place moves into another chunk; at a stop it walks in from the edge and holds one chunk inside it | PLACEHOLDER; MZ-17 (a) | how soon a stack appears once it is inside the entity-ticking area | test 33 |
 | March pace | `march_blocks_per_tick` 0.02 (`culture.rs:289`) | goblin's, PLACEHOLDER | how long a march takes, and how a column reads in sight | test 34; `sim mowzie` run 13 |
@@ -1969,7 +1975,7 @@ one body of a band that a client draws beyond 128 blocks (below).
   today one rejection of a band's first wave clears its embodiment for good (`engine.rs:3924-3931`). A
   band held as one group could not come in while its column straddles the edge. So the ConflictBridge, a
   plugin that keeps its own groups as HerdBridge does, makes each stack its own group, held pending
-  until it is wholly inside (MZ-17: capture per stack, amends C25, provisional (a), awaiting Ben): a
+  until it is wholly inside (MZ-17 (a), Ben, 2026-10-22: capture per stack, amends C25): a
   column fills in stack by stack as it walks inside, and one walking out empties the same way, while the
   engine sees one embodiment. When the band stops to wait or fight, a stack still pending walks in from
   the edge, as members past the spawn quota do (CL-D35), and holds one chunk inside the edge until the
@@ -2640,7 +2646,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 
 ## 8. Decisions and questions for Ben
 
-**Decided by Ben** (2026-10-21, in conversation; moved here from the questions):
+**Decided by Ben** (2026-10-21 and 2026-10-22, in conversation; moved here from the questions):
 
 | Id | Ben's answer | Where it lands |
 |---|---|---|
@@ -2654,7 +2660,11 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | EQ-4 | (b), against EQUILIBRIUM.md's recommended 24 (Ben, 2026-10-21): MOWZIE's base of 6 days, doubling with pressure, `min(192, 6 × 2^P)`: 12 days after a first kill, about 1.8 a game year farmed | §4.2, §4.10, walkthroughs A and D, sim runs 1 and 6 |
 | MZ-14 | (a), as recommended (Ben, 2026-10-21): the Umvuthi heir waits on the same base of 6 as the Frostmaw, `min(192, 6 × 2^P_chief)`: 12 days after a first kill, about 1.8 Sol Visages a game year farmed | §4.6, §4.10, renewal and tunables rows; EQUILIBRIUM.md §2.4.7 and §2.6 items 3 and 12 follow |
 | MZ-15 | Amends MZ-3 (b) (Ben, 2026-10-21): "I feel like it should be the grove / whoever they send 'walking' towards the player instead of it just not working. (I.E. Possibly being able to see them coming via DH.)" Whoever the grove sends, the Umvuthi included, walks the route to the target and back where a player can see it, and its position is known at every tick for a far view | §4.5, §4.9, §4.16; ledgers 4, 6, 7, 23, 24 and 25; BAND_MARCH; walkthroughs B, F and G; tests 23 to 36; sim runs 11 and 13 |
-| MZ-16 | **Rejected** (Ben, 2026-10-22), first round: (a) a horse, and with it (b) a donkey or mule and any other animal mount: "Given the current models for umuthi (sunbirds), them riding horses / most other animals doesn't make too much sense." How the Umvuthi travels instead is MZ-16's second round below | §4.5, §4.16; ledgers 4 and 24; walkthroughs B, F and G; tests 23, 31 and 35; the questions |
+| MZ-16 | **Rejected** (Ben, 2026-10-22), first round: (a) a horse, and with it (b) a donkey or mule and any other animal mount: "Given the current models for umuthi (sunbirds), them riding horses / most other animals doesn't make too much sense." How the Umvuthi travels instead is MZ-16's second round, the next row | §4.5, §4.16; ledgers 4 and 24; walkthroughs B, F and G; tests 23, 31 and 35; the questions |
+| MZ-16, second round | **(a), aloft** (Ben, 2026-10-22): on an Invasion the Umvuthi's own body floats seated 2 blocks over the ground at the rear of its column, its legs hanging as on its throne and its head-sun lit, with vanilla's no-gravity flag and one colliding `move` a tick, turned by a re-pair, sinking to fight and rising to go, with a trail of vanilla flame particles (on until test 31's screenshots say otherwise); no new entity, no client mod. The other options of the second round (sun steps, particle sun steps, bounds, carried unseen, staying home) are set aside, as §4.5 gives them | §4.5, §4.16; ledgers 4 and 24; the tunables' aloft row; walkthroughs B, F and G; tests 23, 31 and 35 |
+| MZ-17 | **(a), capture per stack** (Ben, 2026-10-22), **amending C25**: each stack of a band (a row of two warriors, a raptor pack, the chief alone) is its own group in the ConflictBridge, held pending until it is wholly inside the entity-ticking area, walking in from the edge at a stop and holding one chunk inside it; the engine sees one embodiment; a taken puppet is booked as taken with its taker; no core or record change. C25's "a band and its master capture and despawn as one unit" now holds per stack for war bands | ledger 25; §4.16; DECISIONS.md C25 and MZ-17; tests 33 and 34 |
+| CHIEF_PAID | **Accepted** (Ben, 2026-10-22): record 0x0814, Java to engine, journaled: a first payment to an Umvuthi body, at home or away, with that body's slot and generation, booked as tribute at the camp (the payer's open demand, else a gift) and entered in the grove's trade memory only for the live chief's slot and generation | ledger 14; §4.5's trade memory; the trade memory row below; test 25 |
+| UR-1 exposure of marches | **Accepted** (Ben, 2026-10-22), as §4.9 and §4.16 describe: a census takes every body a party on the road left behind, so an uninstall loses the members away whose bodies are gone (for the rest of a march once its camp has come in while it was out, and for the whole march when it set out from a camp that was in), the Umvuthi among them, its throne empty from a death away until its heir is seated, and payments the engine holds that are not yet written into a body | §4.5's uninstall, §4.9's reset and uninstall, §4.16's census and the march; the bodies away row below |
 
 **Decided here** (each can be undone; the reason is the plan's):
 
@@ -2675,7 +2685,7 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Kills | A chief killed at its camp steps down the killer's feud only; a killer with no feud steps none down; a third player's kill on a raid steps down the raided player's feud, as today | §4.2: a stranger's kill should not clear another player's grudge, but breaking a raid should end it. |
 | Den node | A market-less world node (`NodeKind::Lair`), not a haven | Ledger 13: a Frostmaw trades nothing, and a haven costs about 17 KB. |
 | Robbed Frostmaw | Kept persistent in its den, set at the steal | The steal should disarm it, not remove it; otherwise stealing and walking off farms a crystal at each refill without a fight. |
-| Aloft (provisional, MZ-16's second round) | On an Invasion the Umvuthi's puppet floats seated 2 blocks over the ground at the rear of its column wherever the band has bodies, its own body with vanilla's no-gravity flag and one colliding `move` a tick, its height from the `MOTION_BLOCKING` heightmap of loaded chunks only; its motion zeroed, its fall distance reset and its restriction moved with it every tick aloft; it settles within 32 blocks of the target with the attack flag, or on a player target in sight, never onto a fluid, fights any other target aloft, and rises once the attack flag has dropped and it has had no player target for 200 ticks; held by a ceiling it rises, then is moved to its place out of every player's sight or after 1,200 ticks; a trail of vanilla flame particles under it (on); killed aloft, it falls | §4.5 (MZ-15, MZ-16): the jar's Umvuthi cannot walk and has no walk animation, Ben rejected every animal mount, and its legs already hang when nothing is by its feet, as on its throne, so aloft it reads as it does at home, carried by its own sun; a hidden advance would be the war seat again (MZ-3's first form, a puppet placed behind the first wave); a move that collides needs no swim, drowning, suffocation, supernova or Carry On guard, and within reach aloft it can be struck, or traded with by a masked player, as at home. Awaiting Ben with the other options of MZ-16's second round (below). |
+| Aloft (Ben's, MZ-16's second round, above) | On an Invasion the Umvuthi's puppet floats seated 2 blocks over the ground at the rear of its column wherever the band has bodies, its own body with vanilla's no-gravity flag and one colliding `move` a tick, its height from the `MOTION_BLOCKING` heightmap of loaded chunks only; its motion zeroed, its fall distance reset and its restriction moved with it every tick aloft; it settles within 32 blocks of the target with the attack flag, or on a player target in sight, never onto a fluid, fights any other target aloft, and rises once the attack flag has dropped and it has had no player target for 200 ticks; held by a ceiling it rises, then is moved to its place out of every player's sight or after 1,200 ticks; a trail of vanilla flame particles under it (on); killed aloft, it falls | §4.5 (MZ-15, MZ-16): the jar's Umvuthi cannot walk and has no walk animation, Ben rejected every animal mount, and its legs already hang when nothing is by its feet, as on its throne, so aloft it reads as it does at home, carried by its own sun; a hidden advance would be the war seat again (MZ-3's first form, a puppet placed behind the first wave); a move that collides needs no swim, drowning, suffocation, supernova or Carry On guard, and within reach aloft it can be struck, or traded with by a masked player, as at home. Ben chose it on 2026-10-22 (MZ-16's second round, above); the options he set aside are §4.5's. |
 | Chief stack | The leading Umvuthi is outside the party's units (no unit, quota or wave count), but its strength, 5.0, adds to its band's | §4.5: it goes to the fight and fights there, as CONFLICT-LIFE.md §2.7 also counts it. |
 | Seen coming | One record per change of a party's march, BAND_MARCH (the route with its ticks, phase, kind, counts, the chief's flags); its position is the route interpolated by time, which is `party_pos`; a band met on the march stands as a column from that position | §4.16 (MZ-15): the far view and the bodies read one source, so a box becomes bodies where it stands. |
 | Walk home | A band walking home has bodies where a player is, as one going out does, and is handed back at a camp that is in; its route home starts at `party_chart_pos`; an embodied band that arrives keeps its puppets; a stack outside the ticking edge waits pending until it is inside (MZ-17) | §4.16 (MZ-15): a march that vanished on its way home, or was spawned again at the fight, would break the picture Ben asked for; the folded position would send a band that crossed a seam a lap the wrong way. |
@@ -2690,9 +2700,41 @@ before and after, and a sampler bench at 200 trains on the laptop.
 | Over water | The Umvuthi floats 2 blocks over a fluid's surface (the heightmap counts fluids), never settles onto one, and floats on to the first ground, but fights where it floats within 8 blocks of a target on water | §4.5: aloft it never enters water, so it needs no swim and no drowning cancelled. |
 | A dying chief | A chief puppet taken back during its death animation drops its loot first | §4.5: the jar drops it only at the 115-tick animation's end, so a stop in that window would lose the Sol Visage. |
 
-**Questions** (recommended option first):
+**Questions:** none open. Ben answered the last of them, MZ-16's second round and MZ-17, on 2026-10-22
+(above).
 
-| Id | Question | Recommended | Alternatives |
-|---|---|---|---|
-| MZ-16 | How the Umvuthi travels with its band now that every animal mount is rejected (MZ-16's second round, new 2026-10-22; §4.5, §4.16, ledger 24). **Provisional (a), awaiting Ben** | (a) **aloft, borne by its sun**: its own body floats seated 2 blocks over the ground at the rear of its column, its legs hanging as on its throne and its head-sun lit, with vanilla's no-gravity flag and one colliding `move` a tick; turned by a re-pair (a fresh add bundle to the clients tracking it); it sinks to fight and rises to go; a trail of vanilla flame particles under it (on, test 31's screenshots decide); no new entity, no client mod, no swim or supernova mixin; about 330 Java lines for ledger 24, about 170 fewer than the horse | (b) **sun steps**: it blinks from one of its own sunstrikes to the next; a strike needs open sky and an unchanged block under it, hits every entity within 3 blocks that is not an item twice (as a mob's projectile and as fire) and sets it alight, sparing only its own band (golems, villagers, animals, armour stands, carts and boats are hit), jumps the chief ahead of a column that walks, and is a saved entity that a chunk unload can strand after an uninstall (UR-1); (b') **particle sun steps**: the same blinks drawn with vanilla particles and no strike entity, so nothing is hit or saved, but it still blinks rather than travels and runs ahead of its column; (c) **bounds**, flung in arcs as its summons are: a seated body thrown with no leap animation; (d) **carried unseen** and placed at the fight in a sunstrike: against MZ-15, it is not seen coming and the far view has no chief to draw; (e) **it stays home** and a stand-in leads, MZ-3 (a). Also rejected: a walk mixin (no walk animation, four facings), a litter or a Create contraption (D3), the cranes' teleport (not the Umvuthi's) |
-| MZ-17 | How a band's bodies come in and go at the entity-ticking edge; C25 has a band and its master capture and despawn as one unit (`DECISIONS.md:80`) (new with the ninth review; §4.16, ledger 25). **Provisional (a), capture per stack, amends C25, awaiting Ben** | (a) each stack its own group in the ConflictBridge, a plugin that keeps its own groups as HerdBridge does: a stack not yet wholly inside held pending, a stack still pending when the band stops walking in from the edge (CL-D35) and holding one chunk inside the edge until the band moves on, a taken puppet booked as taken (A10) with its taker, the engine seeing one embodiment; about 180 bridge lines, no core or record change | (b) keep C25 for bands: one group, in only once wholly ticking and out whole; no cost, but a column's head comes in up to its length inside the edge, within 128 blocks at s = 8, and a band along the edge comes and goes whole; (c) capture per member, in the bridge: about the same cost, and a pack or a row splits at the edge. No option touches the core's registry, whose only caller is the caravans' SPAWN_GROUP (`CommandDispatcher.java:264`), or the herds' and dragons' bridges, which keep their own groups |
+## 9. Build order
+
+Each slice lands on main by itself with its own tests and leaves main working. Ledger numbers are §2's,
+GameTests are §7's by number, and "run N" is `rtsim-cli sim mowzie`'s run N. Every Java slice runs its
+GameTests against the real engine. A slice that changes a page format regenerates rtsim-view's fixtures
+from fresh GameTest worlds and adds no migration. Record ids are taken when a slice lands, after
+`git log --all -S` finds no other branch using them. Choices made while building are recorded in
+`docs/choices-mowzie-build.md`. An Opus adversarial review checks M1 to M5 and M10 before each lands.
+
+Three things are left out of this order on purpose:
+- **No council.** Mowzie runs on today's ladder (ledgers 2 and 3), so CONFLICT-LIFE.md's council is
+  not built here.
+- **Two CONFLICT-LIFE pieces are built here, as this plan names them:**
+  - BAND_MARCH (ledger 23). Its joint flag and partner agent are written as zero until alliances
+    land.
+  - The walk-in from the ticking edge (CL-D35, ledger 25).
+- **No chat notices, and no pact notices.** Conflict news stays out of chat and is told in the world
+  (CL-9 widened, Ben, 2026-10-22: "All faction news in-world"; CONFLICT-LIFE.md §2.17). §4.12's told
+  pact is revised, and no slice here builds a text notice: NOTICE_SHOWN keeps only the roar and the
+  gong.
+
+| Slice | What it builds | Ledger | Tests | Needs |
+|---|---|---|---|---|
+| M1 Records | The 17 record kinds and DEMAND_SETTLED's outcome 5, in `boundary.rs` and `docs/boundary.md` §9, decoded in rtsim-jni. A kind whose engine half comes later is counted and dropped until then. DIFFICULTY (no war party leaves on Peaceful), NOTICE_SHOWN (a notice kept until shown, resent at session start), a wiped envoy's withdrawn demand | 14 (in part) | Codec round trips for every kind; rtsim-jni fake-Java tests for Peaceful, the kept notice and outcome 5 | |
+| M2 Cultures | `frostmaw.json` and `umvuthana.json`, empty rungs, repeat, `NodeKind::Lair`, threat source and class, destroyed loot, the `gold_nugget` good and tribute by value. No plugin finds these cultures yet, so today's game is unchanged | 2, 3, 9, 10, 12, 13, 15 | Culture and ladder unit tests; the `sim mowzie` scaffold | M1 |
+| M3 ConflictBridge | The conflict module's Java half in core, played by vanilla bodies for today's cultures. It covers territories and their hash, territory signals, envoy and payment, the envoy guard, the raid director, steer, recall, casualties and notices. Each stack is its own group: until M10, a stack is placed at BAND_MATERIALIZE's position, not in a column. Also the Peaceful flag, the strength hook, the `threat/ignored` tag and Carry On takes of puppets | 16 (not the camp plumbing), 19, 20, 25 (not the column) | Core GameTests with the real engine: a goblin raid materialized per stack, steered, recalled and killed; 14 with stand-ins; 18; 19 | M1 |
+| M4 Camp reconciler, engine | Slots, epochs, the per-camp cap, waiting for whole bodies, CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES and CAMP_DEATH | 6, 7 | Run 10 (Java emulated); run 8's reconcile in flight; the faction bench before and after | M2 |
+| M5 Camp reconciler, Java | The plugin `neoforge/mowziesmobs`: adapters, camp finding, the census, and the reconcile lines for both kinds. In core: the `camp_member` attachment and its index, markers, footprint levels, and entity chunks in the barrier | 16 (camp plumbing), 18 (in part), 22 | 1, 3, 4, 5, 21, and 22 except its march and aloft cases | M3, M4 |
+| M6 Frostmaw | A chief killed at the camp, the den's arrival on `rtsim-kernel::renewal`, CHIEF_STATE, the steal mixin, restriction and the held spawn | 5, 6 (den), 14 (CHIEF_STATE) | 2, 6, 7, 15 (Frostmaw); runs 6 (den) and 7 | M5 |
+| M7 Rail | The rail meter, `set_emission_for`, a district-free focus, and the train sampler | 1, 17 | 10, 11; runs 1 (no ambushes), 2, 3, 4 and 9 | M6 |
+| M8 Lying in wait | AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar | 8 | 8, 9; run 1's ambushes, run 8 | M7 |
+| M9 Umvuthana | The chief leads; hunted animals; tribute at the grove's price; CHIEF_PAID, TRADED and HAVEN_CHEST; trade memory; the envoy party, raptors, the heir and Rule U | 4, 11, 12, 14 (the rest), 18 (the rest but travel) | 12, 13, 14, 15 (Umvuthi), 16, 17, 20, 25, 27, 30; runs 5, 6 (grove) and 12 | M5 |
+| M10 March | BAND_MARCH, the walk home, re-binding, `lose_units` keeping `spawned`; the column, the pending stacks and the walk-in | 23, 25 (the column) | 28, 32, 33, 34, 22's march cases; run 11 without aloft, run 13 | M9 |
+| M11 Aloft | The Umvuthi aloft and CHIEF_BODY | 24 | 23, 24, 26, 29, 31, 35, 36, 22's aloft cases; run 11 | M10 |
+| M12 S9 | EQUILIBRIUM.md's S9 on the shared renewal rule. If S3 (site ledger, kill credit) is not on main by then, its pieces land first as their own slice, following EQUILIBRIUM.md §4 | | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, and S9's five GameTests; the sampler bench at 200 trains | M11, S3 |
