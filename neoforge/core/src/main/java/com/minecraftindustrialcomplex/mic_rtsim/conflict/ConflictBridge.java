@@ -182,6 +182,8 @@ public final class ConflictBridge implements SessionPlugin {
         boolean guarded, insulted;
         /** The envoy's: DEMAND_SETTLED's outcome once its demand is closed, 0 while open (the envoy then says it). */
         int settled;
+        /** The envoy's: the good its demand asked for, kept after settlement so a click offering it is answered. */
+        Item good;
 
         Party(long agent, int epoch, ResourceKey<Level> dimension, long faction, boolean envoy, int purpose, int flags) {
             this.agent = agent;
@@ -601,7 +603,8 @@ public final class ConflictBridge implements SessionPlugin {
             gone(sl, ConflictRecords.BY_OTHER, null, s.gameTime(), false);
             return;
         }
-        // Unloaded or changed dimension: it left the area; the pass takes its stack back to pending.
+        // Unloaded or changed dimension: the pass makes it again at its place after a cooldown, or takes
+        // its stack back to pending if the place no longer ticks (MZB-125).
     }
 
     @Override
@@ -709,7 +712,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /**
      * ENVOY_MATERIALIZE: the envoy and its guards as one stack at the record's position, the first member
-     * the envoy (its name shows the demand); guarded (§4.5) until a player strikes one of them.
+     * the envoy (named "<Culture> Envoy", MZB-101); guarded (§4.5) until a player strikes one of them.
      */
     private void envoy(ByteBuffer b, int at, int size, int m, EngineNames names, long now) {
         long cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
@@ -1008,6 +1011,8 @@ public final class ConflictBridge implements SessionPlugin {
         UUID player = uuid(b.getLong(at + ConflictRecords.Settled.PLAYER_MOST), b.getLong(at + ConflictRecords.Settled.PLAYER_LEAST));
         Party p = byAgent.get(b.getLong(at + ConflictRecords.Settled.AGENT));
         if (p != null && p.envoy) {
+            if (p.demand != null)
+                p.good = p.demand.item;
             p.demand = null;
             p.settled = outcome;
             nameEnvoy(p);
@@ -1812,7 +1817,7 @@ public final class ConflictBridge implements SessionPlugin {
             return false;
         if (p.demand == null && p.settled == 0)
             return false;
-        Item good = p.demand != null ? p.demand.item : null;
+        Item good = p.demand != null ? p.demand.item : p.good;
         ItemStack main = player.getMainHandItem(), off = player.getOffhandItem();
         boolean mainGood = good != null && main.is(good), offGood = good != null && off.is(good);
         if (hand == InteractionHand.OFF_HAND) {
@@ -1836,10 +1841,15 @@ public final class ConflictBridge implements SessionPlugin {
     /**
      * Takes what is owed of the good in {@code held} (TRIBUTE_PAID) when the demand is open and to this
      * player, else nothing; either way the envoy says its line (what is still owed, or why it took none).
+     * A settlers' demand (no player) takes nothing from a player's hand: the click only shows it.
      */
     private boolean pay(ServerPlayer player, Entity envoy, Party p, ItemStack held, long now) {
         Demand d = p.demand;
-        if (p.player == null || closed(p, now) != null) {
+        if (p.player == null) {
+            say(player, envoy);
+            return true;
+        }
+        if (closed(p, now) != null) {
             paymentsRefused++;
             say(player, envoy);
             return true;

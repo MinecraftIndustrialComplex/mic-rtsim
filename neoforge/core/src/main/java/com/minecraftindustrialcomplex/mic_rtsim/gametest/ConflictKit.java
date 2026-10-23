@@ -8,6 +8,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import net.minecraft.gametest.framework.GameTestAssertException;
+import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
@@ -405,9 +409,50 @@ public final class ConflictKit {
      * no other test uses: x below -3,000,000, z above 3,000,000.
      */
     public static int[] farBase() {
-        int x = -3_000_000 - ThreadLocalRandom.current().nextInt(0, 4_000) * 1_024;
-        int z = 3_000_000 + ThreadLocalRandom.current().nextInt(0, 4_000) * 1_024;
+        int x = FAR_X - ThreadLocalRandom.current().nextInt(0, FAR_SLOTS) * FAR_STEP;
+        int z = FAR_Z + ThreadLocalRandom.current().nextInt(0, FAR_SLOTS) * FAR_STEP;
         return new int[]{x, z};
+    }
+
+    private static final int FAR_X = -3_000_000, FAR_Z = 3_000_000, FAR_SLOTS = 4_000, FAR_STEP = 1_024;
+
+    /**
+     * Releases every chunk forced in the far-base area, with a slot's margin each side: forced chunks
+     * persist in the reused world, so a run that failed before its own release leaves them ticking for
+     * every later run. Call at the start of a test that forces chunks there (batches run one at a time).
+     * The count released.
+     */
+    public static int releaseFarChunks(ServerLevel level) {
+        int x0 = (FAR_X - FAR_SLOTS * FAR_STEP) >> 4, x1 = (FAR_X + FAR_STEP) >> 4;
+        int z0 = (FAR_Z - FAR_STEP) >> 4, z1 = (FAR_Z + FAR_SLOTS * FAR_STEP + FAR_STEP) >> 4;
+        int n = 0;
+        for (long c : level.getForcedChunks().toLongArray()) {
+            int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
+            if (cx >= x0 && cx <= x1 && cz >= z0 && cz <= z1 && level.setChunkForced(cx, cz, false))
+                n++;
+        }
+        return n;
+    }
+
+    /** Runs {@code r} when the test ends, passed or failed (a failed test skips its sequence's last steps). */
+    public static void onEnd(GameTestHelper helper, Runnable r) {
+        helper.testInfo.addListener(new GameTestListener() {
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                r.run();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                r.run();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo old, GameTestInfo next, GameTestRunner runner) {}
+        });
     }
 
     /** Forces or releases a chunk; true when the call changed it. */

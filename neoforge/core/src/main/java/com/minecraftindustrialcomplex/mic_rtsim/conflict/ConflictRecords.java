@@ -64,7 +64,7 @@ public final class ConflictRecords {
     public static final int PURPOSE_ENVOY = 1, PURPOSE_SCOUTS = 2, PURPOSE_RAID = 3, PURPOSE_INVASION = 4, PURPOSE_SIEGE = 5,
             PURPOSE_PLUNDER = 6;
 
-    /** ENVOY_ANSWER's aux. */
+    /** ENVOY_ANSWER's aux. The bridge sends only ATTACKED: no click refuses (MZB-110); REFUSED stays in the codec. */
     public static final int ANSWER_ACCEPTED = 1, ANSWER_REFUSED = 2, ANSWER_ATTACKED = 3;
 
     /** DEMAND_SETTLED's aux. */
