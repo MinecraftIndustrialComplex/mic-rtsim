@@ -124,16 +124,16 @@ fn nobody_watching_costs_no_ship_events() {
     assert_eq!(st.materialized, 0);
     assert_eq!(st.promotions, 0);
     // Every event was a pirate's: four a hunt at most (decide, reach, bored, home), plus the
-    // first decisions.
+    // first decisions, and the checks of the ports their hunts warmed (§2.4.6a rule 7, PC25).
     let pirates = c.ships.havens.iter().map(|h| h.ships.len()).sum::<usize>() as u64;
     assert!(st.hunts > 0);
     assert!(
-        st.events <= 4 * (st.hunts + st.fruitless) + pirates,
+        st.events <= 4 * (st.hunts + st.fruitless) + pirates + st.port_checks,
         "{st:?} with {pirates} pirates"
     );
     for (k, _) in c.ships.pending_by_kind() {
         assert!(
-            ["decide", "reach_lane", "bored", "home", "refit"].contains(&k),
+            ["decide", "reach_lane", "bored", "home", "refit", "dock_check"].contains(&k),
             "a pending {k} event with nobody watching"
         );
     }

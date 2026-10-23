@@ -274,6 +274,30 @@ pub fn coastal_on(
     tun: ShipTunables,
     mask: &dyn crate::water::WaterMask,
 ) -> (World, Ships, u32, Option<u32>) {
+    coastal_built(seed, tun, mask, 1, true)
+}
+
+/// [`coastal`] with `pirates` ships of each medium at the haven and the navy only if `navy`:
+/// the coast the blockade tests close ports on (§2.4.6a rule 7).
+pub fn coastal_with(seed: u64, tun: ShipTunables, pirates: u32, navy: bool) -> Coastal {
+    let mask = coast();
+    let (world, ships, haven, navy) = coastal_built(seed, tun, &mask, pirates, navy);
+    Coastal {
+        world,
+        ships,
+        mask,
+        haven,
+        navy,
+    }
+}
+
+fn coastal_built(
+    seed: u64,
+    tun: ShipTunables,
+    mask: &dyn crate::water::WaterMask,
+    pirates: u32,
+    navy: bool,
+) -> (World, Ships, u32, Option<u32>) {
     let (goods, ids) = ws::goods();
     let book = ws::recipes(&ids);
     let ss = sites();
@@ -307,10 +331,14 @@ pub fn coastal_on(
     let hi = ss.iter().position(|s| s.haven).expect("a haven");
     let hs = &ss[hi];
     let haven = ships
-        .add_haven(&mut w, hi, 3, (hs.x, 63, hs.z + 60), 1, Tick::ZERO)
+        .add_haven(&mut w, hi, 3, (hs.x, 63, hs.z + 60), pirates, Tick::ZERO)
         .expect("a haven node");
     ships.build(&mut w, mask, Tick::ZERO);
-    let navy = ships.add_navy(&mut w, 0, Medium::Sea, Tick::ZERO);
+    let navy = if navy {
+        ships.add_navy(&mut w, 0, Medium::Sea, Tick::ZERO)
+    } else {
+        None
+    };
     (w, ships, haven, navy)
 }
 

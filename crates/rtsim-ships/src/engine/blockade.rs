@@ -198,6 +198,7 @@ impl Ships {
             return;
         }
         p.check = None;
+        self.stats.port_checks += 1;
         let full = self.full_share(self.docks[d as usize].medium);
         let (quarter, half) = (full / 4, full / 2);
         let lanes: Vec<u32> = self

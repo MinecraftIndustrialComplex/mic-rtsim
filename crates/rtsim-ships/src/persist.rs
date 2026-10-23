@@ -881,6 +881,7 @@ fn put_blockades(w: &mut Writer, ports: &BTreeMap<u32, PortState>, s: &ShipStats
         s.reopenings,
         s.ships_laid_up_by_closure,
         s.closed_dock_days,
+        s.port_checks,
     ];
     if ports.is_empty() && counts.iter().all(|&c| c == 0) {
         return;
@@ -932,6 +933,7 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMa
     s.reopenings = r.var_u64()?;
     s.ships_laid_up_by_closure = r.var_u64()?;
     s.closed_dock_days = r.var_u64()?;
+    s.port_checks = r.var_u64()?;
     Ok(ports)
 }
 

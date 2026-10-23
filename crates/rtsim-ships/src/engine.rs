@@ -510,12 +510,13 @@ pub struct ShipStats {
     pub bored: u64,
     /// Ports that close under blockade (§2.4.6a rule 7): blockades begun, ports closed and
     /// reopened, merchant ships laid up by a closure (each time one is), and the days ports were
-    /// closed (whole days, credited at each reopening).
+    /// closed (whole days, credited at each reopening), and the ports' checks run.
     pub blockades: u64,
     pub closures: u64,
     pub reopenings: u64,
     pub ships_laid_up_by_closure: u64,
     pub closed_dock_days: u64,
+    pub port_checks: u64,
 }
 
 /// One line of what happened, for the CLI.
