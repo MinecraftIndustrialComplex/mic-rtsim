@@ -1037,6 +1037,11 @@ impl Engine {
                 let dist = self.district_mut(p.district);
                 dist.stations.insert(p.station);
                 dist.exchange.entry(p.station).or_default().ports = inventories;
+                // Each station's ports take its cargo as one: their units join (choice SC75).
+                let revision = dist.revision;
+                let sets = dist.exchange.values().map(|r| r.ports.clone()).collect();
+                self.glass
+                    .station_ports(at, p.district, revision, sets, &self.tun.glass);
             }
             Obs::ReconcileResult(r) => self.reconcile_result(at, r),
             Obs::CarriageResult(r) => self.carriage_result(at, r),

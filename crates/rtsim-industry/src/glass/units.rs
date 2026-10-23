@@ -8,6 +8,10 @@
 //! them, and `P(u,g)` the solve's predictions on them (`Solution.per_store`), as the district's are
 //! over every read store.
 //!
+//! **A station's ports** (§4.4, choice SC75): the inventories one station's interfaces reach
+//! (IND_STATION_PORTS) take its train cargo, which cannot be split between them, so the units
+//! holding them are one unit, judged on one row with those stores interior.
+//!
 //! **One unit or none** judges nothing of its own: the district window is that unit's window (§3.4,
 //! "today's verdict for districts with one section"), so a district of one line holds no extra rows.
 //!
@@ -27,7 +31,7 @@ use std::collections::BTreeMap;
 
 use super::graph::Graph;
 use super::report::{class, why};
-use super::sections::{NONE, Sections, extent, is_virtual};
+use super::sections::{NONE, Sections, Uf, extent, is_virtual};
 use super::solve::Solution;
 use crate::ids::{BlockPos, Good, VecMap};
 
@@ -59,9 +63,10 @@ pub struct Units {
 }
 
 impl Units {
-    /// The units of `g` cut into `s`.
-    pub fn build(g: &Graph, s: &Sections) -> Units {
-        let groups = s.groups();
+    /// The units of `g` cut into `s`, the groups holding the inventories of each of `joins` (a
+    /// station's ports, SC75) joined into one.
+    pub fn build(g: &Graph, s: &Sections, joins: &[Vec<u32>]) -> Units {
+        let groups = join_groups(g, s, s.groups(), joins);
         let nu = groups.len();
         let mut of_section = vec![NONE; s.len()];
         for (u, gr) in groups.iter().enumerate() {
@@ -246,6 +251,64 @@ pub struct UnitBound {
     pub var: f64,
     /// The largest batch into plus out of its stores.
     pub batch: f64,
+}
+
+/// `groups` (each ascending, ordered by its lowest section) with those holding an inventory of one
+/// of `joins` joined: a section holds an inventory when one of its nodes or stores does.
+fn join_groups(
+    g: &Graph,
+    s: &Sections,
+    groups: Vec<Vec<u16>>,
+    joins: &[Vec<u32>],
+) -> Vec<Vec<u16>> {
+    if joins.is_empty() || groups.len() < 2 {
+        return groups;
+    }
+    let mut group_of = vec![0u32; s.len()];
+    for (k, gr) in groups.iter().enumerate() {
+        for &x in gr {
+            group_of[x as usize] = k as u32;
+        }
+    }
+    let mut holders: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for (si, sec) in s.list.iter().enumerate() {
+        for &v in sec.nodes.iter().chain(sec.stores.iter()) {
+            if let Some(i) = g.node(v).inventory {
+                holders.entry(i).or_default().push(group_of[si]);
+            }
+        }
+    }
+    let mut uf = Uf::new(groups.len());
+    let mut joined = false;
+    for set in joins {
+        let mut first: Option<u32> = None;
+        for gr in set.iter().filter_map(|i| holders.get(i)).flatten() {
+            match first {
+                None => first = Some(*gr),
+                Some(f) if uf.find(f) != uf.find(*gr) => {
+                    uf.join(f, *gr);
+                    joined = true;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if !joined {
+        return groups;
+    }
+    let mut by: BTreeMap<u32, Vec<u16>> = BTreeMap::new();
+    for (k, gr) in groups.into_iter().enumerate() {
+        by.entry(uf.find(k as u32)).or_default().extend(gr);
+    }
+    let mut out: Vec<Vec<u16>> = by
+        .into_values()
+        .map(|mut gr| {
+            gr.sort_unstable();
+            gr
+        })
+        .collect();
+    out.sort_unstable_by_key(|gr| gr[0]);
+    out
 }
 
 /// Every unit's bounds under `sol`, by (unit, good); empty unless the units are [`Units::active`].

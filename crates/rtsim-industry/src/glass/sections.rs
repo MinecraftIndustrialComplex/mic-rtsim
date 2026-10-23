@@ -121,13 +121,13 @@ pub fn extent(n: &GraphNode) -> Option<(BlockPos, BlockPos)> {
     Some((p, p))
 }
 
-struct Uf(Vec<u32>);
+pub(super) struct Uf(Vec<u32>);
 
 impl Uf {
-    fn new(n: usize) -> Uf {
+    pub(super) fn new(n: usize) -> Uf {
         Uf((0..n as u32).collect())
     }
-    fn find(&mut self, mut x: u32) -> u32 {
+    pub(super) fn find(&mut self, mut x: u32) -> u32 {
         while self.0[x as usize] != x {
             let p = self.0[x as usize];
             self.0[x as usize] = self.0[p as usize];
@@ -136,7 +136,7 @@ impl Uf {
         x
     }
     /// Joins the two classes; the lower root stays.
-    fn join(&mut self, a: u32, b: u32) {
+    pub(super) fn join(&mut self, a: u32, b: u32) {
         let (a, b) = (self.find(a), self.find(b));
         if a != b {
             let (lo, hi) = (a.min(b), a.max(b));
