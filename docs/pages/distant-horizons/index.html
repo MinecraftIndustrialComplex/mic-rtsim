@@ -343,15 +343,15 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <div class="box" data-ss-id="gallery-fix">
     <h3>Seen in the footage: hand-over glitches</h3>
     <p>Each happens at a hand-over between the two renderers: Distant Horizons' drawing far away, and the game's own dragons and trains up close.</p>
-    <p><strong>Being fixed:</strong></p>
+    <p><strong>Fixed on main</strong> (e9f4eccc, choices DHT40 to DHT45), not yet filmed again:</p>
     <ul>
-      <li>The far object and the real body both show for up to about 0.85 s.</li>
-      <li>A real dragon spawns facing another way from its far object, and about 3 blocks higher.</li>
-      <li>A train vanishes for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hides the near box there.</li>
-      <li>The far object trails the real train by about half a second.</li>
+      <li>The far object and the real body both showed for up to about 0.85 s. Now the far object goes in the frame the real one appears.</li>
+      <li>A real dragon spawned facing another way from its far object, and about 3 blocks higher. Now it faces the way its box flew, and the box is drawn at the body's middle.</li>
+      <li>A train vanished for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hid the near box there. Now Distant Horizons draws on into its own fade, so the near box fades into the same box.</li>
+      <li>The far object trailed the real train by about half a second. Now it runs on from its last positions instead of trailing them.</li>
     </ul>
     <p><strong>Dropped, because the boxes are being replaced:</strong> the two fixes that only resized boxes, for a real dragon about twice its box's size and a train box bigger than the real carriage.</p>
-    <p>What already looked right: boxes keep to the right lane, with steady colour and no flicker. An agent is working on the rest now.</p>
+    <p>What already looked right: boxes keep to the right lane, with steady colour and no flicker.</p>
   </div>
 </section>
 
