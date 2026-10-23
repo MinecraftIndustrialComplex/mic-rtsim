@@ -98,7 +98,8 @@ under its own heading.
   `session_start`. Java's fake does not call it at open, so the rtsim-jni tests choose; the scenario
   calls it with Normal, so `rtsim-cli sim conflict` runs as before.
 - **MZB-26** (The page format): the conflict's pages are RTC4 with meta version 3 (the kept notice in
-  each feud, the Peaceful flag and three counters in the meta), with no migration.
+  each feud, the Peaceful flag and three counters in the meta), with no migration. The rtsim-view
+  fixtures are fresh core and create GameTest saves from the merged head, as before.
 
 ## M2 Cultures
 
