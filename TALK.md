@@ -472,8 +472,9 @@ credited talk with a ribbit (§7); the engine applies it once by op id, as the p
   each; the nearest settlement by the phase 1 market cells.
 - **Port state:** PORT_CLOSED when the latest of PortClosed and PortReopened about the holder is a
   closure; BLOCKADED when a Blockade about it is newer than both.
-- **When phase 1 is off** (U10) or the engine is not running, nothing answers: Java waits 20 ticks
-  (TK5), then speaks without facts.
+- **When phase 1 is off** (U10), the engine answers at once without HOLDER, so Java speaks fluff and
+  its own mood straight away (TK32). When the engine is not running, nothing answers: Java waits 20
+  ticks (TK5), then speaks without facts.
 
 ### 9.4 Report kinds (rtsim-knowledge `ReportKind`)
 
