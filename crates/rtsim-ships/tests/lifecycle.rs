@@ -790,10 +790,10 @@ fn a_navy_leaves_a_strong_haven_alone() {
 }
 
 /// S8b `no_assault_in_view` (§2.4.6a rule 3: nothing happens in a player's view). Once the coast's
-/// pirates have hunted a lane the navy patrols for a year, a player stands 100 blocks off the haven's dock, and at
-/// each look for 40 days the haven has nobody ashore (weak whatever is in port: 11 men at most
-/// against the gate's 12.73). No look breaks it. Once the player leaves, a look with the pool
-/// empty breaks it.
+/// pirates have hunted a lane the navy patrols for a year, a player stands 100 blocks off the
+/// haven's dock, and at each look for 40 days the haven has nobody ashore (weak whatever is in
+/// port: 11 men at most against the gate's 12.73). No look breaks it. Once the player leaves, a
+/// look with the pool empty breaks it.
 #[test]
 fn no_assault_in_view() {
     let tun = looks_often();
@@ -1216,8 +1216,8 @@ fn unattended_havens_rise_and_fall() {
 }
 
 /// S8b `unattended_havens_rise_and_fall` in full: ten centuries (96,000 game days) of seeds 1 to
-/// 30, the lifecycle on and off, and on with no year of robbery before an assault. Release only, for its length (`cargo test --release -p
-/// rtsim-ships --test lifecycle -- --ignored`).
+/// 30, the lifecycle on and off, and on with no year of robbery before an assault. Release only,
+/// for its length (`cargo test --release -p rtsim-ships --test lifecycle -- --ignored`).
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn unattended_havens_rise_and_fall_1000_years() {
