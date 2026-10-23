@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 242.585191,
+      "wall_ms": 220.202277,
       "checks": [
         {
           "name": "conservation",
@@ -736,7 +736,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 243.17579,
+      "wall_ms": 223.777996,
       "checks": [
         {
           "name": "conservation",
@@ -751,7 +751,7 @@
         {
           "name": "tribute de-escalates",
           "ok": true,
-          "detail": "4 tribute(s) paid, no war band; player b0b's rungs (the smog's owner): [None, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice]"
+          "detail": "4 envoy(s) met and 4 tribute(s) paid (days 1.65, 7.91, 14.17, 20.44), each back to notice for the 6-day respite; no demand unmet, no band; player b0b's rungs (the smog's owner): [None, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice, Envoy, Notice]"
         }
       ],
       "rungs": [
@@ -1283,7 +1283,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 236.635267,
+      "wall_ms": 218.976229,
       "checks": [
         {
           "name": "conservation",

@@ -4664,6 +4664,12 @@ impl Conflict {
 
     // ---- reads ------------------------------------------------------------------------------
 
+    /// The grievance at which faction `f`'s feuds climb to rung `s`, bent by its chief's
+    /// temperament (K2-8: up to 40 percent either way).
+    pub fn rung_threshold(&self, f: u32, s: Step) -> f64 {
+        self.theta(f, s)
+    }
+
     /// A feud as it stands at the engine's time (a projection).
     pub fn feud_view(&self, faction: u64, actor: ActorId) -> Option<FeudView> {
         let f = *self.by_key.get(&faction)?;
