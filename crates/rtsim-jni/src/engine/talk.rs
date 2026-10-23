@@ -23,6 +23,7 @@ use std::collections::{BTreeSet, VecDeque};
 use rtsim_conflict::engine::SETTLERS_KEY;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::handle::Handle;
+use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, rung_weight};
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::Topologies;
@@ -55,10 +56,13 @@ const LAIR_TAG: u64 = 0x4C41_4952 << 32;
 /// The upper half of an oil district's actor key (`DIST_TAG ^ site id` in rtsim-ecology's
 /// `oil.rs`): such a group is not a caravan.
 const DIST_PREFIX: u64 = 0x4449_5354;
+/// The upper half of a lair's actor key (`LAIR_TAG`): a lair the ecology does not hold any more is
+/// still not a caravan.
+const LAIR_PREFIX: u64 = LAIR_TAG >> 32;
 
-/// The ids of the news kinds that carry a rung or a code in their severity rather than a multiple
-/// of [`rtsim_knowledge::SEVERITY_UNIT`] (TK33): TALK's own and the conflict's and ports' kinds.
-const FIRST_NEWS_KIND: u16 = 10;
+/// A severity under this is read as a rung, whatever the kind, when ranking news (TK33): the
+/// conflict records rungs on today's kinds too (a robbery of 2, a rescue of 2, a killing of 4).
+pub const RUNG_LIMIT: u8 = 25;
 
 /// What TALK counts (`Engine::talk_stats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -167,6 +171,14 @@ fn refuse(st: &mut State, why: &str) {
     }
 }
 
+/// Whether every dictionary name fits a record of its own: a longer one could never be written,
+/// whatever the buffer (the same test as a resent transfer's, TK44).
+fn names_fit(names: &[(u32, &str)]) -> bool {
+    names
+        .iter()
+        .all(|(_, n)| wire::cmd::dict::size(n.len()) <= wire::MAX_RECORD)
+}
+
 /// Writes the answers that fit. Returns the highest sequence written and whether some wait for the
 /// next buffer.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
@@ -175,8 +187,9 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         let mut ans = answer(st, &q);
         let names: Vec<(u32, &str)> = ans.whats.iter().map(|(_, k, n)| (*k, n.as_str())).collect();
         let need = st.dict_bytes(&names) + ans.facts.size();
-        if need > w.capacity() {
-            // Cannot happen with four news items; a stuck ask would hold the others back.
+        if !names_fit(&names) || need > w.capacity() {
+            // Cannot happen with four news items and real names; a stuck ask would hold the others
+            // back (TK44).
             super::log_error(&format!(
                 "a TALK_FACTS of {need} bytes can never fit a command buffer; dropped"
             ));
@@ -242,6 +255,8 @@ impl Answer {
 /// The holder an ask names, as phase 1 knows it.
 struct Holder {
     actor: ActorId,
+    /// A caravan's home village: reports about it are about the caravan too (TK36).
+    home: Option<ActorId>,
     /// Its market node, for a village.
     node: Option<usize>,
     /// Where it is now, when it is in the ask's frame.
@@ -261,6 +276,7 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let n = l.world.nodes.get(node)?;
             Some(Holder {
                 actor: n.actor,
+                home: None,
                 node: Some(node),
                 pos: (n.pos.frame == frame).then_some((i64::from(n.pos.x), i64::from(n.pos.z))),
             })
@@ -271,6 +287,7 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let p = l.world.caravan_place(car, l.world.now());
             Some(Holder {
                 actor: car.holder,
+                home: l.world.nodes.get(car.home).map(|n| n.actor),
                 node: None,
                 pos: (p.frame == frame).then_some((i64::from(p.x), i64::from(p.z))),
             })
@@ -325,11 +342,12 @@ fn answer(st: &State, a: &Ask) -> Answer {
         topo: &st.topology.shared,
         now,
     };
+    let us: Vec<ActorId> = std::iter::once(holder.actor).chain(holder.home).collect();
     let tun = k.tunables();
     let mut cands: Vec<Candidate> = reports
         .into_iter()
         .map(|r| {
-            let flags = talk_flags(&r, player, holder.actor)
+            let flags = talk_flags(&r, player, &us)
                 | match holder.pos {
                     Some(h) if ctx.seen_from(h, r.place) => news::SEEN,
                     _ => 0,
@@ -401,16 +419,18 @@ pub const fn kind_weight(kind: ReportKind) -> u64 {
     }
 }
 
-/// The severity's part of a score. Today's kinds measure severity on `SEVERITY_UNIT` = 100 (their
-/// base delta), so it counts as it is. The news kinds' severity is a small code (a rung, an
-/// outcome, 1 or 2 for a port), so it counts as 100 plus 25 a step to four: a rung 4 feud outweighs
-/// a rung 1 by 75 percent, and none weighs nothing.
+/// The severity's part of a score. A severity on `SEVERITY_UNIT` = 100 (their base delta) counts
+/// as it is. A small code (a rung, an outcome, 1 or 2 for a port) counts as
+/// [`rtsim_knowledge::report::rung_weight`]: 100 plus 25 a step to four, so a rung 4 feud outweighs
+/// a rung 1 by 25 percent and a rung 1 outweighs a fair trade. A code is the news kinds' severity
+/// always, and any kind's under [`RUNG_LIMIT`]: the conflict records a robbery, a rescue or a
+/// killing by its rung (2, 2, 4), not on the base-delta scale (TK33). Nothing weighs less than 25.
 pub fn severity_term(kind: ReportKind, severity: u8) -> u64 {
-    if (kind as u16) < FIRST_NEWS_KIND {
-        u64::from(severity.max(1))
+    u64::from(if kind.is_news() || severity < RUNG_LIMIT {
+        rung_weight(severity)
     } else {
-        100 + 25 * u64::from(severity.min(4))
-    }
+        severity
+    })
 }
 
 /// Freshness in thousandths: 1,000 at age 0, falling in a straight line to 250 at the end of the
@@ -453,8 +473,9 @@ fn rank(c: &mut Vec<Candidate>) {
     c.truncate(MAX_NEWS);
 }
 
-/// A news item's talk flags (who and whom, against the asker and the holder).
-fn talk_flags(r: &Report, player: Option<ActorId>, holder: ActorId) -> u32 {
+/// A news item's talk flags (who and whom, against the asker and `us`: the holder, and for a
+/// caravan its home village too, TK36).
+fn talk_flags(r: &Report, player: Option<ActorId>, us: &[ActorId]) -> u32 {
     let mut f = 0;
     if player.is_some_and(|p| r.who == p) {
         f |= news::YOU_DID;
@@ -462,10 +483,10 @@ fn talk_flags(r: &Report, player: Option<ActorId>, holder: ActorId) -> u32 {
     if player.is_some_and(|p| r.whom == p) {
         f |= news::TO_YOU;
     }
-    if r.whom == holder {
+    if us.contains(&r.whom) {
         f |= news::TO_US;
     }
-    if r.who == holder {
+    if us.contains(&r.who) {
         f |= news::BY_US;
     }
     f
@@ -528,8 +549,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// Where a block is from the talker, the short way round (never plain subtraction: a seam is
-    /// crossed). `None` in another frame.
+    /// Where a block is from the talker, the short way round, in the talker's own chart: the image
+    /// of the block nearest the talker (`Topology::toward`), less the talker. Never plain
+    /// subtraction (a seam is crossed), and not `displacement` either: that vector is in the
+    /// canonical chart, so a talker standing in a turned tile would be sent the wrong way (TK47).
+    /// `None` in another frame.
     fn offset_of(&self, p: Place) -> Option<(i32, i32)> {
         self.offset(p.frame, i64::from(p.x), i64::from(p.z))
     }
@@ -538,8 +562,8 @@ impl Ctx<'_> {
         if frame != self.frame {
             return None;
         }
-        let (dx, dz) = self.topo.of(frame).displacement(self.from, (x, z));
-        Some((sat(dx), sat(dz)))
+        let (tx, tz) = self.topo.of(frame).toward(self.from, (x, z));
+        Some((sat(tx - self.from.0), sat(tz - self.from.1)))
     }
 
     /// Whether a place is within [`SEEN_BLOCKS`] of a holder at `h`, the short way round.
@@ -660,7 +684,8 @@ impl Ctx<'_> {
         self.placed(d, n.pos)
     }
 
-    /// A notable by what it belongs to: a camp's chief, a caravan's trader, a lair's dragon.
+    /// A notable by what it belongs to: a camp's chief, a caravan's trader, a port's pirate
+    /// captain, a lair's dragon.
     fn notable(&self, a: ActorId) -> Described {
         let k = &self.st.phase1.world.knowledge;
         let Some(n) = k.notable(a) else {
@@ -675,7 +700,7 @@ impl Ctx<'_> {
                     r.b = h.external;
                     (r, what)
                 }
-                None => self.caravan_ref(n.seed),
+                None => self.homed_at(n.seed, h.external),
             },
             Some(h) if h.kind == ActorKind::Group => match self.lair(h.external ^ LAIR_TAG) {
                 Some((l, (mut r, _))) => {
@@ -694,8 +719,23 @@ impl Ctx<'_> {
         }
     }
 
+    /// A notable at home in a settlement that is not a camp, by the settlement's kind: a village's
+    /// notable is a caravan's trader; a haven's or a base's is told as the haven or the base, so
+    /// "the pirates of X robbed us" and not a caravan that is gone (TK36).
+    fn homed_at(&self, seed: u64, key: u64) -> Described {
+        let l = &self.st.phase1;
+        let node = l.node_of(key).or_else(|| l.world.node_of_key(key));
+        match node.and_then(|i| l.world.nodes.get(i)).map(|n| n.kind) {
+            Some(NodeKind::Village(_)) => self.caravan_ref(seed),
+            Some(_) => self.settlement(key),
+            None => unknown(),
+        }
+    }
+
     /// A group actor: a camp, a lair, a caravan; the settlers and the oil districts are not
-    /// described.
+    /// described. A caravan that is gone looks like any other group nobody owns, so it is only
+    /// told as a gone caravan while the conflict runs and has had its say about camps; with the
+    /// conflict off a camp's group would be told as one (TK36).
     fn group(&self, key: u64) -> Described {
         if key == SETTLERS_KEY {
             return unknown();
@@ -706,10 +746,14 @@ impl Ctx<'_> {
         if let Some((_, d)) = self.lair(key ^ LAIR_TAG) {
             return d;
         }
-        if key >> 32 == DIST_PREFIX {
+        if matches!(key >> 32, DIST_PREFIX | LAIR_PREFIX) {
             return unknown();
         }
-        self.caravan_ref(key)
+        if self.caravan(key).is_some() || self.st.conflict.enabled {
+            self.caravan_ref(key)
+        } else {
+            unknown()
+        }
     }
 
     /// The village nearest a place, within [`NEAR_BLOCKS`], by phase 1's market cells (TK35).
@@ -769,6 +813,8 @@ pub(super) fn post(st: &mut State, c: &TalkReportCmd) {
 }
 
 fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
+    // Everything that can be refused without reading an actor comes first: a refused order must
+    // not have registered any (TK40).
     if !st.phase1.is_on() {
         return Err("phase 1 is off".into());
     }
@@ -780,14 +826,39 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
         .ok_or_else(|| format!("village {} is not adopted", c.village))?;
     let frame = st.phase1.world.nodes[node].pos.frame;
     let holder = st.phase1.world.nodes[node].actor;
-    let who = resolve(st, &c.who).ok_or("who does not resolve")?;
-    let whom = resolve(st, &c.whom).ok_or("whom does not resolve")?;
-    let w = &mut st.phase1.world;
-    let now = w.now();
-    if u64::from(c.ago) >= w.knowledge.tunables().lifetime(kind) {
+    for (name, v) in [("x", c.x), ("z", c.z)] {
+        if !(-COORD_LIMIT - 1..=COORD_LIMIT).contains(&v) {
+            return Err(format!("{name} {v} is past what a report can hold"));
+        }
+    }
+    let now = st.phase1.world.now();
+    if u64::from(c.ago) >= st.phase1.world.knowledge.tunables().lifetime(kind) {
         return Err("the report would already be expired".into());
     }
     let at = Tick(now.0.saturating_sub(u64::from(c.ago)));
+    let place = Place::new(frame, c.x, 64, c.z);
+    let player = c.who.class == class::PLAYER || c.whom.class == class::PLAYER;
+    let row = Report {
+        who: ActorId::NULL,
+        whom: ActorId::NULL,
+        kind,
+        severity: c.severity,
+        flags: c.flags | if player { FLAG_PLAYER } else { 0 },
+        at,
+        place,
+    }
+    .pack();
+    if !st.phase1.world.knowledge.reports().admits(&row) {
+        return Err("the report table is full of reports that matter more".into());
+    }
+    let who = resolve(st, &c.who);
+    let whom = resolve(st, &c.whom);
+    // Resolving may have registered actors (a player, a caravan nobody has seen): the world
+    // changed outside the input log whether or not the order goes on.
+    st.phase1.taint();
+    let who = who.ok_or("who does not resolve")?;
+    let whom = whom.ok_or("whom does not resolve")?;
+    let w = &mut st.phase1.world;
     let id = w.knowledge.record(Report {
         who,
         whom,
@@ -795,16 +866,16 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
         severity: c.severity,
         flags: c.flags,
         at,
-        place: Place::new(frame, c.x, 64, c.z),
+        place,
     });
     if id == Handle::NULL {
         return Err("the report table is full".into());
     }
     w.knowledge.witness(holder, id, now);
     // A test posts news. If its kind also writes vanilla gossip, nothing is written: the order
-    // puts a report on a board, it does not play the village's reaction out.
-    let _ = w.knowledge.take_vanilla_gossip();
-    st.phase1.taint();
+    // puts a report on a board, it does not play the village's reaction out. Only this report's
+    // writes go; another module's queued gossip stays (TK40).
+    w.knowledge.drop_vanilla_gossip_of(id);
     Ok(())
 }
 
@@ -1104,11 +1175,14 @@ mod tests {
         assert_eq!(severity_term(ReportKind::Feud, 9), 200, "past four is four");
         assert_eq!(severity_term(ReportKind::PortClosed, 0), 100);
         assert_eq!(severity_term(ReportKind::Assault, 100), 100);
-        assert_eq!(
-            severity_term(ReportKind::Assault, 0),
-            1,
-            "never weighs nothing"
-        );
+        assert_eq!(severity_term(ReportKind::Assault, 101), 101);
+        // The conflict records some old kinds by rung (Robbery 2, Rescue 2, Killing 4): under 25 a
+        // severity of any kind is a rung.
+        assert_eq!(severity_term(ReportKind::Robbery, 2), 150);
+        assert_eq!(severity_term(ReportKind::Killing, 4), 200);
+        assert_eq!(severity_term(ReportKind::Assault, 0), 100);
+        assert_eq!(severity_term(ReportKind::Assault, 24), 200);
+        assert_eq!(severity_term(ReportKind::Assault, 25), 25);
         assert_eq!(kind_weight(ReportKind::Trade), 3);
         assert_eq!(kind_weight(ReportKind::Theft), 10);
         for k in [
@@ -1125,9 +1199,30 @@ mod tests {
     }
 
     #[test]
+    fn a_rung_coded_robbery_outranks_a_fair_trade_between_strangers() {
+        let [p, s, t, _] = handles();
+        let at = 5_000;
+        let life = Tunables::default().lifetime(ReportKind::Robbery);
+        let now = at + life / 4;
+        // What the conflict writes: severity 2 is a rung, not a base delta of 2.
+        let robbery = cand(rep(p, s, ReportKind::Robbery, 2, at), now, news::TO_US);
+        let trade = cand(rep(t, s, ReportKind::Trade, 100, now), now, 0);
+        let mut c = vec![trade, robbery];
+        rank(&mut c);
+        assert_eq!(kinds(&c), vec![ReportKind::Robbery, ReportKind::Trade]);
+        // Even a robbery of strangers, a day old, is worth more than a fresh fair trade.
+        let robbery = cand(rep(p, s, ReportKind::Robbery, 2, at), now, 0);
+        assert!(robbery.score > trade.score);
+        // A killing at its rung 4 outweighs a feud at rung 1 of the same age, as a rung should.
+        let killing = cand(rep(p, s, ReportKind::Killing, 4, at), now, 0);
+        let feud = cand(rep(p, s, ReportKind::Feud, 1, at), now, 0);
+        assert!(killing.score > feud.score);
+    }
+
+    #[test]
     fn talk_flags_name_who_and_whom() {
         let [p, s, t, _] = handles();
-        let f = |who, whom| talk_flags(&rep(who, whom, ReportKind::Assault, 100, 0), Some(p), s);
+        let f = |who, whom| talk_flags(&rep(who, whom, ReportKind::Assault, 100, 0), Some(p), &[s]);
         assert_eq!(f(p, t), news::YOU_DID);
         assert_eq!(f(t, p), news::TO_YOU);
         assert_eq!(f(t, s), news::TO_US);
@@ -1136,10 +1231,40 @@ mod tests {
         assert_eq!(f(s, p), news::BY_US | news::TO_YOU);
         assert_eq!(f(t, t), 0);
         assert_eq!(
-            talk_flags(&rep(p, t, ReportKind::Assault, 100, 0), None, s),
+            talk_flags(&rep(p, t, ReportKind::Assault, 100, 0), None, &[s]),
             0,
             "nobody who is not known is the player"
         );
+    }
+
+    #[test]
+    fn a_caravan_and_its_home_village_are_both_us() {
+        let [p, caravan, home, other] = handles();
+        let us = [caravan, home];
+        let f = |who, whom| talk_flags(&rep(who, whom, ReportKind::Robbery, 2, 0), Some(p), &us);
+        assert_eq!(f(other, caravan), news::TO_US);
+        assert_eq!(
+            f(other, home),
+            news::TO_US,
+            "about the home is about the caravan"
+        );
+        assert_eq!(f(home, other), news::BY_US);
+        assert_eq!(f(caravan, other), news::BY_US);
+        assert_eq!(f(other, other), 0);
+    }
+
+    #[test]
+    fn a_name_longer_than_a_record_is_never_written() {
+        let long = "x".repeat(wire::MAX_RECORD);
+        assert!(names_fit(&[
+            (wire::DICT_ITEM, "oak_log"),
+            (wire::DICT_CULTURE, "human")
+        ]));
+        assert!(names_fit(&[]));
+        assert!(!names_fit(&[
+            (wire::DICT_ITEM, "oak_log"),
+            (wire::DICT_BODY, &long)
+        ]));
     }
 
     #[test]
@@ -1250,7 +1375,7 @@ mod tests {
         assert_eq!(assault.who.class, class::PLAYER);
         assert_eq!((assault.who.a, assault.who.b), (5, 6));
 
-        // The two names went through the dictionary; scarcest and fullest too.
+        // The two names went through the dictionary, and so did the scarcest good.
         assert!(
             st.cmd_dict
                 .contains_key(&(wire::DICT_CULTURE, "goblin".into()))
@@ -1259,9 +1384,11 @@ mod tests {
             st.cmd_dict
                 .contains_key(&(wire::DICT_CULTURE, "human".into()))
         );
+        // A village with no resources keeps one good with a target: that good is the scarcest, and
+        // not also the fullest (TK46).
         assert_ne!(f.scarcest, 0);
-        assert_ne!(f.glutted, 0);
-        assert!(f.scarcest_ratio <= f.glutted_ratio);
+        assert_eq!(f.glutted, 0);
+        assert_eq!(f.glutted_ratio, 0);
         assert_eq!(st.talk.stats.answered, 1);
         assert_eq!(st.talk.stats.with_holder, 1);
     }
@@ -1481,8 +1608,8 @@ mod tests {
             a.z = 500;
             answer_one(&mut st, a)
         };
-        let glued = build(true);
-        let n = &glued.news[0];
+        let across = build(true);
+        let n = &across.news[0];
         assert_eq!((n.dx, n.dz), (20, 0), "not 9,980 blocks the other way");
         assert_ne!(
             n.talk_flags & news::SEEN,
@@ -1504,6 +1631,35 @@ mod tests {
             class::UNKNOWN,
             "no village within 768 blocks of it"
         );
+    }
+
+    #[test]
+    fn a_talker_in_a_turned_tile_is_given_directions_in_its_own_chart() {
+        // A Petroff-Guyou world of side 1,024: x in [-1024, 1024), z in [-512, 512). North of it
+        // (z < -512) is the half-turned image of the tile to the south, and a talker standing there
+        // reads its map in that turned chart, where the origin's image is at (-1, -1025).
+        let talker = (-101, -1_011);
+        let asked = |x: i32, z: i32| {
+            let mut st = world();
+            let mut t = Topologies::new();
+            t.set(0, rtsim_space::topology::layout::guyou(1_024, false));
+            st.topology.shared = Arc::new(t);
+            let mut c = cmd(ReportKind::Raid, 3, village(7), village(7), DAY);
+            c.x = x;
+            c.z = z;
+            post(&mut st, &c);
+            assert_eq!(st.talk.stats.posted, 1);
+            let mut a = ask_of(1, ask::holder::VILLAGE, 7, 5, ask::NEWS);
+            a.x = talker.0;
+            a.z = talker.1;
+            let n = answer_one(&mut st, a).news[0];
+            (n.dx, n.dz)
+        };
+        // A place written in the same turned chart is where it looks: 251 east, 21 south.
+        assert_eq!(asked(150, -990), (251, 21));
+        // The origin of the canonical tile, from the turned chart, is 100 east and 14 north: the
+        // canonical vector (-100, 14) turned half a turn. `displacement` would say the reverse.
+        assert_eq!(asked(0, 0), (100, -14));
     }
 
     #[test]
@@ -1712,6 +1868,74 @@ mod tests {
         assert_eq!(what, Some((wire::DICT_CULTURE, "ribbit".into())));
     }
 
+    #[test]
+    fn a_pirate_captain_is_the_haven_it_sails_from_and_a_traders_home_is_a_village() {
+        let mut st = world();
+        st.phase1.world.join(
+            rtsim_world::NodeData {
+                key: 900,
+                kind: NodeKind::Haven(rtsim_settle::Culture::Human),
+                pos: Pos::new(0, 2_000, 1_000),
+                pop: 10,
+                resources: Default::default(),
+            },
+            Tick(NOW),
+        );
+        let haven = st.phase1.world.nodes[st.phase1.world.node_of_key(900).unwrap()].actor;
+        let v7 = st.phase1.world.nodes[st.phase1.node_of(7).unwrap()].actor;
+        let k = &mut st.phase1.world.knowledge;
+        let captain = k.create_notable(0xC4, haven, ActorId::NULL, Tick(NOW), 10 * DAY);
+        let trader = k.create_notable(0x7A, v7, ActorId::NULL, Tick(NOW), 10 * DAY);
+        // Told as the haven, not as a caravan that is gone.
+        let (r, _) = ctx(&st).describe(captain);
+        assert_eq!((r.class, r.a), (class::HAVEN, 900));
+        assert_eq!(r.flags & reference::DEAD, 0);
+        assert!(r.has_pos());
+        assert_eq!((r.dx, r.dz), (1_000, 0));
+        // A village's trader is still a caravan (gone here: nothing travels).
+        let (r, _) = ctx(&st).describe(trader);
+        assert_eq!((r.class, r.a), (class::CARAVAN, 0x7A));
+        assert_eq!(r.flags, reference::DEAD);
+        // Through a robbery of the village, the way a player would hear it.
+        let pirate = TalkActor {
+            class: class::CHIEF,
+            a: 0xC4,
+            b: 0,
+        };
+        post(
+            &mut st,
+            &cmd(ReportKind::Robbery, 2, pirate, village(7), DAY),
+        );
+        assert_eq!(st.talk.stats.posted, 1);
+        let f = answer_one(&mut st, ask_of(1, ask::holder::VILLAGE, 7, 5, ask::NEWS));
+        let n = &f.news[0];
+        assert_eq!((n.who.class, n.who.a), (class::HAVEN, 900));
+        assert_eq!(n.who.flags & reference::DEAD, 0);
+        assert!(n.who.has_pos());
+    }
+
+    #[test]
+    fn a_group_nobody_owns_is_a_gone_caravan_only_while_the_conflict_runs() {
+        let mut st = world();
+        let k = st.phase1.world.knowledge.actors_mut();
+        // A camp's group, as a save from a run with the conflict on leaves it.
+        let camp = k.register(ActorKind::Group, 0x55AA);
+        // A lair's group, and an oil district's, are never caravans.
+        let lair = k.register(ActorKind::Group, LAIR_TAG ^ 77);
+        let district = k.register(ActorKind::Group, DIST_PREFIX << 32 | 3);
+        let gone = |st: &State, a| {
+            let (r, _) = ctx(st).describe(a);
+            (r.class, r.flags)
+        };
+        assert!(st.conflict.enabled, "on unless turned off");
+        assert_eq!(gone(&st, camp), (class::CARAVAN, reference::DEAD));
+        assert_eq!(gone(&st, lair), (class::UNKNOWN, 0));
+        assert_eq!(gone(&st, district), (class::UNKNOWN, 0));
+        st.conflict.enabled = false;
+        assert_eq!(gone(&st, camp), (class::UNKNOWN, 0), "nobody to tell it by");
+        assert_eq!(gone(&st, lair), (class::UNKNOWN, 0));
+    }
+
     // ---- the test order --------------------------------------------------------------------
 
     #[test]
@@ -1781,17 +2005,180 @@ mod tests {
     }
 
     #[test]
-    fn a_news_kind_writes_no_sentiment_and_no_gossip() {
+    fn an_order_refused_before_it_reads_an_actor_changes_nothing() {
+        let mut st = world();
+        assert!(!st.phase1.tainted_for_test(), "a fresh world is clean");
+        let actors = st.phase1.world.knowledge.actors().len();
+        // Each names a player nobody has met; none gets as far as registering them.
+        let good = cmd(ReportKind::Raid, 3, player(9), village(7), DAY);
+        let edits: [fn(&mut TalkReportCmd); 8] = [
+            |c| c.village = 999,
+            |c| c.kind = 0,
+            |c| c.kind = 15,
+            |c| c.ago = (30 * DAY) as u32,
+            |c| c.x = COORD_LIMIT + 1,
+            |c| c.x = -COORD_LIMIT - 2,
+            |c| c.z = COORD_LIMIT + 1,
+            |c| c.z = i32::MIN,
+        ];
+        for (i, edit) in edits.iter().enumerate() {
+            let mut c = good;
+            edit(&mut c);
+            post(&mut st, &c);
+            assert_eq!(st.talk.stats.post_refused, i as u64 + 1, "order {i}: {c:?}");
+            assert!(
+                !st.phase1.tainted_for_test(),
+                "order {i} left the world alone"
+            );
+            assert_eq!(
+                st.phase1.world.knowledge.actors().len(),
+                actors,
+                "order {i}"
+            );
+        }
+        // Phase 1 off is a refusal too, and just as clean.
+        st.phase1.set_on_for_test(false);
+        post(&mut st, &good);
+        assert!(!st.phase1.tainted_for_test());
+        st.phase1.set_on_for_test(true);
+        // The far corners of the pack's range are fine.
+        for (x, z) in [
+            (COORD_LIMIT, COORD_LIMIT),
+            (-COORD_LIMIT - 1, -COORD_LIMIT - 1),
+        ] {
+            let mut c = good;
+            c.x = x;
+            c.z = z;
+            post(&mut st, &c);
+        }
+        assert_eq!(st.talk.stats.posted, 2);
+    }
+
+    #[test]
+    fn an_order_that_registered_an_actor_taints_the_world_even_when_refused() {
+        // The player is registered; the village that is `whom` is not there.
+        let mut st = world();
+        let actors = st.phase1.world.knowledge.actors().len();
+        post(
+            &mut st,
+            &cmd(ReportKind::Raid, 3, player(9), village(999), DAY),
+        );
+        assert_eq!(st.talk.stats.post_refused, 1);
+        assert_eq!(st.phase1.world.knowledge.actors().len(), actors + 1);
+        assert!(
+            st.phase1.tainted_for_test(),
+            "the next save takes a snapshot"
+        );
+        // And an order that goes through taints it as well.
         let mut st = world();
         post(
             &mut st,
-            &cmd(ReportKind::Feud, 2, village(8), player(5), DAY),
+            &cmd(ReportKind::Raid, 3, player(9), village(7), DAY),
         );
+        assert_eq!(st.talk.stats.posted, 1);
+        assert!(st.phase1.tainted_for_test());
+    }
+
+    #[test]
+    fn an_order_the_full_table_would_drop_is_refused_before_it_reads_an_actor() {
+        let mut st = state();
+        st.phase1.small_report_table_for_test(2);
+        st.phase1.join_for_test(7, false, 0, 1_000, 1_000);
+        st.phase1.world.run_until(Tick(NOW));
+        // Two reports about players fill it.
+        for ago in [1_000, 2_000] {
+            post(
+                &mut st,
+                &cmd(ReportKind::Assault, 100, player(5), village(7), ago),
+            );
+        }
+        assert_eq!(st.talk.stats.posted, 2);
+        st.phase1.untaint_for_test();
+        // Older than both, and about a player nobody has met: the table would drop it, so it
+        // never reads the player.
+        let actors = st.phase1.world.knowledge.actors().len();
+        post(
+            &mut st,
+            &cmd(ReportKind::Raid, 3, player(9), village(7), 10 * DAY),
+        );
+        assert_eq!(st.talk.stats.post_refused, 1);
+        assert_eq!(st.phase1.world.knowledge.actors().len(), actors);
+        assert!(!st.phase1.tainted_for_test());
+        // Newer than the least important, it takes its place.
+        post(
+            &mut st,
+            &cmd(ReportKind::Raid, 3, player(9), village(7), 100),
+        );
+        assert_eq!(st.talk.stats.posted, 3);
+        assert!(st.phase1.tainted_for_test());
+    }
+
+    #[test]
+    fn a_news_kind_writes_no_sentiment_and_no_gossip() {
+        let mut st = world();
+        let me = st.phase1.world.player_uuid(5, 6);
+        let v7 = st.phase1.world.nodes[st.phase1.node_of(7).unwrap()].actor;
+        let now = st.phase1.world.now();
+        let place = Place::new(0, 1_020, 64, 1_000);
+        let make = |kind, severity| Report {
+            who: me,
+            whom: v7,
+            kind,
+            severity,
+            flags: 0,
+            at: now,
+            place,
+        };
+        // The real path, not the test order (which drops gossip itself): the village sees the
+        // player feud with it. The player is `who`, so a kind with a delta would sentiment.
         let k = &mut st.phase1.world.knowledge;
-        assert!(k.take_vanilla_gossip().is_empty());
-        let f = answer_one(&mut st, ask_of(1, ask::holder::VILLAGE, 7, 5, ask::NEWS));
-        assert_eq!(f.sentiment, 0);
-        assert_eq!(f.news[0].talk_flags & news::TO_YOU, news::TO_YOU);
+        let id = k.record(make(ReportKind::Feud, 2));
+        assert_ne!(id, Handle::NULL);
+        assert!(k.witness(v7, id, now));
+        assert!(
+            k.take_vanilla_gossip().is_empty(),
+            "a news kind has no vanilla mapping"
+        );
+        let ask = |id| ask_of(id, ask::holder::VILLAGE, 7, 5, ask::NEWS);
+        let f = answer_one(&mut st, ask(1));
+        assert_eq!(f.sentiment, 0, "and no delta");
+        assert_eq!(f.news[0].talk_flags & news::YOU_DID, news::YOU_DID);
+        // The same path with an old kind does write both: the checks above can fail.
+        let k = &mut st.phase1.world.knowledge;
+        let id = k.record(make(ReportKind::Assault, 100));
+        assert!(k.witness(v7, id, now));
+        assert_eq!(k.take_vanilla_gossip().len(), 1, "an assault is gossip");
+        let f = answer_one(&mut st, ask(2));
+        assert!(f.sentiment < 0);
+    }
+
+    #[test]
+    fn a_test_order_keeps_gossip_other_modules_queued() {
+        let mut st = world();
+        let v7 = st.phase1.world.nodes[st.phase1.node_of(7).unwrap()].actor;
+        let now = st.phase1.world.now();
+        let other = st.phase1.world.player_uuid(8, 9);
+        let k = &mut st.phase1.world.knowledge;
+        let theirs = k.record(Report {
+            who: other,
+            whom: v7,
+            kind: ReportKind::Assault,
+            severity: 100,
+            flags: 0,
+            at: now,
+            place: Place::new(0, 1_000, 64, 1_000),
+        });
+        assert!(k.witness(v7, theirs, now));
+        // The test order is an assault by another player, which would queue gossip of its own.
+        post(
+            &mut st,
+            &cmd(ReportKind::Assault, 100, player(5), village(7), DAY),
+        );
+        assert_eq!(st.talk.stats.posted, 1);
+        let queued = st.phase1.world.knowledge.take_vanilla_gossip();
+        assert_eq!(queued.len(), 1, "only the other module's write is left");
+        assert_eq!(queued[0].report, theirs);
+        assert_eq!(queued[0].player, other);
     }
 
     #[test]

@@ -18,6 +18,32 @@ pub(in crate::engine) struct Extremes {
     pub glutted: Option<(String, u32)>,
 }
 
+/// The scarcest and the most glutted of goods with their stock per target (thousandths), in good
+/// order: the first of equals wins. One good with a target is both the shortest and the fullest,
+/// and saying so twice would have the talker mourn and boast of the same thing, so the glutted is
+/// left out then (TK46).
+fn pick_extremes(
+    ratios: impl IntoIterator<Item = (rtsim_trade::GoodId, u32)>,
+) -> (
+    Option<(u32, rtsim_trade::GoodId)>,
+    Option<(u32, rtsim_trade::GoodId)>,
+) {
+    let mut scarcest: Option<(u32, rtsim_trade::GoodId)> = None;
+    let mut glutted: Option<(u32, rtsim_trade::GoodId)> = None;
+    for (g, ratio) in ratios {
+        if scarcest.is_none_or(|(r, _)| ratio < r) {
+            scarcest = Some((ratio, g));
+        }
+        if glutted.is_none_or(|(r, _)| ratio > r) {
+            glutted = Some((ratio, g));
+        }
+    }
+    if scarcest.map(|(_, g)| g) == glutted.map(|(_, g)| g) {
+        glutted = None;
+    }
+    (scarcest, glutted)
+}
+
 impl Link {
     /// Whether phase 1 runs (U10 switches it off).
     pub(in crate::engine) fn is_on(&self) -> bool {
@@ -68,25 +94,19 @@ impl Link {
             return None;
         }
         let m = self.world.try_market(node)?;
-        let mut scarcest: Option<(u32, rtsim_trade::GoodId)> = None;
-        let mut glutted: Option<(u32, rtsim_trade::GoodId)> = None;
-        for g in self.cat.goods.ids() {
+        let ratios = self.cat.goods.ids().filter_map(|g| {
             if self.cat.goods.is_currency(g) {
-                continue;
+                return None;
             }
             let target = m.goods[g.index()].curve.target;
             if target <= 0 {
-                continue;
+                return None;
             }
             let ratio = (i128::from(m.stock(g).max(0)) * 1000 / i128::from(target))
                 .clamp(0, i128::from(u32::MAX)) as u32;
-            if scarcest.is_none_or(|(r, _)| ratio < r) {
-                scarcest = Some((ratio, g));
-            }
-            if glutted.is_none_or(|(r, _)| ratio > r) {
-                glutted = Some((ratio, g));
-            }
-        }
+            Some((g, ratio))
+        });
+        let (scarcest, glutted) = pick_extremes(ratios);
         Some(Extremes {
             scarcest: scarcest.map(|(r, g)| (self.cat.item(g).to_string(), r)),
             glutted: glutted.map(|(r, g)| (self.cat.item(g).to_string(), r)),
@@ -118,9 +138,60 @@ impl Link {
         );
     }
 
+    /// A fresh link whose world keeps at most `cap` reports, for TALK's tests of a full table:
+    /// call it before anything joins.
+    #[cfg(test)]
+    pub(in crate::engine) fn small_report_table_for_test(&mut self, cap: u32) {
+        let (mut cfg, goods, book) = super::world_parts();
+        cfg.knowledge.report_cap = cap;
+        self.world = rtsim_world::World::build(cfg, goods, book, Vec::new());
+    }
+
+    /// Forgets that the world changed outside the input log, as a snapshot does.
+    #[cfg(test)]
+    pub(in crate::engine) fn untaint_for_test(&mut self) {
+        self.tainted = false;
+    }
+
+    /// Whether the world changed outside the input log since the last snapshot.
+    #[cfg(test)]
+    pub(in crate::engine) fn tainted_for_test(&self) -> bool {
+        self.tainted
+    }
+
     /// Switches phase 1 off or on for TALK's tests (U10).
     #[cfg(test)]
     pub(in crate::engine) fn set_on_for_test(&mut self, on: bool) {
         self.enabled = on;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rtsim_trade::GoodId;
+
+    use super::pick_extremes;
+
+    #[test]
+    fn the_extremes_of_one_good_are_its_scarcity_alone() {
+        let (s, g) = pick_extremes([(GoodId(4), 700)]);
+        assert_eq!(s, Some((700, GoodId(4))));
+        assert_eq!(g, None, "not also the most glutted");
+        assert_eq!(pick_extremes([]), (None, None));
+    }
+
+    #[test]
+    fn goods_at_the_same_stock_leave_none_glutted() {
+        // Equals: the first of them wins both, so it is the same good and only scarce.
+        let (s, g) = pick_extremes([(GoodId(1), 500), (GoodId(2), 500)]);
+        assert_eq!(s, Some((500, GoodId(1))));
+        assert_eq!(g, None, "the first of equals is both: left out");
+    }
+
+    #[test]
+    fn the_scarcest_and_the_most_glutted_of_several_goods() {
+        let (s, g) = pick_extremes([(GoodId(1), 900), (GoodId(2), 100), (GoodId(3), 2_400)]);
+        assert_eq!(s, Some((100, GoodId(2))));
+        assert_eq!(g, Some((2_400, GoodId(3))));
     }
 }
