@@ -239,6 +239,7 @@ impl Encode for Edge {
         w.var_i64(self.cap_slot_milli);
         w.var_u64(self.msg_period);
         w.var_u64(self.msg_walk);
+        w.bool(self.closed);
     }
 }
 
@@ -260,6 +261,7 @@ impl Decode for Edge {
         let cap_slot_milli = r.var_i64()?;
         let msg_period = r.var_u64()?;
         let msg_walk = r.var_u64()?;
+        let closed = r.bool()?;
         Ok(Edge {
             a,
             b,
@@ -274,6 +276,7 @@ impl Decode for Edge {
             cap_slot_milli,
             msg_period,
             msg_walk,
+            closed,
         })
     }
 }
