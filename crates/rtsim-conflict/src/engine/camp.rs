@@ -27,7 +27,7 @@ use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
     BODY_ELSEWHERE, BODY_STRAY, CENSUS_THRONE, CampBodies, CampCensus, CampDeath, CampOut,
-    CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_STALE,
+    CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING,
     ReconcileLine,
 };
 
@@ -522,6 +522,21 @@ impl Conflict {
             return;
         };
         let epoch = camp.epoch;
+        // At most one line in flight per slot (I4): a second for a slot is a bug, and not sent.
+        let lines: Vec<ReconcileLine> = lines
+            .into_iter()
+            .filter(|l| {
+                let busy = l.generation != 0
+                    && camp
+                        .index(l.slot, l.generation)
+                        .is_some_and(|i| camp.slots[i].line.is_some());
+                debug_assert!(!busy, "a second line for slot {} in flight", l.slot);
+                !busy
+            })
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
         let mut out = Vec::new();
         for chunk in lines.chunks(boundary::MAX_ENTRIES) {
             let op = derive_op(key, epoch, camp.seq);
@@ -975,8 +990,8 @@ impl Conflict {
                 s.line = None;
                 cleared += 1;
             }
-            if a.outcome == LINE_STALE || a.outcome != LINE_DONE && a.outcome != boundary::LINE_NOTHING
-            {
+            // A stale line books nothing (nor does an outcome this build does not know).
+            if a.outcome != LINE_DONE && a.outcome != LINE_NOTHING {
                 continue;
             }
             // The action: what was in flight, else what the state implies.
@@ -989,7 +1004,12 @@ impl Conflict {
                 |l| l.action,
             );
             let gone = matches!(action, ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE);
-            let there = matches!(action, ACTION_SPAWN | ACTION_ADOPT | ACTION_HAND_BACK);
+            // An adoption with nothing to do found no stray to adopt: no body is there.
+            let there = match action {
+                ACTION_SPAWN | ACTION_HAND_BACK => true,
+                ACTION_ADOPT => a.outcome == LINE_DONE,
+                _ => false,
+            };
             self.stats.camp_answers += 1;
             match (s.state, gone, there) {
                 (SlotState::Body, true, _) => {
@@ -1118,11 +1138,13 @@ impl Conflict {
         if x.alive() > 0 {
             return;
         }
+        // As `casualties` ends a band with no one left: through its walk home and its own `home`.
         match x.phase {
             Phase::Home => {}
-            Phase::Mustering => self.home(w, p, at),
             Phase::Fighting => self.end_fight(w, p, boundary::RECALL_ROUTED, at),
-            Phase::Out | Phase::Waiting => self.go_home(w, p, boundary::RECALL_ROUTED, at),
+            Phase::Mustering | Phase::Out | Phase::Waiting => {
+                self.go_home(w, p, boundary::RECALL_ROUTED, at)
+            }
         }
     }
 
