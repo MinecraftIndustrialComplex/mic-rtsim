@@ -332,8 +332,17 @@ public final class RescanBudgetGameTests {
         level.getServer().getCommands().performPrefixedCommand(src, cmd);
     }
 
-    /** The most block entities one tick of a detection may look at: the budget, and the chunk it was in (about 35). */
-    private static final int TICK_BOUND = BUDGET + 45;
+    /**
+     * The most block entities one tick of a detection may look at: the budget, and the chunk it was in. The chunk is
+     * counted, not assumed: the yard's chunks also hold what earlier tests left (a bound of 45 a chunk failed with 76 in
+     * one chunk of a test run that landed beside them).
+     */
+    private static int tickBound(ServerLevel level, BlockPos... in) {
+        int biggest = 0;
+        for (BlockPos p : in)
+            biggest = Math.max(biggest, level.getChunkAt(p).getBlockEntities().size());
+        return BUDGET + biggest;
+    }
 
     /**
      * {@code /rtsim district rescan} is a full detection over the next ticks, not one big tick: the call itself does
@@ -373,7 +382,9 @@ public final class RescanBudgetGameTests {
                     record("theRescanCommandSpreadsOverTicksAndReportsWhenDone", "ticks / longest tick (us) / looked / phases",
                             ds.lastRescanSlices() + " / " + ds.lastRescanLongestNanos() / 1000 + " / " + ds.lastRescanLooked() + " / " + ds.lastRescanPhases());
                     check("spread over at least four ticks, got " + ds.lastRescanSlices(), ds.lastRescanSlices() >= 4);
-                    check("no tick looked at more than a budget and a chunk: " + ds.lastRescanLongestLooked(), ds.lastRescanLongestLooked() <= TICK_BOUND);
+                    int bound = tickBound(helper.getLevel(), ms);
+                    check("no tick looked at more than a budget and a chunk (" + bound + "): " + ds.lastRescanLongestLooked(),
+                            ds.lastRescanLongestLooked() <= bound);
                     check("the report came in a later tick than the call", sink.ticks.get(1) > sink.ticks.get(0));
                     check("the report is the districts' count: " + sink.lines.get(1), sink.lines.get(1).contains(": 1 districts;"));
                     check("the district is whole", districtAt(helper, ms[0]).chunks.size() == 4 && districtAt(helper, ms[0]).seeds() == 4);
