@@ -159,8 +159,9 @@ under its own heading.
   always fits, and `finish` asserts it does. 1,024 is past any camp, party or route this slice can
   make (PLACEHOLDER).
 - **MZB-36** (The conflict's reports on the severity unit; the TALK review's finding): the conflict
-  records its Robbery (a camp plunders a village), Rescue (a player routs a band: each village that
-  hates the camp within `rescue_news_blocks`) and Killing (the war chief's killer, seen by the chief
+  records its Robbery (a camp plunders a village), Rescue (a player routs a band: the real witnesses,
+  CL-D61, the village the band marched on and each village that hates the camp within the view
+  radius of the rout) and Killing (the war chief's killer, seen by the chief
   and the heir) at `SEVERITY_UNIT`, the kind's base delta, not at the rung codes 2, 2 and 4. The
   knowledge layer reads severity as a share of the unit, so a robbery moved the village's feeling for
   the camp by -1 instead of -50, a rescue by 0 instead of +25 (and wrote no vanilla gossip, which

@@ -3962,34 +3962,49 @@ impl Conflict {
         self.go_home(w, p, reason, at);
     }
 
-    /// Villages that hate the faction hear that a player broke its band (C24: rescues count). A
-    /// rout is one report (K2-25, CL-D60): every village in range whose culture the faction hates
-    /// witnesses it, and the others hear it only as news. Knowledge dedups per report, so a report
-    /// per witness made each village count the rout once per witness. The report names whom the
-    /// band was after (the node it marched on, else the feud's actor unless that is the breaker,
-    /// else no one) and the place it broke.
+    /// A rout is one rescue report (C24: rescues count; K2-25, CL-D60) that only its real
+    /// witnesses learn first-hand (CL-D61, PLAN.md §8.7): the village the band marched on, always
+    /// (it was the one rescued), and every village that hates the faction within `view_radius` of
+    /// where the band broke (the radius the engine gives a player's view, as [`Conflict::watcher`]
+    /// reads it). Every other village hears it later from a traveller, at hearsay weight, through
+    /// the knowledge layer's news. The report names whom the band was after (the node it marched
+    /// on, else the feud's actor unless that is the breaker, else no one) and the place it broke.
+    /// A rout nobody witnessed records no report. Knowledge dedups per report, so a report per
+    /// witness made each village count the rout once per witness.
     fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
-        let camp = self.factions[f as usize].pos;
-        let r = f64::from(self.tun.rescue_news_blocks);
-        // The villages in news range: the node index's cells around the camp, in node order.
+        let x = &self.parties[p];
+        let frame = x.frame;
+        let (bx, bz) = self.party_pos(p, at);
+        // The rescued village: the node the band marched on, when it is a village. A feud's actor
+        // is a player or the shared settlers, never a village, so `whom` names one only here.
+        let rescued = match x.target {
+            Target::Node(i) => w
+                .nodes
+                .get(i)
+                .filter(|n| matches!(n.kind, NodeKind::Village(_)))
+                .map(|n| n.actor),
+            _ => None,
+        };
+        // The villages in view of the rout: the node index's cells around where it broke, in node
+        // order, whose culture the faction hates (a village that does not was not rescued, and
+        // one friendly to the band would be crediting the player for killing its friends).
         self.nodes.refresh(w);
         let topo = self.topo.clone();
-        let near = self.nodes.within(w, topo.of(camp.frame), camp, r);
-        let witnesses: Vec<ActorId> = near
-            .into_iter()
-            .filter_map(|i| {
-                let n = &w.nodes[i];
-                let NodeKind::Village(cu) = n.kind else {
-                    return None;
-                };
-                (c.hates(cu.name())
-                    && n.pos.frame == camp.frame
-                    && tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) <= r)
-                    .then_some(n.actor)
-            })
-            .collect();
+        let view = f64::from(self.tun.view_radius);
+        let in_view = self
+            .nodes
+            .within(w, topo.of(frame), Pos::new(frame, bx, bz), view);
+        let mut witnesses: Vec<ActorId> = rescued.into_iter().collect();
+        for i in in_view {
+            let n = &w.nodes[i];
+            if matches!(n.kind, NodeKind::Village(cu) if c.hates(cu.name()))
+                && !witnesses.contains(&n.actor)
+            {
+                witnesses.push(n.actor);
+            }
+        }
         let mut heard = 0;
         if !witnesses.is_empty() {
             let x = &self.parties[p];
@@ -3997,8 +4012,6 @@ impl Conflict {
                 Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
                 _ => x.feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
             };
-            let frame = x.frame;
-            let (bx, bz) = self.party_pos(p, at);
             let rep = w.knowledge.record(Report {
                 who: player,
                 whom,
@@ -4018,10 +4031,14 @@ impl Conflict {
             at,
             Some(f),
             "rescue",
-            format!(
-                "{heard} village(s) that hate the {} hear the band was broken",
-                c.name()
-            ),
+            if heard == 0 {
+                format!("nobody saw the {} band broken: no rescue report", c.name())
+            } else {
+                format!(
+                    "{heard} village(s) saw the {} band broken (the rest hear it from travellers)",
+                    c.name()
+                )
+            },
         );
     }
 
