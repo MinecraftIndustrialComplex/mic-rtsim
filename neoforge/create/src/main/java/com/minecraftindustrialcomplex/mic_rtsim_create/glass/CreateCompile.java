@@ -496,14 +496,14 @@ final class CreateCompile implements GlassExtractor.Compile {
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
-                if (listed(s)) {
+                if (listed(net, s)) {
                     capacity += e.getValue() * Math.abs(s.getGeneratedSpeed());
                     crossing |= outside(s);
                 }
             }
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
-                if (listed(m)) {
+                if (listed(net, m)) {
                     stress += e.getValue() * Math.abs(m.getTheoreticalSpeed());
                     overstressed |= m.isOverStressed();
                     crossing |= outside(m);
@@ -559,8 +559,8 @@ final class CreateCompile implements GlassExtractor.Compile {
             domainRoot.put(d.index, rootSpeed);
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
-                if (!listed(m))
-                    continue; // replaced in a loaded chunk: Create's next recount drops it
+                if (!listed(net, m))
+                    continue; // replaced in a loaded chunk by a part that joined, or by another block: Create's next recount drops it
                 float sp = m.getTheoreticalSpeed();
                 // a stopped network (a cold boiler) gives every member speed 0: the ratio is unknown then
                 boolean known = rootSpeed != 0 && sp != 0;
@@ -574,11 +574,15 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /**
      * Whether a network still lists {@code k} as Create's guarded recount does (PATCHES.md row 53): its
-     * chunk is not loaded (kept as Create last saw it), or it is the block entity there now.
+     * chunk is not loaded (kept as Create last saw it), it is the block entity there now, or the one there now
+     * is a new object of the same network that has not joined yet ({@link Loaded#keptFor}).
      */
-    private boolean listed(KineticBlockEntity k) {
+    private boolean listed(com.simibubi.create.content.kinetics.KineticNetwork net, KineticBlockEntity k) {
         BlockPos p = k.getBlockPos();
-        return !Loaded.at(level, p) || Loaded.blockEntity(level, p) == k;
+        if (!Loaded.at(level, p))
+            return true;
+        BlockEntity found = Loaded.blockEntity(level, p);
+        return found == k || Loaded.keptFor(net, k, found);
     }
 
     /**
@@ -592,7 +596,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         float speed = 0;
         for (KineticBlockEntity m : net.members.keySet()) {
             BlockPos p = m.getBlockPos();
-            if (!Loaded.at(level, p) || !listed(m) || m.getTheoreticalSpeed() == 0)
+            if (!Loaded.at(level, p) || !listed(net, m) || m.getTheoreticalSpeed() == 0)
                 continue;
             if (p.asLong() < best) {
                 best = p.asLong();
@@ -611,7 +615,7 @@ final class CreateCompile implements GlassExtractor.Compile {
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
         for (KineticBlockEntity m : net.members.keySet()) {
-            if (!listed(m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
             BlockState state = m.getBlockState();
@@ -640,13 +644,16 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     /**
-     * Whether a kinetic block may turn its neighbour across face {@code f}. A shaft or a cog does only
-     * through a shaft end that way or, for a cog, in its plane; any other block may (a chain drive links
-     * across its sides, which no shaft end says), so it counts, on the safe side. Reads the block's own
-     * state only.
+     * Whether a kinetic block may turn its neighbour across face {@code f}. Create's own shaft and cog
+     * (those classes exactly) do only through a shaft end that way or, for a cog, in its plane; any other
+     * block may (a chain drive links across its sides, which no shaft end says, and an addon's shaft may
+     * link sideways), so it counts, on the safe side. Reads the block's own state only.
      */
     private boolean connects(IRotate block, BlockPos p, BlockState state, Direction f) {
-        if (!(block instanceof com.simibubi.create.content.kinetics.simpleRelays.AbstractSimpleShaftBlock))
+        // Create's own shaft and cog only: an addon's subclass may link sideways
+        Class<?> c = block.getClass();
+        if (c != com.simibubi.create.content.kinetics.simpleRelays.ShaftBlock.class
+                && c != com.simibubi.create.content.kinetics.simpleRelays.CogWheelBlock.class)
             return true;
         if (block.hasShaftTowards(level, p, state, f))
             return true;

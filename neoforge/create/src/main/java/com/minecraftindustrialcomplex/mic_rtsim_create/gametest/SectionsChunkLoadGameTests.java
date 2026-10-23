@@ -475,7 +475,7 @@ public final class SectionsChunkLoadGameTests {
         BlockPos c0 = cs.get(0), c7 = cs.get(7), motor = c7.below(), millA = c0.above().south(), millB = c7.above().south();
         BlockPos added = c0.above().north(), added2 = c0.above().east();
         long[] ids = new long[2];
-        float[] cap = new float[3], stress = new float[2];
+        float[] cap = new float[3], stress = new float[2], joined = new float[2];
         KineticBlockEntity[] oldMotor = {null, null};
         int[] mark = {0};
         Watch watch = new Watch(helper, () -> {
@@ -571,7 +571,11 @@ public final class SectionsChunkLoadGameTests {
                 })
                 .thenWaitUntil(io(() -> {
                     KineticBlockEntity fresh = kinetic(level, motor);
-                    check("the fresh motor joins the network", fresh != null && fresh != oldMotor[0] && net.get().sources.containsKey(fresh));
+                    KineticNetwork n = net.get();
+                    check("the fresh motor joins the network", fresh != null && fresh != oldMotor[0] && n.sources.containsKey(fresh));
+                    // in the tick it is first seen joined, before a later recount or sync could set it
+                    joined[0] = field(fresh, KineticBlockEntity.class, "stress");
+                    joined[1] = field(n, KineticNetwork.class, "currentStress");
                 }))
                 .thenExecute(() -> {
                     // no recount here: the kept motor left the network as the fresh one joined
@@ -580,8 +584,9 @@ public final class SectionsChunkLoadGameTests {
                     float[] u = unloadedShare(n, new float[] {0f, 0f, 0f});
                     record(t, "the unloaded share after the join (set 100, 50, 3)", u[0] + ", " + u[1] + ", " + u[2]);
                     check("the join leaves the unloaded share: " + u[0] + ", " + u[1] + ", " + u[2], u[0] == 100f && u[1] == 50f && u[2] == 3f);
-                    float have = field(oldMotor[1], KineticBlockEntity.class, "stress"), want = field(n, KineticNetwork.class, "currentStress");
-                    record(t, "the fresh motor's stress, the network's (and at the unload)", have + ", " + want + " (" + stress[0] + ")");
+                    float have = joined[0], want = joined[1];
+                    record(t, "the fresh motor's stress as it joined, the network's (and at the unload)", have + ", " + want + " (" + stress[0] + ")");
+                    check("the network's stress moved while the motor was away: " + want + " vs " + stress[0], want != stress[0]);
                     check("the fresh motor takes the network's current stress: " + have + " vs " + want, have == want);
                     record(t, "B loaded again: sources, members, distinct positions", n.sources.size() + ", " + n.members.size() + ", " + positions(n));
                     check("one source again: " + n.sources.size(), n.sources.size() == 1 && !n.sources.containsKey(oldMotor[0]));

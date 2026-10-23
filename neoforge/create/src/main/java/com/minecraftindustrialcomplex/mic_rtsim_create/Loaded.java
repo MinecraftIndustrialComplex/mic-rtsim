@@ -40,6 +40,19 @@ public final class Loaded {
         return chunk(level, p) != null;
     }
 
+    /**
+     * Whether a kinetic network's guarded recount keeps its listed {@code k} although {@code found}, another
+     * object, is at {@code k}'s position now (PATCHES.md row 53): {@code found} is a block entity of the same
+     * network that has not joined yet (its chunk is FULL and has not ticked). The recount
+     * ({@code KineticNetworkMixin}) and the compile ({@code CreateCompile.listed}) both ask this, so they count
+     * the same block entities.
+     */
+    public static boolean keptFor(com.simibubi.create.content.kinetics.KineticNetwork net,
+            com.simibubi.create.content.kinetics.base.KineticBlockEntity k, BlockEntity found) {
+        return found != k && found instanceof com.simibubi.create.content.kinetics.base.KineticBlockEntity o
+                && !net.members.containsKey(o) && net.id != null && net.id.equals(o.network);
+    }
+
     /** {@code Level.getBlockEntity} where the chunk is loaded; null where it is not. */
     public static BlockEntity blockEntity(Level level, BlockPos p) {
         LevelChunk c = chunk(level, p);
