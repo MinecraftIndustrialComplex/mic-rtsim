@@ -597,6 +597,17 @@ public final class NativeEngine implements ScriptedEngine {
     }
 
     /**
+     * Orders a conflict command (docs/boundary.md §9): {@code record} is the whole record, its cmdSeq
+     * ignored, with Java's own body, item and dimension ids, and {@code names} the body and item entries
+     * it uses. The engine writes it as the conflict's own: its sequence and the DICT records it needs.
+     * TEST mode only, and dropped unless the conflict module is on: the conflict bridge's GameTests drive
+     * the bridge with it; the conflict decides its own commands.
+     */
+    public void conflictCommand(List<DictEntry> names, byte[] record) {
+        order(new NativeCodec.Orders().conflictCommand(names, record), "CONFLICT_COMMAND");
+    }
+
+    /**
      * Test only: founds a herd of {@code count} animals of {@code species} ({@code minecraft:sheep} and
      * the rest) at (x, z) in a dimension (Java's dictionary id) when the engine takes the order; seed 0
      * draws one. Nothing in the game founds herds yet (no habitat provider).

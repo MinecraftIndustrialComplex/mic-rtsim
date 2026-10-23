@@ -75,6 +75,10 @@ import java.util.UUID;
  *   <li>28 HERD_FOUND: str name, str species, u32 dimension (Java's id), i32 x, i32 z, u64 count, u64
  *       seed (0: the herds' own). A herd founded there when the engine takes the order (an engine
  *       opened with {@code FLAG_TEST} only: nothing in the game founds herds yet).</li>
+ *   <li>29 CONFLICT_COMMAND: as HERD_COMMAND, with a conflict command record (docs/boundary.md §9):
+ *       its body ids Java's (body dictionary), its item ids Java's (item dictionary), its dimension
+ *       Java's id. The engine writes it as the conflict's own (an engine opened with {@code FLAG_TEST}
+ *       only; the conflict bridge's GameTests).</li>
  *   <li>30 WORKS_GRANT: u64 village, i64 amount. Coin (thousandths of the village's own currency) put
  *       straight into a phase 1 village's works purse (SINK.md), ledgered as minted (an engine opened
  *       with {@code FLAG_TEST} only).</li>
@@ -120,7 +124,7 @@ final class NativeCodec {
     // 26: SHIP_COMMAND (no Java encoder: no ships plugin yet).
     static final int HERD_COMMAND = 27;
     static final int HERD_FOUND = 28;
-    // 29: CONFLICT_COMMAND (no Java encoder here).
+    static final int CONFLICT_COMMAND = 29;
     static final int WORKS_GRANT = 30;
     static final int WORKS_RAID = 31;
     static final int TRIBUTE_START = 32;
@@ -415,6 +419,19 @@ final class NativeCodec {
 
         Orders herdCommand(List<NativeEngine.DictEntry> names, byte[] record) {
             begin(HERD_COMMAND);
+            u32(names.size());
+            for (NativeEngine.DictEntry n : names) {
+                u32(n.kind());
+                u32(n.id());
+                str(n.name());
+            }
+            room(record.length);
+            b.put(record);
+            return end();
+        }
+
+        Orders conflictCommand(List<NativeEngine.DictEntry> names, byte[] record) {
+            begin(CONFLICT_COMMAND);
             u32(names.size());
             for (NativeEngine.DictEntry n : names) {
                 u32(n.kind());

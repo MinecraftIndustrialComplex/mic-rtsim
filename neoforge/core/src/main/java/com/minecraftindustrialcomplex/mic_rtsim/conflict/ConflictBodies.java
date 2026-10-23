@@ -86,10 +86,10 @@ public final class ConflictBodies {
         m.finalizeSpawn(level, level.getCurrentDifficultyAt(BlockPos.containing(x, y, z)), MobSpawnType.EVENT, null);
         if (m instanceof Raider r) {
             // Raider.finalizeSpawn lets every raider but a natural witch join a raid it walks into; a
-            // party's bodies are the engine's, never a vanilla raid's (and never a patrol's).
+            // party's bodies are the engine's, never a vanilla raid's, nor a patrol's leader (only the
+            // patrol spawner sets a mob patrolling, and EVENT spawns are never made leaders).
             r.setCanJoinRaid(false);
             r.setPatrolLeader(false);
-            r.setPatrolling(false);
         }
         m.setPersistenceRequired();
         return m;
