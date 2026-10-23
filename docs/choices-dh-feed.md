@@ -273,8 +273,11 @@ object against the body once a tick.
 - **Cost.** A copy is a live render of the body by its own renderer. In DH's pass it took 0.62 and 0.89 ms of
   CPU a frame against 0.04 and 0.35 ms without, over 90 frames each with the body in the fade (load average 6 to
   20), so about 0.6 ms a copy; about 1.6 ms under load average 40. GPU 0.013 ms.
-- **As a body arrives** (at 114 and at 149 blocks) its wings start level for about 4 frames and then rise: Ice and
-  Fire's animation starts its transition at the body's first render, vanilla's, with or without the copy. Stills:
+- **As a body arrives** (at 114 and at 149 blocks) it unfolds into flight: Ice and Fire plays each looping
+  animation with a 2-tick transition (`DragonBaseEntity.playLoopingAnimation`), at the flight's speed of 0.4 so
+  5 ticks, a quarter of a second, and a new body's first render starts it from the model's rest pose (wings
+  folded, legs down). That is vanilla's render, with or without the copy, and every Ice and Fire dragon that
+  comes into a client's range does it. Stills:
   `work/d6/st/e_fly_arrival_frames.png`, `e_ring_arrival_frames.png` (the far model's last 2 frames, then the
   body's first 4).
 - **The far object ran away in 2 of 8 takes** (`dht47_fly_m0` and `_m1`, under load), not with the copy's
@@ -342,9 +345,11 @@ sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spi
   model was drawn about 3 blocks low (`shots/e_fly_arrival_before_height_fix.png`). With the stub fixed, the
   far point sat 3.0 blocks over the body's feet at the hand-over tick in both takes (stage 4's 3.41, which
   `FarLegs` rounds to a whole block), and far model and body stand at one height. Its wings beat on up to the
-  body's first frame, at 114 blocks and at 149 (inside the fade), one image in every frame. Left: the wings
-  change pose at the body's first frame, where Ice and Fire starts its loop, and the far model of a dragon never
-  embodied on this client is its stage's middle age, so its size can change once (DHT60). Stills:
+  body's first frame, at 114 blocks and at 149 (inside the fade), one image in every frame. Left: at the body's
+  first frame it unfolds from its rest pose into flight over its transition's quarter second (above, "As a body
+  arrives"), which the screenshot review called the one thing Ben may notice; and the far model of a dragon never
+  embodied on this client is its stage's middle age, so its size can change once (DHT60; the review measured the
+  two within 5 to 15% in length, most of it the tail's pose). Stills:
   `shots/g_{fly,ring}_handover_x2_live_in_fade.png` and the 0.1 s sheets `shots/g_{fly,ring}_arrival_sheet_*.png`.
 - **Hills hide the carriages** (`work/ridgeG.py` places the camera from the terrain scan): ring A from 850 and
   400 blocks with a snowy ridge across the line, train 2's observation car shows over the slope and the rest of
