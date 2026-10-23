@@ -437,6 +437,11 @@ impl World {
         // allocation re-runs now and books its changed pipelines' arrivals at the far ends.
         self.market_event(a, at, Cause::Lane);
         self.market_event(b, at, Cause::Lane);
+        // The ends' supplier counts changed (`count_suppliers` skips a closed edge), which is
+        // news in the allocation's eyes though not in kind: send it, so the suppliers left ask
+        // for the whole want at their next allocation (PC60).
+        self.emit(a, at, true);
+        self.emit(b, at, true);
         if closed
             && self.cfg.check_every_event
             && let Err(e) = self.check_lanes()

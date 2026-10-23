@@ -64,7 +64,14 @@ fn config(seed: u64) -> WorldConfig {
 
 /// A farming village and a minting one, joined by one sea lane (edge 0) and nothing else.
 fn lane_world(seed: u64) -> (World, GoodId) {
+    lane_world_with(seed, |_| {})
+}
+
+/// [`lane_world`] with the configuration adjusted first.
+fn lane_world_with(seed: u64, tweak: impl FnOnce(&mut WorldConfig)) -> (World, GoodId) {
     let (goods, book, wheat) = catalogue();
+    let mut cfg = config(seed);
+    tweak(&mut cfg);
     let (farm, ore) = (ResourceId(0), ResourceId(1));
     let node = |key, x, res: ResourceId, amount: i64| NodeData {
         key,
@@ -74,7 +81,7 @@ fn lane_world(seed: u64) -> (World, GoodId) {
         resources: BTreeMap::from([(res, amount * MILLI)]),
     };
     let mut w = World::build(
-        config(seed),
+        cfg,
         goods,
         book,
         vec![node(1, 0, farm, 40), node(2, 600, ore, 20)],
@@ -324,4 +331,305 @@ fn a_closed_lane_takes_no_raids_either() {
     assert!(w.open_lane(LANE, t1));
     run_checked(&mut w, Tick(t1.0 + 10 * rtsim_kernel::clock::TICKS_PER_DAY));
     assert!(raid(&w) > 0);
+}
+
+/// Every consignment sent before the close is paid for, to the thousandth: with exact payments
+/// (no stickiness bands), the coins paid back over the closed lane equal the value of everything
+/// that landed, including what was still sailing when the lane closed.
+#[test]
+fn every_consignment_sent_before_the_close_is_paid_for() {
+    let (mut w, _) = lane_world_with(7, |c| {
+        c.keep_history = true;
+        c.trade.rules.pay_band_div = 0;
+        c.trade.rules.sticky_div = 0;
+    });
+    run_checked(&mut w, Tick::from_days(20));
+    let t0 = w.now();
+    let q = w.cfg.trade.quantum.len();
+    let b0 = w.cfg.trade.quantum.index(t0);
+    assert!(w.close_lane(LANE, t0));
+    let lag = w.edges[LANE as usize].lag();
+    run_checked(&mut w, Tick(t0.0 + (2 * lag + 4) * q));
+    let b = w.cfg.trade.quantum.index(w.now());
+    let e = &w.edges[LANE as usize];
+    let (mut value, mut landed_after_close, mut paid) = (0i128, 0i128, 0i128);
+    for k in 0..=b {
+        for p in e.dirs[0].goods.values() {
+            let v = i128::from(p.arrival_at(k)) * i128::from(p.arrival_quote(k))
+                / i128::from(rtsim_trade::PRICE_ONE);
+            value += v;
+            if k > b0 {
+                landed_after_close += v;
+            }
+        }
+        paid += e.dirs[1]
+            .pay
+            .values()
+            .map(|p| i128::from(p.departure_at(k)))
+            .sum::<i128>();
+    }
+    assert!(
+        landed_after_close > 0,
+        "consignments were still sailing at the close"
+    );
+    assert_eq!(paid, value, "every landed consignment was paid for");
+}
+
+/// Wheat, fish and a coin: a farm village, a fishing village, and a minting resource at both.
+fn two_way_catalogue() -> (Goods, RecipeBook, GoodId, GoodId) {
+    let mut goods = Goods::new();
+    let item = |name: &str| GoodDef {
+        name: name.into(),
+        kind: GoodKind::Item,
+        need_per_pop_day: 1_000,
+        stack: 64,
+    };
+    let wheat = goods.add(item("wheat"));
+    let fish = goods.add(item("fish"));
+    let emerald = goods.add(GoodDef {
+        name: "emerald".into(),
+        kind: GoodKind::Currency(Culture::Human),
+        need_per_pop_day: 0,
+        stack: 64,
+    });
+    let recipe = |name: &str, output, yield_milli, labour, res| Recipe {
+        name: name.into(),
+        output,
+        yield_per_batch: yield_milli,
+        inputs: vec![],
+        labour,
+        resource: Some(ResourceId(res)),
+    };
+    let book = RecipeBook {
+        recipes: vec![
+            recipe("farm", wheat, 10 * MILLI, 1.0, 0),
+            recipe("fish", fish, 10 * MILLI, 1.0, 1),
+            recipe("mint", emerald, MILLI, 3.0, 2),
+        ],
+    };
+    (goods, book, wheat, fish)
+}
+
+/// A (farms wheat, mints) and B (fishes, mints), each needing what the other makes, joined by
+/// one sea lane: goods flow both ways over it, wheat A to B and fish B to A.
+fn two_way_world(seed: u64, tweak: impl FnOnce(&mut WorldConfig)) -> (World, GoodId, GoodId) {
+    two_way_world_with(seed, true, tweak)
+}
+
+/// [`two_way_world`], B minting or not.
+fn two_way_world_with(
+    seed: u64,
+    b_mints: bool,
+    tweak: impl FnOnce(&mut WorldConfig),
+) -> (World, GoodId, GoodId) {
+    let (goods, book, wheat, fish) = two_way_catalogue();
+    let mut cfg = config(seed);
+    tweak(&mut cfg);
+    let node = |key, x, res: &[(u16, i64)]| NodeData {
+        key,
+        kind: NodeKind::Village(Culture::Human),
+        pos: Pos::new(0, x, 0),
+        pop: 10,
+        resources: res
+            .iter()
+            .map(|&(r, a)| (ResourceId(r), a * MILLI))
+            .collect(),
+    };
+    let mut w = World::build(
+        cfg,
+        goods,
+        book,
+        vec![
+            node(1, 0, &[(0, 40), (2, 20)]),
+            node(2, 600, &[(1, 40), (2, if b_mints { 20 } else { 0 })]),
+        ],
+    );
+    assert_eq!(w.edges.len(), 1);
+    for n in &mut w.nodes {
+        n.out.retain(|d| d.edge != 0);
+    }
+    let lane = w.add_lane(
+        LaneSpec {
+            a: 0,
+            b: 1,
+            medium: Medium::Sea,
+            length_blocks: 600,
+            d_quanta: 6,
+            dock_quanta: 4,
+            cap_slot_milli: 4_000,
+        },
+        Tick::ZERO,
+    );
+    assert_eq!(lane, LANE);
+    (w, wheat, fish)
+}
+
+fn dir_rate(w: &World, dir: usize, g: GoodId) -> i64 {
+    w.edges[LANE as usize].dirs[dir]
+        .goods
+        .get(&g)
+        .map_or(0, |p| p.current_rate())
+}
+
+/// The far end exports over the lane too: closing must wind its direction down as well, which
+/// only the far end's own re-allocation can do.
+#[test]
+fn the_far_end_stops_exporting_too() {
+    let (mut w, wheat, fish) = two_way_world(7, |_| {});
+    run_checked(&mut w, Tick::from_days(25));
+    assert!(dir_rate(&w, 0, wheat) > 0, "A sends wheat to B");
+    assert!(dir_rate(&w, 1, fish) > 0, "B sends fish to A");
+    let t0 = w.now();
+    let q = w.cfg.trade.quantum.len();
+    let lag = w.edges[LANE as usize].lag();
+    assert!(w.close_lane(LANE, t0));
+    assert_eq!(dir_rate(&w, 0, wheat), 0, "A's direction wound down");
+    assert_eq!(dir_rate(&w, 1, fish), 0, "B's direction wound down");
+    run_checked(&mut w, Tick(t0.0 + (2 * lag + 4) * q));
+    assert_eq!(on_the_road(&w, w.now()), BTreeMap::new());
+    let t1 = w.now();
+    assert!(w.open_lane(LANE, t1));
+    run_checked(&mut w, Tick(t1.0 + 10 * rtsim_kernel::clock::TICKS_PER_DAY));
+    assert!(dir_rate(&w, 1, fish) > 0 || dir_rate(&w, 0, wheat) > 0);
+}
+
+/// With barter in flows, payments carry items over the lane, and they still travel when it is
+/// closed: conservation holds across the closure, and the items are paid for in kind.
+#[test]
+fn barter_payments_still_travel_a_closed_lane_and_conserve() {
+    let (mut w, ..) = two_way_world(7, |c| {
+        c.trade.rules.barter_in_flows = true;
+        // The money sink would hold a rich treasury at twice its target, short of the glut that
+        // makes it refuse cash.
+        c.trade.rules.money_sink = false;
+    });
+    // A is flush with coin from the start (a player's hoard), so it refuses cash and B pays for
+    // its wheat in fish.
+    let coin = GoodId(2);
+    let hoard = BTreeMap::from([(coin, 10 * w.market(0).line(coin).target)]);
+    w.stock_from_players(0, &hoard, Tick::ZERO);
+    let items = |w: &World, goods: &Goods| -> i64 {
+        w.edges[LANE as usize]
+            .dirs
+            .iter()
+            .flat_map(|d| d.pay.iter())
+            .filter(|(g, _)| goods.get(**g).kind == GoodKind::Item)
+            .map(|(_, p)| p.current_rate())
+            .sum()
+    };
+    let mut seen_before = 0;
+    let mut t = 0;
+    let q = w.cfg.trade.quantum.len();
+    while t < Tick::from_days(25).0 {
+        t += q;
+        run_checked(&mut w, Tick(t));
+        seen_before = seen_before.max(items(&w, &w.goods));
+    }
+    assert!(seen_before > 0, "payments in kind travel the open lane");
+    let t0 = w.now();
+    let lag = w.edges[LANE as usize].lag();
+    assert!(w.close_lane(LANE, t0));
+    let mut seen_closed = 0;
+    let mut t = t0.0;
+    while t < t0.0 + (2 * lag + 4) * q {
+        t += q;
+        run_checked(&mut w, Tick(t));
+        seen_closed = seen_closed.max(items(&w, &w.goods));
+    }
+    assert!(
+        seen_closed > 0,
+        "payments in kind travel the closed lane (PC57)"
+    );
+    assert_eq!(on_the_road(&w, w.now()), BTreeMap::new());
+}
+
+/// Three villages: S1 (node 0) and S2 (node 2) farm wheat, D (node 1) mints. S1 reaches D only
+/// by the lane; S2 reaches D by a road. Returns the world, wheat, the road's edge index.
+fn supplier_world(seed: u64) -> (World, GoodId, u32) {
+    let (goods, book, wheat) = catalogue();
+    let (farm, ore) = (ResourceId(0), ResourceId(1));
+    let node = |key, x, res: ResourceId, amount: i64| NodeData {
+        key,
+        kind: NodeKind::Village(Culture::Human),
+        pos: Pos::new(0, x, 0),
+        pop: 10,
+        resources: BTreeMap::from([(res, amount * MILLI)]),
+    };
+    let mut w = World::build(
+        config(seed),
+        goods,
+        book,
+        vec![
+            node(1, 0, farm, 40),
+            node(2, 600, ore, 20),
+            node(3, 1_200, farm, 40),
+        ],
+    );
+    // Keep only the road between D and S2; S1 gets its lane to D below.
+    let keep = w
+        .edges
+        .iter()
+        .position(|e| (e.a, e.b) == (1, 2) || (e.a, e.b) == (2, 1))
+        .expect("a road joins D and S2") as u32;
+    for n in &mut w.nodes {
+        n.out.retain(|d| d.edge == keep);
+    }
+    w.add_lane(
+        LaneSpec {
+            a: 0,
+            b: 1,
+            medium: Medium::Sea,
+            length_blocks: 600,
+            d_quanta: 6,
+            dock_quanta: 4,
+            cap_slot_milli: 4_000,
+        },
+        Tick::ZERO,
+    );
+    (w, wheat, keep)
+}
+
+/// A closed lane's far end is no supplier: with two suppliers of a destination, one over a lane
+/// and one over a road, closing the lane makes the destination advertise one supplier, and the
+/// road supplier is asked for the whole want at its next allocation (PC60), not half of it.
+#[test]
+fn a_closed_lane_is_no_supplier_and_the_road_supplier_is_asked_for_the_whole_want() {
+    let (mut w, wheat, road) = supplier_world(7);
+    let lane = w.edges.len() as u32 - 1;
+    let q = w.cfg.trade.quantum.len();
+    let rate = |w: &World, e: u32| {
+        w.edges[e as usize]
+            .dirs
+            .iter()
+            .map(|d| d.goods.get(&wheat).map_or(0, |p| p.current_rate()))
+            .sum::<i64>()
+    };
+    let suppliers = |w: &World| {
+        w.nodes[1]
+            .last_sent
+            .as_ref()
+            .map(|s| s.good(wheat).suppliers)
+    };
+    run_checked(&mut w, Tick::from_days(30));
+    let (from_lane, from_road) = (rate(&w, lane), rate(&w, road));
+    assert!(from_lane > 0 && from_road > 0, "both suppliers send");
+    assert_eq!(suppliers(&w), Some(2));
+
+    let t0 = w.now();
+    assert!(w.close_lane(lane, t0));
+    assert_eq!(suppliers(&w), Some(1), "D now advertises one supplier");
+    // Once the news has crossed the road (a few quanta), the road supplier takes up the whole of
+    // what the lane carried.
+    run_checked(&mut w, Tick(t0.0 + 30 * q));
+    assert_eq!(rate(&w, lane), 0);
+    assert!(
+        rate(&w, road) >= from_lane + from_road - 4,
+        "the road supplier sends {} of the {} the two sent",
+        rate(&w, road),
+        from_lane + from_road
+    );
+    // Reopened, the lane is a supplier again.
+    let t1 = w.now();
+    assert!(w.open_lane(lane, t1));
+    assert_eq!(suppliers(&w), Some(2));
 }
