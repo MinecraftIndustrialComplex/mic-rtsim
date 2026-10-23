@@ -44,7 +44,7 @@ public final class RtsimAttachments {
      */
     public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays>> TALK_DAYS =
             TYPES.register("talk_days", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays.EMPTY)
-                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays.CODEC, d -> !d.isEmpty()).build());
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDaysCodec.CODEC, d -> !d.isEmpty()).build());
 
     /**
      * {@code mic_rtsim:player_blocks}: which blocks of a chunk players placed (per section, a 4096-bit

@@ -1,8 +1,5 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
-import com.mojang.serialization.Codec;
-import com.mojang.serialization.codecs.RecordCodecBuilder;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -10,20 +7,14 @@ import java.util.UUID;
 /**
  * The attachment {@code mic_rtsim:talk_days} (TK25): for each player, the last game day a talk with
  * this entity was credited. At most {@link #CAP} players; the one with the oldest day is dropped.
- * Immutable.
+ * Immutable. Its codec lives in {@link TalkDaysCodec}, so this class loads without Mojang's serialization
+ * library (the pure unit tests).
  */
 public record TalkDays(List<Entry> entries) {
     public static final int CAP = 16;
     public static final TalkDays EMPTY = new TalkDays(List.of());
 
-    public record Entry(UUID player, long day) {
-        static final Codec<Entry> CODEC = RecordCodecBuilder.create(i -> i.group(
-                net.minecraft.core.UUIDUtil.CODEC.fieldOf("player").forGetter(Entry::player),
-                Codec.LONG.fieldOf("day").forGetter(Entry::day)
-        ).apply(i, Entry::new));
-    }
-
-    public static final Codec<TalkDays> CODEC = Entry.CODEC.listOf().xmap(TalkDays::new, TalkDays::entries);
+    public record Entry(UUID player, long day) {}
 
     /** The last day credited for this player, or -1 for never. */
     public long lastDay(UUID player) {
