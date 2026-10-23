@@ -203,7 +203,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Trains and dragons now move in Distant Horizons, on rtsim's own feed at 24 to 32 times less bandwidth than Create's</h1>
-  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on our own worlds are being captured for a <a href="#gallery">gallery</a>. Windmills, war and airships are still estimates.</p>
+  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on two worlds we generated ourselves are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>, and what they showed at hand-overs is being fixed (<a href="#gallery">below</a>). Windmills, war and airships are still estimates.</p>
   <p class="lead" data-ss-id="lead">Distant Horizons, which the pack now ships at 3.3.3, lets a mod draw coloured boxes at any distance and move them every frame. The one hard limit is that boxes cannot rotate, so anything that turns (sails, wings, a ship changing course) is a flipbook of a few poses that swap. Trains and dragons are built; windmills, war and airships come next.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-bw"><div class="n">1.3 to 1.7 <small>KB/s</small></div><div class="t">for 50 trains on rtsim's feed, against 41.3 KB/s on Create's own sync</div></div>
@@ -328,8 +328,20 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="gallery" data-ss-id="gallery" data-ss-section>
-  <h2 data-ss-id="gallery-h">Pictures and video: being captured</h2>
-  <p data-ss-id="gallery-p">You asked: <span class="why">"can you get me some videos / images of worlds with this mod"</span>. A capture run is recording trains and dragons in the far view on worlds we generated ourselves. They will go on a separate private page, the far view gallery, linked here and from the hub when it is ready.</p>
+  <h2 data-ss-id="gallery-h">Pictures and video: the far view gallery</h2>
+  <p data-ss-id="gallery-p">You asked: <span class="why">"can you get me some videos / images of worlds with this mod"</span>. <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery"><strong>The far view gallery</strong></a> has 12 stills and 6 clips, on two worlds we generated ourselves: a hill view with trains crossing, dragons circling, a dragon flying in to become a real body, and a train arriving at a station to become a real Create train. Private page.</p>
+  <div class="box" data-ss-id="gallery-fix">
+    <h3>Seen in the footage, being fixed</h3>
+    <p>Each happens at a hand-over between the two renderers: Distant Horizons' boxes far away, and the game's own dragons and trains up close.</p>
+    <ul>
+      <li>The box and the real body both show for up to about 0.85 s.</li>
+      <li>A real dragon is about twice its box's size, spawns facing another way, and sits about 3 blocks higher.</li>
+      <li>A train vanishes for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hides the near box there.</li>
+      <li>The box trails the real train by about half a second.</li>
+      <li>The train's box is bigger than the real carriage.</li>
+    </ul>
+    <p>What already looks right: boxes keep to the right lane, with steady colour and no flicker. An agent is fixing all five now.</p>
+  </div>
 </section>
 
 <section id="items" data-ss-id="items" data-ss-section>
@@ -554,7 +566,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </main>
 
 <footer data-ss-react="off">
-  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb) and your approval. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb), your approval and the gallery. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
 </footer>
 </body>
 </html>
