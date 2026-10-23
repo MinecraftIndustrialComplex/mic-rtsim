@@ -474,3 +474,21 @@ fn the_network_page_is_written_only_when_it_changes() {
     c.run(Tick(2 * HALF_DAY), Tick(4 * HALF_DAY));
     assert_eq!(q.hashes(), c.hashes());
 }
+
+/// A save in an older ships format is refused by name, never read as a truncated one: S8b-3's
+/// stats and ledger made the format `RTS3`, and an `RTS2` page used to fail as "truncated" deep in
+/// the stats (the rtsim-view fixtures, 2026-10-23).
+#[test]
+fn an_older_format_is_refused_by_name() {
+    let mut bytes = Ships::new(1, ShipTunables::default(), Tick::ZERO).save();
+    assert_eq!(&bytes[..4], b"RTS3");
+    bytes[..4].copy_from_slice(b"RTS2");
+    let err = Ships::load(ShipTunables::default(), &bytes)
+        .err()
+        .expect("an RTS2 save is refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("format RTS2") && msg.contains("reads RTS3"),
+        "the error names both formats: {msg}"
+    );
+}
