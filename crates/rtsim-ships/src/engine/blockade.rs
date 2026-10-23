@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ports that close under blockade (EQUILIBRIUM.md §2.4.6a rule 7, slice S8b-4; choices PC20 to
-//! PC25 and PC80 to PC100). The ships engine's half: the world's lanes close and open with
+//! PC25 and PC80 to PC103). The ships engine's half: the world's lanes close and open with
 //! `World::close_lane` and `World::open_lane` (S8b-4a).
 //!
 //! - **Heat** (PC20). Each lane's threat row keeps an exponential average of its applied hazard
@@ -31,6 +31,11 @@
 //!   `relaunch_time`), never in a player's view: a watched home dock puts it off to the slot's
 //!   next stay there (PC90). Laying up and relaunching each make the slot's old body stale
 //!   (PC95), and a slot laid up gives up its booked voyages (PC92).
+//! - **The switch** (PC101, PC103). Switching the ships off lifts every closure at once
+//!   ([`Ships::lift_closures`]): the ports and their lanes open, blockades and open spells clear
+//!   and the heat drops to 0, with no tape row and no news. A relaunch that falls due while the
+//!   ships are off waits, at the switch-on's catch-up, for its slot's first home-dock stay after
+//!   the world's present.
 
 use rtsim_settle::NodeKind;
 
