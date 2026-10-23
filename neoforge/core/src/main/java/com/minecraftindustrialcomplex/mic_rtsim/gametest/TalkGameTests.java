@@ -54,11 +54,11 @@ public final class TalkGameTests {
     private TalkGameTests() {}
 
     /** The tick the talker's brain needs before talking (vanilla's first maybeDecayGossip sets its clock). */
-    private static final int SETTLE = 3;
+    static final int SETTLE = 3;
     /** More than the pair window of the rate limit (TK3). */
-    private static final int WINDOW = 45;
+    static final int WINDOW = 45;
 
-    private static Villager farmer(GameTestHelper helper, double x, double z) {
+    static Villager farmer(GameTestHelper helper, double x, double z) {
         Villager v = helper.spawn(EntityType.VILLAGER, new Vec3(x, 2, z));
         v.setVillagerData(v.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));
         v.setPersistenceRequired();
@@ -94,7 +94,7 @@ public final class TalkGameTests {
         });
     }
 
-    private static InteractionResult[] click(net.minecraft.server.level.ServerPlayer player, net.minecraft.world.entity.Entity target, boolean crouch) {
+    static InteractionResult[] click(net.minecraft.server.level.ServerPlayer player, net.minecraft.world.entity.Entity target, boolean crouch) {
         player.setShiftKeyDown(crouch);
         InteractionResult main = player.interactOn(target, InteractionHand.MAIN_HAND);
         InteractionResult off = player.interactOn(target, InteractionHand.OFF_HAND);
@@ -102,19 +102,19 @@ public final class TalkGameTests {
     }
 
     /** Every message a hearer got, by key, for failure messages. */
-    private static String keys(FakePlayers.Hearer p) {
+    static String keys(FakePlayers.Hearer p) {
         StringBuilder sb = new StringBuilder("[");
         for (Component c : p.raw)
             sb.append(c.getContents() instanceof TranslatableContents t ? t.getKey() : c.getString()).append("; ");
         return sb.append("]").toString();
     }
 
-    private static TranslatableContents translatable(Component c) {
+    static TranslatableContents translatable(Component c) {
         check("a translatable component: " + c, c.getContents() instanceof TranslatableContents);
         return (TranslatableContents) c.getContents();
     }
 
-    private static int minorPositive(Villager v, UUID player) {
+    static int minorPositive(Villager v, UUID player) {
         return v.getGossips().getReputation(player, t -> t == GossipType.MINOR_POSITIVE);
     }
 

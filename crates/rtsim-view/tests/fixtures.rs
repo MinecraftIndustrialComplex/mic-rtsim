@@ -4,10 +4,12 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 7d435b8
-//!   (MOWZIE.md M1 with its review fixes on main 1835625: the conflict's pages are RTC4 with meta
-//!   version 3, each feud's kept notice with its serial and its Envoy hold, the Peaceful flag and
-//!   start and the last notice serial; the ships' pages are RTS3, S8b-3's stats and ledger; the
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit b98ad19
+//!   (EQUILIBRIUM.md S8b-4 on main af79c41: the ships' pages are RTS4, each port's blockade state
+//!   and each laid-up slot's idle spells in a trailing section written only with closures on, and
+//!   the world's pages are RTW4, each edge's closed flag; MOWZIE.md M1: the conflict's pages are
+//!   RTC4 with meta version 3, each feud's kept notice with its serial and its Envoy hold, the
+//!   Peaceful flag and start and the last notice serial; S8b-3's ships stats and ledger; the
 //!   dragons' pages are RTD7 and RTN7, each lair's pressure, wait and fed share, and the nest
 //!   table; the herds' pages are VERSION 4, each herd row its range's K, range, home and vacancy;
 //!   an industry district's glass state is a page of table 0x4903 starting with IGL1, and the
@@ -19,7 +21,7 @@
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
-//!   7d435b8 (the same formats). Every module's pages, mostly empty: herds, districts with their
+//!   b98ad19 (the same formats). Every module's pages, mostly empty: herds, districts with their
 //!   glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
