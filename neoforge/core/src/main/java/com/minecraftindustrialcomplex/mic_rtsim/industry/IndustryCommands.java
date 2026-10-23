@@ -111,6 +111,21 @@ public final class IndustryCommands {
         });
     }
 
+    /**
+     * {@code merge} and {@code split} read the district set, which the detection of an earlier command still under way has
+     * not changed yet (a split of a chunk that an unfinished {@code exclude} takes out would pin a district that never
+     * exists): they are refused until its result line (DS-16). {@code rescan}, {@code exclude} and {@code include} record
+     * their edit alone and stack.
+     */
+    private static boolean busy(CommandContext<CommandSourceStack> ctx, Industry ind,
+                                net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dim) {
+        if (!ind.districts.commandPending(dim))
+            return false;
+        ctx.getSource().sendFailure(Component.literal(
+                "mic_rtsim: an earlier command's detection is still running; wait for its result line and try again"));
+        return true;
+    }
+
     private static UUID player(CommandContext<CommandSourceStack> ctx) {
         Entity e = ctx.getSource().getEntity();
         return e == null ? null : e.getUUID();
@@ -182,6 +197,8 @@ public final class IndustryCommands {
             ctx.getSource().sendFailure(Component.literal("mic_rtsim: merge needs two districts in one dimension"));
             return 0;
         }
+        if (busy(ctx, ind, a.dim))
+            return 0;
         // Pins win over links: a pinned district merges by moving its pins.
         var pins = ind.data.pins(a.dim);
         boolean aPinned = pins.containsValue(a.id), bPinned = pins.containsValue(b.id);
@@ -201,7 +218,7 @@ public final class IndustryCommands {
         ind.data.setDirty();
         ServerLevel level = ind.level(a.dim);
         if (level == null) {
-            say(ctx, "mic_rtsim: merge recorded; the dimension is not loaded, the next detection joins them");
+            say(ctx, "mic_rtsim: merge recorded; the dimension is not loaded, the next full detection of it joins them");
             return 1;
         }
         detectThenSay(ctx, ind, level, "mic_rtsim: merge recorded",
@@ -215,6 +232,8 @@ public final class IndustryCommands {
             return 0;
         District d = find(ctx, ind, null);
         if (d == null)
+            return 0;
+        if (busy(ctx, ind, d.dim))
             return 0;
         ChunkPos here = new ChunkPos(net.minecraft.core.BlockPos.containing(ctx.getSource().getPosition()));
         long id = ind.data.allocateId();

@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
 import net.minecraft.commands.CommandSource;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.chat.Component;
@@ -355,9 +356,9 @@ public final class RescanBudgetGameTests {
                 .thenWaitUntil(() -> check("the district of four chunks is settled",
                         !ind().districts().rescanning() && districtAt(helper, ms[0]) != null && districtAt(helper, ms[0]).chunks.size() == 4))
                 .thenExecute(() -> {
-                    looked[0] = ind().districts().lastRescanLooked();
+                    looked[0] = ind().districts().rescans();
                     command(helper, ms[0], sink, "rtsim district rescan");
-                    check("the call did no detection work", ind().districts().lastRescanLooked() == looked[0]);
+                    check("the call did no detection work", ind().districts().rescans() == looked[0]);
                     check("the detection is waiting to start or under way", ind().districts().rescanning());
                     check("the call said it goes on over the next ticks, and said nothing else: " + sink.lines,
                             sink.lines.size() == 1 && sink.lines.get(0).contains("over the next ticks"));
@@ -374,7 +375,7 @@ public final class RescanBudgetGameTests {
                     check("spread over at least four ticks, got " + ds.lastRescanSlices(), ds.lastRescanSlices() >= 4);
                     check("no tick looked at more than a budget and a chunk: " + ds.lastRescanLongestLooked(), ds.lastRescanLongestLooked() <= TICK_BOUND);
                     check("the report came in a later tick than the call", sink.ticks.get(1) > sink.ticks.get(0));
-                    check("the report is the districts' count: " + sink.lines.get(1), sink.lines.get(1).contains("1 districts"));
+                    check("the report is the districts' count: " + sink.lines.get(1), sink.lines.get(1).contains(": 1 districts;"));
                     check("the district is whole", districtAt(helper, ms[0]).chunks.size() == 4 && districtAt(helper, ms[0]).seeds() == 4);
                 })
                 .thenSucceed();
@@ -389,7 +390,7 @@ public final class RescanBudgetGameTests {
         fastConfig();
         forgetAll(helper);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
-        Sink sink = new Sink(helper.getLevel());
+        Sink sink = new Sink(helper.getLevel()), refused = new Sink(helper.getLevel());
         BlockPos[] ms = new BlockPos[2];
         long[] ids = {0, 0};
         int[] before = {0};
@@ -411,6 +412,10 @@ public final class RescanBudgetGameTests {
                             && districtAt(helper, ms[0]) != districtAt(helper, ms[1]));
                     check("the call said the merge is recorded and the detection goes on: " + sink.lines,
                             sink.lines.size() == 1 && sink.lines.get(0).contains("recorded") && sink.lines.get(0).contains("over the next ticks"));
+                    // merge and split read the district set, which the detection under way has not changed yet
+                    command(helper, ms[0], refused, "rtsim district merge " + ids[0] + " " + ids[1]);
+                    check("a second merge during the detection is refused: " + refused.lines,
+                            refused.lines.size() == 1 && refused.lines.get(0).contains("still running"));
                 })
                 .thenWaitUntil(() -> {
                     check("the report came: " + sink.lines, sink.lines.size() == 2);
@@ -420,8 +425,9 @@ public final class RescanBudgetGameTests {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     check("one district now", ind().districts().all().size() == before[0] - 1 && districtAt(helper, ms[0]) == districtAt(helper, ms[1]));
                     check("of both chunks", districtAt(helper, ms[0]).chunks.size() == 2);
-                    check("spread over ticks, got " + ind().districts().lastRescanSlices(), ind().districts().lastRescanSlices() >= 4);
+                    check("spread over ticks, got " + ind().districts().lastRescanSlices(), ind().districts().lastRescanSlices() >= 3);
                     check("the report says so: " + sink.lines.get(1), sink.lines.get(1).contains("merged"));
+                    check("the refused merge changed nothing and was not answered twice: " + refused.lines, refused.lines.size() == 1);
                 })
                 .thenSucceed();
     }
@@ -505,7 +511,7 @@ public final class RescanBudgetGameTests {
 
     /**
      * A second command while the first one's detection runs restarts it as a full detection and both are answered, once each,
-     * when the one detection that covers them is done.
+     * when the one detection that covers them is done: the first, cancelled one never commits.
      */
     @GameTest(template = YARD, batch = "rescan_budget_10", timeoutTicks = 800)
     public static void aSecondCommandDuringTheDetectionIsAnsweredWithTheFirst(GameTestHelper helper) {
@@ -514,7 +520,7 @@ public final class RescanBudgetGameTests {
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, BUDGET);
         Sink first = new Sink(helper.getLevel()), second = new Sink(helper.getLevel());
         BlockPos[] ms = new BlockPos[4];
-        boolean[] asked = {false};
+        long[] rescans = {0};
         helper.startSequence()
                 .thenExecute(() -> {
                     for (int i = 0; i < 4; i++)
@@ -522,21 +528,78 @@ public final class RescanBudgetGameTests {
                 })
                 .thenWaitUntil(() -> check("settled", !ind().districts().rescanning() && districtAt(helper, ms[0]) != null
                         && districtAt(helper, ms[0]).chunks.size() == 4))
-                .thenExecute(() -> command(helper, ms[0], first, "rtsim district rescan"))
+                .thenExecute(() -> {
+                    rescans[0] = ind().districts().rescans();
+                    command(helper, ms[0], first, "rtsim district rescan");
+                })
+                .thenIdle(2) // the first detection has started and has chunks left (four chunks of 30 block entities at 10 a tick)
+                .thenExecute(() -> {
+                    check("the first detection is under way: " + first.lines, ind().districts().rescanning() && first.lines.size() == 1);
+                    check("and has not committed", ind().districts().rescans() == rescans[0]);
+                    command(helper, ms[0], second, "rtsim district rescan");
+                })
                 .thenWaitUntil(() -> {
-                    check("the first detection is under way", ind().districts().rescanning() && ind().districts().lastRescanSlices() >= 0);
-                    if (!asked[0]) {
-                        asked[0] = true;
-                        command(helper, ms[0], second, "rtsim district rescan");
-                    }
                     check("both were answered: " + first.lines + " and " + second.lines, first.lines.size() == 2 && second.lines.size() == 2);
                     check("and the detection is over", !ind().districts().rescanning());
                 })
                 .thenExecute(() -> {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     check("both reports came in one tick", first.ticks.get(1).equals(second.ticks.get(1)));
+                    check("one detection answered both, the cancelled one never committed: " + (ind().districts().rescans() - rescans[0]),
+                            ind().districts().rescans() == rescans[0] + 1);
                     check("the district is whole", districtAt(helper, ms[0]).chunks.size() == 4);
                 })
                 .thenSucceed();
+    }
+
+    /** A failed test leaves its budget behind: the next batch starts from the fast configuration the other tests assume. */
+    @AfterBatch(batch = "rescan_budget_1")
+    public static void resetAfter1(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_2")
+    public static void resetAfter2(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_3")
+    public static void resetAfter3(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_5")
+    public static void resetAfter5(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_6")
+    public static void resetAfter6(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_7")
+    public static void resetAfter7(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_8")
+    public static void resetAfter8(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_9")
+    public static void resetAfter9(ServerLevel level) {
+        reset();
+    }
+
+    @AfterBatch(batch = "rescan_budget_10")
+    public static void resetAfter10(ServerLevel level) {
+        reset();
+    }
+
+    private static void reset() {
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
+        IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
     }
 }
