@@ -108,6 +108,12 @@ class TalkBandsTest {
         assertEquals(true, TalkTuning.tellable(TalkRecords.BY_US, "by_us"));
         assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US, "other"), "\"Word is us attacked Oakford\" is dropped");
         assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "other"));
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "to_you"),
+                "\"Heard Mudhollow nearly killed you\" names the holder in the third person (TK81)");
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US, "to_you"));
+        assertEquals(true, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "by_us"));
+        assertEquals(true, TalkTuning.tellable(TalkRecords.TO_YOU, "to_you"), "done to the listener by a stranger");
+        assertEquals(true, TalkTuning.tellable(TalkRecords.TO_US | TalkRecords.BY_US, "us"));
         assertEquals(true, TalkTuning.tellable(TalkRecords.TO_US, "other"));
         assertEquals(true, TalkTuning.tellable(0, "other"));
     }
