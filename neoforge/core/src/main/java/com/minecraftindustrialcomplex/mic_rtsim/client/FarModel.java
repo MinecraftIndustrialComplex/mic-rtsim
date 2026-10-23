@@ -21,6 +21,8 @@ public final class FarModel {
     public interface Live {
         /**
          * Draws it into {@code buffers}; {@code ps} is at the mover's midpoint, in world axes, camera relative.
+         * Called once in each pass that draws the mover, so twice a frame in DH's vanilla fade: each call must
+         * draw the same pose and do nothing but draw (no ticking, counting or effects of its own).
          */
         void render(PoseStack ps, MultiBufferSource buffers);
     }

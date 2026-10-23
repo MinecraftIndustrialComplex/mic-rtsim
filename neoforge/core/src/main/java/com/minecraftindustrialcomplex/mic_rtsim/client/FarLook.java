@@ -29,8 +29,9 @@ public interface FarLook {
     /**
      * Places mover {@code m}'s model for this frame into {@code out}: what to draw and how it turns about the
      * mover's midpoint. {@code seg} is the mover's segment at {@code clock} (the leading point, then the trailing
-     * one); {@code live} asks for the live model where the look has one (the nearest few dragons). False when the
-     * mover has no model now ({@link #status} is not READY).
+     * one); {@code live} asks for the live model where the look has one (the nearest few dragons), placed once a
+     * frame and drawn by each pass that draws the mover ({@link FarModel.Live#render}). False when the mover has
+     * no model now ({@link #status} is not READY).
      */
     boolean place(FarMover m, double[] seg, double clock, boolean live, FarModel out);
 
