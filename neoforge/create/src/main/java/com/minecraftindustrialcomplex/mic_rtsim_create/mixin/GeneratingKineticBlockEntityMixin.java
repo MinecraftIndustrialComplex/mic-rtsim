@@ -13,8 +13,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * row 58, SECTIONS.md choice SC73): {@code updateGeneratedRotation} puts it in the network's sources and
  * members through {@code updateCapacityFor} and {@code updateStressFor}, which never count it out of the
  * unloaded share. A steam engine that ticks updates its powered shaft two blocks away, which can lie in a
- * FULL chunk that does not tick. The join takes the generator's share out at its generated speed now (its
- * own fields may have changed already: a shaft's engine efficiency), as Create's first tick would.
+ * FULL chunk that does not tick. The join takes the generator's share out at its generated speed now. A
+ * powered shaft, whose engine changes its fields before this update, joins before them
+ * ({@code PoweredShaftBlockEntityMixin}); another generator whose fields a neighbour changes before its
+ * first tick (a water wheel's flow) takes out its share at the new speed, not the one the network counted
+ * (row 58's residual).
  */
 @Mixin(value = GeneratingKineticBlockEntity.class, remap = false)
 public abstract class GeneratingKineticBlockEntityMixin {

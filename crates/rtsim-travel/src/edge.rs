@@ -187,6 +187,11 @@ pub struct Edge {
     /// caravan or ship (a ships' lane).
     pub msg_period: u64,
     pub msg_walk: u64,
+    /// A closed lane (a blockaded port, EQUILIBRIUM.md §2.4.6a rule 7, choice PC22): the
+    /// allocation offers no new goods on either direction. Consignments already in a pipeline
+    /// still arrive, payments and news still travel. Only a ships' lane is ever closed; kept
+    /// apart from `cap_slot_milli`, where 0 means no limit.
+    pub closed: bool,
 }
 
 impl Edge {
@@ -215,6 +220,7 @@ impl Edge {
             cap_slot_milli: 0,
             msg_period: 0,
             msg_walk: d.max(1),
+            closed: false,
         }
     }
 
