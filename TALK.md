@@ -216,6 +216,14 @@ did what to whom, when and where, from the talker's side:
   (§6, TK29).
 - **Named or described** (TQ-3, both): "Mudhollow raided Lowmarsh, a day's ride east" one time, "the
   goblins in the hills raided a village a day's ride east" another (§6).
+- **Outcome** (TK83): a raid report carries how the raid ended in its severity (1 held, 2 beaten, 3
+  plundered), and a held or beaten raid is told from `news.raid.<perspective>.held` or `.beaten`
+  alone, with no `.seen` variant and never the plain `news.raid.<perspective>`, whose lines all tell a
+  plunder. A plundered raid, and every other kind, is told from `.seen` then the plain topic when
+  seen, else the plain topic.
+- **Once per story** (TK84): of the holder's reports, only the newest of each kind between the same
+  two actors (`who`, `whom`) is ranked, the later report id breaking a tie, so a siege that records a
+  raid per wave or a feud that records one per rung is told once, as it stands now.
 
 Every report kind has lines (§9.4), so this is the path CL-9 and CL-10 need: the five conflict kinds
 (feuds, pacts, betrayals, raids, deaths), the ports kinds (raids on ports, blockades, closures,
