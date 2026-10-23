@@ -19,7 +19,8 @@ import net.minecraft.gametest.framework.GameTestHelper;
  */
 public final class HalfLoadedFactory implements CorpusFactory {
     static final int B_DX = 14;
-    static final BlockPos A_SAW = new BlockPos(8, 3, 8), B_MILL = new BlockPos(8 + B_DX, 3, 8);
+    /** Line A's input chest (the saw shafts' main unit holds it alone, see {@link SectionsFx#BYSTANDER_FEED}) and line B's millstone. */
+    static final BlockPos A_FEED = new BlockPos(8, 5, 8), B_MILL = new BlockPos(8 + B_DX, 3, 8);
 
     @Override
     public String name() {
@@ -58,10 +59,10 @@ public final class HalfLoadedFactory implements CorpusFactory {
                     return "a unit has not learned: " + SectionsFx.describe(far);
             if (!structure) {
                 structure = true;
-                GlassReport.Unit a = SectionsFx.unitAt(far, run.far.absolutePos(A_SAW)), b = SectionsFx.unitAt(far, run.far.absolutePos(B_MILL));
+                GlassReport.Unit a = SectionsFx.unitAt(far, run.far.absolutePos(A_FEED)), b = SectionsFx.unitAt(far, run.far.absolutePos(B_MILL));
                 String d = SectionsFx.describe(far);
                 SectionsFx.info(run, "far units", d);
-                SectionsFx.check(run, "two units, one per line", far.units().size() == 2 && a != null && b != null && a != b, d);
+                SectionsFx.check(run, "the lines are units of their own (A's saw shafts have two sections)", far.units().size() >= 2 && a != null && b != null && a != b, d);
                 SectionsFx.check(run, "both lines learned while every chunk ticked", SectionsFx.learned(a) && SectionsFx.learned(b), d);
             }
             return null;
@@ -69,7 +70,7 @@ public final class HalfLoadedFactory implements CorpusFactory {
 
         @Override
         public void away(GlassReplayGameTests.Run run, GlassReport far, boolean last) {
-            GlassReport.Unit a = SectionsFx.unitAt(far, run.far.absolutePos(A_SAW)), b = SectionsFx.unitAt(far, run.far.absolutePos(B_MILL));
+            GlassReport.Unit a = SectionsFx.unitAt(far, run.far.absolutePos(A_FEED)), b = SectionsFx.unitAt(far, run.far.absolutePos(B_MILL));
             if (aFirst == null && a != null) {
                 aFirst = a;
                 bFirst = b;

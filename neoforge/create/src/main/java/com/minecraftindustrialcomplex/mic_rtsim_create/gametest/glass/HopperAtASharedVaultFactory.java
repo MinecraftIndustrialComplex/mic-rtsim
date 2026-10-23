@@ -51,9 +51,22 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
     static final BlockPos PRESS = new BlockPos(7, 5, 8), HOPPER = new BlockPos(6, 7, 9), HOPPER_CHEST = new BlockPos(6, 8, 9);
     static final BlockPos FEED = new BlockPos(5, 4, 8), BELT_END = new BlockPos(6, 3, 8);
 
+    /** Whether the hopper is built ({@link FrozenNeighbourFactory} builds the same lines without it). */
+    private final boolean withHopper;
+    private final String name;
+
+    public HopperAtASharedVaultFactory() {
+        this(true, "hopper_vault");
+    }
+
+    HopperAtASharedVaultFactory(boolean withHopper, String name) {
+        this.withHopper = withHopper;
+        this.name = name;
+    }
+
     @Override
     public String name() {
-        return "hopper_vault";
+        return name;
     }
 
     @Override
@@ -87,15 +100,18 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
 
         // The hopper: a chest above it, the vault below.
         BlockPos hopperChest = abs(h, HOPPER_CHEST);
-        chest(h, hopperChest);
-        set(h, abs(h, HOPPER), Blocks.HOPPER.defaultBlockState());
-        fill(h, hopperChest, AllItems.BRASS_INGOT.get(), HOPPER_BRASS);
+        if (withHopper) {
+            chest(h, hopperChest);
+            set(h, abs(h, HOPPER), Blocks.HOPPER.defaultBlockState());
+            fill(h, hopperChest, AllItems.BRASS_INGOT.get(), HOPPER_BRASS);
+        }
 
         double pressed = TICKS_PER_MINUTE / 19.0;
-        Built b = new Built(abs(h, PRESS), List.of(hopperChest), List.of(sheets), List.of(
+        Built b = new Built(abs(h, PRESS), withHopper ? List.of(hopperChest) : List.of(), List.of(sheets), List.of(
                 Expect.exact("create:brass_sheet", pressed, "pressing/brass_ingot: one sheet per ingot (nominal, 19 ticks)")),
-                "press line under the vault; a hopper feeds the vault a brass ingot per 8 ticks from " + HOPPER_BRASS);
-        return SectionsFx.merge(7200, "line A (brass mixing) into a vault, line B (press) out of it, a hopper into it; " + a.notes(),
+                withHopper ? "press line under the vault; a hopper feeds the vault a brass ingot per 8 ticks from " + HOPPER_BRASS
+                        : "press line under the vault, which line A fills at 75 a minute and the press empties at 63");
+        return SectionsFx.merge(7200, "line A (brass mixing) into a vault, line B (press) out of it" + (withHopper ? ", a hopper into it; " : "; ") + a.notes(),
                 a, b, SectionsFx.bystander(h));
     }
 
@@ -131,7 +147,7 @@ public final class HopperAtASharedVaultFactory implements CorpusFactory {
             BlockPos hopper = run.far.absolutePos(HOPPER);
             GlassReport.Unit group = SectionsFx.unitAt(r, mixer);
             GlassReport.Unit pressUnit = SectionsFx.unitAt(r, press);
-            GlassReport.Unit bystander = SectionsFx.unitAt(r, run.far.absolutePos(SectionsFx.BYSTANDER_SAW));
+            GlassReport.Unit bystander = SectionsFx.unitAt(r, run.far.absolutePos(SectionsFx.BYSTANDER_FEED));
             String d = SectionsFx.describe(r);
             SectionsFx.info(run, "far units", d);
             SectionsFx.check(run, "the mixing line and the press line are in one judging group", group != null && group == pressUnit, d);

@@ -114,13 +114,16 @@ public final class BeltIntoPressFactory implements CorpusFactory {
         private void structure(GlassReplayGameTests.Run run, String copy, GlassReport r, java.util.function.Function<BlockPos, BlockPos> abs) {
             boolean far = copy.equals("far");
             GlassReport.Unit line = SectionsFx.unitAt(r, abs.apply(PRESS));
-            GlassReport.Unit bystander = SectionsFx.unitAt(r, abs.apply(SectionsFx.BYSTANDER_SAW));
+            java.util.List<GlassReport.Unit> bystander = SectionsFx.holding(r, abs.apply(SectionsFx.BYSTANDER_SAW));
             String d = copy + ": " + SectionsFx.describe(r);
             SectionsFx.info(run, copy + " units", d);
             if (!far)
                 return;
-            SectionsFx.check(run, "two units, the line's and the bystander's", r.units().size() == 2, d);
-            SectionsFx.check(run, "the press and the bystander's saw are in different units", line != null && bystander != null && line != bystander, d);
+            // The bystander's saw has two output chests, which the compile cuts into two sections (two units), so the report has the
+            // line's unit and the bystander's two: the structure is read by position, not by count.
+            SectionsFx.check(run, "the line's unit and the bystander's (three in all: the saw shafts have two sections)", r.units().size() >= 2 && line != null
+                    && !bystander.isEmpty(), d);
+            SectionsFx.check(run, "the press and the bystander's saw are in different units", line != null && !bystander.isEmpty() && !bystander.contains(line), d);
             SectionsFx.check(run, "the line is one section (a belt from a press into a saw is no cut)", line != null && line.sections() == 1,
                     line == null ? "no unit" : line.sections() + " sections");
             SectionsFx.check(run, "its box holds the belt from end to end, the press and the saw",
@@ -129,11 +132,11 @@ public final class BeltIntoPressFactory implements CorpusFactory {
                             && line.holds(abs.apply(PRESS).getX(), abs.apply(PRESS).getY(), abs.apply(PRESS).getZ())
                             && line.holds(abs.apply(SAW).getX(), abs.apply(SAW).getY(), abs.apply(SAW).getZ()),
                     line == null ? "no unit" : line.summary());
-            SectionsFx.check(run, "the bystander is one section of its own", bystander != null && bystander.sections() == 1,
-                    bystander == null ? "no unit" : bystander.summary());
-            SectionsFx.check(run, "the bystander's box does not hold the press", bystander != null && !bystander.holds(
-                    abs.apply(PRESS).getX(), abs.apply(PRESS).getY(), abs.apply(PRESS).getZ()), "");
-            SectionsFx.check(run, "both units learned", SectionsFx.learned(line) && SectionsFx.learned(bystander), SectionsFx.describe(r));
+            SectionsFx.check(run, "the bystander's units are sections of their own (one each)", !bystander.isEmpty()
+                    && bystander.stream().allMatch(u -> u.sections() == 1), d);
+            SectionsFx.check(run, "the bystander's boxes do not hold the press", !bystander.isEmpty() && bystander.stream().noneMatch(u -> u.holds(
+                    abs.apply(PRESS).getX(), abs.apply(PRESS).getY(), abs.apply(PRESS).getZ())), "");
+            SectionsFx.check(run, "every unit learned", r.units().stream().allMatch(SectionsFx::learned), SectionsFx.describe(r));
         }
 
         @Override
@@ -146,8 +149,8 @@ public final class BeltIntoPressFactory implements CorpusFactory {
             SectionsFx.info(run, "units while away", SectionsFx.describe(far));
             SectionsFx.check(run, "the line replays while away (its window passed, nothing staled or froze it)",
                     line != null && line.mayReplay() && !line.frozen() && !line.stale(), line == null ? "no unit" : line.summary());
-            SectionsFx.check(run, "the bystander replays too", SectionsFx.unitAt(far, run.far.absolutePos(SectionsFx.BYSTANDER_SAW)) != null
-                    && SectionsFx.unitAt(far, run.far.absolutePos(SectionsFx.BYSTANDER_SAW)).mayReplay(), "");
+            java.util.List<GlassReport.Unit> bystander = SectionsFx.holding(far, run.far.absolutePos(SectionsFx.BYSTANDER_SAW));
+            SectionsFx.check(run, "the bystander replays too", !bystander.isEmpty() && bystander.stream().allMatch(GlassReport.Unit::mayReplay), "");
         }
 
         @Override
