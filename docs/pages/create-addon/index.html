@@ -52,15 +52,17 @@ ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
 li { margin-bottom: 6px; }
 a { color: var(--accent); }
 .dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.dek em { color: var(--ink); }
 .lead { font-size: 19.5px; line-height: 1.55; }
 section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
 .label { font-size: 15px; color: var(--muted); margin: 0 0 4px; }
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin: 22px 0 6px;
 }
+@media (max-width: 600px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
 .tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
 .tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .tile .n small { font-size: 17px; font-weight: 600; }
@@ -71,11 +73,24 @@ th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-
 th { font-weight: 600; color: var(--muted); font-size: 15px; border-bottom-color: #c9c9d1; }
 td.num, th.num { text-align: right; }
 tr.group td { padding-top: 18px; font-weight: 650; color: var(--ink); border-bottom-color: #c9c9d1; }
+table.status td:first-child { width: 24%; }
+table.status td:last-child { width: 16%; color: var(--muted); font-size: 15px; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100% !important; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 12px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 8px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-weight: 650; font-size: 17px; }
+  table.stack tr.group { border-bottom: 0; padding-bottom: 0; }
+  table.stack tr.group td { font-size: 19px; color: var(--accent); }
+}
 .nowrap { white-space: nowrap; }
 .cap { font-size: 15px; color: var(--muted); margin: 6px 0 16px; }
 code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .state { font-weight: 600; }
 .state.done { color: var(--good); }
+.state.you { color: var(--accent); }
 .box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
 .box p, .box li { max-width: none; }
 .decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 0 0 14px; }
@@ -94,9 +109,10 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <nav class="top" data-ss-react="off">
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#ready">Publicly</a>
+  <a href="#server">Your server</a>
   <a href="#ships">What ships</a>
   <a href="#licenses">Licenses</a>
-  <a href="#ready">Not ready</a>
   <a href="#saves">Saves</a>
   <a href="#create">Create</a>
   <a href="#sites">Sites</a>
@@ -107,22 +123,69 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">The Create addon is easy to package and not yet ready to ship</h1>
-  <p class="dek" data-ss-id="dek">What releasing the shared native library and rtsim's factory sim as their own Create addon would involve. Checked against the repos, Modrinth's and CurseForge's rules and Create's release history on 21 October 2026, and updated that evening with your four answers.</p>
-  <p class="lead" data-ss-id="lead">It would be three mods in one download: <strong>mic_native</strong> (loads the Rust library), <strong>mic_rtsim</strong> (the engine, with only industry switched on) and <strong>mic_rtsim_create</strong> (the Create hooks). Both sites accept a jar with native code inside, and Sable, already in the MIC pack, ships its Rust physics that way. You have answered all four questions: it ships as <strong>Create: Distant Factories</strong>, an alpha on Modrinth and CurseForge the same day once the 14 items below are done, under AGPL and MPL, with mic-rtsim and mic-native opened whole. Two of the 14 are done: the exact replay of Create machines is on main, and lone chests no longer start districts. What still stops a release: Create 6 package loops replay as making nothing, big bases stay on learned rates, there is no Create-only build, and the repos stay private until release. UR-1 removes the save-format question: deleting and reinstalling only ever loses production owed to unloaded chunks.</p>
+  <h1 data-ss-id="headline">The Create addon is 3 of 14 items from a public alpha, and your server waits on one more rehearsal</h1>
+  <p class="dek" data-ss-id="dek">You asked on 23 October: <em>"Status on being able to release the create rtsim stuff? Either on my server or publicly?"</em> This is the answer, as of 23 October 2026. The page was first written on 21 October, about what releasing rtsim's factory sim as its own Create addon involves, and holds your four answers from that day.</p>
+  <p class="lead" data-ss-id="lead"><strong>Publicly, not yet.</strong> You chose an alpha on Modrinth and CurseForge once all 14 items below are done (AD-4). 3 are done: the exact replay of Create machines, lone chests no longer starting districts, and glass state kept across restarts. 2 are under way, big bases and cargo trains; 7 have not started; 2 need you at release. The last two days' work went to MIC features, the ports, TALK, Mowzie's Mobs and the far view, not to this list.</p>
+  <p class="lead" data-ss-id="lead-server"><strong>On your server, closer.</strong> The rehearsal's blocker, an Ice and Fire crash, is guarded, and the glass box should no longer need switching off. But nothing that landed since 21 October has run on the world's copy, so the next step is a re-rehearsal on today's main. After that the deploy waits only on your hold, <span class="nowrap">DR-0</span>, and your choices on the rest.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-open"><div class="n">3 <small>of 14</small></div><div class="t">items done before a public alpha: 2 under way, 7 not started, 2 need you</div></div>
+    <div class="tile" data-ss-id="kpi-server"><div class="n"><span class="nowrap">DR-0</span></div><div class="t">your hold on the server deploy; a re-rehearsal on today's main comes first</div></div>
     <div class="tile" data-ss-id="kpi-mods"><div class="n">3</div><div class="t">mods, one download through jar-in-jar</div></div>
     <div class="tile" data-ss-id="kpi-platforms"><div class="n">2 <small>of 8</small></div><div class="t">platforms ever run: Linux x86-64, and Windows under Wine</div></div>
-    <div class="tile" data-ss-id="kpi-cost"><div class="n">0.5%</div><div class="t">of the server thread at most, on 3 public Create worlds</div></div>
+    <div class="tile" data-ss-id="kpi-cost"><div class="n">1.3% <small>of a tick</small></div><div class="t">rtsim's cost on our own 200-district synthetic world, within the noise</div></div>
     <div class="tile" data-ss-id="kpi-private"><div class="n">3</div><div class="t">private repos the build needs today; mic-viewer is public now</div></div>
-    <div class="tile" data-ss-id="kpi-open"><div class="n">12 <small>of 14</small></div><div class="t">items still to finish before strangers run it</div></div>
   </div>
 </header>
 
+<section id="ready" data-ss-id="ready" data-ss-section>
+  <h2 data-ss-id="ready-h">Publicly: 3 of the 14 items before an alpha are done</h2>
+  <p data-ss-id="ready-intro">Six are the product, four are safety on strangers' servers, four are packaging. You chose to release once all 14 are done (AD-4). Since 21 October one more is done, glass state across restarts, and two are under way. The last two days went to MIC features instead: ports and havens, talking to villagers (TALK), the first slice of Mowzie's Mobs and the far view's real models.</p>
+  <table class="stack status" data-ss-id="ready-table">
+    <thead><tr><th>Item</th><th>Where it stands</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="3">Product</td></tr>
+      <tr><td>Exact Create replay</td><td data-label="Where it stands"><span class="state done">Done.</span> On main since 3c974ef: the glass box replays Create's own machines exactly wherever it can, and learned rates (the black box) cover the rest.</td><td data-label="Source">G2</td></tr>
+      <tr><td>Glass state across restarts</td><td data-label="Where it stands"><span class="state done">Done.</span> Paged by district, as you chose, and a restart now recognises the same factory, so its state carries over (fdbbb1e2, with fresh test saves at 2a3e075d).</td><td data-label="Source">G2-9</td></tr>
+      <tr><td>Big bases</td><td data-label="Where it stands"><span class="state">Under way.</span> Splitting a factory at its links and stores is built on seven branches, not yet on main; you answered its six questions on 22 October. Until it lands, big bases stay on learned rates, because the exact solver is bounded rather than solved for them.</td><td data-label="Source">SEC-1, G2-58</td></tr>
+      <tr><td>Cargo trains</td><td data-label="Where it stands"><span class="state">Under way.</span> Our 200-district synthetic world runs cargo trains through the station exchange. Its last fixes are on a branch, fix/syn200-all, not yet on main.</td><td data-label="Source">ST3</td></tr>
+      <tr><td>Create 6 package loops</td><td data-label="Where it stands"><span class="state">Not started.</span> They replay as making nothing, because package addresses are not modelled. Planned for G3.</td><td data-label="Source">G2-56</td></tr>
+      <tr><td>Accuracy evidence</td><td data-label="Where it stands"><span class="state">Not started:</span> the fed-factory matrix. The exit test, 12 small factories with a far copy checked against a loaded copy in real Create, is on main since the G2 merge.</td><td data-label="Source">G2-55</td></tr>
+      <tr class="group"><td colspan="3">Safety</td></tr>
+      <tr><td>Lone chests become districts</td><td data-label="Where it stands"><span class="state done">Done.</span> Only machines start a district, on main since 02c2096.</td><td data-label="Source">DS-10</td></tr>
+      <tr><td>Reinstall after playing without it</td><td data-label="Where it stands"><span class="state">Not started.</span> An unacknowledged reconcile could replay. The guard and a rehearsal scenario are queued.</td><td data-label="Source">UR-1</td></tr>
+      <tr><td>Clients without the mod</td><td data-label="Where it stands"><span class="state">Not started.</span> It registers no blocks, items or network messages, so it should be server-only, but nobody has tried a join.</td><td data-label="Source">rehearsal 0.12</td></tr>
+      <tr><td>C2ME</td><td data-label="Where it stands"><span class="state">Not started.</span> The save barrier takes a reflection path under C2ME, never crash-tested on a C2ME world.</td><td data-label="Source">JB3</td></tr>
+      <tr class="group"><td colspan="3">Packaging</td></tr>
+      <tr><td>Create-only build</td><td data-label="Where it stands"><span class="state">Not started.</span> Today every module is linked and on by default. Planned: the industry-only profile (G0), and a Cargo feature that cuts deeptime-format out.</td><td data-label="Source">G0, TP19</td></tr>
+      <tr><td>Third-party notices</td><td data-label="Where it stands"><span class="state">Not started.</span> None yet; CurseForge requires them.</td><td data-label="Source">CurseForge terms 4.1</td></tr>
+      <tr><td>Natives on real machines</td><td data-label="Where it stands"><span class="state you">Needs you at release.</span> 12 libraries for 8 platforms build, but only Linux x86-64 and Windows under Wine have ever run them; macOS, ARM and musl never have.</td><td data-label="Source">mic-native README</td></tr>
+      <tr><td>Public source</td><td data-label="Where it stands"><span class="state you">Needs you at release.</span> Private until then (REL-1). Then mic-rtsim and mic-native open whole, after their history is scanned (AD-1).</td><td data-label="Source">REL-1, AD-1</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="ready-cap">Addon machines (Vintage, Metallurgy, Diesel and the rest) get one learned node each until G4. A limit, not a blocker.</p>
+</section>
+
+<section id="server" data-ss-id="server" data-ss-section>
+  <h2 data-ss-id="server-h">On your server: the rehearsal's blocker is guarded, and a re-rehearsal on today's main comes next</h2>
+  <p data-ss-id="server-p1">The 14 items are for strangers' servers. Your server has its own list, DR1 to DR9, from the rehearsal on a copy of the world, and your hold on the deploy, <span class="nowrap">DR-0</span>, since 21 October. Since the rehearsal:</p>
+  <table class="stack status" data-ss-id="server-table">
+    <thead><tr><th>Item</th><th>Since the rehearsal</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>DR1, an Ice and Fire crash that blocked the pack upgrade</td><td data-label="Since the rehearsal">Guarded by a fix in mic_fixes, the pack's private fixes mod, carried as a local jar while the repos stay private (REL-1).</td><td data-label="State"><span class="state done">Done</span></td></tr>
+      <tr><td>DR9, the glass box on the server</td><td data-label="Since the rehearsal">Its cause, a glass solve that never converged, is bounded by work budgets since 31300116, so the glass box should no longer need switching off.</td><td data-label="State"><span class="state">Fixed, not yet confirmed on the world's copy</span></td></tr>
+      <tr><td>DR4, the pack's broken scripts and tag</td><td data-label="Since the rehearsal">In the pack: <code>create_power_loader.js</code> is wrapped in <code>Platform.isLoaded</code>, mic_petrochem is 1.0.2, and the copycat catwalk is out of Sable's tag. <code>radar_integration.js</code> was not checked.</td><td data-label="State"><span class="state">Mostly done</span></td></tr>
+    </tbody>
+  </table>
+  <p data-ss-id="server-yours"><strong>Still yours:</strong> lifting <span class="nowrap">DR-0</span>, then DR2 (the server's heap), DR3 (the watchdog), DR5 (the order: the pack upgrade first and rtsim later, or both at once) and DR6 to DR8 (three smaller choices about the first start and the pack). They stay on hold until you lift <span class="nowrap">DR-0</span>.</p>
+  <p data-ss-id="server-next"><strong>Nothing that landed since 21 October has run on the world's copy:</strong> ports and havens (S8b), TALK, Mowzie's Mobs M1, the far view and the synthetic world's commands. The next step is a re-rehearsal on today's main.</p>
+  <p data-ss-id="server-formats">Several branches not yet on main change save formats: the synthetic world's leg pages, Mowzie's M2 and M3, and SEC-1. On your server each such update resets only rtsim's own state, which it re-learns from the world (SRV2, UR-1). The world itself, its blocks and every item, is untouched.</p>
+</section>
+
 <section id="pitch" data-ss-id="pitch" data-ss-section>
   <h2 data-ss-id="pitch-h">Players would get factories that keep working with nobody near them</h2>
-  <p data-ss-id="pitch-p1">Create factories stop when their chunks unload, so servers either run chunk loaders or lose the output. rtsim learns each factory's inputs and outputs while it is loaded and keeps paying them out while it is unloaded: the items are in the chests when someone comes back. Create already moves trains through unloaded chunks; rtsim adds the station exchange there. On three public Create worlds rtsim's own work cost 0.2 to 0.5% of the server thread (about 0.1 to 0.25 ms a tick).</p>
-  <p data-ss-id="pitch-p2">I found nothing on Modrinth that simulates unloaded Create factories. The nearest neighbour, <strong>Create: Meta Logistics</strong> (GPL-3.0, 41,017 downloads, updated yesterday), reads remote storage and chunk-loads a 3x3 area for 5 minutes when a train arrives. It loads chunks; rtsim avoids loading them.</p>
+  <p data-ss-id="pitch-p0">It would be three mods in one download: <strong>mic_native</strong> (loads the Rust library), <strong>mic_rtsim</strong> (the engine, with only industry switched on) and <strong>mic_rtsim_create</strong> (the Create hooks). Both sites accept a jar with native code inside, and Sable, already in the MIC pack, ships its Rust physics that way. It ships as <strong>Create: Distant Factories</strong>, under AGPL and MPL, with mic-rtsim and mic-native opened whole (your answers, <a href="#decide">below</a>).</p>
+  <p data-ss-id="pitch-p1">Create factories stop when their chunks unload, so servers either run chunk loaders or lose the output. rtsim learns each factory's inputs and outputs while it is loaded and keeps paying them out while it is unloaded: the items are in the chests when someone comes back. Create already moves trains through unloaded chunks; rtsim adds the station exchange there. On our own 200-district synthetic world, rtsim's work cost about 1.3% of a tick, within the noise of two identical control servers.</p>
+  <p data-ss-id="pitch-p2">I found nothing on Modrinth that simulates unloaded Create factories. The nearest neighbour, <strong>Create: Meta Logistics</strong> (GPL-3.0, 41,017 downloads on 21 October), reads remote storage and chunk-loads a 3x3 area for 5 minutes when a train arrives. It loads chunks; rtsim avoids loading them.</p>
 </section>
 
 <section id="ships" data-ss-id="ships" data-ss-section>
@@ -166,40 +229,10 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <p class="cap" data-ss-id="license-cap">Missing: a notices file crediting the Rust and Java dependencies, which CurseForge requires.</p>
 </section>
 
-<section id="ready" data-ss-id="ready" data-ss-section>
-  <h2 data-ss-id="ready-h">Twelve of the fourteen items before a public release are still open</h2>
-  <p data-ss-id="ready-intro">Six are the product, four are safety on strangers' servers, four are packaging. Since 3c974ef, main replays Create's own machines exactly (the glass box) where it can, and learned rates (the black box) elsewhere. You chose to release once all 14 are done (AD-4).</p>
-  <div class="scroll" data-ss-id="ready-table-wrap">
-  <table data-ss-id="ready-table">
-    <thead><tr><th>Item</th><th>Where it stands</th><th>Source</th></tr></thead>
-    <tbody>
-      <tr class="group"><td colspan="3">Product</td></tr>
-      <tr><td>Exact Create replay (G2)</td><td><span class="state done">Done.</span> Merged into main at 3c974ef: the glass box drives the replay</td><td>feat/glassbox-g2</td></tr>
-      <tr><td>Create 6 package loops</td><td>Replay as making nothing: package addresses are not modelled. Planned for G3</td><td>G2-56</td></tr>
-      <tr><td>Big bases</td><td>The solver is bounded, not solved, so they stay on learned rates. Splitting factories at links and stores (SEC-1) is designed, not built</td><td>G2-58, SEC-1</td></tr>
-      <tr><td>Accuracy evidence</td><td>The exit test (12 small factories, a far copy against a loaded copy in real Create) is on main since the G2 merge; the fed-factory matrix is pending. The learned-rate replay's 99.71% comes from a synthetic Rust test</td><td>G2-55, indrework</td></tr>
-      <tr><td>Cargo trains</td><td>Station exchange seen on one passenger metro (67 arrivals, 13 simulated unloaded), never with cargo. Cargo trains are going into the synthetic stress generator (ST3)</td><td>stress worlds 4.4</td></tr>
-      <tr><td>Glass state across restarts</td><td>Not saved yet; you chose to page it</td><td>G2-9</td></tr>
-      <tr class="group"><td colspan="3">Safety</td></tr>
-      <tr><td>Reinstall after playing without it</td><td>Not measured; an unacknowledged reconcile could replay. The fix and a rehearsal scenario are queued</td><td>UR-1</td></tr>
-      <tr><td>Lone chests become districts</td><td><span class="state done">Done.</span> Only machines start a district now, on main since 02c2096</td><td>DS-10</td></tr>
-      <tr><td>Clients without the mod</td><td>It registers no blocks, items or network messages, so it should be server-only, but nobody has tried a join</td><td>rehearsal 0.12</td></tr>
-      <tr><td>C2ME</td><td>The save barrier takes a reflection path under C2ME, never crash-tested on a C2ME world</td><td>JB3</td></tr>
-      <tr class="group"><td colspan="3">Packaging</td></tr>
-      <tr><td>Create-only build</td><td>Every module linked and on by default; deeptime-format to be cut with a Cargo feature</td><td>Cargo.toml, RtsimConfig, TP19</td></tr>
-      <tr><td>Natives on real machines</td><td>12 libraries for 8 platforms build; macOS, ARM and musl never ran, Windows only under Wine. No full cross-build of the engine on record</td><td>mic-native README</td></tr>
-      <tr><td>Public source</td><td>Private until release (REL-1). Then mic-rtsim and mic-native open whole, after their history is scanned for secrets, private hosts and server data</td><td>REL-1, AD-1</td></tr>
-      <tr><td>Third-party notices</td><td>None yet</td><td>CurseForge terms 4.1</td></tr>
-    </tbody>
-  </table>
-  </div>
-  <p class="cap" data-ss-id="ready-cap">Addon machines (Vintage, Metallurgy, Diesel and the rest) get one learned node each until G4. A limit, not a blocker.</p>
-</section>
-
 <section id="saves" data-ss-id="saves" data-ss-section>
   <h2 data-ss-id="saves-h">UR-1 lets the description say: delete it any time</h2>
   <p data-ss-id="saves-p1">No save-format promise is needed. A format change, a reinstall or a failed load resets rtsim's state (SRV2), and it re-learns from the world. A reset loses production owed to unloaded chunks and what the sim had learned. It never loses a player's items or blocks, because rtsim never holds the only copy.</p>
-  <p data-ss-id="saves-p2">Uninstalling was tested on two public stress worlds. Both boot and run normally. NeoForge logs one warning for the missing mods and one skipped-attachment line per seeded chunk on the first load (73 and 46), then stops. rtsim's files stay behind, inert. The trader gamerule left off there is fixed by the trader veto (C8a). The one path not yet measured is a reinstall after playing without it (first safety row above).</p>
+  <p data-ss-id="saves-p2">Removing it has been tried: the world boots and runs normally. NeoForge logs one warning for the missing mods and one skipped-attachment line per seeded chunk on the first load, then stops, and rtsim's files stay behind, inert. The one path not yet measured is a reinstall after playing without it (a safety row <a href="#ready">above</a>).</p>
 </section>
 
 <section id="create" data-ss-id="create" data-ss-section>
@@ -241,7 +274,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <section id="support" data-ss-id="support" data-ss-section>
   <h2 data-ss-id="support-h">Support means strangers' packs, Create updates and native crashes</h2>
   <ul data-ss-id="support-list">
-    <li><strong>Other performance mods.</strong> It has only run inside the MIC pack (168 mods) with C2ME, Lithium, ModernFix, FerriteCore, ServerCore and Clumps. Lithium crashed the tick-order read on a stress world until 1ed1774 fixed it. Public packs mix differently, so expect a few such reports in the first weeks.</li>
+    <li><strong>Other performance mods.</strong> It has only run inside the MIC pack (168 mods) with C2ME, Lithium, ModernFix, FerriteCore, ServerCore and Clumps. Lithium once crashed the tick-order read, until 1ed1774 fixed it. Public packs mix differently, so expect a few such reports in the first weeks.</li>
     <li><strong>Create updates.</strong> One check and possibly one release every 2 to 3 months, and a real port at 6.1.</li>
     <li><strong>Native crashes.</strong> A crash inside the Rust engine does not give a Java stack trace, so each release's debug symbols need keeping.</li>
     <li><strong>Bug reports.</strong> They arrive on the public repo. An issue template asking for the mod list, the log and <code>/rtsim district perf</code> keeps them readable. Since the repos open whole (AD-1), pull requests land on them directly.</li>
@@ -271,7 +304,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <div class="decision" data-ss-id="d-when">
     <h3 data-ss-id="d-when-h">4. When</h3>
     <p class="rec" data-ss-id="d-when-rec">Your answer, as recommended: an alpha on Modrinth and CurseForge the same day, once the 14 items are done (AD-4).</p>
-    <p class="why" data-ss-id="d-when-why">Addon machine models (G4) follow in updates.</p>
+    <p class="why" data-ss-id="d-when-why">Addon machine models (G4) follow in updates. 3 of the 14 are done as of 23 October (<a href="#ready">above</a>).</p>
   </div>
 
   <div class="box" data-ss-id="my-choices">
@@ -288,9 +321,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
+    <li>Status of 23 October: mic-rtsim main with 3c974ef (G2), 02c2096 (DS-10), fdbbb1e2 and 2a3e075d (G2-9) and 31300116 (the glass solve's work budgets); the seven SEC-1 branches (feat/sec1 to feat/sec1-s3) and fix/syn200-all, not yet on main; DECISIONS.md SEC-1 and your answers of 22 October; research/generalize-any-pack-2026-10-21.md (G0).</li>
+    <li>Your server: the deploy rehearsal doc on mic-rtsim main (<span class="nowrap">DR-0</span> to DR9, item 0.12), SRV2 and UR-1; the pack's KubeJS scripts and mic-petrochem 1.0.2; mic_fixes' Ice and Fire guard. Only what applies generally is on this page.</li>
     <li>Your answers: mic-rtsim DECISIONS.md rows AD-1 to AD-4, VH-1, ST3 and TP19 (b2bb407); the mic-viewer re-pin to af33496 (d5199f2); the merges of feat/glassbox-g2 (3c974ef) and fix/district-seeds (02c2096); docs/choices-glassbox-g2.md G2-9.</li>
     <li>mic-rtsim main at aca3c3a: DECISIONS.md rows A2, A7, A18, C8a, C25, C31, G-B14, REL-1, SEC-1, SRV2, UR-1; Cargo.toml and crates/rtsim-jni/Cargo.toml; crates/rtsim-space (deeptime-format); neoforge core RtsimConfig.java and Module.java; neoforge/create neoforge.mods.toml and mic_rtsim_create.mixins.json; PATCHES.md rows 18 to 20 and 30 to 34; tools/natives/build-natives.sh.</li>
-    <li>docs/stress-worlds-results.md sections 1, 3, 4.4, 5, 6 and 8 (StressC, StressB, Greggi and StressA); docs/choices-indrework.md; docs/choices-journal-barrier.md (JB3); docs/deploy-rehearsal-live.md item 0.12.</li>
+    <li>Our own 200-district synthetic world: the stress run of 22 October (rtsim's cost per tick against two identical control servers). docs/choices-indrework.md; docs/choices-journal-barrier.md (JB3).</li>
     <li>Branch feat/glassbox-g2 at d3b4e5a: docs/choices-glassbox-g2.md (G2-9, G2-16, G2-55, G2-56, G2-58) and GLASSBOX.md sections 8.1 and 11.3. Branch fix/district-seeds at 9449891 (DS-10).</li>
     <li>mic-native README (status of 2026-10-20), NOTICE.md and tools/natives/build-natives.sh. Repo visibility and licenses from GitHub (gh repo view).</li>
     <li>Modrinth Content Rules, modrinth.com/legal/rules (modified 13 August 2026); Modrinth Terms, modrinth.com/legal/terms; support article on content disclosures; github.com/modrinth/code/issues/7631.</li>
@@ -302,7 +337,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 </main>
 
-<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026. Private page.</footer>
+<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026, and refreshed on 23 October with the release status and your server. Private page.</footer>
 
 </body>
 </html>

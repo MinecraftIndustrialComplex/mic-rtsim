@@ -332,9 +332,6 @@ public final class RescanBudgetGameTests {
         level.getServer().getCommands().performPrefixedCommand(src, cmd);
     }
 
-    /** The most block entities one tick of a detection may look at: the budget, and the chunk it was in (about 35). */
-    private static final int TICK_BOUND = BUDGET + 45;
-
     /**
      * {@code /rtsim district rescan} is a full detection over the next ticks, not one big tick: the call itself does
      * no detection work, says the detection is under way, and the source hears again, once, when the districts are
@@ -373,7 +370,7 @@ public final class RescanBudgetGameTests {
                     record("theRescanCommandSpreadsOverTicksAndReportsWhenDone", "ticks / longest tick (us) / looked / phases",
                             ds.lastRescanSlices() + " / " + ds.lastRescanLongestNanos() / 1000 + " / " + ds.lastRescanLooked() + " / " + ds.lastRescanPhases());
                     check("spread over at least four ticks, got " + ds.lastRescanSlices(), ds.lastRescanSlices() >= 4);
-                    check("no tick looked at more than a budget and a chunk: " + ds.lastRescanLongestLooked(), ds.lastRescanLongestLooked() <= TICK_BOUND);
+                    checkTickBudget(ds, helper.getLevel(), BUDGET, ms);
                     check("the report came in a later tick than the call", sink.ticks.get(1) > sink.ticks.get(0));
                     check("the report is the districts' count: " + sink.lines.get(1), sink.lines.get(1).contains(": 1 districts;"));
                     check("the district is whole", districtAt(helper, ms[0]).chunks.size() == 4 && districtAt(helper, ms[0]).seeds() == 4);

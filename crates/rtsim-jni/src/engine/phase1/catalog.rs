@@ -25,7 +25,7 @@ pub struct Catalog {
 }
 
 /// The Minecraft item each synthetic good is (by the synthetic good's name).
-const ITEMS: [(&str, &str); 9] = [
+const ITEMS: [(&str, &str); 10] = [
     ("wheat", "minecraft:wheat"),
     ("bread", "minecraft:bread"),
     ("leather", "minecraft:leather"),
@@ -35,6 +35,7 @@ const ITEMS: [(&str, &str); 9] = [
     ("clay_ball", "minecraft:clay_ball"),
     ("emerald", "minecraft:emerald"),
     ("amethyst_shard", "minecraft:amethyst_shard"),
+    ("gold_nugget", "minecraft:gold_nugget"),
 ];
 
 /// The 14 house templates under `data/ribbits/structure/houses` (Ribbits 4.1.6), in name order:
