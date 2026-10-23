@@ -16,7 +16,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_kernel::rng::fnv1a64;
 use rtsim_ships::boundary::Cmd;
-use rtsim_ships::engine::{LaneThreat, PState, PortState, ShipId, Status};
+use rtsim_ships::engine::{LaneThreat, PState, PortChange, PortState, ShipId, Status};
 use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
 use rtsim_ships::timetable::ServiceKind;
 use rtsim_ships::{ShipTunables, Ships};
@@ -613,8 +613,13 @@ fn a_promoted_cargo_lands_before_its_ship_lays_up() {
             .filter_map(|&id| {
                 let x = c.ships.ship(id)?;
                 let p = x.promoted?;
-                (x.is_active() && p.arrive > closed)
-                    .then(|| (id, p.arrive, x.cargo.values().map(|&a| i128::from(a)).sum()))
+                (x.is_active() && p.arrive > closed).then(|| {
+                    (
+                        id,
+                        p.arrive,
+                        x.cargo.values().map(|&a| i128::from(a)).sum::<i128>(),
+                    )
+                })
             })
             .collect();
         assert!(
@@ -1692,6 +1697,299 @@ fn a_lifted_blockade_builds_again() {
             day(before.blockaded.expect("blockaded")),
             day(off),
             day(blockaded)
+        );
+    }
+}
+
+/// Every `ships.port` row on the tape, at any dock.
+fn all_port_rows(s: &Ships) -> Vec<rtsim_archive::Event> {
+    rtsim_archive::record::rows_on(&s.tape)
+        .into_iter()
+        .filter_map(|(kind, _, r)| match r {
+            rtsim_archive::Row::Event(e) if kind == kinds::SHIPS_PORT => Some(e),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The port news (Blockade, PortClosed, PortReopened) the knowledge holds dated in `from..to`.
+fn port_news_in(c: &Coastal, from: Tick, to: Tick) -> usize {
+    use rtsim_knowledge::ReportKind;
+    let k = &c.world.knowledge;
+    k.reports()
+        .iter()
+        .filter(|(id, _)| {
+            k.report(*id).is_some_and(|r| {
+                matches!(
+                    r.kind,
+                    ReportKind::Blockade | ReportKind::PortClosed | ReportKind::PortReopened
+                ) && from <= r.at
+                    && r.at < to
+            })
+        })
+        .count()
+}
+
+/// PC101 and PC103: a long switch-off decides nothing in the time the ships missed. Seeds 1 to
+/// 3 on the blockade coast, lifted once dock 3 is blockaded and once it is closed: the world
+/// then runs 60 days alone, and the switch-on's catch-up replays the ships' missed events (the
+/// pirates hunt on in it, so the heat builds again) but decides no port. Every check that fell
+/// due in the missed time comes again a check interval after the world's present, so after the
+/// catch-up no port is blockaded, closed or in an open spell, no check has been counted, every
+/// booked check is at or after the switch-on, and no `ships.port` row or port news is dated in
+/// the missed time. Forty days on, every new row is dated after the switch-on, and the ships
+/// check throughout.
+#[test]
+fn a_long_switch_off_decides_nothing_in_the_missed_time() {
+    let tun = ShipTunables::default();
+    for closed in [false, true] {
+        for seed in 1..=3u64 {
+            let (mut c, mut fake) = blockade_coast(seed, &tun);
+            c.ships.tape.set_on(true);
+            assert!(
+                run_until(&mut c, &mut fake, Tick::from_days(90), |c, _| {
+                    if closed {
+                        c.ships.stats.closures == 1
+                    } else {
+                        c.ships.stats.blockades == 1
+                    }
+                }),
+                "seed {seed}"
+            );
+            let off = c.ships.now();
+            let rows = all_port_rows(&c.ships).len();
+            assert!(c.ships.lift_closures(&mut c.world).any(), "seed {seed}");
+            let st = c.ships.stats;
+            let on = off + 60 * TICKS_PER_DAY;
+            c.world.run_until(on);
+            c.ships.session_start();
+            c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
+            c.ships
+                .check(&c.world)
+                .unwrap_or_else(|e| panic!("seed {seed}: after the catch-up: {e}"));
+            let s = &c.ships;
+            assert!(s.stats.hunts > st.hunts, "seed {seed}: nothing replayed");
+            assert_eq!(
+                (
+                    s.stats.port_checks,
+                    s.stats.blockades,
+                    s.stats.closures,
+                    s.stats.reopenings
+                ),
+                (st.port_checks, st.blockades, st.closures, st.reopenings),
+                "seed {seed} (closed {closed}): a port decided in the missed time"
+            );
+            for (d, p) in &s.ports {
+                assert!(
+                    p.closed.is_none() && p.blockaded.is_none() && p.reopened.is_none(),
+                    "seed {seed}: dock {d} {p:?}"
+                );
+                assert!(
+                    p.check.is_some_and(|t| t >= on),
+                    "seed {seed}: dock {d}'s check in the missed time: {p:?}"
+                );
+            }
+            assert_eq!(
+                all_port_rows(s).len(),
+                rows,
+                "seed {seed}: a row in the missed time"
+            );
+            assert_eq!(
+                port_news_in(&c, off, on),
+                0,
+                "seed {seed}: news in the missed time"
+            );
+            let lanes = c.ships.dock_lanes(TARGET).to_vec();
+            let heats: Vec<i64> = lanes.iter().map(|&l| c.ships.heat_at(l, on)).collect();
+
+            // On: the ports decide on live time.
+            run_until(&mut c, &mut fake, on + 40 * TICKS_PER_DAY, |_, _| false);
+            c.ships.check(&c.world).expect("40 days on");
+            let new = &all_port_rows(&c.ships)[rows..];
+            assert!(
+                new.iter().all(|e| e.tick >= on.0),
+                "seed {seed}: a row before the switch-on"
+            );
+            eprintln!(
+                "seed {seed} (lifted {}): off day {:.2}, on day {:.2}; heat at the switch-on \
+                 {heats:?}; {} live checks in 40 days, port rows since (day, kind) {:?}",
+                if closed { "closed" } else { "blockaded" },
+                day(off),
+                day(on),
+                c.ships.stats.port_checks - st.port_checks,
+                new.iter()
+                    .map(|e| (day(Tick(e.tick)), e.magnitude))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+/// PC103: a cargo held through a switch-off lands in the switch-on's catch-up, at the world's
+/// present. Seeds 1 to 3 on the blockade coast: on day 5 every active merchant of dock 3's
+/// services is promoted (its voyage's consignments in its hold, as a loot or a raid in view
+/// does). The ships are switched off with those at sea, the world runs on alone two days past
+/// the last arrival, and at the switch-on each ship lands its hold in the catch-up (at a past
+/// tick, a landing would step a market before its anchor: the debug build panics). Every hold
+/// is empty after it, the goods are accounted and conserved, and the ships check.
+#[test]
+fn a_held_cargo_lands_in_the_catch_up() {
+    let tun = ShipTunables::default();
+    let gone = |s: &Ships| {
+        let l = &s.ledger;
+        [
+            &l.landed_at_ports,
+            &l.sunk,
+            &l.taken_by_players,
+            &l.looted_by_pirates,
+        ]
+        .iter()
+        .flat_map(|m| m.values())
+        .sum::<i128>()
+    };
+    for seed in 1..=3u64 {
+        let (mut c, mut fake) = blockade_coast(seed, &tun);
+        run_until(&mut c, &mut fake, Tick::from_days(5), |_, _| false);
+        let at = c.ships.now();
+        let mut held = Vec::new();
+        for id in fleet(&c.ships, &calling(&c.ships, TARGET)) {
+            if c.ships.ship(id).is_some_and(|x| x.is_active())
+                && c.ships.promote(&mut c.world, id, at)
+            {
+                let x = c.ships.ship(id).expect("a ship");
+                if let Some(p) = x.promoted
+                    && !x.cargo.is_empty()
+                    && p.arrive > at
+                {
+                    held.push((
+                        id,
+                        p.arrive,
+                        x.cargo.values().map(|&a| i128::from(a)).sum::<i128>(),
+                    ));
+                }
+            }
+        }
+        assert!(
+            !held.is_empty(),
+            "seed {seed}: no promoted ship holds cargo"
+        );
+        let before = gone(&c.ships);
+        let landings = c.ships.stats.landings;
+        c.ships.lift_closures(&mut c.world);
+        let last = held.iter().map(|h| h.1).max().expect("held");
+        let on = last + 2 * TICKS_PER_DAY;
+        c.world.run_until(on);
+        c.world.check_conserved(on).expect("conserved while off");
+        c.ships.session_start();
+        c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
+        for &(id, _, _) in &held {
+            assert!(
+                c.ships
+                    .ship(id)
+                    .is_none_or(|x| x.promoted.is_none() && x.cargo.is_empty()),
+                "seed {seed}: {:?}",
+                c.ships.ship(id)
+            );
+        }
+        let sum: i128 = held.iter().map(|h| h.2).sum();
+        assert!(
+            gone(&c.ships) - before >= sum,
+            "seed {seed}: the holds went nowhere"
+        );
+        assert!(
+            c.ships.stats.landings > landings,
+            "seed {seed}: nothing landed"
+        );
+        c.world
+            .check_conserved(on)
+            .expect("conserved after the catch-up");
+        c.ships.check(&c.world).expect("checks");
+        eprintln!(
+            "seed {seed}: {} holds ({sum} thousandths) promoted on day {:.2}, landed in the \
+             catch-up on day {:.2}",
+            held.len(),
+            day(at),
+            day(on)
+        );
+    }
+}
+
+/// PC101: a lift clears the open spell. Seeds 1 to 3 on the blockade coast, with a 400-day
+/// open spell so that dock 3's blockade lifts inside it: once the port has reopened and is no
+/// longer blockaded (only its open spell is left), it may not close again for
+/// `blockade_min_open_days` (PC99), so rule 7's step on its state keeps it open at full heat.
+/// Lifted there, it keeps only its check (`Lifted` counts it); ten days off, then the
+/// switch-on's catch-up, which puts the check off to after the switch-on. That first check
+/// after the switch-on, given its lanes at full heat, closes the port: the step on its state as
+/// the engine then holds it.
+#[test]
+fn a_lift_clears_the_open_spell() {
+    let tun = ShipTunables {
+        blockade_min_open_days: 400.0,
+        ..ShipTunables::default()
+    };
+    let min_closed = days(tun.blockade_min_closed_days);
+    let min_open = days(tun.blockade_min_open_days);
+    let check = days(tun.blockade_check_days);
+    for seed in 1..=3u64 {
+        let (mut c, mut fake) = blockade_coast(seed, &tun);
+        assert!(
+            run_until(&mut c, &mut fake, Tick::from_days(500), |c, _| c
+                .ships
+                .port(TARGET)
+                .is_some_and(|p| p.reopened.is_some()
+                    && p.blockaded.is_none()
+                    && p.closed.is_none())),
+            "seed {seed}: never in an open spell alone"
+        );
+        let before = *c.ships.port(TARGET).expect("a state");
+        let reopened = before.reopened.expect("reopened");
+        let full = c.ships.full_share(c.ships.docks[TARGET as usize].medium);
+        let hot = vec![full; c.ships.dock_lanes(TARGET).len()];
+        let mut kept = before;
+        assert!(
+            !kept
+                .step(&hot, full, min_closed, min_open, c.ships.now() + check)
+                .contains(&PortChange::Closed),
+            "seed {seed}: the open spell does not hold"
+        );
+        let lifted = c.ships.lift_closures(&mut c.world);
+        assert!(
+            lifted.ports >= 1 && lifted.closed == 0,
+            "seed {seed}: {lifted:?}"
+        );
+        assert_eq!(
+            c.ships.port(TARGET).copied(),
+            Some(PortState {
+                check: before.check,
+                epoch: before.epoch,
+                ..PortState::default()
+            }),
+            "seed {seed}: the open spell is cleared"
+        );
+        let on = c.ships.now() + 10 * TICKS_PER_DAY;
+        c.world.run_until(on);
+        c.ships.session_start();
+        c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
+        c.ships.check(&c.world).expect("checks");
+        let p = *c.ships.port(TARGET).expect("a state");
+        let first = p.check.expect("a check booked");
+        assert!(
+            first >= on && first.0 < reopened.0 + min_open,
+            "seed {seed}: {p:?}"
+        );
+        let mut q = p;
+        assert!(
+            q.step(&hot, full, min_closed, min_open, first)
+                .contains(&PortChange::Closed),
+            "seed {seed}: the first check after the switch-on cannot close it: {p:?}"
+        );
+        eprintln!(
+            "seed {seed}: reopened day {:.2}, lifted day {:.2}, on day {:.2}, first check day {:.2}",
+            day(reopened),
+            day(on) - 10.0,
+            day(on),
+            day(first)
         );
     }
 }
