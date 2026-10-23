@@ -811,3 +811,340 @@ fn blockade_off_changes_nothing() {
         );
     }
 }
+
+// ---- many seas, nobody watching ------------------------------------------------------------------
+
+/// The model's year (four 24-day seasons), as in `equilibrium.rs`.
+const YEAR: u64 = 96;
+
+/// `f` on each job, up to `threads` at a time on their own threads, in job order.
+fn per_job<J: Sync, T: Send>(threads: usize, jobs: &[J], f: impl Fn(&J) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, threads));
+    let chunk = jobs.len().div_ceil(threads).max(1);
+    std::thread::scope(|sc| {
+        let hs: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|c| {
+                let f = &f;
+                sc.spawn(move || c.iter().map(f).collect::<Vec<T>>())
+            })
+            .collect();
+        hs.into_iter()
+            .flat_map(|h| h.join().expect("a sea's run panicked"))
+            .collect()
+    })
+}
+
+/// One sea's unattended run with closures on or off, sampled every day.
+#[derive(Clone, Debug, Default)]
+struct Sea {
+    world: &'static str,
+    seed: u64,
+    on: bool,
+    years: u64,
+    /// Trade ports with at least one lane (only these can close).
+    ports: usize,
+    navy_ships: usize,
+    blockades: u64,
+    closures: u64,
+    reopenings: u64,
+    laid_up: u64,
+    /// Port-days closed: counted at the daily samples, and credited by the engine at reopening.
+    closed_days: u64,
+    closed_dock_days: u64,
+    /// Each closed spell: (days closed, days from the closure to the last sample with a lane of
+    /// the port above a quarter of full). A spell still running at the end counts as it stands.
+    spells: Vec<(f64, f64)>,
+    ever_closed: usize,
+    /// Days on which every trade port of one medium was closed, and of those the days a navy
+    /// ship was sailing.
+    all_closed: u64,
+    all_closed_navy: u64,
+    hunts: u64,
+    decade_hunts: Vec<u64>,
+    /// The mean share of haven sites open.
+    open: f64,
+}
+
+/// `years` of `world` (`sea_havens` or `coastal`) for `seed` with nobody watching. Asserts as it
+/// goes: the engine's checks every 24 days, no navy ship ever laid up, and no port closed longer
+/// than its lanes stayed above a quarter plus the 30-day minimum, one check interval and the
+/// day's sampling.
+fn unattended(world: &'static str, seed: u64, on: bool, years: u64) -> Sea {
+    let base = ShipTunables::default();
+    let tun = ShipTunables {
+        blockade_days: if on { base.blockade_days } else { 0.0 },
+        ..base
+    };
+    let (mut w, mut ships, mask, havens): (_, _, Box<dyn rtsim_ships::water::WaterMask>, _) =
+        match world {
+            "sea_havens" => {
+                let s = synth::sea_havens(seed, tun.clone());
+                (s.world, s.ships, Box::new(s.mask), s.havens)
+            }
+            _ => {
+                let c = synth::coastal(seed, tun.clone());
+                (c.world, c.ships, Box::new(c.mask), vec![c.haven])
+            }
+        };
+    let mut fake = FakeShips::new(f64::from(tun.view_radius));
+    let ports: Vec<(u32, Vec<u32>)> = (0..ships.docks.len() as u32)
+        .filter(|&d| ships.is_trade_port(&w, d))
+        .map(|d| {
+            let lanes: Vec<u32> = ships
+                .dock_lanes(d)
+                .iter()
+                .copied()
+                .filter(|&l| ships.lanes[l as usize].edge != u32::MAX)
+                .collect();
+            (d, lanes)
+        })
+        .filter(|(_, l)| !l.is_empty())
+        .collect();
+    let navy: Vec<ShipId> = (0..ships.services.len() as u32)
+        .filter(|&v| ships.services[v as usize].kind == ServiceKind::Patrol)
+        .flat_map(|v| ships.service_ships(v))
+        .collect();
+    let bound = tun.blockade_min_closed_days + tun.blockade_check_days + 1.0;
+    let mut sea = Sea {
+        world,
+        seed,
+        on,
+        years,
+        ports: ports.len(),
+        navy_ships: navy.len(),
+        ..Sea::default()
+    };
+    let mut spell: Vec<Option<(Tick, Tick)>> = vec![None; ports.len()];
+    let mut ever = vec![false; ports.len()];
+    let mut hunts0 = 0;
+    let end = Tick::from_days(years * YEAR);
+    let mut t = Tick::ZERO;
+    let ended = |sea: &mut Sea, since: Tick, hot: Tick, t: Tick, d: u32| {
+        let (len, hot) = (day(t) - day(since), day(hot) - day(since));
+        assert!(
+            len <= hot + bound,
+            "{world} {seed}: port {d} closed {len:.1} days, its lanes hot {hot:.1}"
+        );
+        sea.spells.push((len, hot));
+    };
+    while t < end {
+        t += TICKS_PER_DAY;
+        synth::drive(
+            &mut w,
+            &mut ships,
+            &mut fake,
+            &mut NoInfrastructure,
+            &*mask,
+            t,
+            STEP,
+        );
+        let navy_sails = navy
+            .iter()
+            .any(|&id| ships.ship(id).is_some_and(|x| x.is_active()));
+        for &id in &navy {
+            assert!(
+                !ships.ship(id).is_some_and(|x| x.is_laid_up()),
+                "{world} {seed}: navy ship {id:?} laid up"
+            );
+        }
+        let mut medium_open: std::collections::BTreeMap<u8, bool> = Default::default();
+        for (i, (d, lanes)) in ports.iter().enumerate() {
+            let closed = ships.port(*d).and_then(|p| p.closed);
+            let m = ships.docks[*d as usize].medium;
+            *medium_open.entry(m as u8).or_default() |= closed.is_none();
+            match (closed, spell[i]) {
+                (Some(since), sp) => {
+                    let (s0, mut hot) = match sp {
+                        Some((s0, h)) if s0 == since => (s0, h),
+                        Some((s0, h)) => {
+                            ended(&mut sea, s0, h, t, *d);
+                            (since, since)
+                        }
+                        None => (since, since),
+                    };
+                    let quarter = ships.full_share(m) / 4;
+                    if lanes.iter().any(|&l| ships.heat_at(l, t) > quarter) {
+                        hot = t;
+                    }
+                    spell[i] = Some((s0, hot));
+                    ever[i] = true;
+                    sea.closed_days += 1;
+                }
+                (None, Some((s0, hot))) => {
+                    ended(&mut sea, s0, hot, t, *d);
+                    spell[i] = None;
+                }
+                (None, None) => {}
+            }
+        }
+        for open in medium_open.values() {
+            if !open {
+                sea.all_closed += 1;
+                sea.all_closed_navy += u64::from(navy_sails);
+            }
+        }
+        let open = havens
+            .iter()
+            .filter(|&&h| ships.havens[h as usize].shut.is_none())
+            .count();
+        sea.open += open as f64 / havens.len() as f64;
+        if t.0.is_multiple_of(24 * TICKS_PER_DAY) {
+            ships
+                .check(&w)
+                .unwrap_or_else(|e| panic!("{world} {seed} closures {on} day {}: {e}", day(t)));
+        }
+        if t.0.is_multiple_of(10 * YEAR * TICKS_PER_DAY) {
+            sea.decade_hunts.push(ships.stats.hunts - hunts0);
+            hunts0 = ships.stats.hunts;
+        }
+    }
+    for (i, sp) in spell.iter().enumerate() {
+        if let Some((s0, hot)) = *sp {
+            ended(&mut sea, s0, hot, t, ports[i].0);
+        }
+    }
+    sea.open /= (years * YEAR) as f64;
+    sea.ever_closed = ever.iter().filter(|&&e| e).count();
+    let st = &ships.stats;
+    sea.blockades = st.blockades;
+    sea.closures = st.closures;
+    sea.reopenings = st.reopenings;
+    sea.laid_up = st.ships_laid_up_by_closure;
+    sea.closed_dock_days = st.closed_dock_days;
+    sea.hunts = st.hunts;
+    sea
+}
+
+fn report_seas(runs: &[Sea]) {
+    for s in runs {
+        let longest = s.spells.iter().map(|x| x.0).fold(0.0, f64::max);
+        let over = s.spells.iter().map(|x| x.0 - x.1).fold(0.0, f64::max);
+        eprintln!(
+            "{} {:>2} closures {:<5} ports {:>2} navy ships {}: blockades {}, closures {}, \
+             reopenings {}, laid up {}, port-days closed {} (engine {}), longest {longest:.0} \
+             days (at most {over:.0} past its hot lanes), ports ever closed {}, days a medium \
+             was all closed {} (navy sailing {}), hunts/yr {:.1}, fewest hunts in a decade {}, \
+             havens open {:.3}",
+            s.world,
+            s.seed,
+            s.on,
+            s.ports,
+            s.navy_ships,
+            s.blockades,
+            s.closures,
+            s.reopenings,
+            s.laid_up,
+            s.closed_days,
+            s.closed_dock_days,
+            s.ever_closed,
+            s.all_closed,
+            s.all_closed_navy,
+            s.hunts as f64 / s.years as f64,
+            s.decade_hunts.iter().min().copied().unwrap_or(0),
+            s.open,
+        );
+    }
+}
+
+/// One world's seas together, closures on against off.
+fn summary_seas(world: &str, on: &[Sea], off: &[Sea]) {
+    let n = on.len() as f64;
+    let years = on.first().map_or(0, |s| s.years);
+    let sum = |v: &[Sea], f: &dyn Fn(&Sea) -> f64| v.iter().map(f).sum::<f64>();
+    let spells: Vec<(f64, f64)> = on.iter().flat_map(|s| s.spells.iter().copied()).collect();
+    let mean = spells.iter().map(|x| x.0).sum::<f64>() / spells.len().max(1) as f64;
+    let longest = spells.iter().map(|x| x.0).fold(0.0, f64::max);
+    let over = spells.iter().map(|x| x.0 - x.1).fold(0.0, f64::max);
+    let port_days = sum(on, &|s| (s.ports as u64 * s.years * YEAR) as f64);
+    eprintln!(
+        "ALL {world}: {} seas, {years} years each, closures on: per sea per decade blockades \
+         {:.3}, closures {:.3}, reopenings {:.3}, ships laid up {:.2}; days closed mean \
+         {mean:.1}, longest {longest:.0} (at most {over:.1} past its hot lanes); port-days \
+         closed {:.5}; ports ever closed {} of {} (seas with a closure {}); days a medium was \
+         all closed {} (navy sailing {}); hunts/yr {:.2} (off {:.2}); havens open {:.3} (off \
+         {:.3})",
+        on.len(),
+        sum(on, &|s| s.blockades as f64) * 10.0 / (n * years as f64),
+        sum(on, &|s| s.closures as f64) * 10.0 / (n * years as f64),
+        sum(on, &|s| s.reopenings as f64) * 10.0 / (n * years as f64),
+        sum(on, &|s| s.laid_up as f64) * 10.0 / (n * years as f64),
+        sum(on, &|s| s.closed_days as f64) / port_days,
+        sum(on, &|s| s.ever_closed as f64),
+        sum(on, &|s| s.ports as f64),
+        on.iter().filter(|s| s.closures > 0).count(),
+        sum(on, &|s| s.all_closed as f64),
+        sum(on, &|s| s.all_closed_navy as f64),
+        sum(on, &|s| s.hunts as f64) / (n * years as f64),
+        sum(off, &|s| s.hunts as f64) / (n * years as f64),
+        sum(on, &|s| s.open) / n,
+        sum(off, &|s| s.open) / n,
+    );
+}
+
+/// The bars (rule 7 on many seas): the per-run bounds asserted in [`unattended`]; no medium's
+/// ports all closed while a navy sails; pirates hunt in every century; every closure that ended
+/// reopened; and with closures off no port ever closes.
+fn check_seas(on: &[Sea], off: &[Sea]) {
+    for s in on {
+        assert_eq!(s.all_closed_navy, 0, "{s:?}");
+        for c in s.decade_hunts.chunks(10) {
+            assert!(c.iter().sum::<u64>() > 0, "a century with no hunt: {s:?}");
+        }
+        assert!(s.reopenings <= s.closures && s.closures <= s.reopenings + s.ports as u64);
+    }
+    for s in off {
+        assert_eq!((s.blockades, s.closures, s.closed_days), (0, 0, 0), "{s:?}");
+        for c in s.decade_hunts.chunks(10) {
+            assert!(c.iter().sum::<u64>() > 0, "a century with no hunt: {s:?}");
+        }
+    }
+}
+
+fn seas(threads: usize, seeds: std::ops::RangeInclusive<u64>, years: u64) {
+    let jobs: Vec<(&'static str, u64, bool)> = ["sea_havens", "coastal"]
+        .into_iter()
+        .flat_map(|w| {
+            seeds
+                .clone()
+                .flat_map(move |s| [(w, s, true), (w, s, false)])
+        })
+        .collect();
+    let all = per_job(threads, &jobs, |&(w, s, on)| {
+        let t0 = std::time::Instant::now();
+        let r = unattended(w, s, on, years);
+        eprintln!("done {w} {s} {on} in {:.0?}", t0.elapsed());
+        r
+    });
+    report_seas(&all);
+    for w in ["sea_havens", "coastal"] {
+        let on: Vec<Sea> = all
+            .iter()
+            .filter(|s| s.world == w && s.on)
+            .cloned()
+            .collect();
+        let off: Vec<Sea> = all
+            .iter()
+            .filter(|s| s.world == w && !s.on)
+            .cloned()
+            .collect();
+        summary_seas(w, &on, &off);
+        check_seas(&on, &off);
+    }
+}
+
+/// Rule 7 on many seas: `synth::sea_havens` and `synth::coastal`, seeds 1 to 30, a century with
+/// nobody watching, closures on and off. Release only, for its length (`nice -n 10 cargo test
+/// --release -p rtsim-ships --test blockade -- --ignored many_seas_100`).
+#[test]
+#[ignore = "long: run in release with --ignored"]
+fn blockades_on_many_seas_100_years() {
+    seas(10, 1..=30, 100);
+}
+
+/// [`blockades_on_many_seas_100_years`] over ten centuries.
+#[test]
+#[ignore = "long: run in release with --ignored"]
+fn blockades_on_many_seas_1000_years() {
+    seas(10, 1..=30, 1000);
+}
