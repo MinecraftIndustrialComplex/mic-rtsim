@@ -1784,10 +1784,10 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
             let bad = r.check();
             assert!(bad.is_empty(), "{culture} seed {seed}: {bad:#?}");
             assert!(
-                u32::try_from(r.c.stats.camp_written_off).unwrap() <= r.unrecorded_deaths,
-                "{culture} seed {seed}: {} written off, {} lost unrecorded",
+                u32::try_from(r.c.stats.camp_written_off).unwrap() <= r.lost_members(),
+                "{culture} seed {seed}: {} written off, {} bodies lost to a crash",
                 r.c.stats.camp_written_off,
-                r.unrecorded_deaths
+                r.lost_members()
             );
         }
     }

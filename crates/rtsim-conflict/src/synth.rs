@@ -292,6 +292,11 @@ pub struct FakeConflict {
     /// Answers to CAMP_RECONCILEs that are applied but never reach the engine: a crash between the
     /// world's save and the journal's (§4.9's crash table). Counted down, one per answer.
     pub lose_answers: u32,
+    /// Bodies a take or a set-out removed whose answer never reached the engine (lost, or in the
+    /// journal's tail at a restart). The real plugin journals such an answer again from the
+    /// marker the body left (MOWZIE.md §4.9); this one does not, so a party that comes home
+    /// meanwhile leaves a ghost body that three censuses write off.
+    pub lost_removals: u32,
     /// Sends every answer twice: a replay.
     pub replay_answers: bool,
     /// Ticks an answer takes to reach the engine.
@@ -321,6 +326,7 @@ impl FakeConflict {
             camps: BTreeMap::new(),
             applied: Vec::new(),
             lose_answers: 0,
+            lost_removals: 0,
             replay_answers: false,
             answer_ticks: 1,
             uuids: 0,
@@ -790,6 +796,7 @@ impl FakeConflict {
         }
         if self.lose_answers > 0 {
             self.lose_answers -= 1;
+            self.lost_removals += self.removals_of(r.op);
             return;
         }
         let answer = Obs::CampBodies(boundary::CampBodies {
@@ -802,6 +809,21 @@ impl FakeConflict {
             self.push(at + self.answer_ticks, answer.clone());
         }
         self.push(at + self.answer_ticks, answer);
+    }
+
+    /// Bodies the order `op` took or handed off (a take or a set-out that was done).
+    pub fn removals_of(&self, op: u64) -> u32 {
+        self.applied
+            .iter()
+            .filter(|a| {
+                a.op == op
+                    && a.outcome == boundary::LINE_DONE
+                    && matches!(
+                        a.line.action,
+                        boundary::ACTION_TAKE | boundary::ACTION_SET_OUT
+                    )
+            })
+            .count() as u32
     }
 
     /// One line, applied to the camp's world: its target state, so that applying it twice changes
@@ -1023,6 +1045,13 @@ impl CampRun {
         r
     }
 
+    /// Members whose bodies the world may have lost without the books knowing: deaths that were
+    /// never recorded, and bodies a take or a set-out removed whose answer never came. A write-off
+    /// of a living member needs one of them (MOWZIE.md §4.9, the crash table).
+    pub fn lost_members(&self) -> u32 {
+        self.unrecorded_deaths + self.plugin.lost_removals
+    }
+
     /// The engine, the plugin and the player to `to`.
     pub fn run(&mut self, to: Tick) {
         let mut t = self.c.now();
@@ -1154,6 +1183,13 @@ impl CampRun {
             .iter()
             .filter(|o| matches!(o, Obs::CampDeath(d) if d.faction == self.key && d.flags & boundary::DEATH_STRAY == 0))
             .count() as u32;
+        for o in &lost {
+            if let Obs::CampBodies(b) = o {
+                if b.faction == self.key {
+                    self.plugin.lost_removals += self.plugin.removals_of(b.op);
+                }
+            }
+        }
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
@@ -1290,7 +1326,24 @@ impl CampRun {
                     "out (already)".into()
                 }
             }
-            7 | 8 => format!("raid {}", self.raid().is_some()),
+            7 | 8 => {
+                // The draw's bound (ledger 6): no more than the smaller of the pool's whole
+                // members and the slots it may take, as they stand when the order is given.
+                let _ = self.c.camp_audit(self.f, now);
+                let room = self.c.camp(self.f).map_or(0, |c| c.drawable());
+                let whole = self.c.pool_at(self.f, now).floor() as u32;
+                let p = self.raid();
+                if let (Some(p), Some(c)) = (p, self.c.camp(self.f)) {
+                    let drawn = c.slots.iter().filter(|s| s.party == p).count() as u32;
+                    if drawn > whole.min(room) {
+                        self.failures.push(format!(
+                            "tick {}: a draw of {drawn} from a pool of {whole} with {room} slots to take",
+                            now.0
+                        ));
+                    }
+                }
+                format!("raid {}", p.is_some())
+            }
             9 | 10 => {
                 let bodies: Vec<_> = self
                     .plugin
