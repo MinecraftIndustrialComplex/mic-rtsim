@@ -599,7 +599,8 @@ impl Conflict {
                 SlotState::Gone
             };
             s.party = p;
-            s.misses = 0;
+            // A body the last census missed stays unverified while its member is away: `misses`
+            // is kept, so a member that comes home is written off on the clock it was on.
         }
     }
 
@@ -842,6 +843,8 @@ impl Conflict {
                     if s.state == SlotState::Gone && found {
                         s.state = SlotState::Left;
                     }
+                    // Found or gone, the slot's body is no longer in doubt.
+                    s.misses = 0;
                     match (s.state, found, phase) {
                         (SlotState::Left, false, _) => s.state = SlotState::Gone,
                         // Its party is gone from the books: a survivor home, body.
@@ -1027,7 +1030,10 @@ impl Conflict {
                         });
                     }
                 }
-                (SlotState::Left, true, _) => s.state = SlotState::Gone,
+                (SlotState::Left, true, _) => {
+                    s.state = SlotState::Gone;
+                    s.misses = 0;
+                }
                 (SlotState::Dead, true, _) => camp.free(i, true),
                 (SlotState::Owed, _, true) => {
                     s.state = SlotState::Body;
@@ -1035,6 +1041,7 @@ impl Conflict {
                 }
                 (SlotState::Gone, _, true) => {
                     s.state = SlotState::Left;
+                    s.misses = 0;
                     let phase = self.parties.get(s.party).map(|x| x.phase);
                     match phase {
                         Some(Phase::Mustering) => {}
