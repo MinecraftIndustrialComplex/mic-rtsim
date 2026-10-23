@@ -1425,8 +1425,10 @@ body mod is verified: it is the contract a plugin would have to meet.
 **Mowzie's Mobs** (2026-10-22: MOWZIE.md §2, §4.12 and ledger 14; slice M1, choices MZB-1 to MZB-49 in
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
-plugin. The engine half of most of the new kinds comes with a later slice (§9.6); until then the
-engine decodes them, counts them as deferred and drops them, and sends none of the new commands.
+plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-199); that of the
+rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
+deferred and drops them, and sends none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1514,8 +1516,9 @@ are untouched.
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
 All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
-deferred (§9.6).
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
+(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
+(§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1700,12 +1703,18 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
 - **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
-  (M9), RAIL_PASS (M7), TRAIN_PASSED (M8) and the camp records (M4) come later, as do the commands,
-  which the engine does not send yet, and FACTION_FOUND's census (M4). Until then rtsim-jni decodes
-  each, translates its ids, counts it (`ConflictLinkStats::deferred`) and drops it before the shared
-  clock runs for it: no module catches up for a deferred record. One with an op id spends it in
-  the engine, in rtsim-jni as in `Conflict::ingest`, so the same record again is not counted twice
-  (MZB-23).
+  (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
+  not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
+  (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
+  catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
+  `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
+- **The camp records** (slice M4, MZB-150 to MZB-167) are built, with no layout changed. CAMP_CENSUS
+  (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by
+  `engine/camp.rs`, and the engine sends CAMP_RECONCILE only to a camp that is in, at most one line
+  in flight per slot, voiding its lines at CAMP_OUT and at a session start and never resending one.
+  rtsim-jni sets `Conflict::replaying` around a record whose sequence number is before the session's
+  first, so a census replayed from an earlier session only marks its camp out (MZB-159). An answer
+  is booked once by its op id; a CAMP_DEATH by its plugin op id.
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
