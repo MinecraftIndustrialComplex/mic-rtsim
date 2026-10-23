@@ -127,6 +127,11 @@ public final class Districts {
         }
     }
 
+    /** Detections finished since the module started (GameTests count them to tell one detection from two). */
+    public long rescans() {
+        return rescans;
+    }
+
     /** The last detection's wall time, in nanoseconds (/rtsim district perf, GameTests). */
     public long lastRescanNanos() {
         return lastRescanNanos;
@@ -352,10 +357,9 @@ public final class Districts {
      * chunks it changed only: the districts owning or touching them, grown as a ticked pass grows, never the
      * whole dimension. That finishes in this call when the neighbourhood is within one tick's block entity
      * budget; else the detection goes on over the next ticks as a ticked one does, and {@code detected} is false.
-     * A detection of the same dimension under way takes the adopted chunks into itself ({@link Rescan#join}, SG55): the
-     * ones it has not counted yet are looked at as roots, with the districts around them, and finish with it; a
-     * chunk it counted before the adopt holds seeds it did not see, and gets a pass of its own the moment the
-     * running one is done, not after {@code rescanIntervalTicks}.
+     * A detection of the same dimension under way takes the adopted chunks into itself ({@link Rescan#join}, SG55,
+     * SG56): the ones it has not counted yet are looked at as roots, with the districts around them, and a chunk it
+     * counted before the adopt has its seeds counted again; it finishes with the others, as one detection.
      */
     public Adopted adoptAround(ServerLevel level, ChunkPos centre, int radius) {
         ResourceKey<Level> dim = level.dimension();
@@ -371,10 +375,8 @@ public final class Districts {
                 dirty.remove(dim);
         }
         if (job != null && job.dim == dim) {
-            // The running detection takes what it has not looked at; the rest is a pass of its own, next in line.
-            LongOpenHashSet stale = job.join(changed);
-            if (!stale.isEmpty())
-                passes.addFirst(new Pass(dim, stale, false));
+            // The running detection takes the chunks into itself: no second detection, none after it.
+            job.join(changed);
             return new Adopted(n, false);
         }
         Rescan r = new Rescan(level, false, changed);
@@ -709,7 +711,8 @@ public final class Districts {
      * recorded. A chunk is looked at whole and what it holds is recorded then (its seeds, inventories, stations,
      * links), so a chunk that unloads after it was looked at still counts as it was, and one that unloads before
      * it is looked at is an unloaded member (it keeps what its district knew). Edits that arrive meanwhile are in
-     * {@link #dirty}, not in this detection's snapshot, and make the next one.
+     * {@link #dirty}, not in this detection's snapshot, and make the next one; the exception is an adopt, whose
+     * chunks join the detection under way ({@link #join}, DS-14).
      */
     private final class Rescan {
         final ServerLevel level;
@@ -771,22 +774,18 @@ public final class Districts {
         }
 
         /**
-         * Chunks that gained seeds while this detection runs (a deferred adopt, SG55). A chunk the walk has not
-         * counted yet joins as a dirty one would have at the start: it is scheduled as a root, with the districts
-         * owning or touching it (all of the dimension's already, in a full detection), and goes back to the
-         * dirty set if this detection is put back. Returns the chunks the walk counted before: it saw the seeds
-         * they held then, not the adopted ones, so they need a detection after this one.
+         * Chunks that gained seeds while this detection runs (a deferred adopt, SG55). The detection takes them as it
+         * would have at its start: a chunk it has not counted yet is scheduled as a root (again, if the walk went by
+         * it while it was unloaded and recorded nothing), with the districts owning or touching it (all of the
+         * dimension's already, in a full detection); a chunk it counted before has its seeds counted again in place,
+         * and is enqueued as a root if it has some now and the walk had not reached it (SG56). Nothing but the
+         * seed count of a chunk depends on its seeds, so the rest of what the detection recorded stands. The chunks
+         * go back to the dirty set with the job if the job is put back.
          */
-        LongOpenHashSet join(LongOpenHashSet chunks) {
-            LongOpenHashSet counted = new LongOpenHashSet();
+        void join(LongOpenHashSet chunks) {
             Set<Long> near = new HashSet<>();
             for (long c : chunks) {
-                if (scan.seedCounts.containsKey(c)) {
-                    counted.add(c);
-                    continue;
-                }
                 dirtyHere.add(c);
-                schedule(c);
                 if (!full)
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++) {
@@ -794,10 +793,23 @@ public final class Districts {
                             if (o != null && affected.add(o.id))
                                 near.add(o.id);
                         }
+                if (!scan.seedCounts.containsKey(c)) {
+                    // Not counted: scheduled behind the cursor too, because a root that found the chunk unloaded counted nothing.
+                    scheduled.add(c);
+                    pending.add(c);
+                    continue;
+                }
+                LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
+                if (chunk == null)
+                    continue; // unloaded since: its district keeps the seeds it recorded, and the adopt's seeds wait for the chunk
+                scan.seedCounts.remove(c);
+                if (seedsIn(level, chunk, scan) > 0 && visited.add(c)) {
+                    loadedAtTest.add(c);
+                    queue.enqueue(c);
+                }
             }
             if (!near.isEmpty())
                 scheduleDistricts(near);
-            return counted;
         }
 
         /** The chunks of these districts, and the chunks pinned to them, are candidates. */
