@@ -1906,7 +1906,7 @@ what changed in its view (§12.2). Choices are DHT25 and up in `docs/choices-dh-
 | 0x0C00 to 0x0CFF | Java to engine | far view journaled observations (none yet) |
 | 0x8C00 to 0x8CFF | engine to Java | far view commands (`cmdSeq` at 8) |
 
-0x00C0 to 0x00CF, 0x0A00 to 0x0AFF and 0x8A00 to 0x8AFF are TALK's (TALK.md §9, TK10); 0x0B00 to
+0x00C0 to 0x00CF, 0x0A00 to 0x0AFF and 0x8A00 to 0x8AFF are TALK's (§13, TALK.md §9, TK10); 0x0B00 to
 0x0BFF and 0x8B00 to 0x8BFF stay free for the next simulation families (DHT26).
 
 **FAR_LEG (0x8C00, aux = state, size 80).** Reference codec `crates/rtsim-ecology/src/far.rs`, read by
@@ -1922,7 +1922,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 33 | u8 | variant: the colour, 0 to 3 within the species |
 | 34 | u8 | stage, 1 to 5, at the record's time |
 | 35 | u8 | reserved |
-| 36 | i32 | y |
+| 36 | i32 | y: the dragon's feet, as its entity's y (the far feed's LEG draws its middle, §12.2) |
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
@@ -1981,18 +1981,27 @@ GONE   5: handle
   engine's next leg lands, and comes back on its own handle.
 - **Positions** are relative to the header's origin (the subscriber's block): legs in whole blocks,
   samples in eighths of a block with the trailing point relative to the leading one. Times are relative
-  to the header's game time.
+  to the header's game time. A position is the object's middle, as a body source samples it: a LEG's y
+  is FAR_LEG's (the feet) plus the species' centre for the stage, which its plugin registers
+  (`FarLegs.Style`; DHT42).
 - **Only what changed** (`far/FarView.java`): an INTRO when an object is new or its looks changed, a LEG
-  when the leg changed, a SAMPLE when it moved by an eighth of a block, a REAL when its entity id changed.
-  RESET tells the client to forget every object first. The server sends it on every subscription (a
-  client subscribes again when its wants change or a message did not decode) and on a new dimension,
+  when the leg changed, a SAMPLE when it moved by an eighth of a block, and the same SAMPLE once more the
+  first sweep it did not (it stopped: the client stops running it on, DHT44), a REAL when its entity id
+  changed. RESET tells the client to forget every object first. The server sends it on every subscription
+  (a client subscribes again when its wants change or a message did not decode) and on a new dimension,
   and then everything the filter chose.
+- **A body joining a level** (`FarFeed.embodied`, through `RtsimApi.farEntityJoining`): as a dragon's body
+  or a carriage's entity joins a server level, each subscriber holding that object gets a message of its
+  own at once (flags 0, one REAL), ahead of the entity's spawn packet, so the client hides its far object
+  the frame the entity arrives rather than at the next sweep (DHT40). The sweep's item then carries the
+  same id and sends nothing more.
 - **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock,
   timed through the client's game time; a hunt circles at 0.5 blocks a tick (PLACEHOLDER), spiralling
   onto its circle over 40 ticks from where the dragon was drawn and turning the way it was flying. A
-  mover moves from where it was drawn to each new sample over the next second, so the view runs a second
-  behind the server. A message that does not decode drops every object, and the client subscribes again,
-  so the server's RESET brings them back.
+  sampled mover is run on (DHT44): from where it is drawn, it heads for where its last two samples say
+  it will be when the next one comes, and 10 ticks on past that (PLACEHOLDER) should the next be late,
+  then waits; one that stopped or brakes to a stop stops there. A message that does not decode drops
+  every object, and the client subscribes again, so the server's RESET brings them back.
 
 ### 12.3 Sources and the filter
 
@@ -2013,4 +2022,98 @@ for each level a subscriber is in, and none when nobody is subscribed.
   at this game time, dragons first and then nearest first, up to its budget.
 - **The entity id** lets a client hide the proxy while it has the real entity near it; a carriage
   between the server's simulation distance and the client's render distance has no entity, and the
-  client draws it there itself (DHT33).
+  client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
+  the sweep.
+
+## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK48)
+
+What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
+(a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
+market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
+did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
+section is the wire.
+
+Reference codec `crates/rtsim-jni/src/talk_wire.rs` (every record's bytes are pinned by its tests).
+The Java codec comes with the slice that wires the core to it and takes the same pinned bytes. The
+engine side is `engine/talk.rs`.
+
+### 13.1 Kind ranges (reserved)
+
+| Range | Direction | Class |
+|---|---|---|
+| 0x00C0 to 0x00CF | Java to engine | TALK latest-wins observations: TALK_ASK (0x00C0) |
+| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, slice 3; the engine does not decode it yet) |
+| 0x8A00 to 0x8AFF | engine to Java | TALK commands (`cmdSeq` at 8): TALK_FACTS (0x8A00) |
+
+0x0B00 to 0x0BFF and 0x8B00 to 0x8BFF stay free.
+
+### 13.2 TALK_ASK (0x00C0, latest wins, aux = n)
+
+Java's open questions, sent each tick until answered (dropped and sent again when a buffer is full,
+as every latest-wins kind is). Size 8 + 56n; each ask starts at 8 + 56i:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u64 | askId (Java's, per session, never 0) |
+| 8, 16 | u64 | playerMost, playerLeast |
+| 24 | u32 | holder kind: 1 village (Java's village id), 2 caravan (a puppet's agent), 3 faction (the camp's key), 4 ship (an agent) |
+| 28 | u32 | dimension (dictionary 1); the engine's frame is its id, so one above 65,535 is refused |
+| 32 | u64 | holder |
+| 40, 44 | i32 | the talker's x, z |
+| 48 | u32 | flags: 1 news, 2 faction facts |
+| 52 | u32 | reserved |
+
+### 13.3 TALK_FACTS (0x8A00, aux = news n, at most 4; per session)
+
+The answer to one ask, one tick or more later. No op id, never kept, never resent after a restart:
+its sequence is the session's (`session_seq`), and Java drops an ask's wait when it lands or after
+20 ticks (TK5). Size 48 + 120n:
+
+| Offset | Type | Field |
+|---|---|---|
+| 8 | u64 | cmdSeq |
+| 16 | u64 | askId |
+| 24 | u32 | flags: 1 HOLDER (the engine knows the holder), 2 PORT_CLOSED, 4 BLOCKADED, 8 FACTION (a faction block follows; slice 4) |
+| 28 | i32 | the holder's sentiment toward the player (rtsim-knowledge's scale; 0 for a player it has never met) |
+| 32 | u32 | scarcest good (dictionary 2; 0 none) |
+| 36 | u32 | its stock per target, thousandths |
+| 40 | u32 | most glutted good (0 none) |
+| 44 | u32 | its stock per target, thousandths |
+| 48 | n x 120 | news, best first |
+
+Without HOLDER everything after the flags is zero and n is 0 (TK32, TK38). News comes only when the
+ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way.
+
+A **news item** (120 bytes, offsets from its start): 0 u16 report kind, 2 u8 severity, 3 u8 the
+report's flags, 4 u32 talk flags (1 YOU_DID, 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago
+(saturating), 12 i32 dx, 16 i32 dz (the place from the talker, the short way round a seam, in the talker's own chart,
+TK47; 0 and 0 across frames, TK34), 20 reserved, 24 ref who, 56 ref whom, 88 ref near (the village nearest the
+place, TK35).
+
+A **ref** (32 bytes): 0 u8 class, 1 u8 flags (1 DEAD, 2 POS), 2 reserved, 4 u32 what (dictionary 5
+culture for villages, camps and chiefs; dictionary 3 body for dragons and lairs), 8 u64 a, 16 u64 b,
+24 i32 dx, 28 i32 dz (where it is from the talker, the short way round, in the talker's chart, when POS). Classes: 0
+unknown, 1 player (a, b the UUID), 2 village (a Java's village id), 3 player base, 4 caravan (a its
+seed, b its home village), 5 camp (a the faction key), 6 chief or notable (a its seed, b its camp),
+7 dragon (a its seed, b its lair key), 8 lair (a its key), 9 haven, 10 ship. How each is found, and
+when one is class 0 or DEAD, is TK36 and TK37.
+
+### 13.4 What the engine side does with them
+
+- **Observe:** each ask with a new askId is queued (at most 256 wait; the last 1,024 answered ids are
+  remembered; all cleared at SESSION_START, TK39). One that is already answered or waiting is
+  ignored when it comes again. An askId of 0, a dimension no frame can be and a record that does
+  not decode are refused and counted.
+- **Write point:** after the step's simulate, after the world model's commands, so the answer reads
+  the world as it stands at this hand-over (TK43). Each answer's dictionary names go out first; a
+  buffer that cannot hold the next answer keeps its ask for the next one.
+- **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
+  without HOLDER (TK32).
+
+### 13.5 Test order 40: `TalkReport`
+
+TEST mode only (rtsim-host's fake Java keeps no 0x8A00 payloads, and the conflict and ports
+engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
+z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
+it does to the knowledge tables, are TK40.
