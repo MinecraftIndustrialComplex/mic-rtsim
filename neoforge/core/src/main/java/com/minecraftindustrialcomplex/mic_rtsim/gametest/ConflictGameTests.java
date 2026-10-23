@@ -2,11 +2,13 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.api.Talker;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictTalker;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -17,6 +19,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.RateLimit;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -578,7 +581,8 @@ public final class ConflictGameTests {
      * click when the main hand holds something else; the envoy says what is still owed, and the off-hand
      * click after an answered main-hand click does nothing. A plain click with empty hands shows the
      * demand (the same line as talk, to that player only); crouching with an empty hand talks (TALK): the
-     * reason, what is still owed and the deadline; a guard warns with the reason (MZB-121, MZB-124). A
+     * reason, what is still owed and the deadline; a guard warns with the reason (MZB-121, MZB-124), and
+     * makes small talk only with a bystander the camp has no reason against (MZB-130). A
      * settlers' envoy only shows its demand: it takes nothing from a player. Past its deadline an envoy
      * takes nothing and says so. A player's arrow hurts a guard and is an insult (ENVOY_ANSWER 3, once):
      * the guard is lifted, and the struck envoy takes nothing and says so. ENVOY_ANSWER 2 is never sent.
@@ -860,6 +864,27 @@ public final class ConflictGameTests {
                     TranslatableContents line = spoken(player.heard.get(heard));
                     check("the withdrawal: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.settled.withdrawn.0"));
                     player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                    // TALK slice 4 (MZB-130): a member hostile to the player (the camp has a reason against
+                    // him) makes no small talk; to a bystander with no reason, now that no demand is to
+                    // anyone, it chats. The envoy never does.
+                    check("the guard does not chat with the player it has a reason against", !chats(guard[0], player)
+                            && Talkers.find(guard[0], player).attitude(guard[0], player) == Talker.Attitude.HOSTILE);
+                    check("nor the envoy", Talkers.find(envoy[0], player) instanceof ConflictTalker && !chats(envoy[0], player));
+                    FakePlayers.Hearer bystander = FakePlayers.hearing(level, c.add(-1.5, 0, 2.5), "conflict_envoy_bystander");
+                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(bystander));
+                    check("the guard chats with him", chats(guard[0], bystander)
+                            && Talkers.find(guard[0], bystander).attitude(guard[0], bystander) == Talker.Attitude.WARY);
+                    check("the envoy does not", !chats(envoy[0], bystander));
+                    int heardBy = bystander.heard.size();
+                    bystander.setShiftKeyDown(true);
+                    bystander.interactOn(guard[0], InteractionHand.MAIN_HAND);
+                    bystander.setShiftKeyDown(false);
+                    check("the guard spoke to him once: " + talkKeys(bystander), bystander.heard.size() == heardBy + 1);
+                    TranslatableContents chat = spoken(bystander.heard.get(heardBy));
+                    record(test, "bystander line", chat.getKey() + " " + bystander.heard.get(heardBy).getString());
+                    check("no reason, no insult: " + chat.getKey(), !chat.getKey().matches("mic_rtsim\\.talk\\.[a-z_]+\\.hostile\\.warn\\.[a-z_]+\\.\\d+")
+                            && !chat.getKey().contains(".hostile.insult."));
+                    FakePlayers.remove(bystander);
                     // The rest of B by /kill too: no answer from the whole party.
                     envoyB[0].kill();
                     ConflictKit.settled(faction, a, player.getUUID(), ConflictRecords.SETTLED_PAID, 0);
@@ -928,6 +953,12 @@ public final class ConflictGameTests {
         Component line = (Component) ((TranslatableContents) say.getContents()).getArgs()[1];
         check("a line of ours: " + line, line.getContents() instanceof TranslatableContents);
         return (TranslatableContents) line.getContents();
+    }
+
+    /** Whether the conflict talker makes small talk with this player (TALK slice 4, MZB-130). */
+    private static boolean chats(Entity e, ServerPlayer p) {
+        Talker t = Talkers.find(e, p);
+        return t instanceof ConflictTalker && t.chats(e, p);
     }
 
     private static String talkKeys(FakePlayers.Hearer p) {
