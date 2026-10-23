@@ -12,11 +12,16 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
+import com.minecraftindustrialcomplex.mic_rtsim.api.Talker;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ai.gossip.GossipType;
 import net.minecraft.world.entity.npc.Villager;
@@ -26,6 +31,10 @@ import net.minecraft.world.inventory.MerchantMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.common.util.FakePlayer;
+import net.neoforged.neoforge.common.util.FakePlayerFactory;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -125,6 +134,8 @@ public final class TalkGameTests {
                     // everyone (a broadcast) would reach Alex too. Add, click, remove: one synchronous block.
                     java.util.List<net.minecraft.server.level.ServerPlayer> all = ((PlayerListAccessor) level.getServer().getPlayerList()).mic_rtsim$players();
                     InteractionResult[] r;
+                    int benRaw = ben.raw.size(), benOverlay = ben.overlay.size();
+                    int alexRaw = alex.raw.size(), alexOverlay = alex.overlay.size();
                     all.add(ben);
                     all.add(alex);
                     try {
@@ -145,6 +156,11 @@ public final class TalkGameTests {
                             line.getFallback() != null && !line.getFallback().equals(line.getKey()));
                     check("the say template carries its English too", say.getFallback() != null && say.getFallback().contains("%2$s"));
                     check("Alex received no talk line: " + keys(alex), alex.heard.isEmpty());
+                    // Same tick as the click, so nothing else can have been sent in between: exact counts.
+                    check("Ben got exactly one message of any kind: " + (ben.raw.size() - benRaw) + " of " + keys(ben), ben.raw.size() - benRaw == 1);
+                    check("and none on the action bar: " + (ben.overlay.size() - benOverlay), ben.overlay.size() == benOverlay);
+                    check("Alex got no message of any kind: " + (alex.raw.size() - alexRaw) + " of " + keys(alex), alex.raw.size() == alexRaw);
+                    check("and none on the action bar: " + (alex.overlay.size() - alexOverlay), alex.overlay.size() == alexOverlay);
                     record("talk", "line", line.getKey() + " = " + line.getFallback());
                     record("talk", "speaker", ((Component) say.getArgs()[0]).getString());
                 })
@@ -168,7 +184,10 @@ public final class TalkGameTests {
                 })
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
+                    int raw0 = ben.raw.size(), overlay0 = ben.overlay.size();
                     click(ben, v[0], true);
+                    check("one message for the click, none on the action bar: " + (ben.raw.size() - raw0) + " " + (ben.overlay.size() - overlay0),
+                            ben.raw.size() - raw0 == 1 && ben.overlay.size() == overlay0);
                     check("a crouching click on a villager with trades opens nothing", ben.containerMenu == ben.inventoryMenu);
                     check("and the villager is not trading", v[0].getTradingPlayer() == null);
                     check("the villager was talked to", ben.heard.size() == 1);
@@ -254,8 +273,10 @@ public final class TalkGameTests {
                 })
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
+                    int raw0 = ben.raw.size();
                     click(ben, v[0], true);
                     check("a stick in hand: the villager says nothing: " + ben.heard.size(), ben.heard.isEmpty());
+                    check("not a message of any kind: " + (ben.raw.size() - raw0), ben.raw.size() == raw0);
                     check("and gains no gossip", minorPositive(v[0], ben.getUUID()) == 0);
                     click(ben, t[0], true);
                     check("a stick in hand: a crouching click on the trader opens its trades as vanilla does: " + ben.containerMenu,
@@ -297,6 +318,129 @@ public final class TalkGameTests {
                     check("another id, usually another name", !Names.village(43L).isEmpty());
                     record("talk", "villager.fluff variants", fluff);
                     record("talk", "Names.village(42)", name);
+                })
+                .thenSucceed();
+    }
+
+    /** The probe talkers register once per JVM; they answer only for entities with their own custom name. */
+    private static final String PROBE = "talk_probe";
+    private static boolean probesRegistered;
+
+    private static final class Probe implements Talker {
+        @Override
+        public boolean talks(Entity entity, ServerPlayer player) {
+            return entity.hasCustomName() && entity.getCustomName().getString().equals(PROBE);
+        }
+
+        @Override
+        public String voice(Entity entity, ServerPlayer player) {
+            return "villager";
+        }
+
+        @Override
+        public Component speaker(Entity entity, ServerPlayer player) {
+            return Component.literal("Probe");
+        }
+    }
+
+    private static synchronized void registerProbes() {
+        if (probesRegistered)
+            return;
+        probesRegistered = true;
+        // On the villager (the built-in talker's own type) and on a type the core does not know, not always talking.
+        Talkers.register(ResourceLocation.withDefaultNamespace("villager"), new Probe(), true);
+        Talkers.register(ResourceLocation.withDefaultNamespace("cow"), new Probe(), false);
+    }
+
+    /** A machine (a NeoForge fake player, as a Create deployer is) crouch-clicking a villager is not a talk. */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 100)
+    public static void talkIgnoresFakePlayers(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Villager[] v = new Villager[1];
+        helper.startSequence()
+                .thenExecute(() -> v[0] = farmer(helper, 5.5, 5.5))
+                .thenIdle(SETTLE)
+                .thenExecute(() -> {
+                    FakePlayer machine = FakePlayerFactory.getMinecraft(level);
+                    check("it is a fake player", machine.isFakePlayer());
+                    machine.setShiftKeyDown(true);
+                    machine.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                    for (InteractionHand hand : InteractionHand.values()) {
+                        PlayerInteractEvent.EntityInteract event = new PlayerInteractEvent.EntityInteract(machine, hand, v[0]);
+                        NeoForge.EVENT_BUS.post(event);
+                        check("the click is not cancelled by a talk (" + hand + ")", !event.isCanceled());
+                    }
+                    machine.setShiftKeyDown(false);
+                    check("no gossip was credited", minorPositive(v[0], machine.getUUID()) == 0);
+                    check("and no day recorded", v[0].getData(RtsimAttachments.TALK_DAYS).isEmpty());
+                })
+                .thenSucceed();
+    }
+
+    /** A plugin's talker is asked before the core's built-in one on the same type, and only for what it means. */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 100)
+    public static void talkPluginTalkerIsAskedFirst(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        registerProbes();
+        FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(7.5, 2, 5.5)), "talk_plugin");
+        cleanup(helper, ben);
+        Villager[] v = new Villager[2];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    v[0] = farmer(helper, 4.5, 5.5);
+                    v[1] = farmer(helper, 5.5, 5.5);
+                    v[1].setCustomName(Component.literal(PROBE));
+                })
+                .thenIdle(SETTLE)
+                .thenExecute(() -> {
+                    Talker plain = Talkers.find(v[0], ben);
+                    Talker named = Talkers.find(v[1], ben);
+                    check("an unnamed farmer is the built-in's: " + plain, plain != null && plain.getClass().getSimpleName().equals("VillagerTalker"));
+                    check("the named one is the plugin's, though the built-in would talk too: " + named, named instanceof Probe);
+                    click(ben, v[1], true);
+                    check("one line: " + keys(ben), ben.heard.size() == 1);
+                    TranslatableContents say = translatable(ben.heard.get(0));
+                    check("spoken by the plugin's speaker: " + say.getArgs()[0], ((Component) say.getArgs()[0]).getString().equals("Probe"));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A type that does not always talk: the client sends the off-hand item's use after the two interact
+     * packets, and that use is cancelled in the talk's own tick (so a snowball is not thrown), while the
+     * same use a while later works.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 200)
+    public static void talkCancelsTheOffHandItemUse(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        registerProbes();
+        FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(7.5, 2, 5.5)), "talk_offhand");
+        cleanup(helper, ben);
+        net.minecraft.world.entity.animal.Cow[] cow = new net.minecraft.world.entity.animal.Cow[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    cow[0] = helper.spawn(EntityType.COW, new Vec3(5.5, 2, 5.5));
+                    cow[0].setCustomName(Component.literal(PROBE));
+                    cow[0].setPersistenceRequired();
+                    ben.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.SNOWBALL, 4));
+                    check("the cow's type does not always talk", !Talkers.alwaysTalks(EntityType.COW));
+                })
+                .thenIdle(SETTLE)
+                .thenExecute(() -> {
+                    long snowballs = level.getEntitiesOfClass(net.minecraft.world.entity.projectile.Snowball.class, ben.getBoundingBox().inflate(16)).size();
+                    InteractionResult[] r = click(ben, cow[0], true);
+                    check("the cow talked: " + keys(ben), r[0] == InteractionResult.SUCCESS && ben.heard.size() == 1);
+                    // The client's separate use of the off-hand item, in the same tick.
+                    InteractionResult use = ben.gameMode.useItem(ben, level, ben.getOffhandItem(), InteractionHand.OFF_HAND);
+                    check("the use is cancelled: " + use, use == InteractionResult.CONSUME);
+                    check("the snowballs are all still there: " + ben.getOffhandItem().getCount(), ben.getOffhandItem().getCount() == 4);
+                    check("none was thrown", level.getEntitiesOfClass(net.minecraft.world.entity.projectile.Snowball.class, ben.getBoundingBox().inflate(16)).size() == snowballs);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    ben.setShiftKeyDown(false);
+                    ben.gameMode.useItem(ben, level, ben.getOffhandItem(), InteractionHand.OFF_HAND);
+                    check("a use a few ticks later is not touched: " + ben.getOffhandItem().getCount(), ben.getOffhandItem().getCount() == 3);
                 })
                 .thenSucceed();
     }
