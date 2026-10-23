@@ -100,6 +100,11 @@ under its own heading.
 - **MZB-26** (The page format): the conflict's pages are RTC4 with meta version 3 (the kept notice in
   each feud, the Peaceful flag and three counters in the meta), with no migration. The rtsim-view
   fixtures are fresh core and create GameTest saves from the merged head, as before.
+- **MZB-27** (The viewer hashes under the guard): the fresh core save put the herds' forage pages in a
+  segment of their own, and `unreadable.rs` then panicked: rtsim-view's `load_world` took each paged
+  module's state hash (which reads every page) outside its `guarded` load. The hash of phase 1,
+  dragons, herds, ships and conflict is now taken inside the guard, so a page that cannot be read
+  makes that module unreadable instead of the viewer panicking.
 
 ## M2 Cultures
 
