@@ -471,7 +471,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash b7d678e98bd6d8e1"
+          "detail": "state hash 29e8bdcac5241e51"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -536,11 +536,11 @@
           1
         ],
         "raids_district": 0,
-        "raids_village": 1,
+        "raids_village": 0,
         "raids_watched": 0,
         "raids_skipped": 0,
         "ambushes": 0,
-        "casualties": 1,
+        "casualties": 0,
         "routs": 0,
         "bored": 1,
         "chiefs_killed": 0,
@@ -712,14 +712,14 @@
           "day": 21.084541666666667,
           "faction": "umvuthana camp 3232825345",
           "kind": "plunder",
-          "what": "raids node 4 (defence 3.8 against 2.6): 1 fall, carries off 0 items"
+          "what": "finds nothing worth taking at node 4: 1 items spare within reach"
         },
         {
           "tick": 529078,
           "day": 22.044916666666666,
           "faction": "umvuthana camp 3232825345",
           "kind": "home",
-          "what": "plunder home with 0 left and 0 items for the haven"
+          "what": "plunder home with 1 left and 0 items for the haven"
         }
       ]
     },

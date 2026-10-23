@@ -144,7 +144,7 @@ live in that mod's plugin (D4).
 |---|---|---|---|---|---|---|
 | Villagers | `minecraft:villager` (adults by profession; babies) | core | `villager.<profession>`, `child` | the adopted village it is a resident of (`Residents.villageOf`); none outside one | friendly; wary when vanilla reputation for the player is at or below -25 | vanilla gossip |
 | Caravan merchants | `minecraft:wandering_trader` (C8a: while trade is on, every one is a caravan's puppet) | core | `trader` | the caravan's own board (HolderKind Caravan); a stray non-puppet trader has none | friendly; wary after the player robbed a caravan | none (TK6) |
-| Ribbits | `ribbits:ribbit` (gardener, fisherman, merchant, sorcerer, nitwit; nitwit musicians in a band) | `mic_rtsim_ribbits` | `ribbit.<profession>` | its ribbit village; a merchant caravan's or band's board when it is a puppet | by the village's sentiment: wary at or below -25 (the sorcerers' threshold), warm at or above 25 | the village's sentiment |
+| Ribbits | `ribbits:ribbit` (gardener, fisherman, merchant, sorcerer, nitwit; nitwit musicians in a band) | `mic_rtsim_ribbits` | `ribbit.<profession>`; `ribbit.musician` for a band's puppet; plain `ribbit` for a baby | its ribbit village for a resident; a merchant puppet's caravan board; none for a band's musician (the engine keeps no board for a band), a baby, or a ribbit outside a village (TK62) | wary when its village dislikes the player (sentiment at or below -25, the sorcerers' own test); friendly otherwise. A village that likes the player (25 or more, `Snapshot.friend`) adds the `mood.liked` lines, one that dislikes him the `mood.disliked` ones (TK64) | the village's sentiment, once per village and player a game day (TK60) |
 | Conflict bands: bandits, raiders, goblins | the conflict bodies, whatever stands in for them (`BodyKinds.standIn`: pillager, vindicator, evoker and others in M3) | core (M3's ConflictBridge) | `bandit`, `raider`, `goblin`, by the party's culture; beasts (ravagers, wolves) are not talkers | the camp's board (its Haven node) | hostile in a raid or when the camp feuds with the player; wary otherwise | none (TK6) |
 | Envoys | the envoy band's body | core (M3) | `envoy.<culture>` | the camp | wary | none |
 | Umvuthana and the Umvuthi | `mowziesmobs:umvuthana`, `umvuthana_raptor`, `umvuthana_crane`, `umvuthi`, and the player-led followers `umvuthana_follower_player`, `umvuthana_crane_player`, `umvuthana_follower_raptor` | `mic_rtsim_mowzie` | `umvuthana`, `umvuthi`; followers `umvuthana.follower` | the grove's camp | by mask: friendly to a masked player, hostile to a bare face (Mowzie's own rule for trade) | none |
@@ -322,9 +322,14 @@ about the player to that villager (`GossipContainer.add`; TK1). Vanilla's rules 
 rtsim-knowledge's sentiment (prices, the sorcerers' buffs). The first talk of the day between a player
 and a ribbit sends TALKED (§9.2), journaled, and the engine adjusts the ribbit village's sentiment
 toward them by **+3** (TK2) through the phase 1 world's input log (so a crash replays it). The cap is
-the same attachment on the ribbit. rtsim's sentiment fades weak feelings in hours (a +3 is gone in
-about 7,500 ticks), so talk alone never makes a friend (25): it lifts a player hovering under the
-sorcerers' -25 back over it for the day, which is "mildly".
+per village, not per ribbit: once a game day per player, kept on the player in the Ribbits plugin's
+own saved attachment `mic_rtsim_ribbits:talk_days` (village id to the last game day credited, at most
+16 villages, kept through death, TK60; only older days are trimmed, TK69). The credit lands on the village's sentiment, which every ribbit of
+the village shares, so a cap per ribbit would let ten ribbits give +30, past the friend line at 25.
+A puppet (a caravan's merchant, a band's musician) gives none (TK61), and neither does a ribbit standing in an
+adopted village of another culture (TK70). rtsim's sentiment fades weak
+feelings in hours (a +3 is gone in about 7,500 ticks), so talk alone never makes a friend (25): it
+lifts a player hovering under the sorcerers' -25 back over it for the day, which is "mildly".
 
 **Everyone else: nothing.** Talking to a caravan merchant, a bandit, a raider, a goblin, an envoy or
 an Umvuthana changes no feeling (TK6): a camp's anger is its memories and grievances (CONFLICT-LIFE),
@@ -332,8 +337,8 @@ and chatting must not talk a war down.
 
 **UR-1.** Removed, rtsim leaves the MINOR_POSITIVE gossip it wrote, vanilla data that vanilla decays
 by 1 a day and that only ever helps the player; NeoForge drops the unknown `mic_rtsim:talk_days`
-attachment on load. The ribbit credit is in rtsim's own state, reset with it. Nothing else is
-written.
+attachment on load, and the Ribbits plugin's `mic_rtsim_ribbits:talk_days` on a player with it. The
+ribbit credit is in rtsim's own state, reset with it. Nothing else is written.
 
 ---
 
@@ -456,8 +461,9 @@ with the ally of CL-D48), its chief's seed, its pool and whether it is cowed.
 
 **TALKED (0x0A00, journaled):** 24 u64 opId (Java's), 32 u64 village, 40 u64 playerMost,
 48 u64 playerLeast, 56 u32 the talker's body (dictionary 3), 60 reserved; 64 bytes. Sent only for a
-credited talk with a ribbit (§7); the engine applies it once by op id, as the phase 1 input
-`Talked`, which adjusts the village's sentiment.
+credited talk with a resident ribbit (§7; a puppet sends none, TK61); the engine applies it once by op
+id, as the phase 1 input `Talked`, which adjusts the village's sentiment. The layout, the three layers
+that make it exactly once and what the engine refuses are in docs/boundary.md §13.7.
 
 ### 9.3 The engine side (`rtsim-jni/src/engine/talk.rs`)
 
@@ -521,7 +527,7 @@ only). The ports agent records 16 to 20.
 Nothing runs until a player talks. A talk is one 64-byte ask, a board scan of at most 256 reports and
 a sort, and an answer of at most 528 bytes (48 + 4 × 120); the Java side is a few map lookups and one chat message.
 Per player, at most one line each 10 ticks. The variant counts are read once at start. No tick
-handler, no saved state except the villager's day cap and the ribbit credit.
+handler, no saved state except the villager's day cap and a player's ribbit talk days.
 
 ---
 
