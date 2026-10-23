@@ -129,6 +129,17 @@ kinds! {
     KNOWLEDGE_RESIDENT_ASSAULT = "knowledge.resident_assault", "Resident assaulted", Minor;
     KNOWLEDGE_RESIDENT_KILLING = "knowledge.resident_killing", "Resident killed", Notable;
     KNOWLEDGE_ENCROACHMENT = "knowledge.encroachment", "Encroachment on a dragon's oil", Minor;
+    // TALK news kinds (TALK.md §9.4, ReportKinds 10 to 20; 15 is a spare).
+    KNOWLEDGE_FEUD = "knowledge.feud", "Feud", Notable;
+    KNOWLEDGE_PACT_SWORN = "knowledge.pact_sworn", "Pact sworn", Notable;
+    KNOWLEDGE_PACT_BROKEN = "knowledge.pact_broken", "Pact broken", Notable;
+    KNOWLEDGE_RAID = "knowledge.raid", "Raid", Notable;
+    KNOWLEDGE_FELL = "knowledge.fell", "Notable fell", Notable;
+    KNOWLEDGE_PORT_RAIDED = "knowledge.port_raided", "Port raided", Notable;
+    KNOWLEDGE_BLOCKADE = "knowledge.blockade", "Port blockaded", Notable;
+    KNOWLEDGE_PORT_CLOSED = "knowledge.port_closed", "Port closed", Notable;
+    KNOWLEDGE_PORT_REOPENED = "knowledge.port_reopened", "Port reopened", Minor;
+    KNOWLEDGE_HAVEN_FELL = "knowledge.haven_fell", "Haven fell", Notable;
     // Industry (rtsim-industry), at the district's centre.
     INDUSTRY_DETECTED = "industry.detected", "District found", Minor;
     INDUSTRY_LEARNED = "industry.learned", "District learned", Minor;
@@ -218,8 +229,9 @@ mod tests {
         assert_eq!(CONFLICT_RAID.group(), "conflict");
         assert_eq!(CONFLICT_RAID.severity(), Severity::Major);
         assert!(of_group("herds").all(|k| k.name().starts_with("herds.")));
-        // One per report kind (rtsim-knowledge's ReportKind, Encroachment the ninth).
-        assert_eq!(of_group("knowledge").count(), 9);
+        // One per report kind (rtsim-knowledge's ReportKind: nine of today's, then the ten TALK
+        // news kinds, ids 10 to 14 and 16 to 20).
+        assert_eq!(of_group("knowledge").count(), 19);
         assert_eq!(group("conflict.raid"), "conflict");
         assert_eq!(group("loose"), "loose");
         assert_eq!(fallback_label("herds.route_leg"), "Route leg");

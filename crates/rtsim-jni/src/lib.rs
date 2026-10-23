@@ -19,6 +19,7 @@ pub mod buffers;
 pub mod engine;
 pub mod jni_api;
 pub mod orders;
+pub mod talk_wire;
 pub mod wire;
 pub mod world;
 
