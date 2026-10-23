@@ -14,6 +14,10 @@
 //!   the module that owns it (phase 1: villages, bases, caravans and players; ecology: lairs and
 //!   dragons; conflict: camps and chiefs). It changes nothing in the world; the only writer is the
 //!   TEST order [`post`].
+//! - **A camp** (holder kind 3, slice 4, TK71 to TK76): the camp's knowledge is its chief's board,
+//!   else its heir's (a haven is not a holder), and the conflict is read through
+//!   `rtsim_conflict::view::faction_facts` and nothing else. An ask with the FACTION flag also gets
+//!   the 48-byte faction block after the news: the camp's feud against the asker, and its moods.
 //!
 //! The ranking, the refs and the port state are pure functions of the board and the world, so they
 //! are tested apart from the protocol.
@@ -21,7 +25,8 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use rtsim_conflict::engine::SETTLERS_KEY;
-use rtsim_kernel::clock::Tick;
+use rtsim_conflict::view::{FactionFacts, faction_facts};
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, rung_weight};
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind};
@@ -32,7 +37,7 @@ use rtsim_world::interest::uuid_hash;
 use super::{State, log_warn};
 use crate::orders::{TalkActor, TalkReportCmd};
 use crate::talk_wire::{
-    Ask, Facts, News, Ref, TALK_ASK, ask, decode_asks, facts, news,
+    Ask, Faction, Facts, News, Ref, TALK_ASK, ask, decode_asks, facts, news,
     reference::{self, class},
 };
 use crate::wire::{self, Rec, RecordWriter};
@@ -48,6 +53,9 @@ pub const SEEN_BLOCKS: i64 = 96;
 pub const NEAR_BLOCKS: i64 = 768;
 /// News items in one answer (TK20).
 pub const MAX_NEWS: usize = facts::MAX_NEWS;
+/// How long after a succession a camp's chief counts as new, ticks: ten game days (TK75).
+/// TUNABLE (PLACEHOLDER).
+pub const NEW_CHIEF_TICKS: u64 = 10 * TICKS_PER_DAY;
 
 /// The tag rtsim-ecology puts on a lair's key to register its knowledge actor (`LAIR_TAG` in its
 /// `engine.rs`, private there). A test registers a real lair and checks the actor's key against
@@ -77,6 +85,8 @@ pub struct Stats {
     pub answered: u64,
     /// Of those, answers that carried HOLDER.
     pub with_holder: u64,
+    /// Of those, answers that carried a faction block (a camp, with the FACTION ask flag).
+    pub with_faction: u64,
     /// Asks and records refused: undecodable, an askId of 0, a dimension no frame can be.
     pub refused: u64,
     /// Asks dropped because [`MAX_PENDING`] were waiting.
@@ -229,6 +239,9 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         if ans.facts.flags & facts::HOLDER != 0 {
             st.talk.stats.with_holder += 1;
         }
+        if ans.facts.flags & facts::FACTION != 0 {
+            st.talk.stats.with_faction += 1;
+        }
     }
     (highest, false)
 }
@@ -269,13 +282,18 @@ impl Answer {
 
 /// The holder an ask names, as phase 1 knows it.
 struct Holder {
-    actor: ActorId,
-    /// A caravan's home village: reports about it are about the caravan too (TK36).
-    home: Option<ActorId>,
+    /// Whose board, feelings and port state answer. A camp has none when its chief and its heir
+    /// are both gone: the camp is known and has nothing to tell (TK72).
+    actor: Option<ActorId>,
+    /// Actors news about which is about the holder too: a caravan's home village (TK36); a camp's
+    /// own actor, chief, heir and haven (TK73). No nulls, none twice, never `actor`.
+    also: Vec<ActorId>,
     /// Its market node, for a village.
     node: Option<usize>,
     /// Where it is now, when it is in the ask's frame.
     pos: Option<(i64, i64)>,
+    /// The camp, when the holder is one: what the conflict says of it, with no player.
+    camp: Option<FactionFacts>,
 }
 
 /// Whose answer: the holder the ask names, or none (TK32, TK38).
@@ -290,10 +308,11 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let node = l.node_of(a.holder)?;
             let n = l.world.nodes.get(node)?;
             Some(Holder {
-                actor: n.actor,
-                home: None,
+                actor: Some(n.actor),
+                also: Vec::new(),
                 node: Some(node),
                 pos: (n.pos.frame == frame).then_some((i64::from(n.pos.x), i64::from(n.pos.z))),
+                camp: None,
             })
         }
         ask::holder::CARAVAN => {
@@ -301,16 +320,94 @@ fn holder_of(st: &State, a: &Ask) -> Option<Holder> {
             let car = l.world.caravans.get(Handle::from_bits(bits))?;
             let p = l.world.caravan_place(car, l.world.now());
             Some(Holder {
-                actor: car.holder,
-                home: l.world.nodes.get(car.home).map(|n| n.actor),
+                actor: Some(car.holder),
+                also: l
+                    .world
+                    .nodes
+                    .get(car.home)
+                    .map(|n| n.actor)
+                    .into_iter()
+                    .collect(),
                 node: None,
                 pos: (p.frame == frame).then_some((i64::from(p.x), i64::from(p.z))),
+                camp: None,
             })
         }
-        // TODO(slice 4): a faction's camp (kind 3) and a ship (kind 4) answer from the conflict's
-        // and the ships' tables; until then they answer without HOLDER, like any holder this
-        // build does not know (TK38).
+        ask::holder::FACTION => camp_holder(st, a),
+        // A ship (kind 4) answers from the ships' table, a later slice; until then it answers
+        // without HOLDER, like any holder this build does not know (TK38).
         _ => None,
+    }
+}
+
+/// A camp as a holder (TK71 to TK74): known when the conflict runs and has a faction of this key.
+/// Its knowledge is the chief's board, else the heir's; a haven is not a holder in phase 1's
+/// knowledge, so the camp has no board of its own. `us` for its news is the chief, the heir, the
+/// faction's own actor and the haven's.
+fn camp_holder(st: &State, a: &Ask) -> Option<Holder> {
+    if !st.conflict.enabled {
+        return None;
+    }
+    let ff = faction_facts(&st.conflict.engine, a.holder, None)?;
+    let w = &st.phase1.world;
+    let k = &w.knowledge;
+    let actor = [ff.chief, ff.heir]
+        .into_iter()
+        .find(|c| !c.is_null() && k.is_holder(*c));
+    let mut also = Vec::new();
+    let haven = w.nodes.get(ff.node).map(|n| n.actor);
+    for x in [Some(ff.actor), Some(ff.chief), Some(ff.heir), haven]
+        .into_iter()
+        .flatten()
+    {
+        if !x.is_null() && Some(x) != actor && !also.contains(&x) {
+            also.push(x);
+        }
+    }
+    let pos =
+        (ff.pos.frame == a.dimension as u16).then_some((i64::from(ff.pos.x), i64::from(ff.pos.z)));
+    Some(Holder {
+        actor,
+        also,
+        node: None,
+        pos,
+        camp: Some(ff),
+    })
+}
+
+/// The faction block of an answer (TK72 to TK76): the camp's feud against the asker, and its moods
+/// at `now`. `heir_born` is when the heir came to be: a succession names a new heir, so it is
+/// when the chief last changed.
+fn faction_block(ff: &FactionFacts, heir_born: Option<Tick>, now: Tick) -> Faction {
+    use facts::faction::{NO_SIGNAL, mood};
+    let left = ff.cowed_until.0.saturating_sub(now.0);
+    let mut flags = 0;
+    if left > 0 {
+        flags |= mood::COWED;
+    }
+    if ff.chief_out {
+        flags |= mood::CHIEF_OUT;
+    }
+    if ff.chiefs > 2 && heir_born.is_some_and(|b| now.0.saturating_sub(b.0) < NEW_CHIEF_TICKS) {
+        flags |= mood::NEW_CHIEF;
+    }
+    if ff.pool_cap > 0.0 {
+        if ff.pool < ff.pool_cap / 3.0 {
+            flags |= mood::LEAN;
+        }
+        if ff.pool >= ff.pool_cap - 0.5 {
+            flags |= mood::STRONG;
+        }
+    }
+    Faction {
+        rung: ff.step as u8,
+        mood: flags,
+        signal: ff.signal.map_or(NO_SIGNAL, |s| u16::from(s as u8)),
+        grievance: ff.grievance as f32,
+        cowed_ticks: u32::try_from(left).unwrap_or(u32::MAX),
+        plunders: ff.plunders,
+        // Reserved for the Mowzie plugin's name line (M9): the chief's ref, nothing yet.
+        chief: Ref::default(),
     }
 }
 
@@ -332,7 +429,10 @@ fn answer(st: &State, a: &Ask) -> Answer {
     let player = k
         .actors()
         .find(ActorKind::Player, uuid_hash(a.player.0, a.player.1));
-    ans.facts.sentiment = player.map_or(0, |p| i32::from(k.sentiment(holder.actor, p, now)));
+    ans.facts.sentiment = match (holder.actor, player) {
+        (Some(h), Some(p)) => i32::from(k.sentiment(h, p, now)),
+        _ => 0,
+    };
     if let Some(ex) = holder.node.and_then(|n| st.phase1.market_extremes(n)) {
         if let Some((item, ratio)) = ex.scarcest {
             ans.facts.scarcest_ratio = ratio;
@@ -343,10 +443,21 @@ fn answer(st: &State, a: &Ask) -> Answer {
             ans.whats.push((Slot::Glutted, wire::DICT_ITEM, item));
         }
     }
-    let reports: Vec<Report> = k.board(holder.actor).map_or_else(Vec::new, |b| {
-        b.iter().filter_map(|id| k.report(id)).collect()
-    });
-    ans.facts.flags |= port_flags(&reports, holder.actor);
+    let reports: Vec<Report> = holder
+        .actor
+        .and_then(|h| k.board(h))
+        .map_or_else(Vec::new, |b| {
+            b.iter().filter_map(|id| k.report(id)).collect()
+        });
+    ans.facts.flags |= holder.actor.map_or(0, |h| port_flags(&reports, h));
+    if a.flags & ask::FACTION != 0 && holder.camp.is_some() {
+        // Again with the asker, for the feud: the camp itself cannot have gone since.
+        if let Some(ff) = faction_facts(&st.conflict.engine, a.holder, player) {
+            let heir_born = k.notable(ff.heir).map(|n| n.born);
+            ans.facts.faction = Some(faction_block(&ff, heir_born, now));
+            ans.facts.flags |= facts::FACTION;
+        }
+    }
     if a.flags & ask::NEWS == 0 {
         return ans;
     }
@@ -357,7 +468,7 @@ fn answer(st: &State, a: &Ask) -> Answer {
         topo: &st.topology.shared,
         now,
     };
-    let us: Vec<ActorId> = std::iter::once(holder.actor).chain(holder.home).collect();
+    let us: Vec<ActorId> = holder.actor.into_iter().chain(holder.also).collect();
     let tun = k.tunables();
     let mut cands: Vec<Candidate> = reports
         .into_iter()
@@ -836,12 +947,15 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
     }
     let kind =
         ReportKind::from_u16(c.kind).ok_or_else(|| format!("{} is not a report kind", c.kind))?;
-    let node = st
-        .phase1
-        .node_of(c.village)
-        .ok_or_else(|| format!("village {} is not adopted", c.village))?;
-    let frame = st.phase1.world.nodes[node].pos.frame;
-    let holder = st.phase1.world.nodes[node].actor;
+    let (frame, holder) = match st.phase1.node_of(c.village) {
+        Some(node) => {
+            let n = &st.phase1.world.nodes[node];
+            (n.pos.frame, n.actor)
+        }
+        // A key that is no adopted village but is a camp's: the camp's board, its chief's (TK77).
+        None => camp_board(st, c.village)
+            .ok_or_else(|| format!("village {} is not adopted", c.village))?,
+    };
     for (name, v) in [("x", c.x), ("z", c.z)] {
         if !(-COORD_LIMIT - 1..=COORD_LIMIT).contains(&v) {
             return Err(format!("{name} {v} is past what a report can hold"));
@@ -893,6 +1007,21 @@ fn post_report(st: &mut State, c: &TalkReportCmd) -> Result<(), String> {
     // writes go; another module's queued gossip stays (TK40).
     w.knowledge.drop_vanilla_gossip_of(id);
     Ok(())
+}
+
+/// The board of the camp with this faction key, and its frame: the chief's, else the heir's (the
+/// same holder an ask for the camp answers from). `None` while the conflict is off, or for a key
+/// that is no camp, or when neither is alive.
+fn camp_board(st: &State, key: u64) -> Option<(u16, ActorId)> {
+    if !st.conflict.enabled {
+        return None;
+    }
+    let ff = faction_facts(&st.conflict.engine, key, None)?;
+    let k = &st.phase1.world.knowledge;
+    let holder = [ff.chief, ff.heir]
+        .into_iter()
+        .find(|c| !c.is_null() && k.is_holder(*c))?;
+    Some((ff.pos.frame, holder))
 }
 
 /// The actor a test order names, as the engine's own tables know it (a player is registered).
@@ -1444,7 +1573,7 @@ mod tests {
                 ask_of(2, ask::holder::VILLAGE, 7, 5, 0),
             ],
         );
-        let one = facts::record_size(0) + 2 * wire::align8(wire::cmd::dict::size(16));
+        let one = facts::record_size(0, false) + 2 * wire::align8(wire::cmd::dict::size(16));
         let (got, more) = write(&mut st, one);
         assert!(more, "the second does not fit");
         assert_eq!(got.len(), 1);
