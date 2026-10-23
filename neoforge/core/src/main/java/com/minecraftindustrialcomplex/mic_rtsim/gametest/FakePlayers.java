@@ -37,6 +37,40 @@ public final class FakePlayers {
         return p;
     }
 
+    /**
+     * A server player who records what it is sent: every chat line in {@link Hearer#heard} and every
+     * action-bar line in {@link Hearer#overlay}. Otherwise as {@link #add}.
+     */
+    public static Hearer hearing(ServerLevel level, Vec3 at, String name) {
+        GameProfile profile = new GameProfile(UUID.randomUUID(), name);
+        CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
+        Hearer p = new Hearer(level.getServer(), level, profile, cookie.clientInformation());
+        Connection connection = new Connection(PacketFlow.SERVERBOUND);
+        new EmbeddedChannel(connection);
+        new ServerGamePacketListenerImpl(level.getServer(), connection, p, cookie);
+        p.setGameMode(GameType.SURVIVAL);
+        p.moveTo(at.x, at.y, at.z);
+        level.players().add(p);
+        return p;
+    }
+
+    /** A player that remembers the system messages it was sent (still sending them). */
+    public static final class Hearer extends ServerPlayer {
+        public final java.util.List<net.minecraft.network.chat.Component> heard = new java.util.ArrayList<>();
+        public final java.util.List<net.minecraft.network.chat.Component> overlay = new java.util.ArrayList<>();
+
+        Hearer(net.minecraft.server.MinecraftServer server, ServerLevel level, GameProfile profile,
+               net.minecraft.server.level.ClientInformation info) {
+            super(server, level, profile, info);
+        }
+
+        @Override
+        public void sendSystemMessage(net.minecraft.network.chat.Component message, boolean overlayBar) {
+            (overlayBar ? overlay : heard).add(message);
+            super.sendSystemMessage(message, overlayBar);
+        }
+    }
+
     public static void remove(ServerPlayer p) {
         p.serverLevel().players().remove(p);
     }
