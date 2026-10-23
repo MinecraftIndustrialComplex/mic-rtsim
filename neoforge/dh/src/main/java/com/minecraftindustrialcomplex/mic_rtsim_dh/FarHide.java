@@ -70,7 +70,7 @@ final class FarHide {
      * by 1.2 block box until its first client tick, and vanilla leaves it out beyond about 74 blocks at render
      * distance 10, 88 at 12: hidden for its entity then, the far box left a gap of a frame or two.
      *
-     * And, as vanilla's entity pass asks next, the section the body stands in has been built (or is outside
+     * <p>And, as vanilla's entity pass asks next, the section the body stands in has been built (or is outside
      * the build height): vanilla leaves out a body over a section it has not built yet.
      *
      * <p>Not for a carriage: Create hands its carriages to Flywheel, which draws them with no distance rule
