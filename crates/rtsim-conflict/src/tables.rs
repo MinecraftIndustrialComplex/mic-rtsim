@@ -105,6 +105,8 @@ impl Row for FactionRow {
     fn heap_bytes(&self) -> usize {
         self.x.observed.capacity() * std::mem::size_of::<(f64, f64)>()
             + self.feuds.capacity() * std::mem::size_of::<(ActorId, Feud)>()
+            + self.feuds.iter().filter(|e| e.1.notice.is_some()).count()
+                * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
     }
 }

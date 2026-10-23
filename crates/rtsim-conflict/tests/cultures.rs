@@ -556,6 +556,40 @@ fn no_repeat_with_a_demand_pending() {
     assert_eq!((c.stats.repeats, c.stats.parties), before);
 }
 
+/// Peaceful books no repeat (no war party leaves, M1's MZB-15); leaving it plans the feud again,
+/// and the repeat comes within its dwell's pause and jitter plus `repeat_days` (MZB-51).
+#[test]
+fn no_repeat_on_peaceful_and_one_after_it() {
+    let (mut w, mut c, f, p, t) = frostmaw_home_on_raid(18);
+    let raid = theta(&c, f, Step::Raid);
+    let before = (c.stats.repeats, c.stats.parties);
+    c.set_difficulty(&mut w, boundary::DIFFICULTY_PEACEFUL);
+    let calm = Tick(t.0 + 12 * TICKS_PER_DAY);
+    let seen = feed(&mut c, &mut w, f, p, 2.0 * raid, t, calm);
+    assert_eq!(
+        (c.stats.repeats, c.stats.parties),
+        before,
+        "none on Peaceful"
+    );
+    assert!(seen.iter().all(|s| s.step == Step::Raid && !s.out));
+    c.set_difficulty(&mut w, boundary::DIFFICULTY_NORMAL);
+    let seen = feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
+        2.0 * raid,
+        calm,
+        Tick(calm.0 + 9 * TICKS_PER_DAY),
+    );
+    assert!(
+        c.stats.repeats > before.0,
+        "a repeat once it is not Peaceful"
+    );
+    assert!(seen.iter().all(|s| s.bands <= 1), "never two Frostmaws");
+    c.check(&w).expect("books");
+}
+
 /// A step down from Siege with Invasion and Raid empty crosses both: the chief's fall (two steps)
 /// lands on Envoy, a calm on Scouts.
 #[test]

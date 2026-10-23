@@ -137,6 +137,16 @@ pub fn archive_kind(kind: ReportKind) -> Kind {
         ReportKind::ResidentAssault => kinds::KNOWLEDGE_RESIDENT_ASSAULT,
         ReportKind::ResidentKilling => kinds::KNOWLEDGE_RESIDENT_KILLING,
         ReportKind::Encroachment => kinds::KNOWLEDGE_ENCROACHMENT,
+        ReportKind::Feud => kinds::KNOWLEDGE_FEUD,
+        ReportKind::PactSworn => kinds::KNOWLEDGE_PACT_SWORN,
+        ReportKind::PactBroken => kinds::KNOWLEDGE_PACT_BROKEN,
+        ReportKind::Raid => kinds::KNOWLEDGE_RAID,
+        ReportKind::Fell => kinds::KNOWLEDGE_FELL,
+        ReportKind::PortRaided => kinds::KNOWLEDGE_PORT_RAIDED,
+        ReportKind::Blockade => kinds::KNOWLEDGE_BLOCKADE,
+        ReportKind::PortClosed => kinds::KNOWLEDGE_PORT_CLOSED,
+        ReportKind::PortReopened => kinds::KNOWLEDGE_PORT_REOPENED,
+        ReportKind::HavenFell => kinds::KNOWLEDGE_HAVEN_FELL,
     }
 }
 
@@ -288,7 +298,12 @@ impl Knowledge {
         // relearned as news.
         h.board.push(id);
         let who_kind = self.actors.kind(report.who);
-        if who_kind.is_some() && report.who != holder {
+        // A kind whose base delta is 0 (the TALK news kinds, TALK.md §9.4) writes no sentiment
+        // at all: not even the decay commit an `add` makes.
+        if who_kind.is_some()
+            && report.who != holder
+            && self.tunables.delta[report.kind.index()] != 0
+        {
             let d = self.tunables.delta(report.kind, report.severity, hearsay);
             h.sentiment.add(
                 at,
@@ -299,11 +314,12 @@ impl Knowledge {
                 &self.tunables,
             );
         }
+        // The TALK news kinds have no vanilla mapping and write no vanilla gossip.
         if h.kind == HolderKind::VanillaVillage
             && who_kind == Some(ActorKind::Player)
             && (hearsay || !vanilla_sees_first_hand(report.kind))
+            && let Some((gossip, base)) = vanilla_mapping(report.kind)
         {
-            let (gossip, base) = vanilla_mapping(report.kind);
             let mut amount = base * i32::from(report.severity) / i32::from(SEVERITY_UNIT);
             if hearsay {
                 amount = amount * i32::from(self.tunables.hearsay_percent) / 100;
@@ -322,7 +338,7 @@ impl Knowledge {
             }
         }
         if let Some(n) = self.notables.get_mut(&holder) {
-            let mut salience = u32::from(report.severity);
+            let mut salience = u32::from(report.kind.magnitude(report.severity));
             if hearsay {
                 salience = salience * u32::from(self.tunables.hearsay_percent) / 100;
             }
@@ -379,6 +395,14 @@ impl Knowledge {
     /// Gossip writes for the bridge since the last call (C20).
     pub fn take_vanilla_gossip(&mut self) -> Vec<VanillaGossip> {
         std::mem::take(&mut self.vanilla)
+    }
+
+    /// Drops the queued gossip writes that came of one report and keeps every other module's.
+    /// Returns how many it dropped. For a scripted report that must not play out as a grudge.
+    pub fn drop_vanilla_gossip_of(&mut self, report: ReportId) -> usize {
+        let before = self.vanilla.len();
+        self.vanilla.retain(|g| g.report != report);
+        before - self.vanilla.len()
     }
 
     // ---- Expiry ----
