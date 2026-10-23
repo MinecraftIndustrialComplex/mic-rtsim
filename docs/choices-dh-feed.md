@@ -178,6 +178,32 @@ those 10, before the JIT has compiled most of the path:
   us of sends, 10 subscribers would put about 6.5 ms into that one tick. Spreading the subscribers over the 20
   ticks would flatten it; it is not built.
 
+### The hand-over's second pass, before and after
+
+Captured on the evening of 2026-10-22 in a private headless sway at 1920x1080, 30 fps, render distance 10,
+simulation distance 5, field of view 60. Before: the capture session's own take of two lanes of looping
+one-carriage trains (`dh-2026-10-22/raw/rec/hand_a.mkv`, main before DHT40). After: the same scene and camera
+on this branch at a9dc6709 (`dh-fixes-2026-10-22/raw/rec/hand_after.mkv`). Each frame was classed along each
+lane from colour kymographs: a box is changed pixels at least 90% flat dark grey, a carriage under 75% grey.
+Stills and the tools are in `/home/greencheetah/mic-media/dh-fixes-2026-10-22/`.
+
+| Seam | Before | After |
+|---|---|---|
+| A carriage arrives (box to carriage), at 88 to 108 blocks | 2 arrivals: the box and the carriage both drawn for 25 and 18 frames, the box 25 and 16 blocks behind | 4 arrivals: no frame with both, none with neither; the box about 2 blocks behind |
+| A carriage leaves (carriage to box), at 93 to 97 blocks | 3 departures: no frame with both or neither; the box appears 10 to 11 blocks behind | 6 departures: no frame with both or neither; the box appears 5 to 7 blocks ahead |
+| DH's fade ring (block x 1540 to 1660, about 125 to 200 blocks) | 5 crossings: the train not seen for 40, 38, 36, 33 and 21 frames | 10 crossings: seen in every frame |
+
+- **The box ahead as a carriage leaves is mostly Create's own trailing.** A carriage syncs every 3 ticks
+  (`AllEntityTypes.CARRIAGE_CONTRAPTION`'s update interval) and the client moves toward each snapshot over the
+  next 3 (`CarriageSyncData.approach`, Create 6.0.10), so the carriage a client draws runs 3 to 6 ticks behind
+  the server's, 3 to 6 blocks at these trains' 1 block a tick. The box, run on to the server's time (DHT44),
+  is drawn where the server has it. An arriving carriage's spawn packet puts it at the server's position, and
+  there the box is within 2 blocks of it. A possible follow-up: as a body leaves, start its far object where
+  the body was drawn and ease it onto the feed's position over a few ticks.
+- The edge measures are muddied by the boxes' sizes, which this pass leaves alone: a carriage's box is a cube
+  about twice as long as these carriages.
+- For 2 frames as each carriage arrives, Create draws its body without its bogeys. No frame is empty.
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
@@ -226,3 +252,6 @@ the pack plan on 2026-10-22 ("Approve, ship with rtsim"); the PLACEHOLDERs are s
   at 8 blocks a tick (DHT44); and the fade ring's margins, SLACK 2 and PREPARE 16 blocks (DHT45).
 - **A possible follow-up:** spread the subscribers' sends over the second, before a server with many DH
   players (see "The server's sweep").
+- **Another:** a leaving carriage's box appears 5 to 7 blocks ahead of where Create drew the carriage, which
+  trails the server (see "The hand-over's second pass, before and after"); easing the far object from the
+  body's last drawn position would close it.
