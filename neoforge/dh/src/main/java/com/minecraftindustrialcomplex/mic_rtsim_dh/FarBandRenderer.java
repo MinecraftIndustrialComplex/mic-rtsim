@@ -108,7 +108,7 @@ final class FarBandRenderer {
                     continue;
                 m.segmentAt(clock, SEG);
                 double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
-                if (!FarHide.bandDraws(m, level, x, y, z))
+                if (!FarHide.bandDraws(m, level, x, y, z, cam))
                     continue;
                 List<double[]> cut;
                 int rgb = m.rgb(), wingFrom = Integer.MAX_VALUE, wingRgb = rgb;
