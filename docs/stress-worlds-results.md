@@ -470,6 +470,10 @@ In short:
   chests (10.5). Both are fixed (10.8): at syn40 every station's rule now has its load and unload,
   a simulated call moves about 30 items through its station's own port vaults, and the factories'
   chests change only by their own machines' work.
+- **syn200 again (10.9),** on main b5cd4d2: every station's load and unload learned at 200 districts,
+  the busy window's worst rtsim tick 34 to 51 ms (201 to 230 before), and rtsim's whole cost 1.6 to
+  1.7 ms a tick, which 10.3's MSPT could not see (it ends before the Post handlers). New: edges from
+  a station to itself after deferred adopts, and a slower one-call rescan.
 
 ### 10.1 What the generator builds
 
@@ -722,9 +726,9 @@ Recommended option first in each.
    (b) is the smallest change and fixes the 1,664-item legs; only (a) stops the reconcile starving
    factories.
 3. **The detection tick on many districts** (10.4). **(a) landed as DS-11; syn40 re-measured in
-   10.8.** A full pass of 0.2 to 0.45 s at 200 districts, and adopts that grow with the district
-   count. (a) Recommended: land the budgeted rescan and re-measure on syn200. (b) Also limit an
-   adopt's work to its own neighbourhood.
+   10.8, syn200 in 10.9.** A full pass of 0.2 to 0.45 s at 200 districts, and adopts that grow with
+   the district count. (a) Recommended: land the budgeted rescan and re-measure on syn200. (b) Also
+   limit an adopt's work to its own neighbourhood.
 4. **A 1.2 to 3.6 s tick at the start of every rtsim session.** **Profiled (a): Project
    Atmosphere's, reached through rtsim's habitat sampler (10.8).** It coincides with a C2ME
    density-function compile on the server thread (1.0 to 3.3 s). Both arms log such compiles in
@@ -778,8 +782,15 @@ Recommended option first in each.
 | SG38 | `tools/stress-worlds/stock.py` reads the saved worlds' chests and port vaults, off arm first | factory stock and port vaults are the coordinator's question; no command lists them, and the saved world is what a player would find |
 | SG39 | Jar set `sg-cce8b6a`: this branch after merging main 72fa63e (DS-11), `mic_native` from 7177451; the create suite run on the same tree just before. sg40c, started before DS-11 landed, was stopped and deleted | the coordinator asked for DS-11 in the re-run |
 | SG40 | The adopt question measured by the adopt loop alone, two servers side by side (before DS-11, `sg-2313699`, and after, `sg-cce8b6a`), reading `rtsim district perf` after each adopt, with spark on both | sg40d's settle window mixes adopts with ticked passes on a loaded laptop; the perf line's last detection after an adopt is that adopt's own |
-| SG41 | syn200 not re-run | other agents' benches and GameTests were queued on the bridge lock and the load average stayed between 8 and 14 |
+| SG41 | syn200 not re-run then (re-run on main b5cd4d2 in 10.9) | other agents' benches and GameTests were queued on the bridge lock and the load average stayed between 8 and 14 |
 | SG42 | The adopt spike reported, not fixed | the adopt command and `rescanNow` are the district work's files (DS-11 left them unbudgeted on purpose) |
+| SG43 | Scene phases can end by game ticks (`"ticks"` in the scene); both arms of a pair end a phase together | at 7 to 8 TPS a 600 s busy window holds about 4,600 ticks and can miss the periodic pass at 12,000 |
+| SG44 | A KubeJS script on every arm (`swticks`) records each tick's ring time and gap; the gap is the whole tick | the tick ring, and so `neoforge tps`, ends before `ServerTickEvent.Post` and leaves out most of rtsim's work |
+| SG45 | Page segments copied as they appear and decoded by table; `/micperf zones` read after the final save | compaction deletes the autosaves' segments; the snapshot and the write run off the server thread |
+| SG46 | `/rtsim district perf` once more at the end of the reloaded window | the reloaded report comes before the reloaded window; this one covers the run up to the save |
+| SG47 | Ticks with a gap over 10 s dropped (two lid-close suspends, 238 s and 1,726 s); pair a's reloaded window not compared | a suspend is one tick on both arms; pair a's reloaded window ran at a load of 30 to 32 and 3.7 TPS |
+| SG48 | Jar set `sg-b5cd4d2` (main b5cd4d2, `mic_native` as before), `syn200r` rebuilt by the `stressGen` run, three pairs (off, on; on, on; on, off) | the coordinator asked for main's fixes and the generator's own build; arm order alternates and the A/A pair gives the noise |
+| SG49 | The self edges, the slower `rescanNow`, the whole globals page, the deferred adopts and the first-tick stall reported, not fixed; no jar swapped for mic_climate | engine, bridge and district design for Ben (10.9); the coordinator asked for the stall to be noted only |
 
 ### 10.8 The station fixes, and syn40 again
 
@@ -902,7 +913,7 @@ one-minute load average over the busy windows was 3 to 14.
 - **The first tick** still holds the 1.65 s stall at game tick 1,293 on both rtsim arms (SG36).
 - **syn200 was not re-run:** other agents' client benches and GameTests were queued on the bridge
   lock and the load average stayed between 8 and 14, so two 10 GB servers would have measured the
-  laptop, not rtsim.
+  laptop, not rtsim (re-run on main b5cd4d2 in 10.9).
 
 **Does an adopt still spike (the coordinator's DS-11 question)?** Yes, and the spike comes from the
 adopt command itself, not from the detection triggers DS-11 spreads over ticks.
@@ -938,3 +949,274 @@ adopt command itself, not from the detection triggers DS-11 spreads over ticks.
   then the command cannot report the new district count at once.
 - **Fixed afterwards (DS-12):** the adopt now detects around its own chunks (`Districts.adoptAround`), budgeted
   like a ticked pass. `merge`, `split` and `exclude` still call `rescanNow`.
+
+### 10.9 syn200 again, on main b5cd4d2
+
+SG41 left syn200 unmeasured after the station fixes. This re-run uses main at b5cd4d2, which since
+10.3 has gained DS-11 (the budgeted district rescan), DS-12 (an adopt detects around its own
+chunks), 10.8's station cargo fixes (IND_STATION_PORTS, the dock snapshot, the load cap), G2-9 (the
+glass state paged), dirty-page saves (b5cd4d2), EQUILIBRIUM S8 and the oil F6 nests.
+
+In short:
+
+- **Cost:** rtsim's whole cost is 1.6 to 1.7 ms a tick at 200 districts, about 1.3% of a 122 to
+  133 ms tick. 10.3's MSPT cannot see most of it (it ends before the Post handlers); a new per-tick
+  measure can, and its on minus off difference matches rtsim's own tick cost to 0.03 ms. MSPT
+  differences on minus off (+0.6 to +2.5 ms) stay inside the A/A control's (+3.3).
+- **Detection:** the periodic pass now runs over 363 ticks, and the busy window's worst rtsim tick
+  is 34 to 51 ms, against 201 to 230 ms. Adopts no longer spike. The one-call `rtsim district
+  rescan` got slower: 0.49 to 1.09 s, against 0.23 to 0.45 s.
+- **Station learning:** load and unload learned at all 720 stations on every rtsim arm (0 to 33
+  unloads before), none wrong. New and wrong: 21 to 31 one-trip edges from a station to itself on
+  three of the four rtsim arms, from DS-12's deferred adopts.
+- **Factory stock:** factory chests change only by their own machines' replay; the simulated calls
+  took from the ports' vaults.
+- **Saves:** 3.4 to 3.7 MB a save while every district runs, 2.2 to 2.4 MB of it the glass pages (new
+  with G2-9); a save seconds later writes 0.95 to 1.5 MB. The globals page is written whole every
+  save and grows with the line legs.
+- **First tick:** the 1.9 to 3.5 s stall is still there (mic_climate 0.2.0, SG36), with a second, 2.0
+  to 5.7 s, at the first forceload.
+
+#### Method
+
+- **Jars** (SG48): set `sg-b5cd4d2`, every rtsim jar built from main b5cd4d2; `mic_native` is the jar of
+  every earlier set (7177451). The pack ships mic_climate 0.2.0, so the first-tick stall was
+  expected; no jar was swapped.
+- **World:** `syn200r`, rebuilt by the `stressGen` run on this tree (seed 2, 200 x 32, 360 lines
+  verified, 1,470 game ticks, 85 s in the test). Its layout is syn200's (districts, factories,
+  station pairs, goods); its trains' UUIDs and build ticks differ.
+- **Pairs** (10 GB heaps, side by side, `free -g` checked before each): syn200r-a (off, on),
+  syn200r-b (on, on: the A/A control) and syn200r-c (on, off). Two single-arm trials of the
+  harness changes (t1, t2) are not used.
+- **Scene** (`synthetic-syn200r-ticks.json`): 10.2's, with its phases ended by game ticks (SG43):
+  settle 1,200 (the adopts at its middle), busy 6,600, unload wait 1,800, unloaded 600, reload wait
+  900, reloaded 600. syn200 runs at 7 to 8 TPS here, where a 600 s busy window would hold about
+  4,600 ticks and could miss the periodic pass at game tick 12,000; every busy window here held it.
+  A phase ends once both arms have run its ticks, so the faster arm runs a few more (6,609 to 6,781
+  in busy).
+- **Per tick** (SG44): a KubeJS script on every arm (not part of the pack, like the hippocampus
+  workaround) records two numbers each tick, read with `swticks dump`:
+  - "ring", the server's own tick time (`tickTimesNanos`, what `neoforge tps` and so 10.3's MSPT
+    average);
+  - "gap", the wall time from one tick's end to the next, taken after every `ServerTickEvent.Post`
+    handler: the whole tick.
+- **Saves** (SG45): each rtsim arm's page segments are copied as they appear (compaction deletes
+  them) and decoded by table, and the engine's `rtsim.snapshot` (step thread) and `rtsim.save` (IO
+  lane) zones are read from `/micperf zones` after the final save.
+- **Final report** (SG46): `/rtsim district perf` once more at the end of the reloaded window, so the
+  reconcile count covers the whole reload.
+- **Load and suspends:** the one-minute load average over the busy windows was 12 (pair a), 6 (b)
+  and 9 (c). The laptop suspended twice when its lid closed (the sleep inhibitor does not cover the
+  lid): one 238 s tick in pair a's busy window and one 1,726 s tick in pair b's reloaded window, on
+  both arms. Ticks with a gap over 10 s are dropped (SG47). Pair a's reloaded window ran at a load
+  of 30 to 32 and 3.7 TPS and is not compared (SG47).
+
+#### What 10.3's MSPT measured
+
+The tick ring is written before `ServerTickEvent.Post` fires, so it leaves out every Post handler,
+where most of rtsim's tick work runs. The gap holds them. On each on-off pair the rtsim arm's gap
+minus ring exceeds the off arm's by rtsim's own tick cost (`TickCost`), and on the A/A pair the two
+are equal:
+
+| Pair | Gap minus ring, rtsim arm | Gap minus ring, other arm | Difference | `TickCost` mean |
+|---|---:|---:|---:|---:|
+| syn200r-a (off, on) | 1.89 | 0.28 | +1.61 | 1.58 |
+| syn200r-c (on, off) | 1.94 | 0.27 | +1.67 | 1.66 |
+| syn200r-b (A/A) | 1.83 | 1.83 | 0.00 | 1.53, 1.53 |
+
+So the MSPT columns of 10.3 and 10.8 never held rtsim's Post handlers. Their server-thread CPU and
+`TickCost` columns did, and 10.3's reading of rtsim's cost rests on those. From here the gap is the
+whole tick.
+
+#### Numbers
+
+Busy window (at least 6,600 game ticks, all districts loaded, every train running). Means in ms,
+p95 and p99 in brackets.
+
+| Run | Arm | Ticks | Ring (p95, p99) | Gap (p95, p99) | CPU/tick | Server thread/tick | TPS |
+|---|---|---:|---:|---:|---:|---:|---:|
+| syn200r-a | off | 6,781 | 122.13 (195.6, 281.4) | 122.41 (196, 282) | 158.1 | 130.54 | 8.17 |
+| syn200r-a | on | 6,621 | 122.97 (199.2, 284.1) | 124.86 (202, 289) | 162.6 | 132.61 | 8.01 |
+| syn200r-b | on | 6,779 | 129.76 (166.1, 250.0) | 131.59 (169, 252) | 160.2 | 134.77 | 7.60 |
+| syn200r-b | on (A/A) | 6,609 | 133.07 (171.8, 237.0) | 134.90 (174, 238) | 172.9 | 137.97 | 7.41 |
+| syn200r-c | on | 6,615 | 129.73 (195.7, 259.4) | 131.67 (199, 263) | 193.4 | 142.64 | 7.59 |
+| syn200r-c | off | 6,739 | 129.10 (196.0, 255.4) | 129.37 (196, 256) | 176.0 | 140.40 | 7.73 |
+
+| Comparison | dRing | dGap | dCPU/tick | dServer thread/tick |
+|---|---:|---:|---:|---:|
+| busy, syn200r-a, on minus off | +0.84 | +2.45 | +4.5 | +2.07 |
+| busy, syn200r-c, on minus off | +0.63 | +2.30 | +17.4 | +2.24 |
+| busy, syn200r-b, A/A | +3.31 | +3.31 | +12.7 | +3.20 |
+| busy, sg200d, on minus off (10.3; MSPT is the ring) | +0.04 | | +3.9 | +1.23 |
+| busy, sg200c, A/A (10.3) | -1.57 | | -0.4 | -1.35 |
+| reloaded, syn200r-c, on minus off (859 reconciles) | +1.45 | +3.23 | +15.7 | +3.52 |
+| reloaded, syn200r-b, A/A | +2.40 | +2.38 | +9.8 | +3.03 |
+| reloaded, syn200r-a (load 30 to 32, 3.7 TPS; not compared) | +3.32 | +5.36 | +5.0 | +4.15 |
+
+- rtsim costs about 1.6 to 1.7 ms of a 122 to 133 ms tick. Every on minus off difference sits
+  inside the A/A pair's, whose two identical arms ran 3.3 ms apart on both measures.
+- Whole-process CPU per tick (GC, C2ME and the engine's threads as well) moved 4 to 17 ms between
+  arms, A/A included, and is not read as rtsim's.
+- Every arm ran slower than sg200d (122 to 133 against 102 MSPT), off arms included: the laptop's
+  load and this copy of the world, not rtsim.
+
+**rtsim's own tick cost** (busy window, `TickCost`, ms):
+
+| Run | Arm | Mean | p50 | p99 | p99.9 | Worst (game tick) |
+|---|---|---:|---:|---:|---:|---:|
+| syn200r-a | on | 1.58 | 1.33 | 6.20 | 9.84 | 50.8 (7,919) |
+| syn200r-b | on | 1.53 | 1.29 | 7.18 | 12.18 | 33.5 (6,544) |
+| syn200r-b | on (A/A) | 1.53 | 1.28 | 7.28 | 14.05 | 45.9 (10,366) |
+| syn200r-c | on | 1.66 | 1.42 | 6.02 | 11.87 | 33.8 (7,662) |
+
+The mean stays where 10.3 had it (1.23 to 1.59 ms). The worst tick falls from 201 to 230 ms (the
+periodic pass in one tick, game tick 12,001) to 34 to 51 ms.
+
+**Spark** (60 s profiles just after the busy window, server thread, the four rtsim arms; 10.3's
+syn200 figures in brackets):
+
+| Share of the server thread | syn200r |
+|---|---:|
+| rtsim in all | 0.76% to 1.01% (0.80% to 1.35%) |
+| inventory sweeps | 0.22% to 0.28% (0.26% to 0.40%) |
+| the glass box | 0.24% to 0.29% (0.24% to 0.35%) |
+| district upkeep (`Districts`) | 0.17% to 0.27% (0.19% to 0.55%) |
+| the engine hand-over | 0.03% to 0.20% (0.01% to 0.2%) |
+| `TrainWatch` | 0.02% to 0.04% |
+| Create's trains, every arm | 4.2% to 5.2% (5.2% to 5.4%) |
+
+**Longest ticks.** On every arm the busy window's longest tick is the vanilla autosave at game time
+7,507: 1.31 to 2.63 s, with or without rtsim (1.31 s on both arms of pair a; 1.65 s on pair c's rtsim
+arm against 1.93 s off). Other busy ticks reach 0.5 to 0.97 s on both arms alike, and their ring
+time equals their gap, so none of them is in a Post handler.
+
+**Engine hand-over and heap.** The server waited on the engine on 0 to 7 ticks through the busy
+window and on 25 to 71 ticks by the end of the unloaded window (78 by the end of pair c's reloaded
+window). Live heap after the run was 2.07 to 2.13 GB on every rtsim arm (RSS 4.8 to 6.0 GB), as
+before (SG18).
+
+#### Detection
+
+| Detection | sg200 (10.4, one tick) | syn200r (DS-11, DS-12) |
+|---|---|---|
+| The periodic pass (game tick 12,000) | 201 to 230 ms in one tick | 296 to 413 ms in all, over 362 to 363 ticks |
+| The pass after the reload | 234 to 253 ms in one tick | 343 to 658 ms over 364 to 369 ticks |
+| Longest detection tick over a whole run | the passes above | 14 to 63 ms; once 150 ms (pair a, load 67) |
+| The busy window's worst rtsim tick | 201 to 230 ms | 34 to 51 ms |
+| The scene's 400 adopts | 41 to 59 s; each of the last adopts 226 to 374 ms in its tick | 42 to 52 s; each adopt seeds its block entities and the ticked passes detect |
+| The timed `rtsim district rescan` (one call, no budget) | 232, 246, 360 and 448 ms | 493, 789, 812 and 1,088 ms |
+
+- The ticked passes did what DS-11 promised at 200 districts: a pass costs about what it did, spread
+  over 363 ticks at 256 block entities a tick.
+- The longest detection ticks are now commits (declaring districts), not walks: pair a's 63 ms held
+  58 ms of commit, pair c's 23 ms was all commit, and the one 150 ms tick was a commit at a load of
+  67.
+- The adopt loop takes 42 to 52 s because each RCON command waits for a tick at 7 to 8 TPS: it
+  measures the tick rate, not the adopts.
+- The one-call rescan is two to three times slower than sg200's, even on the least loaded arm (pair
+  c, 493 ms at a load of 9). `merge`, `split` and `exclude` still call `rescanNow`, so they pay it
+  in one tick. It was not profiled here.
+
+#### Station learning
+
+- **Exchange rules** (`rtsim-cli lines`, checked against `stressgen.json`): the load and the unload
+  are learned at all 720 stations on all four rtsim arms; none is wrong. sg200 learned 0 to 33
+  unloads (10.5).
+- **Cargo source:** every real arrival's cargo was read at an interface dock (7,587 by the end of
+  pair a's busy window), with no departure fallback and no late read, beside 2,067 to 3,012
+  simulated arrivals.
+- **Line edges:** all 720 real edges on every arm, 16 to 19 trips each, travel 129 to 131 ticks, the
+  line's good right on every edge.
+- **New and wrong: edges from a station to itself.** 25 (pair a), 31 and 21 (pair b), none (pair c);
+  none in sg200 or sg40d. Every one is an east station's, with one trip, 30 items of that station's
+  load good, a travel time of 461 to 465 ticks (one round trip: two runs and two dwells) and its
+  arrival at game time 6,129 to 6,179.
+  - DS-12's `Districts.adoptAround` does not detect while a detection job runs in the dimension: it
+    marks the chunks dirty and returns ("the next pass has them"). The next pass starts only once no
+    job or pass is left, after `rescanIntervalTicks` (20), and works at 256 block entities a tick
+    (`rescanBlockEntitiesPerTick`) against about 285 in a district. So while the adopts keep a job
+    running, the deferred chunks wait. At the end of the loop 110, 186, 175 and 200 districts were
+    declared, and 315 to 358 of the 400 adopts had been deferred.
+  - The adopts run west to east. A train that left a declared district's east station at game time
+    5,664 to 5,718 reached its partner's west station before that district was declared.
+    `TrainWatch.arrived` returns when no district holds the station, so no stop is sent, and
+    `departing` then finds none either.
+  - The engine's `last_departure` for the train still names the first station, so the next arrival
+    there makes an edge from the station to itself.
+  - Pair c's districts were all declared by the end of its loop, and it has none.
+  - Each is a wrong edge with one phantom trip; no simulated leg used them. Any train that calls at
+    a station outside every district and comes back, out and back, makes the same edge: a base
+    adopted while its trains run, or a player's undeclared station on a route.
+
+#### Factory stock and reconciles
+
+- Against the off arm, each factory chest changed only by its own machines' replay over the
+  unloaded window. In pair c's 88 replayed districts: presses -50 to -133 iron ingots with +99 to
+  +123 sheets, millstones -38 to -65 wheat, saws -20 to -43 andesite alloy. No chest lost more than
+  its machines used (worst -133; pair a's -141).
+- The simulated calls took from the ports: the replayed districts' supply vaults fell 180 to 498
+  items each (34,082 in all in pair c, 3,268 in pair a) and their sink vaults rose (27,734 and
+  1,157).
+- The other districts' chests moved only by the arms' different tick counts (worst chest -57 to -59).
+- Reconciles applied: 78 (pair a, 8 districts), 938 and 577 (pair b), 859 (pair c, 88 districts),
+  against sg200d's 107. Only a district whose glass box had a verdict before the unload replays
+  and reconciles. The others have no sim span, so they skip simulated exchanges and stay frozen, as
+  in vanilla, with nothing to reconcile. The verdict window (6,000 ticks) closed near the end of the
+  busy window, so the count depends on when each arm's districts were declared; `rtsim district
+  info` sampled 0 to 5 of 12 with a verdict.
+
+#### Saves (dirty-page saves)
+
+| Save | Industry pages written | Segment |
+|---|---|---:|
+| First autosave (game time 7,507) | 200 district, 200 glass, the globals (91 KB raw, pair c) | 1.76 to 2.36 MB |
+| Second autosave (13,507) | 200, 200, the globals (383 KB raw, pair c) | 3.10 to 3.22 MB |
+| `save-all flush` after the reloaded window | 200 district (766 to 782 KB stored), 200 glass (2.2 to 2.4 MB stored, 11.5 to 11.7 MB raw), the globals (616 to 640 KB raw, 428 to 445 KB stored) | 3.43 to 3.65 MB |
+| The stop's save, seconds later | 94 to 195 district, 12 to 29 glass, the globals | 0.95 to 1.54 MB |
+
+- While every district is loaded and running, every district and glass page changes between saves,
+  so dirty-page saves write them all. They pay off on a save soon after another: the stop's save
+  wrote half or less.
+- The glass pages are new with G2-9 and are two thirds of a full save. They compress about 5:1.
+- The globals page (0x4900) is written whole on every save, and it grows with the line legs it holds
+  (about 45 to 50 bytes raw a departure; legs expire after a game day): 91, 383 and then 636 KB raw.
+  At this world's departure rate it would reach about 1.2 MB raw once a day of legs is held.
+- Time: the final save's snapshot took 55 to 113 ms on the engine's step thread and its write 66 to
+  107 ms on the IO lane; over each arm's three saves the largest were 143 and 271 ms. The segment
+  appeared within about a second after `save-all flush` returned. The flush took 1.44 to 3.80 s on
+  rtsim arms and 2.11 to 3.57 s on off arms, and the autosave tick shows no rtsim difference.
+- The rtsim directory is 3.48 to 3.68 MB, against 1.47 to 1.53 MB in sg200 (whose industry was in
+  SavedData then).
+
+#### The first tick and the first forceload
+
+- The first tick (game time 1,508) took 1.85, 3.49, 3.33 and 2.71 s on the rtsim arms. Its ring time
+  was 13 to 35 ms, so the stall is in a Post handler: SG36's Project Atmosphere forecast, reached
+  through rtsim's habitat sampler and mic_climate 0.2.0.
+- The first forceload's tick took 1.98, 5.68, 4.85 and 3.50 s on the rtsim arms only. rtsim arms
+  log three large density-function compiles (1.4 to 4.2 s each), off arms one, as sg200d did: the
+  same cause, as the habitat sampler meets new regions. Not new.
+
+#### Findings and For Ben
+
+Recommended option first in each; none is fixed here (SG49).
+
+1. **Edges from a station to itself.** (a) Recommended: the bridge sends an "unwatched stop" when a
+   watched train calls at a station outside every district, so the engine ends the leg there and
+   starts no edge. (b) The engine drops an edge from a station to itself. (c) Leave them: one
+   phantom trip each, and nothing simulated used them here.
+2. **The one-call `rescanNow` is two to three times slower at 200 districts** (0.49 to 1.09 s).
+   (a) Recommended: budget `merge`, `split` and `exclude` as DS-12 budgeted the adopt, and profile
+   one call to find what grew. (b) Profile only.
+3. **The globals page is written whole on every save and grows with the legs** (0.6 MB raw here,
+   about 1.2 MB at a day of legs). (a) Recommended: page the legs apart from the globals, by cell or
+   by train, so a save writes only the changed ones. (b) Split the page into a few fixed parts.
+   (c) Leave it: 0.4 MB stored a save at 200 districts.
+4. **Deferred adopts wait for the running job** (behind item 1). (a) Recommended: let a deferred
+   adopt's chunks join the running job, or start a pass at once after it. (b) Leave it, if item 1
+   (a) lands: the deferral then costs only time.
+5. **The scene's reconcile count depends on glass verdict timing.** (a) Recommended: lengthen the
+   busy window or delay the unload (about 8,000 ticks after the adopts), so every district's verdict
+   closes before the unload. (b) Leave it and report the count per run, as here.
+6. **The first-tick and first-forceload stalls** (SG36). (a) Recommended: the mic_climate fix of
+   10.8 (PA's `BiomeSampler` given the level's own `RandomState`). (b) Leave it: once per region.
