@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 481.15918899999997,
+      "wall_ms": 213.173631,
       "checks": [
         {
           "name": "conservation",
@@ -748,7 +748,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 454.797071,
+      "wall_ms": 208.41912200000002,
       "checks": [
         {
           "name": "conservation",
@@ -1297,7 +1297,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 461.73801399999996,
+      "wall_ms": 251.023026,
       "checks": [
         {
           "name": "conservation",
