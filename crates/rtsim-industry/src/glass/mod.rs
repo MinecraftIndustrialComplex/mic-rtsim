@@ -231,7 +231,12 @@ impl Glass {
                                 let max = dg.sections_cap.map_or(tun.sections_max, |c| {
                                     (c as usize).min(tun.sections_max)
                                 });
-                                let mut comp = Compiled::new_cut(graph, at, tun, &dg.demoted, max);
+                                let joins = match &dg.joins {
+                                    Some((rev, sets)) if *rev == graph.end.revision => sets.clone(),
+                                    _ => Vec::new(),
+                                };
+                                let mut comp =
+                                    Compiled::new_cut(graph, at, tun, &dg.demoted, max, &joins);
                                 let none_inv = VecMap::new();
                                 let none_ports = GoodVec::new();
                                 let empty = empty_view(&none_inv, &none_ports);
@@ -477,6 +482,42 @@ impl Glass {
         c.ports_at.insert(inv, v);
     }
 
+    /// The inventory sets the district's stations' ports name now (IND_STATION_PORTS; each
+    /// sorted, empty ones left out), numbering the inventories of `revision` (SECTIONS.md §4.4,
+    /// choice SC75): a station's cargo cannot be split between its ports, so the units holding
+    /// one station's ports join into one. Kept for the district's next compiles; its compile of
+    /// that revision regroups its units now, each unit that stays as it was keeping its window.
+    pub fn station_ports(
+        &mut self,
+        at: Tick,
+        district: DistrictId,
+        revision: u32,
+        mut sets: Vec<Vec<u32>>,
+        tun: &GlassTunables,
+    ) {
+        sets.retain(|s| s.len() > 1);
+        sets.sort_unstable();
+        sets.dedup();
+        let dg = self
+            .districts
+            .get_or_insert_with(district, DistrictGlass::default);
+        let joins = Some((revision, sets));
+        if dg.joins == joins {
+            return;
+        }
+        dg.joins = joins;
+        let Some(c) = dg.compiled.as_mut() else {
+            return;
+        };
+        if c.graph.end.revision != revision {
+            return;
+        }
+        let sets = dg.joins.as_ref().map(|j| j.1.clone()).unwrap_or_default();
+        if c.regroup(&sets, at, tun) {
+            self.recount(district, tun);
+        }
+    }
+
     /// A train's cargo at a station whose last ports named `inventories` (SECTIONS.md §4.4, choice
     /// SC75): with judging units, cargo whose named inventories all lie in one unit is that unit's
     /// port, booked at the first of them; cargo naming inventories of several units, or of a unit
@@ -505,7 +546,10 @@ impl Glass {
         if !c.units.active() || c.graph.end.revision != revision {
             return;
         }
-        let of: Vec<Option<u16>> = inventories.iter().map(|&i| c.units.unit_of_inv(i)).collect();
+        let of: Vec<Option<u16>> = inventories
+            .iter()
+            .map(|&i| c.units.unit_of_inv(i))
+            .collect();
         let mut hit: Vec<u16> = of.iter().flatten().copied().collect();
         hit.sort_unstable();
         hit.dedup();

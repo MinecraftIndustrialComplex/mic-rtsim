@@ -4824,7 +4824,7 @@ mod replay_path {
     mod units {
         use super::*;
         use crate::glass::check::{Liveness, UnitState};
-        use crate::glass::page::GLASS_MAGIC_IGL2;
+        use crate::glass::page::{GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3};
         use crate::glass::page::{PageRead, district_page, read_district_page};
         use crate::glass::replay::Replay;
         use crate::glass::report::discard;
@@ -5396,7 +5396,7 @@ mod replay_path {
         }
 
         /// A page keeps the units' windows, rows, verdicts and ports: read back, it is the state
-        /// it was written from, byte for byte. An IGL2 page drops its district (§5).
+        /// it was written from, byte for byte. An IGL2 or IGL3 page drops its district (§5).
         #[test]
         fn a_page_keeps_the_units_windows() {
             let tun = GlassTunables::default();
@@ -5424,12 +5424,14 @@ mod replay_path {
             assert_eq!(r.rows_len(), c.rows_len());
             assert_eq!(r.ports_at, c.ports_at);
             assert_eq!(district_page(&back), page);
-            let mut old = page.clone();
-            old[..4].copy_from_slice(&GLASS_MAGIC_IGL2.to_le_bytes());
-            assert!(matches!(
-                read_district_page(&old, 64),
-                Ok(PageRead::Dropped(_))
-            ));
+            for magic in [GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3] {
+                let mut old = page.clone();
+                old[..4].copy_from_slice(&magic.to_le_bytes());
+                assert!(matches!(
+                    read_district_page(&old, 64),
+                    Ok(PageRead::Dropped(_))
+                ));
+            }
         }
 
         /// Through the engine: a partial load learns the loaded line (its chunk loaded, the sweep
@@ -6585,6 +6587,316 @@ mod replay_path {
                 }
                 e.check_books().expect("books");
             }
+        }
+
+        // ---- stations (SECTIONS.md §3.6, §4.4, slice S2d) --------------------------------------
+
+        /// [`two_lines`] (B ore into crushed) and a third press line apart, C: zinc (4) into press
+        /// C into copper (5) at x 80 to 82 (chunk 5). Returns the builder and the three presses.
+        fn three_lines() -> (B, [u32; 3]) {
+            let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let (i, o) = (b.store(4), b.store(5));
+            let r = b.recipe(&[(ZINC, 1)], &[(COPPER, 1)]);
+            let p2 = b.machine(model::PRESS, r, 1, 10);
+            b.edge(i, p2);
+            b.edge(p2, o);
+            for (v, x) in [(i, 80), (p2, 81), (o, 82)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            (b, [p0, p1, p2])
+        }
+
+        /// The three lines' inventories when each made `m`.
+        fn invs3(m: i64) -> VecMap<u32, Inventory> {
+            let mut v = invs(ORE, CRUSHED, m, m);
+            v.insert(4, inventory(4, &[(ZINC, 100_000 - m)]));
+            v.insert(5, inventory(5, &[(COPPER, m)]));
+            v
+        }
+
+        /// The three lines swept every 100 ticks from 0 to `to`, each at its rate.
+        fn three_lines_run(to: u64, tun: &GlassTunables) -> (Glass, [u32; 3]) {
+            let (b, p) = three_lines();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), tun);
+            assert_eq!(comp(&g, D).units.len(), 3);
+            let ports = GoodVec::new();
+            let mut t = 0;
+            while t <= to {
+                let inv = invs3((t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, tun);
+                t += 100;
+            }
+            (g, p)
+        }
+
+        /// One station's ports join the units holding them (choice SC75): lines A and B judged as
+        /// one, C apart keeping its passed window; the page and the next compile of the revision
+        /// keep the join, and ports of another revision regroup nothing.
+        #[test]
+        fn a_stations_ports_join_their_units_and_the_rest_keep_their_windows() {
+            let tun = GlassTunables::default();
+            let (mut g, [p0, p1, p2]) = three_lines_run(3200, &tun);
+            let c = comp(&g, D);
+            let uc = unit_of(c, p2);
+            let kept = c.unit_state[uc as usize].clone();
+            assert_eq!(verdict_of(&kept), verdict::PASS);
+            g.station_ports(Tick(3250), D, 1, vec![vec![1, 3], vec![4]], &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.units.len(), 2);
+            assert_eq!(unit_of(c, p0), unit_of(c, p1));
+            let (ab, uc) = (unit_of(c, p0), unit_of(c, p2));
+            assert_ne!(ab, uc);
+            assert_eq!(c.unit_state[uc as usize], kept, "C keeps its state");
+            let st = &c.unit_state[ab as usize];
+            assert!(
+                st.last.is_none() && st.windows_completed == 0,
+                "A and B start afresh"
+            );
+            assert_eq!(c.units.unit_of_inv(1), c.units.unit_of_inv(3));
+            assert_eq!(c.joins, vec![vec![1, 3]], "a lone inventory joins nothing");
+            // The same ports again change nothing.
+            let before = c.unit_state.clone();
+            g.station_ports(Tick(3260), D, 1, vec![vec![4], vec![1, 3]], &tun);
+            assert_eq!(comp(&g, D).unit_state, before);
+            // The page keeps the join.
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(back.joins, g.districts[&D].joins);
+            let r = back.compiled.as_ref().expect("compile");
+            assert_eq!(r.units, comp(&g, D).units);
+            assert_eq!(district_page(&back), page);
+            // So does a recompile of the revision.
+            let (b, _) = three_lines();
+            ingest_seen(&mut g, 3300, &b.records(2), &invs3(330), &tun);
+            let c = comp(&g, D);
+            assert_eq!((c.graph.end.compile, c.units.len()), (2, 2));
+            // Ports numbering another revision's inventories regroup nothing now.
+            g.station_ports(Tick(3400), D, 2, vec![vec![3, 5]], &tun);
+            assert_eq!(comp(&g, D).units.len(), 2);
+            assert_eq!(comp(&g, D).joins, vec![vec![1, 3]]);
+        }
+
+        /// A train's cargo (§4.4, SC75) is the port of the one unit its station's ports lie in,
+        /// booked once; cargo the units cannot split costs their open windows; cargo into no
+        /// unit's inventory is the district's alone.
+        #[test]
+        fn train_cargo_goes_to_the_unit_its_ports_name_once() {
+            let tun = GlassTunables::default();
+            let cargo = GoodVec::from_pairs([(SHEET, 50), (CRUSHED, -20)]);
+            // Joined: one unit's port, at its first inventory.
+            let (mut g, [p0, ..]) = three_lines_run(1500, &tun);
+            g.station_ports(Tick(1500), D, 1, vec![vec![1, 3]], &tun);
+            let ab = unit_of(comp(&g, D), p0);
+            // It warms up afresh (warmup_ticks and the longest latency), then opens a window.
+            let ready = 1500 + tun.warmup_ticks + 100;
+            let mut t = 1600;
+            while t <= ready {
+                let inv = invs3((t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &GoodVec::new(), &Liveness::All, &tun);
+                t += 100;
+            }
+            let opened = comp(&g, D).unit_window(ab);
+            assert!(opened.is_some(), "the joined unit warmed up");
+            g.cargo(Tick(t), D, 1, &[1, 3], &cargo, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.ports_at.len(), 1);
+            assert_eq!(c.ports_at.get(&1), Some(&cargo), "booked once");
+            assert_eq!(c.unit_window(ab), opened);
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 0);
+            // Cargo of another revision is not kept.
+            g.cargo(Tick(t + 10), D, 2, &[1, 3], &cargo, &tun);
+            assert_eq!(comp(&g, D).ports_at.get(&1), Some(&cargo));
+
+            // Not joined: A and B lose their windows, C keeps its.
+            let (mut g, [p0, p1, p2]) = three_lines_run(1500, &tun);
+            let c = comp(&g, D);
+            let (ua, ub, uc) = (unit_of(c, p0), unit_of(c, p1), unit_of(c, p2));
+            assert!(c.unit_window(ua).is_some() && c.unit_window(uc).is_some());
+            g.cargo(Tick(1550), D, 1, &[1, 3], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty());
+            assert!(c.unit_window(ua).is_none() && c.unit_window(ub).is_none());
+            assert!(c.unit_window(uc).is_some());
+            assert!(
+                c.window().is_some(),
+                "the district's window counts the cargo itself"
+            );
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 1);
+            // One unit's inventory and one no unit holds: that unit's window goes.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.cargo(Tick(1550), D, 1, &[5, 9], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty());
+            assert!(c.unit_window(uc).is_none() && c.unit_window(ua).is_some());
+            // Only inventories no unit holds: the district's alone.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.cargo(Tick(1550), D, 1, &[9], &cargo, &tun);
+            let c = comp(&g, D);
+            assert!(c.ports_at.is_empty() && (0..3).all(|u| c.unit_window(u).is_some()));
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 0);
+            // One unit's inventory alone: its port.
+            g.cargo(Tick(1560), D, 1, &[5], &cargo, &tun);
+            assert_eq!(comp(&g, D).ports_at.get(&5), Some(&cargo));
+        }
+
+        /// Each discard's reach (§3.6): a station's `Other` discard takes the units its last ports
+        /// named and the district's window, every unit when it named none; a revision change and a
+        /// session start take every window.
+        #[test]
+        fn each_discard_reaches_the_windows_it_names() {
+            let tun = GlassTunables::default();
+            let all_open = |g: &Glass| {
+                let c = comp(g, D);
+                (0..3u16)
+                    .map(|u| c.unit_window(u).is_some())
+                    .collect::<Vec<_>>()
+            };
+            let (mut g, [_, p1, _]) = three_lines_run(1500, &tun);
+            assert_eq!(all_open(&g), vec![true; 3]);
+            let ub = unit_of(comp(&g, D), p1);
+            g.station_discard(Tick(1550), D, &[3], &tun);
+            let c = comp(&g, D);
+            assert!(c.window().is_none());
+            for u in 0..3u16 {
+                assert_eq!(c.unit_window(u).is_some(), u != ub, "unit {u}");
+            }
+            assert_eq!(g.districts[&D].discards[discard::STATION as usize], 1);
+            assert_eq!(
+                g.districts[&D].last_discard,
+                Some((Tick(1550), discard::STATION))
+            );
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.station_discard(Tick(1550), D, &[], &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+            // A sweep of another revision.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            let inv = invs3(160);
+            let ports = GoodVec::new();
+            let view = View {
+                revision: 2,
+                inventories: &inv,
+                ports: &ports,
+            };
+            g.sweep(Tick(1600), D, &view, &Liveness::All, &goods(), &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+            assert_eq!(g.districts[&D].discards[discard::REVISION as usize], 1);
+            // A session start.
+            let (mut g, _) = three_lines_run(1500, &tun);
+            g.session_start(Tick(1550), &tun);
+            assert!(comp(&g, D).window().is_none());
+            assert_eq!(all_open(&g), vec![false; 3]);
+        }
+
+        /// Through the engine: a loaded call's ports, sent before its cargo (SC75), join A and B;
+        /// the cargo, with no inventory, maps through the station the train stands at to their
+        /// unit's port; the station's `Other` discard reaches that unit and the district's window;
+        /// a save and restore keeps the join.
+        #[test]
+        fn the_engine_maps_a_calls_cargo_through_its_stations_ports() {
+            use crate::ids::{StationId, TrainId};
+            use crate::obs::{
+                CargoFrom, DiscardReason, PortKind, PortTransfer, StationPorts, TrainCall,
+            };
+            let (b, [p0, p1, p2]) = three_lines();
+            let mut s = setup(&b, 6);
+            for k in 1..=15u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[
+                        &[(BRASS, 100_000 - m)],
+                        &[(SHEET, m)],
+                        &[(ORE, 100_000 - m)],
+                        &[(CRUSHED, m)],
+                        &[(ZINC, 100_000 - m)],
+                        &[(COPPER, m)],
+                    ],
+                );
+            }
+            let (train, station) = (TrainId(77), StationId(0x5eed_0000_0000_0001));
+            s.push(at(
+                1520,
+                Obs::TrainArrived(TrainCall {
+                    train,
+                    station,
+                    district: D,
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            ));
+            s.push(at(
+                1530,
+                Obs::StationPorts(StationPorts {
+                    station,
+                    district: D,
+                    inventories: vec![3, 1],
+                }),
+            ));
+            let cargo = GoodVec::from_pairs([(SHEET, -40)]);
+            s.push(at(
+                1530,
+                Obs::Port(PortTransfer {
+                    district: D,
+                    kind: PortKind::TrainCargo,
+                    inventory: None,
+                    counterpart: train.0,
+                    op: None,
+                    goods: cargo.clone(),
+                }),
+            ));
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(c.units.len(), 2);
+            let (ab, uc) = (c.units.of_node[p0 as usize], c.units.of_node[p2 as usize]);
+            assert_eq!(ab, c.units.of_node[p1 as usize]);
+            assert_eq!(c.ports_at.get(&1), Some(&cargo));
+            assert!(c.unit_window(uc).is_some());
+            let r = Engine::restore(e.snapshot(), Tunables::default()).expect("restore");
+            let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!(rc.units, c.units);
+            assert_eq!(rc.ports_at, c.ports_at);
+            // The station's discard: A and B's unit and the district's window, not C's.
+            feed(
+                &mut e,
+                &at(
+                    1540,
+                    Obs::Discard {
+                        district: D,
+                        reason: DiscardReason::Other,
+                        station: Some(station),
+                    },
+                ),
+            );
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert!(c.window().is_none() && c.unit_window(ab).is_none());
+            assert!(c.unit_window(uc).is_some());
+            // Another reason, or no station: the glass windows stay (the learner's alone).
+            let before = (c.window(), c.unit_window(uc));
+            feed(
+                &mut e,
+                &at(
+                    1545,
+                    Obs::Discard {
+                        district: D,
+                        reason: DiscardReason::Other,
+                        station: None,
+                    },
+                ),
+            );
+            let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
+            assert_eq!((c.window(), c.unit_window(uc)), before);
         }
     }
 }

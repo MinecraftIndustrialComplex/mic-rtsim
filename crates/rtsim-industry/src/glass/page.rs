@@ -388,6 +388,7 @@ impl Persist for DistrictGlass {
         self.sections_cap.put(w);
         self.stopped.put(w);
         self.away.put(w);
+        self.joins.put(w);
     }
     fn get(r: &mut Reader<'_>) -> Result<Self> {
         let dg = DistrictGlass {
@@ -406,6 +407,7 @@ impl Persist for DistrictGlass {
             sections_cap: Persist::get(r)?,
             stopped: Persist::get(r)?,
             away: Persist::get(r)?,
+            joins: Persist::get(r)?,
         };
         // The replay indexes its compile's nodes: a page whose two disagree is refused.
         if let (Some(c), Some(rp)) = (&dg.compiled, &dg.replay)

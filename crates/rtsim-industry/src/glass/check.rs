@@ -343,6 +343,9 @@ pub struct Compiled {
     pub sections: Sections,
     /// The sections' judging units (§4.3, `units.rs`): recomputed with the sections, never saved.
     pub units: Units,
+    /// The station port sets the units join (`Units::build`, choice SC75): the district's
+    /// (`DistrictGlass::joins`) when they number this compile's revision's inventories, else none.
+    pub joins: Vec<Vec<u32>>,
     /// Each unit's bounds per good under the current solve (choice SC56), by (unit, good):
     /// recomputed at every solve and on restore, never saved. Empty unless the units are active.
     pub ubounds: Vec<UnitBound>,
@@ -392,6 +395,9 @@ pub struct DistrictGlass {
     /// The district went away ([`super::Glass::away`]) and is not back yet ([`super::Glass::back`]):
     /// no unit runs (choice SC59).
     pub away: bool,
+    /// The inventory sets the district's stations' ports name (IND_STATION_PORTS), each sorted,
+    /// and the inventory revision they number: what its compiles' units join (choice SC75).
+    pub joins: Option<(u32, Vec<Vec<u32>>)>,
 }
 
 /// What a sweep sees of the district.
@@ -765,7 +771,7 @@ fn add_sample(acc: &mut Acc, cum: &Cum, t: f64, y: f64) {
 
 impl Compiled {
     pub fn new(graph: Graph, at: Tick, tun: &GlassTunables, demoted: &BTreeSet<u32>) -> Compiled {
-        Compiled::new_cut(graph, at, tun, demoted, tun.sections_max)
+        Compiled::new_cut(graph, at, tun, demoted, tun.sections_max, &[])
     }
 
     /// [`Compiled::new`], cut into at most `max` sections (`glass.sectionsMax`, or a district's
@@ -776,6 +782,7 @@ impl Compiled {
         tun: &GlassTunables,
         demoted: &BTreeSet<u32>,
         max: usize,
+        joins: &[Vec<u32>],
     ) -> Compiled {
         let n = graph.nodes.len();
         let window_target = if graph.end.window == 0 {
@@ -802,7 +809,7 @@ impl Compiled {
             })
             .collect();
         let sections = Sections::compute(&graph, max);
-        let units = Units::build(&graph, &sections);
+        let units = Units::build(&graph, &sections, joins);
         let mut regime = Regime::new(n);
         regime.demoted = demoted.clone();
         // Heaters lit at the compile spend their burn from here (§9.3); a creative one never does.
@@ -858,6 +865,7 @@ impl Compiled {
             unit_state: fresh_units(&units, ready_at),
             sections,
             units,
+            joins: joins.to_vec(),
             ubounds: Vec::new(),
             rows: Vec::new(),
             ports_at: VecMap::new(),
@@ -869,7 +877,7 @@ impl Compiled {
     /// and verdicts; a merged unit starts learning after a fresh warm-up from `at`.
     pub fn recut(&mut self, max: usize, at: Tick, tun: &GlassTunables) {
         let sections = Sections::compute(&self.graph, max);
-        let units = Units::build(&self.graph, &sections);
+        let units = Units::build(&self.graph, &sections, &self.joins);
         let ready = self
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
@@ -880,6 +888,29 @@ impl Compiled {
         self.adopt(&old_units, old_state, old_rows, false);
         self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
         self.forget_idle_state();
+    }
+
+    /// Joins the units anew by `joins` (a station's ports changed, choice SC75), keeping each unit
+    /// that stays as it was, as [`Compiled::recut`] does. False when the units are unchanged.
+    pub fn regroup(&mut self, joins: &[Vec<u32>], at: Tick, tun: &GlassTunables) -> bool {
+        if self.joins == joins {
+            return false;
+        }
+        self.joins = joins.to_vec();
+        let units = Units::build(&self.graph, &self.sections, &self.joins);
+        if units == self.units {
+            return false;
+        }
+        let ready = self
+            .ready_at
+            .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
+        let old_units = std::mem::replace(&mut self.units, units);
+        let old_state = std::mem::replace(&mut self.unit_state, fresh_units(&self.units, ready));
+        let old_rows = std::mem::take(&mut self.rows);
+        self.adopt(&old_units, old_state, old_rows, false);
+        self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
+        self.forget_idle_state();
+        true
     }
 
     /// Takes over each unit of an older cut (`old_units`, with its states and rows) that this cut
@@ -2135,24 +2166,44 @@ impl Compiled {
                 let secs = self.units.sections.get(u).map_or(&[][..], |v| &v[..]);
                 let mut bbox: Option<(BlockPos, BlockPos)> = None;
                 for &s in secs {
-                    let Some((lo, hi)) = self.sections.list.get(s as usize).and_then(|x| x.bbox) else {
+                    let Some((lo, hi)) = self.sections.list.get(s as usize).and_then(|x| x.bbox)
+                    else {
                         continue;
                     };
                     bbox = Some(match bbox {
                         None => (lo, hi),
                         Some((a, b)) => (
-                            BlockPos { x: a.x.min(lo.x), y: a.y.min(lo.y), z: a.z.min(lo.z) },
-                            BlockPos { x: b.x.max(hi.x), y: b.y.max(hi.y), z: b.z.max(hi.z) },
+                            BlockPos {
+                                x: a.x.min(lo.x),
+                                y: a.y.min(lo.y),
+                                z: a.z.min(lo.z),
+                            },
+                            BlockPos {
+                                x: b.x.max(hi.x),
+                                y: b.y.max(hi.y),
+                                z: b.z.max(hi.z),
+                            },
                         ),
                     });
                 }
                 report::UnitReport {
                     sections: secs.len() as u32,
-                    nodes: self.units.of_node.iter().filter(|&&x| x as usize == u).count() as u32,
+                    nodes: self
+                        .units
+                        .of_node
+                        .iter()
+                        .filter(|&&x| x as usize == u)
+                        .count() as u32,
                     bbox,
-                    window_ticks: st.win.as_ref().map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
+                    window_ticks: st
+                        .win
+                        .as_ref()
+                        .map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
                     windows_completed: st.windows_completed,
-                    verdict: st.last.as_ref().map_or(report::verdict::NONE, |r| r.verdict),
+                    verdict: st
+                        .last
+                        .as_ref()
+                        .map_or(report::verdict::NONE, |r| r.verdict),
                     strikes: st.strikes,
                     passed: st.passed.is_some(),
                     stale: st.edited,
@@ -2241,7 +2292,7 @@ impl Compiled {
         let goods = self.unit_goods();
         let extra_at = |max: usize| -> usize {
             let s = Sections::compute(&self.graph, max);
-            let u = Units::build(&self.graph, &s);
+            let u = Units::build(&self.graph, &s, &self.joins);
             if !u.active() {
                 return 0;
             }
@@ -2280,7 +2331,7 @@ impl Compiled {
     /// their bounds from the sections and the solve, and a check that the saved unit state is
     /// theirs. False when it is not (an invalid page).
     pub(crate) fn restore_units(&mut self) -> bool {
-        self.units = Units::build(&self.graph, &self.sections);
+        self.units = Units::build(&self.graph, &self.sections, &self.joins);
         self.ubounds = units::bounds(&self.graph, &self.units, &self.sol);
         let nu = if self.units.active() {
             self.units.len()
@@ -2596,6 +2647,7 @@ mod persist_impls {
             self.unit_state.put(w);
             self.rows.put(w);
             self.ports_at.put(w);
+            self.joins.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             let c = Compiled {
@@ -2636,6 +2688,7 @@ mod persist_impls {
                 unit_state: Persist::get(r)?,
                 rows: Persist::get(r)?,
                 ports_at: Persist::get(r)?,
+                joins: Persist::get(r)?,
                 sections: Sections::default(),
                 units: Units::default(),
                 ubounds: Vec::new(),
