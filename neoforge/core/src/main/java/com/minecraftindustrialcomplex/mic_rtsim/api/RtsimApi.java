@@ -58,6 +58,16 @@ public final class RtsimApi {
     }
 
     /**
+     * A far source's body is joining {@code level} as entity {@code entity} (a dragon materialized, a carriage's
+     * entity spawned): call it before the entity is added, and each subscriber holding far object {@code id} is
+     * told before the entity's spawn packet, so its client never draws both (docs/choices-dh-feed.md DHT40).
+     * Server thread.
+     */
+    public static void farEntityJoining(net.minecraft.server.level.ServerLevel level, long id, int entity) {
+        com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.embodied(level, id, entity);
+    }
+
+    /**
      * Registers a topology source (a world mod that glues a level's edges, Deep Time's layout) asked
      * before Toroidal World's shape and the world border (TP18). Call during mod construction.
      */

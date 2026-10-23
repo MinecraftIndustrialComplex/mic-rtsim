@@ -23,8 +23,10 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *       the payload (an optional channel: a server without it is never asked). Radius 0 withdraws.</li>
  *   <li><b>Legs</b> (the engine's dragons) become movers that fly from one end to the other on the far
  *       registry's clock, circle a hunt, or rest: nothing more arrives until the leg changes.</li>
- *   <li><b>Samples</b> (trains, dragons in the game) arrive once a second; each mover moves from where it was
- *       drawn to the new sample over the next second, so the view runs a second behind the server.</li>
+ *   <li><b>Samples</b> (trains, dragons in the game) arrive once a second; each mover runs on from where it
+ *       was drawn toward where its speed and its change of speed put it a second on, and a little past, so it is
+ *       drawn about where the server has it, not a second behind ({@link FarFeedReceiver}, DHT44). A jump is
+ *       drawn at once, and a mover is never drawn going backward along its way.</li>
  *   <li><b>{@link #active()}</b> says the server answered, so a source with its own way to learn the same
  *       things (Create's map sync, {@code mic_rtsim_create}) can stop asking.</li>
  * </ul>

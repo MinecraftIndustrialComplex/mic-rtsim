@@ -124,16 +124,18 @@ fn nobody_watching_costs_no_ship_events() {
     assert_eq!(st.materialized, 0);
     assert_eq!(st.promotions, 0);
     // Every event was a pirate's: four a hunt at most (decide, reach, bored, home), plus the
-    // first decisions.
+    // first decisions; or a navy's look for a haven to assault (§2.4.6a rule 3), one per navy
+    // every 24 days.
     let pirates = c.ships.havens.iter().map(|h| h.ships.len()).sum::<usize>() as u64;
+    let looks = c.ships.navy_counts().looked;
     assert!(st.hunts > 0);
     assert!(
-        st.events <= 4 * (st.hunts + st.fruitless) + pirates,
-        "{st:?} with {pirates} pirates"
+        st.events <= 4 * (st.hunts + st.fruitless) + pirates + looks,
+        "{st:?} with {pirates} pirates and {looks} navy looks"
     );
     for (k, _) in c.ships.pending_by_kind() {
         assert!(
-            ["decide", "reach_lane", "bored", "home", "refit"].contains(&k),
+            ["decide", "reach_lane", "bored", "home", "refit", "assault"].contains(&k),
             "a pending {k} event with nobody watching"
         );
     }
