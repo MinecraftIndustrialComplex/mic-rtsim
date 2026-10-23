@@ -934,6 +934,14 @@ pub struct CampRun {
     pub unrecorded_deaths: u32,
     /// Everything a check found wrong, with when.
     pub failures: Vec<String>,
+    /// The player stands at the refinery (observed every 1,200 ticks) while this is set: a band
+    /// that comes near is materialized and fought as the plugin's scripted player does.
+    pub watch: bool,
+    /// Whether the chaos run's saves are made (off, they are skipped: the run to compare with).
+    pub round_trips: bool,
+    /// What the chaos run did, with when: for a failure's report.
+    pub events: Vec<(Tick, String)>,
+    next_obs: Tick,
 }
 
 impl CampRun {
@@ -988,6 +996,10 @@ impl CampRun {
             body,
             unrecorded_deaths: 0,
             failures: Vec::new(),
+            watch: false,
+            round_trips: true,
+            events: Vec::new(),
+            next_obs: Tick::ZERO,
         };
         r.flush(Tick(1));
         r
@@ -997,12 +1009,16 @@ impl CampRun {
     pub fn run(&mut self, to: Tick) {
         let mut t = self.c.now();
         while t < to {
-            let next = [self.c.next_due(), self.plugin.next_due()]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap_or(to)
-                .clamp(t + 1, to);
+            let next = [
+                self.c.next_due(),
+                self.plugin.next_due(),
+                self.watch.then_some(self.next_obs),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(to)
+            .clamp(t + 1, to);
             for (at, o) in self.plugin.due(next) {
                 self.c.ingest(
                     &mut self.w,
@@ -1016,6 +1032,10 @@ impl CampRun {
                 &mut rtsim_ecology::infra::NoInfrastructure,
                 next,
             );
+            if self.watch && next >= self.next_obs {
+                self.c.observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
+                self.next_obs = next + 1_200;
+            }
             self.flush(next);
             t = next;
         }
@@ -1061,6 +1081,22 @@ impl CampRun {
         );
         self.flush(at);
         p
+    }
+
+    /// The player kills `n` of the camp's members at the refinery, a signal against the camp: the
+    /// feud's grievance (and with it a war party, in time).
+    pub fn kill(&mut self, n: f64) {
+        let at = self.c.now();
+        let sig = crate::engine::Signal {
+            faction: Some(self.key),
+            kind: crate::culture::SignalKind::Killing,
+            amount: n,
+            actor: self.player,
+            pos: REFINERY_POS,
+            district: Some(REFINERY),
+        };
+        self.c.signal(&mut self.w, sig, at);
+        self.flush(at);
     }
 
     /// A session restart: the plugin's observations not yet journaled are lost (a death among
@@ -1120,20 +1156,21 @@ impl CampRun {
             && camp.in_flight() == 0
             && !self.plugin.camp_pending(self.key);
         if settled {
-            let want: std::collections::BTreeSet<(u32, u32)> = camp
-                .slots
-                .iter()
-                .filter(|s| {
-                    matches!(
-                        s.state,
-                        crate::engine::SlotState::Body
-                            | crate::engine::SlotState::Left
-                            | crate::engine::SlotState::Dead
-                    )
-                })
-                .map(|s| (s.id, s.generation))
-                .collect();
-            if want != seen {
+            // A home body a census missed (`misses` above 0) may or may not be in the world: it
+            // is the crash table's lost body, written off at the third miss.
+            let mut want: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+            let mut maybe: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+            for s in &camp.slots {
+                use crate::engine::SlotState::{Body, Dead, Left};
+                if matches!(s.state, Body | Left | Dead) && s.misses > 0 {
+                    maybe.insert((s.id, s.generation));
+                } else if matches!(s.state, Body | Left | Dead) {
+                    want.insert((s.id, s.generation));
+                }
+            }
+            let held: std::collections::BTreeSet<(u32, u32)> =
+                seen.difference(&maybe).copied().collect();
+            if want != held {
                 bad.push(format!(
                     "I3: slots with a body {want:?}, tagged bodies in the world {seen:?}"
                 ));
@@ -1170,25 +1207,36 @@ impl CampRun {
     pub fn chaos(&mut self, seed: u64, events: u32) {
         let mut rng = StreamKey::new(seed, SYS_CHAOS, self.key).slot(0);
         for _ in 0..events {
+            self.chaos_step(&mut rng);
+        }
+    }
+
+    /// One random event of [`CampRun::chaos`], then the check.
+    pub fn chaos_step(&mut self, rng: &mut rtsim_kernel::rng::SlotRng) {
+        {
             let now = self.c.now();
-            match rng.below(16) {
+            let what: String = match rng.below(16) {
                 0..=3 => {
                     let span = 1 + rng.below(14 * (TICKS_PER_DAY / 24));
                     self.run(now + span);
+                    format!("run {span}")
                 }
                 4 | 5 => {
-                    if !self.plugin.camp_is_in(self.key) {
-                        self.camp_in();
+                    if self.plugin.camp_is_in(self.key) {
+                        "in (already)".into()
+                    } else {
+                        format!("camp in, epoch {:#x}", self.camp_in())
                     }
                 }
                 6 => {
                     if self.plugin.camp_is_in(self.key) {
                         self.camp_out();
+                        "camp out".into()
+                    } else {
+                        "out (already)".into()
                     }
                 }
-                7 | 8 => {
-                    self.raid();
-                }
+                7 | 8 => format!("raid {}", self.raid().is_some()),
                 9 | 10 => {
                     let bodies: Vec<_> = self
                         .plugin
@@ -1196,21 +1244,39 @@ impl CampRun {
                         .get(&self.key)
                         .map(|c| c.bodies.clone())
                         .unwrap_or_default();
-                    if !bodies.is_empty() {
+                    if bodies.is_empty() {
+                        "kill (none)".into()
+                    } else {
                         let b = bodies[rng.below(bodies.len() as u64) as usize];
                         self.plugin
                             .camp_kill(self.key, b.uuid, boundary::BY_PLAYER, now + 1);
+                        format!("kill slot {} gen {:#x}", b.slot, b.generation)
                     }
                 }
                 11 => {
                     let body = self.body;
                     self.plugin.camp_stray(self.key, body);
+                    "stray".into()
                 }
-                12 => self.plugin.lose_answers += 1,
-                13 => self.plugin.replay_answers = !self.plugin.replay_answers,
-                14 => self.restart(),
-                _ => self.round_trip(),
-            }
+                12 => {
+                    self.plugin.lose_answers += 1;
+                    "lose the next answer".into()
+                }
+                13 => {
+                    self.plugin.replay_answers = !self.plugin.replay_answers;
+                    format!("replay answers {}", self.plugin.replay_answers)
+                }
+                14 => {
+                    self.restart();
+                    "restart".into()
+                }
+                _ if self.round_trips => {
+                    self.round_trip();
+                    "save and load".into()
+                }
+                _ => "save (skipped)".into(),
+            };
+            self.events.push((now, what));
             // Half the time the answers come before the check, half not.
             if rng.below(2) == 0 {
                 let to = self.c.now() + 3;
