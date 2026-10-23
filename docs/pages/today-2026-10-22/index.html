@@ -129,15 +129,15 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <div class="tiles" data-ss-id="tiles">
     <div class="tile" data-ss-id="kpi-landed"><div class="n">8</div><div class="t">changes landed, plus a history scan and a 200-district stress run</div></div>
     <div class="tile" data-ss-id="kpi-ask"><div class="n">0</div><div class="t">wait on you from today: all answered, among them SEC-1's six, CL-10, TALK's three and the ports</div></div>
-    <div class="tile" data-ss-id="kpi-prog"><div class="n">7</div><div class="t">in progress: the Mowzie build, news in place of chat notices, TALK, ports, the SEC-1 build, the far view's hand-over fixes, the stress run's fixes</div></div>
+    <div class="tile" data-ss-id="kpi-prog"><div class="n">7</div><div class="t">in progress: the Mowzie build, news in place of chat notices, TALK, ports, the SEC-1 build, the far view's new look and hand-over fixes, the stress run's fixes</div></div>
   </div>
 </header>
 
 <section id="elsewhere" data-ss-id="elsewhere" data-ss-section>
   <h2 data-ss-id="elsewhere-h">Also today, on their own pages</h2>
   <ul class="elsewhere" data-ss-id="elsewhere-list">
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; the pictures and video are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>, 12 stills and 6 clips, and five glitches they showed at hand-overs are being fixed.</li>
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices pushed for conflict. You hear the news by talking to villagers, ribbits and clans (CL-10, being designed as TALK; you answered its three questions, <a href="#talk">below</a>), and an envoy speaks to you in chat when you talk to it.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; the pictures and video are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>, 12 stills and 6 clips. You were unhappy with the box look, so it is being replaced: trains drawn as the carriages players built, dragons as the real Ice and Fire dragon. A test runs first, and if it passes it is built overnight.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices pushed for conflict. You hear the news by talking to villagers, ribbits and clans (CL-10, being built as TALK, villagers and traders first; you answered its three questions, <a href="#talk">below</a>), and an envoy speaks to you in chat when you talk to it.</li>
     <li><a href="https://spacesheep.dev/@benmac/rtsim-mowzie"><strong>The Umvuthi aloft, and the Mowzie build</strong></a>: you chose aloft and answered "All three" for the rest. The build has started: M1 to M3 of 12 slices are being built, each reviewed before it lands.</li>
   </ul>
 </section>
@@ -248,8 +248,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="talk" data-ss-id="talk" data-ss-section>
-  <h2 data-ss-id="talk-h">TALK: talking to villagers, and its first three questions <span class="state plan">In design</span></h2>
-  <p class="meta" data-ss-id="talk-meta">TALK.md on branch feat/talk (f23c1b60), not landed yet.</p>
+  <h2 data-ss-id="talk-h">TALK: talking to villagers, and its first three questions <span class="state plan">Being built</span></h2>
+  <p class="meta" data-ss-id="talk-meta">TALK.md on main; its slice 1 landed (08622772): crouch-click a villager or a wandering trader and it talks, with small talk and lines from how it feels, and talking raises your standing with it at most once a game day. News, ribbits and clans are slices 2 to 4.</p>
   <p data-ss-id="talk-p">Your CL-10 answer is being designed and built as TALK: shift-click a villager, a ribbit or a clan member and it answers with small talk, with how it feels and with what it may have seen, and talking raises your standing with it a little. The design asked you three things, and you answered all three:</p>
   <ol data-ss-id="talk-answers">
     <li><strong>TQ-1, sharing the gesture with Carry On: "Talk wins on talkers"</strong>, as recommended. Shift + right-click on a villager, a wandering trader or a ribbit always talks. Carry On can no longer pick those up, and still carries every other mob and every block.</li>
@@ -291,14 +291,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><strong>The Mowzie build:</strong> M1 records, M2 cultures and M3 the conflict bridge are being built, each reviewed before it lands (MOWZIE.md section 9, b11a3cab). <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#build">The slices</a>.</li>
     <li><strong>No chat notices for conflict:</strong> an agent is removing the chat notices the game sends today and routing them to news. <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#news">How news travels</a>.</li>
     <li><strong>Ports:</strong> the port lifecycle is being built, with your PORTS-1 and PORTS-2 answers (<a href="#s8">above</a>).</li>
-    <li><strong>TALK:</strong> shift-click a villager, a ribbit or a clan member to talk to it, your CL-10 answer. In design (TALK.md, on branch feat/talk); you answered its first three questions (<a href="#talk">above</a>), and any more will come to you.</li>
+    <li><strong>TALK:</strong> shift-click a villager, a ribbit or a clan member to talk to it, your CL-10 answer. Being built in four slices; slice 1, villagers and wandering traders, landed (08622772). You answered its first three questions (<a href="#talk">above</a>), and any more will come to you.</li>
     <li><strong>SEC-1:</strong> the build has started, slice by slice, beginning with the one that stops Create's chain conveyors and network recount from loading chunks (<a href="#sec1">above</a>).</li>
     <li><strong>The stress run's fixes:</strong> the three in <a href="#syn200">its card</a>.</li>
-    <li><strong>The far view:</strong> <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the gallery</a> is done, 12 stills and 6 clips on two worlds we generated ourselves. It showed five glitches where a box hands over to the real dragon or train, and an agent is fixing them (<a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons#gallery">the list</a>).</li>
+    <li><strong>The far view:</strong> <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the gallery</a> is done, 12 stills and 6 clips on two worlds we generated ourselves. You were "Really unhappy with how the DH stuff looks: A) Trains don't match the trains players built they are just black boxes. B) Dragons look like a blocky mess and not like dragons." The box look is being replaced, with your approval: trains as one textured model of each carriage players built, at its true angle, hidden by hills and faded by fog; dragons as pictures of the real Ice and Fire dragon far away, its own model nearer, the real dragon close up. A test runs first; if it passes, it is built and landed overnight, and the morning page will show before and after. The hand-over fixes go on, except the two that only resized boxes (<a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons#gallery">on the page</a>).</li>
     <li><strong>EQUILIBRIUM:</strong> S1, the census of who is alive (a4cd627), S2, herds that settle and come back (2d5b07b), and now S4, dragons (<a href="#s4">above</a>), are built. S3, the site ledger and kill credit, comes with the Mowzie build's last slice.</li>
   </ul>
 </section>
 </main>
-<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers, the stress run, TALK's questions and the dragons. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers, the stress run, TALK's questions, the dragons and the far view's new look. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
 </body>
 </html>
