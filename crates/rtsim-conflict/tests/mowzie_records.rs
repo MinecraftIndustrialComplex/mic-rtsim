@@ -898,6 +898,24 @@ fn chief_in_a_fight(seed: u64) -> (Run, Handle<Party>) {
     (r, band)
 }
 
+/// The villages that hate goblins (human and bandit) within the rescue news range of the camp.
+fn haters_in_range(r: &Run) -> Vec<ActorId> {
+    let camp = synth::CAMP_POS;
+    let range = f64::from(r.c.tun.rescue_news_blocks);
+    r.w.nodes
+        .iter()
+        .filter(|n| match n.kind {
+            NodeKind::Village(cu) => ["human", "bandit"].contains(&cu.name()),
+            _ => false,
+        })
+        .filter(|n| {
+            let (dx, dz) = (f64::from(n.pos.x - camp.x), f64::from(n.pos.z - camp.z));
+            n.pos.frame == camp.frame && (dx * dx + dz * dz).sqrt() <= range - 1.0
+        })
+        .map(|n| n.actor)
+        .collect()
+}
+
 /// MZB-36: the heir who saw the player kill the war chief feels it at the killing's base delta
 /// (-125), so the grudge it takes over is about 60 grievance (`heir_grudge_factor` 0.5 a point),
 /// not 2.5. And the villages that hate the camp hear of the rescue at the rescue's +25.
@@ -916,21 +934,10 @@ fn a_chief_killed_counts_at_the_base_delta() {
     };
     let before = killing(&r);
     // The villages that hate goblins within the news range, and what they feel before.
-    let camp = synth::CAMP_POS;
-    let range = f64::from(r.c.tun.rescue_news_blocks);
-    let haters: Vec<(ActorId, i8)> =
-        r.w.nodes
-            .iter()
-            .filter(|n| match n.kind {
-                NodeKind::Village(cu) => ["human", "bandit"].contains(&cu.name()),
-                _ => false,
-            })
-            .filter(|n| {
-                let (dx, dz) = (f64::from(n.pos.x - camp.x), f64::from(n.pos.z - camp.z));
-                n.pos.frame == camp.frame && (dx * dx + dz * dz).sqrt() <= range - 1.0
-            })
-            .map(|n| (n.actor, r.w.knowledge.sentiment(n.actor, r.p, at)))
-            .collect();
+    let haters: Vec<(ActorId, i8)> = haters_in_range(&r)
+        .into_iter()
+        .map(|a| (a, r.w.knowledge.sentiment(a, r.p, at)))
+        .collect();
     assert!(
         !haters.is_empty(),
         "a village that hates goblins is in range"
@@ -958,4 +965,77 @@ fn a_chief_killed_counts_at_the_base_delta() {
         );
     }
     assert_eq!(r.c.stats.routs, 1);
+}
+
+/// CL-D60 (K2-25: the villages witness "a rescue report"): one rout is one rescue report, however
+/// many hating villages are in range. Each of them witnesses it first-hand at the full +25; a
+/// village that does not hate goblins does not know it yet (it hears it later, as news). A report
+/// per witness made every village count one rout once per hating village.
+#[test]
+fn a_rout_is_one_rescue_report_that_every_hater_in_range_witnesses() {
+    let (mut r, band) = chief_in_a_fight(9);
+    let at = Tick::from_days(1) + 100;
+    let rescues = |r: &Run| -> Vec<rtsim_knowledge::ReportId> {
+        r.w.knowledge
+            .reports()
+            .iter()
+            .map(|(id, _)| id)
+            .filter(|id| {
+                r.w.knowledge
+                    .report(*id)
+                    .is_some_and(|x| x.kind == ReportKind::Rescue)
+            })
+            .collect()
+    };
+    assert!(rescues(&r).is_empty(), "no rescue before the rout");
+    let haters = haters_in_range(&r);
+    assert!(
+        haters.len() >= 2,
+        "several hating villages in range ({})",
+        haters.len()
+    );
+    let others: Vec<ActorId> =
+        r.w.nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Village(_)) && !haters.contains(&n.actor))
+            .map(|n| n.actor)
+            .collect();
+    assert!(!others.is_empty(), "a village that does not hate goblins");
+    let was: Vec<i8> = haters
+        .iter()
+        .map(|a| r.w.knowledge.sentiment(*a, r.p, at))
+        .collect();
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    let reps = rescues(&r);
+    assert_eq!(
+        reps.len(),
+        1,
+        "one rout, one rescue report ({} recorded)",
+        reps.len()
+    );
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!(rep.who, r.p, "the rescuer");
+    assert_eq!(
+        rep.whom,
+        ActorId::NULL,
+        "the band was after the rescuer himself, so it names no one rescued"
+    );
+    for (a, was) in haters.iter().zip(was) {
+        assert!(
+            r.w.knowledge.knows(*a, reps[0]),
+            "a hating village in range witnesses it"
+        );
+        let now = r.w.knowledge.sentiment(*a, r.p, at);
+        assert!(
+            i32::from(now) >= i32::from(was) + 20,
+            "first-hand, not hearsay: {was} to {now}"
+        );
+    }
+    for a in others {
+        assert!(
+            !r.w.knowledge.knows(a, reps[0]),
+            "a village that does not hate goblins only hears it later"
+        );
+    }
 }
