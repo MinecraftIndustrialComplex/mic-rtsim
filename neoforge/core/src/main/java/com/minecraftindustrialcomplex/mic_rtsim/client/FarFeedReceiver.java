@@ -46,6 +46,11 @@ final class FarFeedReceiver {
     static final double MAX_RUN_TICKS = SAMPLE_TICKS + RUN_ON_TICKS + 10.0;
     /** Slower than this (an eighth of a block a sample, what the server does not send) is standing still. */
     static final double STILL = 0.125 / SAMPLE_TICKS;
+    /**
+     * Faster than this, blocks a tick, is a jump, not a run (a teleport, or a toroidal world's wrap putting the
+     * object in another image): it is drawn at its new sample at once. No train or dragon moves at 160 m/s.
+     */
+    static final double JUMP = 8.0;
 
     private final Map<Integer, Obj> objs = new HashMap<>();
     /** Far clock minus game time, as the legs are timed; NaN until known. */
@@ -218,6 +223,18 @@ final class FarFeedReceiver {
      */
     private static void sample(Obj o, double[] seg, double at, double now) {
         double[] drawn = o.drawnAt(now);
+        if ((o.last != null && gap(seg, o.last) > JUMP * Math.max(1.0, at - o.lastTick))
+                || (drawn != null && gap(seg, drawn) > JUMP * SAMPLE_TICKS)) {
+            // A jump: drawn where it is now, standing until the next sample says how it moves
+            o.last = seg;
+            o.lastTick = at;
+            o.velocity = null;
+            o.prev = o.cur = seg.clone();
+            o.sampleTick = now;
+            o.interval = 1.0;
+            return;
+        }
+        double[] before = o.velocity;
         double[] v = null;
         double[] acc = null;
         if (o.last != null && at - o.lastTick >= 1.0) {
@@ -256,23 +273,49 @@ final class FarFeedReceiver {
         double[] from = drawn != null ? drawn : run.at(now);
         double due = Math.min(now + SAMPLE_TICKS, at + MAX_RUN_TICKS);
         double end = Math.min(now + SAMPLE_TICKS + RUN_ON_TICKS, at + MAX_RUN_TICKS);
-        if (!run.moving() || run.stopsBy(end))
+        double stop = run.stopTime();
+        if (!run.moving())
             end = due;
-        if (end - now < 1.0) {
-            // Too long since the sample to run it on: hold where the run ends
-            o.prev = o.cur = run.at(end);
-            o.sampleTick = now;
-            o.interval = 1.0;
-            return;
+        else if (stop < end)
+            end = Math.max(due, stop); // it comes to rest there, run on or not
+        boolean late = end - now < 1.0; // too long since the sample to run it on: it holds where the run ends
+        double[] to;
+        if (late || (stop <= end && end > due)) {
+            to = run.at(end); // or where it comes to rest, after the next sample is due
+        } else {
+            double[] there = run.at(due);
+            double k = (end - now) / (due - now);
+            to = new double[6];
+            for (int i = 0; i < 6; i++)
+                to[i] = from[i] + (there[i] - from[i]) * k;
         }
-        double[] there = run.at(due), to = new double[6];
-        double k = (end - now) / (due - now);
-        for (int i = 0; i < 6; i++)
-            to[i] = from[i] + (there[i] - from[i]) * k;
-        o.prev = from;
+        // Never backward along its way (its way now, or the way it went if it stopped): run on past where it
+        // stopped short, it waits there for the samples to pass it rather than rolling back
+        double[] way = run.moving() ? v : before;
+        if (way != null && !still(way) && along(to, from, way) < 0.0)
+            to = from;
+        o.prev = late ? to : from;
         o.cur = to;
         o.sampleTick = now;
-        o.interval = end - now;
+        o.interval = late ? 1.0 : end - now;
+    }
+
+    /** The farther of the two points' distances between segments {@code a} and {@code b}. */
+    private static double gap(double[] a, double[] b) {
+        double g = 0.0;
+        for (int p = 0; p < 2; p++) {
+            double dx = a[3 * p] - b[3 * p], dy = a[3 * p + 1] - b[3 * p + 1], dz = a[3 * p + 2] - b[3 * p + 2];
+            g = Math.max(g, Math.sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        return g;
+    }
+
+    /** How far the midpoint moves from {@code from} to {@code to} along the midpoint's velocity in {@code v}. */
+    private static double along(double[] to, double[] from, double[] v) {
+        double d = 0.0;
+        for (int i = 0; i < 3; i++)
+            d += (to[i] + to[3 + i] - from[i] - from[3 + i]) * (v[i] + v[3 + i]);
+        return d;
     }
 
     private static double speed(double[] v, int p) {
@@ -297,14 +340,15 @@ final class FarFeedReceiver {
             return v != null && (speedAt(0) >= STILL || speedAt(1) >= STILL);
         }
 
-        /** True when a point comes to rest before {@code t}. */
-        boolean stopsBy(double t) {
+        /** When the first point slowing down comes to rest; infinite when none does. */
+        double stopTime() {
+            double t = Double.POSITIVE_INFINITY;
             for (int p = 0; p < 2 && v != null; p++) {
                 double u = speedAt(p), a = accAt(p, u);
-                if (u >= STILL && a < 0.0 && at + u / -a < t)
-                    return true;
+                if (u >= STILL && a < 0.0)
+                    t = Math.min(t, at + u / -a);
             }
-            return false;
+            return t;
         }
 
         double[] at(double t) {

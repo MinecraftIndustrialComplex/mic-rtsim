@@ -14,8 +14,14 @@ import net.minecraft.client.Minecraft;
  * At render distance 10 on a 16:9 screen that is about 134 to 170 blocks. So a far box the band renderer draws
  * there fades into whatever DH drew behind it: DH must draw the same box there too, or it fades to nothing.
  *
+ * <p>DH leaves the fade out when {@code vanillaFadeMode} is NONE, when its renderer mode is not DEFAULT, and
+ * while an Iris shader pack is in use ({@code ClientApi.shouldRenderFade}); then nothing fades and the ring is
+ * nowhere ({@link #start()} infinite), so DH draws a far mover only outside the loaded chunks, as before the
+ * fade hand-over.
+ *
  * <p>Read once a frame, from DH itself; if that ever fails (another DH version), from the same formula with
- * the API's overdraw setting, leaving out the fast-camera lowering. Render thread only.
+ * the API's overdraw setting, leaving out the fast-camera lowering, and with the API's renderer mode and Iris's
+ * own API for whether the fade runs. Render thread only.
  */
 final class FadeRing {
     /** The frustum corner factor's tangent: DH takes the field of view as 70 degrees, whatever it is. */
@@ -23,11 +29,19 @@ final class FadeRing {
 
     private static double start = Double.POSITIVE_INFINITY;
     private static boolean fromDhFailed;
+    private static boolean fadeFromDhFailed;
+    private static java.lang.reflect.Method irisInUse;
+    private static Object iris;
+    private static boolean irisLooked;
 
     private FadeRing() {}
 
     /** Reads this frame's ring (the DH controller, once a frame, before the views decide). */
     static void update() {
+        if (!fadeRuns()) {
+            start = Double.POSITIVE_INFINITY;
+            return;
+        }
         float near = Float.NaN;
         if (!fromDhFailed) {
             try {
@@ -46,6 +60,58 @@ final class FadeRing {
     /** The 3D distance from the camera where the fade starts, in blocks; infinite before the first frame. */
     static double start() {
         return start;
+    }
+
+    /** True when DH fades vanilla's pixels this frame (DH 3.3.3's {@code ClientApi.renderFadeTransparent}). */
+    private static boolean fadeRuns() {
+        if (!fadeFromDhFailed) {
+            try {
+                if (com.seibel.distanthorizons.core.config.Config.Client.Advanced.Debugging.rendererMode.get()
+                        != com.seibel.distanthorizons.api.enums.rendering.EDhApiRendererMode.DEFAULT)
+                    return false;
+                if (com.seibel.distanthorizons.core.config.Config.Client.Advanced.Graphics.Quality.vanillaFadeMode.get()
+                                == com.seibel.distanthorizons.api.enums.config.EDhApiMcRenderingFadeMode.NONE
+                        && !Boolean.TRUE.equals(
+                                com.seibel.distanthorizons.core.config.Config.Client.Advanced.Debugging.lodOnlyMode.get()))
+                    return false;
+                var shaders = com.seibel.distanthorizons.core.dependencyInjection.ModAccessorInjector.INSTANCE.get(
+                        com.seibel.distanthorizons.core.wrapperInterfaces.modAccessor.IIrisAccessor.class);
+                return shaders == null || !shaders.isShaderPackInUse();
+            } catch (RuntimeException | LinkageError e) {
+                fadeFromDhFailed = true;
+                MicRtsimDh.LOGGER.warn("mic_rtsim_dh: DH's fade settings are not readable ({}); whether the fade "
+                        + "runs is worked out from the API and Iris", e.toString());
+            }
+        }
+        try {
+            if (DhApi.Delayed.configs.graphics().renderingMode().getValue()
+                    != com.seibel.distanthorizons.api.enums.rendering.EDhApiRendererMode.DEFAULT)
+                return false;
+        } catch (RuntimeException | LinkageError e) {
+            // taken as DEFAULT
+        }
+        return !irisShaderPackInUse();
+    }
+
+    /** Iris's own API, looked up once by reflection: no compile-time Iris dependency. */
+    private static boolean irisShaderPackInUse() {
+        if (!irisLooked) {
+            irisLooked = true;
+            try {
+                Class<?> api = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+                iris = api.getMethod("getInstance").invoke(null);
+                irisInUse = api.getMethod("isShaderPackInUse");
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+                iris = null; // no Iris
+            }
+        }
+        if (iris == null)
+            return false;
+        try {
+            return (Boolean) irisInUse.invoke(iris);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return false;
+        }
     }
 
     /** DH's fade start for a near clip plane of {@code near} blocks. */
