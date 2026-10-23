@@ -129,6 +129,10 @@ pub struct Feud {
     /// No escalation before this (a band could not be mustered).
     pub wait_until: Tick,
     pub raids: u32,
+    /// The feud's in-world notice the plugin has not played yet (NOTICE_SHOWN): sent again at
+    /// every session start until it is (MOWZIE.md §4.12, ledger 14). A later notice replaces it;
+    /// it goes with the feud.
+    pub notice: Option<Box<boundary::Notice>>,
 }
 
 impl Feud {
@@ -144,6 +148,7 @@ impl Feud {
             focus: None,
             wait_until: Tick::ZERO,
             raids: 0,
+            notice: None,
         }
     }
 }
@@ -318,6 +323,13 @@ pub struct ConflictStats {
     pub feuds_forgotten: u64,
     /// Sources whose owner changed: the player with the most time in their chunks moved (P14).
     pub reattributed: u64,
+    /// Demands withdrawn: the envoy party fell with no player among its killers (outcome 5).
+    pub withdrawn: u64,
+    /// War parties Peaceful held back: stood down at their muster's end, or home with nothing
+    /// done; and ambushes and plunders it stopped.
+    pub peace_held: u64,
+    /// Notices the plugin played (NOTICE_SHOWN).
+    pub notices_shown: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -589,6 +601,9 @@ pub struct Conflict {
     pub presence: Presence,
     /// Every frame's topology (TP6): flat until the engine host hands over the TOPOLOGY records'.
     pub topo: SharedTopologies,
+    /// The world is on Peaceful (DIFFICULTY, MOWZIE.md §4.12): no war party leaves, and ambushes,
+    /// raids and plunder do nothing. Saved: the plugin reports it again at each session start.
+    pub peaceful: bool,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -668,6 +683,7 @@ impl Conflict {
             nodes: NodeIndex::default(),
             presence,
             topo: rtsim_space::topology::all_flat(),
+            peaceful: false,
         }
     }
 
@@ -1557,10 +1573,13 @@ impl Conflict {
                 next = Some(next.map_or(t, |n: Tick| n.min(t)));
             }
         };
+        // On Peaceful no war party leaves: the climb to a war rung waits for the world to change
+        // (`set_difficulty` plans every feud again then).
+        let peaceful = self.peaceful;
         if let Some(d) = feud.demand {
             take(Some(d.deadline));
         } else if feud.party.is_none() {
-            if let Some(up) = feud.step.up() {
+            if let Some(up) = feud.step.up().filter(|u| !(peaceful && u.is_war())) {
                 let dwell = feud.since + self.culture(f).dwell_ticks[feud.step.index()];
                 take(
                     feud.g
@@ -1615,7 +1634,11 @@ impl Conflict {
             let dwell = since + self.culture(f).dwell_ticks[step.index()];
             let up = step.up();
             if let Some(up) = up.filter(|u| {
-                !cowed && at >= dwell && at >= wait && g >= self.theta(f, *u) * (1.0 - 1e-9)
+                !cowed
+                    && !(self.peaceful && u.is_war())
+                    && at >= dwell
+                    && at >= wait
+                    && g >= self.theta(f, *u) * (1.0 - 1e-9)
             }) {
                 self.escalate(w, f, a, up, at);
             } else if step > Step::None && g < self.down_theta(f, step) {
@@ -1762,7 +1785,7 @@ impl Conflict {
             .text(|| format!("{} ({} first, grievance {g:.1})", to.name(), kind.name()));
         if to == Step::Notice {
             let player = self.uuid_of(w, a);
-            self.outbox.push(Cmd::Notice(boundary::Notice {
+            let n = boundary::Notice {
                 faction: self.factions[f as usize].key,
                 step: to as u32,
                 player,
@@ -1771,7 +1794,11 @@ impl Conflict {
                 x: pos.x,
                 z: pos.z,
                 grievance: g as f32,
-            }));
+            };
+            // Kept until the plugin plays it (NOTICE_SHOWN), and sent again at every session
+            // start: a notice is never lost (MOWZIE.md §4.12).
+            self.feud_mut(f, a).expect("exists").notice = Some(Box::new(n));
+            self.outbox.push(Cmd::Notice(n));
         }
         self.note(
             at,
@@ -1964,6 +1991,40 @@ impl Conflict {
                 } else {
                     "the signal stopped"
                 }
+            ),
+        );
+        self.plan_feud(f, a, at, false);
+    }
+
+    /// The envoy party `p` fell with no player among its killers (MOWZIE.md ledger 14): its
+    /// demand is withdrawn (DEMAND_SETTLED outcome 5), with no relief, no refusal and no climb.
+    /// The feud stays on Envoy, its dwell begun again, and plans its next rung as before.
+    fn withdraw(&mut self, w: &mut World, p: Handle<Party>, at: Tick) {
+        let (f, feud) = (self.parties[p].faction, self.parties[p].feud);
+        let Some(a) = feud else {
+            return;
+        };
+        let theirs = self
+            .feud(f, a)
+            .and_then(|x| x.demand)
+            .is_some_and(|d| d.envoy == Some(p));
+        if !theirs {
+            return;
+        }
+        let feud = self.feud_mut(f, a).expect("checked");
+        let d = feud.demand.take().expect("checked");
+        feud.party = None;
+        feud.since = at;
+        self.parties[p].feud = None;
+        self.stats.withdrawn += 1;
+        self.settle_outbox(w, f, a, d, boundary::SETTLED_WITHDRAWN);
+        self.note(
+            at,
+            Some(f),
+            "withdrawn",
+            format!(
+                "the envoy to {} fell to no player's hand: the demand is withdrawn",
+                self.actor_name(w, a)
             ),
         );
         self.plan_feud(f, a, at, false);
@@ -2422,6 +2483,9 @@ impl Conflict {
         at: Tick,
     ) {
         match self.parties[p].phase {
+            Phase::Mustering if self.peaceful && self.parties[p].kind.is_war() => {
+                self.stand_down(w, p, at);
+            }
             Phase::Mustering => {
                 self.parties[p].phase = Phase::Out;
                 self.parties[p].seg = 0;
@@ -2450,6 +2514,34 @@ impl Conflict {
                 self.end_fight(w, p, reason, at);
             }
         }
+    }
+
+    /// Peaceful at a war party's muster's end (MOWZIE.md §4.12): it never leaves. Its bodies, if
+    /// any, go; its warriors are back in the pool at once; the feud it served steps back a rung,
+    /// so that it climbs to it again once the world is not Peaceful.
+    fn stand_down(&mut self, w: &mut World, p: Handle<Party>, at: Tick) {
+        let x = &self.parties[p];
+        let (f, kind, feud, embodied, epoch) = (x.faction, x.kind, x.feud, x.embodied, x.epoch);
+        self.stats.peace_held += 1;
+        if embodied {
+            let camp = self.factions[f as usize].pos;
+            self.recall(p, epoch, boundary::RECALL_DONE, (camp.x, camp.z));
+        }
+        if let Some(a) = feud
+            && self
+                .feud(f, a)
+                .is_some_and(|x| x.party == Some(p) && PartyKind::of_step(x.step) == Some(kind))
+        {
+            let x = self.feud_mut(f, a).expect("checked");
+            x.step = x.step.down();
+        }
+        self.note(
+            at,
+            Some(f),
+            "peaceful",
+            format!("the {} stands down: the world is Peaceful", kind.name()),
+        );
+        self.home(w, p, at);
     }
 
     fn start_segment(
@@ -2652,6 +2744,10 @@ impl Conflict {
         at: Tick,
         w: &mut World,
     ) {
+        if self.peaceful {
+            self.stats.peace_held += 1;
+            return;
+        }
         let id = fnv1a64(
             &[
                 Party::agent(p).to_le_bytes(),
@@ -2774,6 +2870,17 @@ impl Conflict {
                     format!("scouts watch ({}, {}) from the edge", tpos.x, tpos.z),
                 );
             }
+            _ if self.peaceful => {
+                // Peaceful: the raid does nothing, and the band goes home (MOWZIE.md §4.12).
+                self.stats.peace_held += 1;
+                self.note(
+                    at,
+                    Some(f),
+                    "peaceful",
+                    format!("the {} does nothing: the world is Peaceful", kind.name()),
+                );
+                self.go_home(w, p, boundary::RECALL_DONE, at);
+            }
             _ => {
                 if let Some(player) = self.watcher(w, tpos, at) {
                     self.start_fight(w, p, player, at);
@@ -2815,7 +2922,7 @@ impl Conflict {
     ) {
         let x = &self.parties[p];
         let (kind, f) = (x.kind, x.faction);
-        if kind == PartyKind::Siege && at < x.bored_at && x.alive() > 0 {
+        if kind == PartyKind::Siege && at < x.bored_at && x.alive() > 0 && !self.peaceful {
             let tpos = self.target_pos(w, x.target);
             if let Some(player) = self.watcher(w, tpos, at) {
                 self.start_fight(w, p, player, at);
@@ -3275,6 +3382,12 @@ impl Conflict {
     }
 
     fn plunder(&mut self, w: &mut World, f: u32, at: Tick) {
+        if self.peaceful {
+            // No war party leaves on Peaceful: the drive tries again later.
+            self.stats.peace_held += 1;
+            self.schedule_plunder(f, at);
+            return;
+        }
         self.ensure_chief(w, f, at);
         let c = self.culture(f).clone();
         let camp = self.factions[f as usize].pos;
@@ -3821,18 +3934,103 @@ impl Conflict {
                 x.phase = Phase::Waiting;
             }
         }
-        self.outbox
-            .retain(|c| c.agent().is_none() && !matches!(c, Cmd::Territory(_)));
-        // Every faction, once a session: page by page, keeping to the budget (PM-C8).
+        // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
+        // again below from what is kept.
+        self.outbox.retain(|c| {
+            c.agent().is_none()
+                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
+        });
+        // Every faction, once a session: page by page, keeping to the budget (PM-C8). Each
+        // faction's territory, then every notice of its feuds not played yet.
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let t = self.territory(f);
             self.outbox.push(t);
+            let kept: Vec<Cmd> = self
+                .feuds_of(f)
+                .iter()
+                .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
+                .collect();
+            self.outbox.extend(kept);
             if (f + 1) % per == 0 {
                 self.enforce_budget();
             }
         }
         self.enforce_budget();
+    }
+
+    /// The world's difficulty (DIFFICULTY, MOWZIE.md §4.12). While it is Peaceful no war party
+    /// leaves (`plan_feud` books no climb to a war rung, a muster's end stands down), and
+    /// ambushes, raids and plunder do nothing; feuds keep their grievance and decay as usual.
+    /// When it ends, every feud is planned again, so one held below a war rung climbs as it
+    /// would have. Applied at the engine's present.
+    pub fn set_difficulty(&mut self, difficulty: u32) {
+        let peaceful = difficulty == boundary::DIFFICULTY_PEACEFUL;
+        if peaceful == self.peaceful {
+            return;
+        }
+        self.peaceful = peaceful;
+        let at = self.now;
+        self.note(
+            at,
+            None,
+            "difficulty",
+            if peaceful {
+                "the world is Peaceful: no war party leaves".into()
+            } else {
+                "the world is no longer Peaceful".into()
+            },
+        );
+        if peaceful {
+            return;
+        }
+        let per = crate::tables::FACTIONS_PER_PAGE as u32;
+        for f in 0..self.factions.len() as u32 {
+            for a in self.feud_actors(f) {
+                self.plan_feud(f, a, at, false);
+            }
+            if (f + 1) % per == 0 {
+                self.enforce_budget();
+            }
+        }
+        self.enforce_budget();
+    }
+
+    /// The plugin played a feud's notice (NOTICE_SHOWN): it is not sent again. A step other than
+    /// the kept notice's is an answer to an older one, and changes nothing.
+    fn notice_shown(&mut self, n: &boundary::NoticeShown) {
+        let Some(&f) = self.by_key.get(&n.faction) else {
+            return;
+        };
+        let actor = if n.player == (0, 0) {
+            Some(self.settlers)
+        } else {
+            self.players
+                .iter()
+                .find(|(_, u)| **u == n.player)
+                .map(|(a, _)| *a)
+        };
+        let Some(a) = actor.filter(|a| !a.is_null()) else {
+            return;
+        };
+        let kept = self.feud(f, a).and_then(|x| x.notice.as_deref());
+        if kept.is_some_and(|k| k.step == n.step) {
+            self.feud_mut(f, a).expect("checked").notice = None;
+            self.stats.notices_shown += 1;
+        }
+    }
+
+    /// Notices kept until played, in faction then actor order. A whole-engine pass: tests and
+    /// tools only.
+    pub fn kept_notices(&self) -> Vec<boundary::Notice> {
+        (0..self.factions.len() as u32)
+            .flat_map(|f| {
+                self.feuds_of(f)
+                    .iter()
+                    .filter_map(|(_, x)| x.notice.as_deref().copied())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     // ---- observations (docs/boundary.md §9) --------------------------------------------------
@@ -3863,10 +4061,33 @@ impl Conflict {
         m
     }
 
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the camp
+    /// reconciler's, the rail meter's, the chief's and the grove's.
+    pub fn later(o: &Obs) -> bool {
+        matches!(
+            o,
+            Obs::ChiefState(_)
+                | Obs::HavenChest(_)
+                | Obs::RailPass(_)
+                | Obs::TrainPassed(_)
+                | Obs::CampDeath(_)
+                | Obs::CampCensus(_)
+                | Obs::Traded(_)
+                | Obs::CampBodies(_)
+                | Obs::CampOut(_)
+                | Obs::ChiefPaid(_)
+        )
+    }
+
     /// A record from the plugin, at its game time.
     pub fn ingest(&mut self, w: &mut World, infra: &mut dyn Infrastructure, o: &Obs, at: Tick) {
         let at = at.max(self.now);
         self.run_until(w, infra, at);
+        if Self::later(o) {
+            // The engine half of these comes with a later slice (MOWZIE.md §9): dropped, its op
+            // id not spent.
+            return;
+        }
         if let Some(op) = o.op()
             && !self.first_time(op)
         {
@@ -3874,6 +4095,18 @@ impl Conflict {
         }
         match o {
             Obs::State(_) | Obs::Materialized(_) => {}
+            Obs::Difficulty(d) => self.set_difficulty(d.difficulty),
+            Obs::NoticeShown(n) => self.notice_shown(n),
+            Obs::ChiefState(_)
+            | Obs::HavenChest(_)
+            | Obs::RailPass(_)
+            | Obs::TrainPassed(_)
+            | Obs::CampDeath(_)
+            | Obs::CampCensus(_)
+            | Obs::Traded(_)
+            | Obs::CampBodies(_)
+            | Obs::CampOut(_)
+            | Obs::ChiefPaid(_) => {}
             Obs::FactionFound(ff) => {
                 let Some(name) = self.java_dict.get(&(4, ff.structure)).cloned() else {
                     return;
@@ -4126,6 +4359,11 @@ impl Conflict {
                 );
             }
         } else if x.alive() == 0 && x.phase != Phase::Home {
+            // An envoy party no player struck down withdraws its demand (outcome 5); one a player
+            // killed leaves it to run out as an insult (the killings above, `refuse` on ATTACKED).
+            if x.kind == PartyKind::Envoy && x.breaker.is_none() {
+                self.withdraw(w, p, at);
+            }
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
         }
     }

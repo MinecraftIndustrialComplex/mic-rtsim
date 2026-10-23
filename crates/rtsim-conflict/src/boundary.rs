@@ -18,6 +18,9 @@
 //! 0x20** names Destroy pollution types (`destroy:smog`).
 
 pub const BAND_STATE: u16 = 0x0090;
+pub const CHIEF_STATE: u16 = 0x0091;
+pub const HAVEN_CHEST: u16 = 0x0092;
+pub const DIFFICULTY: u16 = 0x0093;
 pub const FACTION_FOUND: u16 = 0x0800;
 pub const TERRITORY_SIGNAL: u16 = 0x0801;
 pub const POLLUTION: u16 = 0x0802;
@@ -30,6 +33,15 @@ pub const ENVOY_ANSWER: u16 = 0x0808;
 pub const TRIBUTE_PAID: u16 = 0x0809;
 pub const GIFT_GIVEN: u16 = 0x080A;
 pub const BAND_LOOTED: u16 = 0x080B;
+pub const RAIL_PASS: u16 = 0x080C;
+pub const TRAIN_PASSED: u16 = 0x080D;
+pub const CAMP_DEATH: u16 = 0x080E;
+pub const CAMP_CENSUS: u16 = 0x080F;
+pub const TRADED: u16 = 0x0810;
+pub const NOTICE_SHOWN: u16 = 0x0811;
+pub const CAMP_BODIES: u16 = 0x0812;
+pub const CAMP_OUT: u16 = 0x0813;
+pub const CHIEF_PAID: u16 = 0x0814;
 
 pub const TERRITORY: u16 = 0x8800;
 pub const FACTION_NOTICE: u16 = 0x8801;
@@ -38,6 +50,11 @@ pub const BAND_MATERIALIZE: u16 = 0x8803;
 pub const BAND_STEER: u16 = 0x8804;
 pub const BAND_RECALL: u16 = 0x8805;
 pub const DEMAND_SETTLED: u16 = 0x8806;
+pub const AMBUSH_SPOT: u16 = 0x8807;
+pub const CAMP_RECONCILE: u16 = 0x8808;
+pub const TRAIN_ROBBED: u16 = 0x8809;
+pub const CHIEF_BODY: u16 = 0x880A;
+pub const BAND_MARCH: u16 = 0x880B;
 
 /// The agent namespace byte ("C"; dragons 0x44, ships 0x53, herds 0x48, industry 0x49).
 pub const AGENT_NAMESPACE: u64 = 0x43;
@@ -70,6 +87,8 @@ pub const BY_NONE: u32 = 0;
 pub const BY_PLAYER: u32 = 1;
 pub const BY_MOB: u32 = 2;
 pub const BY_OTHER: u32 = 3;
+/// CAMP_DEATH only: a camp body carried off (Carry On, A10).
+pub const BY_TAKEN: u32 = 4;
 
 /// BAND_RECALL reasons.
 pub const RECALL_BORED: u32 = 1;
@@ -89,6 +108,61 @@ pub const SETTLED_PAID: u32 = 1;
 pub const SETTLED_CUT: u32 = 2;
 pub const SETTLED_EXPIRED: u32 = 3;
 pub const SETTLED_REFUSED: u32 = 4;
+/// The envoy party was wiped out with no player among its killers: the demand is withdrawn.
+pub const SETTLED_WITHDRAWN: u32 = 5;
+
+/// TRAIN_PASSED flags.
+pub const PASSED_WATCHED: u32 = 1;
+/// CAMP_DEATH flags.
+pub const DEATH_CHIEF: u32 = 1;
+pub const DEATH_STRAY: u32 = 2;
+/// CAMP_CENSUS flags.
+pub const CENSUS_CHIEF: u32 = 1;
+pub const CENSUS_CRYSTAL: u32 = 2;
+pub const CENSUS_THRONE: u32 = 4;
+/// CAMP_CENSUS body flags.
+pub const BODY_STRAY: u32 = 1;
+pub const BODY_ELSEWHERE: u32 = 2;
+pub const BODY_CHIEF: u32 = 4;
+/// CAMP_BODIES outcomes, per line.
+pub const LINE_DONE: u32 = 1;
+pub const LINE_NOTHING: u32 = 2;
+pub const LINE_STALE: u32 = 3;
+/// CHIEF_PAID flags.
+pub const PAID_STRAY: u32 = 1;
+/// CHIEF_STATE and CHIEF_BODY flags.
+pub const CHIEF_CRYSTAL: u32 = 1;
+/// DIFFICULTY values (Minecraft's `Difficulty` ids).
+pub const DIFFICULTY_PEACEFUL: u32 = 0;
+pub const DIFFICULTY_EASY: u32 = 1;
+pub const DIFFICULTY_NORMAL: u32 = 2;
+pub const DIFFICULTY_HARD: u32 = 3;
+/// AMBUSH_SPOT flags.
+pub const AMBUSH_REMOVED: u32 = 1;
+/// CAMP_RECONCILE flags.
+pub const RECONCILE_THRONE: u32 = 1;
+/// CAMP_RECONCILE line actions.
+pub const ACTION_SPAWN: u8 = 1;
+pub const ACTION_ADOPT: u8 = 2;
+pub const ACTION_TAKE: u8 = 3;
+pub const ACTION_SET_OUT: u8 = 4;
+pub const ACTION_HAND_BACK: u8 = 5;
+pub const ACTION_REMOVE: u8 = 6;
+pub const ACTION_SEAT_HEIR: u8 = 7;
+/// CAMP_RECONCILE line flags.
+pub const LINE_CHIEF: u8 = 1;
+pub const LINE_CRYSTAL: u8 = 2;
+/// BAND_MARCH phases.
+pub const MARCH_MUSTERING: u8 = 1;
+pub const MARCH_OUT: u8 = 2;
+pub const MARCH_WAITING: u8 = 3;
+pub const MARCH_FIGHTING: u8 = 4;
+pub const MARCH_HOME: u8 = 5;
+/// BAND_MARCH flags.
+pub const MARCH_CHIEF: u8 = 1;
+pub const MARCH_ENDED: u8 = 2;
+/// A joint attack's contingent (CONFLICT-LIFE.md §2.16): never set in this build.
+pub const MARCH_JOINT: u8 = 4;
 
 /// An item stack in a record: item dictionary id and count.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -124,6 +198,10 @@ pub struct FactionFound {
     pub dimension: u32,
     pub structure: u32,
     pub pos: (i32, i32, i32),
+    /// The census at discovery: the camp's bodies at home, and `CENSUS_CHIEF` (the chief is
+    /// present) and `CENSUS_CRYSTAL` (it holds its crystal).
+    pub home_bodies: u16,
+    pub census: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +313,165 @@ pub struct BandLooted {
     pub items: Vec<Item>,
 }
 
+/// The latest health and crystal of a camp's chief at home (latest-wins).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChiefState {
+    pub faction: u64,
+    /// `CHIEF_CRYSTAL`.
+    pub flags: u32,
+    pub health: f32,
+}
+
+/// A chest at a haven the tribute can go into (latest-wins, as LAIR_CHEST).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HavenChest {
+    pub faction: u64,
+    pub dimension: u32,
+    pub pos: (i32, i32, i32),
+    /// Its empty slots (a chest whose loot table is not rolled yet: all of them).
+    pub free: u32,
+}
+
+/// The world's difficulty (latest-wins): `DIFFICULTY_PEACEFUL` to `DIFFICULTY_HARD`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Difficulty {
+    pub difficulty: u32,
+}
+
+/// A train's pass through a camp's range (MOWZIE.md §4.3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RailPass {
+    pub faction: u64,
+    /// SplitMix64 of Create's train UUID (docs/industry-boundary.md H19).
+    pub train: u64,
+    /// The train's owner; (0, 0) for none.
+    pub owner: Uuid,
+    pub dimension: u32,
+    /// The sampled point nearest the camp.
+    pub pos: (f64, f64, f64),
+    pub entry: i64,
+    pub exit: i64,
+}
+
+/// A train passing a lurking party's track point (MOWZIE.md §4.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrainPassed {
+    pub agent: u64,
+    pub epoch: u32,
+    /// `PASSED_WATCHED`.
+    pub flags: u32,
+    /// The carriage nearest the point, from 0.
+    pub carriage: u32,
+    pub train: u64,
+}
+
+/// A camp body killed or carried off, at home or left behind (MOWZIE.md §4.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampDeath {
+    pub faction: u64,
+    /// The killer kind: `BY_NONE` to `BY_TAKEN`.
+    pub by: u32,
+    pub body: u32,
+    /// `DEATH_CHIEF`, `DEATH_STRAY`.
+    pub flags: u32,
+    /// The body's slot and generation (0 for a stray).
+    pub slot: u32,
+    pub generation: u32,
+    pub killer: Uuid,
+    pub op: u64,
+}
+
+/// One body a census found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CensusBody {
+    pub body: u32,
+    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`.
+    pub flags: u32,
+    pub slot: u32,
+    pub generation: u32,
+    pub uuid: Uuid,
+}
+
+/// A camp's bodies when it comes in (MOWZIE.md §4.9).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CampCensus {
+    pub faction: u64,
+    /// The new epoch: a Java op id.
+    pub epoch: u64,
+    /// `CENSUS_CHIEF`, `CENSUS_CRYSTAL`, `CENSUS_THRONE`.
+    pub flags: u32,
+    pub health: f32,
+    /// The Umvuthi's position and direction (the throne spot), with `CENSUS_THRONE`.
+    pub throne: (f64, f64, f64),
+    pub direction: f32,
+    /// The body whose trade memory `traded` is.
+    pub traded_slot: u32,
+    pub traded_generation: u32,
+    pub bodies: Vec<CensusBody>,
+    pub traded: Vec<Uuid>,
+}
+
+/// A masked trade at a grove.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Traded {
+    pub faction: u64,
+    pub player: Uuid,
+    pub nuggets: u32,
+    pub op: u64,
+}
+
+/// The plugin played a feud's in-world notice (FACTION_NOTICE) to its player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoticeShown {
+    pub faction: u64,
+    /// The notice's step, as FACTION_NOTICE's aux.
+    pub step: u32,
+    /// The notice's player; (0, 0) for the settlers.
+    pub player: Uuid,
+}
+
+/// One CAMP_RECONCILE line's answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineAnswer {
+    /// The line's index in its CAMP_RECONCILE, from 0.
+    pub line: u32,
+    pub slot: u32,
+    pub generation: u32,
+    /// `LINE_DONE`, `LINE_NOTHING`, `LINE_STALE`.
+    pub outcome: u32,
+}
+
+/// The answer to a CAMP_RECONCILE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampBodies {
+    pub faction: u64,
+    pub epoch: u64,
+    /// The reconcile's op id (the engine's).
+    pub op: u64,
+    pub lines: Vec<LineAnswer>,
+}
+
+/// A camp went out: a footprint chunk dropped below FULL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CampOut {
+    pub faction: u64,
+    /// The epoch that ended.
+    pub epoch: u64,
+}
+
+/// A player's first payment to an Umvuthi body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChiefPaid {
+    pub faction: u64,
+    pub slot: u32,
+    pub generation: u32,
+    /// `PAID_STRAY`.
+    pub flags: u32,
+    pub player: Uuid,
+    pub op: u64,
+    pub items: Vec<Item>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
     State(BandState),
@@ -250,11 +487,35 @@ pub enum Obs {
     TributePaid(TributePaid),
     GiftGiven(GiftGiven),
     Looted(BandLooted),
+    ChiefState(ChiefState),
+    HavenChest(HavenChest),
+    Difficulty(Difficulty),
+    RailPass(RailPass),
+    TrainPassed(TrainPassed),
+    CampDeath(CampDeath),
+    CampCensus(CampCensus),
+    Traded(Traded),
+    NoticeShown(NoticeShown),
+    CampBodies(CampBodies),
+    CampOut(CampOut),
+    ChiefPaid(ChiefPaid),
 }
 
 impl Obs {
     pub fn kind(&self) -> u16 {
         match self {
+            Obs::ChiefState(_) => CHIEF_STATE,
+            Obs::HavenChest(_) => HAVEN_CHEST,
+            Obs::Difficulty(_) => DIFFICULTY,
+            Obs::RailPass(_) => RAIL_PASS,
+            Obs::TrainPassed(_) => TRAIN_PASSED,
+            Obs::CampDeath(_) => CAMP_DEATH,
+            Obs::CampCensus(_) => CAMP_CENSUS,
+            Obs::Traded(_) => TRADED,
+            Obs::NoticeShown(_) => NOTICE_SHOWN,
+            Obs::CampBodies(_) => CAMP_BODIES,
+            Obs::CampOut(_) => CAMP_OUT,
+            Obs::ChiefPaid(_) => CHIEF_PAID,
             Obs::State(_) => BAND_STATE,
             Obs::FactionFound(_) => FACTION_FOUND,
             Obs::Signal(_) => TERRITORY_SIGNAL,
@@ -275,13 +536,17 @@ impl Obs {
         self.kind() >= 0x0100
     }
 
-    /// The plugin's op id, for the records that move items or kill a chief (applied once).
+    /// The plugin's op id, for the records that move items, trade or kill (applied once).
+    /// CAMP_BODIES carries the engine's op id of the reconcile it answers, booked by state.
     pub fn op(&self) -> Option<u64> {
         match self {
             Obs::ChiefKilled(c) => Some(c.op),
             Obs::TributePaid(t) => Some(t.op),
             Obs::GiftGiven(g) => Some(g.op),
             Obs::Looted(l) => Some(l.op),
+            Obs::CampDeath(d) => Some(d.op),
+            Obs::Traded(t) => Some(t.op),
+            Obs::ChiefPaid(c) => Some(c.op),
             _ => None,
         }
     }
@@ -381,6 +646,97 @@ pub struct DemandSettled {
     pub signal: u32,
 }
 
+/// Where a lurking party waits beside a track (MOWZIE.md §4.4).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AmbushSpot {
+    pub agent: u64,
+    pub epoch: u32,
+    /// `AMBUSH_REMOVED`: the lurk ended.
+    pub flags: u32,
+    pub dimension: u32,
+    pub faction: u64,
+    /// The sampled track point.
+    pub track: (f64, f64, f64),
+    /// Where the body stands.
+    pub spot: (f64, f64, f64),
+    /// Blocks from the track point within which a train passes it.
+    pub reach: f32,
+}
+
+/// One CAMP_RECONCILE line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReconcileLine {
+    pub slot: u32,
+    pub generation: u32,
+    pub body: u32,
+    /// `ACTION_SPAWN` to `ACTION_SEAT_HEIR`.
+    pub action: u8,
+    /// `LINE_CHIEF`, `LINE_CRYSTAL`.
+    pub flags: u8,
+    /// Adopt and remove a stray: its UUID. Set out and hand back: the party's agent and epoch.
+    pub a: u64,
+    pub b: u64,
+}
+
+/// The engine's order to a camp that is in (MOWZIE.md §4.9).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CampReconcile {
+    pub faction: u64,
+    pub epoch: u64,
+    /// Derived from the faction, epoch and decision (allocator byte 0x43, docs/boundary.md §9.2).
+    pub op: u64,
+    /// `RECONCILE_THRONE`: the throne spot is given.
+    pub flags: u32,
+    pub throne: (f64, f64, f64),
+    pub direction: f32,
+    pub lines: Vec<ReconcileLine>,
+}
+
+/// The train the robbed-train roar plays for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrainRobbed {
+    pub faction: u64,
+    pub train: u64,
+}
+
+/// A chief's health, crystal and trade memory, ahead of a stack, spawn line or hand-back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChiefBody {
+    pub faction: u64,
+    /// The party's agent; 0 at home.
+    pub agent: u64,
+    /// The party's epoch, or the camp's at home.
+    pub epoch: u64,
+    pub health: f32,
+    /// `CHIEF_CRYSTAL`.
+    pub flags: u32,
+    pub traded: Vec<Uuid>,
+}
+
+/// A party's march (MOWZIE.md §4.16): each record replaces the agent's earlier ones.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandMarch {
+    pub agent: u64,
+    pub revision: u32,
+    pub dimension: u32,
+    pub faction: u64,
+    /// Dictionary kind 5.
+    pub culture: u32,
+    /// BAND_MATERIALIZE's purposes: 1 envoy to 6 plunder.
+    pub kind: u8,
+    /// `MARCH_MUSTERING` to `MARCH_HOME`.
+    pub phase: u8,
+    /// `MARCH_CHIEF`, `MARCH_ENDED`, `MARCH_JOINT`.
+    pub flags: u8,
+    /// The partner contingent's agent for a joint attack; 0 in this build.
+    pub partner: u64,
+    pub muster_end: i64,
+    /// Unit counts by body kind.
+    pub units: Vec<(u32, u32)>,
+    /// From `route[seg]` at `times[seg]`: (x, z, tick), chart coordinates.
+    pub waypoints: Vec<(i32, i32, i64)>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
     Territory(Territory),
@@ -390,11 +746,21 @@ pub enum Cmd {
     Steer(BandSteer),
     Recall(BandRecall),
     Settled(DemandSettled),
+    AmbushSpot(AmbushSpot),
+    Reconcile(CampReconcile),
+    TrainRobbed(TrainRobbed),
+    ChiefBody(ChiefBody),
+    March(BandMarch),
 }
 
 impl Cmd {
     pub fn kind(&self) -> u16 {
         match self {
+            Cmd::AmbushSpot(_) => AMBUSH_SPOT,
+            Cmd::Reconcile(_) => CAMP_RECONCILE,
+            Cmd::TrainRobbed(_) => TRAIN_ROBBED,
+            Cmd::ChiefBody(_) => CHIEF_BODY,
+            Cmd::March(_) => BAND_MARCH,
             Cmd::Territory(_) => TERRITORY,
             Cmd::Notice(_) => FACTION_NOTICE,
             Cmd::Envoy(_) => ENVOY_MATERIALIZE,
@@ -414,16 +780,24 @@ impl Cmd {
             Cmd::Steer(_) => "BAND_STEER",
             Cmd::Recall(_) => "BAND_RECALL",
             Cmd::Settled(_) => "DEMAND_SETTLED",
+            Cmd::AmbushSpot(_) => "AMBUSH_SPOT",
+            Cmd::Reconcile(_) => "CAMP_RECONCILE",
+            Cmd::TrainRobbed(_) => "TRAIN_ROBBED",
+            Cmd::ChiefBody(_) => "CHIEF_BODY",
+            Cmd::March(_) => "BAND_MARCH",
         }
     }
 
-    /// The agent a puppet command addresses.
+    /// The agent a party's command addresses (dropped from the outbox at a session start, which
+    /// derives them again).
     pub fn agent(&self) -> Option<u64> {
         match self {
             Cmd::Envoy(c) => Some(c.agent),
             Cmd::Materialize(c) => Some(c.agent),
             Cmd::Steer(c) => Some(c.agent),
             Cmd::Recall(c) => Some(c.agent),
+            Cmd::AmbushSpot(c) => Some(c.agent),
+            Cmd::March(c) => Some(c.agent),
             _ => None,
         }
     }
@@ -596,6 +970,8 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(32, f.dimension);
             w.u32(36, f.structure);
             w.ipos(40, f.pos);
+            w.u16(52, f.home_bodies);
+            w.u8(54, f.census);
             w.finish(FACTION_FOUND, f.flags, 56);
         }
         Obs::Signal(s) => {
@@ -681,6 +1057,113 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.items(48, &l.items);
             w.finish(BAND_LOOTED, l.items.len() as u32, 48 + 16 * l.items.len());
         }
+        Obs::ChiefState(c) => {
+            w.u64(8, c.faction);
+            w.f32(16, c.health);
+            w.finish(CHIEF_STATE, c.flags, 24);
+        }
+        Obs::HavenChest(h) => {
+            w.u64(8, h.faction);
+            w.u32(16, h.dimension);
+            w.ipos(20, h.pos);
+            w.u32(32, h.free);
+            w.finish(HAVEN_CHEST, 0, 40);
+        }
+        Obs::Difficulty(d) => {
+            w.u32(8, d.difficulty);
+            w.finish(DIFFICULTY, 0, 16);
+        }
+        Obs::RailPass(p) => {
+            w.u64(24, p.faction);
+            w.u64(32, p.train);
+            w.uuid(40, p.owner);
+            w.u32(56, p.dimension);
+            w.pos(64, p.pos);
+            w.i64(88, p.entry);
+            w.i64(96, p.exit);
+            w.finish(RAIL_PASS, 0, 104);
+        }
+        Obs::TrainPassed(t) => {
+            w.u64(24, t.agent);
+            w.u32(32, t.epoch);
+            w.u32(36, t.carriage);
+            w.u64(40, t.train);
+            w.finish(TRAIN_PASSED, t.flags, 48);
+        }
+        Obs::CampDeath(d) => {
+            w.u64(24, d.faction);
+            w.u32(32, d.body);
+            w.u32(36, d.flags);
+            w.u32(40, d.slot);
+            w.u32(44, d.generation);
+            w.uuid(48, d.killer);
+            w.u64(64, d.op);
+            w.finish(CAMP_DEATH, d.by, 72);
+        }
+        Obs::CampCensus(c) => {
+            w.u64(24, c.faction);
+            w.u64(32, c.epoch);
+            w.u32(40, c.flags);
+            w.f32(44, c.health);
+            w.pos(48, c.throne);
+            w.f32(72, c.direction);
+            w.u32(76, c.traded.len() as u32);
+            w.u32(80, c.traded_slot);
+            w.u32(84, c.traded_generation);
+            for (k, b) in c.bodies.iter().enumerate() {
+                let o = 88 + 32 * k;
+                w.u32(o, b.body);
+                w.u32(o + 4, b.flags);
+                w.u32(o + 8, b.slot);
+                w.u32(o + 12, b.generation);
+                w.uuid(o + 16, b.uuid);
+            }
+            let t0 = 88 + 32 * c.bodies.len();
+            for (k, u) in c.traded.iter().enumerate() {
+                w.uuid(t0 + 16 * k, *u);
+            }
+            w.finish(CAMP_CENSUS, c.bodies.len() as u32, t0 + 16 * c.traded.len());
+        }
+        Obs::Traded(t) => {
+            w.u64(24, t.faction);
+            w.uuid(32, t.player);
+            w.u32(48, t.nuggets);
+            w.u64(56, t.op);
+            w.finish(TRADED, 0, 64);
+        }
+        Obs::NoticeShown(n) => {
+            w.u64(24, n.faction);
+            w.uuid(32, n.player);
+            w.finish(NOTICE_SHOWN, n.step, 48);
+        }
+        Obs::CampBodies(b) => {
+            w.u64(24, b.faction);
+            w.u64(32, b.epoch);
+            w.u64(40, b.op);
+            for (k, l) in b.lines.iter().enumerate() {
+                let o = 48 + 16 * k;
+                w.u32(o, l.line);
+                w.u32(o + 4, l.slot);
+                w.u32(o + 8, l.generation);
+                w.u32(o + 12, l.outcome);
+            }
+            w.finish(CAMP_BODIES, b.lines.len() as u32, 48 + 16 * b.lines.len());
+        }
+        Obs::CampOut(c) => {
+            w.u64(24, c.faction);
+            w.u64(32, c.epoch);
+            w.finish(CAMP_OUT, 0, 40);
+        }
+        Obs::ChiefPaid(c) => {
+            w.u64(24, c.faction);
+            w.u32(32, c.slot);
+            w.u32(36, c.generation);
+            w.u32(40, c.flags);
+            w.uuid(48, c.player);
+            w.u64(64, c.op);
+            w.items(72, &c.items);
+            w.finish(CHIEF_PAID, c.items.len() as u32, 72 + 16 * c.items.len());
+        }
     }
 }
 
@@ -718,6 +1201,8 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             dimension: r.u32(32)?,
             structure: r.u32(36)?,
             pos: r.ipos(40)?,
+            home_bodies: r.u16(52)?,
+            census: r.u8(54)?,
         }),
         TERRITORY_SIGNAL => Obs::Signal(TerritorySignal {
             faction: r.u64(24)?,
@@ -799,6 +1284,121 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             epoch: r.u32(32)?,
             op: r.u64(40)?,
             items: r.items(48, aux as usize)?,
+        }),
+        CHIEF_STATE => Obs::ChiefState(ChiefState {
+            faction: r.u64(8)?,
+            flags: aux,
+            health: r.f32(16)?,
+        }),
+        HAVEN_CHEST => Obs::HavenChest(HavenChest {
+            faction: r.u64(8)?,
+            dimension: r.u32(16)?,
+            pos: r.ipos(20)?,
+            free: r.u32(32)?,
+        }),
+        DIFFICULTY => Obs::Difficulty(Difficulty {
+            difficulty: r.u32(8)?,
+        }),
+        RAIL_PASS => Obs::RailPass(RailPass {
+            faction: r.u64(24)?,
+            train: r.u64(32)?,
+            owner: r.uuid(40)?,
+            dimension: r.u32(56)?,
+            pos: r.pos(64)?,
+            entry: r.i64(88)?,
+            exit: r.i64(96)?,
+        }),
+        TRAIN_PASSED => Obs::TrainPassed(TrainPassed {
+            agent: r.u64(24)?,
+            epoch: r.u32(32)?,
+            flags: aux,
+            carriage: r.u32(36)?,
+            train: r.u64(40)?,
+        }),
+        CAMP_DEATH => Obs::CampDeath(CampDeath {
+            faction: r.u64(24)?,
+            by: aux,
+            body: r.u32(32)?,
+            flags: r.u32(36)?,
+            slot: r.u32(40)?,
+            generation: r.u32(44)?,
+            killer: r.uuid(48)?,
+            op: r.u64(64)?,
+        }),
+        CAMP_CENSUS => {
+            let n = aux as usize;
+            let t = r.u32(76)? as usize;
+            let bodies = (0..n)
+                .map(|k| {
+                    let o = 88 + 32 * k;
+                    Ok(CensusBody {
+                        body: r.u32(o)?,
+                        flags: r.u32(o + 4)?,
+                        slot: r.u32(o + 8)?,
+                        generation: r.u32(o + 12)?,
+                        uuid: r.uuid(o + 16)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, CodecError>>()?;
+            let t0 = 88 + 32 * n;
+            let traded = (0..t)
+                .map(|k| r.uuid(t0 + 16 * k))
+                .collect::<Result<Vec<_>, CodecError>>()?;
+            Obs::CampCensus(CampCensus {
+                faction: r.u64(24)?,
+                epoch: r.u64(32)?,
+                flags: r.u32(40)?,
+                health: r.f32(44)?,
+                throne: r.pos(48)?,
+                direction: r.f32(72)?,
+                traded_slot: r.u32(80)?,
+                traded_generation: r.u32(84)?,
+                bodies,
+                traded,
+            })
+        }
+        TRADED => Obs::Traded(Traded {
+            faction: r.u64(24)?,
+            player: r.uuid(32)?,
+            nuggets: r.u32(48)?,
+            op: r.u64(56)?,
+        }),
+        NOTICE_SHOWN => Obs::NoticeShown(NoticeShown {
+            faction: r.u64(24)?,
+            step: aux,
+            player: r.uuid(32)?,
+        }),
+        CAMP_BODIES => {
+            let lines = (0..aux as usize)
+                .map(|k| {
+                    let o = 48 + 16 * k;
+                    Ok(LineAnswer {
+                        line: r.u32(o)?,
+                        slot: r.u32(o + 4)?,
+                        generation: r.u32(o + 8)?,
+                        outcome: r.u32(o + 12)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, CodecError>>()?;
+            Obs::CampBodies(CampBodies {
+                faction: r.u64(24)?,
+                epoch: r.u64(32)?,
+                op: r.u64(40)?,
+                lines,
+            })
+        }
+        CAMP_OUT => Obs::CampOut(CampOut {
+            faction: r.u64(24)?,
+            epoch: r.u64(32)?,
+        }),
+        CHIEF_PAID => Obs::ChiefPaid(ChiefPaid {
+            faction: r.u64(24)?,
+            slot: r.u32(32)?,
+            generation: r.u32(36)?,
+            flags: r.u32(40)?,
+            player: r.uuid(48)?,
+            op: r.u64(64)?,
+            items: r.items(72, aux as usize)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -899,6 +1499,80 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u32(48, s.signal);
             w.finish(DEMAND_SETTLED, s.outcome, 56);
         }
+        Cmd::AmbushSpot(a) => {
+            w.u64(16, a.agent);
+            w.u32(24, a.epoch);
+            w.u32(28, a.dimension);
+            w.u64(32, a.faction);
+            w.pos(40, a.track);
+            w.pos(64, a.spot);
+            w.f32(88, a.reach);
+            w.finish(AMBUSH_SPOT, a.flags, 96);
+        }
+        Cmd::Reconcile(c) => {
+            w.u64(16, c.faction);
+            w.u64(24, c.epoch);
+            w.u64(32, c.op);
+            w.pos(40, c.throne);
+            w.f32(64, c.direction);
+            w.u32(68, c.flags);
+            for (k, l) in c.lines.iter().enumerate() {
+                let o = 72 + 32 * k;
+                w.u32(o, l.slot);
+                w.u32(o + 4, l.generation);
+                w.u32(o + 8, l.body);
+                w.u8(o + 12, l.action);
+                w.u8(o + 13, l.flags);
+                w.u64(o + 16, l.a);
+                w.u64(o + 24, l.b);
+            }
+            w.finish(
+                CAMP_RECONCILE,
+                c.lines.len() as u32,
+                72 + 32 * c.lines.len(),
+            );
+        }
+        Cmd::TrainRobbed(t) => {
+            w.u64(16, t.faction);
+            w.u64(24, t.train);
+            w.finish(TRAIN_ROBBED, 0, 32);
+        }
+        Cmd::ChiefBody(c) => {
+            w.u64(16, c.faction);
+            w.u64(24, c.agent);
+            w.u64(32, c.epoch);
+            w.f32(40, c.health);
+            w.u32(44, c.flags);
+            for (k, u) in c.traded.iter().enumerate() {
+                w.uuid(48 + 16 * k, *u);
+            }
+            w.finish(CHIEF_BODY, c.traded.len() as u32, 48 + 16 * c.traded.len());
+        }
+        Cmd::March(m) => {
+            w.u64(16, m.agent);
+            w.u32(24, m.revision);
+            w.u32(28, m.dimension);
+            w.u64(32, m.faction);
+            w.u32(40, m.culture);
+            w.u8(44, m.kind);
+            w.u8(45, m.phase);
+            w.u8(46, m.flags);
+            w.u64(48, m.partner);
+            w.i64(56, m.muster_end);
+            w.u32(64, m.units.len() as u32);
+            w.pairs(72, &m.units);
+            let w0 = 72 + 8 * m.units.len();
+            for (k, p) in m.waypoints.iter().enumerate() {
+                w.i32(w0 + 16 * k, p.0);
+                w.i32(w0 + 16 * k + 4, p.1);
+                w.i64(w0 + 16 * k + 8, p.2);
+            }
+            w.finish(
+                BAND_MARCH,
+                m.waypoints.len() as u32,
+                w0 + 16 * m.waypoints.len(),
+            );
+        }
     }
 }
 
@@ -998,6 +1672,78 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             player: r.uuid(32)?,
             signal: r.u32(48)?,
         }),
+        AMBUSH_SPOT => Cmd::AmbushSpot(AmbushSpot {
+            agent: r.u64(16)?,
+            epoch: r.u32(24)?,
+            flags: aux,
+            dimension: r.u32(28)?,
+            faction: r.u64(32)?,
+            track: r.pos(40)?,
+            spot: r.pos(64)?,
+            reach: r.f32(88)?,
+        }),
+        CAMP_RECONCILE => {
+            let lines = (0..aux as usize)
+                .map(|k| {
+                    let o = 72 + 32 * k;
+                    Ok(ReconcileLine {
+                        slot: r.u32(o)?,
+                        generation: r.u32(o + 4)?,
+                        body: r.u32(o + 8)?,
+                        action: r.u8(o + 12)?,
+                        flags: r.u8(o + 13)?,
+                        a: r.u64(o + 16)?,
+                        b: r.u64(o + 24)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, CodecError>>()?;
+            Cmd::Reconcile(CampReconcile {
+                faction: r.u64(16)?,
+                epoch: r.u64(24)?,
+                op: r.u64(32)?,
+                throne: r.pos(40)?,
+                direction: r.f32(64)?,
+                flags: r.u32(68)?,
+                lines,
+            })
+        }
+        TRAIN_ROBBED => Cmd::TrainRobbed(TrainRobbed {
+            faction: r.u64(16)?,
+            train: r.u64(24)?,
+        }),
+        CHIEF_BODY => Cmd::ChiefBody(ChiefBody {
+            faction: r.u64(16)?,
+            agent: r.u64(24)?,
+            epoch: r.u64(32)?,
+            health: r.f32(40)?,
+            flags: r.u32(44)?,
+            traded: (0..aux as usize)
+                .map(|k| r.uuid(48 + 16 * k))
+                .collect::<Result<Vec<_>, CodecError>>()?,
+        }),
+        BAND_MARCH => {
+            let k = r.u32(64)? as usize;
+            let w0 = 72 + 8 * k;
+            Cmd::March(BandMarch {
+                agent: r.u64(16)?,
+                revision: r.u32(24)?,
+                dimension: r.u32(28)?,
+                faction: r.u64(32)?,
+                culture: r.u32(40)?,
+                kind: r.u8(44)?,
+                phase: r.u8(45)?,
+                flags: r.u8(46)?,
+                partner: r.u64(48)?,
+                muster_end: r.i64(56)?,
+                units: r.pairs(72, k)?,
+                waypoints: (0..aux as usize)
+                    .map(|j| {
+                        let o = w0 + 16 * j;
+                        Ok((r.i32(o)?, r.i32(o + 4)?, r.i64(o + 8)?))
+                    })
+                    .collect::<Result<Vec<_>, CodecError>>()?,
+            })
+        }
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((seq, c, size))
@@ -1005,6 +1751,8 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn obs() -> Vec<Obs> {
@@ -1024,6 +1772,8 @@ mod tests {
                 dimension: 1,
                 structure: 4,
                 pos: (900, 70, 1000),
+                home_bodies: 7,
+                census: (CENSUS_CHIEF | CENSUS_CRYSTAL) as u8,
             }),
             Obs::Signal(TerritorySignal {
                 faction: 77,
@@ -1101,6 +1851,123 @@ mod tests {
                 agent: 5,
                 epoch: 1,
                 op: 1 << 63 | 7,
+                items: items.clone(),
+            }),
+            Obs::ChiefState(ChiefState {
+                faction: 77,
+                flags: CHIEF_CRYSTAL,
+                health: 0.75,
+            }),
+            Obs::HavenChest(HavenChest {
+                faction: 77,
+                dimension: 1,
+                pos: (905, 71, 1002),
+                free: 27,
+            }),
+            Obs::Difficulty(Difficulty {
+                difficulty: DIFFICULTY_PEACEFUL,
+            }),
+            Obs::RailPass(RailPass {
+                faction: 77,
+                train: 0xDEAD_BEEF,
+                owner: (11, 22),
+                dimension: 1,
+                pos: (930.5, 66.0, 1010.25),
+                entry: 4_000,
+                exit: 4_160,
+            }),
+            Obs::TrainPassed(TrainPassed {
+                agent: 5,
+                epoch: 1,
+                flags: PASSED_WATCHED,
+                carriage: 2,
+                train: 0xDEAD_BEEF,
+            }),
+            Obs::CampDeath(CampDeath {
+                faction: 77,
+                by: BY_TAKEN,
+                body: 3,
+                flags: DEATH_CHIEF,
+                slot: 4,
+                generation: 2,
+                killer: (11, 22),
+                op: 1 << 63 | 8,
+            }),
+            Obs::CampCensus(CampCensus {
+                faction: 77,
+                epoch: 1 << 63 | 9,
+                flags: CENSUS_CHIEF | CENSUS_THRONE,
+                health: 0.5,
+                throne: (900.5, 70.0, 1000.5),
+                direction: 90.0,
+                traded_slot: 1,
+                traded_generation: 3,
+                bodies: vec![
+                    CensusBody {
+                        body: 1,
+                        flags: 0,
+                        slot: 2,
+                        generation: 1,
+                        uuid: (5, 6),
+                    },
+                    CensusBody {
+                        body: 1,
+                        flags: BODY_STRAY,
+                        slot: 0,
+                        generation: 0,
+                        uuid: (7, 8),
+                    },
+                    CensusBody {
+                        body: 4,
+                        flags: BODY_CHIEF | BODY_ELSEWHERE,
+                        slot: 1,
+                        generation: 3,
+                        uuid: (9, 10),
+                    },
+                ],
+                traded: vec![(11, 22), (33, 44)],
+            }),
+            Obs::Traded(Traded {
+                faction: 77,
+                player: (11, 22),
+                nuggets: 9,
+                op: 1 << 63 | 10,
+            }),
+            Obs::NoticeShown(NoticeShown {
+                faction: 77,
+                step: 1,
+                player: (11, 22),
+            }),
+            Obs::CampBodies(CampBodies {
+                faction: 77,
+                epoch: 1 << 63 | 9,
+                op: AGENT_NAMESPACE << 56 | 12,
+                lines: vec![
+                    LineAnswer {
+                        line: 0,
+                        slot: 2,
+                        generation: 1,
+                        outcome: LINE_DONE,
+                    },
+                    LineAnswer {
+                        line: 1,
+                        slot: 0,
+                        generation: 0,
+                        outcome: LINE_STALE,
+                    },
+                ],
+            }),
+            Obs::CampOut(CampOut {
+                faction: 77,
+                epoch: 1 << 63 | 9,
+            }),
+            Obs::ChiefPaid(ChiefPaid {
+                faction: 77,
+                slot: 1,
+                generation: 3,
+                flags: 0,
+                player: (11, 22),
+                op: 1 << 63 | 11,
                 items,
             }),
         ]
@@ -1186,12 +2053,180 @@ mod tests {
             }),
             Cmd::Settled(DemandSettled {
                 faction: 77,
-                outcome: SETTLED_PAID,
+                outcome: SETTLED_WITHDRAWN,
                 agent: 6,
                 player: (11, 22),
                 signal: 0,
             }),
+            Cmd::AmbushSpot(AmbushSpot {
+                agent: 5,
+                epoch: 1,
+                flags: AMBUSH_REMOVED,
+                dimension: 1,
+                faction: 77,
+                track: (930.5, 66.0, 1010.25),
+                spot: (934.5, 66.0, 1013.25),
+                reach: 8.0,
+            }),
+            Cmd::Reconcile(CampReconcile {
+                faction: 77,
+                epoch: 1 << 63 | 9,
+                op: AGENT_NAMESPACE << 56 | 12,
+                flags: RECONCILE_THRONE,
+                throne: (900.5, 70.0, 1000.5),
+                direction: 90.0,
+                lines: vec![
+                    ReconcileLine {
+                        slot: 2,
+                        generation: 1,
+                        body: 1,
+                        action: ACTION_SPAWN,
+                        flags: 0,
+                        a: 0,
+                        b: 0,
+                    },
+                    ReconcileLine {
+                        slot: 3,
+                        generation: 2,
+                        body: 1,
+                        action: ACTION_ADOPT,
+                        flags: 0,
+                        a: 7,
+                        b: 8,
+                    },
+                    ReconcileLine {
+                        slot: 1,
+                        generation: 3,
+                        body: 4,
+                        action: ACTION_SET_OUT,
+                        flags: LINE_CHIEF | LINE_CRYSTAL,
+                        a: 5,
+                        b: 1,
+                    },
+                ],
+            }),
+            Cmd::TrainRobbed(TrainRobbed {
+                faction: 77,
+                train: 0xDEAD_BEEF,
+            }),
+            Cmd::ChiefBody(ChiefBody {
+                faction: 77,
+                agent: 0,
+                epoch: 1 << 63 | 9,
+                health: 0.5,
+                flags: CHIEF_CRYSTAL,
+                traded: vec![(11, 22), (33, 44), (55, 66)],
+            }),
+            Cmd::March(BandMarch {
+                agent: 5,
+                revision: 4,
+                dimension: 1,
+                faction: 77,
+                culture: 2,
+                kind: 3,
+                phase: MARCH_OUT,
+                flags: MARCH_CHIEF,
+                partner: 0,
+                muster_end: 2_400,
+                units: vec![(1, 8), (2, 4)],
+                waypoints: vec![(900, 1000, 2_400), (850, 960, 3_100), (700, 780, 9_000)],
+            }),
         ]
+    }
+
+    /// docs/boundary.md §9.3 and §9.4: each record's size.
+    fn documented_size(kind: u16, aux: u32, b: &[u8]) -> usize {
+        let n = aux as usize;
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        match kind {
+            BAND_STATE => 56,
+            CHIEF_STATE => 24,
+            HAVEN_CHEST => 40,
+            DIFFICULTY => 16,
+            FACTION_FOUND => 56,
+            TERRITORY_SIGNAL => 72,
+            POLLUTION => 64,
+            BAND_MATERIALIZED | BAND_SPAWN_REJECTED => 48,
+            BAND_DEMATERIALIZED => 40 + 8 * u32_at(36),
+            BAND_CASUALTIES | CHIEF_KILLED => 64,
+            ENVOY_ANSWER => 56,
+            TRIBUTE_PAID => 72 + 16 * n,
+            GIFT_GIVEN => 56 + 16 * n,
+            BAND_LOOTED => 48 + 16 * n,
+            RAIL_PASS => 104,
+            TRAIN_PASSED => 48,
+            CAMP_DEATH => 72,
+            CAMP_CENSUS => 88 + 32 * n + 16 * u32_at(76),
+            TRADED => 64,
+            NOTICE_SHOWN => 48,
+            CAMP_BODIES => 48 + 16 * n,
+            CAMP_OUT => 40,
+            CHIEF_PAID => 72 + 16 * n,
+            TERRITORY => 48,
+            FACTION_NOTICE => 64,
+            ENVOY_MATERIALIZE => 104 + 8 * n,
+            BAND_MATERIALIZE => 120 + 16 * n,
+            BAND_STEER => 64,
+            BAND_RECALL => 48,
+            DEMAND_SETTLED => 56,
+            AMBUSH_SPOT => 96,
+            CAMP_RECONCILE => 72 + 32 * n,
+            TRAIN_ROBBED => 32,
+            CHIEF_BODY => 48 + 16 * n,
+            BAND_MARCH => 72 + 8 * u32_at(64) + 16 * n,
+            k => panic!("kind {k:#06x} has no documented size"),
+        }
+    }
+
+    #[test]
+    fn every_record_has_its_documented_size() {
+        let mut seen = BTreeSet::new();
+        for o in obs() {
+            let mut b = Vec::new();
+            encode_obs(1, 2, &o, &mut b);
+            let (kind, aux) = (o.kind(), u32::from_le_bytes(b[4..8].try_into().unwrap()));
+            assert_eq!(b.len(), documented_size(kind, aux, &b), "{o:?}");
+            assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
+            seen.insert(kind);
+        }
+        for c in cmds() {
+            let mut b = Vec::new();
+            encode_cmd(1, &c, &mut b);
+            let (kind, aux) = (c.kind(), u32::from_le_bytes(b[4..8].try_into().unwrap()));
+            assert_eq!(b.len(), documented_size(kind, aux, &b), "{c:?}");
+            assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
+            seen.insert(kind);
+        }
+        // Every kind of docs/boundary.md §9 has a sample: 13 + 12 observations, 7 + 5 commands.
+        assert_eq!(seen.len(), 37);
+        // BAND_MARCH: 72 + 8 a body kind + 16 a waypoint (MOWZIE.md §4.16): 408 for 20
+        // waypoints and two body kinds.
+        let mut b = Vec::new();
+        let Cmd::March(mut m) = cmds().pop().unwrap() else {
+            panic!("the last sample is a march")
+        };
+        m.waypoints = (0..20).map(|i| (i, -i, i64::from(i) * 100)).collect();
+        encode_cmd(1, &Cmd::March(m), &mut b);
+        assert_eq!(b.len(), 408);
+    }
+
+    #[test]
+    fn faction_found_carries_the_census_in_its_reserved_word() {
+        let mut b = Vec::new();
+        encode_obs(1, 2, &obs()[1], &mut b);
+        assert_eq!(u16::from_le_bytes([b[52], b[53]]), 7, "home bodies at 52");
+        assert_eq!(b[54], (CENSUS_CHIEF | CENSUS_CRYSTAL) as u8, "flags at 54");
+        assert_eq!(b[55], 0, "55 reserved");
+    }
+
+    #[test]
+    fn a_march_writes_no_partner_and_no_joint_flag_when_none_is_given() {
+        let mut b = Vec::new();
+        let c = cmds().pop().unwrap();
+        encode_cmd(1, &c, &mut b);
+        assert_eq!(&b[48..56], &[0; 8], "the partner agent");
+        assert_eq!(b[46] & MARCH_JOINT, 0);
+        assert_eq!(&b[68..72], &[0; 4], "68 reserved");
     }
 
     #[test]
