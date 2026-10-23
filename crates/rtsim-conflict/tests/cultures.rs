@@ -75,12 +75,14 @@ fn kill(c: &mut Conflict, w: &mut World, a: ActorId, amount: f64, at: Tick) {
     );
 }
 
-/// The feud at the end of an hour: its rung, whether a party is out for it, and since when.
+/// The feud at the end of an hour: its rung, whether a party is out for it, since when, and how
+/// many of the faction's bands are about.
 #[derive(Clone, Copy, Debug)]
 struct Sample {
     step: Step,
     out: bool,
     since: Tick,
+    bands: usize,
 }
 
 /// Kills enough each day from `from` to `to` that the grievance settles near `peak` (half-life 6
@@ -103,16 +105,19 @@ fn feed(
         }
         t = Tick(t.0 + HOUR);
         c.run_until(w, &mut NoInfrastructure, t);
+        let bands = c.parties.iter().filter(|(_, x)| x.faction == f).count();
         seen.push(c.feud(f, a).map_or(
             Sample {
                 step: Step::None,
                 out: false,
                 since: t,
+                bands,
             },
             |x| Sample {
                 step: x.step,
                 out: x.party.is_some(),
                 since: x.since,
+                bands,
             },
         ));
     }
@@ -138,50 +143,86 @@ fn turns(seen: &[Sample]) -> Vec<f64> {
         .collect()
 }
 
-/// `sim mowzie` run 1's M2 part: a Frostmaw den, angered by kills in its range, climbs from
-/// Notice straight to Raid (it has no Envoy or Scouts), comes again every 4 days after each
-/// return while the grievance holds, and calms back to Notice (not to Scouts) when it fades.
+/// Each repeat's day and the days since the last band came home before it (MZB-51).
+fn repeat_gaps(c: &Conflict) -> Vec<(f64, f64, String)> {
+    let mut home = None;
+    let mut out = Vec::new();
+    for e in &c.log {
+        match e.kind {
+            "home" => home = Some(e.day),
+            "repeat" => out.push((e.day, e.day - home.unwrap_or(f64::NAN), e.what.clone())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `sim mowzie` run 1's M2 part (MOWZIE.md §7 run 1: notice, raid, repeat, invasion): a Frostmaw
+/// den, angered by kills in its range, climbs from Notice straight to Raid (it has no Envoy or
+/// Scouts), comes again 4 days after each band is home, climbs to Invasion once the kills grow
+/// past its threshold after Raid's dwell, comes again at the top of its ladder, and calms back to
+/// Raid and to Notice (not to Scouts) when it fades.
 #[test]
-fn a_frostmaw_climbs_to_raid_repeats_and_calms_to_notice() {
+fn a_frostmaw_raids_invades_repeats_and_calms() {
     let (mut w, mut c, f) = setup_with(11, Cultures::builtin(), "frostmaw");
     let node = c.factions[f as usize].node;
     assert_eq!(w.nodes[node].kind, NodeKind::Lair, "a den is a lair");
     let p = c.player(&mut w, synth::PLAYER);
-    let raid = theta(&c, f, Step::Raid);
-    // Between Raid and Invasion (twice Raid's threshold): it raids and repeats, never invades.
-    let mut seen = feed(
-        &mut c,
-        &mut w,
-        f,
-        p,
-        1.5 * raid,
-        Tick(10),
-        Tick::from_days(60),
-    );
+    let (raid, inv) = (theta(&c, f, Step::Raid), theta(&c, f, Step::Invasion));
+    let dwell = c.cultures.get(c.factions[f as usize].culture).def.dwell_days[Step::Raid.index()];
+    // Between Raid and Invasion until Raid's dwell is over.
+    let mut seen = Vec::new();
+    let mut t = Tick(10);
+    let mut on_raid = None;
+    while on_raid.is_none_or(|d: Tick| t < Tick(d.0 + ((dwell + 1.0) * TICKS_PER_DAY as f64) as u64))
+    {
+        let to = Tick(t.0 + TICKS_PER_DAY);
+        seen.extend(feed(&mut c, &mut w, f, p, 1.5 * raid, t, to));
+        t = to;
+        if on_raid.is_none() && seen.iter().any(|x| x.step == Step::Raid) {
+            on_raid = Some(t);
+        }
+        assert!(t < Tick::from_days(60), "on Raid by now");
+    }
+    assert!(seen.iter().all(|x| x.step <= Step::Raid));
+    let calm_from = Tick(t.0 + 40 * TICKS_PER_DAY);
+    seen.extend(feed(&mut c, &mut w, f, p, 1.5 * inv, t, calm_from));
     seen.extend(feed(
         &mut c,
         &mut w,
         f,
         p,
         0.0,
-        Tick::from_days(60),
-        Tick::from_days(160),
+        calm_from,
+        Tick(calm_from.0 + 140 * TICKS_PER_DAY),
     ));
     let r = rungs(&seen);
     assert_eq!(
-        &r[..4],
-        &[Step::Notice, Step::Raid, Step::Notice, Step::None],
-        "{r:?}"
+        r,
+        vec![
+            Step::Notice,
+            Step::Raid,
+            Step::Invasion,
+            Step::Raid,
+            Step::Notice,
+            Step::None
+        ],
     );
     let s = &c.stats;
     assert_eq!(s.escalations[Step::Envoy.index()], 0);
     assert_eq!(s.escalations[Step::Scouts.index()], 0);
     assert_eq!(s.escalations[Step::Raid.index()], 1);
-    assert_eq!(s.escalations[Step::Invasion.index()], 0);
-    assert!(s.repeats >= 3, "repeats every 4 days after a return: {s:?}");
-    assert_eq!(s.parties[PartyKind::Raid.index()], 1 + s.repeats);
+    assert_eq!(s.escalations[Step::Invasion.index()], 1);
+    assert_eq!(c.cultures.get(c.factions[f as usize].culture).next_up(Step::Invasion), None);
+    let gaps = repeat_gaps(&c);
+    let invasions = gaps.iter().filter(|g| g.2.contains("invasion")).count();
+    assert!(invasions >= 2, "the top rung comes again: {gaps:?}");
+    assert_eq!(s.repeats as usize, gaps.len());
+    assert_eq!(
+        s.parties[PartyKind::Raid.index()] + s.parties[PartyKind::Invasion.index()],
+        2 + s.repeats
+    );
     assert_eq!(s.demands, 0, "a beast makes no demands");
-    assert!(c.log.iter().any(|e| e.kind == "repeat"));
     assert!(
         c.log
             .iter()
@@ -189,25 +230,101 @@ fn a_frostmaw_climbs_to_raid_repeats_and_calms_to_notice() {
             .all(|e| !e.what.contains("scouts") && !e.what.contains("envoy")),
         "calms skip the empty rungs"
     );
-    // Each repeat came 4 days after the band turned for home (`since`, MZB-51), the den's own
-    // walk back being part of them.
-    let homes = turns(&seen);
-    let repeats: Vec<f64> = c
-        .log
-        .iter()
-        .filter(|e| e.kind == "repeat")
-        .map(|e| e.day)
-        .collect();
-    assert!(homes.len() > repeats.len() && repeats.len() >= 3);
-    for (h, r) in homes.iter().zip(&repeats) {
-        assert!(
-            (4.0 - 1e-6..4.0 + 1e-3).contains(&(r - h)),
-            "home {h}, again {r}"
-        );
+    // Every repeat comes 4 days after the last band came home, to the tick while the kills go on
+    // (MZB-51); never two bands about.
+    let fed = calm_from.0 as f64 / TICKS_PER_DAY as f64;
+    for (day, gap, what) in &gaps {
+        assert!(*gap >= 4.0 - 1e-6, "day {day}: {gap} after home ({what})");
+        if *day < fed {
+            assert!(*gap <= 4.0 + 1e-3, "day {day}: {gap} after home ({what})");
+        }
     }
+    assert!(seen.iter().all(|x| x.bands <= 1));
+    assert!(s.feud_wakes < 2_000, "{s:?}");
     c.check(&w).expect("books");
     let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save()).unwrap();
     assert_eq!(back.state_hash(), c.state_hash());
+}
+
+/// A band whose walk home is longer than `repeat_days` (a Frostmaw sent far, MZB-51): the pool
+/// has its warrior back long before the band is home, and still the repeat waits until 4 days
+/// after the arrival, so there is never a second Frostmaw.
+#[test]
+fn a_repeat_counts_from_the_arrival_home() {
+    let cultures = edited(FROSTMAW_JSON, |d| {
+        d.parties.insert("invasion".into(), Vec::new());
+        d.march_blocks_per_tick = 0.0005;
+    });
+    let (mut w, mut c, f) = setup_with(22, cultures, "frostmaw");
+    let p = c.player(&mut w, synth::PLAYER);
+    let raid = theta(&c, f, Step::Raid);
+    let seen = feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
+        2.0 * raid,
+        Tick(10),
+        Tick::from_days(90),
+    );
+    let homes: Vec<f64> = c
+        .log
+        .iter()
+        .filter(|e| e.kind == "home")
+        .map(|e| e.day)
+        .collect();
+    let walks: Vec<f64> = turns(&seen)
+        .iter()
+        .zip(&homes)
+        .map(|(t, h)| h - t)
+        .collect();
+    assert!(
+        walks.iter().all(|d| *d > 4.0),
+        "each walk home outlasts repeat_days: {walks:?}"
+    );
+    let gaps = repeat_gaps(&c);
+    assert!(!gaps.is_empty(), "{:?}", c.stats);
+    for (day, gap, _) in &gaps {
+        assert!(
+            (4.0 - 1e-6..4.0 + 1e-3).contains(gap),
+            "day {day}: {gap} after home"
+        );
+    }
+    assert!(
+        seen.iter().all(|x| x.bands <= 1),
+        "never a second Frostmaw"
+    );
+    c.check(&w).expect("books");
+}
+
+/// A pool short of a whole warrior (MZB-52): a Frostmaw's pool at 0.6 when it climbs to Raid
+/// waits until it holds one, waking its feud a few times, not once a tick (about 72,000 times in
+/// these 3 days with a wait for half a warrior).
+#[test]
+fn a_pool_short_of_a_whole_warrior_waits_for_it() {
+    let (mut w, mut c, f) = setup_with(23, Cultures::builtin(), "frostmaw");
+    let p = c.player(&mut w, synth::PLAYER);
+    let raid = theta(&c, f, Step::Raid);
+    kill(&mut c, &mut w, p, 2.0 * raid / 8.0, Tick(10));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(20));
+    assert_eq!(c.feud(f, p).unwrap().step, Step::Notice);
+    c.factions[f as usize].pool = 0.6;
+    c.factions[f as usize].pool_at = Tick(20);
+    let wakes = c.stats.feud_wakes;
+    let to = Tick(20 + 3 * TICKS_PER_DAY);
+    let mut t = Tick(20);
+    while t < to {
+        t = Tick(t.0 + HOUR);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+    }
+    let x = c.feud(f, p).unwrap();
+    assert_eq!(x.step, Step::Raid, "it climbed once the warrior was there");
+    assert_eq!(c.stats.parties[PartyKind::Raid.index()], 1);
+    assert!(
+        c.stats.feud_wakes - wakes < 10,
+        "{} wakes",
+        c.stats.feud_wakes - wakes
+    );
 }
 
 /// `sim mowzie` run 5's M2 part: the grove's ladder goes Notice, Envoy (a demand in gold

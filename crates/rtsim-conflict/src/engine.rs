@@ -1112,7 +1112,7 @@ impl Conflict {
         if rate <= 0.0 {
             return Tick(u64::MAX / 2);
         }
-        at + ((n - have) / rate).ceil() as u64 + 1
+        later(at, (((n - have) / rate).ceil() as u64).saturating_add(1))
     }
 
     /// The chief, after a death of age the world's knowledge processed (the heir takes over).
