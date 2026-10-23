@@ -1080,7 +1080,10 @@ impl Ships {
     /// Haven `h`'s crew pool at `at`, thousandths. Fed, hires add `r (1 - pool/cap)` a day, so
     /// from `pool0` at `pool_at` it is `cap - (cap - pool0) e^(-r t / cap)` (§2.4.6); after
     /// `fed_until` it deserts at the same rate, `p_turn e^(-r t / cap)` (§2.4.6a rule 2, PC2).
-    /// One piecewise closed form, no event.
+    /// One piecewise closed form, no event. With `hires_per_day <= 0` the pool is frozen: the
+    /// desertion rate is the hire rate (one `k`), so a starving pool does not decay either
+    /// (tests turn hires off to hold the pool still; a separate desertion rate would be a new
+    /// tunable).
     pub fn crew_pool_milli(&self, h: u32, at: Tick) -> u32 {
         let hv = &self.havens[h as usize];
         if self.tun.hires_per_day <= 0.0 || at <= hv.pool_at {
@@ -1116,7 +1119,8 @@ impl Ships {
     /// When haven `h`'s pool will hold `need` crew (whole), from `at`: `at` if it does now, never
     /// (`None`) if hires cannot get there before the haven starves (§2.4.6a rule 2: after
     /// `fed_until` the pool only falls, and only a hunt start can feed it again). The inverse of
-    /// [`Self::crew_pool_milli`], a tick late so the closed form reads at least `need` then.
+    /// [`Self::crew_pool_milli`], a tick late so the closed form reads at least `need` then. With
+    /// hires off nothing is ever hired, so a short pool never gets there.
     fn crew_ready_at(&self, h: u32, need: u32, at: Tick) -> Option<Tick> {
         let have = self.crew_pool_milli(h, at);
         let need = need * 1000;
@@ -4268,7 +4272,9 @@ impl Ships {
             .filter(|&s| {
                 self.ships
                     .get(s)
-                    .is_some_and(|x| matches!(x.status, Status::Lost { back, .. } if back <= at))
+                    .is_some_and(|x| {
+                        matches!(x.status, Status::Lost { back, .. } if back <= at || back == LAID_UP)
+                    })
             })
             .collect();
         for s in waiting {
@@ -4717,6 +4723,11 @@ impl Ships {
             Obs::Dematerialized(d) => {
                 if let Some(s) = self.ship_of(d.agent, d.epoch) {
                     self.set_embodied(s, false);
+                    // A lost or laid-up ship's late report changes nothing: its crew went
+                    // ashore (or down with it), and a replay must not give it men back.
+                    if !self.ships[s].is_active() {
+                        return;
+                    }
                     let x = &mut self.ships[s];
                     x.hull_milli = d.hull_milli.min(1000);
                     x.crew = d.crew;
@@ -4927,12 +4938,18 @@ impl Ships {
                 }
             }
             Obs::Fight(f) => {
-                self.stats.fights_observed += 1;
                 let (Some(a), Some(d)) =
                     (Ship::id_of_agent(f.attacker), Ship::id_of_agent(f.defender))
                 else {
                     return;
                 };
+                // A late or replayed report of a fight whose attacker is lost or laid up since
+                // changes nothing: it would put men aboard a ship with none, or over a fresh
+                // crew (the record carries no epoch, so only the ship's state can tell).
+                if !self.ships.get(a).is_some_and(Ship::is_active) {
+                    return;
+                }
+                self.stats.fights_observed += 1;
                 let pairing = match self.ships.get(d).map(|x| x.role) {
                     Some(Role::Navy { .. }) => Pairing::PiratePatrol,
                     _ => Pairing::PirateMerchant,
@@ -4952,7 +4969,7 @@ impl Ships {
                     x.crew = f.attacker_crew.1;
                     x.hull_milli = f.attacker_hull_milli.min(1000);
                 }
-                if let Some(x) = self.ships.get_mut(d) {
+                if let Some(x) = self.ships.get_mut(d).filter(|x| x.is_active()) {
                     x.crew = f.defender_crew.1;
                     x.hull_milli = f.defender_hull_milli.min(1000);
                 }
@@ -5056,6 +5073,7 @@ impl Ships {
         // The lifecycle (§2.4.6a): a shut haven has no active ship, and exactly one live look
         // (an open one at most one); a laid-up ship's crew is ashore. A broken haven books no
         // refit and shuts broken; each navy has one live look for an assault while they run.
+        let now = self.now();
         let mut looks = vec![0usize; self.havens.len()];
         let mut assaults = vec![0usize; self.navies.len()];
         for (_, e) in self.wheel.iter() {
@@ -5104,6 +5122,17 @@ impl Ships {
                 }
                 if x.is_laid_up() && x.crew != 0 {
                     return Err(format!("laid-up ship {s:?} keeps {} crew aboard", x.crew));
+                }
+                // A ship is laid up only in a haven that starves, is broken (PC33) or is shut; a
+                // haven fed again wakes its laid-up slots (PC11), a broken one only at its refound.
+                if x.is_laid_up()
+                    && hv.shut.is_none()
+                    && hv.broken_at.is_none()
+                    && !self.starving(h as u32, now)
+                {
+                    return Err(format!(
+                        "ship {s:?} is laid up in haven {h}, which is open, whole and fed"
+                    ));
                 }
             }
             if let Some(sh) = hv.shut
