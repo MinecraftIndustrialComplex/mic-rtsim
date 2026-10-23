@@ -4,7 +4,7 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit MERGEHEAD
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 4b07ea8
 //!   (Mowzie M2 merged with main 4b207a3: the phase 1 world's catalogue has 10 goods,
 //!   `gold_nugget` last; the conflict's pages are RTC4 with meta version 3, each feud's kept
 //!   notice with its serial and its Envoy hold, the Peaceful flag and start and the last notice
@@ -22,8 +22,8 @@
 //!   which depends on when the server stops: 6638edc's save had one, while both runs of 98d6d34
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from another run of
-//!   MERGEHEAD (the same formats). Every module's pages, mostly empty: herds, districts with their
+//! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
+//!   4b07ea8 (the same formats). Every module's pages, mostly empty: herds, districts with their
 //!   glass pages and stations draw.
 //!
 //! A page format change before release makes a module unreadable here: the test then names it,
