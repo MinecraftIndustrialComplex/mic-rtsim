@@ -130,7 +130,9 @@ public final class CarriageLook implements FarLook {
     private long clock, lastSweep;
     private int errors;
     private long bakes, bakeNanos, uploadNanos, bakeFrames, badBlocks;
-    private double maxStepMs;
+    private double maxStepMs, maxPieceMs;
+    /** What {@link #maxPieceMs} was: a block, a bogey or the upload. */
+    private String maxPieceWhat = "none";
 
     @Override
     public Status status(FarMover m) {
@@ -260,14 +262,18 @@ public final class CarriageLook implements FarLook {
         long t0 = System.nanoTime();
         try {
             do {
+                long p0 = System.nanoTime();
+                String what;
                 if (j.next < blocks.size()) {
                     int index = j.next++;
+                    what = "block";
                     if (j.bad.contains(index))
                         continue;
                     CarriageShape.Block b = blocks.get(index);
                     BlockState state = Block.stateById(b.state());
                     if (state.getRenderShape() != RenderShape.MODEL)
                         continue;
+                    what = state.toString();
                     try {
                         BlockPos pos = new BlockPos(b.x(), b.y(), b.z());
                         BakedModel model = brd.getBlockModel(state);
@@ -285,6 +291,7 @@ public final class CarriageLook implements FarLook {
                 } else if (j.bogey < bogeys.size()) {
                     // Create draws bogeys with its own renderer, so the block list has none of their geometry
                     CarriageShape.Bogey g = bogeys.get(j.bogey++);
+                    what = "bogey " + g.style();
                     BogeyMeshes.Mesh mesh = BogeyMeshes.get(g.style(), g.size(), axis, g.upsideDown());
                     if (mesh != null)
                         for (int layer = 0; layer < LAYERS.length; layer++)
@@ -292,10 +299,20 @@ public final class CarriageLook implements FarLook {
                                 mesh.replay(layer, j.builder(layer), g.x(), g.y(), g.z());
                 } else
                     return true;
+                piece(p0, what);
             } while (System.nanoTime() < deadline);
             return false;
         } finally {
             j.nanos += System.nanoTime() - t0;
+        }
+    }
+
+    /** Keeps the longest piece of a bake (a block, a bogey, an upload) since the last {@link #stats}. */
+    private void piece(long t0, String what) {
+        double ms = (System.nanoTime() - t0) / 1e6;
+        if (ms > maxPieceMs) {
+            maxPieceMs = ms;
+            maxPieceWhat = what;
         }
     }
 
@@ -350,6 +367,7 @@ public final class CarriageLook implements FarLook {
             j.abandon();
         }
         uploadNanos += System.nanoTime() - t1;
+        piece(t1, "upload");
         if (parts.isEmpty()) {
             // Nothing drew (its blocks all drawn by block entities, its bogeys a style with no mesh): a box (DHT63)
             failed.add(j.hash);
@@ -402,12 +420,15 @@ public final class CarriageLook implements FarLook {
             vertices += m.vertices;
         String s = String.format(Locale.ROOT,
                 "carriages: %d meshes (%d vertices, %.1f MiB), %d wanted, %d failed; %d bakes, %.2f ms each over %.1f frames, "
-                        + "upload %.2f ms each, longest frame's bake %.2f ms; %d blocks left out; bogeys %d drawn in %.1f ms",
+                        + "upload %.2f ms each, longest frame's bake %.2f ms, longest piece %.2f ms (%s); %d blocks left "
+                        + "out; bogeys %d drawn in %.1f ms",
                 meshes.size(), vertices, vertices * (double) DefaultVertexFormat.BLOCK.getVertexSize() / (1 << 20),
                 wanted.size(), failed.size(), bakes, bakes == 0 ? 0.0 : bakeNanos / 1e6 / bakes,
                 bakes == 0 ? 0.0 : bakeFrames / (double) bakes, bakes == 0 ? 0.0 : uploadNanos / 1e6 / bakes, maxStepMs,
-                badBlocks, BogeyMeshes.drawn, BogeyMeshes.drawNanos / 1e6);
+                maxPieceMs, maxPieceWhat, badBlocks, BogeyMeshes.drawn, BogeyMeshes.drawNanos / 1e6);
         maxStepMs = 0;
+        maxPieceMs = 0;
+        maxPieceWhat = "none";
         return s;
     }
 

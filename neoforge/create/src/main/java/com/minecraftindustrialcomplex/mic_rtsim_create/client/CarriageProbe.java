@@ -10,6 +10,7 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.simibubi.create.content.trains.entity.CarriageContraptionEntity;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import org.joml.Vector3f;
@@ -30,6 +31,54 @@ public final class CarriageProbe {
 
     private CarriageProbe() {}
 
+    /** The gaps for one side (the client's entities, or the integrated server's): maxima and the worst carriage. */
+    private static final class Gaps {
+        final String name;
+        int n;
+        double upMax, upSum, sideMax, alongMax, worst = -1;
+        String detail = "";
+
+        Gaps(String name) {
+            this.name = name;
+        }
+
+        void add(CarriageContraptionEntity e, float[] mid, double cx, double cy, double cz, double ax, double ay, double az,
+                 double ourYaw) {
+            n++;
+            double carriageWorst = 0;
+            for (float[] s : STEPS) {
+                float px = mid[0] + s[0], py = mid[1] + s[1], pz = mid[2] + s[2];
+                Vector3f w = MODEL.local.transformPosition(px, py, pz, new Vector3f());
+                Vec3 g = e.toGlobalVector(new Vec3(px, py, pz), 1f);
+                double dx = cx + w.x - g.x, dy = cy + w.y - g.y, dz = cz + w.z - g.z;
+                double along = dx * ax + dy * ay + dz * az;
+                double rx = dx - along * ax, ry = dy - along * ay, rz = dz - along * az;
+                upMax = Math.max(upMax, Math.abs(ry));
+                upSum += Math.abs(ry);
+                double side = Math.sqrt(rx * rx + rz * rz);
+                sideMax = Math.max(sideMax, side);
+                alongMax = Math.max(alongMax, Math.abs(along));
+                carriageWorst = Math.max(carriageWorst, Math.sqrt(dx * dx + dy * dy + dz * dz));
+            }
+            if (carriageWorst > worst) {
+                worst = carriageWorst;
+                Vec3 g0 = e.toGlobalVector(new Vec3(mid[0], mid[1], mid[2]), 1f);
+                detail = String.format(java.util.Locale.ROOT,
+                        "worst %.3f: our mid (%.2f %.2f %.2f) yaw %.1f, its mid (%.2f %.2f %.2f) pos (%.2f %.2f %.2f) "
+                                + "yaw %.1f initial %.1f pitch %.1f",
+                        carriageWorst, cx, cy, cz, ourYaw, g0.x, g0.y, g0.z, e.getX(), e.getY(), e.getZ(), e.yaw,
+                        e.getInitialYaw(), e.pitch);
+            }
+        }
+
+        void log() {
+            if (n > 0)
+                MicRtsimCreate.LOGGER.info("far probe {} carriages {} up max {} mean {} side max {} along max {}; {}", name, n,
+                        String.format("%.3f", upMax), String.format("%.3f", upSum / (n * STEPS.length)),
+                        String.format("%.3f", sideMax), String.format("%.3f", alongMax), detail);
+        }
+    }
+
     public static void onClientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
@@ -38,9 +87,12 @@ public final class CarriageProbe {
         if (!(FarLooks.of(FarKind.CARRIAGE) instanceof CarriageLook look))
             return;
         String dimension = level.dimension().location().toString();
+        // In single player the server's entities are the ones the feed read: a gap there is the far model's, a gap
+        // only on the client is Create's client-side placement (bench trains have no track on the client)
+        var server = mc.getSingleplayerServer();
+        ServerLevel serverLevel = server == null ? null : server.getLevel(level.dimension());
         double clock = FarClock.ticks();
-        int n = 0;
-        double upMax = 0, upSum = 0, sideMax = 0, alongMax = 0;
+        Gaps client = new Gaps("client"), integrated = new Gaps("server");
         for (FarMover m : FarObjects.movers()) {
             if (m.kind() != FarKind.CARRIAGE || !dimension.equals(m.dimension()) || m.entity() < 0)
                 continue;
@@ -60,23 +112,12 @@ public final class CarriageProbe {
             ax /= al;
             ay /= al;
             az /= al;
-            n++;
-            for (float[] s : STEPS) {
-                float px = mid[0] + s[0], py = mid[1] + s[1], pz = mid[2] + s[2];
-                Vector3f w = MODEL.local.transformPosition(px, py, pz, new Vector3f());
-                Vec3 g = cce.toGlobalVector(new Vec3(px, py, pz), 1f);
-                double dx = cx + w.x - g.x, dy = cy + w.y - g.y, dz = cz + w.z - g.z;
-                double along = dx * ax + dy * ay + dz * az;
-                double rx = dx - along * ax, ry = dy - along * ay, rz = dz - along * az;
-                upMax = Math.max(upMax, Math.abs(ry));
-                upSum += Math.abs(ry);
-                sideMax = Math.max(sideMax, Math.sqrt(rx * rx + rz * rz));
-                alongMax = Math.max(alongMax, Math.abs(along));
-            }
+            double ourYaw = Math.toDegrees(Math.atan2(az, ax));
+            client.add(cce, mid, cx, cy, cz, ax, ay, az, ourYaw);
+            if (serverLevel != null && serverLevel.getEntity(m.entity()) instanceof CarriageContraptionEntity sce)
+                integrated.add(sce, mid, cx, cy, cz, ax, ay, az, ourYaw);
         }
-        if (n > 0)
-            MicRtsimCreate.LOGGER.info("far probe carriages {} up max {} mean {} side max {} along max {}", n,
-                    String.format("%.3f", upMax), String.format("%.3f", upSum / (n * STEPS.length)),
-                    String.format("%.3f", sideMax), String.format("%.3f", alongMax));
+        client.log();
+        integrated.log();
     }
 }

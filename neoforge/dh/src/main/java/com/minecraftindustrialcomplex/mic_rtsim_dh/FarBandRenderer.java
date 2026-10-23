@@ -11,6 +11,7 @@ import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexSorting;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.Minecraft;
@@ -20,6 +21,8 @@ import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import org.joml.Matrix4f;
+import org.joml.Matrix4fStack;
 
 /**
  * The band renderer (docs/choices-dh-feed.md): far movers inside the chunks the client has loaded that have no
@@ -64,17 +67,49 @@ final class FarBandRenderer {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null)
             return;
-        FarModelRenderer.onBand(event, level);
-        long t0 = System.nanoTime();
-        try {
-            draw(event, level);
-        } catch (RuntimeException e) {
-            if (errors++ < 5)
-                MicRtsimDh.LOGGER.error("mic_rtsim_dh: band renderer failed this frame", e);
+        // The stage's own matrices, not whatever RenderSystem holds by now: what the entities left there need not
+        // be the level's (a zoomed view drew the band's movers off where they are)
+        Matrix4f mv = event.getModelViewMatrix(), proj = event.getProjectionMatrix();
+        if (FarBench.ENABLED) {
+            mvDrift = Math.max(mvDrift, drift(RenderSystem.getModelViewMatrix(), mv));
+            projDrift = Math.max(projDrift, drift(RenderSystem.getProjectionMatrix(), proj));
         }
-        nanos += System.nanoTime() - t0;
-        frames++;
+        Matrix4f savedProj = new Matrix4f(RenderSystem.getProjectionMatrix());
+        VertexSorting savedSorting = RenderSystem.getVertexSorting();
+        Matrix4fStack stack = RenderSystem.getModelViewStack();
+        stack.pushMatrix();
+        try {
+            stack.set(mv);
+            RenderSystem.applyModelViewMatrix();
+            RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
+            FarModelRenderer.onBand(event, level);
+            long t0 = System.nanoTime();
+            try {
+                draw(event, level);
+            } catch (RuntimeException e) {
+                if (errors++ < 5)
+                    MicRtsimDh.LOGGER.error("mic_rtsim_dh: band renderer failed this frame", e);
+            }
+            nanos += System.nanoTime() - t0;
+            frames++;
+        } finally {
+            stack.popMatrix();
+            RenderSystem.applyModelViewMatrix();
+            RenderSystem.setProjectionMatrix(savedProj, savedSorting);
+        }
     }
+
+    /** The largest difference between two matrices' elements (the bench's check of what RenderSystem held). */
+    private static float drift(Matrix4f a, Matrix4f b) {
+        float d = 0;
+        for (int c = 0; c < 4; c++)
+            for (int r = 0; r < 4; r++)
+                d = Math.max(d, Math.abs(a.get(c, r) - b.get(c, r)));
+        return d;
+    }
+
+    /** For the bench: how far RenderSystem's matrices were from the stage's at the band, at most. */
+    static float mvDrift, projDrift;
 
     private static void draw(RenderLevelStageEvent event, ClientLevel level) {
         Vec3 cam = event.getCamera().getPosition();
