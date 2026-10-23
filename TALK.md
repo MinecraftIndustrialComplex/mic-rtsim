@@ -195,7 +195,7 @@ engine needed:
   - **hunger:** the scarce good is a food (it has `DataComponents.FOOD`) below a third of its target;
   - **prices:** a good under half its target is dear, over twice its target is cheap.
 - **A camp's own mood** (slice 4, from the faction block, §9.2; weights in TK78): `mood.cowed` (its chief
-  fell lately and it is cowed), `mood.new_chief` (a succession within ten game days, TK75), `mood.chief_out`
+  fell lately and it is cowed), `mood.new_chief` (a succession within ten game days, or a chief dead with the heir answering, TK75), `mood.chief_out`
   (its war chief is out with a band), `mood.lean` (under a third of its warriors) or `mood.strong` (at its
   full strength, TK76), and `mood.grudge`, its anger at the player: the feud has reached the first rung.
   None takes an argument. The safety, feud and dragon moods above apply to a camp's own news as they do a
