@@ -22,8 +22,10 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.Difficulty;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -46,7 +48,16 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -571,10 +582,11 @@ public final class ConflictGameTests {
      * settlers' envoy only shows its demand: it takes nothing from a player. Past its deadline an envoy
      * takes nothing and says so. A player's arrow hurts a guard and is an insult (ENVOY_ANSWER 3, once):
      * the guard is lifted, and the struck envoy takes nothing and says so. ENVOY_ANSWER 2 is never sent.
-     * Another envoy party killed by {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES with no
-     * killer. DEMAND_SETTLED takes the name away, and the envoy then takes nothing and says the
-     * settlement. A recall keeps the bodies while a player sees them, until its timeout. (DEMAND_SETTLED 5
-     * for the killed party is the engine's, M1.)
+     * Another envoy party (the settlers') killed by {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES
+     * with no killer, and its demand is withdrawn (DEMAND_SETTLED 5, scripted as M1's engine sends it, with
+     * the envoy still standing as MZB-32 allows; MZB-128). DEMAND_SETTLED takes the name away, and the envoy
+     * then takes nothing and says the settlement (withdrawn, paid). A recall keeps the bodies while a player
+     * sees them, until its timeout.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "conflict_envoy", skyAccess = true)
     public static void anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment(GameTestHelper helper) {
@@ -591,20 +603,21 @@ public final class ConflictGameTests {
         ConflictKit.envoy(a, 1, faction, dim, c.x - 1.5, c.y, c.z, player.getUUID(), demand, ConflictRecords.SIGNAL_MINING,
                 "minecraft:emerald", 6, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1), new ConflictKit.MemberSpec(WARRIOR, 2)));
         ConflictKit.envoy(b, 1, faction, dim, c.x + 1.0, c.y, c.z - 3.5, null, ConflictRecords.Envoy.DEMAND_TRIBUTE, 0,
-                "minecraft:emerald", 1, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
+                "minecraft:emerald", 1, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1), new ConflictKit.MemberSpec(WARRIOR, 1)));
         // Party "late": the player's, with a deadline that passes during the test.
         ConflictKit.envoy(late, 1, faction, dim, c.x - 2.5, c.y, c.z - 3.5, player.getUUID(), ConflictRecords.Envoy.DEMAND_TRIBUTE,
                 ConflictRecords.SIGNAL_MINING, "minecraft:emerald", 2, lateDeadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
-        Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1], envoyLate = new Mob[1];
+        Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1], guardB = new Mob[1], envoyLate = new Mob[1];
         IronGolem[] golem = new IronGolem[1];
-        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, saidA = {0};
+        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, saidA = {0}, saidB = {0};
         float[] health = {0};
         java.util.function.BooleanSupplier aMayTalk = () -> level.getGameTime() - saidA[0] >= RateLimit.PAIR;
+        java.util.function.BooleanSupplier bMayTalk = () -> level.getGameTime() - saidB[0] >= RateLimit.PAIR;
 
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     check("party A placed", party(a).stacks().size() == 1 && party(a).stacks().get(0).bodies().size() == 3);
-                    check("party B placed", party(b).stacks().size() == 1 && party(b).stacks().get(0).bodies().size() == 1);
+                    check("party B placed", party(b).stacks().size() == 1 && party(b).stacks().get(0).bodies().size() == 2);
                     check("the late party placed", party(late).stacks().size() == 1 && party(late).stacks().get(0).bodies().size() == 1);
                     // Journaled at the placing; it reaches received() at the next hand-over.
                     check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, a).isEmpty());
@@ -618,7 +631,12 @@ public final class ConflictGameTests {
                         else if (guard[0] == null)
                             guard[0] = sl.entity();
                     }
-                    envoyB[0] = party(b).stacks().get(0).bodies().get(0);
+                    for (ConflictBridge.Slot sl : party(b).stacks().get(0).slots()) {
+                        if (sl.envoy)
+                            envoyB[0] = sl.entity();
+                        else
+                            guardB[0] = sl.entity();
+                    }
                     envoyLate[0] = party(late).stacks().get(0).bodies().get(0);
                     check("the envoy is a pillager, its guards vindicators", envoy[0].getType() == EntityType.PILLAGER
                             && guard[0].getType() == EntityType.VINDICATOR);
@@ -757,6 +775,7 @@ public final class ConflictGameTests {
                     check("B took nothing", party(b).demand().remaining() == 1 && player.getMainHandItem().getCount() == 2);
                     check("B showed its demand: " + talkKeys(player), player.heard.size() == heardB + 1
                             && spoken(player.heard.get(heardB)).getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute.0"));
+                    saidB[0] = level.getGameTime();
                     player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
                 })
                 .thenWaitUntil(() -> check("the late party's deadline passed", level.getGameTime() >= lateDeadline))
@@ -796,8 +815,8 @@ public final class ConflictGameTests {
                             && spoken(player.heard.get(heard)).getKey().equals("mic_rtsim.talk.envoy.envoy.settled.struck.0"));
                     player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
                     saidA[0] = level.getGameTime();
-                    // Party B killed by /kill: no answer, a casualty with no killer.
-                    envoyB[0].kill();
+                    // Party B's guard killed by /kill: no answer, a casualty with no killer.
+                    guardB[0].kill();
                 })
                 .thenWaitUntil(() -> check("B's casualty", about(ConflictRecords.BAND_CASUALTIES, b).size() == 1))
                 .thenWaitUntil(() -> check("TRIBUTE_PAID three times", ConflictKit.tributes(a).size() == 3))
@@ -809,7 +828,7 @@ public final class ConflictGameTests {
                         check("ENVOY_ANSWER 2 is never sent", ConflictKit.answers(x, ConflictRecords.ANSWER_REFUSED) == 0);
                     ScriptedEngine.Received cb = about(ConflictRecords.BAND_CASUALTIES, b).get(0);
                     check("/kill: no killer", cb.aux() == ConflictRecords.BY_NONE && ConflictKit.uuidAt(cb, ConflictRecords.Casualties.KILLER_MOST) == null);
-                    check("the emissary", cb.view().getInt(ConflictRecords.Casualties.BODY) == ConflictKit.bodyId(EMISSARY));
+                    check("the guard", cb.view().getInt(ConflictRecords.Casualties.BODY) == ConflictKit.bodyId(WARRIOR));
                     check("and no ENVOY_ANSWER from B", about(ConflictRecords.ENVOY_ANSWER, b).isEmpty());
                     List<ScriptedEngine.Received> ts = ConflictKit.tributes(a);
                     int[] counts = {3, 1, 1};
@@ -823,8 +842,35 @@ public final class ConflictGameTests {
                         check("with a Java op id", (t.view().getLong(ConflictRecords.TributePaid.OP_ID) & Obs.JAVA_OP_BIT) != 0);
                     }
                     check("none to B or the late party", ConflictKit.tributes(b).isEmpty() && ConflictKit.tributes(late).isEmpty());
-                    ConflictKit.recall(b, 1, ConflictRecords.RECALL_ROUTED, 0, c.x, c.z);
+                    // The engine withdraws a demand whose party fell to no player (DEMAND_SETTLED 5, M1). It
+                    // sends it when its own count of the party reaches nothing, and a member may still stand
+                    // in Minecraft then (MZB-32): here the envoy, so its name and its line can be seen.
+                    ConflictKit.settled(faction, b, null, ConflictRecords.SETTLED_WITHDRAWN, 0);
+                })
+                .thenWaitUntil(() -> check("B's demand withdrawn", party(b).demand() == null))
+                .thenWaitUntil(() -> check("B's envoy may talk again", bMayTalk.getAsBoolean()))
+                .thenExecute(() -> {
+                    check("DEMAND_SETTLED 5 taken (" + bridge().lastSettled + ")", bridge().lastSettled == ConflictRecords.SETTLED_WITHDRAWN);
+                    check("B's name is gone", envoyB[0].getCustomName() == null && !envoyB[0].isCustomNameVisible());
+                    int heard = player.heard.size();
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 1));
+                    click(player, envoyB[0]);
+                    check("withdrawn, B took nothing", player.getMainHandItem().getCount() == 1);
+                    check("B spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
+                    TranslatableContents line = spoken(player.heard.get(heard));
+                    check("the withdrawal: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.settled.withdrawn.0"));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                    // The rest of B by /kill too: no answer from the whole party.
+                    envoyB[0].kill();
                     ConflictKit.settled(faction, a, player.getUUID(), ConflictRecords.SETTLED_PAID, 0);
+                })
+                .thenWaitUntil(() -> check("B's second casualty", about(ConflictRecords.BAND_CASUALTIES, b).size() == 2))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received cb = about(ConflictRecords.BAND_CASUALTIES, b).get(1);
+                    check("/kill: no killer", cb.aux() == ConflictRecords.BY_NONE && ConflictKit.uuidAt(cb, ConflictRecords.Casualties.KILLER_MOST) == null);
+                    check("the emissary", cb.view().getInt(ConflictRecords.Casualties.BODY) == ConflictKit.bodyId(EMISSARY));
+                    check("still no ENVOY_ANSWER from B", about(ConflictRecords.ENVOY_ANSWER, b).isEmpty());
+                    ConflictKit.recall(b, 1, ConflictRecords.RECALL_SETTLED, 0, c.x, c.z);
                 })
                 .thenWaitUntil(() -> check("A's demand settled", party(a).demand() == null))
                 .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
@@ -940,6 +986,7 @@ public final class ConflictGameTests {
                     id[0] = d.id;
                 })
                 .thenExecute(() -> {
+                    check("the core's tag ignores Mowzie's foliaath, not required", shippedIgnoresFoliaath());
                     check("the endermite is ignored", EntityType.ENDERMITE.is(com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatClasses.IGNORED));
                     IronGolem golem = EntityType.IRON_GOLEM.create(level);
                     golem.setPlayerCreated(true);
@@ -976,18 +1023,98 @@ public final class ConflictGameTests {
                 .thenSucceed();
     }
 
+    /** The shipped {@code mic_rtsim:threat/ignored} (the core's, not the test pack's) lists mowziesmobs:foliaath, required false. */
+    private static boolean shippedIgnoresFoliaath() {
+        String path = "/data/mic_rtsim/tags/entity_type/threat/ignored.json";
+        try (InputStream in = ConflictGameTests.class.getResourceAsStream(path)) {
+            check("the core ships " + path, in != null);
+            JsonObject tag = JsonParser.parseReader(new InputStreamReader(in, StandardCharsets.UTF_8)).getAsJsonObject();
+            for (JsonElement v : tag.getAsJsonArray("values"))
+                if (v.isJsonObject() && v.getAsJsonObject().has("id") && "mowziesmobs:foliaath".equals(v.getAsJsonObject().get("id").getAsString()))
+                    return v.getAsJsonObject().has("required") && !v.getAsJsonObject().get("required").getAsBoolean();
+            return false;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    // ---- the difficulty --------------------------------------------------------------------------
+
+    /**
+     * DIFFICULTY (M1, MZB-17): journaled (0x0815) on each change of the world's difficulty, with Minecraft's
+     * id. On Peaceful a hostile stack waits pending, as Peaceful would remove its bodies, and the change back
+     * places it.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_peaceful", skyAccess = true)
+    public static void peacefulIsJournaledAndHoldsAHostileBand(GameTestHelper helper) {
+        String test = "peacefulIsJournaledAndHoldsAHostileBand";
+        ServerLevel level = helper.getLevel();
+        MinecraftServer server = level.getServer();
+        Difficulty before = server.getWorldData().getDifficulty();
+        Difficulty after = before == Difficulty.PEACEFUL ? Difficulty.NORMAL : before;
+        ConflictKit.onEnd(helper, () -> server.setDifficulty(before, true));
+        Vec3 c = RtsimTests.centre(helper);
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), RtsimTests.dimension(helper));
+        band.arcX = c.x + 0.5;
+        band.arcZ = c.z;
+        band.targetX = c.x + 100;
+        band.targetY = c.y;
+        band.targetZ = c.z;
+        band.speed = 0f;
+        int[] seen = {0};
+        java.util.function.Supplier<List<ScriptedEngine.Received>> difficulties = () -> RtsimTests.engine().received(ConflictRecords.DIFFICULTY);
+        java.util.function.IntPredicate lastIs = id -> {
+            List<ScriptedEngine.Received> ds = difficulties.get();
+            return ds.size() > seen[0] && ds.get(ds.size() - 1).view().getInt(ConflictRecords.DifficultyRecord.DIFFICULTY) == id;
+        };
+        helper.startSequence()
+                .thenExecute(() -> {
+                    seen[0] = difficulties.get().size();
+                    server.setDifficulty(Difficulty.PEACEFUL, true);
+                })
+                .thenWaitUntil(() -> check("DIFFICULTY Peaceful", lastIs.test(Difficulty.PEACEFUL.getId())))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = difficulties.get().get(difficulties.get().size() - 1);
+                    check("journaled: an observation sequence (" + d.view().getLong(8) + ")", d.view().getLong(8) > 0);
+                    check("its own kind, 0x0815", d.kind() == 0x0815 && d.view().capacity() == ConflictRecords.DifficultyRecord.SIZE);
+                    ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false)));
+                })
+                .thenWaitUntil(() -> check("the party", party(agent) != null && party(agent).stacks().size() == 1))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    ConflictBridge.Stack st = party(agent).stacks().get(0);
+                    check("pending on Peaceful (" + st.state() + ")", st.state() == ConflictBridge.StackState.PENDING && st.bodies().isEmpty());
+                    check("no BAND_MATERIALIZED", about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty());
+                    seen[0] = difficulties.get().size();
+                    server.setDifficulty(after, true);
+                })
+                .thenWaitUntil(() -> check("DIFFICULTY " + after, lastIs.test(after.getId())))
+                .thenWaitUntil(() -> check("placed once Peaceful ends", party(agent).stacks().get(0).state() == ConflictBridge.StackState.PLACED
+                        && party(agent).stacks().get(0).bodies().size() == 2))
+                .thenExecute(() -> {
+                    record(test, "difficulty", "Peaceful held the band; " + after + " placed it");
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, c.x - 100, c.z);
+                })
+                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
+                .thenSucceed();
+    }
+
     // ---- notices ---------------------------------------------------------------------------------
 
     /**
-     * FACTION_NOTICE is a sound only (Ben, 2026-10-22: nothing in chat, the action bar or a title),
-     * kept until its player is in range: a notice to a player away from the territory waits; the player
-     * leaves and comes back inside it, and it plays once (NOTICE_SHOWN with its step once M1's records
-     * are on). A notice to the settlers plays to every player in range (MZB-118), here two. The territory
-     * command adds and removes the faction's circle. Test 19 without the M1 half.
+     * Test 19 (MOWZIE.md §7): FACTION_NOTICE is a sound only (Ben, 2026-10-22: nothing in chat, the action
+     * bar or a title), kept until its player is in range: a notice to a player away from the territory
+     * waits; the player logs out (PlayerList.remove: the logged-out event, the entity gone) and logs in
+     * again inside it (a new entity with the same id), and it plays once, to the new entity: NOTICE_SHOWN
+     * with the notice's serial in its aux. A notice to the settlers plays to every player in range
+     * (MZB-118), here two. The territory command adds and removes the faction's circle. The restart half
+     * (the engine resends a kept notice at session start) is M1's rtsim-jni test: the GameTest server
+     * has one bridge session, and the resent notice is the same FACTION_NOTICE this test sends (MZB-129).
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_notice", skyAccess = true)
-    public static void aNoticeWaitsForThePlayersNextEntry(GameTestHelper helper) {
-        String test = "aNoticeWaitsForThePlayersNextEntry";
+    public static void aNoticeWaitsForThePlayersNextEntryAcrossALogout(GameTestHelper helper) {
+        String test = "aNoticeWaitsForThePlayersNextEntryAcrossALogout";
         ServerLevel level = helper.getLevel();
         String dim = RtsimTests.dimension(helper);
         Vec3 c = RtsimTests.centre(helper);
@@ -995,12 +1122,14 @@ public final class ConflictGameTests {
         int tx = (int) Math.floor(c.x), tz = (int) Math.floor(c.z);
         // The player stands 600 blocks off: outside the territory (radius 100) and NOTICE_RANGE.
         ServerPlayer player = FakePlayers.add(level, c.add(600, 0, 0), "conflict_notice_target");
-        ServerPlayer[] second = new ServerPlayer[1];
+        ServerPlayer[] second = new ServerPlayer[1], back = new ServerPlayer[1];
         ConflictKit.onEnd(helper, () -> {
             FakePlayers.remove(player);
-            if (second[0] != null)
-                FakePlayers.remove(second[0]);
+            for (ServerPlayer p : new ServerPlayer[]{second[0], back[0]})
+                if (p != null)
+                    FakePlayers.remove(p);
         });
+        int serial = 0x5E41_0019;
         long[] played = {0}, posted = {0}, hearers = {0};
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.territory(faction, dim, (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING), tx, tz, 100))
@@ -1008,19 +1137,21 @@ public final class ConflictGameTests {
                 .thenExecute(() -> {
                     played[0] = bridge().noticesPlayed;
                     posted[0] = ConflictNews.posted();
-                    ConflictKit.notice(faction, player.getUUID(), dim, ConflictRecords.SIGNAL_MINING, tx, tz, 12f, 3);
+                    ConflictKit.notice(faction, player.getUUID(), dim, ConflictRecords.SIGNAL_MINING, tx, tz, 12f, 3, serial);
                 })
                 .thenWaitUntil(() -> check("kept", bridge().noticesKept() >= 1))
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 3)
                 .thenExecute(() -> {
                     check("not played while the player is away", bridge().noticesPlayed == played[0] && bridge().noticesKept() >= 1);
-                    FakePlayers.remove(player); // logs out
-                    player.moveTo(c.x + 20, c.y, c.z); // and back, inside the territory
+                    // A real logout: the logged-out event fires and the entity leaves the level.
+                    level.getServer().getPlayerList().remove(player);
+                    check("logged out", player.isRemoved() && !level.players().contains(player));
                 })
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 2)
                 .thenExecute(() -> {
                     check("not played to a player not in the level", bridge().noticesPlayed == played[0]);
-                    level.players().add(player);
+                    // A login inside the territory: a new entity with the player's id.
+                    back[0] = FakePlayers.add(level, c.add(20, 0, 0), "conflict_notice_target", player.getUUID());
                 })
                 .thenWaitUntil(() -> check("played on the player's entry", bridge().noticesPlayed == played[0] + 1))
                 .thenExecute(() -> {
@@ -1031,20 +1162,20 @@ public final class ConflictGameTests {
                         for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
                             if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
                                 shown.add(r);
-                        check("NOTICE_SHOWN with the step", shown.size() == 1 && shown.get(0).aux() == 3
+                        check("NOTICE_SHOWN with the notice's serial", shown.size() == 1 && shown.get(0).aux() == serial
                                 && player.getUUID().equals(ConflictKit.uuidAt(shown.get(0), ConflictRecords.NoticeShown.PLAYER_MOST)));
                     }
                     // To the settlers: every player in range, here two.
                     second[0] = FakePlayers.add(level, c.add(30, 0, 5), "conflict_notice_second");
                     hearers[0] = bridge().noticeHearers;
-                    ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1);
+                    ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1, serial + 1);
                 })
                 .thenWaitUntil(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0))
                 .thenExecute(() -> {
                     long heard = bridge().noticeHearers - hearers[0];
                     record(test, "notices", "kept while away, played on entry; the settlers' to " + heard + " players in range");
                     check("the settlers' notice reached both players (" + heard + ")", heard >= 2);
-                    FakePlayers.remove(player);
+                    FakePlayers.remove(back[0]);
                     FakePlayers.remove(second[0]);
                     ConflictKit.territoryRemoved(faction, dim);
                 })
