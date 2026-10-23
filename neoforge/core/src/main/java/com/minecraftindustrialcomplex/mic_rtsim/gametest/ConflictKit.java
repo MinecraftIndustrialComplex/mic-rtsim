@@ -9,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 
 import java.nio.ByteBuffer;
@@ -377,6 +378,24 @@ public final class ConflictKit {
 
     public static int bodyId(String name) {
         return RtsimTests.session().dictId(Obs.DICT_BODY, name);
+    }
+
+    /**
+     * A PLAYER record for a test's fake player, which the session does not observe (it is in the level's
+     * list only): where it stands, as the session reports a real player every 20 ticks.
+     */
+    public static void reportPlayer(ServerPlayer p) {
+        var s = RtsimTests.session();
+        int dim = s.dimId(p.level().dimension()); // before direct(): an id is defined before its first use
+        int at = s.boundary().direct(Obs.PLAYER, Obs.Player.SIZE, dim, s.gameTime());
+        if (at < 0)
+            return;
+        ByteBuffer b = s.boundary().openBuffer();
+        b.putLong(at + Obs.Player.UUID_MOST, p.getUUID().getMostSignificantBits());
+        b.putLong(at + Obs.Player.UUID_LEAST, p.getUUID().getLeastSignificantBits());
+        b.putDouble(at + Obs.Player.X, p.getX());
+        b.putDouble(at + Obs.Player.Y, p.getY());
+        b.putDouble(at + Obs.Player.Z, p.getZ());
     }
 
     // ---- far places -----------------------------------------------------------------------------

@@ -7,6 +7,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
@@ -889,6 +891,229 @@ public final class ConflictGameTests {
                     ConflictKit.territoryRemoved(faction[0], dim);
                 })
                 .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction[0]) == null))
+                .thenSucceed();
+    }
+
+    // ---- the feud driven to a raid, on the native engine ------------------------------------------
+
+    /** The faction's embodied party: its envoy's ({@code purpose} 0) or a band of that purpose; null for none. */
+    private static ConflictBridge.Party partyOf(long faction, int purpose) {
+        for (ConflictBridge.Party p : bridge().parties())
+            if (p.faction == faction && (purpose == 0 ? p.envoy : !p.envoy && p.purpose == purpose))
+                return p;
+        return null;
+    }
+
+    /**
+     * The feud driven to a raid on the native engine (MOWZIE.md §9 M3), at a place far from every earlier
+     * run's with forced chunks standing in for the simulation distance. A goblin camp reported (a structure
+     * the goblin culture claims) gets its territory back (TERRITORY, radius 400). A player 40 blocks off
+     * kills sixteen of the camp's kin there: one TERRITORY_SIGNAL (killing, 4), and the tribe takes notice
+     * (FACTION_NOTICE, its sound played to the player, who stands inside). The phase 1 world's clock, which
+     * the conflict runs on, is moved on 1,200 ticks at a time (P1_ADVANCE) with the player reporting where
+     * it stands before each: the envoy comes into view (ENVOY_MATERIALIZE) asking emeralds or the killing
+     * stopped, is placed and refused (ENVOY_ANSWER 2: sneaking, an empty hand); the demand is settled as
+     * refused (DEMAND_SETTLED 4), and the ladder climbs on to a raid that musters and is seen setting out
+     * (BAND_MATERIALIZE, purpose 3, the war chief with it), whose stacks are placed. A stack still pending
+     * has its chunks forced too (the engine picks where a party comes into view). Skipped on the stub,
+     * which decides nothing.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = "conflict_feud")
+    public static void aPlayersKillingsClimbTheLadderFromNoticeToARaid(GameTestHelper helper) {
+        String test = "aPlayersKillingsClimbTheLadderFromNoticeToARaid";
+        if (!(RtsimTests.engine() instanceof NativeEngine e)) {
+            record(test, "skipped", "the stub engine decides nothing; this test needs the native engine's conflict");
+            helper.succeed();
+            return;
+        }
+        ServerLevel level = helper.getLevel();
+        int[] base = ConflictKit.farBase();
+        int bx = base[0] + 8, bz = base[1] + 8; // the camp; the player 40 blocks east
+        int px = bx + 40;
+        String kinTag = "mic_rtsim_test_goblin_kin";
+        int kills = 16; // killing weighs 8: grievance 128, past the raid's 70 after the climb's days of decay
+        int step = 1_200; // under the conflict's player_stale_ticks (2,400): the player keeps watching
+        List<Long> forced = new ArrayList<>();
+        java.util.function.BiConsumer<Integer, Integer> force = (cx, cz) -> {
+            if (ConflictKit.force(level, cx, cz, true))
+                forced.add(chunk(cx, cz));
+        };
+        int box = 0;
+        for (int cx = (bx - 32) >> 4; cx <= (px + 32) >> 4; cx++)
+            for (int cz = (bz - 32) >> 4; cz <= (bz + 32) >> 4; cz++) {
+                force.accept(cx, cz);
+                box++;
+            }
+        int boxChunks = box;
+        ServerPlayer[] player = new ServerPlayer[1];
+        long[] faction = {0};
+        long[] lastReport = {Long.MIN_VALUE};
+        long[] mark = new long[4];
+        int[] asks = {0, 0};
+        boolean[] scouts = {false};
+        ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
+        ConflictBridge.Party[] raid = new ConflictBridge.Party[1];
+        // Each tick of a wait: the player's PLAYER record every 20 ticks, and every pending stack of the
+        // faction's parties gets its chunks forced.
+        Runnable keep = () -> {
+            long now = level.getGameTime();
+            if (player[0] != null && now - lastReport[0] >= 20) {
+                ConflictKit.reportPlayer(player[0]);
+                lastReport[0] = now;
+            }
+            for (ConflictBridge.Party p : bridge().parties())
+                if (p.faction == faction[0])
+                    for (ConflictBridge.Stack s : p.stacks())
+                        if (s.state() == ConflictBridge.StackState.PENDING)
+                            for (long c : s.chunksNow(now))
+                                force.accept(ChunkPos.getX(c), ChunkPos.getZ(c));
+        };
+        // Every fourth tick: the player reports, then the world's clock moves on a step.
+        Runnable advance = () -> {
+            if (asks[0]++ % 4 == 0) {
+                ConflictKit.reportPlayer(player[0]);
+                lastReport[0] = level.getGameTime();
+                e.phase1Advance(step);
+                asks[1]++;
+            }
+        };
+        Runnable unforce = () -> {
+            for (long c : forced)
+                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
+            forced.clear();
+        };
+
+        helper.startSequence()
+                .thenWaitUntil(io(() -> {
+                    for (int cx = (bx - 32) >> 4; cx <= (px + 32) >> 4; cx++)
+                        for (int cz = (bz - 32) >> 4; cz <= (bz + 32) >> 4; cz++)
+                            check("the forced chunks tick entities", RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
+                }))
+                .thenExecute(() -> {
+                    int py = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, px, bz);
+                    player[0] = FakePlayers.add(level, new Vec3(px + 0.5, py, bz + 0.5), "conflict_feud");
+                    BlockPos camp = new BlockPos(bx, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz), bz);
+                    faction[0] = bridge().reportCamp(level, "mic_rtsim:conflict/goblin_camp", camp,
+                            x -> x.getTags().contains(kinTag), null, false, 0, 0);
+                    check("a faction key", faction[0] != 0L);
+                    record(test, "camp", "(" + bx + ", " + bz + "), the player at (" + px + ", " + bz + "), " + boxChunks + " chunks forced");
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    check("TERRITORY from the engine", bridge().territories().get(faction[0]) != null);
+                })
+                .thenExecute(() -> {
+                    Territories.Territory t = bridge().territories().get(faction[0]);
+                    record(test, "territory", "radius " + t.radius() + ", minds " + Integer.toBinaryString(t.mask()));
+                    check("the goblins' radius, 400 (" + t.radius() + ")", t.radius() == 400);
+                    check("it minds killing", t.minds(ConflictRecords.SIGNAL_KILLING));
+                    mark[0] = bridge().signalsCounted;
+                    mark[1] = bridge().noticesPlayed;
+                    ServerPlayer pl = player[0];
+                    for (int i = 0; i < kills; i++) {
+                        Zombie z = EntityType.ZOMBIE.create(level);
+                        z.addTag(kinTag);
+                        z.moveTo(pl.getX() + 1, pl.getY(), pl.getZ() + 1);
+                        level.addFreshEntity(z);
+                        z.hurt(level.damageSources().playerAttack(pl), 1000f);
+                    }
+                    check("each kill counted (" + (bridge().signalsCounted - mark[0]) + ")", bridge().signalsCounted == mark[0] + kills);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    List<ScriptedEngine.Received> rs = ConflictKit.signals(ConflictRecords.SIGNAL_KILLING, player[0].getUUID());
+                    check("one TERRITORY_SIGNAL of " + kills, rs.size() == 1 && rs.get(0).view().getInt(ConflictRecords.TerritorySignal.COUNT) == kills
+                            && rs.get(0).view().getLong(ConflictRecords.TerritorySignal.FACTION) == faction[0]);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    check("FACTION_NOTICE played to the player", bridge().noticesPlayed > mark[1]);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    if (partyOf(faction[0], 0) != null)
+                        return;
+                    check("an envoy within 40 steps of " + step + " ticks (asks " + asks[1] + ", world tick "
+                            + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] < 40);
+                    advance.run();
+                    check("the envoy comes", false);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    envoy[0] = partyOf(faction[0], 0);
+                    check("the envoy party is still here", envoy[0] != null);
+                    check("placed", envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenExecute(() -> {
+                    record(test, "envoy after", asks[1] + " steps of " + step + " ticks");
+                    ConflictBridge.Demand d = envoy[0].demand();
+                    check("a demand", d != null);
+                    check("emeralds (" + d.itemName + ")", d.item == Items.EMERALD && d.remaining() > 0);
+                    check("or the killing stopped", (d.flags & ConflictRecords.Envoy.DEMAND_STOP) != 0
+                            && d.signal == ConflictRecords.SIGNAL_KILLING);
+                    check("guarded", envoy[0].guarded());
+                    Mob emissary = null;
+                    for (ConflictBridge.Slot sl : envoy[0].stacks().get(0).slots())
+                        if (sl.envoy)
+                            emissary = sl.entity();
+                    check("the emissary", emissary != null && emissary.isAlive());
+                    String n = name(emissary);
+                    record(test, "the envoy's name", n);
+                    check("it says its demand: " + n, n != null && n.contains("killing"));
+                    mark[2] = bridge().settledCommands;
+                    ServerPlayer pl = player[0];
+                    check("an empty hand", pl.getMainHandItem().isEmpty());
+                    pl.setShiftKeyDown(true);
+                    pl.interactOn(emissary, InteractionHand.MAIN_HAND);
+                    pl.setShiftKeyDown(false);
+                    check("ENVOY_ANSWER 2", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 1);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    check("DEMAND_SETTLED", bridge().settledCommands > mark[2]);
+                })
+                .thenExecute(() -> {
+                    check("settled as refused (" + bridge().lastSettled + ")", bridge().lastSettled == ConflictRecords.SETTLED_REFUSED);
+                    asks[0] = 0;
+                    mark[3] = asks[1];
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    if (partyOf(faction[0], ConflictRecords.PURPOSE_SCOUTS) != null)
+                        scouts[0] = true;
+                    if (partyOf(faction[0], ConflictRecords.PURPOSE_RAID) != null)
+                        return;
+                    check("a raid within 160 steps of " + step + " ticks (asks " + (asks[1] - mark[3]) + ", world tick "
+                            + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ")", asks[1] - mark[3] < 160);
+                    advance.run();
+                    check("the raid comes", false);
+                })
+                .thenWaitUntil(() -> {
+                    keep.run();
+                    raid[0] = partyOf(faction[0], ConflictRecords.PURPOSE_RAID);
+                    check("the raid is still here", raid[0] != null);
+                    for (ConflictBridge.Stack s : raid[0].stacks())
+                        check("every stack placed", s.state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenExecute(() -> {
+                    ConflictBridge.Party r = raid[0];
+                    int bodies = 0;
+                    boolean chief = false;
+                    for (ConflictBridge.Stack s : r.stacks())
+                        for (ConflictBridge.Slot sl : s.slots()) {
+                            bodies++;
+                            chief |= sl.chief;
+                        }
+                    record(test, "raid after", (asks[1] - mark[3]) + " more steps; scouts seen: " + scouts[0] + "; " + r.stacks().size()
+                            + " stacks, " + bodies + " bodies; " + (forced.size() - boxChunks) + " more chunks forced");
+                    check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, r.agent).isEmpty());
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, r.agent).isEmpty());
+                    check("the war chief comes with it", chief);
+                    check("every body in Minecraft (" + bridge().bodies(r.agent).size() + " of " + bodies + ")",
+                            bridge().bodies(r.agent).size() == bodies);
+                    FakePlayers.remove(player[0]);
+                    unforce.run();
+                })
                 .thenSucceed();
     }
 
