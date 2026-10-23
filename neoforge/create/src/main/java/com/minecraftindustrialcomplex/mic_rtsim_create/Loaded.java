@@ -85,7 +85,7 @@ public final class Loaded {
 
     /**
      * Whether a block entity ticking at {@code from} may look at {@code to} (the chain conveyor and network
-     * guards, PATCHES.md rows 50 to 54): true on a client or a virtual level, and in {@code from}'s own chunk
+     * guards, PATCHES.md rows 50 to 52): true on a client or a virtual level, and in {@code from}'s own chunk
      * (which ticks, since {@code from} does); else {@link #ticks}.
      */
     public static boolean ticksFrom(Level level, BlockPos from, BlockPos to) {

@@ -396,7 +396,7 @@ public final class SectionsChunkLoadGameTests {
 
     /**
      * Rotation never propagates into an away chunk, and the part it left stale is re-synced when it loads
-     * (PATCHES.md rows 52 and 56). With B away, the motor in A is set to 128, 32, -64 and -32 RPM; CA follows
+     * (PATCHES.md rows 55 and 56). With B away, the motor in A is set to 128, 32, -64 and -32 RPM; CA follows
      * each change and B is never loaded (without the patch, every change walked the chain into B and loaded
      * it). CB keeps 64 RPM in its saved state, which no longer matches CA: Create's first attach at the load
      * would break CB (opposite signs). With the re-sync, CB loads, takes CA's -32 RPM and turns its millstone
@@ -572,11 +572,12 @@ public final class SectionsChunkLoadGameTests {
     }
 
     /**
-     * A compile of a district whose network reaches into an away district loads nothing (PATCHES.md row
-     * 55, SECTIONS.md §2.8). The motor is in B; with B away, A's compile reads CA's chain into B as nothing
-     * (counted as stops at unloaded chunks), and the network, which has members outside A, is a crossing
-     * one: millstone A's domain has one level at the speed the network last had, no driver, and its members
-     * are bounded. {@code /rtsim district graph} writes the compile without loading anything either.
+     * A compile of a district whose network reaches into an away district loads nothing (SECTIONS.md §2.8,
+     * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
+     * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
+     * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
+     * driver, and its members are bounded. {@code /rtsim district graph} writes the compile without loading
+     * anything either.
      */
     @GameTest(template = YARD, batch = "sec1_4", timeoutTicks = 12000)
     public static void aCompileLoadsNoChunk(GameTestHelper helper) {
