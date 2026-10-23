@@ -20,11 +20,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -42,11 +44,14 @@ import net.minecraft.world.entity.EntityType;
  * dragon is then a draw per render type, the real model from every side, solid geometry that hills hide and
  * DH's fog reads, with its wings beating at {@link #FRAMES} steps a loop. The nearest few (the renderer asks
  * with {@code live}) are drawn by Ice and Fire's renderer itself each frame, at their own age, so their wings
- * beat smoothly.
+ * beat smoothly; a live stand-in is started on the bakes' clock (the same renders before its first frame), so
+ * its wings and the baked frames' are at the same point of the loop at the same time, and a dragon that goes
+ * from one to the other keeps its beat.
  *
  * <p>The stand-ins are entities made with the species' type and never added to a level: they never tick, no
- * server knows them, and nothing but this class holds them (D3). Bakes run a render at a time inside the
- * frame's budget, so a new colour costs no hitch. Render thread.
+ * server knows them, nothing but this class holds them, and their ids are negative, so no entity the server
+ * sends shares one (D3). NeoForge still tells listeners of their construction and their renders. Bakes run a
+ * render at a time inside the frame's budget, so a new colour costs no hitch. Render thread.
  */
 public final class DragonLook implements FarLook {
     /** Points of the flight loop baked; renders before them let the animation settle into the loop. */
@@ -58,8 +63,17 @@ public final class DragonLook implements FarLook {
     static final int SKY_LIGHT = 15 << 20;
     /** A pose set nobody drew for this long is freed, a live stand-in sooner (PLACEHOLDERS). */
     static final long KEEP_NANOS = 60_000_000_000L, LIVE_KEEP_NANOS = 5_000_000_000L;
-    /** At most this many pose sets at once (about 2 MiB of GPU each); past it, new ones wait as boxes (PLACEHOLDER). */
+    /**
+     * At most this many pose sets at once (about 2 MiB of GPU each); past it, the set least recently drawn makes
+     * room if nobody drew it for {@link #EVICT_NANOS}, and otherwise a new one waits as a box (PLACEHOLDERS).
+     */
     static final int MAX_SETS = 32;
+    static final long EVICT_NANOS = 1_000_000_000L;
+    /** A wanted set nobody asked for in this long is forgotten, and freed if half baked. */
+    static final long WANT_NANOS = 10_000_000_000L;
+    /** The stand-ins' ids, counting down from here: below every id a server gives out. */
+    private static final int FIRST_ID = -1_000_000;
+    private static int nextId = FIRST_ID;
 
     /** A baked set: the flight loop's frames and the rest pose, and the sphere that holds every one of them. */
     private static final class Poses {
@@ -101,6 +115,7 @@ public final class DragonLook implements FarLook {
     private static final class StandIn {
         DragonBaseEntity entity;
         int species = -1;
+        boolean flying;
         long used;
     }
 
@@ -109,6 +124,8 @@ public final class DragonLook implements FarLook {
     private final LinkedHashMap<Integer, Long> wanted = new LinkedHashMap<>();
     private final Map<FarKey, StandIn> standIns = new HashMap<>();
     private final Map<FarKey, Float> lastYaw = new HashMap<>();
+    /** Sets that would not bake: boxes until the level changes. */
+    private final Set<Integer> failed = new HashSet<>();
     /** Ice and Fire's render size at an age, per species (a probe's, aged): the model's scale is a third of it. */
     private final Map<Integer, Float> renderSizes = new HashMap<>();
     private final DragonBaseEntity[] probes = new DragonBaseEntity[IafDragons.SPECIES.size()];
@@ -146,6 +163,8 @@ public final class DragonLook implements FarLook {
         if (species < 0)
             return Status.NONE;
         int k = key(species, m.variant(), stage(m));
+        if (failed.contains(k))
+            return Status.NONE;
         Poses p = sets.get(k);
         if (p != null && p.ready()) {
             p.used = clock;
@@ -185,15 +204,20 @@ public final class DragonLook implements FarLook {
         out.radius = (float) Math.sqrt(s * s * p.maxH2 + half * half);
         if (live) {
             StandIn st = standIns.computeIfAbsent(m.key(), k -> new StandIn());
-            if (st.entity == null || st.species != species) {
+            EntityRenderer<DragonBaseEntity> r;
+            if (st.entity == null || st.species != species || st.flying != flying) {
+                // A fresh stand-in (its animation starts over), started as the bakes start theirs
                 st.entity = newStandIn(levelOf, species);
                 st.species = species;
-            }
+                st.flying = flying;
+                r = renderer(st.entity);
+                startOnBakeClock(st.entity, r, m.variant(), age, flying, yawDeg, time);
+            } else
+                r = renderer(st.entity);
             st.used = this.clock;
             DragonBaseEntity d = st.entity;
             pose(d, m.variant(), age, flying, yawDeg, time);
             float frac = (float) (time - Math.floor(time));
-            EntityRenderer<DragonBaseEntity> r = renderer(d);
             out.parts = List.of();
             out.local.identity();
             out.lightYaw = Float.NaN;
@@ -207,10 +231,9 @@ public final class DragonLook implements FarLook {
             return true;
         }
         List<FarModel.Part> parts;
-        if (flying) {
-            double phase = Math.floorMod((long) Math.floor(time * 1000.0), (long) (LOOP * 1000.0)) / (LOOP * 1000.0);
-            parts = p.frames[Math.min(FRAMES - 1, (int) (phase * FRAMES))];
-        } else
+        if (flying)
+            parts = p.frames[frameAt(time)];
+        else
             parts = p.rest;
         out.parts = parts;
         // Ice and Fire turns the model by (180 - yaw) about +y; the baked frames have yaw 0 in them already
@@ -235,13 +258,14 @@ public final class DragonLook implements FarLook {
             sweep(now);
         }
         long t0 = System.nanoTime();
-        while (!wanted.isEmpty() && System.nanoTime() < deadline) {
-            Iterator<Map.Entry<Integer, Long>> it = wanted.entrySet().iterator();
+        // The oldest ask first; a set bakes to its end before the next starts, unless the budget runs out
+        Iterator<Map.Entry<Integer, Long>> it = wanted.entrySet().iterator();
+        while (it.hasNext() && System.nanoTime() < deadline) {
             int k = it.next().getKey();
             Poses p = sets.get(k);
             if (p == null) {
-                if (sets.size() >= MAX_SETS)
-                    break;
+                if (sets.size() >= MAX_SETS && !evictOne(now))
+                    continue; // full of sets in use: this one waits, as a box, and the others bake on
                 p = new Poses(k / 8 / 16, k / 8 % 16, k % 8);
                 sets.put(k, p);
             }
@@ -251,14 +275,18 @@ public final class DragonLook implements FarLook {
             }
             long s0 = System.nanoTime();
             try {
-                step(level, p);
+                do
+                    step(level, p);
+                while (!p.ready() && System.nanoTime() < deadline);
             } catch (RuntimeException | LinkageError e) {
-                // Left out of the sets: asked for again, it bakes again (a renderer that failed once may not twice)
+                // A box until the level changes: a renderer that failed once would most likely fail every frame
                 it.remove();
                 sets.remove(k);
                 p.close();
+                failed.add(k);
                 if (errors++ < 5)
-                    MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] a far dragon's poses would not bake", e);
+                    MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] a far dragon's poses would not bake; it stays a box",
+                            e);
                 continue;
             } finally {
                 p.nanos += System.nanoTime() - s0;
@@ -272,6 +300,50 @@ public final class DragonLook implements FarLook {
             }
         }
         maxStepMs = Math.max(maxStepMs, (System.nanoTime() - t0) / 1e6);
+    }
+
+    /** Frees the ready set least recently drawn, if nobody drew it for {@link #EVICT_NANOS}; false when none. */
+    private boolean evictOne(long now) {
+        Integer oldest = null;
+        long at = Long.MAX_VALUE;
+        for (Map.Entry<Integer, Poses> e : sets.entrySet()) {
+            Poses p = e.getValue();
+            if (p.ready() && now - p.used >= EVICT_NANOS && p.used < at) {
+                at = p.used;
+                oldest = e.getKey();
+            }
+        }
+        if (oldest == null)
+            return false;
+        sets.remove(oldest).close();
+        return true;
+    }
+
+    /**
+     * The baked frame of the flight loop nearest {@code time}: frame {@code f} was drawn at {@code T0 + f} steps,
+     * so a stand-in started on the same clock ({@link #startOnBakeClock}) is at frame {@code f} whenever its
+     * time is that, a whole number of loops on.
+     */
+    static int frameAt(double time) {
+        double into = (time - T0) % LOOP;
+        if (into < 0)
+            into += LOOP;
+        return (int) Math.round(into / (LOOP / FRAMES)) % FRAMES;
+    }
+
+    /**
+     * Gives a fresh stand-in the renders a bake gives its probe before frame 0 (the warm-ups and frame 0 itself),
+     * at times a whole number of loops before or at {@code time}, so its animation starts as the bake's did:
+     * Ice and Fire's controllers (GeckoLib's) start their loop at the render that ends their transition.
+     */
+    private static void startOnBakeClock(DragonBaseEntity d, EntityRenderer<DragonBaseEntity> r, int variant, int age,
+            boolean flying, float yaw, double time) {
+        long now = (long) Math.floor(time);
+        long start = now - Math.floorMod(now - T0, (long) LOOP) - (long) (WARM * (LOOP / FRAMES));
+        for (int s = 0; s <= WARM; s++) {
+            pose(d, variant, age, flying, yaw, start + s * (LOOP / FRAMES));
+            r.render(d, yaw, 0f, new PoseStack(), rt -> NullVertexConsumer.INSTANCE, SKY_LIGHT);
+        }
     }
 
     /** One render of a bake: a warm-up, a frame of the flight loop, a warm-up at rest, or the rest pose. */
@@ -364,12 +436,15 @@ public final class DragonLook implements FarLook {
         });
     }
 
-    /** A client-only stand-in of {@code species}, never added to a level. */
+    /** A client-only stand-in of {@code species}, never added to a level, with an id no server entity has. */
     static DragonBaseEntity newStandIn(ClientLevel level, int species) {
         EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.parse(IafDragons.SPECIES.get(species)));
         Entity e = type.create(level);
         if (!(e instanceof DragonBaseEntity d))
             throw new IllegalStateException(IafDragons.SPECIES.get(species) + " made " + e);
+        // GeckoLib keys a render's animation by the id: a real dragon's would share the stand-in's pose
+        d.setId(nextId);
+        nextId = nextId <= Integer.MIN_VALUE / 2 ? FIRST_ID : nextId - 1;
         return d;
     }
 
@@ -404,17 +479,21 @@ public final class DragonLook implements FarLook {
                 .getRenderer(d);
     }
 
-    /** Frees pose sets nobody drew for {@link #KEEP_NANOS} and stand-ins not drawn live for {@link #LIVE_KEEP_NANOS}. */
+    /**
+     * Forgets asks older than {@link #WANT_NANOS}; frees pose sets nobody drew for {@link #KEEP_NANOS}, half-baked
+     * sets nobody wants now, and stand-ins not drawn live for {@link #LIVE_KEEP_NANOS}.
+     */
     private void sweep(long now) {
-        sets.values().removeIf(p -> {
-            if (p.ready() && now - p.used > KEEP_NANOS) {
+        wanted.values().removeIf(t -> now - t > WANT_NANOS);
+        sets.entrySet().removeIf(e -> {
+            Poses p = e.getValue();
+            if (p.ready() ? now - p.used > KEEP_NANOS : !wanted.containsKey(e.getKey())) {
                 p.close();
                 return true;
             }
             return false;
         });
         standIns.values().removeIf(s -> now - s.used > LIVE_KEEP_NANOS);
-        wanted.values().removeIf(t -> now - t > 10_000_000_000L);
         if (lastYaw.size() > 4096)
             lastYaw.clear();
     }
@@ -425,6 +504,7 @@ public final class DragonLook implements FarLook {
             p.close();
         sets.clear();
         wanted.clear();
+        failed.clear();
         standIns.clear();
         lastYaw.clear();
         renderSizes.clear();
@@ -443,9 +523,10 @@ public final class DragonLook implements FarLook {
                 bytes += p.bytes;
             }
         String s = String.format(Locale.ROOT,
-                "dragons: %d pose sets (%d vertices, %.1f MiB), %d wanted, %d stand-ins, %d live draws; %d sets baked, "
-                        + "%.2f ms each, longest frame's bake %.2f ms",
-                ready, vertices, bytes / (double) (1 << 20), wanted.size(), standIns.size(), liveDrawn, setsBaked,
+                "dragons: %d pose sets (%d vertices, %.1f MiB), %d wanted, %d failed, %d stand-ins, %d live draws; "
+                        + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms",
+                ready, vertices, bytes / (double) (1 << 20), wanted.size(), failed.size(), standIns.size(), liveDrawn,
+                setsBaked,
                 setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs);
         maxStepMs = 0;
         liveDrawn = 0;

@@ -55,9 +55,12 @@ import org.lwjgl.opengl.GL30;
  *   <li><b>Who draws what</b> is the boxes' rule ({@link FarHide}, {@link HandOverRule}, {@link FadeRing}): no
  *       model while the client has the real entity; DH's pass beyond the loaded chunks and in DH's vanilla fade;
  *       the band inside them. Each kind is held to the tier's count ({@link FarDetail#dragons},
- *       {@link FarDetail#feedObjects}), nearest first.</li>
+ *       {@link FarDetail#feedObjects}), nearest first by horizontal distance as the boxes rank theirs; a dragon
+ *       still drawn as a box takes its place in that count here, and a model in {@link FarDragonView}'s, so the
+ *       models and the boxes together keep to it.</li>
  *   <li><b>Live</b>: the nearest {@link #LIVE_DRAGONS} dragons within {@link #LIVE_DISTANCE} blocks are drawn by
- *       their own renderer each frame (smooth wings), the rest from baked frames.</li>
+ *       their own renderer each frame (smooth wings), the rest from baked frames. Live once a frame: in DH's
+ *       vanilla fade, where both passes draw, DH's pass draws the baked frame the live one is at.</li>
  * </ul>
  *
  * <p>Render thread only.
@@ -87,9 +90,14 @@ final class FarModelRenderer {
     /** One mover's model this frame. */
     private static final class Item {
         FarMover mover;
-        final FarModel model = new FarModel();
-        double x, y, z, distance;
+        /** Its baked frame, and, when {@link #live}, its live model. */
+        final FarModel model = new FarModel(), liveModel = new FarModel();
+        double x, y, z, distance, d2;
         boolean live;
+        /** Drawn live in the pass being drawn. */
+        boolean drawLive;
+        /** A dragon still drawn as a box: never drawn here, only counted against the tier. */
+        boolean placeholder;
         final Matrix4f mv = new Matrix4f();
     }
 
@@ -103,6 +111,8 @@ final class FarModelRenderer {
     private static final Vector3f L0 = new Vector3f(), L1 = new Vector3f();
 
     private static long frameNanos, lastPrune;
+    /** The looks' cold first draws are done (Create's bogeys): at the first frame the far view runs. */
+    private static boolean prewarmed;
     private static long preparedFrame = -1, dhDrawnFrame = -1;
     private static int depthFunc, dhDrawFbo;
     private static int errors;
@@ -126,6 +136,11 @@ final class FarModelRenderer {
         frameNanos = System.nanoTime();
         if (OFF || !FarGates.ready())
             return;
+        if (!prewarmed) {
+            // Behind the loading screen when it joins a world, or in the options screen when the detail goes on
+            prewarmed = true;
+            FarLooks.prewarmAll();
+        }
         FarLooks.frame();
         long now = System.nanoTime();
         lookNanos += now - frameNanos;
@@ -137,6 +152,7 @@ final class FarModelRenderer {
 
     /** The client left its world: the looks free their meshes, and nothing waits. */
     static void releaseAll() {
+        prewarmed = false;
         WAITING.clear();
         ITEMS.clear();
         DRAWN.clear();
@@ -174,7 +190,7 @@ final class FarModelRenderer {
     /**
      * This frame's models, once (the first pass to draw asks): the movers in this level and DH's radius whose
      * look has a model and whose entity the client does not have, placed, nearest first; the nearest dragons
-     * live.
+     * live. The dragons drawn as boxes come too, as placeholders for the tier's count.
      */
     private static void prepare(ClientLevel level, Vec3 cam, double clock) {
         long frame = FarTrainView.frame();
@@ -197,36 +213,39 @@ final class FarModelRenderer {
             Cover c = cover(m);
             if (c == Cover.WAIT)
                 waiting++;
-            if (c != Cover.MODEL || FarHide.entityPresent(m, level, x, y, z))
+            boolean placeholder = c == Cover.BOX && m.kind() == FarKind.DRAGON;
+            if (c != Cover.MODEL && !placeholder || FarHide.entityPresent(m, level, x, y, z))
                 continue;
             Item it = ITEMS.size() < POOL.size() ? POOL.get(ITEMS.size()) : null;
             if (it == null)
                 POOL.add(it = new Item());
-            if (!place(m, clock, false, it.model.reset()))
+            if (!placeholder && !place(m, clock, false, it.model.reset()))
                 continue;
             it.mover = m;
             it.x = x;
             it.y = y;
             it.z = z;
-            it.distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            it.d2 = dx * dx + dz * dz;
+            it.distance = Math.sqrt(it.d2 + dy * dy);
             it.live = false;
+            it.placeholder = placeholder;
             ITEMS.add(it);
         }
-        ITEMS.sort((a, b) -> Double.compare(a.distance, b.distance));
-        int live = 0;
+        ITEMS.sort((a, b) -> Double.compare(a.d2, b.d2));
+        int live = 0, models = 0;
         for (Item it : ITEMS) {
-            if (live >= LIVE_DRAGONS || it.distance >= LIVE_DISTANCE)
-                break;
-            if (it.mover.kind() != FarKind.DRAGON)
+            if (it.placeholder)
+                continue;
+            models++;
+            if (live >= LIVE_DRAGONS || it.distance >= LIVE_DISTANCE || it.mover.kind() != FarKind.DRAGON)
                 continue;
             it.mover.segmentAt(clock, SEG);
-            if (place(it.mover, clock, true, it.model.reset()) && it.model.live != null) {
+            if (place(it.mover, clock, true, it.liveModel.reset()) && it.liveModel.live != null) {
                 it.live = true;
                 live++;
-            } else
-                place(it.mover, clock, false, it.model.reset());
+            }
         }
-        lastCandidates = ITEMS.size();
+        lastCandidates = models;
         lastLive = live;
         lastWaiting = waiting;
         prepareNanos += System.nanoTime() - t0;
@@ -283,10 +302,15 @@ final class FarModelRenderer {
         int dragons = 0, carriages = 0;
         for (Item it : ITEMS) {
             FarMover m = it.mover;
-            if (!FarHide.dhDraws(m, level, it.x, it.y, it.z, it.model.radius, cam))
+            double reach = it.placeholder ? FarDragonView.reach(m.size()) : it.model.radius;
+            if (!FarHide.dhDraws(m, level, it.x, it.y, it.z, reach, cam))
                 continue;
             if (m.kind() == FarKind.DRAGON ? dragons++ >= tier.dragons : carriages++ >= tier.feedObjects)
                 continue;
+            if (it.placeholder)
+                continue;
+            // Live once a frame: where the band draws it too (DH's vanilla fade), the band draws it live
+            it.drawLive = it.live && !FarHide.bandDraws(m, level, it.x, it.y, it.z);
             float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
@@ -382,6 +406,9 @@ final class FarModelRenderer {
                 continue;
             if (m.kind() == FarKind.DRAGON ? dragons++ >= tier.dragons : carriages++ >= tier.feedObjects)
                 continue;
+            if (it.placeholder)
+                continue;
+            it.drawLive = it.live;
             double r = it.model.radius;
             if (!frustum.isVisible(new AABB(it.x - r, it.y - r, it.z - r, it.x + r, it.y + r, it.z + r)))
                 continue;
@@ -418,7 +445,7 @@ final class FarModelRenderer {
         long vertices = 0;
         boolean anyLive = false;
         for (Item it : items) {
-            if (it.live) {
+            if (it.drawLive) {
                 anyLive = true;
                 continue;
             }
@@ -475,12 +502,12 @@ final class FarModelRenderer {
             batch.vertices = 0;
             try {
                 for (Item it : items) {
-                    if (!it.live)
+                    if (!it.drawLive)
                         continue;
                     POSE.pushPose();
                     POSE.translate((float) (it.x - cam.x), (float) (it.y - cam.y), (float) (it.z - cam.z));
                     try {
-                        it.model.live.render(POSE, batch);
+                        it.liveModel.live.render(POSE, batch);
                     } finally {
                         POSE.popPose();
                     }

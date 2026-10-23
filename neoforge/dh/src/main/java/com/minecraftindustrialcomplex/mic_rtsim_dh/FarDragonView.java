@@ -72,7 +72,9 @@ final class FarDragonView {
         static final Used NONE = new Used(0, 0, 0);
     }
 
-    private record Candidate(FarMover mover, double x, double y, double z, double hx, double hz, double distanceSq) {
+    /** A dragon in reach; {@code model}: drawn by {@link FarModelRenderer}, here only to take its place in the tier's count. */
+    private record Candidate(FarMover mover, double x, double y, double z, double hx, double hz, double distanceSq,
+            boolean model) {
     }
 
     /** What a dragon's groups were cut for: its stage, its heading step and the staircase step. */
@@ -159,25 +161,34 @@ final class FarDragonView {
             double d2 = dx * dx + dz * dz;
             if (!(d2 <= radiusSq))
                 continue;
-            // Ice and Fire's own model, where the look has it (FarModelRenderer); its groups, if any, go dark
-            if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
+            // Ice and Fire's own model, where the look has it (FarModelRenderer); its groups, if any, go dark. The
+            // models and the boxes share the tier's count, nearest first, as FarModelRenderer counts them too
+            FarModelRenderer.Cover cover = FarModelRenderer.cover(m);
+            if (cover == FarModelRenderer.Cover.WAIT)
                 continue;
-            Proxy p = PROXIES.get(m.key());
+            boolean model = cover == FarModelRenderer.Cover.MODEL;
+            Proxy p = model ? null : PROXIES.get(m.key());
             if (p != null)
                 p.wantedAt = now;
             if (!FarHide.dhDraws(m, level, x, y, z, reach(m.size()), cam)) {
-                hidden++;
+                if (!model)
+                    hidden++;
                 continue;
             }
-            CANDIDATES.add(new Candidate(m, x, y, z, SEG[0] - SEG[3], SEG[2] - SEG[5], d2));
+            CANDIDATES.add(new Candidate(m, x, y, z, SEG[0] - SEG[3], SEG[2] - SEG[5], d2, model));
         }
         CANDIDATES.sort((a, b) -> Double.compare(a.distanceSq, b.distanceSq));
 
-        int drawn = 0, groups = 0, boxes = 0;
+        int drawn = 0, models = 0, groups = 0, boxes = 0;
         int keep = tier.dragons * KEEP_PER_DRAWN;
         for (Candidate c : CANDIDATES) {
             if (drawn >= tier.dragons || groups + 2 > tier.activeGroups)
                 break;
+            if (c.model) {
+                drawn++;
+                models++;
+                continue;
+            }
             FarMover m = c.mover;
             int stage = Math.max(1, Math.min(5, m.size()));
             int poses = tier.wingPoses;
@@ -236,14 +247,22 @@ final class FarDragonView {
             }
             registered += p.groups();
         }
-        lastDrawn = drawn;
+        lastDrawn = drawn - models;
         lastGroups = groups;
         lastBoxes = boxes;
         lastRegistered = registered;
         lastHidden = hidden;
-        lastCandidates = CANDIDATES.size();
+        lastCandidates = CANDIDATES.size() - countModels();
         CANDIDATES.clear();
         return new Used(groups, boxes, registered);
+    }
+
+    private static int countModels() {
+        int n = 0;
+        for (Candidate c : CANDIDATES)
+            if (c.model)
+                n++;
+        return n;
     }
 
     /** The farthest a dragon of size {@code size} reaches from its midpoint: its wingspan. */
