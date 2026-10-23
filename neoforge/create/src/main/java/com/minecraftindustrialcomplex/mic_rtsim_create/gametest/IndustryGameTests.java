@@ -583,6 +583,13 @@ public final class IndustryGameTests {
         unwatchedJourney(helper, "aSelfEdgeIsRefusedWhenTheBridgeReportsNoUnwatchedStop", false);
     }
 
+    /**
+     * Two out-and-back legs from a district's station through a station outside every district. The first
+     * leaves and calls at the far station in one tick, before the bridge has journaled the departure (the
+     * report must carry it out first); a second call in the same leg adds nothing. The second leg waits for its
+     * departure to be journaled, as Create's schedule does, and the departure from the district re-arms the
+     * report. Records are waited for, never counted in ticks; the engine's own counts are read at the end.
+     */
     private static void unwatchedJourney(GameTestHelper helper, String test, boolean report) {
         fastConfig();
         forget(helper);
@@ -593,8 +600,14 @@ public final class IndustryGameTests {
         playerPlaced(helper, chestPos);
         Train[] train = {null};
         GlobalStation[] home = {null}, away = {null};
-        long[] before = {0, 0, 0, 0};
+        long[] before = {0, 0, 0};
         boolean[] recorded = {false};
+        java.util.function.Supplier<List<ByteBuffer>> reports = () -> received(IndRecords.IND_TRAIN_UNWATCHED,
+                IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id));
+        java.util.function.Supplier<List<ByteBuffer>> departures = () -> received(IndRecords.IND_TRAIN_DEPARTED,
+                d -> d.getLong(IndRecords.Train.TRAIN) == CreateIds.of(train[0].id) && d.getLong(IndRecords.Train.DEPARTED_DESTINATION) == CreateIds.of(away[0].id));
+        java.util.function.Supplier<List<ByteBuffer>> arrivals = () -> received(IndRecords.IND_TRAIN_ARRIVED,
+                IndRecords.Train.TRAIN, CreateIds.of(train[0].id));
         helper.startSequence()
                 .thenWaitUntil(() -> check("district", districtAt(helper, chestPos) != null))
                 .thenExecute(() -> {
@@ -607,79 +620,84 @@ public final class IndustryGameTests {
                         before[0] = l[0];
                         before[1] = l[1];
                         before[2] = l[2];
-                        before[3] = l.length;
                     }
                     train[0].arriveAt(home[0]);
                 })
-                .thenWaitUntil(() -> check("the first call at home was journaled",
-                        received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN, CreateIds.of(train[0].id)).size() == 1))
+                .thenWaitUntil(() -> check("the first call at home was journaled", arrivals.get().size() == 1))
+                // Leg one: out and at the far station in one tick.
                 .thenExecute(() -> {
                     train[0].leaveStation();
                     train[0].navigation.destination = away[0];
                     train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(away[0]);
                 })
-                .thenWaitUntil(() -> check("IND_TRAIN_DEPARTED for the far station", received(IndRecords.IND_TRAIN_DEPARTED,
-                        d -> d.getLong(IndRecords.Train.TRAIN) == CreateIds.of(train[0].id)
-                                && d.getLong(IndRecords.Train.DEPARTED_DESTINATION) == CreateIds.of(away[0].id)).size() == 1))
-                .thenExecute(() -> train[0].arriveAt(away[0]))
-                .thenIdle(5)
-                .thenExecute(() -> {
-                    List<ByteBuffer> u = received(IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id));
+                .thenWaitUntil(() -> {
+                    check("IND_TRAIN_DEPARTED for the far station: " + departures.get().size(), departures.get().size() == 1);
                     if (report) {
+                        List<ByteBuffer> u = reports.get();
                         check("IND_TRAIN_UNWATCHED for the call outside every district: " + u.size(), u.size() == 1);
                         check("at the far station", u.get(0).getLong(IndRecords.TrainUnwatched.STATION) == CreateIds.of(away[0].id));
-                        check("after the departure it ends", seqOf(IndRecords.IND_TRAIN_DEPARTED, train[0]) < u.get(0).getLong(Obs.OBS_SEQ));
-                    } else {
-                        check("no report with the bridge's report off: " + u.size(), u.isEmpty());
+                        check("after the departure it ends", departures.get().get(0).getLong(Obs.OBS_SEQ) < u.get(0).getLong(Obs.OBS_SEQ));
                     }
-                    check("a call outside every district is no IND_TRAIN_ARRIVED", received(IndRecords.IND_TRAIN_ARRIVED,
-                            IndRecords.Train.TRAIN, CreateIds.of(train[0].id)).size() == 1);
-                    // A second call outside every district in the same leg: the engine has the news already.
+                })
+                // A second call outside every district in the same leg: the engine has the news already.
+                .thenExecute(() -> {
                     train[0].leaveStation();
                     train[0].navigation.destination = away[0];
                     train[0].arriveAt(away[0]);
-                })
-                .thenIdle(5)
-                .thenExecute(() -> {
-                    int n = received(IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.TRAIN, CreateIds.of(train[0].id)).size();
-                    check("one report a leg: " + n, n == (report ? 1 : 0));
                     train[0].leaveStation();
                     train[0].navigation.destination = home[0];
                     train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(home[0]);
                 })
-                .thenIdle(5)
-                .thenExecute(() -> train[0].arriveAt(home[0]))
+                .thenWaitUntil(() -> check("the second call at home was journaled", arrivals.get().size() == 2))
+                // Leg two: the departure is journaled before the train calls at the far station.
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = away[0];
+                    train[0].navigation.distanceToDestination = 400;
+                })
+                .thenWaitUntil(() -> check("the second IND_TRAIN_DEPARTED: " + departures.get().size(), departures.get().size() == 2))
+                .thenExecute(() -> train[0].arriveAt(away[0]))
                 .thenWaitUntil(() -> {
-                    check("the second call at home was journaled", received(IndRecords.IND_TRAIN_ARRIVED, IndRecords.Train.TRAIN,
-                            CreateIds.of(train[0].id)).size() == 2);
+                    if (report)
+                        check("the departure from home re-armed the report: " + reports.get().size(), reports.get().size() == 2);
+                })
+                .thenExecute(() -> {
+                    train[0].leaveStation();
+                    train[0].navigation.destination = home[0];
+                    train[0].navigation.distanceToDestination = 400;
+                    train[0].arriveAt(home[0]);
+                })
+                .thenWaitUntil(() -> {
+                    // Journal order: every record before the third call at home has been taken in by now.
+                    check("the third call at home was journaled", arrivals.get().size() == 3);
+                    check("one report a leg, none without the switch: " + reports.get().size(), reports.get().size() == (report ? 2 : 0));
                     if (!nativeEngine())
                         return;
                     // The engine counts across the whole run: this journey's share is the change since it began.
                     long[] lines = ((NativeEngine) engine()).industryLines();
-                    check("the engine saw both calls at home: " + java.util.Arrays.toString(lines), lines[2] - before[2] >= 2);
+                    check("the engine saw the calls at home: " + java.util.Arrays.toString(lines), lines[2] - before[2] >= 3);
                     long unwatchedStops = lines[0] - before[0], refused = lines[1] - before[1];
+                    int edges = 0;
+                    for (int i = 3; i + 3 < lines.length; i += 4)
+                        if (lines[i] == CreateIds.of(home[0].id) || lines[i] == CreateIds.of(away[0].id)
+                                || lines[i + 1] == CreateIds.of(home[0].id) || lines[i + 1] == CreateIds.of(away[0].id))
+                            edges++;
                     if (!recorded[0]) {
                         recorded[0] = true;
-                        record(test, "engine: unwatched stops / self edges refused / edge list length", unwatchedStops + " / " + refused + " / " + lines.length);
+                        record(test, "engine: unwatched stops / self edges refused / edges of these stations", unwatchedStops + " / " + refused + " / " + edges);
                     }
-                    check("the engine took " + unwatchedStops + " unwatched stop(s)", unwatchedStops == (report ? 1 : 0));
+                    check("the engine took " + unwatchedStops + " unwatched stop(s)", unwatchedStops == (report ? 2 : 0));
                     check("self edges refused by the engine: " + refused + (report ? " (the report came first)" : " (its guard)"),
-                            refused == (report ? 0 : 1));
-                    check("no edge learned: " + (lines.length - before[3]) / 4 + " more", lines.length == before[3]);
+                            refused == (report ? 0 : 2));
+                    check("no edge learned from or to these stations: " + edges, edges == 0);
                 })
                 .thenExecute(() -> {
                     TrainWatch.reportUnwatchedForTest(true);
                     TrainWatch.forget(train[0]);
                 })
                 .thenSucceed();
-    }
-
-    private static long seqOf(int kind, Train train) {
-        long seq = -1;
-        for (var r : engine().received(kind))
-            if (!r.skipped() && r.view().getLong(IndRecords.Train.TRAIN) == CreateIds.of(train.id))
-                seq = Math.max(seq, r.view().getLong(Obs.OBS_SEQ));
-        return seq;
     }
 
     /**

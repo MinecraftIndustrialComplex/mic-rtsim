@@ -224,8 +224,12 @@ public final class TrainWatch {
     public static void arrived(Train train, GlobalStation station) {
         try {
             Industry ind = IndustryApi.current();
-            if (ind == null || station == null || station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null)
+            if (ind == null || station == null)
                 return;
+            if (station.getBlockEntityPos() == null || station.getBlockEntityDimension() == null) {
+                unwatched(ind, train, station); // a station with no place is in no district
+                return;
+            }
             ResourceKey<Level> dim = station.getBlockEntityDimension();
             BlockPos pos = station.getBlockEntityPos();
             District d = ind.districtAt(dim, ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4));
@@ -418,7 +422,8 @@ public final class TrainWatch {
     private static void flushLeaving(Industry ind, Train train) {
         for (Iterator<Leaving> it = LEAVING.iterator(); it.hasNext(); ) {
             Leaving l = it.next();
-            if (l.train.get() != train)
+            Train t = l.train.get();
+            if (t == null || !t.id.equals(train.id))
                 continue;
             it.remove();
             departed(ind, l, train, train.navigation == null ? null : train.navigation.destination);
