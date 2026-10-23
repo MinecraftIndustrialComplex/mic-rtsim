@@ -53,6 +53,7 @@ fn kind_label(k: NodeKind) -> &'static str {
         NodeKind::Village(Culture::Ribbit) => "Ribbit village",
         NodeKind::PlayerBase { .. } => "Player base",
         NodeKind::Haven(_) => "Haven",
+        NodeKind::Lair => "Lair",
     }
 }
 
@@ -100,7 +101,7 @@ fn village(cx: &Ctx, layer: &str, i: usize) -> Option<Card> {
     let s = w.settlements.get(n.settlement);
     let culture = match n.kind {
         NodeKind::Village(c) | NodeKind::Haven(c) => format!("{c:?}"),
-        NodeKind::PlayerBase { .. } => "none".into(),
+        NodeKind::PlayerBase { .. } | NodeKind::Lair => "none".into(),
     };
     let mut c = Card::new(layer, i, village_title(w, i))
         .subtitle(culture.clone())

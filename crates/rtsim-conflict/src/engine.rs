@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::ids::DistrictId;
-use rtsim_industry::threat::{Loads, Threat, ThreatSource, ThreatTarget};
+use rtsim_industry::threat::{Loads, Threat, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
@@ -61,6 +61,9 @@ const SYS_AMBUSH: SystemId = SystemId::named("conflict.ambush");
 const SYS_CHIEF: SystemId = SystemId::named("conflict.chief");
 const SYS_PEACE: SystemId = SystemId::named("conflict.peace");
 
+/// The most a market price may raise a demand above the culture's fallback per coin (MZB-57): a
+/// good whose price has collapsed would otherwise be asked by the million.
+pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -92,6 +95,9 @@ pub struct Faction {
     pub observed: Vec<(f64, f64)>,
     /// The war chief is out with a band.
     pub chief_out: bool,
+    /// The chief holds its crystal (MOWZIE.md ledger 9): units with a `without_crystal` row fight
+    /// as that row while it does not. True until a report says otherwise.
+    pub crystal: bool,
 }
 
 /// What an envoy asked.
@@ -344,6 +350,9 @@ pub struct ConflictStats {
     pub peace_held: u64,
     /// Notices the plugin played (NOTICE_SHOWN).
     pub notices_shown: u64,
+    /// War parties sent again on the same rung, `repeat_days` after the last came home (MOWZIE.md
+    /// ledger 3).
+    pub repeats: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -357,6 +366,11 @@ pub struct ConflictLedger {
     pub gifts: BTreeMap<GoodId, i128>,
     /// Industry goods stolen that the world's catalogue has no good for, by name (items).
     pub unmapped: BTreeMap<String, i64>,
+    /// Taken from villages by a culture whose loot is destroyed where it is taken (MOWZIE.md
+    /// ledger 10): part of `from_villages`, never carried.
+    pub destroyed: BTreeMap<GoodId, i128>,
+    /// The same for goods taken from players: part of `from_players`.
+    pub destroyed_from_players: BTreeMap<GoodId, i128>,
 }
 
 fn add(m: &mut BTreeMap<GoodId, i128>, g: GoodId, a: Amount) {
@@ -546,6 +560,11 @@ impl NodeIndex {
 }
 
 /// Where `pos` is at `at`, for the archive.
+/// `t` plus `dt` ticks, held at the end of time rather than wrapping.
+fn later(t: Tick, dt: u64) -> Tick {
+    Tick(t.0.saturating_add(dt))
+}
+
 fn spot(at: Tick, pos: Pos) -> At {
     At::new(at.0, u32::from(pos.frame), pos.x, pos.z)
 }
@@ -884,7 +903,8 @@ impl Conflict {
 
     // ---- factions -------------------------------------------------------------------------
 
-    /// A faction's camp: joins the world as a haven node (C24) if no node has its key, registers
+    /// A faction's camp: joins the world as a haven node (C24), or as a lair for a culture with no
+    /// haven (MOWZIE.md ledger 13), if no node has its key, registers
     /// the faction, its chief and heir, books its plunder drive, and tells the plugin its
     /// territory. Idempotent by key. `None` for an unknown culture.
     pub fn add_faction(
@@ -906,7 +926,11 @@ impl Conflict {
             None => w.join(
                 NodeData {
                     key,
-                    kind: NodeKind::Haven(cu.market),
+                    kind: if cu.def.haven {
+                        NodeKind::Haven(cu.market)
+                    } else {
+                        NodeKind::Lair
+                    },
                     pos,
                     pop: (cu.def.pool_cap / 4).max(1),
                     resources: BTreeMap::new(),
@@ -935,6 +959,7 @@ impl Conflict {
             plunder_stamp: 0,
             observed: Vec::new(),
             chief_out: false,
+            crystal: true,
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -1125,7 +1150,7 @@ impl Conflict {
         if rate <= 0.0 {
             return Tick(u64::MAX / 2);
         }
-        at + ((n - have) / rate).ceil() as u64 + 1
+        later(at, (((n - have) / rate).ceil() as u64).saturating_add(1))
     }
 
     /// The chief, after a death of age the world's knowledge processed (the heir takes over).
@@ -1581,8 +1606,55 @@ impl Conflict {
         self.culture(f).def.hysteresis * self.theta(f, s)
     }
 
-    /// Books the feud's next event: the earliest of its next rung (after the dwell), its fall
-    /// below the current rung, its demand's deadline. A new stamp makes the older booking stale.
+    /// The earliest tick a feud on Raid or Invasion with no party out and no demand may send its
+    /// rung's party again (MOWZIE.md ledger 3, MZB-51): `repeat_days` after the later of the
+    /// rung's start and the arrival home of any war party of this feud still on its way home, and
+    /// not while cowed or waiting for the pool. `None` for a culture that does not repeat, a feud
+    /// that cannot repeat now, or a rung whose party is empty (MZB-64).
+    fn repeat_after(&self, f: u32, a: ActorId, feud: &Feud) -> Option<Tick> {
+        let c = self.culture(f);
+        let days = c.def.repeat_days?;
+        // On Peaceful no war party leaves; leaving it plans every feud again (`set_difficulty`).
+        if self.peaceful
+            || !matches!(feud.step, Step::Raid | Step::Invasion)
+            || !c.has_rung(feud.step)
+            || feud.party.is_some()
+            || feud.demand.is_some()
+        {
+            return None;
+        }
+        // The pool refills while a party walks home: counting from its turn could field a second
+        // band (a second Frostmaw) before the first is back.
+        let back = self
+            .parties
+            .iter()
+            .filter(|(_, x)| {
+                x.faction == f && x.feud == Some(a) && x.phase == Phase::Home && x.kind.is_war()
+            })
+            .filter_map(|(_, x)| x.times.last().copied())
+            .max();
+        let from = back.map_or(feud.since, |b| b.max(feud.since));
+        Some(
+            later(from, days_to_ticks(days))
+                .max(self.factions[f as usize].cowed_until)
+                .max(feud.wait_until),
+        )
+    }
+
+    /// When the feud repeats: at [`Self::repeat_after`], once the grievance is at the rung's
+    /// threshold.
+    fn repeat_at(&self, f: u32, a: ActorId, feud: &Feud) -> Option<Tick> {
+        let after = self.repeat_after(f, a, feud)?;
+        let lambda = self.culture(f).lambda;
+        feud.g
+            .crossing_up(self.theta(f, feud.step), lambda)
+            .map(|t| t.max(after))
+    }
+
+    /// Books the feud's next event: the earliest of its next rung (after the dwell), its rung's
+    /// repeat, its fall below the current rung, its demand's deadline. A new stamp makes the older
+    /// booking stale. Empty rungs are skipped (MOWZIE.md ledger 2): a climb's threshold is the
+    /// rung it goes to, its dwell the rung it leaves.
     fn plan_feud(&mut self, f: u32, a: ActorId, at: Tick, from_wake: bool) {
         let Some(feud) = self.feud(f, a) else {
             return;
@@ -1604,7 +1676,11 @@ impl Conflict {
             if feud.holds_envoy() {
                 // A withdrawn demand: no climb, a fresh envoy at the old deadline (MZB-22).
                 take(Some(feud.wait_until.max(cowed)));
-            } else if let Some(up) = feud.step.up().filter(|u| !(peaceful && u.is_war())) {
+            } else if let Some(up) = self
+                .culture(f)
+                .next_up(feud.step)
+                .filter(|u| !(peaceful && u.is_war()))
+            {
                 let dwell = feud.since + self.culture(f).dwell_ticks[feud.step.index()];
                 take(
                     feud.g
@@ -1612,6 +1688,7 @@ impl Conflict {
                         .map(|t| t.max(dwell).max(cowed).max(feud.wait_until)),
                 );
             }
+            take(self.repeat_at(f, a, feud));
             if feud.step > Step::None {
                 take(feud.g.crossing_down(self.down_theta(f, feud.step), lambda));
             } else if feud.raw.iter().all(|r| *r <= 0.0) {
@@ -1658,7 +1735,13 @@ impl Conflict {
         } else if party.is_none() {
             let cowed = self.factions[f as usize].cowed_until > at;
             let dwell = since + self.culture(f).dwell_ticks[step.index()];
-            let up = step.up();
+            let up = self.culture(f).next_up(step);
+            // A repeat of the rung's war party (MOWZIE.md ledger 3); never on Peaceful
+            // (`repeat_after`).
+            let repeat = self
+                .feud(f, a)
+                .and_then(|feud| self.repeat_after(f, a, feud))
+                .is_some_and(|t| at >= t && g >= self.theta(f, step) * (1.0 - 1e-9));
             if again && !cowed && at >= wait && g >= self.down_theta(f, step) {
                 self.envoy_again(w, f, a, at);
             } else if let Some(up) = up.filter(|u| {
@@ -1669,14 +1752,16 @@ impl Conflict {
                     && at >= wait
                     && g >= self.theta(f, *u) * (1.0 - 1e-9)
             }) {
-                self.escalate(w, f, a, up, at);
+                self.escalate(w, f, a, up, at, false);
+            } else if repeat {
+                self.escalate(w, f, a, step, at, true);
             } else if step > Step::None && g < self.down_theta(f, step) {
+                let to = self.culture(f).next_down(step);
                 let feud = self.feud_mut(f, a).expect("exists");
-                feud.step = step.down();
+                feud.step = to;
                 feud.since = at;
                 feud.envoy_again = false;
                 self.stats.calmed += 1;
-                let to = step.down();
                 let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
                 self.tape.event(
                     kinds::CONFLICT_CALM,
@@ -1721,8 +1806,9 @@ impl Conflict {
         }
     }
 
-    /// Climbs to rung `to`, doing what it says.
-    fn escalate(&mut self, w: &mut World, f: u32, a: ActorId, to: Step, at: Tick) {
+    /// Climbs to rung `to`, doing what it says; or, `again`, sends the party of the rung the feud
+    /// is on once more (MOWZIE.md ledger 3), counted as a repeat and not as a step.
+    fn escalate(&mut self, w: &mut World, f: u32, a: ActorId, to: Step, at: Tick, again: bool) {
         let lambda = self.culture(f).lambda;
         let feud = self.feud(f, a).expect("exists");
         let g = feud.g.total_at(at, lambda);
@@ -1730,10 +1816,18 @@ impl Conflict {
         let focus = feud.focus;
         if to.is_war() || to == Step::Scouts || to == Step::Envoy {
             let pk = PartyKind::of_step(to).expect("a party rung");
+            if self.culture(f).parties[pk.index()].is_empty() {
+                // `next_up` and `repeat_after` never pick an empty rung. Were one picked anyway,
+                // a pool wait for no warriors would wake the feud every tick: change and book
+                // nothing (MZB-64).
+                debug_assert!(false, "escalate to the empty rung {}", to.name());
+                return;
+            }
             let target = self.target_of(w, f, focus, at);
             let Some(p) = self.send_party(w, f, Some(a), pk, target, at) else {
-                // Not enough warriors: wait for the pool (closed form).
-                let need = self.party_size(f, pk) as f64 / 2.0;
+                // Not enough warriors: wait for the pool (closed form). The whole warriors
+                // `send_party` needs, so the wait ends when it can send (MOWZIE.md ledger 6).
+                let need = (self.party_size(f, pk) as f64 / 2.0).ceil();
                 let ready = self.pool_ready(f, need, at);
                 let feud = self.feud_mut(f, a).expect("exists");
                 feud.wait_until = ready;
@@ -1758,6 +1852,25 @@ impl Conflict {
         feud.since = at;
         feud.wait_until = Tick::ZERO;
         feud.envoy_again = false;
+        if again {
+            self.stats.repeats += 1;
+            self.note(
+                at,
+                Some(f),
+                "repeat",
+                format!(
+                    "grievance against {} still at {g:.1} ({} first): the {} comes again",
+                    self.actor_name(w, a),
+                    kind.name(),
+                    if to == Step::Invasion {
+                        "invasion"
+                    } else {
+                        "war band"
+                    }
+                ),
+            );
+            return;
+        }
         self.stats.escalations[to.index()] += 1;
         let pos = focus.map_or(self.factions[f as usize].pos, |fo| fo.pos);
         let severity = if matches!(to, Step::Invasion | Step::Siege) {
@@ -1832,7 +1945,10 @@ impl Conflict {
         let good = self.tribute_good(w, f);
         let base = self.culture(f).def.tribute_per_grievance * g;
         let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50);
-        let tribute = ((base * f64::from(bend) / 1000.0).ceil() as i64).max(1);
+        let per_coin = self.tribute_per_coin(w, f, good);
+        // Held to what the envoy's wire count (an i32) can say (MZB-57).
+        let tribute = ((base * f64::from(bend) / 1000.0 * per_coin).ceil() as i64)
+            .clamp(1, i64::from(i32::MAX));
         let deadline = at + days_to_ticks(self.culture(f).def.demand_days);
         let feud = self.feud_mut(f, a).expect("exists");
         feud.demand = Some(Demand {
@@ -1883,7 +1999,8 @@ impl Conflict {
         );
         let target = self.target_of(w, f, focus, at);
         let Some(p) = self.send_party(w, f, Some(a), PartyKind::Envoy, target, at) else {
-            let need = self.party_size(f, PartyKind::Envoy) as f64 / 2.0;
+            // The whole warriors `send_party` needs, as `escalate` waits for (MZB-52).
+            let need = (self.party_size(f, PartyKind::Envoy) as f64 / 2.0).ceil();
             let ready = self.pool_ready(f, need, at);
             self.feud_mut(f, a).expect("exists").wait_until = ready;
             return;
@@ -1904,6 +2021,23 @@ impl Conflict {
             .and_then(|n| w.goods.find(n))
             .or_else(|| w.goods.currency(c.market))
             .unwrap_or(GoodId(0))
+    }
+
+    /// Units of the tribute good one coin of the haven's money buys (MOWZIE.md ledger 12): 1 for
+    /// money itself, else at the haven market's price, else the culture's fallback while that
+    /// market has no price for it. A price that has fallen near nothing asks at most
+    /// [`TRIBUTE_PRICE_CAP`] times the fallback (MZB-57).
+    fn tribute_per_coin(&self, w: &World, f: u32, good: GoodId) -> f64 {
+        if w.goods.is_currency(good) {
+            return 1.0;
+        }
+        let price = w.market(self.factions[f as usize].node).price(good);
+        let fallback = self.culture(f).def.tribute_per_coin_fallback;
+        if price > 0 {
+            (PRICE_ONE as f64 / price as f64).min(TRIBUTE_PRICE_CAP * fallback)
+        } else {
+            fallback
+        }
     }
 
     /// Where a feud's party goes: its focus's district, else the place, else the camp's edge.
@@ -1982,11 +2116,14 @@ impl Conflict {
                     self.actor_name(w, a)
                 ),
             );
-            if g >= self.theta(f, Step::Scouts) * (1.0 - 1e-9) {
-                self.escalate(w, f, a, Step::Scouts, at);
+            // The next rung up the culture has (MOWZIE.md ledger 2): Scouts, unless it skips them.
+            let up = self.culture(f).next_up(Step::Envoy);
+            if let Some(up) = up.filter(|u| g >= self.theta(f, *u) * (1.0 - 1e-9)) {
+                self.escalate(w, f, a, up, at, false);
             } else if g < self.down_theta(f, Step::Envoy) {
+                let to = self.culture(f).next_down(Step::Envoy);
                 let feud = self.feud_mut(f, a).expect("exists");
-                feud.step = Step::Notice;
+                feud.step = to;
                 feud.since = at;
             } else {
                 let feud = self.feud_mut(f, a).expect("exists");
@@ -2373,7 +2510,8 @@ impl Conflict {
     }
 
     /// Musters a party at the camp. War parties draw on the pool (at least half their make-up, or
-    /// none goes); envoys and scouts always go.
+    /// none goes); envoys and scouts always go. A kind the culture has no party for sends nothing
+    /// (MOWZIE.md ledger 2; the ladder never climbs to such a rung).
     fn send_party(
         &mut self,
         w: &mut World,
@@ -2384,6 +2522,9 @@ impl Conflict {
         at: Tick,
     ) -> Option<Handle<Party>> {
         let make: Vec<(u8, u32)> = self.culture(f).parties[kind.index()].clone();
+        if make.is_empty() {
+            return None;
+        }
         let want: u32 = make.iter().map(|u| u.1).sum();
         let units = if kind.is_war() {
             let have = self.pool_at(f, at).floor() as u32;
@@ -2782,13 +2923,12 @@ impl Conflict {
         p: Handle<Party>,
     ) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64, Loads)> {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         let mut m = BTreeMap::new();
         for &(u, n) in &x.units {
             if n == 0 {
                 continue;
             }
-            let ud = c.unit(u);
+            let ud = self.unit_row(x.faction, u);
             let e = m
                 .entry(ud.class.threat())
                 .or_insert((0u32, 0.0f64, Loads::default()));
@@ -2802,13 +2942,22 @@ impl Conflict {
 
     fn strength(&self, p: Handle<Party>) -> f64 {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         x.units
             .iter()
-            .map(|&(u, n)| f64::from(n) * c.unit(u).strength)
+            .map(|&(u, n)| f64::from(n) * self.unit_row(x.faction, u).strength)
             .sum()
     }
 
+    /// Unit `u` of faction `f` as it fights now: the row its chief's crystal picks (MOWZIE.md
+    /// ledger 9). A body is always its own row's.
+    fn unit_row(&self, f: u32, u: u8) -> &crate::culture::UnitDef {
+        self.culture(f)
+            .unit_as(u, self.factions[f as usize].crystal)
+    }
+
+    /// A war band falls on a train it crosses (C16, I24): one threat per class of unit, each with
+    /// that class's count, strength and carry (MOWZIE.md ledger 9, MZB-53), as district raids
+    /// send them. One ambush however many classes took something.
     fn ambush(
         &mut self,
         infra: &mut dyn Infrastructure,
@@ -2821,40 +2970,43 @@ impl Conflict {
             self.stats.peace_held += 1;
             return;
         }
-        let id = fnv1a64(
-            &[
-                Party::agent(p).to_le_bytes(),
-                at.0.to_le_bytes(),
-                train.to_le_bytes(),
-            ]
-            .concat(),
-        );
-        let s = self.strength(p);
-        let n = self.parties[p].alive();
-        let carry: i64 = {
-            let x = &self.parties[p];
-            let c = self.culture(x.faction);
-            x.units
-                .iter()
-                .map(|&(u, k)| i64::from(k) * i64::from(c.unit(u).carry))
-                .sum()
-        };
-        let t = Threat {
-            id,
-            source: ThreatSource::Bandit,
-            class: rtsim_industry::threat::ThreatClass::GroundMelee,
-            count: n,
-            strength: s,
-            target: ThreatTarget::Train(rtsim_industry::ids::TrainId(train)),
-            at,
-            loads: Some(Loads { carry, blocks: 0 }),
-        };
-        let Some(loot) = infra.raid_train(&t) else {
-            return;
-        };
-        self.stats.ambushes += 1;
-        let got = self.take_industry_loot(w, infra, p, &loot);
         let f = self.parties[p].faction;
+        let source = self.culture(f).def.source.threat();
+        let mut hit = false;
+        let mut got = 0;
+        for (class, (count, strength, loads)) in self.strength_by_class(p) {
+            let id = fnv1a64(
+                &[
+                    Party::agent(p).to_le_bytes(),
+                    at.0.to_le_bytes(),
+                    train.to_le_bytes(),
+                    (class.index() as u64).to_le_bytes(),
+                ]
+                .concat(),
+            );
+            let t = Threat {
+                id,
+                source,
+                class,
+                count,
+                strength,
+                target: ThreatTarget::Train(rtsim_industry::ids::TrainId(train)),
+                at,
+                loads: Some(Loads {
+                    carry: loads.carry,
+                    blocks: 0,
+                }),
+            };
+            let Some(loot) = infra.raid_train(&t) else {
+                continue;
+            };
+            hit = true;
+            got += self.take_industry_loot(w, infra, p, &loot);
+        }
+        if !hit {
+            return;
+        }
+        self.stats.ambushes += 1;
         let (x, z) = self.party_pos(p, at);
         let frame = u32::from(self.parties[p].frame);
         self.tape
@@ -2874,6 +3026,17 @@ impl Conflict {
         );
     }
 
+    /// Goods `a` (thousandths) of `g` taken from players by party `p`: carried home, or destroyed
+    /// where taken by a culture whose loot is (MOWZIE.md ledger 10).
+    fn took_from_players(&mut self, p: Handle<Party>, g: GoodId, a: Amount) {
+        add(&mut self.ledger.from_players, g, a);
+        if self.culture(self.parties[p].faction).def.loot_destroyed {
+            add(&mut self.ledger.destroyed_from_players, g, a);
+        } else {
+            *self.parties[p].from_players.entry(g).or_default() += a;
+        }
+    }
+
     /// Maps industry goods to the world's by name into the party's players' goods. Returns items.
     fn take_industry_loot(
         &mut self,
@@ -2890,9 +3053,7 @@ impl Conflict {
             let short = name.rsplit(':').next().unwrap_or(&name).to_string();
             match w.goods.find(&name).or_else(|| w.goods.find(&short)) {
                 Some(wg) => {
-                    let a = n.saturating_mul(MILLI);
-                    *self.parties[p].from_players.entry(wg).or_default() += a;
-                    add(&mut self.ledger.from_players, wg, a);
+                    self.took_from_players(p, wg, n.saturating_mul(MILLI));
                     got += n;
                 }
                 None => *self.ledger.unmapped.entry(name).or_default() += n,
@@ -3136,7 +3297,7 @@ impl Conflict {
             );
             let t = Threat {
                 id,
-                source: ThreatSource::Bandit,
+                source: self.culture(f).def.source.threat(),
                 class,
                 count,
                 strength,
@@ -3189,13 +3350,13 @@ impl Conflict {
         (stolen_items, blocks)
     }
 
-    /// What party `p`'s living members carry between them, thousandths.
+    /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
+    /// crystal has it fight now (`unit_row`, MOWZIE.md ledger 9).
     fn carry_milli(&self, p: Handle<Party>) -> Amount {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         x.units
             .iter()
-            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
+            .map(|&(u, n)| i64::from(n) * i64::from(self.unit_row(x.faction, u).carry))
             .sum::<i64>()
             * MILLI
     }
@@ -3211,7 +3372,7 @@ impl Conflict {
         let classes: Vec<bool> = self.parties[p]
             .units
             .iter()
-            .map(|&(u, _)| class(self.culture(f).unit(u).class))
+            .map(|&(u, _)| class(self.unit_row(f, u).class))
             .collect();
         let x = &mut self.parties[p];
         for (k, e) in x.units.iter_mut().enumerate() {
@@ -3232,7 +3393,9 @@ impl Conflict {
     /// observed); the survivors carry off up to their carry and the culture's share of each line's
     /// surplus over its target, coins included, into the band's hold (`World::stock_to_held`),
     /// conservation exact. A band that could not carry off one whole item if nobody fell does not
-    /// fight at all (CL-D58, as the ports' PC72 and PC78).
+    /// fight at all (CL-D58, as the ports' PC72 and PC78). A culture whose loot is destroyed takes
+    /// it out of the world where it stands (`World::take_stocks`, MOWZIE.md ledger 10), from the
+    /// same capped shares. A lair defends as a haven does (MZB-59) and has no stock to take.
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
@@ -3266,7 +3429,7 @@ impl Conflict {
         let s = self.strength(p);
         let node = &w.nodes[i];
         let per = match node.kind {
-            NodeKind::Haven(_) => self.tun.haven_defence_per_pop,
+            NodeKind::Haven(_) | NodeKind::Lair => self.tun.haven_defence_per_pop,
             _ => self.tun.village_defence_per_pop,
         };
         let pop = w.settlements.get(node.settlement).map_or(0, |x| x.pop);
@@ -3285,10 +3448,18 @@ impl Conflict {
         // no time, so the market has not moved).
         let shares = apportion(self.carry_milli(p).min(reach), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
-        let got = w.stock_to_held(i, &want, at);
+        let got = if c.def.loot_destroyed {
+            w.take_stocks(i, &want, at)
+        } else {
+            w.stock_to_held(i, &want, at)
+        };
         let mut items = 0;
         for (g, a) in &got {
-            *self.parties[p].loot.entry(*g).or_default() += a;
+            if c.def.loot_destroyed {
+                add(&mut self.ledger.destroyed, *g, *a);
+            } else {
+                *self.parties[p].loot.entry(*g).or_default() += a;
+            }
             add(&mut self.ledger.from_villages, *g, *a);
             items += a / MILLI;
         }
@@ -3443,6 +3614,17 @@ impl Conflict {
             feud.party = None;
             feud.since = at;
             self.plan_feud(f, a, at, false);
+        } else if let Some(a) = self.parties[p].feud
+            && self.culture(f).def.repeat_days.is_some()
+            && let Some(feud) = self.feud_mut(f, a)
+            && feud.party.is_none()
+            && feud.demand.is_none()
+            && PartyKind::of_step(feud.step) == Some(kind)
+        {
+            // A repeat counts from the arrival home (MZB-51): the rung it served starts again
+            // now, so a replan cannot book the repeat from the turn.
+            feud.since = feud.since.max(at);
+            self.plan_feud(f, a, at, false);
         }
         if self.parties[p].loot.is_empty() {
             self.parties.remove(p);
@@ -3513,7 +3695,8 @@ impl Conflict {
                     NodeKind::Haven(_) => by_key.get(&n.key).is_some_and(|&o| {
                         c.hates(cultures.get(factions[o as usize].culture).name())
                     }),
-                    NodeKind::PlayerBase { .. } => false,
+                    // A lair has nothing to plunder (MOWZIE.md ledger 13).
+                    NodeKind::PlayerBase { .. } | NodeKind::Lair => false,
                 }
             });
         let Some((_, i)) = best else {
@@ -3918,7 +4101,7 @@ impl Conflict {
                 boundary::DEMAND_TRIBUTE | boundary::DEMAND_STOP,
                 d.kind as u32,
                 item_of(d.good),
-                (d.tribute - d.paid).max(0) as i32,
+                (d.tribute - d.paid).clamp(0, i64::from(i32::MAX)) as i32,
                 d.deadline.0 as i64,
             ),
             None => (0, 0, 0, 0, 0),
@@ -4149,10 +4332,16 @@ impl Conflict {
                         .slot(a.to_bits())
                         .below(dwell)
                 };
+                // Held: a climb to a war rung (the culture's next rung up, MZB-50), or the repeat
+                // of the war rung it is on (MZB-51).
+                let (step, repeats) = {
+                    let x = self.feud(f, a).expect("listed");
+                    (x.step, self.culture(f).def.repeat_days.is_some())
+                };
+                let war_next = self.culture(f).next_up(step).is_some_and(Step::is_war)
+                    || (repeats && matches!(step, Step::Raid | Step::Invasion));
                 let x = self.feud_mut(f, a).expect("listed");
-                let held = x.party.is_none()
-                    && x.demand.is_none()
-                    && x.step.up().is_some_and(Step::is_war);
+                let held = x.party.is_none() && x.demand.is_none() && war_next;
                 if held {
                     let paused = x.since + at.since(x.since.max(since));
                     x.since = paused.max(Tick(at.0.saturating_sub(dwell))) + jitter;
@@ -4207,8 +4396,11 @@ impl Conflict {
                 .feud(f, a)
                 .is_some_and(|x| x.party == Some(p) && PartyKind::of_step(x.step) == Some(kind))
         {
-            let x = self.feud_mut(f, a).expect("checked");
-            x.step = x.step.down();
+            // Past empty rungs, as every step down (MZB-50).
+            let to = self
+                .culture(f)
+                .next_down(self.feud(f, a).expect("checked").step);
+            self.feud_mut(f, a).expect("checked").step = to;
         }
     }
 
@@ -4488,8 +4680,7 @@ impl Conflict {
                 // Items real mobs carried off from containers: they left the player's world.
                 let goods = self.goods_of(w, &l.items);
                 for (g, a) in goods {
-                    *self.parties[p].from_players.entry(g).or_default() += a;
-                    add(&mut self.ledger.from_players, g, a);
+                    self.took_from_players(p, g, a);
                 }
             }
         }
@@ -4647,11 +4838,16 @@ impl Conflict {
             });
         if let Some(a) = self.parties[p].feud.or(killer) {
             let steps = self.tun.chief_rout_steps;
-            if let Some(feud) = self.feud_mut(f, a) {
+            if let Some(from) = self.feud(f, a).map(|x| x.step) {
+                // Each step down skips the rungs the culture has no party for (MOWZIE.md
+                // ledger 2).
+                let c = self.culture(f);
+                let mut to = from;
                 for _ in 0..steps {
-                    feud.step = feud.step.down();
+                    to = c.next_down(to);
                 }
-                feud.step = feud.step.max(Step::Notice);
+                let feud = self.feud_mut(f, a).expect("exists");
+                feud.step = to.max(Step::Notice);
                 feud.since = at;
             }
         }
@@ -4673,6 +4869,8 @@ impl Conflict {
                 cowed as f64 / TICKS_PER_DAY as f64
             ),
         );
+        // Every feud replans here, the one whose step just fell among them, also when the band
+        // was already walking home and neither `go_home` nor `end_fight` ran above.
         for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
@@ -4725,9 +4923,10 @@ impl Conflict {
         for (g, taken) in &self.ledger.from_villages {
             let landed = self.ledger.landed.get(g).copied().unwrap_or(0);
             let h = held.get(g).copied().unwrap_or(0);
-            if *taken != landed + h {
+            let gone = self.ledger.destroyed.get(g).copied().unwrap_or(0);
+            if *taken != landed + h + gone {
                 return Err(format!(
-                    "good {}: taken {taken}, landed {landed}, held {h}",
+                    "good {}: taken {taken}, landed {landed}, held {h}, destroyed {gone}",
                     g.0
                 ));
             }
@@ -4747,9 +4946,15 @@ impl Conflict {
         for (g, taken) in &self.ledger.from_players {
             let landed = self.ledger.landed_from_players.get(g).copied().unwrap_or(0);
             let c = carried.get(g).copied().unwrap_or(0);
-            if *taken != landed + c {
+            let gone = self
+                .ledger
+                .destroyed_from_players
+                .get(g)
+                .copied()
+                .unwrap_or(0);
+            if *taken != landed + c + gone {
                 return Err(format!(
-                    "good {}: from players {taken}, landed {landed}, carried {c}",
+                    "good {}: from players {taken}, landed {landed}, carried {c}, destroyed {gone}",
                     g.0
                 ));
             }

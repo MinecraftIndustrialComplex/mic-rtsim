@@ -87,6 +87,12 @@ usage:
       player is offline, applied on load), tribute and converter (de-escalation), and a save and
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
       Exits 1 if a check fails.
+  rtsim-cli sim mowzie [list | run N ...] [--seed S] [--out FILE | --no-write] [--quiet]
+      Mowzie's Mobs' Frostmaw and Umvuthana (MOWZIE.md §7's runs, numbered as there; list
+      names each run and the slice that builds it). Built so far (slice M2): run 1's den ladder
+      on kills (Notice straight to Raid, repeats, calm) and run 5's grove ladder (a demand in
+      gold nuggets, no Siege); the other runs print the slice that builds them. Writes JSON to
+      FILE (default scenario/results/sim-mowzie.json). Exits 1 if a check fails.
   rtsim-cli sim census [--scenario all|ecology,ships,conflict] [--days N] [--every N] [--seed S]
       The who-is-alive census (EQUILIBRIUM.md S1): each scenario's synthetic world with nobody
       watching, one fixed-width line per kind of site every N days (default 24, for 960 days):
@@ -274,6 +280,7 @@ fn main() -> ExitCode {
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
         ["sim", "census", rest @ ..] => sim::census::cli(rest),
         ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
+        ["sim", "mowzie", rest @ ..] => sim::mowzie::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {
