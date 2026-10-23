@@ -63,7 +63,7 @@ public final class DragonLook implements FarLook {
     /** Open sky, no block light: the lightmap darkens them at night as it does DH's terrain. */
     static final int SKY_LIGHT = 15 << 20;
     /** Where the renders that only move the animation on draw to. */
-    private static final MultiBufferSource NULL_SOURCE = rt -> NullVertexConsumer.INSTANCE;
+    static final MultiBufferSource NULL_SOURCE = rt -> NullVertexConsumer.INSTANCE;
     /** A pose set nobody drew for this long is freed, a live stand-in sooner (PLACEHOLDERS). */
     static final long KEEP_NANOS = 60_000_000_000L, LIVE_KEEP_NANOS = 5_000_000_000L;
     /**
@@ -135,6 +135,8 @@ public final class DragonLook implements FarLook {
     private final Map<Integer, Float> renderSizes = new HashMap<>();
     private final DragonBaseEntity[] probes = new DragonBaseEntity[IafDragons.SPECIES.size()];
     private ClientLevel levelOf;
+    /** New bodies held back while their animation settles (DHT68). */
+    final DragonArrivals arrivals = new DragonArrivals();
     private long clock, lastSweep;
     private int errors;
     private long setsBaked, bakeNanos;
@@ -273,6 +275,7 @@ public final class DragonLook implements FarLook {
         }
         if (level == null)
             return;
+        arrivals.frame(level, this::copies);
         if (now - lastSweep > 1_000_000_000L) {
             lastSweep = now;
             sweep(now);
@@ -587,9 +590,16 @@ public final class DragonLook implements FarLook {
         return !(body instanceof LightningDragonEntity l && l.hasLightningTarget());
     }
 
+    /** A new body vanilla does not draw this frame, the far model drawn for it instead (DHT68). */
+    @Override
+    public boolean holds(Entity body) {
+        return arrivals.holds(body);
+    }
+
     @Override
     public void clear() {
         reset();
+        arrivals.clear(Minecraft.getInstance().level);
         failed.clear();
         lastYaw.clear();
         renderSizes.clear();
@@ -626,7 +636,8 @@ public final class DragonLook implements FarLook {
                         + "%d sets baked, %.2f ms each, longest frame's bake %.2f ms, longest render %.2f ms (%s)",
                 ready, vertices, bytes / (double) (1 << 20), wanted.size(), failed.size(), standIns.size(), liveDrawn,
                 setsBaked,
-                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs, maxRenderMs, maxRenderWhat);
+                setsBaked == 0 ? 0.0 : bakeNanos / 1e6 / setsBaked, maxStepMs, maxRenderMs, maxRenderWhat)
+                + "; " + arrivals.stats();
         maxStepMs = 0;
         maxRenderMs = 0;
         maxRenderWhat = "none";

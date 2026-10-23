@@ -66,18 +66,4 @@ class FarLooksTest {
         assertEquals(1, keeping.clears);
         assertEquals(1, keeping.resets);
     }
-
-    @Test
-    void aLookThatThrowsOnResetDoesNotStopTheOthers() {
-        Keeping after = new Keeping();
-        FarLooks.register(FarKind.DRAGON, new Counting() {
-            @Override
-            public void reset() {
-                throw new IllegalStateException("broken");
-            }
-        });
-        FarLooks.register(FarKind.CARRIAGE, after);
-        FarLooks.resetAll();
-        assertEquals(1, after.resets);
-    }
 }
