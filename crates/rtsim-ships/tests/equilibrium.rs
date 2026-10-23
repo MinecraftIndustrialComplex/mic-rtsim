@@ -9,7 +9,7 @@
 //! a sea and a sky pirate, two slots), with S8b's lifecycle on (unless a test turns it off) but
 //! no navy assaults (§2.4.6a rule 3): the coast's haven hunts lanes Saltmere's navy patrols, so
 //! with assaults on it is broken at nearly every look its fleet is out, and S8's refits would go
-//! unmeasured (docs/choices-ports.md PC33). `lifecycle.rs` judges the assaults.
+//! unmeasured (docs/choices-ports.md PC34). `lifecycle.rs` judges the assaults.
 
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -28,7 +28,7 @@ fn coast(seed: u64) -> Coastal {
 }
 
 /// The tunables S8's rules are judged with: the defaults with no navy assaults (§2.4.6a rule 3,
-/// PC33).
+/// PC34).
 fn s8_tun() -> ShipTunables {
     ShipTunables {
         assault_every_days: 0,
@@ -187,7 +187,7 @@ fn refit_wait(s: &Ships, p: ShipId) -> Option<f64> {
 /// pool low while every slot is manned, so the slots wait longer for crews; a haven whose ships
 /// were all sunk is not shut (PC4) and stays fed until a month after its first refit is due
 /// (PC13), so a kill-all is still answered by refits and the 180-day band holds. No navy assaults
-/// (PC33): with them, Saltmere's navy breaks the emptied haven instead.
+/// (PC34): with them, Saltmere's navy breaks the emptied haven instead.
 #[test]
 fn kill_all_pirates() {
     let tun = s8_tun();
@@ -432,6 +432,7 @@ fn a_haven_with_no_lane_worth_hunting_rests() {
 /// late report once made the pirate's homecoming stale (the fight sent it home again, and a
 /// pirate not hunting ignores that), so it idled forever with nothing booked: seed 4 of
 /// `sim ships` lost both its pirates that way. Now the pirate gets home, rests and sails again.
+/// No navy assaults (PC34): a broken haven lays its pirate up at home, which is not this bug.
 #[test]
 fn a_late_fight_report_never_strands_a_pirate() {
     let out = per_seed(&seeds(), |seed| {
@@ -568,7 +569,9 @@ fn check_unattended(seed: u64, ss: &[Stretch]) {
 /// seeds 1 to 30, censused on the model's 24-day grid. Every century every seed's haven still
 /// hunts, its slots are manned, its pool is within the cap, and the event queue and the save stay
 /// flat. Release only, for its length (`cargo test --release -p rtsim-ships --test equilibrium
-/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut.
+/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut. No navy
+/// assaults (PC34): `lifecycle.rs`'s `coast_havens_cycle_with_assaults` measures the coast with
+/// them.
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn pirates_survive_unattended_1000_years() {
@@ -589,7 +592,8 @@ fn pirates_survive_unattended_1000_years() {
     );
 }
 
-/// [`pirates_survive_unattended_1000_years`]'s rule over three decades on seeds 1, 7 and 30.
+/// [`pirates_survive_unattended_1000_years`]'s rule over three decades on seeds 1, 7 and 30, with
+/// no navy assaults (PC34).
 #[test]
 fn pirates_survive_unattended_thirty_years() {
     per_seed(&[1, 7, 30], |seed| {
