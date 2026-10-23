@@ -9,11 +9,13 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.far.CarriageShape;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarItem;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarLegs;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarPayloads;
+import com.minecraftindustrialcomplex.mic_rtsim.far.FarShape;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarSource;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarState;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarView;
@@ -267,5 +269,109 @@ public final class FarFeedGameTests {
             FakePlayers.remove(watcher);
             body.discard();
         }
+    }
+
+    /** A carriage of {@code n} blocks of one state in a row, as a far shape. */
+    private static FarShape shape(int n, int state) {
+        List<CarriageShape.Block> blocks = new ArrayList<>();
+        for (int x = 0; x < n; x++)
+            blocks.add(new CarriageShape.Block(x, 1, 0, state));
+        return new CarriageShape(4, blocks, List.of(new CarriageShape.Bogey(0, 0, 0, "create:standard", "create:small", false)))
+                .shape();
+    }
+
+    /**
+     * Carriage shapes (docs/choices-dh-feed.md DHT62): each goes to a subscriber once, right after the message
+     * whose INTRO first names it, however many carriages wear it; a carriage rebuilt names a new one, which goes
+     * after that message; a new subscription (a RESET) sends them all again.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 100, batch = "mic_rtsim_far_feed")
+    public static void aCarriagesShapeGoesOnceAfterTheMessageThatNamesIt(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Vec3 at = helper.absoluteVec(new Vec3(1.5, 2, 1.5));
+        ServerPlayer watcher = FakePlayers.add(level, at, "far_shape_watcher");
+        UUID w = watcher.getUUID();
+        List<String> events = new ArrayList<>();
+        List<byte[]> sent = new ArrayList<>();
+        FarFeed.setSink(new FarFeed.Sink() {
+            @Override
+            public void send(ServerPlayer p, byte[] message) {
+                if (p.getUUID().equals(w)) {
+                    sent.add(message);
+                    events.add("message");
+                }
+            }
+
+            @Override
+            public void shape(ServerPlayer p, long hash, byte[] bytes) {
+                if (p.getUUID().equals(w)) {
+                    check("a shape's bytes are its own", FarShape.raw(hash, bytes).length > 0);
+                    events.add(Long.toHexString(hash));
+                }
+            }
+        });
+        FarFeed.setPlayers(u -> u.equals(w) ? watcher : level.getServer().getPlayerList().getPlayer(u));
+        int px = (int) Math.floor(at.x), py = (int) Math.floor(at.y), pz = (int) Math.floor(at.z);
+        long base = 0x54L << 56 | 0xFD_0000_0000L | ((long) ThreadLocalRandom.current().nextInt(1 << 16) << 8);
+        FarShape coach = shape(9, 1), loco = shape(12, 2), rebuilt = shape(10, 1);
+        String c = Long.toHexString(coach.hash()), l = Long.toHexString(loco.hash()), r = Long.toHexString(rebuilt.hash());
+        List<FarItem> train = new ArrayList<>();
+        FarSource src = new FarSource() {
+            @Override
+            public String name() {
+                return "gametest far carriages";
+            }
+
+            @Override
+            public void collect(ServerLevel lv, long gameTime, Consumer<FarItem> out) {
+                train.forEach(out);
+            }
+        };
+        FarFeed.addSource(src);
+        try {
+            for (int k = 0; k < 3; k++)
+                train.add(carriage(base + k, px + 40 + 12 * k, py, pz, k == 0 ? loco : coach));
+            FarFeed.subscribe(watcher, new FarPayloads.Subscribe(FarPayloads.SUB_VERSION, 512, 2, 64, FarKind.CARRIAGE.bit()));
+            events.clear();
+            FarWire.Message m1 = sweep(helper, sent);
+            check("the first message starts the view over", m1 != null && (m1.flags() & FarWire.RESET) != 0);
+            long named = m1.recs().stream().filter(x -> x instanceof FarWire.Intro i && i.shape() == coach.hash()).count();
+            check("two carriages name the coach's shape: " + m1.recs(), named == 2);
+            check("the message, then each shape once, nearest first: " + events, events.equals(List.of("message", l, c)));
+
+            // Moving on: only samples, no shapes
+            train.replaceAll(i -> carriage(i.id(), i.seg()[0] + 5, py, pz, i.shape()));
+            events.clear();
+            sweep(helper, sent);
+            check("a moving train sends no shape again: " + events, events.equals(List.of("message")));
+
+            // A carriage rebuilt: its INTRO names the new shape, which follows the message
+            train.set(2, carriage(base + 2, train.get(2).seg()[0], py, pz, rebuilt));
+            events.clear();
+            FarWire.Message m3 = sweep(helper, sent);
+            check("the rebuilt carriage is introduced again with its new shape: " + m3.recs(), m3.recs().stream()
+                    .anyMatch(x -> x instanceof FarWire.Intro i && i.id() == base + 2 && i.shape() == rebuilt.hash()));
+            check("then its shape: " + events, events.equals(List.of("message", r)));
+
+            // A new subscription starts over: every shape again, after the RESET
+            FarFeed.subscribe(watcher, new FarPayloads.Subscribe(FarPayloads.SUB_VERSION, 512, 2, 64, FarKind.CARRIAGE.bit()));
+            events.clear();
+            FarWire.Message m4 = sweep(helper, sent);
+            check("a new subscription starts over", m4 != null && (m4.flags() & FarWire.RESET) != 0);
+            check("and sends the shapes again: " + events, events.equals(List.of("message", l, c, r)));
+            record("far feed shapes", "bytes", coach.bytes().length + ", " + loco.bytes().length + ", " + rebuilt.bytes().length);
+            helper.succeed();
+        } finally {
+            FarFeed.removeSource(src);
+            FarFeed.unsubscribe(w);
+            FarFeed.setSink(null);
+            FarFeed.setPlayers(null);
+            FakePlayers.remove(watcher);
+        }
+    }
+
+    private static FarItem carriage(long id, double x, int y, int z, FarShape shape) {
+        return new FarItem(id, FarKind.CARRIAGE, 0, 0, 0, 0x404040, FarState.MOVING, new double[]{x + 3, y, z, x - 3, y, z},
+                null, -1, 0, shape, -1);
     }
 }

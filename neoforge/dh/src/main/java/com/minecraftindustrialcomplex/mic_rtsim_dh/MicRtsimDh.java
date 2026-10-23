@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
 import com.mojang.logging.LogUtils;
 import com.seibel.distanthorizons.api.DhApi;
+import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiBeforeGenericRenderCleanupEvent;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiBeforeGenericRenderSetupEvent;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiLevelLoadEvent;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiLevelUnloadEvent;
@@ -24,7 +25,9 @@ import org.slf4j.Logger;
  * DECISIONS.md DH-1 and DH-2). It knows DH and the core's far registry and nothing else: it draws what the
  * registry's sources put there (Create trains from mic_rtsim_create, and the server's far feed of trains and
  * dragons, which it subscribes to) as DH boxes beyond the vanilla view, and as vanilla boxes in the loaded
- * chunks where the real thing has no entity ({@link FarBandRenderer}). Client only: servers never load it.
+ * chunks where the real thing has no entity ({@link FarBandRenderer}); and, where a plugin's look has it, as the
+ * real thing: a carriage as the blocks its player built, a dragon as Ice and Fire's model ({@link FarModelRenderer},
+ * DECISIONS.md DH-6). Client only: servers never load it.
  */
 @Mod(value = MicRtsimDh.MODID, dist = Dist.CLIENT)
 public final class MicRtsimDh {
@@ -55,11 +58,23 @@ public final class MicRtsimDh {
                 FarTrainView.beforeSetup(event.value);
             }
         });
+        DhApi.events.bind(DhApiBeforeGenericRenderCleanupEvent.class, new DhApiBeforeGenericRenderCleanupEvent() {
+            @Override
+            public void beforeCleanup(DhApiEventParam<DhApiRenderParam> event) {
+                FarModelRenderer.onDhCleanup(event.value);
+            }
+        });
 
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post e) -> FarGates.tick());
-        NeoForge.EVENT_BUS.addListener((RenderFrameEvent.Pre e) -> FarTrainView.newFrame());
+        NeoForge.EVENT_BUS.addListener((RenderFrameEvent.Pre e) -> {
+            FarTrainView.newFrame();
+            FarModelRenderer.newFrame();
+        });
         NeoForge.EVENT_BUS.addListener(FarBandRenderer::onStage);
-        NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut e) -> FarTrainView.releaseAll());
+        NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut e) -> {
+            FarTrainView.releaseAll();
+            FarModelRenderer.releaseAll();
+        });
         if (FarBench.ENABLED)
             FarBench.register();
     }

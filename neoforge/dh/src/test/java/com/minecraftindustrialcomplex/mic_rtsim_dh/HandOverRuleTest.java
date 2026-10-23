@@ -48,4 +48,15 @@ class HandOverRuleTest {
         assertFalse(HandOverRule.dh(false, true, 10_000, REACH, Double.POSITIVE_INFINITY));
         assertTrue(HandOverRule.dh(false, false, 10_000, REACH, Double.POSITIVE_INFINITY));
     }
+
+    @Test
+    void aDragonsBodyIsCopiedIntoDhWhereDhWouldDrawTheDragon() {
+        double edge = START - REACH - HandOverRule.SLACK - HandOverRule.PREPARE;
+        assertFalse(HandOverRule.bodyCopied(true, edge - 0.01, REACH, START), "well short of the fade: vanilla's alone");
+        assertTrue(HandOverRule.bodyCopied(true, edge, REACH, START), "any part of it could soon be faded");
+        assertTrue(HandOverRule.bodyCopied(true, START + 20, REACH, START), "in the ring, as at the client's tracking edge");
+        assertTrue(HandOverRule.bodyCopied(false, 40, REACH, START), "its chunk not loaded: vanilla leaves it out");
+        assertFalse(HandOverRule.bodyCopied(true, 10_000, REACH, Double.POSITIVE_INFINITY), "no fade: vanilla's alone");
+        assertFalse(HandOverRule.band(true, true), "the band never draws it");
+    }
 }

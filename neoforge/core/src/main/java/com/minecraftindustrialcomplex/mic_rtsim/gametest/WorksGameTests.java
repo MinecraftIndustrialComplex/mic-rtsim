@@ -190,12 +190,15 @@ public final class WorksGameTests {
 
                     RtsimTests.session().phase1.census.take(level, v, RtsimTests.session().gameTime());
                 })
-                .thenWaitUntil(() -> check("the census reached the engine",
-                        !RtsimTests.recordsWith(engine, Obs.VILLAGE_CENSUS, Obs.VillageCensus.VILLAGE, v.id).isEmpty()))
-                .thenExecute(() -> {
+                // The census sweep (one village every Census.INTERVAL ticks) may have counted this village
+                // before the golem spawned, and that record can reach the engine a hand-over ahead of the
+                // census above: wait for the latest record to count the golem, not for the first record.
+                .thenWaitUntil(() -> {
                     List<ScriptedEngine.Received> census = RtsimTests.recordsWith(engine, Obs.VILLAGE_CENSUS, Obs.VillageCensus.VILLAGE, v.id);
-                    int counted = census.get(census.size() - 1).view().getInt(Obs.VillageCensus.GOLEMS);
-                    check("the census counts the golem: " + counted, counted == 1);
+                    int counted = census.isEmpty() ? -1 : census.get(census.size() - 1).view().getInt(Obs.VillageCensus.GOLEMS);
+                    check("the census counts the golem: " + (counted < 0 ? "no census reached the engine" : counted), counted == 1);
+                })
+                .thenExecute(() -> {
                     golemsNear(level, meet, 6).forEach(net.minecraft.world.entity.Entity::discard);
                     hold(level, meet, 24, false);
                     RtsimTests.forget(v);
