@@ -65,6 +65,17 @@ public final class TalkNewsGameTests {
 
     private static final int ROBBERY = 3, SEVERITY = 2;
 
+    /**
+     * What a report's place can hold (24 bits, rtsim_knowledge::report::COORD_LIMIT): the engine refuses a
+     * TALK_REPORT beyond it. The GameTest arenas sit at a random place of each fresh world, up to millions
+     * of blocks out and sometimes past that, so a report near the arena is clamped to the edge of what fits.
+     */
+    private static final int COORD_LIMIT = (1 << 23) - 1;
+
+    private static int held(int v) {
+        return Math.max(-COORD_LIMIT - 1, Math.min(COORD_LIMIT, v));
+    }
+
     private static NativeEngine live(GameTestHelper helper, String test) {
         if (RtsimTests.engine() instanceof NativeEngine e)
             return e;
@@ -190,7 +201,7 @@ public final class TalkNewsGameTests {
                     day0[0] = level.getGameTime() / Talk.DAY;
                     check("the villager is in the village", RtsimApi.villageOf(villager[0]) == v);
                     e.talkReport(v.id, ROBBERY, SEVERITY, 0, TalkActor.player(alex.getUUID()), TalkActor.village(v.id),
-                            meet.getX() + 60, meet.getZ(), AGO);
+                            held(meet.getX() + 60), held(meet.getZ()), AGO);
                     hunt[0] = new Hunt(level, ben, villager[0], ".news.robbery.");
                 })
                 .thenIdle(SETTLE)
@@ -249,7 +260,7 @@ public final class TalkNewsGameTests {
                     // The report's place is by the talker, 380 blocks from the robber: a described ref at the
                     // report's own place drops its locator (TK29), and this one is not there.
                     e.talkReport(here.id, ROBBERY, SEVERITY, 0, TalkActor.village(east.id), TalkActor.village(here.id),
-                            meet.getX() + 20, meet.getZ(), AGO);
+                            held(meet.getX() + 20), held(meet.getZ()), AGO);
                     hunt[0] = new Hunt(level, ben, villager[0], ".news.robbery.");
                 })
                 .thenIdle(SETTLE)
