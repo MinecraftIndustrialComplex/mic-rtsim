@@ -3111,6 +3111,8 @@ mod conflict {
             dimension: dim,
             structure,
             pos: (at.0, 64, at.1),
+            home_bodies: 0,
+            census: 0,
         }));
     }
 
