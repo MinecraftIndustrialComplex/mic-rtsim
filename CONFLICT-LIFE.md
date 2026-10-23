@@ -1,8 +1,10 @@
 # Conflict life: how factions decide to fight
 
-**Status:** design for Ben's review, 2026-10-21; revised 2026-10-22 after an adversarial review and
-MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Nothing is
-built and no engine code changes here. Ben approves this design before code. Branch
+**Status:** design approved by Ben (he has answered every question so far, CL-1 to CL-9, including
+"Add alliances" and "All faction news in-world"), built only in part: alliances are designed and
+measured in the model, not built in the game. CL-10, how a player hears gossip, is being answered as a
+new TALK design. Design first drafted 2026-10-21; revised 2026-10-22 after an adversarial review and
+MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Branch
 `plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`; the alliances on branch
 `plan/umvuthi-alliances`, worktree `mods/mic-rtsim-conflict2`.
 
