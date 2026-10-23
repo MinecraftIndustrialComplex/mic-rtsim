@@ -255,7 +255,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <div class="tile" data-ss-id="kpi-fortress"><div class="n">1 <small>in 8 years</small></div><div class="t">a fight on a walled base that never pays, each with a reason (today's ladder: 2.7 a year, every one lost)</div></div>
     <div class="tile" data-ss-id="kpi-call"><div class="n">2%</div><div class="t">of a camp's next acts can be called to the day from its last two (ladder 18%, gate 17%)</div></div>
     <div class="tile" data-ss-id="kpi-endless"><div class="n">0 <small>of 64</small></div><div class="t">worlds left alone with an endless war (ladder: all 64)</div></div>
-    <div class="tile" data-ss-id="kpi-wait"><div class="n">0</div><div class="t">questions wait for you; how you hear the news is in design as TALK</div></div>
+    <div class="tile" data-ss-id="kpi-wait"><div class="n">0</div><div class="t">questions wait for you; how you hear the news is in design as TALK, and you answered its three questions</div></div>
   </div>
 </header>
 
@@ -612,7 +612,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li data-ss-id="news-life"><b>How long it lasts</b>A feud 10 days, a pact or a betrayal 30, a raid 20, a death 30. These are placeholders.</li>
     <li data-ss-id="news-not"><b>What it does not do</b>News changes no one's feelings and never enters vanilla villager gossip: a rumour of a feud between two camps is not a villager's grudge. Your own deeds still move a village, as today.</li>
     <li data-ss-id="news-gone"><b>What goes</b>The text of every conflict notice, the told pact, the pact notices CL-9 (a) offered, and every line of chat pushed at a player. Chat you start, by talking to someone, is fine. A player who lives near both camps and talks to no one hears nothing, which is the point.</li>
-    <li data-ss-id="news-now"><b>Now</b>An agent is removing the chat notices the game sends today and routing them to news. You hear the news by talking to people (<a href="#cl10">CL-10</a>), which an agent is designing and building as TALK.</li>
+    <li data-ss-id="news-now"><b>Now</b>An agent is removing the chat notices the game sends today and routing them to news. You hear the news by talking to people (<a href="#cl10">CL-10</a>), which an agent is designing and building as TALK, with places named and given a direction (TQ-3). Villagers will talk about port news too.</li>
   </ul>
 </section>
 
@@ -673,7 +673,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
   <h2 data-ss-id="waiting-h">Your answers</h2>
-  <p data-ss-id="waiting-p">Nothing on this page waits for you. CL-10 came from your news answer, and you answered it the same evening.</p>
+  <p data-ss-id="waiting-p">Nothing on this page waits for you. CL-10 came from your news answer, and you answered it the same evening, and then the three questions its design, TALK, asked you.</p>
 
 
   <h3 data-ss-id="answered-h">Answered on 22 October</h3>
@@ -682,7 +682,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <h3>CL-10: you hear the news by talking <span class="done-tag">Answered</span></h3>
     <p class="rec">Your answer: <span class="why">"Shift + Click to speak to a viller, have them output fluff lines, lines based on how they are feeling, and lines based on what they might have seen. Players should be able to do the same withi ribbits, and other clans as well. Talking with a villager should mildly increase a players 'relationship' with them"</span></p>
     <p>None of the options offered. Chat is fine for talk you start; what you ruled out is chat pushed at you. Shift-click a villager and it answers with small talk, with lines from how it feels, and with lines about what it may have seen, which is where the news it holds reaches you. Ribbits and other clans talk the same way. Talking to a villager mildly raises your standing with it.</p>
-    <p><strong>In design:</strong> an agent is designing and building it as TALK (TALK.md), and will send you any questions it raises.</p>
+    <p><strong>In design:</strong> an agent is designing and building it as TALK (TALK.md, on branch feat/talk at f23c1b60, not landed yet). It asked you three questions, and you answered all three:</p>
+    <ul data-ss-id="cl10-tq">
+      <li><strong>TQ-1, Carry On and talk share Shift + right-click: "Talk wins on talkers"</strong>, as recommended. Shift + right-click on a villager, a wandering trader or a ribbit always talks. Carry On can no longer pick those up, and still carries every other mob and every block.</li>
+      <li><strong>TQ-2, how players find out they can talk: "Nothing".</strong> No hint and no guide line; players find it for themselves.</li>
+      <li><strong>TQ-3, names: "Generated names and directions, both are cool ideas!"</strong> Villages, camps and chiefs get generated two-part names, the same for every player. Lines mix the two ways: naming with a direction and distance, <span class="why">"Mudhollow raided Lowmarsh, a day's ride east"</span>, and describing by place, <span class="why">"the goblins in the hills raided the village a day's ride east"</span>.</li>
+    </ul>
+    <p>Villagers will also talk about port news: raids, blockades, closures, reopenings and havens falling. Any further questions from TALK will come to you.</p>
   </div>
 
   <div class="decision" id="cl1" data-ss-id="cl1">
@@ -729,14 +735,14 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li>CONFLICT-LIFE.md on mic-rtsim main at ce52e0dc: the model (§2), alliances (§2.16), news in the world (§2.17), the walkthroughs (§3, the alliance stories in §3.6), the numbers (§4, alliances in §4.5), cost (§5), tests (§6), choices CL-D1 to CL-D57 (§7), and your answers, the questions and CL-10 (§8).</li>
     <li>EQUILIBRIUM.md: §2.2's 128-block rule as reworded for MZ-15, and §2.6 item 11, the census.</li>
     <li>research/conflict-life-2026-10-21/results: summary.md, walkthroughs.md as it stood at 9775d54 (the four stories: seeds 1000, 1002, 1003 and 1000, which the alliances-off runs reproduce exactly), stories.md, results.json, and alliances.txt for the alliance measurements.</li>
-    <li>DECISIONS.md: EQ-5, MZ-15, CL-1 to CL-9, and CL-9 widened to all conflict. Your CL-10 and envoy answers of 22 October, sent by the coordinator; TALK.md is being written.</li>
+    <li>DECISIONS.md: EQ-5, MZ-15, CL-1 to CL-9, and CL-9 widened to all conflict. Your CL-10 and envoy answers of 22 October, sent by the coordinator. TALK.md and your TQ-1 to TQ-3 answers: branch feat/talk (f23c1b60), not landed yet.</li>
   </ul>
 </details>
 
 </main>
 
 <footer data-ss-react="off">
-  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at ce52e0dc. Private page for Ben, 22 October 2026, updated for alliances and then for your answers on news, CL-10 and the envoy.</p>
+  <p>mic-rtsim, lifelike faction conflict. CONFLICT-LIFE.md at ce52e0dc. Private page for Ben, 22 October 2026, updated for alliances and then for your answers on news, CL-10, the envoy and TALK's three questions.</p>
 </footer>
 
 </body>
