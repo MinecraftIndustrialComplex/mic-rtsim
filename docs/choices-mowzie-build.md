@@ -658,6 +658,21 @@ under its own heading.
   `chief_killed` passes true, `ensure_chief` false). The text is "dies of age" for false, "is
   killed; the heir takes over, holding the grudge" for a player's kill, and "is killed, by no
   player; the heir takes over" for a kill with none. Test: the three texts. Fails on the old text.
+- **MZB-141** (a replay over several hand-overs; re-review P2-1): the bodies a session start keeps
+  for the replay (MZB-138) were dropped by `replay_done`, which `resend_notices` calls, and
+  `rtsim-jni`'s conflict `simulate` called `resend_notices_if_due` at the end of every step, so the
+  first hand-over of a restart ended the replay. Java hands its journal over while it fits (about a
+  thousand 64-byte BAND_CASUALTIES in a minimum-size buffer, about 4,000 in 256 KiB), so a long
+  journal spans hand-overs, and a despawn or a casualty in the second found nothing kept (the
+  reviewer's run ended with 12 alive, not 10, after 1,500 filler records). `simulate` now resends
+  the notices (and so ends the replay) only once the engine's replay has caught up with the
+  session's first live observation (`applied_through + 1 >= session_first`); the other trigger, the
+  first live conflict record in `journaled`, is unchanged. Cost: a restart whose journal tail is
+  lost (cannot happen with a world save, whose journal and `next_obs` are saved together) would
+  wait for the first live record instead of the first step. Test (rtsim-jni): the walk-off crash test
+  with 1,500 filler records between the recall and the despawn on a `MIN_CAPACITY` engine; fails on
+  the old `simulate` (12, not 10). The jni test helper `reopen_with` takes the capacity and hands
+  the journal over until Java has sent it all.
 
 ## M4 Camp reconciler, engine
 
