@@ -39,14 +39,16 @@ public final class HandOverRule {
     }
 
     /**
-     * True when vanilla draws a dragon's body rather than its far box (DHT47): the body's farthest point, its
-     * {@code distance} from the camera in 3D plus the box's {@code reach}, is short of where DH's vanilla fade
-     * starts, less the slack. Past there DH's fade mixes each of the body's pixels toward DH's own image, which
-     * has no body in it, so the body would fade out (or in) across the ring, while the box, drawn by the band
-     * and by DH alike there, keeps its colour. Always true while the ring is nowhere.
+     * True when DH's pass draws a copy of a dragon's body that vanilla draws (DHT47): where {@link #dh} would
+     * draw the dragon were its body not there. So wherever any part of it could be in DH's vanilla fade, both
+     * margins before that ({@code distance} is the body's own, in 3D; {@code reach} the box's, its wingspan; a
+     * model's wings reach past it by 15.2 blocks at most in the bench, inside the margins), and anywhere its chunk
+     * is not {@code loaded}, where vanilla leaves it out. The fade mixes the body's pixels toward DH's image, so
+     * with the copy there, toward themselves; short of the fade, vanilla's pixels cover the copy exactly. Never
+     * while the ring is nowhere, in a loaded chunk.
      */
-    public static boolean bodyShown(double distance, double reach, double fadeStart) {
-        return distance + reach < fadeStart - SLACK;
+    public static boolean bodyCopied(boolean loaded, double distance, double reach, double fadeStart) {
+        return dh(false, loaded, distance, reach, fadeStart);
     }
 
     /** True when the band renderer draws the mover: in a loaded chunk, with no entity. */
