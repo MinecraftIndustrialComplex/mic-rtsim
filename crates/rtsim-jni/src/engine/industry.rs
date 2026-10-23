@@ -1014,7 +1014,12 @@ impl Engine {
             (e.stats.arrivals_approach + e.stats.arrivals_departure + e.stats.arrivals_late) as i64,
         ];
         for ((a, b), l) in e.lines() {
-            v.extend([a.0 as i64, b.0 as i64, l.trips as i64, l.travel_ticks as i64]);
+            v.extend([
+                a.0 as i64,
+                b.0 as i64,
+                l.trips as i64,
+                l.travel_ticks as i64,
+            ]);
         }
         v
     }
