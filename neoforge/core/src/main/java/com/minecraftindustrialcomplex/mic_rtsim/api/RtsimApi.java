@@ -170,4 +170,22 @@ public final class RtsimApi {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag tag = RtsimAttachments.tag(entity);
         return s == null || tag == null ? null : s.registry().live(tag, entity.getUUID());
     }
+
+    // ---- TALK (TALK.md §2, §4) -----------------------------------------------------------------
+
+    /**
+     * Registers a talker for an entity type, by its registry id (TK28): so a plugin for a soft
+     * dependency names a type without touching the mod's classes. Callable from mod construction.
+     * Several talkers on one type are asked in registration order; the first whose
+     * {@link Talker#talks} says yes speaks. {@code alwaysTalks} says every entity of the type talks to
+     * every player, which lets the client cancel the click too (no screen opens, no second packet).
+     */
+    public static void registerTalker(net.minecraft.resources.ResourceLocation entityTypeId, Talker talker, boolean alwaysTalks) {
+        com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers.register(entityTypeId, talker, alwaysTalks);
+    }
+
+    /** {@link #registerTalker(net.minecraft.resources.ResourceLocation, Talker, boolean)} by the type itself. */
+    public static void registerTalker(net.minecraft.world.entity.EntityType<?> type, Talker talker, boolean alwaysTalks) {
+        registerTalker(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(type), talker, alwaysTalks);
+    }
 }

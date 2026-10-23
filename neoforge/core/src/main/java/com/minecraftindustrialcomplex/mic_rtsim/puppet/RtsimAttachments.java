@@ -39,6 +39,22 @@ public final class RtsimAttachments {
                     .serialize(com.minecraftindustrialcomplex.mic_rtsim.village.GossipWriter.GossipOps.CODEC, g -> !g.isEmpty()).build());
 
     /**
+     * {@code mic_rtsim:talk_days}: for each player, the last game day a talk with this entity earned a
+     * credit (TK25, TALK.md §7). Saved with the entity; at most 16 players.
+     */
+    public static final Supplier<AttachmentType<com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays>> TALK_DAYS =
+            TYPES.register("talk_days", () -> AttachmentType.builder(() -> com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays.EMPTY)
+                    .serialize(com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays.CODEC, d -> !d.isEmpty()).build());
+
+    /**
+     * {@code mic_rtsim:talk_hinted}: the player has seen the "crouch and right-click to talk" hint, or
+     * has talked (TK27). Saved with the player, kept through death.
+     */
+    public static final Supplier<AttachmentType<Boolean>> TALK_HINTED =
+            TYPES.register("talk_hinted", () -> AttachmentType.builder(() -> false)
+                    .serialize(com.mojang.serialization.Codec.BOOL, b -> b).copyOnDeath().build());
+
+    /**
      * {@code mic_rtsim:player_blocks}: which blocks of a chunk players placed (per section, a 4096-bit
      * set). Village growth never builds over them (PLAN.md §8.8). Saved with the chunk.
      */
