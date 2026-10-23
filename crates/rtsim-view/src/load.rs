@@ -230,13 +230,19 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
     let names = Names::read(&world_dir);
     let mut modules = Vec::new();
 
-    let phase1 = match guarded(|| read_phase1(&source, budget)) {
+    // A module's state hash reads every one of its pages, so it is taken under the module's guard:
+    // a page that cannot be read then makes the module unreadable, not the viewer panic.
+    let phase1 = match guarded(|| {
+        Ok(read_phase1(&source, budget)?.map(|p| {
+            let hash = (p.saved_hash != 0).then(|| (p.world.state_hash(), Some(p.saved_hash)));
+            (p, hash)
+        }))
+    }) {
         Ok(None) => {
             modules.push(module("phase1", Status::Absent, String::new(), None));
             None
         }
-        Ok(Some(p)) => {
-            let hash = (p.saved_hash != 0).then(|| (p.world.state_hash(), Some(p.saved_hash)));
+        Ok(Some((p, hash))) => {
             let detail = format!(
                 "{} nodes, {} edges, {} caravans, {} bands, {} packets; {} inputs replayed",
                 p.world.nodes.len(),
@@ -305,18 +311,18 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         Ok(false) => absent(&mut modules, "dragons"),
         Err(why) => unreadable(&mut modules, "dragons", why),
         Ok(true) => match guarded(|| {
-            Dragons::open_paged(
+            let d = Dragons::open_paged(
                 source.clone(),
                 budget,
                 keys::DRAGONS,
                 DragonTunables::default(),
             )
-            .map_err(|e| format!("the dragons' meta page: {e}"))
+            .map_err(|e| format!("the dragons' meta page: {e}"))?;
+            let hash = saved_hash(&*source, keys::DRAGONS).map(|s| (d.state_hash(), Some(s)));
+            Ok((d, hash))
         }) {
-            Ok(d) => {
-                let saved = saved_hash(&*source, keys::DRAGONS);
+            Ok((d, hash)) => {
                 let detail = format!("{} dragons, {} lairs", d.dragons.len(), d.lairs.len());
-                let hash = saved.map(|s| (d.state_hash(), Some(s)));
                 modules.push(module("dragons", Status::Loaded, detail, hash));
                 Some(d)
             }
@@ -329,19 +335,19 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         Ok(false) => absent(&mut modules, "herds"),
         Err(why) => unreadable(&mut modules, "herds", why),
         Ok(true) => match guarded(|| {
-            Herds::open_paged(
+            let h = Herds::open_paged(
                 source.clone(),
                 budget,
                 keys::HERDS,
                 HerdTunables::default(),
                 Box::new(HabitatClimate::new(climate_world)),
             )
-            .map_err(|e| format!("the herds' meta page: {e}"))
+            .map_err(|e| format!("the herds' meta page: {e}"))?;
+            let hash = saved_hash(&*source, keys::HERDS).map(|s| (h.state_hash(), Some(s)));
+            Ok((h, hash))
         }) {
-            Ok(h) => {
-                let saved = saved_hash(&*source, keys::HERDS);
+            Ok((h, hash)) => {
                 let detail = format!("{} herds", h.herds.len());
-                let hash = saved.map(|s| (h.state_hash(), Some(s)));
                 modules.push(module("herds", Status::Loaded, detail, hash));
                 Some(h)
             }
@@ -354,11 +360,13 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         Err(why) => unreadable(&mut modules, "ships", why),
         Ok(true) => {
             match guarded(|| {
-                Ships::open_paged(source.clone(), budget, keys::SHIPS, ShipTunables::default())
-                    .map_err(|e| format!("the ships' meta page: {e}"))
+                let s =
+                    Ships::open_paged(source.clone(), budget, keys::SHIPS, ShipTunables::default())
+                        .map_err(|e| format!("the ships' meta page: {e}"))?;
+                let hash = saved_hash(&*source, keys::SHIPS).map(|h| (s.state_hash(), Some(h)));
+                Ok((s, hash))
             }) {
-                Ok(s) => {
-                    let saved = saved_hash(&*source, keys::SHIPS);
+                Ok((s, hash)) => {
                     let detail = format!(
                         "{} docks, {} lanes, {} ships, {} havens",
                         s.docks.len(),
@@ -366,7 +374,6 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
                         s.ships.len(),
                         s.havens.len()
                     );
-                    let hash = saved.map(|h| (s.state_hash(), Some(h)));
                     modules.push(module("ships", Status::Loaded, detail, hash));
                     Some(s)
                 }
@@ -379,24 +386,26 @@ pub fn load_world(dir: &Path, limits: Limits) -> Result<Saved, String> {
         Ok(false) => absent(&mut modules, "conflict"),
         Err(why) => unreadable(&mut modules, "conflict", why),
         Ok(true) => match guarded(|| {
-            rtsim_conflict::Conflict::open_paged(
+            let c = rtsim_conflict::Conflict::open_paged(
                 source.clone(),
                 budget,
                 keys::CONFLICT,
                 ConflictTunables::default(),
                 Cultures::builtin(),
             )
-            .map_err(|e| format!("the conflict's meta page: {e}"))
+            .map_err(|e| format!("the conflict's meta page: {e}"))?;
+            Ok(c.map(|c| {
+                let hash = saved_hash(&*source, keys::CONFLICT).map(|h| (c.state_hash(), Some(h)));
+                (c, hash)
+            }))
         }) {
-            Ok(Some(c)) => {
-                let saved = saved_hash(&*source, keys::CONFLICT);
+            Ok(Some((c, hash))) => {
                 let detail = format!(
                     "{} factions, {} feuds, {} parties",
                     c.factions.len(),
                     c.feud_count(),
                     c.parties.len()
                 );
-                let hash = saved.map(|h| (c.state_hash(), Some(h)));
                 modules.push(module("conflict", Status::Loaded, detail, hash));
                 Some(c)
             }
