@@ -14,7 +14,7 @@
 //!   the module that owns it (phase 1: villages, bases, caravans and players; ecology: lairs and
 //!   dragons; conflict: camps and chiefs). It changes nothing in the world; the only writer is the
 //!   TEST order [`post`].
-//! - **A camp** (holder kind 3, slice 4, TK71 to TK82): the camp's knowledge is its chief's board,
+//! - **A camp** (holder kind 3, slice 4, TK71 to TK84): the camp's knowledge is its chief's board,
 //!   else its heir's (a haven is not a holder), and the conflict is read through
 //!   `rtsim_conflict::view::faction_facts` and nothing else. An ask with the FACTION flag also gets
 //!   the 48-byte faction block after the news: the camp's feud against the asker, and its moods.
@@ -22,13 +22,13 @@
 //! The ranking, the refs and the port state are pure functions of the board and the world, so they
 //! are tested apart from the protocol.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rtsim_conflict::engine::SETTLERS_KEY;
 use rtsim_conflict::view::{FactionFacts, faction_facts};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
-use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, rung_weight};
+use rtsim_knowledge::report::{COORD_LIMIT, FLAG_PLAYER, ReportId, rung_weight};
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::Topologies;
@@ -449,13 +449,18 @@ fn answer(st: &State, a: &Ask) -> Answer {
             ans.whats.push((Slot::Glutted, wire::DICT_ITEM, item));
         }
     }
-    let reports: Vec<Report> = holder
-        .actor
-        .and_then(|h| k.board(h))
-        .map_or_else(Vec::new, |b| {
-            b.iter().filter_map(|id| k.report(id)).collect()
-        });
-    ans.facts.flags |= holder.actor.map_or(0, |h| port_flags(&reports, h));
+    let board: Vec<(ReportId, Report)> =
+        holder
+            .actor
+            .and_then(|h| k.board(h))
+            .map_or_else(Vec::new, |b| {
+                b.iter()
+                    .filter_map(|id| k.report(id).map(|r| (id, r)))
+                    .collect()
+            });
+    // The port's state reads the whole board; only the news is thinned (TK84).
+    let all: Vec<Report> = board.iter().map(|(_, r)| *r).collect();
+    ans.facts.flags |= holder.actor.map_or(0, |h| port_flags(&all, h));
     if a.flags & ask::FACTION != 0 && holder.camp.is_some() {
         // Again with the asker, for the feud: the camp itself cannot have gone since.
         if let Some(ff) = faction_facts(&st.conflict.engine, a.holder, player) {
@@ -477,7 +482,7 @@ fn answer(st: &State, a: &Ask) -> Answer {
     };
     let us: Vec<ActorId> = holder.actor.into_iter().chain(holder.also).collect();
     let tun = k.tunables();
-    let mut cands: Vec<Candidate> = reports
+    let mut cands: Vec<Candidate> = newest_per_pair(board)
         .into_iter()
         .map(|r| {
             let flags = talk_flags(&r, player, &us)
@@ -517,6 +522,25 @@ fn answer(st: &State, a: &Ask) -> Answer {
 }
 
 // ---- ranking (TK33) -----------------------------------------------------------------------------
+
+/// The board's reports with only the newest of each (kind, who, whom) kept (TK84): a siege records a
+/// Raid per wave and a feud a Feud per rung, and without this the four news slots fill with
+/// repeats of one story. The newest is the latest `at`; a tie goes to the higher report id, so the
+/// choice never depends on the order the board is read in. Every holder, every kind. In
+/// (kind, who, whom) order, which the ranking does not depend on.
+fn newest_per_pair(board: Vec<(ReportId, Report)>) -> Vec<Report> {
+    let mut newest: BTreeMap<(u16, ActorId, ActorId), (Tick, ReportId, Report)> = BTreeMap::new();
+    for (id, r) in board {
+        let key = (r.kind as u16, r.who, r.whom);
+        match newest.get(&key) {
+            Some(&(at, held, _)) if (at, held) >= (r.at, id) => {}
+            _ => {
+                newest.insert(key, (r.at, id, r));
+            }
+        }
+    }
+    newest.into_values().map(|(_, _, r)| r).collect()
+}
 
 /// One report on the board, scored.
 #[derive(Clone, Copy, Debug)]
@@ -1217,6 +1241,113 @@ mod tests {
             at: Tick(at),
             place: Place::new(0, 0, 64, 0),
         }
+    }
+
+    fn id(n: u32) -> ReportId {
+        ReportId::from_parts(n, 1)
+    }
+
+    #[test]
+    fn only_the_newest_report_of_a_kind_between_two_actors_is_kept() {
+        let [p, s, t, g] = handles();
+        let kept = |board: Vec<(ReportId, Report)>| {
+            let mut v: Vec<(u64, ReportKind, ActorId, ActorId)> = newest_per_pair(board)
+                .into_iter()
+                .map(|r| (r.at.0, r.kind, r.who, r.whom))
+                .collect();
+            v.sort_by_key(|e| (e.0, e.1 as u16));
+            v
+        };
+        // Two raids by the same camp on the same village: only the newer is told.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Raid, 2, 900)),
+            ]),
+            vec![(900, ReportKind::Raid, g, s)]
+        );
+        // And the newer wins whichever way the board is read.
+        assert_eq!(
+            kept(vec![
+                (id(2), rep(g, s, ReportKind::Raid, 2, 900)),
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+            ]),
+            vec![(900, ReportKind::Raid, g, s)]
+        );
+        // The same raider on another village is another story: both are kept.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, t, ReportKind::Raid, 3, 900)),
+            ]),
+            vec![(100, ReportKind::Raid, g, s), (900, ReportKind::Raid, g, t)]
+        );
+        // The same pair under another kind is kept too, and so is the pair the other way round.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Feud, 2, 200)),
+                (id(3), rep(s, g, ReportKind::Raid, 3, 300)),
+            ]),
+            vec![
+                (100, ReportKind::Raid, g, s),
+                (200, ReportKind::Feud, g, s),
+                (300, ReportKind::Raid, s, g),
+            ]
+        );
+        // Three waves, the middle one learned last: the latest time still wins.
+        assert_eq!(
+            kept(vec![
+                (id(1), rep(g, s, ReportKind::Raid, 3, 100)),
+                (id(2), rep(g, s, ReportKind::Raid, 3, 300)),
+                (id(3), rep(g, s, ReportKind::Raid, 1, 200)),
+            ]),
+            vec![(300, ReportKind::Raid, g, s)]
+        );
+        // The same time: the higher id, in either reading order.
+        for board in [
+            vec![
+                (id(4), rep(g, s, ReportKind::Raid, 1, 500)),
+                (id(9), rep(g, s, ReportKind::Raid, 2, 500)),
+            ],
+            vec![
+                (id(9), rep(g, s, ReportKind::Raid, 2, 500)),
+                (id(4), rep(g, s, ReportKind::Raid, 1, 500)),
+            ],
+        ] {
+            let got = newest_per_pair(board);
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].severity, 2, "the higher id breaks the tie");
+        }
+        assert!(newest_per_pair(Vec::new()).is_empty());
+        // A player on either side is a pair like any other.
+        assert_eq!(
+            newest_per_pair(vec![
+                (id(1), rep(p, s, ReportKind::Assault, 100, 10)),
+                (id(2), rep(p, s, ReportKind::Assault, 100, 20)),
+            ])
+            .len(),
+            1
+        );
+    }
+
+    /// Through the real answer: a village's board with two raids by one village on it tells the
+    /// newer only, and a raid by another stays.
+    #[test]
+    fn an_answer_tells_the_newest_of_a_repeated_story_only() {
+        let mut st = world();
+        st.phase1.join_for_test(9, false, 0, 1_200, 1_000);
+        // Two waves by village 8 on village 7, the older first, and one by village 9.
+        for (ago, severity, by) in [(3_000, 3, 8), (1_000, 2, 8), (2_000, 3, 9)] {
+            post(
+                &mut st,
+                &cmd(ReportKind::Raid, severity, village(by), village(7), ago),
+            );
+        }
+        let a = answer_one(&mut st, ask_of(1, ask::holder::VILLAGE, 7, 5, ask::NEWS));
+        let mut told: Vec<(u8, u32)> = a.news.iter().map(|n| (n.severity, n.ago)).collect();
+        told.sort();
+        assert_eq!(told, vec![(2, 1_000), (3, 2_000)], "{told:?}");
     }
 
     fn cand(r: Report, now: u64, flags: u32) -> Candidate {
@@ -2481,7 +2612,7 @@ mod tests {
         let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
         assert_eq!(answer_one(&mut st, a).sentiment, 0);
     }
-    // ---- a camp (slice 4, TK71 to TK82) ------------------------------------------------------
+    // ---- a camp (slice 4, TK71 to TK84) ------------------------------------------------------
 
     /// A state with the two villages and the goblin camp 55 at (1300, 1000), found at [`NOW`];
     /// the camp's index.
