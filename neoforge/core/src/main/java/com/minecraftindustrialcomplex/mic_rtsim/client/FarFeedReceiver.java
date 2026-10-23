@@ -71,6 +71,18 @@ final class FarFeedReceiver {
      */
     static final double TURN_MIN_BLOCKS = 2.0;
     static final double MAX_TURN = Math.toRadians(135.0);
+    /**
+     * A turning mover's run turns on past its heading at the sample only this share of the angle it turned between
+     * the last two gaps (PLACEHOLDER), then goes straight on; its box turns on as far as that angle again. A dragon
+     * that swerved once and flew on straight is still seen turning at the next sample: run on turning half the angle
+     * again, a swerve of 135 degrees in half a second drew the box 71 blocks from the dragon at worst over the
+     * second's 20 sample timings, past the 64 within which a client counts the real thing as there (straight on, 65;
+     * a quarter, 63.5), while a quarter still keeps a circling dragon's box within 7 blocks of a circle of radius 40
+     * at 1.5 blocks a tick (straight on, 22). The box turns on further than its run because that costs nothing at a
+     * hand-over: on that circle it faces within 2 degrees of the way the dragon flies, on average, against 33 turned
+     * as the run is.
+     */
+    static final double TURN_ON = 0.25;
 
     private final Map<Integer, Obj> objs = new HashMap<>();
     /** Far clock minus game time, as the legs are timed; NaN until known. */
@@ -366,10 +378,8 @@ final class FarFeedReceiver {
     /**
      * The mover's turn across the ground, from its midpoint's heading over the gap before ({@code prev} over
      * {@code prevTicks}) to that over the last ({@code v} over {@code ticks}): {radians a block, the most it turns
-     * on past its heading at the sample}. One turn for the whole mover, so a carriage entering a curve bends
-     * neither end alone. It turns on at most half the angle it turned between the two gaps: a dragon that swerved
-     * once and flew on straight is still seen turning at the next sample, and turned on in full it would be drawn
-     * swinging round as far again. Null when it did not turn, or a gap is too short to say.
+     * between the two gaps}. One turn for the whole mover, so a carriage entering a curve bends neither end alone.
+     * Null when it did not turn, or a gap is too short to say.
      */
     private static double[] turnOf(double[] prev, double prevTicks, double[] v, double ticks) {
         double px = prev[0] + prev[3], pz = prev[2] + prev[5], qx = v[0] + v[3], qz = v[2] + v[5];
@@ -379,7 +389,7 @@ final class FarFeedReceiver {
         double angle = Math.atan2(px * qz - pz * qx, px * qx + pz * qz);
         if (angle == 0.0 || Math.abs(angle) > MAX_TURN)
             return null;
-        return new double[]{angle / ((lp + lq) / 2.0), Math.abs(angle) / 2.0};
+        return new double[]{angle / ((lp + lq) / 2.0), Math.abs(angle)};
     }
 
     /**
@@ -387,12 +397,13 @@ final class FarFeedReceiver {
      * the sample, speeding up or slowing down as it was (at most doubling its speed a sample), and stopping where
      * slowing brings it to rest. A mover that was turning goes on turning as it was, on an arc across the ground
      * (its climb or dive kept) from its heading at the sample (half a gap's turn past its heading over the last
-     * gap), as far as {@link #turnOf} lets it, then straight on; a straight run would take a circling dragon off
+     * gap), {@link #TURN_ON} of its last turn, then straight on; a straight run would take a circling dragon off
      * on the tangent.
      *
      * @param v     the mean velocity over the last gap (6 values), or null for none
      * @param acc   each point's change of speed, blocks a tick a tick, or null for none
-     * @param turn  the turn across the ground, {radians a block, the most it turns} ({@link #turnOf}), or null
+     * @param turn  the turn across the ground, {radians a block, radians between the gaps} ({@link #turnOf}), or
+     *              null
      * @param ticks the last gap, over which {@code v} is the mean
      */
     private record Run(double[] seg, double at, double[] v, double[] acc, double[] turn, double ticks) {
@@ -415,59 +426,98 @@ final class FarFeedReceiver {
             double[] out = seg.clone();
             if (v == null)
                 return out;
+            if (turn != null) {
+                Arc arc = arc(t);
+                if (arc != null)
+                    return arc.place(seg);
+            }
             for (int p = 0; p < 2; p++) {
                 double mean = speed(v, p), u = speedAt(p);
                 if (u < STILL || mean < 1e-9)
                     continue;
                 double d = distance(p, u, t);
-                double k = turn == null ? 0.0 : turn[0];
-                double ux = v[3 * p] / mean, uz = v[3 * p + 2] / mean, ground = Math.sqrt(ux * ux + uz * uz);
-                out[3 * p + 1] += v[3 * p + 1] / mean * d;
-                if (k == 0.0 || ground < 1e-9) {
-                    out[3 * p] += ux * d;
-                    out[3 * p + 2] += uz * d;
-                    continue;
-                }
-                // On an arc of k radians a block from the heading at the sample (hx, hz): k above 0 turns it toward
-                // (-hz, hx), below 0 toward (hz, -hx)
-                double phi = k * groundGap(p) / 2.0, c = Math.cos(phi), s = Math.sin(phi);
-                double hx = (ux * c - uz * s) / ground, hz = (ux * s + uz * c) / ground;
-                double sg = ground * d, ks = k * sg, ahead, aside;
-                if (Math.abs(ks) <= turn[1]) {
-                    ahead = Math.sin(ks) / k;
-                    aside = (1.0 - Math.cos(ks)) / k;
-                } else {
-                    // Turned as far as it may, then straight on
-                    double sc = Math.copySign(turn[1] / Math.abs(k), sg), pc = k * sc, r = sg - sc;
-                    ahead = Math.sin(pc) / k + r * Math.cos(pc);
-                    aside = (1.0 - Math.cos(pc)) / k + r * Math.sin(pc);
-                }
-                out[3 * p] += hx * ahead - hz * aside;
-                out[3 * p + 2] += hz * ahead + hx * aside;
+                for (int i = 0; i < 3; i++)
+                    out[3 * p + i] += v[3 * p + i] / mean * d;
             }
             return out;
         }
 
         /**
-         * Each point's velocity at {@code t} as far as its heading goes: its velocity over the last gap turned
-         * across the ground as the run has turned it by then (its speed left as it was over the gap).
+         * Each point's velocity at {@code t} as far as its heading goes: on a turn, the midpoint's over the last
+         * gap turned as the run has turned it by then, for both points (its speed left as it was over the gap).
          */
         double[] tangent(double t) {
-            if (v == null || turn == null)
+            Arc arc = v == null || turn == null ? null : arc(t);
+            if (arc == null)
                 return v;
-            double[] out = v.clone();
+            double c = Math.cos(arc.heading), s = Math.sin(arc.heading);
+            double[] out = new double[6];
             for (int p = 0; p < 2; p++) {
-                double mean = speed(v, p), u = speedAt(p);
-                if (u < STILL || mean < 1e-9)
-                    continue;
-                double ux = v[3 * p] / mean, uz = v[3 * p + 2] / mean, ground = Math.sqrt(ux * ux + uz * uz);
-                double k = turn[0], ks = k * ground * distance(p, u, t);
-                double phi = k * groundGap(p) / 2.0 + Math.max(-turn[1], Math.min(ks, turn[1]));
-                double c = Math.cos(phi), s = Math.sin(phi);
-                out[3 * p] = v[3 * p] * c - v[3 * p + 2] * s;
-                out[3 * p + 2] = v[3 * p] * s + v[3 * p + 2] * c;
+                out[3 * p] = arc.vx * c - arc.vz * s;
+                out[3 * p + 1] = arc.vy;
+                out[3 * p + 2] = arc.vx * s + arc.vz * c;
             }
             return out;
+        }
+
+        /**
+         * A turning run at {@code t}: the midpoint on an arc of {@code turn[0]} radians a block across the ground,
+         * from its heading at the sample (half a gap's turn past its heading over the last gap), turned at most
+         * {@link #TURN_ON} of {@code turn[1]} past that and then straight on; its climb or dive kept. The segment
+         * turns about the midpoint as the arc would turn uncapped, up to {@code turn[1]}, and keeps its length (a
+         * straight run's points, each on its own velocity, would stretch it). Null when the midpoint does not move
+         * across the ground.
+         */
+        private Arc arc(double t) {
+            double vx = (v[0] + v[3]) / 2.0, vy = (v[1] + v[4]) / 2.0, vz = (v[2] + v[5]) / 2.0;
+            double mean = Math.sqrt(vx * vx + vy * vy + vz * vz), d = 0.0;
+            for (int p = 0; p < 2; p++) {
+                double u = speedAt(p);
+                if (u >= STILL && speed(v, p) >= 1e-9)
+                    d += distance(p, u, t) / 2.0;
+            }
+            double ground = Math.sqrt(vx * vx + vz * vz) / Math.max(mean, 1e-9);
+            if (mean < 1e-9 || ground < 1e-9)
+                return null;
+            double k = turn[0], cap = turn[1] * TURN_ON;
+            double phi = k * Math.sqrt(vx * vx + vz * vz) * ticks / 2.0, c = Math.cos(phi), s = Math.sin(phi);
+            double hx = (vx * c - vz * s) / (ground * mean), hz = (vx * s + vz * c) / (ground * mean);
+            double sg = ground * d, ks = k * sg, ahead, aside, turned;
+            double faced = Math.copySign(Math.min(Math.abs(ks), turn[1]), ks);
+            if (Math.abs(ks) <= cap) {
+                ahead = Math.sin(ks) / k;
+                aside = (1.0 - Math.cos(ks)) / k;
+                turned = ks;
+            } else {
+                // Turned as far as it may, then straight on
+                double sc = Math.copySign(cap / Math.abs(k), sg), pc = k * sc, r = sg - sc;
+                ahead = Math.sin(pc) / k + r * Math.cos(pc);
+                aside = (1.0 - Math.cos(pc)) / k + r * Math.sin(pc);
+                turned = pc;
+            }
+            // k above 0 turns (hx, hz) toward (-hz, hx), below 0 toward (hz, -hx)
+            return new Arc(hx * ahead - hz * aside, vy / mean * d, hz * ahead + hx * aside, faced, phi + turned,
+                    vx, vy, vz);
+        }
+
+        /**
+         * A turning run's midpoint moved by (dx, dy, dz) and the segment turned by {@code faced} about it;
+         * {@code heading} is how far the run's heading is from the last gap's, for the velocity (vx, vy, vz).
+         */
+        private record Arc(double dx, double dy, double dz, double faced, double heading, double vx, double vy,
+                double vz) {
+            double[] place(double[] seg) {
+                double mx = (seg[0] + seg[3]) / 2.0, mz = (seg[2] + seg[5]) / 2.0;
+                double c = Math.cos(faced), s = Math.sin(faced);
+                double[] out = new double[6];
+                for (int p = 0; p < 2; p++) {
+                    double ox = seg[3 * p] - mx, oz = seg[3 * p + 2] - mz;
+                    out[3 * p] = mx + dx + ox * c - oz * s;
+                    out[3 * p + 1] = seg[3 * p + 1] + dy;
+                    out[3 * p + 2] = mz + dz + ox * s + oz * c;
+                }
+                return out;
+            }
         }
 
         /** How far point {@code p}, at speed {@code u} at the sample, has gone along its run by {@code t}. */
@@ -479,11 +529,6 @@ final class FarFeedReceiver {
             if (a < 0.0 && tau > u / -a)
                 return u * u / (2.0 * -a);
             return u * tau + 0.5 * a * tau * tau;
-        }
-
-        /** How far point {@code p} went across the ground over the last gap. */
-        private double groundGap(int p) {
-            return Math.sqrt(v[3 * p] * v[3 * p] + v[3 * p + 2] * v[3 * p + 2]) * ticks;
         }
 
         /** The point's speed at the sample: the mean over the gap and half a gap of its change; 0 if it stopped. */

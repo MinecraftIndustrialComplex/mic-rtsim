@@ -236,13 +236,14 @@ class FarFeedReceiverTest {
     /**
      * Flies a dragon along {@code path} (tick to {x, z, heading x, heading z} at y 200), sampled every second as the
      * server does (and once more, unchanged, the first second it stands), for {@code ticks} ticks. Returns how far
-     * the box's midpoint was from the dragon's at worst from tick {@code after} on.
+     * the box's midpoint was from the dragon's at worst from tick {@code after} on, and the mean angle in degrees
+     * between the box's facing and the dragon's heading.
      */
-    private double worstOff(int ticks, int after, java.util.function.IntFunction<double[]> path) {
+    private double[] worstOff(int ticks, int after, java.util.function.IntFunction<double[]> path) {
         long g0 = 40_000 + (long) FarClock.ticks(); // one receiver: its clock offset is the first message's
         double[] sent = null;
         boolean moved = false;
-        double worst = 0.0;
+        double worst = 0.0, facing = 0.0;
         for (int t = 0; t <= ticks; t++) {
             if (t > 0)
                 FarClock.advance();
@@ -264,8 +265,12 @@ class FarFeedReceiverTest {
             double now = FarClock.ticks();
             double dx = centreX(mover(), now) - p[0], dz = centreZ(mover(), now) - p[1];
             worst = Math.max(worst, Math.sqrt(dx * dx + dz * dz));
+            double[] b = new double[6];
+            mover().segmentAt(now, b);
+            double off = Math.atan2(b[2] - b[5], b[0] - b[3]) - Math.atan2(p[3], p[2]);
+            facing += Math.toDegrees(Math.abs(Math.IEEEremainder(off, 2.0 * Math.PI))) / (ticks + 1 - after);
         }
-        return worst;
+        return new double[]{worst, facing};
     }
 
     /** Round a circle of radius r about the origin at u blocks a tick. */
@@ -279,31 +284,38 @@ class FarFeedReceiverTest {
     @Test
     void aCirclingDragonIsDrawnOnItsCircleNotOffOnTheTangent() {
         // Run on along a straight line instead, it was drawn up to 22 blocks off a circle of radius 40 at 1.5
-        // blocks a tick (the turn is known from the third sample)
-        double wide = worstOff(400, 60, circle(40.0, 1.5));
-        assertTrue(wide < 4.0, "off the wide circle by " + wide);
+        // blocks a tick (the turn is known from the third sample), and facing 15 degrees off on average
+        double[] wide = worstOff(400, 60, circle(40.0, 1.5));
+        assertTrue(wide[0] < 8.0, "off the wide circle by " + wide[0]);
+        assertTrue(wide[1] < 5.0, "facing off by " + wide[1] + " degrees");
         FarObjects.clearAll();
         // A tight, slow circle, as a hunt: the box must not wait for a dragon it takes to be behind it
-        double tight = worstOff(400, 60, circle(12.0, 0.5));
-        assertTrue(tight < 2.0, "off the tight circle by " + tight);
+        double[] tight = worstOff(400, 60, circle(12.0, 0.5));
+        assertTrue(tight[0] < 3.0, "off the tight circle by " + tight[0]);
     }
 
     @Test
     void aDragonThatSwervedOnceIsNotDrawnTurningOnAndOn() {
-        // East at 2 blocks a tick, then through 135 degrees in half a second from tick 105, then straight on: the
-        // turn is followed only half again past where the dragon was heading at the sample, so the box never
-        // strays 64 blocks (where a client stops counting the body as there); followed in full, 70
-        double worst = worstOff(400, 0, t -> {
-            double h = t < 105 ? 0.0 : t > 115 ? 0.75 * Math.PI : 0.75 * Math.PI * (t - 105) / 10.0;
-            double x = 0.0, z = 0.0;
-            for (int i = 0; i < t; i++) {
-                double hi = i < 105 ? 0.0 : i > 115 ? 0.75 * Math.PI : 0.75 * Math.PI * (i - 105) / 10.0;
-                x += 2.0 * Math.cos(hi);
-                z += 2.0 * Math.sin(hi);
-            }
-            return new double[]{x, z, Math.cos(h), Math.sin(h)};
-        });
-        assertTrue(worst < 64.0, "strayed " + worst);
+        // East at 2 blocks a tick, then through 135 degrees in half a second, then straight on, starting the swerve
+        // at each tick of a second (how the samples fall across it matters): the run turns on only a quarter again
+        // past where the dragon was heading at the sample, so the box never strays 64 blocks (where a client stops
+        // counting the body as there); turned on half again, 71
+        for (int start = 100; start < 120; start++) {
+            FarObjects.clearAll();
+            int t0 = start;
+            double worst = worstOff(400, 0, t -> {
+                double x = 0.0, z = 0.0, h = 0.0;
+                for (int i = 0; i <= t; i++) {
+                    h = i < t0 ? 0.0 : i > t0 + 10 ? 0.75 * Math.PI : 0.75 * Math.PI * (i - t0) / 10.0;
+                    if (i < t) {
+                        x += 2.0 * Math.cos(h);
+                        z += 2.0 * Math.sin(h);
+                    }
+                }
+                return new double[]{x, z, Math.cos(h), Math.sin(h)};
+            })[0];
+            assertTrue(worst < 64.0, "strayed " + worst + " swerving from tick " + start);
+        }
     }
 
     @Test
