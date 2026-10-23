@@ -286,6 +286,72 @@ object against the body once a tick.
 - The folded hide's offsets are the feed's: the far object is drawn where the samples, run on, put it, and the
   body where vanilla's position packets put it. The copy is drawn from the body itself.
 
+### The real models (DHT63 to DHT66)
+
+Captured on 2026-10-23 from 03:24 to 06:27 in the same private sway at 1920x1080, with the pack's Sodium 0.8.13,
+on a local verify branch: this branch plus the media stub (`/micmedia`), which lays synthetic Create trains of
+DHT66's four designs and places far dragons on a locally generated world. Render distance 12, simulation distance
+5, field of view 70, unless named. Vsync held most frames to about 16.7 ms (p50 16.7 to 17.7 in the windows below), so a
+window's frame mean says little and the pass's own timers say more. The client ran niced among other
+sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spike-2026-10-22/build/raw/latest-phase{B,D,E,F,G}.log`
+(the bench lines are "micmedia: bench"); stills in `shots/`, takes in `raw/rec/`.
+
+| Window | What is drawn | Frame mean, p95, max (ms) | DH pass CPU (ms a frame) | DH pass GPU (ms a frame) | Vertices |
+|---|---|---|---|---|---|
+| t20_on (B) | 20 carriages, models | 16.98, 19.88, 37.8 | 0.480 | 0.052 | 153,140 |
+| t20_off (B) | the same as boxes | 17.29, 21.07, 78.1 | | | |
+| t50_on (B) | 50 carriages, models | 17.13, 20.29, 89.1 | 0.521 | 0.117 | 384,860 |
+| t50_off (B) | the same as boxes | 17.55, 22.57, 98.1 | | | |
+| bake_t20, rebake_t20 (F) | 20 carriages, models, load 9 to 14 | 16.88, 19.00, 38.5; 16.91, 18.74, 35.7 | 0.193, 0.175 | 0.046, 0.051 | 153,140 |
+| d20_on (B) | 20 dragons, models | 18.92, 26.28, 195.2 | 1.490 | 0.068 | |
+| d20_off (B) | the same as boxes | 20.94, 37.58, 166.3 | | | |
+| e20_on (E) | 20 dragons, models, load 6 to 20 | 16.95, 19.25, 32.4 | 0.703 | 0.071 | 103,104 |
+| g20_on1, g20_on2 (G) | 20 dragons, models, load about 24 | 16.84, 18.93, 33.5; 16.90, 19.13, 35.7 | 0.368, 0.413 | 0.070 | 103,104 |
+| g20_off1, g20_off2 (G) | the same as boxes, between the two | 16.90, 18.94, 32.2; 16.88, 18.71, 34.5 | | | |
+| g_live2_z1550 (G) | 2 live dragons in DH's fade, both passes | 17.01, 19.43, 38.7 | 0.979, band 0.547 | 0.023, band 0.036 | |
+| g_live2_z1450 (G) | 2 live dragons past the loaded chunks | 17.85, 28.61, 88.9 | 1.271 | 0.020 | |
+
+- **No frame cost shows.** G interleaved the 20 dragons as models and as boxes, on, off, on, off, in one machine
+  state: frame means within 0.06 ms of each other, p95 within 0.42 ms and the longest frames within 3.5 ms, with
+  no order between on and off. In B the boxes' windows were the slower ones.
+- **The pass's GPU time is steady and small:** 0.07 ms for 20 dragons, 0.05 ms for 20 carriages and 0.12 ms for
+  50, in every window. Its CPU time for the same 20 dragons ran from 0.37 to 1.49 ms (2.57 at load average 40)
+  with the machine, not the work.
+- **A slow pass is a wait, not our work.** G logged each DH pass over 4 ms (181 of them, in about 30,000
+  frames) with its parts. In 96 most of the time was `GlState.read`'s `glGet` calls: Mesa's GL thread makes
+  each a sync with the driver thread, which then takes on the frame's wait for vsync. 10 had a garbage collection
+  in them (12 to 15 ms), 10 were in `prepare`, 3 were a set's first draw, and 62 spent it in the draw with no
+  placing or baking, some with nothing to draw (the niced render thread descheduled). The frames stayed
+  vsync-held. A possible follow-up, should a GPU-bound machine show the syncs: track the state we set rather
+  than read it each pass.
+- **Bakes, spread over frames.** A dragon set (species, colour, stage) is 2.1 to 2.2 MiB and about 64,000
+  vertices; 20 sets 44.2 MiB. A set took 18.4 ms (E) and 20.8 ms (F) in all over about 9 frames; at load
+  average 40 (D) 57 ms. In F the bake window's frames were no worse than the steady window's (p95 19.62
+  against 18.88, longest 35.2 against 35.6). The longest slice is a new probe's first warm-up render, which
+  cannot be split: 13.8 to 15.8 ms for the session's first, 0.8 to 6.3 ms for the rest. E's bake window had one
+  66.5 ms frame; its longest slice was 17.8 ms. Before the prewarm (B) a species' cold first render was 91.9 ms inside a frame.
+  The prewarm itself is 97 to 128 ms at the far view's first frame, behind the loading screen. A carriage
+  design's mesh is about 7,700 vertices and 0.2 MiB (four 30,628 and 0.9 MiB); cold 12.2 ms over about 5
+  frames with a 0.8 to 1.1 ms upload, the longest frame's slice 6.7 to 11.3 ms, and warm (the meshes freed and
+  laid again) about 3.3 ms, its longest slice 2.5 ms. Create's bogeys, 8 styles and sizes, take 52 to 106 ms
+  (172 at load average 40) at the first frame, behind the loading screen.
+- **Live in DH's fade (DHT65).** Two fire dragons 150 blocks out at render distance 10 were rendered live by both
+  passes, one pose each a frame: the band's 0.547 ms is their second renders, about 0.27 ms a dragon.
+- **The hand-over** (`g_fly_m2`, `g_ring_m2`, field of view 60, render distance 10). The media stub laid its
+  far leg at the body's feet until G; the engine's legs carry the hitbox's middle (`FarLegs`), so in E the far
+  model was drawn about 3 blocks low (`shots/e_fly_arrival_before_height_fix.png`). With the stub fixed, the
+  far point sat 3.0 blocks over the body's feet at the hand-over tick in both takes (stage 4's 3.41, which
+  `FarLegs` rounds to a whole block), and far model and body stand at one height. Its wings beat on up to the
+  body's first frame, at 114 blocks and at 149 (inside the fade), one image in every frame. Left: the wings
+  change pose at the body's first frame, where Ice and Fire starts its loop, and the far model of a dragon never
+  embodied on this client is its stage's middle age, so its size can change once (DHT60). Stills:
+  `shots/g_{fly,ring}_handover_x2_live_in_fade.png` and the 0.1 s sheets `shots/g_{fly,ring}_arrival_sheet_*.png`.
+- **Hills hide the carriages** (`work/ridgeG.py` places the camera from the terrain scan): ring A from 850 and
+  400 blocks with a snowy ridge across the line, train 2's observation car shows over the slope and the rest of
+  its train is behind it, train 9's locomotive front shows at the ridge's edge, the same for boxes and models
+  (`shots/v_ridge_ringA_*_before_after.png`).
+- Ice and Fire's lightning dragons in blue read navy at range: that is their own texture.
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
@@ -299,6 +365,9 @@ object against the body once a tick.
 - The hide test with real carriages or dragons near the camera.
 - A server running for hours: the longest run was r3long2's 333 sweeps.
 - The band's light at night or under the darkness effect, and block light (DHT33 leaves them out).
+- The real models with players' own trains (only DHT66's four designs ran: no carriage of block entities only,
+  none mixing upright and upside-down bogeys) and a hand-over for each species (only a stage 4 fire dragon).
+- The real models under an Iris shader pack, or on a GPU other than the laptop's Radeon on Mesa.
 
 ### Traps the bench found
 
