@@ -67,6 +67,7 @@ public final class TrainFeedSource implements FarSource {
     @Override
     public void collect(ServerLevel level, long gameTime, Consumer<FarItem> out) {
         ResourceKey<Level> dim = level.dimension();
+        CarriageShapes.sweep();
         for (Train train : Create.RAILWAYS.trains.values()) {
             List<Carriage> carriages = train.carriages;
             for (int i = 0; i < carriages.size() && i < 256; i++) {

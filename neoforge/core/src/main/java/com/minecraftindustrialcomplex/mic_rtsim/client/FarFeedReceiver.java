@@ -174,6 +174,10 @@ final class FarFeedReceiver {
                     o = new Obj();
                     objs.put(i.handle(), o);
                 }
+                // A body says its age, the engine's leg does not: a dragon handed back to its leg keeps the age
+                // its body had, so it is not drawn a size smaller or bigger, while it stays at that stage
+                // (docs/choices-dh-feed.md DHT60); a leg of another stage has outgrown it
+                boolean keepAge = same && i.age() < 0 && o.size == i.size();
                 o.id = i.id();
                 o.kind = FarKind.ofWire(i.kind());
                 o.style = i.style();
@@ -181,9 +185,7 @@ final class FarFeedReceiver {
                 o.size = i.size();
                 o.rgb = i.rgb();
                 o.shape = i.shape();
-                // A body says its age, the engine's leg does not: a dragon handed back to its leg keeps the age
-                // its body had, so it is not drawn a size smaller or bigger (docs/choices-dh-feed.md DHT60)
-                if (i.age() >= 0 || !same)
+                if (!keepAge)
                     o.age = i.age();
                 if (o.kind == null)
                     objs.remove(i.handle()); // a kind this client does not know

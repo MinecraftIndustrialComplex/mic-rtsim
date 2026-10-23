@@ -97,6 +97,9 @@ neoForge {
                     systemProperty 'mic_rtsim.farbench.warmup', project.property('farBenchWarmup').toString()
                 if (project.hasProperty('farBenchWarmSweeps'))
                     systemProperty 'mic_rtsim.farfeed.warmSweeps', project.property('farBenchWarmSweeps').toString()
+                // The bench carriages' designs (docs/choices-dh-feed.md DHT63); false leaves them bare, as boxes
+                if (project.hasProperty('farBenchDress'))
+                    systemProperty 'mic_rtsim.farbench.dress', project.property('farBenchDress').toString()
             }
             jvmArgument '-Xmx6G'
         }

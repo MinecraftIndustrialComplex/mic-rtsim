@@ -96,7 +96,10 @@ public final class FarPayloads {
     private static void onRegister(RegisterPayloadHandlersEvent event) {
         PayloadRegistrar r = event.registrar("1").optional();
         r.playToServer(Subscribe.TYPE, Subscribe.CODEC, (p, ctx) -> {
-            if (ctx.player() instanceof ServerPlayer sp)
+            // Only a client that takes both of the feed's payloads: sending one it did not negotiate throws in
+            // the server's tick (a modified client could ask for the feed without them)
+            if (ctx.player() instanceof ServerPlayer sp && sp.connection.hasChannel(Feed.TYPE)
+                    && sp.connection.hasChannel(Shape.TYPE))
                 FarFeed.subscribe(sp, p);
         });
         r.playToClient(Feed.TYPE, Feed.CODEC, (p, ctx) -> {

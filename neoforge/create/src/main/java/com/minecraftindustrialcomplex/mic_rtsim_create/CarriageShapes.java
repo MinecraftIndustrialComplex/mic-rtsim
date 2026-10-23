@@ -7,6 +7,8 @@ import com.simibubi.create.content.trains.entity.Carriage;
 import com.simibubi.create.content.trains.entity.CarriageBogey;
 import com.simibubi.create.content.trains.entity.CarriageContraption;
 import com.simibubi.create.content.trains.entity.CarriageContraptionEntity;
+import com.simibubi.create.content.trains.bogey.AbstractBogeyBlock;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,19 +38,39 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
  *       {@code Contraption.Blocks} compound is the palette and block list.</li>
  * </ul>
  * A carriage's shape is kept while its source (the contraption, or the saved tag) is the same object, so each
- * is encoded once per change, not once a second. Server thread.
+ * is encoded once per source, not once a second; the source is held weakly (a live contraption reaches its
+ * carriage through its entity, so a strong one would keep every carriage it ever saw). Encoding has a budget
+ * per sweep ({@link #BUDGET_NANOS}): past it, a carriage keeps the shape it had (its blocks seldom change when
+ * its entity loads or unloads) or has none yet, and is encoded on a later sweep. A door or lever a train opens
+ * in place changes the live contraption's blocks without a new source, so the shape is the old one until the
+ * entity unloads. Server thread.
  */
 final class CarriageShapes {
     private static final Field SERIALISED = serialisedField();
 
-    private record Kept(Object source, FarShape shape) {
+    /** What one sweep may spend encoding shapes, per level (PLACEHOLDER). */
+    static final long BUDGET_NANOS = 2_000_000L;
+
+    private record Kept(WeakReference<Object> source, FarShape shape) {
     }
 
     private static final Map<Carriage, Kept> KEPT = new WeakHashMap<>();
     private static int failures;
-    static long encodes, encodeNanos;
+    private static long spent;
+    static long encodes, encodeNanos, deferred;
 
     private CarriageShapes() {}
+
+    /** A sweep of one level starts: its encoding budget is whole again. */
+    static void sweep() {
+        spent = 0;
+    }
+
+    /** The server stopped: nothing of its carriages is kept. */
+    static void clear() {
+        KEPT.clear();
+        spent = 0;
+    }
 
     private static Field serialisedField() {
         try {
@@ -69,21 +91,29 @@ final class CarriageShapes {
         if (source == null)
             return null;
         Kept had = KEPT.get(c);
-        if (had != null && had.source == source)
+        if (had != null && had.source.get() == source)
             return had.shape;
+        if (spent >= BUDGET_NANOS) {
+            // Encoded on a later sweep; meanwhile the shape it had, if any
+            deferred++;
+            return had == null ? null : had.shape;
+        }
         FarShape shape = null;
         long t0 = System.nanoTime();
         try {
             CarriageShape cs = source instanceof CompoundTag tag ? fromTag(c, tag, level.holderLookup(Registries.BLOCK))
                     : fromContraption(c, (Contraption) source);
-            shape = cs == null ? null : cs.shape();
+            // No blocks at all is no look: the carriage stays a box rather than becoming nothing
+            shape = cs == null || cs.blocks().isEmpty() ? null : cs.shape();
         } catch (RuntimeException ex) {
             if (failures++ < 3)
                 MicRtsimCreate.LOGGER.warn("[mic_rtsim_create] a carriage's far shape failed; it is drawn as a box", ex);
         }
+        long took = System.nanoTime() - t0;
         encodes++;
-        encodeNanos += System.nanoTime() - t0;
-        KEPT.put(c, new Kept(source, shape));
+        encodeNanos += took;
+        spent += took;
+        KEPT.put(c, new Kept(new WeakReference<>(source), shape));
         return shape;
     }
 
@@ -116,7 +146,7 @@ final class CarriageShapes {
             BlockPos p = BlockPos.of(k.getLong("Pos"));
             list.add(new CarriageShape.Block(p.getX(), p.getY(), p.getZ(), ids[s]));
         }
-        return new CarriageShape(assembly.get3DDataValue(), list, bogeys(c, assembly));
+        return new CarriageShape(assembly.get3DDataValue(), list, bogeys(c, assembly, list));
     }
 
     private static CarriageShape fromContraption(Carriage c, Contraption contraption) {
@@ -124,18 +154,32 @@ final class CarriageShapes {
         List<CarriageShape.Block> list = new ArrayList<>(contraption.getBlocks().size());
         for (StructureTemplate.StructureBlockInfo info : contraption.getBlocks().values())
             list.add(new CarriageShape.Block(info.pos().getX(), info.pos().getY(), info.pos().getZ(), Block.getId(info.state())));
-        return new CarriageShape(assembly.get3DDataValue(), list, bogeys(c, assembly));
+        return new CarriageShape(assembly.get3DDataValue(), list, bogeys(c, assembly, list));
     }
 
-    /** The leading bogey at the contraption's anchor, the trailing one the bogey spacing along the assembly. */
-    private static List<CarriageShape.Bogey> bogeys(Carriage c, Direction assembly) {
+    /**
+     * The leading bogey at the contraption's anchor, the trailing one the bogey spacing along the assembly, at
+     * the height its bogey block has in the block list: a carriage may hang one bogey upside down and stand
+     * the other upright, a block or two apart in height.
+     */
+    private static List<CarriageShape.Bogey> bogeys(Carriage c, Direction assembly, List<CarriageShape.Block> blocks) {
         List<CarriageShape.Bogey> out = new ArrayList<>(2);
         CarriageBogey lead = c.bogeys.getFirst(), trail = c.bogeys.getSecond();
         if (lead != null)
             out.add(bogey(lead, BlockPos.ZERO));
         if (trail != null)
-            out.add(bogey(trail, BlockPos.ZERO.relative(assembly, c.bogeySpacing)));
+            out.add(bogey(trail, bogeyBlock(BlockPos.ZERO.relative(assembly, c.bogeySpacing), blocks)));
         return out;
+    }
+
+    /** The bogey block at {@code at}, or up to two above or below it; {@code at} when there is none. */
+    private static BlockPos bogeyBlock(BlockPos at, List<CarriageShape.Block> blocks) {
+        for (int dy : new int[]{0, 1, -1, 2, -2})
+            for (CarriageShape.Block b : blocks)
+                if (b.x() == at.getX() && b.y() == at.getY() + dy && b.z() == at.getZ()
+                        && Block.stateById(b.state()).getBlock() instanceof AbstractBogeyBlock<?>)
+                    return at.above(dy);
+        return at;
     }
 
     private static CarriageShape.Bogey bogey(CarriageBogey b, BlockPos at) {

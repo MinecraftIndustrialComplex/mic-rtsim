@@ -54,7 +54,7 @@ public final class FarFeedClient {
     private static final FarFeedReceiver RECEIVER = new FarFeedReceiver();
     private static final FarShapeStore SHAPES = new FarShapeStore();
     // What came, for the bench and the log
-    static long messages, bytes, records, malformed, shapes, shapeBytes;
+    static long messages, bytes, records, malformed, shapes, shapeBytes, malformedShapes;
 
     private FarFeedClient() {}
 
@@ -66,7 +66,8 @@ public final class FarFeedClient {
     /**
      * The deflated bytes of far shape {@code hash} (a mover's {@link com.minecraftindustrialcomplex.mic_rtsim.far.FarMover#shape()}),
      * or null when the server has not sent them yet; decode with
-     * {@link com.minecraftindustrialcomplex.mic_rtsim.far.FarShape#raw}.
+     * {@link com.minecraftindustrialcomplex.mic_rtsim.far.FarShape#raw}. They were checked against the hash as
+     * they came. The client's main thread only; never change the array (in single player it is the server's own).
      */
     public static byte[] shape(long hash) {
         return SHAPES.get(hash);
@@ -201,6 +202,15 @@ public final class FarFeedClient {
         shapeBytes += data.length;
         if (sent == null)
             return;
+        try {
+            com.minecraftindustrialcomplex.mic_rtsim.far.FarShape.raw(hash, data);
+        } catch (IllegalArgumentException e) {
+            // Not what its hash says: never kept, so its objects are boxes (docs/choices-dh-feed.md DHT62)
+            if (malformedShapes++ < 3)
+                MicRtsim.LOGGER.warn("[mic_rtsim] far feed: shape {} does not match its bytes ({}); dropped",
+                        Long.toHexString(hash), e.getMessage());
+            return;
+        }
         if (!SHAPES.put(hash, data) && SHAPES.dropped <= 3)
             MicRtsim.LOGGER.warn("[mic_rtsim] far feed: {} shapes ({} bytes) held, shape {} dropped", SHAPES.size(),
                     SHAPES.bytes(), Long.toHexString(hash));
