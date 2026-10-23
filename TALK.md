@@ -1,8 +1,8 @@
 # TALK: speaking with the valley's people
 
 Status (2026-10-22): designed; slices 1 to 4 being built in this order (§12). Choices are TK# in
-`docs/choices-talk.md`; Ben's open questions are TQ-1 to TQ-3 (§13), each built on its recommended
-answer until he answers.
+`docs/choices-talk.md`; Ben answered TQ-1 to TQ-3 the same day (§13): talk wins over Carry On, no
+hint (players find talk themselves), and both names and descriptions of places.
 
 Ben's decision (2026-10-22), answering CL-10 (CONFLICT-LIFE.md §8, how a player hears gossip):
 
@@ -11,8 +11,8 @@ Ben's decision (2026-10-22), answering CL-10 (CONFLICT-LIFE.md §8, how a player
 > ribbits, and other clans as well. Talking with a villager should mildly increase a players
 > 'relationship' with them"
 
-And for the envoy (CL-1), "Speaks to you in chat": one line, to that player only, in person, when he
-talks to it. Talk is the one place rtsim puts text in chat, and only because the player asked for it:
+And for the envoy (CL-1), "Speaks to you in chat": one line, to that player only, in person, when they
+talk to it. Talk is the one place rtsim puts text in chat, and only because the player asked for it:
 nothing is ever pushed into chat (CL-9, "All faction news in-world").
 
 **The rules this design keeps:** D1 (on demand and cheap: nothing runs until a player talks), D3 (no
@@ -78,7 +78,7 @@ Facts (vanilla 1.21.1 and NeoForge 21.1, read from the sources; the audit is in 
   its trades; and it opens them for either hand. Talk cancels both hands on a talker.
 - **The crouch flag is the client's:** `ServerGamePacketListenerImpl.handleInteract` sets the server
   player's shift state from the packet before the interaction, so `isSecondaryUseActive()` on the
-  server is what the player held when he clicked.
+  server is what the player held when they clicked.
 - **Order:** for each hand, `EntityInteractSpecific`, then `EntityInteract`
   (`Player.interactOn` calls `CommonHooks.onInteractEntity` first; a cancelled event returns its
   result and `entity.interact` never runs), then the item's own use on the mob. So a cancel at
@@ -86,7 +86,7 @@ Facts (vanilla 1.21.1 and NeoForge 21.1, read from the sources; the audit is in 
 
 **How Java handles it** (`talk/TalkEvents`, core):
 - `PlayerInteractEvent.EntityInteract` at **HIGHEST** priority, both sides. When the player is
-  crouching, his main hand is empty and the target is a talker (§4): cancel with SUCCESS (one arm
+  crouching, their main hand is empty and the target is a talker (§4): cancel with SUCCESS (one arm
   swing). On the server, the main hand speaks; the off hand's event is cancelled silently, so no
   mod's `mobInteract` runs for it either.
 - On the client the same check runs for entity types a plugin registered as always talking
@@ -108,7 +108,7 @@ when crouching. Talk at HIGHEST, empty main hand only, resolves all of them:
 
 | Mod (version) | What it does on a crouching right-click | Effect on talk | Resolution |
 |---|---|---|---|
-| **Carry On 2.2.6.13** | `CommonEvents.onEntityRightClick` (EntityInteract, HIGH, server): with both hands empty, within 2.5 blocks, picks the entity up and cancels with SUCCESS. The pack leaves the carry key unbound (`pack/options.txt` line 200), so Shift is the carry key. Its `forbiddenEntities` default lacks villagers, wandering traders and ribbits; it never picks up MONSTER mobs (`pickupHostileMobs=false`) | **The one conflict**: the same gesture on the same mobs | TQ-1. Built on (a): talk at HIGHEST wins on talkers, so Carry On no longer picks up villagers, wandering traders or ribbits; it still carries every other mob and every block, as now. Illagers and Umvuthana are MONSTER, which Carry On never takes |
+| **Carry On 2.2.6.13** | `CommonEvents.onEntityRightClick` (EntityInteract, HIGH, server): with both hands empty, within 2.5 blocks, picks the entity up and cancels with SUCCESS. The pack leaves the carry key unbound (`pack/options.txt` line 200), so Shift is the carry key. Its `forbiddenEntities` default lacks villagers, wandering traders and ribbits; it never picks up MONSTER mobs (`pickupHostileMobs=false`) | **The one conflict**: the same gesture on the same mobs | TQ-1, answered (a): talk at HIGHEST wins on talkers, so Carry On no longer picks up villagers, wandering traders or ribbits; it still carries every other mob and every block, as now. Illagers and Umvuthana are MONSTER, which Carry On never takes |
 | vanilla Villager | crouching: PASS, nothing | none | talk takes the free gesture |
 | vanilla WanderingTrader | crouching still opens trades (any hand) | trade screen | talk cancels both hands |
 | Ribbits 4.1.6 | crouch + amethyst shard sets a ribbit's home; otherwise no crouch check, so a merchant ribbit opens its trades | trade screen | empty main hand only: the shard keeps working, the trade does not open |
@@ -180,7 +180,7 @@ engine needed:
 - **What the talker sees** (Java): a vanilla raid on the village now (`ServerLevel.getRaidAt`), night
   with monsters near (any `Enemy` within 16 blocks), and the player's vanilla reputation with this
   villager (`Villager.getPlayerReputation`): liked at 25 and up, disliked at -25 and below, and
-  "hated" at -100 and below, where vanilla's golems turn on him.
+  "hated" at -100 and below, where vanilla's golems turn on them.
 - **What the engine says** (the TALK_FACTS answer, §9): the holder's sentiment toward the player (for
   the sim's own peoples), the market's scarcest and most glutted good (stock per target), a port
   closed or blockaded, and the news (§5.3), from which Java reads:
@@ -205,7 +205,10 @@ did what to whom, when and where, from the talker's side:
   the rest as heard ("a caravan says", "they say").
 - **When:** today, yesterday, two or three days ago, last week, a while back.
 - **Where:** a compass direction and a distance band from the talker (close by, a short walk, a
-  day's ride, far off), with the nearest settlement named ("near Lowmarsh").
+  day's ride, far off), with the nearest settlement ("near Lowmarsh") when it is one the talker names
+  (§6, TK29).
+- **Named or described** (TQ-3, both): "Mudhollow raided Lowmarsh, a day's ride east" one time, "the
+  goblins in the hills raided a village a day's ride east" another (§6).
 
 Every report kind has lines (§9.4), so this is the path CL-9 and CL-10 need: the five conflict kinds
 (feuds, pacts, betrayals, raids, deaths), the ports kinds (raids on ports, blockades, closures,
@@ -226,7 +229,7 @@ to, not written down (TK12).
 
 The envoy's one line is its demand and its reason, the CL-1 line, as CONFLICT-LIFE.md §2.8 and
 CL-D34 shape it: who was wronged, how, when, who stands with the caller (CL-D48), the price and the
-deadline. It is the same line every time he asks until the demand is settled; then it says the
+deadline. It is the same line every time they ask until the demand is settled; then it says the
 settlement ("Paid. Go in peace, for now."). The fields come from ENVOY_MATERIALIZE (the faction, the
 player, the tribute, the deadline, and CL-D34's reason with the ally) and the faction block of
 TALK_FACTS (§9.2); slice 4 builds it with M3.
@@ -240,12 +243,12 @@ TALK_FACTS (§9.2); slice 4 builds it with M3.
      about the player × 1.5 when it is about us.
    All weights TUNABLE (TK4).
 2. **Pick a topic** by weight, then **a variant** of it at random.
-3. **Never the same line back to back:** each player keeps his last 8 line keys (in memory); a
+3. **Never the same line back to back:** each player keeps their last 8 line keys (in memory); a
    variant among them is skipped while another is left, and a topic whose every variant is among them
    loses half its weight.
 4. **Rate limits** (TK3): a talker answers the same player once per 40 ticks (a click inside that is
    still cancelled, silently), and anyone once per 10 ticks. In memory, never saved.
-5. **Speak:** `ServerPlayer.sendSystemMessage` to the talking player only; the talker looks at him
+5. **Speak:** `ServerPlayer.sendSystemMessage` to the talking player only; the talker looks at them
    (a villager's `LOOK_TARGET` memory for 40 ticks) and plays its ambient sound, which everyone near
    hears, as vanilla's own murmur. Talking to a villager or a wandering trader counts in vanilla's
    "Talked to Villagers" statistic.
@@ -255,14 +258,27 @@ TALK_FACTS (§9.2); slice 4 builds it with M3.
 ## 6. Names and places
 
 rtsim keeps no names today: villages, camps and chiefs are keys (CL-D20: codes, text written when
-read). Talk names them (TQ-3, built on (a)):
-- **Java names them** (`talk/Names`), deterministically from the key, so every player and every
-  session hears the same name, and the envoy and the villagers agree. A name is two parts from the
-  people's own list (`mic_rtsim.talk.name.<people>.a.<n>` and `.b.<n>` in the lang file, 32 to 48
-  each): villages "Oak" + "ford", goblin camps "Mud" + "hollow", bandit gangs "the Crow Road gang",
-  raider outposts "the Grey Tower", chiefs one goblin, bandit or illager name (Vorr, Gitz, Lugg).
-  The server composes the name from its own (English) lang and sends it as plain text, so a client in
-  another language sees the same name.
+read). Ben answered TQ-3 with both styles ("Generated names and directions, both are cool ideas!"),
+so a line either **names** a place or people, or **describes** it by where it is (TK29):
+- **Names** (`talk/Names`, TK13): deterministic from the key, so every player and every session hears
+  the same name, and the envoy and the villagers agree. Two parts from the people's own list
+  (`mic_rtsim.talk.name.<people>.a.<n>` and `.b.<n>` in the lang file, 32 to 48 each), put together by
+  `mic_rtsim.talk.name.<people>.format`: villages "Oak" + "ford", goblin camps "Mud" + "hollow",
+  bandit gangs "the Crow Road gang", raider outposts "the Grey Tower", havens "Blackwater"; chiefs one
+  name from `mic_rtsim.talk.name.chief.<culture>.<n>` (Vorr, Gitz, Lugg). The server composes the
+  name from its own (English) lang and sends it as plain text, so a client in another language sees
+  the same name.
+- **Descriptions**: the people or kind of place and a locator, `mic_rtsim.talk.desc.<kind>.at`
+  ("the goblins %1$s") with the locator from the biome at its place (`mic_rtsim.talk.loc.<terrain>`,
+  "in the hills", by the same tags as §5.1, read with `getBiome`, which never loads a chunk) and the
+  compass or a distance band ("in the hills to the east", "a day's ride east"). A described ref that
+  stands at the report's own place drops its locator ("a village"), since the line's where phrase
+  already says where: "the goblins in the hills raided a village a day's ride east".
+- **Which, each time** (TK29): the listener is "you", other players are named, and the talker's own
+  settlement or camp, anything it saw (SEEN) and anything within a short walk (under 600 blocks) are
+  named; within a day's ride (under 3,000) a ref is named half the time, farther a quarter of the
+  time, and otherwise described. Each ref is decided on its own, per line, from the talker's random, so
+  the same news is sometimes told with names and sometimes by place.
 - **The village a talker lives in** is named in its own lines ("here in Oakford"), which is how a
   player learns the names: by visiting.
 - **Players** are named by their name, or "you" when it is the listener.
@@ -301,7 +317,7 @@ about the player to that villager (`GossipContainer.add`; TK1). Vanilla's rules 
 **Ribbits: the sim's sentiment.** Ribbits have no gossip of their own; their village's feeling is
 rtsim-knowledge's sentiment (prices, the sorcerers' buffs). The first talk of the day between a player
 and a ribbit sends TALKED (§9.2), journaled, and the engine adjusts the ribbit village's sentiment
-toward him by **+3** (TK2) through the phase 1 world's input log (so a crash replays it). The cap is
+toward them by **+3** (TK2) through the phase 1 world's input log (so a crash replays it). The cap is
 the same attachment on the ribbit. rtsim's sentiment fades weak feelings in hours (a +3 is gone in
 about 7,500 ticks), so talk alone never makes a friend (25): it lifts a player hovering under the
 sorcerers' -25 back over it for the day, which is "mildly".
@@ -414,16 +430,17 @@ tick or more later:
 | 36 | u32 | its stock per target, thousandths |
 | 40 | u32 | most glutted good (0 none) |
 | 44 | u32 | its stock per target, thousandths |
-| 48 | n × 96 | news |
+| 48 | n × 120 | news |
 
 Each news item: 0 u16 report kind, 2 u8 severity, 3 u8 the report's flags, 4 u32 talk flags (1 YOU_DID,
 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago (saturating), 12 i32 dx, 16 i32 dz (the
-place from the talker, the short way round), 20 reserved, 24 ref who, 48 ref whom, 72 ref near (the
-settlement nearest the place).
+place from the talker, the short way round), 20 reserved, 24 ref who, 56 ref whom, 88 ref near (the
+settlement nearest the place); 120 bytes.
 
-A **ref** (24 bytes) is 0 u8 class, 1 u8 flags (1 dead), 2 reserved, 4 u32 what (dictionary 5
+A **ref** (32 bytes) is 0 u8 class, 1 u8 flags (1 dead, 2 POS), 2 reserved, 4 u32 what (dictionary 5
 culture for settlements, camps and chiefs; dictionary 3 body for dragons and ships), 8 u64 a,
-16 u64 b. Classes: 0 unknown, 1 player (a, b the UUID), 2 village (a Java's village id), 3 player
+16 u64 b, 24 i32 dx, 28 i32 dz (where it is from the talker, the short way round, when POS: what a
+description's locator reads, §6). Classes: 0 unknown, 1 player (a, b the UUID), 2 village (a Java's village id), 3 player
 base, 4 caravan (a its seed, b its home village), 5 camp (a the faction key), 6 chief or notable
 (a its seed, b its camp), 7 dragon, 8 lair, 9 haven, 10 ship.
 
@@ -523,10 +540,10 @@ lands, and landed on main.
 
 1. **The talk path and vanilla villagers** (Java only, no boundary change): `talk/` in the core (the
    API, the listener on both sides, the picker, rate limits, no repeats, the lang counts, names),
-   villagers and wandering traders, fluff and Java-side mood, the gossip credit with its cap, the TQ-2
-   hint (TK27), the core lang file. GameTests:
-   - `talk_line_reaches_only_the_talker`: two mock players by a villager; one crouch-clicks; only he
-     receives a line, and it is a `mic_rtsim.talk.` key;
+   villagers and wandering traders, fluff and Java-side mood, the gossip credit with its cap, the core
+   lang file (no hint: TQ-2, TK27). GameTests:
+   - `talk_line_reaches_only_the_talker`: two mock players by a villager; one crouch-clicks; only they
+     receive a line, and it is a `mic_rtsim.talk.` key;
    - `talk_opens_no_trade_screen`: a crouching click on a villager with trades and on a wandering
      trader leaves the player's menu the inventory;
    - `talk_gossip_capped_per_day`: two talks in one day add MINOR_POSITIVE 3 once; after 24,000
@@ -545,18 +562,14 @@ lands, and landed on main.
 
 ---
 
-## 13. Ben's questions
+## 13. Ben's questions (answered 2026-10-22)
 
-- **TQ-1. Carry On and talk share Shift + right-click with empty hands.** (a, recommended) Talk wins on
-  talkers: Carry On can no longer pick up villagers, wandering traders and ribbits, and still carries
-  every other mob and every block. (b) Ship Carry On's carry key bound to another key (Left Alt) in
-  the pack's `options.txt`, so Carry On keeps villagers on that key and Shift only talks; changes Carry
-  On's key for blocks too, for new installs. (c) Talk only with something in the off hand, leaving
-  Shift with both hands empty to Carry On. Built on (a).
-- **TQ-2. How players find out they can talk.** (a, recommended) A line in the pack's guide and the
-  first time a player closes a villager's trades (TK27), a one-time action-bar hint ("Crouch and right-click
-  to talk"), never again for him. (b) The pack's guide only. (c) Nothing. Built on (a).
-- **TQ-3. Names.** (a, recommended) Villages, camps and chiefs get generated names (two parts from a
-  list, the same for everyone), always with a direction and distance, so "Mudhollow raided Lowmarsh,
-  a day's ride east". (b) No names, only directions: "the goblins in the hills raided the village a
-  day's ride east". Built on (a); the envoy line in CL-1 already uses names.
+- **TQ-1. Carry On and talk share Shift + right-click with empty hands.** Ben: "Talk wins on talkers
+  (Recommended)". Talk wins on talkers: Carry On can no longer pick up villagers, wandering traders and
+  ribbits, and still carries every other mob and every block. (Not chosen: Carry On on another key;
+  talk only with something in the off hand.)
+- **TQ-2. How players find out they can talk.** Ben: "Nothing". No hint and no guide line: players
+  find talk themselves (TK27). (Not chosen: a one-time hint and a guide line; the guide only.)
+- **TQ-3. Names.** Ben: "Generated names and directions, both are cool ideas!". Lines use both:
+  generated two-part names, the same for everyone, and descriptions by place, mixed as §6 says
+  (TK29).
