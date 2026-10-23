@@ -161,7 +161,8 @@ under its own heading.
 - **MZB-36** (The conflict's reports on the severity unit; the TALK review's finding): the conflict
   records its Robbery (a camp plunders a village), Rescue (a player routs a band: the real witnesses,
   CL-D61, the village the band marched on, each village that hates the camp within the view
-  radius of the rout, and each player base within it) and Killing (the war chief's killer, seen by the chief
+  radius of where it broke, and the player's base it marched on and each player base within that
+  radius) and Killing (the war chief's killer, seen by the chief
   and the heir) at `SEVERITY_UNIT`, the kind's base delta, not at the rung codes 2, 2 and 4. The
   knowledge layer reads severity as a share of the unit, so a robbery moved the village's feeling for
   the camp by -1 instead of -50, a rescue by 0 instead of +25 (and wrote no vanilla gossip, which
