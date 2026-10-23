@@ -106,6 +106,7 @@ kinds! {
     SHIPS_LOST = "ships.lost", "Ship lost", Notable;
     SHIPS_BACK = "ships.back", "Ship back", Minor;
     SHIPS_HAVEN = "ships.haven", "Haven threat changes", Minor;
+    SHIPS_PORT = "ships.port", "Port blockaded, closed or reopened", Notable;
     // Phase 1: markets (rtsim-trade, recorded by rtsim-world).
     TRADE_SHIFT = "trade.shift", "Price shift", Minor;
     // Phase 1: villages and bases (rtsim-settle, recorded by rtsim-world).
