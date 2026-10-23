@@ -975,6 +975,21 @@ fn a_navy_breaks_a_weak_haven() {
             .filter(|e| e.tick == due.0)
             .collect();
         assert_eq!(lost.len(), 1, "seed {seed}: {lost:?}");
+        // The news (PC10): one HavenFell, the navy's port against the haven, known to that port.
+        let k = &c.world.knowledge;
+        let fell: Vec<_> = k
+            .reports()
+            .iter()
+            .filter_map(|(id, _)| k.report(id).map(|r| (id, r)))
+            .filter(|(_, r)| r.kind == rtsim_knowledge::ReportKind::HavenFell)
+            .collect();
+        assert_eq!(fell.len(), 1, "seed {seed}: {fell:?}");
+        let (id, r) = fell[0];
+        let port = c.world.nodes[c.ships.navies[nv as usize].node].actor;
+        assert_eq!(r.who, port, "seed {seed}");
+        assert_eq!(r.whom, c.world.nodes[c.ships.havens[h as usize].node].actor);
+        assert_eq!((r.severity, r.at), (2, due), "seed {seed}");
+        assert!(k.knows(port, id), "seed {seed}: the navy's port knows");
         let census = &c.ships.census()[0];
         assert_eq!((census.broken, census.members), (1, 1));
         let s2 = Ships::load(tun.clone(), &c.ships.save()).expect("ships load");
