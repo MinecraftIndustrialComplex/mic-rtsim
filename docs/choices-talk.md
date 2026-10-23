@@ -1,0 +1,32 @@
+# TALK choices
+
+Reversible choices made while designing and building TALK (TALK.md), each with its reason. Ben's open
+questions are TQ-1 to TQ-3 in TALK.md §13; each is built on its recommended answer until he answers.
+
+| Id | Choice | Why |
+|---|---|---|
+| TK1 | A villager's first talk of the day with a player adds **MINOR_POSITIVE 3**; "a day" is 24,000 ticks of game time | vanilla drops values below 2 on decay, so +2 would vanish at the first decay; +3 nets +2 a day against vanilla's decay of 1, up to vanilla's max of 25 (reputation +25, a fifth of a cure). Game time, not day time, so `/time set` and sleeping do not reset the cap |
+| TK2 | A ribbit's first talk of the day with a player adds **+3** to its village's sentiment toward him (journaled TALKED, the phase 1 input `Talked`); the cap is per ribbit, not per village | the sim's own feeling is the ribbits' relationship; weak feelings fade in hours, so talk lifts a player over the sorcerers' -25 for the day and never makes a friend alone. Per ribbit reuses the villagers' attachment; a village of ten ribbits gives at most +30 in a day, which fades by the next |
+| TK3 | Rate limits: a talker answers one player at most once per 40 ticks, and anyone once per 10; a click inside the window is cancelled silently. In memory | no spam, no saved state |
+| TK4 | The picker's weights (TALK.md §5.6): fluff 1 (+0.5 a condition met), mood 2 uneasy, 4 afraid, 1.5 prices, hunger, liked or disliked; news 3 x freshness x 2 about the player x 1.5 about us | news and danger should dominate when they exist, fluff fill the quiet; all TUNABLE |
+| TK5 | Java resends an open TALK_ASK each tick, at most 32 open, and gives up after 20 ticks, then speaks without facts | a sim switched off (U10) or not running still gets an answer |
+| TK6 | Talking to caravan merchants, bandits, raiders, goblins, envoys and Umvuthana changes no feeling | a camp's anger is its memories and grievances (CONFLICT-LIFE); chatting must not talk a war down. Ben asked for the relationship for villagers; ribbits are villagers |
+| TK7 | The gesture: crouch, main hand, **empty main hand**, any off hand; `EntityInteract` at HIGHEST on both sides; both hands cancelled on a talker | an item in hand keeps its own use (a name tag, the ribbits' amethyst shard home, a backpack's mob catcher); HIGHEST beats every mod that opens a screen (the audit, TALK.md §3) |
+| TK8 | A Create seated shopkeeper never talks | Create cancels the click on the client, so no packet reaches the server; a shopkeeper is Create's |
+| TK9 | Not talkers: the Frostmaw, Mowzie's Sculptor, golems, animals, pets, trader llamas, rctmod's trainers, Cobblemon NPCs, and beasts in a band (ravagers, wolves) | beasts do not talk; the Sculptor is one quest NPC with its own screen; Cobblemon is leaving the pack (D4) |
+| TK10 | TALK's kind ranges: 0x00C0 to 0x00CF, 0x0A00 to 0x0AFF, 0x8A00 to 0x8AFF | the next free family ranges (DHT26); 0x0B00 and 0x8B00 stay free |
+| TK11 | ReportKind ids from 10: 10 to 15 conflict news (Feud, PactSworn, PactBroken, Raid, Fell, a spare), 16 to 23 ports (16 to 20 the ports agent's, 21 to 23 spare), 24 to 31 TALK's own, 32 and up free (ask first); `from_u16` a match and the per-kind tables sized by the highest id | blocks per owner so parallel branches never take the same id; gaps need a match, not `id - 1` |
+| TK12 | The bandit's "written warning" (CONFLICT-LIFE.md §2.7, the Warn row) becomes a bandit lookout on the road who speaks the warning when talked to | a written note would be text pushed at the player, or a block or item of our own (D3); a spoken line when he asks is CL-1's rule for envoys |
+| TK13 | Names are composed on the server from two-part lists in the core's lang file and sent as plain text | the same name for every player and session, and for the envoy and the villagers; built on TQ-3 (a) |
+| TK14 | News whose place is within 96 blocks of the holder is told as seen, the rest as heard | the board keeps no first-hand flag; the place is a fair proxy (the witness radius is 32, a village's own news falls inside 96) |
+| TK15 | Lines are lang keys `mic_rtsim.talk.<voice>.<topic>.<n>`, counted once at server start, with the fallback chain voice, parent, `any`; sent as `translatableWithFallback` with the server's English | adding a line is adding a key; a client without the lang file still reads English |
+| TK16 | Babies talk (a `child` voice, fluff only); sleeping, busy (trading with another player) and hurt talkers say a state line; none of them gives a credit | a crouching click always gets an answer, and a credit needs a real conversation |
+| TK17 | The talker looks at the player (a villager's `LOOK_TARGET` memory for 40 ticks) and plays its ambient sound | the conversation shows in the world; the sound carries no text, so others nearby learn nothing |
+| TK18 | A talk with a villager or wandering trader counts in vanilla's "Talked to Villagers" statistic | vanilla's own name for it; a trade attempt counts there today |
+| TK19 | Mood thresholds: reputation liked at 25, disliked at -25, hated at -100 (golems); uneasy for an attack on us within 10 days, afraid within 2; a good dear under half its target, cheap over twice; hungry when the scarce good is food under a third | vanilla's own reputation steps, rtsim's penalty levels, and the report lifetimes; all TUNABLE |
+| TK20 | At most four news items an answer, ranked kind weight x severity x freshness x (3 about the player, 2 about us) | four is enough for the picker to choose among; the board is at most 256, so the scan is cheap |
+| TK21 | A villager outside an adopted village has no holder: fluff and its own mood only | no board to speak from; a stray trader (not a puppet) likewise |
+| TK22 | Each player's last 8 line keys are skipped while another variant is left; in memory | "never the same line back to back", across talkers of one voice too |
+| TK23 | The envoy says the same line each time until its demand is settled, then a settled line | it is one line (CL-1), the demand's own words |
+| TK24 | M3's `ConflictNews.post` hook is not needed by TALK | news is reports on the engine's boards; Java reads them through TALK_FACTS when asked |
+| TK25 | The ribbit credit and the villager cap share one saved attachment, `mic_rtsim:talk_days` (player to the last day credited, at most 16 players) | the `mic_rtsim:gossip_ops` precedent; NeoForge drops it when rtsim is removed (UR-1) |
