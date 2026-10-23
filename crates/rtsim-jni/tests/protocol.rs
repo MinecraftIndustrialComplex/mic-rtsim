@@ -2513,9 +2513,10 @@ mod ships {
     /// PC103 (C25, U10): a long switch-off, then the switch-on's catch-up, through the native
     /// engine. Thirty days on (a haven on the coast, so the pirates hunt), thirty days off, then
     /// on again: the ships replay what they missed up to the world's present at the switch-on,
-    /// and decide no port in that time. After a day on, no port holds a closure, blockade or open
-    /// spell dated before the switch-on and every booked check is after it; the ships check and
-    /// the protocol holds.
+    /// and decide no port in that time. After a day on, no port check has been decided since the
+    /// switch-off (each missed one comes again a check interval after the switch-on), no port
+    /// holds a closure, blockade or open spell dated before the switch-on and every booked check
+    /// is after it; the ships check and the protocol holds.
     #[test]
     fn switch_on_catch_up_after_a_long_off() {
         let dir = tmpdir("ships-catchup");
@@ -2547,6 +2548,10 @@ mod ships {
         days(&mut j, 1);
         let (after, _, _, _) = e.ship_stats();
         assert!(after.events > before.events, "nothing replayed");
+        assert_eq!(
+            after.port_checks, before.port_checks,
+            "a port check decided in the missed time"
+        );
         let (now, ports) = e.with_ships(|s, _| (s.now(), s.ports.clone()));
         assert!(now >= on, "the ships caught up: {now:?} < {on:?}");
         for (d, p) in &ports {
