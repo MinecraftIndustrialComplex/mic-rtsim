@@ -140,6 +140,8 @@ public final class TalkAsks implements SessionPlugin {
     @Override
     public void sessionStopping(RtsimSession s) {
         closeAll();
+        if (session == s)
+            session = null;
     }
 
     @Override
@@ -228,9 +230,12 @@ public final class TalkAsks implements SessionPlugin {
         }
     }
 
-    /** Forgets everything without calling anyone back (server start and stop clear, the talks' own state goes with it). */
+    /**
+     * Forgets the open asks without calling anyone back (server started and stopped clear, the talks' own state
+     * goes with it). The session is kept: the bridge starts its session on the same ServerStartedEvent, in an
+     * order this class does not control, and {@link #canAsk} already checks it against the running one.
+     */
     public void reset() {
         open.clear();
-        session = null;
     }
 }
