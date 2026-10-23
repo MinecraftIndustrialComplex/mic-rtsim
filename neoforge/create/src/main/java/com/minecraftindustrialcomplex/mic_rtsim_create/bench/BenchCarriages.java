@@ -22,7 +22,7 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 
 /**
- * The far-view bench's carriage designs (docs/choices-dh-feed.md DHT63): {@link FarTrainBench}'s synthetic
+ * The far-view bench's carriage designs (docs/choices-dh-feed.md DHT66): {@link FarTrainBench}'s synthetic
  * carriages have no blocks, so the far feed would send them as boxes. This gives each one a design the way a
  * player's carriage is stored: a Create {@link CarriageContraption} of Create and vanilla blocks, handed to the
  * carriage with Create's own {@link Carriage#setContraption}, which keeps it in {@code Carriage.serialisedEntity}

@@ -37,6 +37,9 @@ import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
  * boxes toward DH's there. So where DH draws it, the band draws DH's own cut ({@link FarTrainView#shownCut},
  * {@link FarDragonView#shown}): the two match box for box and the fade shows one (DHT45).
  *
+ * <p>Movers drawn as the real thing ({@link FarModelRenderer}) are drawn by that in the band too, with the same
+ * hand-over; these boxes are for the rest.
+ *
  * <p>Render thread only.
  */
 final class FarBandRenderer {
@@ -61,6 +64,7 @@ final class FarBandRenderer {
         ClientLevel level = Minecraft.getInstance().level;
         if (level == null)
             return;
+        FarModelRenderer.onBand(event, level);
         long t0 = System.nanoTime();
         try {
             draw(event, level);
@@ -98,6 +102,9 @@ final class FarBandRenderer {
         try {
             for (FarMover m : FarObjects.movers()) {
                 if (!dimension.equals(m.dimension()))
+                    continue;
+                // Drawn as the real thing by the model renderer, or waiting for it a moment
+                if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
                     continue;
                 m.segmentAt(clock, SEG);
                 double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
