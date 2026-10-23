@@ -589,16 +589,26 @@ public final class DragonLook implements FarLook {
 
     @Override
     public void clear() {
-        for (Poses p : sets.values())
-            p.close();
-        sets.clear();
-        wanted.clear();
+        reset();
         failed.clear();
-        standIns.clear();
         lastYaw.clear();
         renderSizes.clear();
         java.util.Arrays.fill(probes, null);
         levelOf = null;
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the pose sets and the live stand-ins go; the
+     * probes the prewarm drew and their render sizes stay, as do the headings last seen (a dragon at rest is drawn
+     * facing the way it last flew) and the looks that would not bake (they would not bake again).
+     */
+    @Override
+    public void reset() {
+        for (Poses p : sets.values())
+            p.close();
+        sets.clear();
+        wanted.clear();
+        standIns.clear();
     }
 
     @Override

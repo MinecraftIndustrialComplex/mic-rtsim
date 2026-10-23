@@ -45,6 +45,15 @@ public interface FarLook {
     void clear();
 
     /**
+     * The far feed started over (a RESET, docs/choices-dh-feed.md DHT70): frees what it baked and placed for the
+     * movers it was drawing, which the feed sends again, and keeps what {@link #prewarm} loaded, so the next bake
+     * pays no cold first draw. Everything ({@link #clear}) by default.
+     */
+    default void reset() {
+        clear();
+    }
+
+    /**
      * Loads, behind the loading screen as the client joins a world, what would make a first bake slow inside a
      * frame (Create's bogey renderer, about 180 ms cold). Nothing by default.
      */

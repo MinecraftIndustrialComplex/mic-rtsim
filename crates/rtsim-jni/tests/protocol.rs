@@ -2073,6 +2073,7 @@ mod dragons {
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
+        assert_eq!(body.age_days, 110, "its age in whole days, as the body reported it (DH-7)");
 
         // Captured, it is abstract again: at its lair, or on a leg in game time.
         let seen = j.far.len();
@@ -2081,6 +2082,7 @@ mod dragons {
         let after = last(&j);
         assert!(j.far.len() > seen, "a change sends a record");
         assert_ne!(after.state, FarState::Body, "{after:?}");
+        assert_eq!(after.age_days, 110, "the body's age, a day not yet passed");
         assert!(
             after.t0 <= j.game_time && after.t0 >= j.game_time - 200,
             "times are game time: {} at {}",

@@ -396,6 +396,18 @@ public final class CarriageLook implements FarLook {
 
     @Override
     public void clear() {
+        reset();
+        failed.clear();
+        BogeyMeshes.clear();
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the bake under way and every carriage's mesh go;
+     * the bogeys' meshes the prewarm drew stay, so the next bake pays no cold first draw, as do the shapes that
+     * would not bake (a hash names its blocks, so they would not bake again).
+     */
+    @Override
+    public void reset() {
         if (job != null) {
             job.abandon();
             job = null;
@@ -404,8 +416,6 @@ public final class CarriageLook implements FarLook {
             m.close();
         meshes.clear();
         wanted.clear();
-        failed.clear();
-        BogeyMeshes.clear();
     }
 
     @Override
