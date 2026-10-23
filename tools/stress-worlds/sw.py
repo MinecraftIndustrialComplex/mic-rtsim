@@ -23,7 +23,23 @@ shift its windows against the others'. Scenes are JSON:
      "idle": 60, "settle": 120, "busy": 300, "sample": 5,
      "unload_reload": 90,                        forceload remove all, wait, add again, wait
      "rescan": true,                             `rtsim district rescan` after the busy window (rtsim arms)
-     "info_max": 12}                             districts to ask for info
+     "info_max": 12,                             districts to ask for info
+     "ticks": {"busy": 6600, ...}}               phases run by game ticks, not seconds (below)
+
+"ticks" names phases that end by game ticks: "settle" (split in halves around the adopts), "busy",
+"unload" and "reload" (the waits), "unloaded" and "reloaded" (the windows). Such a phase ends once
+every arm has run that many game ticks since it reached it (read over RCON), so a slow server still
+holds the periodic detection pass or a simulated call that a wall-time phase would miss (choice
+SG43). Phases not named there keep their seconds.
+
+Every arm also gets a KubeJS script that records two numbers a tick for the `swticks` command (SG44):
+"ring", the server's tick time ring (what `neoforge tps` averages, which ends before
+ServerTickEvent.Post and so leaves out rtsim's Post handlers), and "gap", the wall time from one
+tick's end to the next (after every Post handler, so the whole tick; below 50 ms it includes the wait
+for the next tick). Per window: mean, p50, p95, p99, p99.9 and max of each, the longest ticks by gap
+with their ring times and game ticks, and the longest ticks since the boot. On
+rtsim arms the result holds `/micperf zones` (the engine's snapshot and save zones) and the page
+store's files before and after the final save (SG45).
 """
 import argparse
 import json
@@ -49,8 +65,96 @@ NO_HIPPO = """// Stress-world workaround, not part of the pack (same as the depl
 // 2.1-beta.1's HippocampusExplorationGoal can crash the server ("Ticking entity"). Kept out of every run.
 EntityEvents.spawned('iceandfire:hippocampus', event => { event.cancel() })
 """
+SW_TICKS = """// Stress-world measurement, not part of the pack (sw.py, choice SG44). Each server tick gives two
+// numbers: "ring", the server's own tick time (MinecraftServer.tickTimesNanos, what `neoforge tps`
+// averages), which ends before ServerTickEvent.Post and so leaves out every Post handler (most of
+// rtsim's work); and "gap", the wall time from the end of the previous tick to the end of this one
+// (KubeJS runs at the tail of tickServer, after every Post handler), which holds the whole tick plus
+// the tasks run between ticks and, below 50 ms, the wait for the next tick. Ticks are named by the
+// server's tick count (KubeJS does not expose Level.getGameTime); sw.py adds the game time's offset.
+let swMs = []
+let swGap = []
+let swGt = []
+let swTop = []
+let swLast = -1
+let swPrev = 0
+
+function swPct(a, p) {
+    if (a.length == 0) return 0
+    return a[Math.min(a.length - 1, Math.floor(p * a.length))]
+}
+
+function swFmt(x) { return Math.round(x * 100) / 100 }
+
+function swStats(name, v) {
+    const a = v.slice().sort((x, y) => x - y)
+    let sum = 0
+    let over = [0, 0, 0, 0]
+    for (let i = 0; i < a.length; i++) {
+        sum += a[i]
+        if (a[i] > 50) over[0]++
+        if (a[i] > 100) over[1]++
+        if (a[i] > 250) over[2]++
+        if (a[i] > 1000) over[3]++
+    }
+    return name + ' mean ' + swFmt(a.length ? sum / a.length : 0) + ' p50 ' + swFmt(swPct(a, 0.5))
+        + ' p95 ' + swFmt(swPct(a, 0.95)) + ' p99 ' + swFmt(swPct(a, 0.99)) + ' p999 ' + swFmt(swPct(a, 0.999))
+        + ' max ' + swFmt(a.length ? a[a.length - 1] : 0)
+        + ' over50 ' + over[0] + ' over100 ' + over[1] + ' over250 ' + over[2] + ' over1000 ' + over[3]
+}
+
+ServerEvents.tick(event => {
+    const s = event.server
+    const tc = s.getTickCount()
+    const now = Date.now()
+    if (tc == swLast) return
+    const gap = (swPrev > 0 && tc == swLast + 1) ? now - swPrev : -1
+    swLast = tc
+    swPrev = now
+    if (gap < 0) return
+    const ms = s.getTickTimesNanos()[tc % 100] / 1e6
+    swMs.push(ms)
+    swGap.push(gap)
+    swGt.push(tc)
+    if (swTop.length < 20 || gap > swTop[swTop.length - 1][1]) {
+        swTop.push([tc, gap, ms])
+        swTop.sort((x, y) => y[1] - x[1])
+        if (swTop.length > 20) swTop.pop()
+    }
+})
+
+ServerEvents.commandRegistry(event => {
+    const { commands: Commands } = event
+    event.register(Commands.literal('swticks')
+        .requires(s => s.hasPermission(2))
+        .then(Commands.literal('reset').executes(c => {
+            swMs = []
+            swGap = []
+            swGt = []
+            c.source.sendSystemMessage(Text.of('swticks: reset'))
+            return 1
+        }))
+        .then(Commands.literal('dump').executes(c => {
+            const idx = []
+            for (let i = 0; i < swGap.length; i++) idx.push(i)
+            idx.sort((x, y) => swGap[y] - swGap[x])
+            const top = idx.slice(0, 10).map(i => swFmt(swGap[i]) + '/' + swFmt(swMs[i]) + '@' + swGt[i]).join(' ')
+            const boot = swTop.map(t => swFmt(t[1]) + '/' + swFmt(t[2]) + '@' + t[0]).join(' ')
+            c.source.sendSystemMessage(Text.of('swticks: now ' + c.source.getServer().getTickCount() + ' n ' + swGt.length
+                + ' from ' + (swGt.length ? swGt[0] : -1) + ' to ' + (swGt.length ? swGt[swGt.length - 1] : -1)
+                + ' ' + swStats('ring', swMs) + ' ' + swStats('gap', swGap)
+                + ' top ' + top + ' ; boot ' + boot))
+            return 1
+        })))
+})
+"""
 
 _print_lock = threading.Lock()
+# Phases run by game ticks (choice SG43): each arm's ticks since it reached a phase, by phase and run.
+_tick_lock = threading.Lock()
+_tick_progress = {}
+_tick_arms = 1
+_tick_abort = threading.Event()
 
 
 def log(*a):
@@ -270,6 +374,7 @@ def prep(run, world, rtsim, slot, xmx="6G", world_from_run=None):
         f"-Xms2G\n-Xmx{xmx}\n-XX:+UseG1GC\n-Xlog:gc*:file=gc.log:time,uptime:filecount=2,filesize=20M\n")
     os.makedirs(f"{d}/kubejs/server_scripts", exist_ok=True)
     open(f"{d}/kubejs/server_scripts/zz_stress_no_hippocampus.js", "w").write(NO_HIPPO)
+    open(f"{d}/kubejs/server_scripts/zz_stress_swticks.js", "w").write(SW_TICKS)
     set_rtsim(d, rtsim)
     # SW_INDUSTRY_TOML="rescanBlockEntitiesPerTick = 10000000": lines for the industry server config (an A/B of one setting)
     if os.environ.get("SW_INDUSTRY_TOML"):
@@ -357,23 +462,106 @@ class Server:
         dims = re.findall(r"(\S+): ([\d.]+) TPS \(([\d.]+) ms/tick\)", out)
         return (float(m.group(2)) if m else None), {d: float(ms) for d, _t, ms in dims if d != "Overall:"}
 
-    def window(self, name, seconds, sample):
-        """Measure a window: neoforge tps every `sample` s, CPU per tick (process and server thread)."""
+    def ran_ticks(self, key, g0, n):
+        """Record this arm's game ticks since g0 for phase `key`; True once every arm has run n (SG43)."""
+        g = self.gametime()
+        with _tick_lock:
+            t = _tick_progress.setdefault(key, {})
+            if g is not None and g0 is not None:
+                t[self.run] = g - g0
+            return _tick_abort.is_set() or (len(t) >= _tick_arms and all(v >= n for v in t.values()))
+
+    def wait_phase(self, key, seconds, ticks=None, poll=5):
+        """Wait `seconds`, or with `ticks` until every arm has run that many game ticks since it got here."""
+        if ticks is None:
+            time.sleep(seconds)
+            return
+        g0 = self.gametime()
+        while not self.ran_ticks(key, g0, ticks):
+            time.sleep(poll)
+            self.keep_segments()
+        self.ev("phase", key=key, ticks=ticks, g0=g0, g1=self.gametime())
+
+    def rtsim_files(self):
+        """The page store's files and sizes (a save writes one page segment and a log record, SG45)."""
+        d = f"{self.dir}/world/rtsim"
+        out = {}
+        for dp, _dn, fn in os.walk(d):
+            for f in fn:
+                try:
+                    out[os.path.relpath(os.path.join(dp, f), d)] = os.lstat(os.path.join(dp, f)).st_size
+                except OSError:
+                    pass
+        return out
+
+    def keep_segments(self, now=None):
+        """Copy each page segment not seen before to <run>/segs, before compaction drops it, for
+        segpages.py (SG45). Called from the windows, the tick waits, the reports and the final save."""
+        if not self.rtsim:
+            return
+        now = self.rtsim_files() if now is None else now
+        seen = getattr(self, "_segs_seen", set())
+        for f in now:
+            if f.startswith("seg-") and f not in seen:
+                os.makedirs(f"{self.dir}/segs", exist_ok=True)
+                subprocess.run(["cp", "--reflink=auto", f"{self.dir}/world/rtsim/{f}", f"{self.dir}/segs/{f}"],
+                               check=False)
+                seen.add(f)
+        self._segs_seen = seen
+
+    def swticks(self, what):
+        out = self.cmd(f"swticks {what}")
+        if what != "dump":
+            return out
+        gt = self.gametime()
+        st = r"mean ([\d.]+) p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) p999 ([\d.]+) max ([\d.]+) " \
+             r"over50 (\d+) over100 (\d+) over250 (\d+) over1000 (\d+)"
+        m = re.search(r"swticks: now (\d+) n (\d+) from (-?\d+) to (-?\d+) ring " + st + " gap " + st
+                      + r" top (.*?) ; boot (.*)", out)
+        if not m:
+            return {"raw": out[:500]}
+        g = m.groups()
+        sk = ["mean", "p50", "p95", "p99", "p999", "max", "over50", "over100", "over250", "over1000"]
+        num = lambda v: float(v) if "." in v else int(v)
+        r = {key: num(v) for key, v in zip(["now", "n", "from", "to"], g[:4])}
+        r["ring"] = {key: num(v) for key, v in zip(sk, g[4:14])}
+        r["gap"] = {key: num(v) for key, v in zip(sk, g[14:24])}
+        # tick count to game time: one game tick a server tick here (no /tick freeze or sprint)
+        off = (gt - r["now"]) if gt is not None else 0
+        r["from"], r["to"] = r["from"] + off, r["to"] + off
+        trip = lambda s: [{"gap": float(a), "ring": float(b), "tick": int(c) + off}
+                          for a, b, c in re.findall(r"([\d.]+)/([\d.]+)@(-?\d+)", s)]
+        r["top"], r["boot_top"] = trip(g[24]), trip(g[25])
+        r["gametime_offset"] = off
+        return r
+
+    def window(self, name, seconds, sample, run_ticks=None):
+        """Measure a window: neoforge tps every `sample` s, CPU per tick (process and server thread), each
+        tick's own duration (swticks, SG44). With `run_ticks`, it ends once every arm has run that many (SG43)."""
+        self.swticks("reset")
         g0, c0, th0, t0 = self.gametime(), proc_cpu(self.pid), threads_cpu(self.pid), time.time()
         ms = []
         end = t0 + seconds
-        while time.time() < end:
-            time.sleep(min(sample, max(0.0, end - time.time())))
+        files = self.rtsim_files() if self.rtsim else None
+        while (time.time() < end) if run_ticks is None else not self.ran_ticks(f"window:{name}", g0, run_ticks):
+            time.sleep(min(sample, max(0.0, end - time.time())) if run_ticks is None else sample)
             mspt, dims = self.tps()
             s = {"window": name, "t": time.time(), "mspt": mspt, "load1": load1(), "rss_mb": rss_mb(self.pid)}
+            if self.rtsim:
+                f = self.rtsim_files()
+                if f != files:
+                    self.keep_segments(f)
+                    s["rtsim_files"] = files = f  # a save happened (an autosave, SG45)
             self.res["samples"].append(s)
             if mspt is not None:
                 ms.append(mspt)
         g1, c1, th1, t1 = self.gametime(), proc_cpu(self.pid), threads_cpu(self.pid), time.time()
+        per_tick = self.swticks("dump")
         ticks = (g1 - g0) if (g0 is not None and g1 is not None) else None
         thd = {k: round(th1.get(k, 0) - th0.get(k, 0), 2) for k in th1 if th1.get(k, 0) - th0.get(k, 0) > 0.5}
         st = th1.get("Server thread", 0) - th0.get("Server thread", 0)
-        w = {"seconds": t1 - t0, "ticks": ticks, "tps": ticks / (t1 - t0) if ticks else None,
+        w = {"seconds": t1 - t0, "ticks": ticks, "g0": g0, "g1": g1, "per_tick_ms": per_tick,
+             "tps": ticks / (t1 - t0) if ticks else None,
              "mspt_mean": sum(ms) / len(ms) if ms else None,
              "mspt_samples": ms,
              "cpu_ms_per_tick": 1000 * (c1 - c0) / ticks if ticks else None,
@@ -389,7 +577,9 @@ class Server:
         if not self.rtsim:
             return
         r = {"perf": self.cmd("rtsim perf"), "district_perf": self.cmd("rtsim district perf"),
-             "district_list": self.cmd("rtsim district list")}
+             "district_list": self.cmd("rtsim district list"), "gametime": self.gametime(),
+             "micperf_zones": self.cmd("micperf zones 100"), "rtsim_files": self.rtsim_files()}
+        self.keep_segments(r["rtsim_files"])
         # rtsim's own tick handlers since the last `rtsim perf reset` (choice SG7)
         m = re.search(r"tick cost: (\d+) ticks since the reset; mean ([\d.]+) us, p50 ([\d.]+) us, p99 ([\d.]+) us, "
                       r"p99\.9 ([\d.]+) us, worst ([\d.]+) us \(game tick (-?\d+)\)", r["perf"])
@@ -462,7 +652,9 @@ def scene_run(s, sc, profile_s, barrier=None):
         if i + 1 < len(boxes):
             time.sleep(10)
     s.ev("forceloaded")
-    time.sleep(sc.get("settle", 120) / 2)
+    tk = sc.get("ticks", {})
+    half = tk["settle"] // 2 if "settle" in tk else None
+    s.wait_phase("settle1", sc.get("settle", 120) / 2, half)
     if s.rtsim:
         for b in sc.get("adopt", []):
             x, y, z, r = b[:4]
@@ -470,7 +662,7 @@ def scene_run(s, sc, profile_s, barrier=None):
             out = s.cmd(f"execute in {dim} positioned {x} {y} {z} run rtsim district adopt {r}")
             s.ev("adopt", at=list(b), out=out)
             log(s.run, "adopt", x, z, r, out.strip()[:120])
-    time.sleep(sc.get("settle", 120) / 2)
+    s.wait_phase("settle2", sc.get("settle", 120) / 2, half)
     s.rtsim_report("settled", sc.get("info_max", 12))
     if barrier:
         # the rtsim arm's adopts and reports take longer than nothing (110 s at 200 districts):
@@ -478,7 +670,7 @@ def scene_run(s, sc, profile_s, barrier=None):
         barrier.wait()
     if s.rtsim:
         s.cmd("rtsim perf reset")  # the busy window's tick cost alone (SG7)
-    s.window("busy", sc.get("busy", 300), smp)
+    s.window("busy", sc.get("busy", 300), smp, tk.get("busy"))
     s.rtsim_report("busy", sc.get("info_max", 12))
     if profile_s:
         for f in os.listdir(f"{s.dir}/config/spark"):
@@ -503,19 +695,37 @@ def scene_run(s, sc, profile_s, barrier=None):
             barrier.wait()  # unload together after the rtsim arm's reports and rescan (SG22)
         forceload(s, boxes, add=False)
         s.ev("unloaded")
-        time.sleep(w)
+        s.wait_phase("unload", w, tk.get("unload"))
         s.rtsim_report("unloaded", sc.get("info_max", 12))
-        s.window("unloaded", 30, smp)
+        s.window("unloaded", 30, smp, tk.get("unloaded"))
         forceload(s, boxes, add=True)
         s.ev("reloaded")
-        time.sleep(w)
+        s.wait_phase("reload", w, tk.get("reload"))
         s.rtsim_report("reloaded", sc.get("info_max", 12))
-        s.window("reloaded", 60, smp)
+        s.window("reloaded", 60, smp, tk.get("reloaded"))
+        s.rtsim_report("final", 0)  # the reconciles applied by the end, just before the save (SG46)
     s.res["heap"] = heap(s.pid)
+    before = s.rtsim_files() if s.rtsim else None
     t = time.time()
     out = s.cmd("save-all flush")
     s.res["save_flush_s"] = time.time() - t
     s.res["save_out"] = out[:300]
+    if s.rtsim:
+        # The engine saves on its own step and IO lane after the request (the page store's new segment
+        # and log record land a little later): wait for them, then read its zones (SG45).
+        after, t1 = before, time.time()
+        while after == before and time.time() - t1 < 120:
+            time.sleep(1)
+            after = s.rtsim_files()
+        time.sleep(3)
+        after = s.rtsim_files()
+        s.keep_segments(after)
+        new = {f: n for f, n in after.items() if f not in before}
+        grown = {f: n - before[f] for f, n in after.items() if f in before and n > before[f]}
+        s.res["save_rtsim"] = {"before": before, "after": after, "new": new, "grown": grown,
+                               "written_bytes": sum(new.values()) + sum(grown.values()),
+                               "landed_s": time.time() - t, "micperf_zones": s.cmd("micperf zones 100")}
+        log(s.run, "save: rtsim pages written", s.res["save_rtsim"]["written_bytes"], "bytes", sorted(new))
     s.res["world_bytes"] = du_bytes(f"{s.dir}/world")
     s.res["rtsim_dir_bytes"] = du_bytes(f"{s.dir}/world/rtsim") if os.path.isdir(f"{s.dir}/world/rtsim") else 0
     s.res["data_files"] = {f: os.path.getsize(f"{s.dir}/world/data/{f}") for f in os.listdir(f"{s.dir}/world/data")
@@ -549,6 +759,7 @@ def run_arm(s, sc, profile_s, barrier, delay):
         import traceback
         s.res["error"] = traceback.format_exc()
         log(s.run, "FAILED", e)
+        _tick_abort.set()  # the other arms' tick phases stop waiting for this one
         if barrier:
             barrier.abort()
         try:
@@ -627,6 +838,8 @@ def main():
             prep(run, a.world, arm == "on", a.slot + i, a.xmx, a.world_from_run)
             servers.append(Server(run, a.slot + i, arm == "on"))
         barrier = threading.Barrier(len(servers))
+        global _tick_arms
+        _tick_arms = len(servers)
         ths = [threading.Thread(target=run_arm, args=(s, sc, a.profile, barrier, 5 * i)) for i, s in enumerate(servers)]
         for t in ths:
             t.start()
