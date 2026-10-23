@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.mixin;
 
+import com.minecraftindustrialcomplex.mic_rtsim_create.KineticSyncPending;
 import com.minecraftindustrialcomplex.mic_rtsim_create.StaleKinetics;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
@@ -25,14 +26,30 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * speed from it, then {@code propagateNewSource} from the source gives the part the source's speed, as
  * Create does when a source changes. The re-sync waits one tick, so that every block entity of the chunk
  * that loaded has joined its network first ({@code initialize}, which counts it out of the network's
- * unloaded share). Every other attach is Create's own.
+ * unloaded share). Every other attach is Create's own. A chunk that comes back FULL without loading (it
+ * dropped below FULL and stayed in memory) attaches nothing: {@link StaleKinetics#chunkFull} re-syncs it.
+ *
+ * <p>Also holds the flag of a network update held back while the chunk was not loaded
+ * ({@link KineticSyncPending}, PATCHES.md row 54). Runtime fields only, never saved.
  */
 @Mixin(value = KineticBlockEntity.class, remap = false)
-public abstract class KineticBlockEntityMixin {
+public abstract class KineticBlockEntityMixin implements KineticSyncPending {
     @Unique
     private boolean mic_rtsim$attached;
     @Unique
     private boolean mic_rtsim$deferred;
+    @Unique
+    private boolean mic_rtsim$syncPending;
+
+    @Override
+    public boolean mic_rtsim$syncPending() {
+        return mic_rtsim$syncPending;
+    }
+
+    @Override
+    public void mic_rtsim$setSyncPending(boolean pending) {
+        mic_rtsim$syncPending = pending;
+    }
 
     @Inject(method = "attachKinetics", at = @At("HEAD"), cancellable = true)
     private void mic_rtsim$resyncStale(CallbackInfo ci) {

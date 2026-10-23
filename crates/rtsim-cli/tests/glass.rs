@@ -103,6 +103,9 @@ fn glass_reads_a_create_gametest_save_and_writes_nothing() {
     );
     assert_eq!(glass(&[w, "mill"]).status.code(), Some(64));
     assert_eq!(glass(&[w, "--json", "--graph"]).status.code(), Some(64));
+    // a form given twice is still that form
+    let twice = json(&glass(&[w, "--json", "--json"]));
+    assert_eq!(twice, all);
 
     assert!(before == snapshot(&world), "the save's folder changed");
 }

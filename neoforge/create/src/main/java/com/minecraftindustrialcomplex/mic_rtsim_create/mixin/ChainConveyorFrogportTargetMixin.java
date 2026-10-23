@@ -21,6 +21,12 @@ import org.spongepowered.asm.mixin.injection.At;
  * away. A far conveyor whose chunk does not tick is looked up as nothing: Create then returns, and the port
  * tries again at its next lazy tick. The port's own conveyor ({@code PackagePortTarget.be}) is already
  * guarded by Create ({@code Level.isLoaded}) and lies within {@code packagePortRange} (5) of the port.
+ *
+ * <p>Create deregisters the port from the near conveyor before it looks the far end up, so while the far end
+ * does not tick the port is registered nowhere: its entries leave the near conveyor's routing table (which is
+ * marked changed at each such lazy tick) and packages are not sent to it. Once the far chunk ticks, the next
+ * lazy tick registers it there, as Create would have at once. Create without the guard would load the far
+ * chunk instead; a port whose conveyor's turning matches it never reaches the lookup.
  */
 @Mixin(value = PackagePortTarget.ChainConveyorFrogportTarget.class, remap = false)
 public abstract class ChainConveyorFrogportTargetMixin {

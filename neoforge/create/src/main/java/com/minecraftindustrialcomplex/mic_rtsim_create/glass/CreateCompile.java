@@ -490,9 +490,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             // a network whose members lie outside the district's chunks (another district's, or no
             // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
             // every other district on it (choice SC11), the boiler's district included. Members whose chunk
-            // has not loaded this session are not listed, only counted (KineticNetwork.initFromTE's
-            // unloadedMembers, in getSize): a network with any is crossing too (choice SC44)
-            boolean crossing = net.getSize() > net.members.size();
+            // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
+            // member outside, or a link out of the district from a listed member inside (reachesOut)
+            boolean crossing = false;
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
@@ -509,6 +509,8 @@ final class CreateCompile implements GlassExtractor.Compile {
                     crossing |= outside(m);
                 }
             }
+            if (!crossing)
+                crossing = reachesOut(id, net);
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
@@ -601,6 +603,37 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     /** Whether a block entity lies outside the district's chunks. */
+    /**
+     * Whether a listed member of {@code net} inside the district links to a chunk outside it (choice SC44):
+     * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
+     * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
+     * may hold members that never loaded this session) or to a kinetic block entity of the same network.
+     * Reads only loaded chunks.
+     */
+    private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
+        for (KineticBlockEntity m : net.members.keySet()) {
+            if (!listed(m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+                continue;
+            BlockPos p = m.getBlockPos();
+            for (Direction f : Direction.values())
+                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f)))
+                    return true;
+            BlockState state = m.getBlockState();
+            if (state.getBlock() instanceof IRotate block)
+                for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
+                    if (linksOutTo(id, n))
+                        return true;
+        }
+        return false;
+    }
+
+    private boolean linksOutTo(long id, BlockPos n) {
+        if (!g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(n.getX() >> 4, n.getZ() >> 4)))
+            return !Loaded.at(level, n)
+                    || (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && o.network != null && o.network == id);
+        return false;
+    }
+
     private boolean outside(BlockEntity be) {
         BlockPos p = be.getBlockPos();
         return !g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4));

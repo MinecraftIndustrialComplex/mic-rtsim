@@ -32,15 +32,17 @@ public abstract class RotationPropagatorMixin {
     private static List<BlockPos> mic_rtsim$loadedOnly(List<BlockPos> list, @Local(argsOnly = true) KineticBlockEntity be) {
         if (!(be.getLevel() instanceof ServerLevel level))
             return list;
+        // Create's list is a LinkedList: walk it, never index it
         List<BlockPos> out = null;
-        for (int i = 0; i < list.size(); i++) {
-            BlockPos p = list.get(i);
+        int i = 0;
+        for (BlockPos p : list) {
             if (Loaded.at(level, p)) {
                 if (out != null)
                     out.add(p);
             } else if (out == null) {
                 out = new ArrayList<>(list.subList(0, i));
             }
+            i++;
         }
         return out == null ? list : out;
     }
