@@ -67,9 +67,10 @@ import org.lwjgl.opengl.GL30;
  *       band's boxes have no count of their own, so there only the models keep to it.</li>
  *   <li><b>Live</b>: the nearest {@link #LIVE_DRAGONS} dragons within {@link #LIVE_DISTANCE} blocks are drawn by
  *       their own renderer each frame (smooth wings), the rest from baked frames. In DH's vanilla fade, where
- *       both passes draw, both render it live: one pose placed once a frame and rendered twice (GeckoLib keeps a
- *       re-render at the same time to the pose it has), as a body's copy is, so the fade mixes it toward itself and
- *       the wings beat on up to the hand-over.</li>
+ *       both passes draw, both render it live: one pose placed once a frame and rendered twice at the same time
+ *       (GeckoLib skips the second as a re-render, or runs the animation again at that time when another dragon
+ *       of the species drew between), as a body's copy is, so the fade mixes it toward itself and the wings beat
+ *       on up to the hand-over. A mover whose live render threw is drawn from its baked frames from then on.</li>
  * </ul>
  *
  * <p>Render thread only.
@@ -130,6 +131,8 @@ final class FarModelRenderer {
     private static final Vector3f L0 = new Vector3f(), L1 = new Vector3f();
     /** Bodies whose copy threw: never copied again in this level (vanilla still draws them; they fade as before). */
     private static final Set<Integer> FAILED_COPIES = new HashSet<>();
+    /** Movers whose live render threw: drawn from their baked frames from then on, in this level. */
+    private static final Set<FarKey> FAILED_LIVE = new HashSet<>();
     /** The pass being drawn is in a level lit as the Nether is. */
     private static boolean netherLight;
 
@@ -170,6 +173,7 @@ final class FarModelRenderer {
             DRAWN.clear();
             WAITING.clear();
             FAILED_COPIES.clear();
+            FAILED_LIVE.clear();
         }
         if (OFF || !FarGates.ready())
             return;
@@ -193,6 +197,7 @@ final class FarModelRenderer {
         prewarmed = false;
         WAITING.clear();
         FAILED_COPIES.clear();
+        FAILED_LIVE.clear();
         ITEMS.clear();
         DRAWN.clear();
         POOL.clear(); // their models hold the old world's stand-ins
@@ -291,7 +296,8 @@ final class FarModelRenderer {
             if (it.placeholder || it.body != null)
                 continue;
             models++;
-            if (live >= LIVE_DRAGONS || it.distance >= LIVE_DISTANCE || it.mover.kind() != FarKind.DRAGON)
+            if (live >= LIVE_DRAGONS || it.distance >= LIVE_DISTANCE || it.mover.kind() != FarKind.DRAGON
+                    || FAILED_LIVE.contains(it.mover.key()))
                 continue;
             it.mover.segmentAt(clock, SEG);
             if (place(it.mover, clock, true, it.liveModel.reset()) && it.liveModel.live != null) {
@@ -437,8 +443,8 @@ final class FarModelRenderer {
                 continue;
             if (it.placeholder)
                 continue;
-            // Live in both passes where the band draws it too (DH's vanilla fade): one pose, rendered twice, so the
-            // fade mixes it toward itself and the wings keep beating up to the body's hand-over
+            // Live in both passes where the band draws it too (DH's vanilla fade): one pose, rendered twice at the
+            // same time, so the fade mixes it toward itself and the wings keep beating up to the body's hand-over
             it.drawLive = it.live;
             float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
@@ -660,9 +666,11 @@ final class FarModelRenderer {
                     batch.discard();
                     if (it.body != null)
                         FAILED_COPIES.add(it.body.getId());
+                    else
+                        FAILED_LIVE.add(it.mover.key());
                     if (errors++ < 5)
                         MicRtsimDh.LOGGER.error(it.body != null ? "mic_rtsim_dh: a dragon's copy failed; it is left to vanilla"
-                                : "mic_rtsim_dh: a far model failed live this frame", e);
+                                : "mic_rtsim_dh: a far model failed live; it is drawn baked from now on", e);
                 }
             }
             vertices += batch.vertices;
