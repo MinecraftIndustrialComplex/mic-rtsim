@@ -33,9 +33,10 @@
 //!   (PC95), and a slot laid up gives up its booked voyages (PC92).
 //! - **The switch** (PC101, PC103). Switching the ships off lifts every closure at once
 //!   ([`Ships::lift_closures`]): the ports and their lanes open, blockades and open spells clear
-//!   and the heat drops to 0, with no tape row and no news. A relaunch that falls due while the
-//!   ships are off waits, at the switch-on's catch-up, for its slot's first home-dock stay after
-//!   the world's present.
+//!   and the heat drops to 0, with no tape row and no news. Nothing that falls due while the
+//!   ships are off is decided in the time they missed: at the switch-on's catch-up a port check
+//!   comes again a check interval after the world's present (so ports decide only on live time),
+//!   and a relaunch waits for its slot's first home-dock stay after the world's present.
 
 use rtsim_settle::NodeKind;
 

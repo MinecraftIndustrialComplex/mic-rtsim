@@ -703,9 +703,13 @@ broken, and refounding at found sites.
      state holds. The ships are then frozen (U10), and a module that is not running holds no lane
      of the world closed. Switched on again, every port starts open and the heat builds again from
      the lanes as usual. The ships run the time they missed in one go, their changes reaching the
-     world at its present, and each laid-up slot whose relaunch fell due meanwhile waits for its
-     first stay at its home dock after the switch-on, never relaunching while a player watches
-     there (PC90, PC102, PC103).
+     world at its present, and nothing in that time is decided at a tick the world has passed
+     (PC103): a port check that fell due meanwhile comes again a check interval after the
+     switch-on, so no port is blockaded, closed or reopened, and no news is dated, in the time
+     the ships missed; a laid-up slot whose relaunch fell due waits for its first stay at its home
+     dock after the switch-on; a shut haven's refound and a navy's look are put off to the
+     switch-on; and a port raid in the catch-up is judged against the players there at the
+     switch-on. None of them happens while a player watches (PC90, PC102, PC103).
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
    - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
