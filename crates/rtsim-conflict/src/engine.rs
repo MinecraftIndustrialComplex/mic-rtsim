@@ -34,7 +34,9 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
-use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, Temperament, Trait};
+use rtsim_knowledge::{
+    ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
+};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::{SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, PRICE_ONE};
@@ -3262,7 +3264,8 @@ impl Conflict {
             items += a / MILLI;
         }
         self.stats.items_from_villages += items.max(0) as u64;
-        // The village remembers who robbed it.
+        // The village remembers who robbed it, at the kind's base delta (severity on the knowledge
+        // layer's unit, as every module records its robberies: MZB-36).
         let fa = self.factions[f as usize].actor;
         let va = w.nodes[i].actor;
         let pos = w.nodes[i].pos;
@@ -3270,7 +3273,7 @@ impl Conflict {
             who: fa,
             whom: va,
             kind: ReportKind::Robbery,
-            severity: 2,
+            severity: SEVERITY_UNIT,
             flags: 0,
             at,
             place: Place::new(pos.frame, pos.x, 64, pos.z),
@@ -3774,7 +3777,7 @@ impl Conflict {
                 who: player,
                 whom: va,
                 kind: ReportKind::Rescue,
-                severity: 2,
+                severity: SEVERITY_UNIT,
                 flags: 0,
                 at,
                 place: Place::new(pos.frame, pos.x, 64, pos.z),
@@ -4574,7 +4577,7 @@ impl Conflict {
                 who: k,
                 whom: chief,
                 kind: ReportKind::Killing,
-                severity: 4,
+                severity: SEVERITY_UNIT,
                 flags: 0,
                 at,
                 place: Place::new(pos.frame, pos.x, 64, pos.z),

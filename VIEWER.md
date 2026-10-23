@@ -1255,6 +1255,7 @@ For Deep Time's coordinator to review.
 | `ships.raid` | pirate | district, train or merchant | items | notable when anything was taken, else minor; in a player's view, notable with magnitude 0 |
 | `ships.lost` | ship | doer | cargo | |
 | `ships.back` | ship | home or haven node | crew | |
+| `ships.port` | port node | haven of the port's hottest lane, or 0 | 1 blockaded, 2 closed, 3 reopened, 4 no longer blockaded | notable; at the dock (S8b-4, PC88) |
 | `industry.detected` | district | 0 | chunks | at its first chunks |
 | `industry.learned` | district | 0 | per mille | |
 | `industry.stale` | district | 0 | 1 a revision, 2 an edit | |
