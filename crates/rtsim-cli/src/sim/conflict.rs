@@ -8,11 +8,13 @@
 //! for five days (the player's own act). It is at the refinery until day 8, offline until day 13,
 //! then back. **The plugin** is `rtsim_conflict::synth::FakeConflict`: every record goes through
 //! the boundary codec (docs/boundary.md §9). At home the player defends the refinery against the
-//! director's waves and kills the war chief.
+//! director's waves and kills the war chief, when a band comes while he is home: a calm chief's
+//! feud can stay on Raid after the raid while he is offline (CONFLICT-LIFE.md CL-D59, open).
 //!
 //! Three runs: **ignore** (the envoy's demand goes unmet: scouts, then a war band that meets the
 //! refinery while the player is offline, resolved by the industry engine and applied on load,
-//! capped), **tribute** (the player pays each envoy), **converter** (a catalytic converter half a
+//! capped), **tribute** (the player pays each envoy he meets; one that reaches the refinery while he
+//! is offline runs out unmet, and the feud climbs), **converter** (a catalytic converter half a
 //! day after the demand). A fourth run of **ignore** is saved and restored in the middle and must
 //! end with the same state hashes.
 //!
@@ -22,7 +24,7 @@
 //!
 //! Exit 1 if a check fails.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -173,13 +175,15 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
     );
     // The feud the refinery's smog feeds: the player who runs it (P14, changed).
     let owner = o.smog_owner.clone();
-    let settlers: Vec<Step> = o
-        .rungs
-        .iter()
-        .filter(|r| r.actor == owner)
-        .map(|r| r.step)
-        .collect();
+    let owned: Vec<&Rung> = o.rungs.iter().filter(|r| r.actor == owner).collect();
+    let settlers: Vec<Step> = owned.iter().map(|r| r.step).collect();
     let st = &c.stats;
+    let f = c.faction_of_key(synth::CAMP).expect("camp");
+    let feud = c
+        .feuds_of(f)
+        .iter()
+        .find(|(a, _)| c.actor_name(&o.world, *a) == owner)
+        .and_then(|(a, _)| c.feud_view(synth::CAMP, *a));
     match v {
         Variant::Ignore => {
             let pos = |s: Step| settlers.iter().position(|x| *x == s);
@@ -225,25 +229,111 @@ fn checks_for(o: &Outcome, v: Variant) -> Vec<Check> {
                     o.reloaded_day.unwrap_or(0.0)
                 ),
             );
+            // A band that arrives where the player watches comes in the director's waves and he
+            // kills its chief. None comes while he is home when the feud parks on Raid: each climb
+            // sends its rung's party once and only Siege repeats (K2-8, MOWZIE.md §3.3), and a calm
+            // chief's Invasion threshold (bent up to 40 percent up) can sit above the grievance
+            // this script's smog raises (CONFLICT-LIFE.md CL-D59, open).
+            let invasion = c.rung_threshold(f, Step::Invasion);
+            let parked = st.parties[PartyKind::Invasion.index()] == 0
+                && feud.as_ref().is_some_and(|v| {
+                    v.step == Step::Raid && v.party.is_none() && v.grievance < invasion
+                });
             check(
                 "the director's waves and the war chief",
-                st.raids_watched > 0 && st.chiefs_killed > 0 && st.successions > 0,
-                format!(
-                    "{} watched raid(s), {} wave(s), {} chief(s) killed, {} heir(s) took over",
-                    st.raids_watched, st.waves, st.chiefs_killed, st.successions
-                ),
+                if st.raids_watched > 0 {
+                    st.chiefs_killed > 0 && st.successions > 0
+                } else {
+                    parked
+                },
+                if st.raids_watched > 0 {
+                    format!(
+                        "{} watched raid(s), {} wave(s), {} chief(s) killed, {} heir(s) took over",
+                        st.raids_watched, st.waves, st.chiefs_killed, st.successions
+                    )
+                } else {
+                    format!(
+                        "no war band came while the player was home: the feud stays on Raid at \
+                         grievance {:.1}, under this chief's Invasion threshold {invasion:.1}, and a \
+                         Raid is sent once (CL-D59, open); {owner}'s rungs: {settlers:?}",
+                        feud.as_ref().map_or(0.0, |v| v.grievance)
+                    )
+                },
             );
         }
         Variant::Tribute => {
+            // The scripted player pays every envoy he meets (one materializes only where he
+            // watches). A paid demand settles at once, back to notice, and holds the ladder there
+            // for the respite (K2-10, K2-11). An envoy that reaches the refinery while he is
+            // offline waits there, but its deadline is game time (raids do not wait for the
+            // owner, PLAN.md §10.3): the demand runs out unmet and the feud climbs as the ignore
+            // run's does. So no band marches before such a demand has run out.
+            let met: BTreeSet<&str> = o
+                .plugin
+                .commands
+                .iter()
+                .filter_map(|(_, s)| s.strip_prefix("ENVOY_MATERIALIZE: envoy "))
+                .filter_map(|s| s.split(':').next())
+                .collect();
+            let days = |kind: &str, what: &str| -> Vec<f64> {
+                c.log
+                    .iter()
+                    .filter(|l| l.kind == kind && l.what.contains(what))
+                    .map(|l| l.day)
+                    .collect()
+            };
+            let paid = days("settled", "tribute paid");
+            let unmet = days("refused", "goes unmet");
+            let open = u64::from(feud.as_ref().is_some_and(|v| v.demand.is_some()));
+            let respite = c
+                .cultures
+                .get(c.factions[f as usize].culture)
+                .def
+                .respite_days;
+            let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+            let held = paid.iter().all(|d| {
+                owned
+                    .iter()
+                    .position(|r| near(r.day, *d) && r.step == Step::Notice)
+                    .is_some_and(|i| {
+                        owned
+                            .get(i + 1)
+                            .is_none_or(|n| n.step <= Step::Notice || n.day + 1e-6 >= d + respite)
+                    })
+            });
+            let climb = owned.iter().find(|r| r.step > Step::Envoy).map(|r| r.day);
+            let climbed_after_unmet = climb
+                .is_none_or(|d| d >= OFFLINE_DAY && unmet.first().is_some_and(|u| *u <= d + 1e-6));
+            let list = |v: &[f64]| {
+                v.iter()
+                    .map(|d| format!("{d:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             check(
                 "tribute de-escalates",
                 st.tributes > 0
-                    && st.parties[PartyKind::Raid.index()] == 0
-                    && st.parties[PartyKind::Invasion.index()] == 0
-                    && settlers.iter().all(|s| *s <= Step::Envoy),
+                    && paid.len() as u64 == st.tributes
+                    && met.len() as u64 == st.tributes
+                    && st.demands == st.tributes + st.expired + open
+                    && held
+                    && climbed_after_unmet,
                 format!(
-                    "{} tribute(s) paid, no war band; {owner}'s rungs (the smog's owner): {settlers:?}",
-                    st.tributes
+                    "{} envoy(s) met and {} tribute(s) paid (days {}), each back to notice for the \
+                     {respite}-day respite; {}; {owner}'s rungs (the smog's owner): {settlers:?}",
+                    met.len(),
+                    st.tributes,
+                    list(&paid),
+                    match climb {
+                        None if unmet.is_empty() => "no demand unmet, no band".to_string(),
+                        None => format!("demand(s) unmet on day(s) {}, no band", list(&unmet)),
+                        Some(d) => format!(
+                            "{} demand(s) unmet while the player was offline (day(s) {}), the \
+                             first climb past envoy on day {d:.2}",
+                            st.expired,
+                            list(&unmet)
+                        ),
+                    },
                 ),
             );
         }

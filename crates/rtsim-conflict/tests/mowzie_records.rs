@@ -5,6 +5,8 @@
 //! killers withdrawing its demand (DEMAND_SETTLED outcome 5, ledger 14). And the reports the
 //! conflict records on the knowledge layer's severity unit (MZB-36).
 
+use std::collections::BTreeMap;
+
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
 use rtsim_conflict::engine::{Conflict, Party, Phase, Signal, Target};
@@ -15,6 +17,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::{ActorId, ReportKind, SEVERITY_UNIT};
 use rtsim_settle::NodeKind;
+use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
 fn day(d: f64) -> Tick {
@@ -835,6 +838,16 @@ fn a_robbery_counts_at_the_base_delta() {
     let mut r = Run::new(6, quiet_goblins());
     let ashby = r.w.node_of_key(4).expect("Ashby");
     let (va, fa) = (r.w.nodes[ashby].actor, r.c.factions[r.f as usize].actor);
+    // Ashby's lines stand at their targets on day 0, and a raid takes only the surplus (CL-D58):
+    // 20 items over each, so there is something to take.
+    let m = r.w.market(ashby);
+    let rich: BTreeMap<GoodId, i64> =
+        r.w.goods
+            .ids()
+            .map(|g| (g, m.line(g).target + 20 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+    r.w.stock_from_players(ashby, &rich, Tick(10));
     r.c.order_party(
         &mut r.w,
         synth::CAMP,
