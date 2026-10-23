@@ -800,7 +800,7 @@ fn port_raids_measured() {
     }
 }
 
-/// S8b-3 `a_raid_fills_a_part_full_hold_exactly_to_its_capacity` (PC51). A pirate whose hold
+/// S8b-3 `a_raid_fills_a_part_full_hold_exactly_to_its_capacity` (PC71). A pirate whose hold
 /// already holds goods (taken from a village into its hold by the test, as any held goods) raids
 /// a port: the merged hold, by the hold's own floor-per-good measure, never passes its capacity,
 /// across many part-full holds, and the world's check holds. Port raids alone never meet a part
