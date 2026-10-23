@@ -7,6 +7,7 @@
     "ChainConveyorBlockEntityMixin",
     "ChainConveyorFrogportTargetMixin",
     "ChunkMapPromotionMixin",
+    "GeneratingKineticBlockEntityMixin",
     "GlobalStationMixin",
     "KineticBlockEntityMixin",
     "KineticNetworkInvoker",
