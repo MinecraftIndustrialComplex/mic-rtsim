@@ -949,6 +949,7 @@ fn drive(
         invs.insert(1, inventory(1, &[(SHEET, m)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1019,6 +1020,7 @@ fn a_slow_press_fails_the_window_and_is_derated_and_probed() {
         invs.insert(1, inventory(1, &[(SHEET, m)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1093,6 +1095,7 @@ fn a_controller_switches_with_hysteresis_at_each_sweep() {
         invs.insert(2, inventory(2, &[(MARKER, level)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1127,6 +1130,7 @@ fn a_window_spanning_two_regimes_predicts_their_time_average() {
         invs.insert(2, inventory(2, &[(MARKER, if on(t) { 150 } else { 10 })]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1212,6 +1216,7 @@ fn a_heater_lit_at_the_compile_runs_on_its_burn_then_goes_out() {
         invs.insert(1, inventory(1, &[(BRASS, 2 * k)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1269,6 +1274,7 @@ fn a_heater_takes_fuel_once_its_burn_falls_to_the_threshold() {
         invs.insert(1, inventory(1, &[]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -1403,6 +1409,7 @@ fn coal_view_sweep(c: &mut Compiled, t: u64, coal: i64, tun: &GlassTunables) {
     invs.insert(0, inventory(0, &[(COAL, coal)]));
     let view = View {
         revision: 1,
+        sweep: 0,
         inventories: &invs,
         ports: &ports,
     };
@@ -1490,6 +1497,7 @@ fn the_inverted_flag_is_display_only() {
         invs.insert(2, inventory(2, &[(MARKER, level)]));
         let view = View {
             revision: 1,
+            sweep: 0,
             inventories: &invs,
             ports: &ports,
         };
@@ -2122,6 +2130,9 @@ fn a_not_compilable_end_drops_the_held_compile() {
         Some((2, not_compilable::TOO_BIG))
     );
 }
+
+/// `glass.countedStoresMax`, its default.
+const CMAX: usize = 256;
 
 mod engine_path {
     use super::*;
@@ -4636,7 +4647,7 @@ mod replay_path {
                 .expect("a glass page");
             assert_eq!(gk.id(), D.0);
             assert!(gb == district_page(&e.glass.districts[&D]));
-            let read = |b: &[u8]| read_district_page(b, MAX);
+            let read = |b: &[u8]| read_district_page(b, MAX, CMAX);
             assert!(read(&gb).expect("the page itself").kept().is_some());
             for n in 0..gb.len() {
                 assert!(read(&gb[..n]).is_err(), "cut at {n}");
@@ -4670,7 +4681,7 @@ mod replay_path {
             e.advance_to(Tick(6000));
             let mut dg = e.glass.districts[&D].clone();
             dg.compiled.as_mut().expect("a compile").graph = switched_line().graph();
-            assert!(read_district_page(&district_page(&dg), MAX).is_err());
+            assert!(read_district_page(&district_page(&dg), MAX, CMAX).is_err());
         }
 
         /// `glass.sectionsMax` as the engine's tunables have it.
@@ -4699,7 +4710,7 @@ mod replay_path {
             let compiled = e.glass.districts[&D].compiled.as_ref().expect("a compile");
             assert!(!compiled.sections.is_empty(), "the press is a section");
             // The page as written: its fingerprints are its compile's.
-            let PageRead::Kept(dg) = read_district_page(&gb, MAX).expect("decodes") else {
+            let PageRead::Kept(dg) = read_district_page(&gb, MAX, CMAX).expect("decodes") else {
                 panic!("the page as written is kept");
             };
             assert_eq!(
@@ -4714,18 +4725,18 @@ mod replay_path {
             let mut old = gb.clone();
             old[..4].copy_from_slice(&GLASS_MAGIC_IGL1.to_le_bytes());
             assert!(matches!(
-                read_district_page(&old, MAX),
+                read_district_page(&old, MAX, CMAX),
                 Ok(PageRead::Dropped(_))
             ));
             assert!(matches!(
-                read_district_page(&old[..4], MAX),
+                read_district_page(&old[..4], MAX, CMAX),
                 Ok(PageRead::Dropped(_))
             ));
             // Fingerprints not the compile's: the last byte is the last fingerprint's.
             let mut other = gb.clone();
             *other.last_mut().expect("bytes") ^= 1;
             assert!(matches!(
-                read_district_page(&other, MAX),
+                read_district_page(&other, MAX, CMAX),
                 Ok(PageRead::Dropped(_))
             ));
             for bad in [old, other] {
@@ -4792,10 +4803,16 @@ mod replay_path {
                 .sections
                 .len();
             assert_eq!(n, 2, "a section per press");
-            assert!(matches!(read_district_page(&gb, n), Ok(PageRead::Kept(_))));
-            assert!(matches!(read_district_page(&gb, 64), Ok(PageRead::Kept(_))));
             assert!(matches!(
-                read_district_page(&gb, n - 1),
+                read_district_page(&gb, n, CMAX),
+                Ok(PageRead::Kept(_))
+            ));
+            assert!(matches!(
+                read_district_page(&gb, 64, CMAX),
+                Ok(PageRead::Kept(_))
+            ));
+            assert!(matches!(
+                read_district_page(&gb, n - 1, CMAX),
                 Ok(PageRead::Dropped(_))
             ));
         }
@@ -4880,6 +4897,7 @@ mod replay_path {
                 let inv = invs(b_in, b_out, a(t), bm(t));
                 let view = View {
                     revision: 1,
+                    sweep: 0,
                     inventories: &inv,
                     ports: &ports,
                 };
@@ -4935,6 +4953,7 @@ mod replay_path {
             let ports = GoodVec::new();
             let view = View {
                 revision: 1,
+                sweep: 0,
                 inventories: inv,
                 ports: &ports,
             };
@@ -4957,6 +4976,7 @@ mod replay_path {
             let goods = goods();
             let view = View {
                 revision: 1,
+                sweep: 0,
                 inventories: inv,
                 ports,
             };
@@ -5360,7 +5380,7 @@ mod replay_path {
             assert!(c.window().is_some(), "the district window goes on");
             // Its page keeps the cut.
             let page = district_page(&g.districts[&D]);
-            let PageRead::Kept(dg) = read_district_page(&page, 64).expect("decodes") else {
+            let PageRead::Kept(dg) = read_district_page(&page, 64, CMAX).expect("decodes") else {
                 panic!("kept");
             };
             assert_eq!(dg.compiled.as_ref().expect("compile").sections.len(), 1);
@@ -5414,7 +5434,7 @@ mod replay_path {
             let c = dg.compiled.as_ref().expect("compile");
             assert!(c.rows_len() > 0 && c.unit_state.iter().all(|s| s.last.is_some()));
             let page = district_page(dg);
-            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
                 panic!("kept");
             };
             let r = back.compiled.as_ref().expect("compile");
@@ -5428,7 +5448,7 @@ mod replay_path {
                 let mut old = page.clone();
                 old[..4].copy_from_slice(&magic.to_le_bytes());
                 assert!(matches!(
-                    read_district_page(&old, 64),
+                    read_district_page(&old, 64, CMAX),
                     Ok(PageRead::Dropped(_))
                 ));
             }
@@ -5554,7 +5574,7 @@ mod replay_path {
             assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
             assert!(!c.unit_may_replay(ua), "the recompile keeps the veto");
             let page = district_page(&g.districts[&D]);
-            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
                 panic!("kept");
             };
             assert_eq!(
@@ -5712,7 +5732,7 @@ mod replay_path {
             assert!(!g.districts[&D].away);
             let page = district_page(&g.districts[&D]);
             assert!(matches!(
-                read_district_page(&page, 64),
+                read_district_page(&page, 64, CMAX),
                 Ok(PageRead::Kept(_))
             ));
         }
@@ -6661,7 +6681,7 @@ mod replay_path {
             assert_eq!(comp(&g, D).unit_state, before);
             // The page keeps the join.
             let page = district_page(&g.districts[&D]);
-            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+            let PageRead::Kept(back) = read_district_page(&page, 64, CMAX).expect("decodes") else {
                 panic!("kept");
             };
             assert_eq!(back.joins, g.districts[&D].joins);
@@ -6778,6 +6798,7 @@ mod replay_path {
             let ports = GoodVec::new();
             let view = View {
                 revision: 2,
+                sweep: 0,
                 inventories: &inv,
                 ports: &ports,
             };

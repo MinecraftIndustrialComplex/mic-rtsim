@@ -689,6 +689,7 @@ fn kind_name(c: &Cmd) -> &'static str {
         Cmd::DepositDelta(_) => "IND_DEPOSIT_DELTA",
         Cmd::WritePackage(_) => "IND_WRITE_PACKAGE",
         Cmd::ProbeSet(_) => "IND_PROBE_SET",
+        Cmd::CountSet(_) => "IND_COUNT_SET",
     }
 }
 
@@ -762,7 +763,7 @@ fn names_of(c: &Cmd) -> (DimAt, Vec<(u32, u32)>) {
             p.goods.goods().for_each(|g| goods(g, &mut names));
             None
         }
-        Cmd::ProbeSet(_) => None,
+        Cmd::ProbeSet(_) | Cmd::CountSet(_) => None,
     };
     names.sort_unstable();
     names.dedup();
