@@ -1084,21 +1084,25 @@ fn closures_survive_save_and_restore() {
 /// world half (S8b-4a, `crates/rtsim-world` and `crates/rtsim-travel`, which main does not have:
 /// its edge record has no closed flag), so the world hashes compare the same layout. Printed by
 /// the same scenarios built on that tree (`git archive` of main, the world half patched in).
+/// The world hashes are then re-pinned for MOWZIE.md M2's catalogue, which adds `gold_nugget`
+/// (MZB-58) to every market's encoding: on M2 merged with main 4b207a37, the ships' hashes are
+/// the parent's, and the world's equal the parent's once that good is left out of the catalogue
+/// (MZB-67).
 const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
         0xf921_e4e7_d97f_73b0,
-        0xced9_aa1e_7c85_48da,
+        0x76af_4450_4540_45a9,
     ),
     (
         "sea_havens 1 unattended 96 days",
         0xc111_a5ab_f099_e354,
-        0x72e1_88c5_3087_657e,
+        0x4a37_c3da_c591_88c3,
     ),
     (
         "sea_havens 2 unattended 96 days",
         0x49ce_1716_2f28_027b,
-        0x7a1b_ab1b_37f6_dd1f,
+        0xebc1_caab_4449_231e,
     ),
 ];
 
