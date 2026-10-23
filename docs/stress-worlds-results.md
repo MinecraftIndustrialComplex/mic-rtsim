@@ -1276,14 +1276,19 @@ detection's phases. Dev and test code only.
 
 | Profile of one call | 24 districts (768 factories, 504 chunks, no trains), 15 runs | 200 districts |
 |---|---|---|
-| Detection, one call | min 26 ms, median 37 ms, max 57 ms | to be added |
-| Block entities looked at | 8,970 (4.1 us each at the median) | |
-| Where the time goes | roots 1.0 ms, walks 23.6 ms, commit 1.8 ms (walks are 92%) | |
-| Inclusive, of the samples | `scanChunk` 90%; `FanLinks.links` 57% (`fromHost` 51%, of which `Level.getBlockState` 43%); `describe` 13%; `FanLinks.stops` 12%; capability lookups 14% | |
-| Leaves | `PalettedContainer.get` 20%, `Level.getChunk` 15%, `ImmutableCollections$SetN.probe` 10% | |
+| Detection, one call | min 26 ms, median 37 ms, max 57 ms | min 124 ms, median 128 ms, max 146 ms (10 runs) |
+| Block entities looked at | 8,970 (4.1 us each at the median) | 75,491 (1.7 us each at the median) |
+| Where the time goes | roots 1.0 ms, walks 23.6 ms, commit 1.8 ms (walks are 92%) | roots 4.8 ms, walks 114.5 ms, commit 8.0 ms (walks are 90%) |
+| Inclusive, of the samples | `scanChunk` 90%; `FanLinks.links` 57% (`fromHost` 51%, of which `Level.getBlockState` 43%); `describe` 13%; `FanLinks.stops` 12%; capability lookups 14% | `scanChunk` 89%; `FanLinks.links` 55% (`fromHost` 53%, of which `Level.getBlockState` 40%); `FanLinks.stops` 16%; 5,921 samples |
+| Leaves | `PalettedContainer.get` 20%, `Level.getChunk` 15%, `ImmutableCollections$SetN.probe` 10% | `PalettedContainer.get` 29%, `ImmutableCollections$SetN.probe` 14%, `scanChunk` 9%, `ServerChunkCache.getChunk` 7% |
 
 - The cost is linear in block entities, in the walk. Nothing in it grows with the district count: the
-  commit is 5%, the roots 3%.
+  commit is 6% and the roots 4% at 200 districts, and a block entity costs less at 200 districts (1.7 us)
+  than at 24 (4.1 us, a colder JIT in 15 short runs). One call at 200 districts is 128 ms in this
+  world (75,491 block entities, no trains, the laptop at a load average of about 70); 10.9's 493 to
+  1,088 ms were the same call in the bench's world on a server at 7 to 8 TPS. The profile does not
+  say which part of the gap is the bench world's size and which is its load, only that the walk
+  itself, at 1.7 us a block entity, is not 4 to 8 times slower than it was measured here.
 - Half of it is `FanLinks.fromHost` (the fan air currents of G2-73 to G2-76, de7b4735): every
   belt-like host block entity casts four horizontal rays of the fan reach out from two heights,
   one `getBlockState` per block, to find a fan in another chunk. This world has no fan.
