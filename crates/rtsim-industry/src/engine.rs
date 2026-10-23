@@ -4210,8 +4210,8 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist,
-        from_bytes, persist_struct, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist, from_bytes,
+        persist_struct, to_bytes,
     };
 
     persist_struct!(LineEdge {
