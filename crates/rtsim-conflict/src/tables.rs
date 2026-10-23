@@ -108,7 +108,11 @@ impl Row for FactionRow {
             + self.feuds.iter().filter(|e| e.1.notice.is_some()).count()
                 * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
-            + self.x.camp.as_deref().map_or(0, crate::engine::Camp::heap_bytes)
+            + self
+                .x
+                .camp
+                .as_deref()
+                .map_or(0, crate::engine::Camp::heap_bytes)
     }
 }
 

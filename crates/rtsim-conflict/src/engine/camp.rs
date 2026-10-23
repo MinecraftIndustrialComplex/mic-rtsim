@@ -170,7 +170,10 @@ impl Camp {
     }
 
     fn retired_gen(&self, id: u32) -> Option<u32> {
-        self.retired.iter().find(|r| r.slot == id).map(|r| r.generation)
+        self.retired
+            .iter()
+            .find(|r| r.slot == id)
+            .map(|r| r.generation)
     }
 
     /// Frees slot `i`, remembering the generation it retired and whether at a death.
@@ -696,7 +699,9 @@ impl Conflict {
         }
         let mut lines = Vec::new();
         for (id, generation) in hand {
-            let s = self.camp(f).and_then(|c| c.index(id, generation).map(|i| &c.slots[i]));
+            let s = self
+                .camp(f)
+                .and_then(|c| c.index(id, generation).map(|i| &c.slots[i]));
             let Some(s) = s else {
                 continue;
             };
@@ -873,7 +878,8 @@ impl Conflict {
         for b in &c.bodies {
             let key = (b.slot, b.generation);
             let is_stray = b.flags & BODY_STRAY != 0 || b.generation == 0;
-            if !is_stray && (matched.contains(&key) || held.get(&key).is_none_or(|k| k.uuid != b.uuid))
+            if !is_stray
+                && (matched.contains(&key) || held.get(&key).is_none_or(|k| k.uuid != b.uuid))
             {
                 continue;
             }
@@ -904,7 +910,13 @@ impl Conflict {
             } else if camp.home_count() + camp.away_count() < cap {
                 self.factions[f as usize].camp = Some(camp);
                 self.pool_shift(f, 1.0, at);
-                let id = self.camp_alloc(f, at, if b.body != 0 { b.body } else { body }, SlotState::Owed, Handle::NULL);
+                let id = self.camp_alloc(
+                    f,
+                    at,
+                    if b.body != 0 { b.body } else { body },
+                    SlotState::Owed,
+                    Handle::NULL,
+                );
                 camp = self.factions[f as usize].camp.take().expect("put back");
                 let i = camp.slots.binary_search_by_key(&id, |s| s.id).expect("new");
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
@@ -1088,10 +1100,7 @@ impl Conflict {
             return;
         }
         self.camp_sync(f, at);
-        let Some(i) = self
-            .camp(f)
-            .and_then(|c| c.index(d.slot, d.generation))
-        else {
+        let Some(i) = self.camp(f).and_then(|c| c.index(d.slot, d.generation)) else {
             return;
         };
         self.stats.camp_deaths += 1;
@@ -1203,13 +1212,19 @@ impl Conflict {
                 bad.push(format!("I1: slot {} twice or out of order", s.id));
             }
             if s.state.away() != !s.party.eq(&Handle::NULL) && s.state != SlotState::Dead {
-                bad.push(format!("I1: slot {} {:?} with a wrong party", s.id, s.state));
+                bad.push(format!(
+                    "I1: slot {} {:?} with a wrong party",
+                    s.id, s.state
+                ));
             }
             if s.state.away() && !self.parties.contains(s.party) {
                 bad.push(format!("I1: slot {} is in a party that is gone", s.id));
             }
             if s.line.is_some() && !c.is_in() {
-                bad.push(format!("I4: slot {} has a line in flight with its camp out", s.id));
+                bad.push(format!(
+                    "I4: slot {} has a line in flight with its camp out",
+                    s.id
+                ));
             }
         }
         bad
