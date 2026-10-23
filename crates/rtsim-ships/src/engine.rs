@@ -48,6 +48,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_ecology::infra::Infrastructure;
+use rtsim_industry::reconcile::apportion;
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
@@ -58,6 +59,7 @@ use rtsim_kernel::rows::{PagedArena, PagedRows};
 use rtsim_kernel::wheel::TimingWheel;
 use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament};
 use rtsim_knowledge::{Trait, witnesses};
+use rtsim_settle::NodeKind;
 use rtsim_space::topology::{Iso, SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, Price};
 use rtsim_travel::Medium;
@@ -481,6 +483,12 @@ pub struct ShipStats {
     pub rebuilds: u64,
     pub captains_died: u64,
     pub bored: u64,
+    /// Raids on port villages (§2.4.6a rule 6, PC9).
+    pub port_raids: u64,
+    /// Whole items they carried off.
+    pub items_from_ports: u64,
+    /// Crew they cost, thousandths of a man (the square law's share, as the toll's).
+    pub port_raid_lost_milli: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -513,6 +521,9 @@ pub struct ShipLedger {
     pub districts_landed: BTreeMap<GoodId, i128>,
     /// District loot lost with a sunk pirate before it reached the haven.
     pub districts_lost: BTreeMap<GoodId, i128>,
+    /// Taken from port villages' stocks by pirates (`World::stock_to_held`, into their holds),
+    /// §2.4.6a rule 6. Landed, sunk and still aboard with the rest of a pirate's cargo.
+    pub looted_from_ports: BTreeMap<GoodId, i128>,
     /// Industry goods with no world good of the same name: kept by the pirates, counted here.
     pub districts_unmapped: BTreeMap<String, i64>,
 }
@@ -1153,12 +1164,24 @@ impl Ships {
     pub fn hunt_value(&self, a: f64, medium: Medium, defence: f64) -> f64 {
         let t = &self.tun;
         let d = f64::from(t.medium(medium).merchant_crew) * t.merchant_strength + defence.max(0.0);
+        self.belief_value(self.win_belief(a, d))
+    }
+
+    /// The win chance a pirate of strength `a` believes it has against defence `d`:
+    /// `p = A² / (A² + D²)`, the square law's weights (not a roll).
+    fn win_belief(&self, a: f64, d: f64) -> f64 {
+        let t = &self.tun;
         let (wa, wd) = (
             t.attacker_effectiveness * a * a,
             t.defender_effectiveness * d * d,
         );
-        let p = if wa + wd > 0.0 { wa / (wa + wd) } else { 0.0 };
-        p * t.hunt_loot_value - (1.0 - p) * t.hunt_crew_value
+        if wa + wd > 0.0 { wa / (wa + wd) } else { 0.0 }
+    }
+
+    /// What a pirate puts on a fight it believes it wins with chance `p`: `p x loot - (1 - p) x
+    /// crew`. Positive is worth taking (a win chance above 2/3 with the model's 3 and 6).
+    fn belief_value(&self, p: f64) -> f64 {
+        p * self.tun.hunt_loot_value - (1.0 - p) * self.tun.hunt_crew_value
     }
 
     /// Lane `l` as a pirate of haven `h`, of `medium` and strength `a`, sees it from port: if it
@@ -3141,6 +3164,8 @@ impl Ships {
                 u128::from(tr.train.0),
             )
         } else {
+            // Neither: the port village at the lane's nearer end (§2.4.6a rule 6, PC9).
+            self.port_raid(w, s, lane, at);
             return;
         };
         self.stats.coast_raids += 1;
@@ -3187,6 +3212,153 @@ impl Ships {
             Some(s),
             format!("raids {what} from lane {lane}: {got} items for the haven"),
         );
+    }
+
+    /// The port village a coast raid from lane `lane` would hit (§2.4.6a rule 6, PC40): of the
+    /// lane's two docks the one nearer the pirate's haven dock (straight distance in the dock's
+    /// frame; on a tie, the lane's `a`), if it is a trade port (a village node: never a haven
+    /// node, never a player base); if it is not, the other end if that is; else none. Returns the
+    /// dock's index.
+    fn raid_dock(&self, w: &World, h: u32, lane: u32) -> Option<u32> {
+        let ln = &self.lanes[lane as usize];
+        let hv = &self.havens[h as usize];
+        let from = (hv.dock.0, hv.dock.2);
+        let dist = |d: u32| {
+            self.sdist(
+                self.docks[d as usize].frame,
+                self.docks[d as usize].xz(),
+                from,
+            )
+        };
+        let (near, far) = if dist(ln.b) < dist(ln.a) {
+            (ln.b, ln.a)
+        } else {
+            (ln.a, ln.b)
+        };
+        [near, far].into_iter().find(|&d| {
+            w.nodes
+                .get(self.docks[d as usize].node)
+                .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)))
+        })
+    }
+
+    /// A hunt's coast raid with no player district or train to take (§2.4.6a rule 6, PC9, PC40
+    /// to PC47): pirate `s` raids the port village at the hunted lane's nearer end, if nobody
+    /// watches it and the pirate believes it wins (`p = A² / (A² + D²)` against the village's
+    /// `pop x port_village_defence_per_pop` makes the hunt's own value positive). The square law
+    /// decides the losses, booked as the toll's (PC12); the survivors carry off
+    /// `port_raid_carry` items a man, clipped to the hold's room and to `loot_share_milli` of each
+    /// stock, apportioned over the goods, through `World::stock_to_held`, into the pirate's hold:
+    /// the haven's landing and a sinking's destruction carry them as any held goods.
+    fn port_raid(&mut self, w: &mut World, s: ShipId, lane: u32, at: Tick) {
+        let per_man = i64::from(self.tun.port_raid_carry);
+        if per_man == 0 || !self.tun.lifecycle || self.ships[s].embodied {
+            return;
+        }
+        let Some(h) = self.haven_of(s) else {
+            return;
+        };
+        let Some(d) = self.raid_dock(w, h, lane) else {
+            return;
+        };
+        let dock = self.docks[d as usize].clone();
+        if self.point_in_view(w, dock.frame, dock.xz(), at) {
+            return;
+        }
+        let node = dock.node;
+        let pop = w
+            .settlements
+            .get(w.nodes[node].settlement)
+            .map_or(0, |x| x.pop);
+        let def = f64::from(pop) * self.tun.port_village_defence_per_pop;
+        let a = self.strength(s);
+        if self.belief_value(self.win_belief(a, def)) <= 0.0 {
+            return;
+        }
+        // The fight: certain, as the toll's. The pool makes the men good, the crew pays the rest.
+        let crew = self.ships[s].crew;
+        let lost = (f64::from(crew) * 1000.0 * (1.0 - fight::square_law(a, def, &self.tun))).round()
+            as u32;
+        if lost > 0 {
+            self.stats.port_raid_lost_milli += u64::from(lost);
+            let (_, men) = self.book_loss(s, h, lost, at);
+            if men > 0 && self.lose_if_crewless(w, s, 0, None, at) {
+                return;
+            }
+        }
+        // The loot: what the survivors carry, to the hold's room, at most a share of each stock.
+        let survivors = i64::from(self.ships[s].crew);
+        let room = (i64::from(self.tun.pirate_hold_slots) * 1000
+            - Self::hold_slot_milli(w, &self.ships[s].cargo))
+        .max(0);
+        let m = w.market(node);
+        let caps: Vec<(GoodId, Amount)> = w
+            .goods
+            .ids()
+            .map(|g| (g, m.stock(g) * self.tun.loot_share_milli / 1000))
+            .filter(|e| e.1 > 0)
+            .collect();
+        let weights: Vec<i64> = caps.iter().map(|e| e.1).collect();
+        let reach: i64 = weights.iter().sum();
+        let split = |carry: i64| -> BTreeMap<GoodId, Amount> {
+            let shares = apportion(carry.min(reach), &weights);
+            caps.iter()
+                .zip(shares)
+                .filter(|(_, a)| *a > 0)
+                .map(|(e, a)| (e.0, a))
+                .collect()
+        };
+        let carry = survivors * per_man * MILLI;
+        let mut want = split(carry);
+        let vol = Self::hold_slot_milli(w, &want);
+        if vol > room {
+            want =
+                split((i128::from(carry.min(reach)) * i128::from(room) / i128::from(vol)) as i64);
+        }
+        // Whole-slot rounding can still leave a sliver over: trim goods until it fits.
+        let mut left = room;
+        for (g, a) in want.iter_mut() {
+            let stack = i64::from(w.goods.get(*g).stack.max(1));
+            *a = (*a).min(left * stack + stack - 1);
+            left = (left - *a / stack).max(0);
+        }
+        want.retain(|_, a| *a > 0);
+        let got = w.stock_to_held(node, &want, at);
+        let mut items = 0i64;
+        for (g, a) in &got {
+            *self.ships[s].cargo.entry(*g).or_default() += *a;
+            add(&mut self.ledger.looted_from_ports, *g, *a);
+            items += a / MILLI;
+        }
+        self.stats.port_raids += 1;
+        self.stats.items_from_ports += items.max(0) as u64;
+        let key = w.nodes[node].key;
+        let severity = if items > 0 {
+            Severity::Notable
+        } else {
+            Severity::Minor
+        };
+        self.tape
+            .event_as(
+                kinds::SHIPS_RAID,
+                severity,
+                spot(at, dock.frame, dock.x, dock.z),
+                sid(s),
+                nid(w, node),
+                items,
+            )
+            .text(|| format!("raids port village {key} from lane {lane}: {items} items"));
+        self.note(
+            at,
+            "port raid",
+            Some(s),
+            format!(
+                "raids port village {key} from lane {lane} (defence {def:.1} against {a:.1}): \
+                 {items} items for the haven, {:.2} men lost",
+                f64::from(lost) / 1000.0
+            ),
+        );
+        self.check_hold(w, s, at);
     }
 
     fn leave_lane(&mut self, w: &mut World, s: ShipId, reason: u32, at: Tick) {
@@ -4104,14 +4276,8 @@ impl Ships {
         if toll == 0 {
             return false;
         }
-        self.settle_pool(h, at);
-        let due = self.due_crews(h).saturating_mul(1000);
-        let hv = &mut self.havens[h as usize];
-        let from_pool = toll.min(hv.pool_milli.saturating_sub(due));
-        hv.pool_milli -= from_pool;
-        hv.counts.toll_milli += u64::from(toll);
-        let men = (toll - from_pool).div_ceil(1000);
-        self.ships[s].crew = crew.saturating_sub(men);
+        self.havens[h as usize].counts.toll_milli += u64::from(toll);
+        let (from_pool, men) = self.book_loss(s, h, toll, at);
         if self.log_enabled {
             self.note(
                 at,
@@ -4126,6 +4292,22 @@ impl Ships {
             );
         }
         men > 0 && self.lose_if_crewless(w, s, 0, None, at)
+    }
+
+    /// Books `loss` thousandths of a man lost by pirate `s` of haven `h` (PC12, as the toll and a
+    /// port raid both pay it): the pool ashore makes it good as far as it goes beyond the crews
+    /// its empty slots are owed, and what it lacks comes off the ship's crew in whole men,
+    /// rounded up. Returns the thousandths the pool paid and the men the crew lost.
+    fn book_loss(&mut self, s: ShipId, h: u32, loss: u32, at: Tick) -> (u32, u32) {
+        self.settle_pool(h, at);
+        let due = self.due_crews(h).saturating_mul(1000);
+        let hv = &mut self.havens[h as usize];
+        let from_pool = loss.min(hv.pool_milli.saturating_sub(due));
+        hv.pool_milli -= from_pool;
+        let men = (loss - from_pool).div_ceil(1000);
+        let crew = self.ships[s].crew;
+        self.ships[s].crew = crew.saturating_sub(men);
+        (from_pool, men)
     }
 
     /// A hunt begins from haven `h` (§2.4.6a rule 2, PC2): the haven is fed for `starve_days`
@@ -4357,15 +4539,19 @@ impl Ships {
     /// on the same frame (§2.4.6a rule 5: nothing appears in a player's view).
     fn dock_in_view(&self, w: &World, h: u32, at: Tick) -> bool {
         let hv = &self.havens[h as usize];
-        let dock = (hv.dock.0, hv.dock.2);
+        self.point_in_view(w, hv.frame, (hv.dock.0, hv.dock.2), at)
+    }
+
+    /// Whether a player's interest centre is within `view_radius` of `dock` on `frame` at `at`.
+    fn point_in_view(&self, w: &World, frame: u16, dock: (i32, i32), at: Tick) -> bool {
         self.players.values().any(|v| {
             v.interest
                 .and_then(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
                 .is_some_and(|r| {
-                    r.path.frame == hv.frame
+                    r.path.frame == frame
                         && r.path.t0 <= at
                         && at <= r.path.t1
-                        && self.sdist(hv.frame, (r.path.x0, r.path.z0), dock)
+                        && self.sdist(frame, (r.path.x0, r.path.z0), dock)
                             <= u64::from(self.tun.view_radius)
                 })
         })
@@ -4714,6 +4900,23 @@ impl Ships {
             return Err(format!(
                 "ships hold {held:?}, the world counts {world:?} as held"
             ));
+        }
+        // What pirates took from port villages (§2.4.6a rule 6) is landed at a haven, still
+        // aboard, sunk or taken by a player: the ledger cannot say which hold a good came from
+        // once it is mixed with merchants' loot, so each good's sum bounds it from above.
+        for (g, &took) in &self.ledger.looted_from_ports {
+            let at = |m: &BTreeMap<GoodId, i128>| m.get(g).copied().unwrap_or(0);
+            let out = at(&self.ledger.landed_at_havens)
+                + at(&held)
+                + at(&self.ledger.sunk)
+                + at(&self.ledger.taken_by_players);
+            if took > out {
+                return Err(format!(
+                    "pirates took {took} of good {} from ports, but only {out} is landed, \
+                     aboard, sunk or taken",
+                    g.0
+                ));
+            }
         }
         self.check_indexes()
     }
