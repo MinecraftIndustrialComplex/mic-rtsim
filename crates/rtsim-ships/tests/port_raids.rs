@@ -85,6 +85,20 @@ fn village_nodes(w: &World) -> Vec<usize> {
         .collect()
 }
 
+/// Raises every line of node `node` to its target plus `extra` thousandths, as goods players
+/// brought there (`World::stock_from_players`, so the books stay exact): a rich port whose
+/// surplus a raid can take (PC72), for the tests that need raids big enough to fill a hold.
+fn enrich(w: &mut World, node: usize, extra: i64, at: Tick) {
+    let m = w.market(node);
+    let goods: BTreeMap<_, _> = w
+        .goods
+        .ids()
+        .map(|g| (g, m.line(g).target + extra - m.stock(g)))
+        .filter(|e| e.1 > 0)
+        .collect();
+    w.stock_from_players(node, &goods, at);
+}
+
 fn haven_nodes(s: &Ships) -> Vec<usize> {
     s.havens.iter().map(|h| h.node).collect()
 }
@@ -508,8 +522,10 @@ fn the_far_end_is_tried_when_the_nearer_is_no_trade_port() {
 /// hold.
 #[test]
 fn a_hold_never_passes_its_capacity_and_a_sunk_pirate_loses_its_port_loot() {
-    // A raid's loot is under a slot (about 50 items), so a hold of one slot is what makes the
-    // room bind; at the default 27 no hold ever fills.
+    // A raid's loot is under a slot (at most 60 items), so a hold of one slot is what makes the
+    // room bind; at the default 27 no hold ever fills. A raid takes only a share of a line's
+    // surplus over its target (PC72), so the villages are made rich now and then: the room,
+    // not the surplus, bounds the loot.
     let small = ShipTunables {
         pirate_hold_slots: 1,
         ..ShipTunables::default()
@@ -529,7 +545,13 @@ fn a_hold_never_passes_its_capacity_and_a_sunk_pirate_loses_its_port_loot() {
         let mut fullest = 0;
         let mut done = false;
         let mut op = 0xB0A7_0000 + seed * 1000;
+        let villages = village_nodes(&s.world);
         while t < Tick::from_days(150) {
+            if t.get() % (TICKS_PER_DAY * 24) == 0 {
+                for &v in &villages {
+                    enrich(&mut s.world, v, 128_000, t);
+                }
+            }
             t += TICKS_PER_DAY / 4;
             drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
             for hv in &s.ships.havens {
@@ -803,9 +825,10 @@ fn port_raids_measured() {
 
 /// S8b-3 `a_raid_fills_a_part_full_hold_exactly_to_its_capacity` (PC71). A pirate whose hold
 /// already holds goods (taken from a village into its hold by the test, as any held goods) raids
-/// a port: the merged hold, by the hold's own floor-per-good measure, never passes its capacity,
-/// across many part-full holds, and the world's check holds. Port raids alone never meet a part
-/// full hold (a hunt has one raid and the hold is emptied at home), so this makes one.
+/// a port made rich (PC72: a raid takes from the surplus over the target only): the merged hold,
+/// by the hold's own floor-per-good measure, never passes its capacity, across many part-full
+/// holds, and the world's check holds. Port raids alone never meet a part full hold (a hunt has
+/// one raid and the hold is emptied at home), so this makes one.
 #[test]
 fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
     let tun = ShipTunables {
@@ -841,7 +864,6 @@ fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
         for trial in 0..24u64 {
             // A part-full hold: some of one good, of another, the amounts stepping through
             // every remainder of the stack so rounding goes both ways.
-            let before = s.ships.ship(p).unwrap().cargo.clone();
             let mut want = BTreeMap::new();
             for (k, g) in goods
                 .iter()
@@ -858,9 +880,14 @@ fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
                 *x.cargo.entry(g).or_default() += a;
             }
             x.crew = tun.medium(x.medium).pirate_crew;
+            // The hold as the raid finds it: one already full (the rich port gave the test all
+            // it asked) is not raided (PC70) and stays as it is.
+            let before = x.cargo.clone();
+            enrich(&mut s.world, node, 128_000, t);
             let raids = s.ships.stats.port_raids;
             s.ships.port_raid(&mut s.world, p, lane, t);
-            raided += (s.ships.stats.port_raids - raids) as usize;
+            let fought = s.ships.stats.port_raids > raids;
+            raided += usize::from(fought);
             let x = s.ships.ship(p).unwrap();
             let v: i64 = x
                 .cargo
@@ -871,13 +898,146 @@ fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
                 v <= cap || x.cargo == before,
                 "seed {seed} trial {trial}: {v} over {cap}"
             );
-            filled += usize::from(v > cap * 9 / 10);
+            filled += usize::from(fought && v > cap * 9 / 10);
             // Back to an empty hold for the next trial: what was aboard sinks with nothing
             // owed (it is destroyed through the world's books).
             let cargo = std::mem::take(&mut s.ships.ships.get_mut(p).unwrap().cargo);
             s.world.destroy_held(&cargo);
         }
     }
+    eprintln!("{raided} raids, {filled} holds filled to the brim");
     assert!(raided > 100, "{raided} raids");
     assert!(filled > 20, "{filled} holds filled to the brim");
+}
+
+/// S8b-3 `a_port_raid_takes_only_the_surplus` (PC72). A pirate raids a port some of whose lines
+/// stand above their targets (made so by the test) and some at or below: every line at or below
+/// its target is untouched, and every line above keeps at least its target, coins included.
+#[test]
+fn a_port_raid_takes_only_the_surplus() {
+    let tun = ShipTunables::default();
+    let (mut raided, mut took_coins) = (0, 0);
+    for seed in 1..=8u64 {
+        let mut s = synth::sea_havens(seed, tun.clone());
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut t = Tick::ZERO;
+        let (p, lane, h) = loop {
+            t += TICKS_PER_DAY / 4;
+            assert!(t < Tick::from_days(100), "seed {seed}: no hunt");
+            drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+            let hit = s.ships.havens.iter().enumerate().find_map(|(h, hv)| {
+                hv.ships
+                    .iter()
+                    .find_map(|&p| match s.ships.ship(p)?.pirate.as_ref()?.state {
+                        PState::Hunting { lane, .. } => Some((p, lane, h as u32)),
+                        _ => None,
+                    })
+            });
+            if let Some(hit) = hit {
+                break hit;
+            }
+        };
+        let dock = s.ships.raid_dock(&s.world, h, lane).expect("a port");
+        let node = s.ships.docks[dock as usize].node;
+        let goods: Vec<_> = s.world.goods.ids().collect();
+        for trial in 0..6usize {
+            // Every other good, by the trial, stands up to 40 items over its target.
+            let m = s.world.market(node);
+            let rich: BTreeMap<_, _> = goods
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| (k + trial) % 2 == 0)
+                .map(|(k, &g)| {
+                    let want = m.line(g).target + (k as i64 + 1) * 40_000 / goods.len() as i64;
+                    (g, want - m.stock(g))
+                })
+                .filter(|e| e.1 > 0)
+                .collect();
+            s.world.stock_from_players(node, &rich, t);
+            let m = s.world.market(node);
+            let before: Vec<(i64, i64)> = goods
+                .iter()
+                .map(|&g| (m.stock(g), m.line(g).target))
+                .collect();
+            let x = s.ships.ships.get_mut(p).unwrap();
+            x.crew = tun.medium(x.medium).pirate_crew;
+            let raids = s.ships.stats.port_raids;
+            s.ships.port_raid(&mut s.world, p, lane, t);
+            raided += usize::from(s.ships.stats.port_raids > raids);
+            let m = s.world.market(node);
+            for (k, &g) in goods.iter().enumerate() {
+                let (stock, target) = before[k];
+                let after = m.stock(g);
+                if stock <= target {
+                    assert_eq!(after, stock, "seed {seed} trial {trial} good {k}: at its target");
+                } else {
+                    assert!(
+                        after >= target && after <= stock,
+                        "seed {seed} trial {trial} good {k}: {stock} to {after}, target {target}"
+                    );
+                    took_coins += usize::from(s.world.goods.is_currency(g) && after < stock);
+                }
+            }
+            // Back to an empty hold for the next trial (destroyed through the world's books).
+            let cargo = std::mem::take(&mut s.ships.ships.get_mut(p).unwrap().cargo);
+            s.world.destroy_held(&cargo);
+        }
+    }
+    assert!(raided >= 24, "{raided} raids");
+    assert!(took_coins > 0, "a raid takes coins over the treasury's target");
+}
+
+/// The share of haven sites open (sampled every 24 days), the port raids fought and the villages
+/// whose treasury is under one coin, after `days` of `seed`'s `sea_havens` with `port_raid_carry`
+/// `carry`.
+fn sea_outcome(seed: u64, carry: u32, days: u64) -> (f64, u64, usize) {
+    let tun = ShipTunables {
+        port_raid_carry: carry,
+        ..ShipTunables::default()
+    };
+    let mut s = synth::sea_havens(seed, tun.clone());
+    let mut fake = FakeShips::new(f64::from(tun.view_radius));
+    let (mut open, mut seen) = (0usize, 0usize);
+    let mut t = Tick::ZERO;
+    while t < Tick::from_days(days) {
+        t += TICKS_PER_DAY * 24;
+        drive(&mut s, &mut fake, t, TICKS_PER_DAY / 4);
+        open += s
+            .havens
+            .iter()
+            .filter(|&&h| s.ships.havens[h as usize].shut.is_none())
+            .count();
+        seen += s.havens.len();
+    }
+    let broke = village_nodes(&s.world)
+        .into_iter()
+        .filter(|&v| s.world.market(v).treasury() < 1000)
+        .count();
+    (open as f64 / seen as f64, s.ships.stats.port_raids, broke)
+}
+
+/// S8b-3 `port_raids_leave_the_villages_solvent` (PC73), the cheap cut of the 1,000-year haven
+/// run's regression: when a raid took 600 per mille of every stock, raided villages went broke
+/// and the lane trickles their havens hunted on stopped, so sites open fell from 0.958 with no
+/// port raids to 0.885. On seeds 25, 26 and 30 for 600 days, paired against `port_raid_carry` 0:
+/// raids happen, no village's treasury is under one coin, and the sites open are within 0.05 of
+/// the pair's, on the mean of the seeds. Before PC72 these seeds had 1, 4 and 1 villages broke
+/// and sites open 0.824, 0.984 and 0.680 against 0.968, 0.984 and 1.000.
+#[test]
+fn port_raids_leave_the_villages_solvent() {
+    let seeds = [25u64, 26, 30];
+    let runs = per_seed(&[25, 26, 30, 125, 126, 130], |j| {
+        sea_outcome(j % 100, if j > 100 { 0 } else { 10 }, 600)
+    });
+    let (on, off) = runs.split_at(seeds.len());
+    for (k, seed) in seeds.iter().enumerate() {
+        eprintln!(
+            "seed {seed}: open {:.3} against {:.3}, {} raids, {} villages broke",
+            on[k].0, off[k].0, on[k].1, on[k].2
+        );
+        assert!(on[k].1 > 0, "seed {seed}: raids happen");
+        assert_eq!(on[k].2, 0, "seed {seed}: a village went broke");
+    }
+    let gap: f64 = on.iter().zip(off).map(|(a, b)| b.0 - a.0).sum::<f64>() / seeds.len() as f64;
+    assert!(gap <= 0.05, "sites open {gap:.3} under the pair's: {on:?} {off:?}");
 }
