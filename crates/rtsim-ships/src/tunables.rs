@@ -196,7 +196,9 @@ pub struct ShipTunables {
     pub blockade_check_days: f64,
     /// A reopened port does not close again for this many days, however hot its lanes get
     /// (PC99): its merchants hold their nerve. It may still be blockaded. 0 lets the next check
-    /// close it. TUNABLE 0 (chosen by the S8b-4 sweep).
+    /// close it. TUNABLE 48 (half a game year; the S8b-4 sweep's pick, the smallest of 0, 48, 96
+    /// and 192 whose most closed port spends at most a quarter of 1,000 years closed: 0.145
+    /// against 0.544 at 0).
     pub blockade_min_open_days: f64,
 }
 
@@ -305,7 +307,7 @@ impl Default for ShipTunables {
             blockade_days: 30.0,
             blockade_min_closed_days: 30.0,
             blockade_check_days: 6.0,
-            blockade_min_open_days: 0.0,
+            blockade_min_open_days: 48.0,
         }
     }
 }

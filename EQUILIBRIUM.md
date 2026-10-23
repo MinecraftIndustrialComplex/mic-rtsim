@@ -680,7 +680,7 @@ broken, and refounding at found sites.
      next home-dock stays, never while a player watches the home dock: a watched dock puts the
      relaunch off to the slot's next stay there (PC90). The lanes open again. Goods offered from
      the next boundary take the lane's lag before they land (PC87). A reopened port does not close
-     again for MINOPEN_DAYS (`blockade_min_open_days`, PC99); it may still be blockaded.
+     again for 48 days (`blockade_min_open_days`, PC99); it may still be blockaded.
    - **Why it cannot flap.** The band between a quarter and a half, the month-long average and the
      30-day minimum closure keep a port from closing and reopening faster than about once a season,
      and the minimum open spell after a reopening (PC99) keeps one hunted port from spending most
@@ -723,7 +723,7 @@ broken, and refounding at found sites.
   again. Every sea with prey hunts in every century.
 - A port closes for at least 30 days and only after about a month of blockade; it reopens only
   when no lane of it is above a quarter of the full share (half the closing heat), and once
-  reopened it stays open at least MINOPEN_DAYS.
+  reopened it stays open at least 48 days.
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
