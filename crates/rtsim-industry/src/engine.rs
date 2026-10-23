@@ -46,6 +46,7 @@ use crate::learn::{LinkKey, Sample};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
     Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -180,6 +181,12 @@ pub struct Stats {
     /// Simulated calls at a station with an exchange rule but no known ports: nothing moved
     /// (choice SG33).
     pub exchanges_portless: u64,
+    /// Calls at a station outside every district (IND_TRAIN_UNWATCHED, choice SG50): each ended
+    /// the train's leg.
+    pub unwatched_stops: u64,
+    /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
+    /// (choice SG51).
+    pub self_edges_refused: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -994,6 +1001,7 @@ impl Engine {
             Obs::Port(p) => self.port(at, p),
             Obs::TrainArrived(c) => self.train_arrived(at, c),
             Obs::TrainDeparted(d) => self.train_departed(at, d),
+            Obs::TrainUnwatched(u) => self.train_unwatched(u),
             Obs::Station(s) => {
                 if let Some(d) = s.district {
                     self.district_mut(d).stations.insert(s.station);
@@ -2586,35 +2594,60 @@ impl Engine {
         dist.ports.merge(&p.goods);
     }
 
-    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
-        // Line edges (§8.8).
-        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
-            let e = self.lines.entry((from, c.station)).or_default();
-            let first = e.trips == 0;
-            if first {
-                e.first = at;
+    /// A train's call outside every district (IND_TRAIN_UNWATCHED, choice SG50): the leg it began at
+    /// its last district station ends here. The next district station it reaches is no edge from
+    /// that one, and never an edge from that station to itself.
+    fn train_unwatched(&mut self, u: &UnwatchedStop) {
+        self.last_departure.remove(&u.train);
+        self.stats.unwatched_stops += 1;
+    }
+
+    /// One trip along the edge `(from, c.station)`: `from` is where the train's leg began at `depart`.
+    fn line_edge(
+        &mut self,
+        at: Tick,
+        c: &TrainCall,
+        from: StationId,
+        depart: Tick,
+        cargo: GoodVec,
+    ) {
+        let e = self.lines.entry((from, c.station)).or_default();
+        let first = e.trips == 0;
+        if first {
+            e.first = at;
+        }
+        e.trips += 1;
+        e.cargo.merge(&cargo);
+        e.travel_ticks += at.since(depart);
+        e.last = at;
+        if first && self.tape.is_on() {
+            // At the station it arrived at, or where it left from if that one was not declared.
+            let station = self
+                .stations
+                .get(&c.station)
+                .or_else(|| self.stations.get(&from));
+            if let Some(s) = station {
+                let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
+                let items = item_count(&self.goods, &cargo);
+                self.tape.event(
+                    kinds::INDUSTRY_LINE,
+                    p,
+                    u128::from(from.0),
+                    u128::from(c.station.0),
+                    items,
+                );
             }
-            e.trips += 1;
-            e.cargo.merge(&cargo);
-            e.travel_ticks += at.since(depart);
-            e.last = at;
-            if first && self.tape.is_on() {
-                // At the station it arrived at, or where it left from if that one was not declared.
-                let station = self
-                    .stations
-                    .get(&c.station)
-                    .or_else(|| self.stations.get(&from));
-                if let Some(s) = station {
-                    let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
-                    let items = item_count(&self.goods, &cargo);
-                    self.tape.event(
-                        kinds::INDUSTRY_LINE,
-                        p,
-                        u128::from(from.0),
-                        u128::from(c.station.0),
-                        items,
-                    );
-                }
+        }
+    }
+
+    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
+        // Line edges (§8.8). A leg that ends where it began is no edge (choice SG51): the train went
+        // out and back through stops nothing watched, so its travel time is a round trip's.
+        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
+            if from == c.station {
+                self.stats.self_edges_refused += 1;
+            } else {
+                self.line_edge(at, c, from, depart, cargo);
             }
         }
         if !c.simulated {
@@ -4207,6 +4240,8 @@ mod persist_impls {
         arrivals_departure,
         arrivals_late,
         exchanges_portless,
+        unwatched_stops,
+        self_edges_refused,
     });
     persist_struct!(Books {
         minted,
