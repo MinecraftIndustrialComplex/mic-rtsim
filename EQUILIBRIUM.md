@@ -689,17 +689,18 @@ broken, and refounding at found sites.
      how a blockade lifts by itself.
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
-   - **Built (S8b-4)**, 2026-10-22 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
-     PC80 to PC89; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
+   - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
+     PC80 to PC99; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
      `crates/rtsim-ships/tests/blockade.rs`). Measured over 1,000 years on `synth::sea_havens`, seeds
-     1 to 30, nobody watching: per sea per decade 0.76 blockades and 5.39 closures; closed spells of
-     30.4 days on average and 37 at the longest, never more than 11 days past the last day a lane was
-     above a quarter; 0.86% of port-days closed; 33 of 589 ports ever closed, in 18 of 30 seas; 2.5%
-     fewer hunts than with closures off (86.34 against 88.53 a sea-year); havens open 0.973 of the
-     time (0.980 off); hunts in every decade; never every sea port of a sea closed at once, and no
-     navy ship laid up. A port whose lanes are its haven's main prey closes again 17 to 30 days after a
-     reopening on average and is closed 50% to 64% of the time (seeds 3, 10, 11 and 12, with 79% of the
-     closures). `synth::coastal`, whose navy patrols the lanes, never closes a port.
+     1 to 30, nobody watching, with navy assaults and port raids at their defaults: per sea per
+     decade 1.26 blockades and 0.60 closures; closed spells of 33.2 days on average and 43 at the
+     longest, never more than 12 days past the last day a lane was above a quarter; 0.10% of
+     port-days closed, and 14.5% for the most closed port (54.4% without the 48-day open spell,
+     PC99); 30 of 589 ports ever closed, in 19 of 30 seas; 75.71 hunts a sea-year against 74.15 with
+     closures off; havens open 0.908 of the time (0.885 off); hunts in every century; never every
+     sea port of a sea closed at once, and no navy ship laid up. Every sky port of a sea was closed
+     at once on 2,132 sea-days, in 5 seas (the navy patrols only the sea). `synth::coastal`, whose
+     navy patrols the lanes, never closes a port.
 8. **News travels in the world, never in chat (CL-9).**
    - New report kinds 16 to 20 (`rtsim-knowledge`, reserved for ports and ships): PortRaided (16), Blockade
      begun (17), PortClosed (18), PortReopened (19) and HavenFell (20). `who` is the haven (the navy's
