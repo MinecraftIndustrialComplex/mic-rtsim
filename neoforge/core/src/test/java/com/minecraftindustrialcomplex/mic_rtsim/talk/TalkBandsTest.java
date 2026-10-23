@@ -104,6 +104,15 @@ class TalkBandsTest {
     }
 
     @Test
+    void anItemTheHolderDidIsNeverToldAsOther() {
+        assertEquals(true, TalkTuning.tellable(TalkRecords.BY_US, "by_us"));
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US, "other"), "\"Word is us attacked Oakford\" is dropped");
+        assertEquals(false, TalkTuning.tellable(TalkRecords.BY_US | TalkRecords.TO_YOU, "other"));
+        assertEquals(true, TalkTuning.tellable(TalkRecords.TO_US, "other"));
+        assertEquals(true, TalkTuning.tellable(0, "other"));
+    }
+
+    @Test
     void everyReportKindHasItsNameAndTheGapsHaveNone() {
         String[] expected = {null, "assault", "killing", "robbery", "theft", "trade", "rescue", "resident_assault",
                 "resident_killing", "encroachment", "feud", "pact_sworn", "pact_broken", "raid", "fell", null,

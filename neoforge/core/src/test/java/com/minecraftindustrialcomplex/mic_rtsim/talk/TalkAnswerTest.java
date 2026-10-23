@@ -65,4 +65,26 @@ class TalkAnswerTest {
         assertEquals(0xFFFF_FFFFL, t.gluttedRatio());
         assertEquals(0, t.news());
     }
+
+    /** A village holder's own side is itself; a caravan's home is not on the wire, so it is what the answer flags as "us" (TK36). */
+    @Test
+    void theHoldersOwnVillagesAreItselfOrWhatTheEngineFlaggedAsUs() {
+        Ref home = new Ref(TalkRecords.C_VILLAGE, 0, 3, 77, 0, 0, 0);
+        Ref other = new Ref(TalkRecords.C_VILLAGE, 0, 3, 88, 0, 0, 0);
+        Ref thief = new Ref(TalkRecords.C_PLAYER, 0, 0, 1, 2, 0, 0);
+        News toUs = new News(3, 1, 0, TalkRecords.TO_US, 5, 0, 0, thief, home, Ref.NONE);
+        News byUs = new News(1, 1, 0, TalkRecords.BY_US, 5, 0, 0, home, other, Ref.NONE);
+        News third = new News(1, 1, 0, 0, 5, 0, 0, other, other, home);
+        Facts f = new Facts(1, TalkRecords.F_HOLDER, 0, 0, 0, 0, 0, List.of(toUs, third));
+        TalkAnswer a = TalkAnswer.resolve(f, (k, id) -> null);
+        assertEquals(java.util.Set.of(5L), a.ownVillages(com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.VILLAGE, 5),
+                "a village holder is its own side and nothing else");
+        assertEquals(java.util.Set.of(77L), a.ownVillages(com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.CARAVAN, 9),
+                "a caravan's side is the village flagged TO_US, not a third party near it");
+        TalkAnswer b = TalkAnswer.resolve(new Facts(1, TalkRecords.F_HOLDER, 0, 0, 0, 0, 0, List.of(byUs, third)), (k, id) -> null);
+        assertEquals(java.util.Set.of(77L), b.ownVillages(com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.CARAVAN, 9),
+                "or the one that did it, flagged BY_US");
+        assertEquals(java.util.Set.of(), b.ownVillages(com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder.CARAVAN, 9).stream()
+                .filter(v -> v == 88).collect(java.util.stream.Collectors.toSet()));
+    }
 }

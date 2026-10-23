@@ -148,6 +148,15 @@ public final class TalkTuning {
         return out;
     }
 
+    /**
+     * Whether an item that would be told from {@code chosen} is told at all. One the holder did (BY_US) is
+     * told only from its own perspective ({@code by_us}) or {@code us}: with neither it would fall to
+     * {@code other} and read "Word is us attacked Oakford", so it is dropped (TK57).
+     */
+    public static boolean tellable(int talkFlags, String chosen) {
+        return !(chosen.equals("other") && (talkFlags & TalkRecords.BY_US) != 0);
+    }
+
     /** The first perspective of {@link #perspectives}: the one a news item is told from when its topic has lines. */
     public static String perspective(int talkFlags) {
         return perspectives(talkFlags).get(0);

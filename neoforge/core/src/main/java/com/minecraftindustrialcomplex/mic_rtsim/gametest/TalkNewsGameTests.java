@@ -9,6 +9,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.talk.Names;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Refs;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Talk;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkAsks;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -180,11 +181,13 @@ public final class TalkNewsGameTests {
         Refs.force = Naming.Force.NAMED;
         Villager[] villager = new Villager[1];
         Hunt[] hunt = new Hunt[1];
+        long[] day0 = new long[1];
 
         helper.startSequence()
                 .thenExecute(() -> villager[0] = farmer(helper, 5.5, 5.5))
                 .thenWaitUntil(() -> check("the engine knows the village", e.phase1Sentiment(v.id, ben.getUUID()) != Integer.MIN_VALUE))
                 .thenExecute(() -> {
+                    day0[0] = level.getGameTime() / Talk.DAY;
                     check("the villager is in the village", RtsimApi.villageOf(villager[0]) == v);
                     e.talkReport(v.id, ROBBERY, SEVERITY, 0, TalkActor.player(alex.getUUID()), TalkActor.village(v.id),
                             meet.getX() + 60, meet.getZ(), AGO);
@@ -201,8 +204,10 @@ public final class TalkNewsGameTests {
                     check("the line is the server's English, not its key: " + english(said), !english(said).contains("mic_rtsim."));
                     check("one line per talk: " + hunt[0].keys.size() + " lines in " + hunt[0].talks + " talks",
                             hunt[0].keys.size() == hunt[0].talks);
-                    // Once a game day, 3 each; the hunt can span a day boundary of the shared game time.
-                    check("Ben was credited: " + minorPositive(villager[0], ben.getUUID()), minorPositive(villager[0], ben.getUUID()) >= 3);
+                    // 3 once a game day however many talks; a hunt can span a day boundary of the shared game time.
+                    long days = level.getGameTime() / Talk.DAY - day0[0] + 1;
+                    check("Ben was credited once a day (" + days + " day(s) spanned): " + minorPositive(villager[0], ben.getUUID()),
+                            minorPositive(villager[0], ben.getUUID()) == 3 * days);
                     record("talk news", "line", said.key() + " = " + english(said));
                     record("talk news", "talks until it came up", hunt[0].talks);
                     record("talk news", "lines heard", hunt[0].keys);
@@ -241,7 +246,8 @@ public final class TalkNewsGameTests {
                 })
                 .thenExecute(() -> {
                     check("the villager is in the village", RtsimApi.villageOf(villager[0]) == here);
-                    // At the other village's side of the world, well away from the villager.
+                    // The report's place is by the talker, 380 blocks from the robber: a described ref at the
+                    // report's own place drops its locator (TK29), and this one is not there.
                     e.talkReport(here.id, ROBBERY, SEVERITY, 0, TalkActor.village(east.id), TalkActor.village(here.id),
                             meet.getX() + 20, meet.getZ(), AGO);
                     hunt[0] = new Hunt(level, ben, villager[0], ".news.robbery.");
@@ -274,17 +280,31 @@ public final class TalkNewsGameTests {
         BlockPos meet = BlockPos.containing(RtsimTests.centre(helper));
         Village v = RtsimTests.adoptArenaLive(helper, "human", "minecraft:village_plains", meet, HALF, 20);
         FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(7.5, 2, 7.5)), "talk_mute_ben");
-        arm(helper, List.of(ben), List.of(v));
+        FakePlayers.Hearer kid = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(3.5, 2, 7.5)), "talk_mute_kid");
+        arm(helper, List.of(ben, kid), List.of(v));
         TalkAsks.mute = true;
         Villager[] villager = new Villager[1];
+        Villager[] child = new Villager[1];
         long[] before = new long[3]; // open, timed out, written to the engine
 
         helper.startSequence()
-                .thenExecute(() -> villager[0] = farmer(helper, 5.5, 5.5))
+                .thenExecute(() -> {
+                    villager[0] = farmer(helper, 5.5, 5.5);
+                    child[0] = helper.spawn(net.minecraft.world.entity.EntityType.VILLAGER, new Vec3(4.5, 2, 5.5));
+                    child[0].setAge(-24_000);
+                    child[0].setPersistenceRequired();
+                })
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
                     check("the villager has a holder", RtsimApi.villageOf(villager[0]) == v);
+                    // A child is in the village but has no holder: it speaks at once and opens no ask (TK16).
+                    check("the child is a baby in the village", child[0].isBaby() && RtsimApi.villageOf(child[0]) == v);
+                    check("a child has no holder", Talkers.find(child[0], kid).holder(child[0]) == null);
                     before[0] = TalkAsks.INSTANCE.openCount();
+                    click(kid, child[0], true);
+                    check("the child spoke at once: " + keys(kid), kid.heard.size() == 1);
+                    check("and opened no ask", TalkAsks.INSTANCE.openCount() == before[0]);
+                    check("and none of its lines is news: " + keys(kid), !Said.of(kid.heard.get(0)).key().contains(".news."));
                     before[1] = TalkAsks.INSTANCE.timedOut;
                     before[2] = TalkAsks.INSTANCE.flushed;
                     click(ben, villager[0], true);

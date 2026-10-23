@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.News;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Ref;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.QuartPos;
 import net.minecraft.locale.Language;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -14,6 +15,7 @@ import net.minecraft.tags.BiomeTags;
 import net.minecraft.tags.TagKey;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.common.Tags;
 
 import java.util.LinkedHashMap;
@@ -36,15 +38,25 @@ import java.util.random.RandomGenerator;
 public final class Refs {
     private Refs() {}
 
-    /** Test hook (TK52): force every ref that has a name to be named, or every ref that has a description to be described. */
+    /**
+     * Test hook (TK52): force every ref that has a name to be named, or every ref that has a description to be
+     * described. It overrides {@code own} too (the holder's own place is then named or described, not "us"
+     * or always named), so it is for tests only.
+     */
     public static volatile Naming.Force force = Naming.Force.NONE;
 
     /**
      * What telling a ref needs: the talker's level and block, the listener, the holder (or null), the answer
-     * (for the dictionary names) and the talk's random.
+     * (for the dictionary names), the talk's random and the villages that are the holder's own side
+     * ({@link TalkAnswer#ownVillages}; the short constructor works them out).
      */
     public record Env(ServerLevel level, BlockPos talker, UUID listener, TalkHolder holder, TalkAnswer answer,
-                      RandomGenerator rnd) {}
+                      RandomGenerator rnd, java.util.Set<Long> ownVillages) {
+        public Env(ServerLevel level, BlockPos talker, UUID listener, TalkHolder holder, TalkAnswer answer, RandomGenerator rnd) {
+            this(level, talker, listener, holder, answer, rnd,
+                    answer.ownVillages(holder == null ? 0 : holder.kind(), holder == null ? 0 : holder.id()));
+        }
+    }
 
     // ---- language ------------------------------------------------------------------------------
 
@@ -88,8 +100,7 @@ public final class Refs {
             default:
                 break;
         }
-        boolean own = holderSide || (env.holder() != null && env.holder().kind() == TalkHolder.VILLAGE
-                && r.cls() == TalkRecords.C_VILLAGE && r.a() == env.holder().id());
+        boolean own = holderSide || (r.cls() == TalkRecords.C_VILLAGE && env.ownVillages().contains(r.a()));
         if (us && own)
             return english(ROOT + "ref.us");
         boolean named = switch (force) {
@@ -204,13 +215,20 @@ public final class Refs {
     }
 
     /**
-     * The terrain name ({@code loc.<name>}) of the biome at a block, or null. {@code getBiome} reads the
-     * chunk's biomes when the chunk is loaded to that status and otherwise the generator's biome source: it
-     * never loads a chunk (LevelReader.getNoiseBiome asks {@code getChunk(..., BIOMES, false)}, and falls back
-     * to {@code getUncachedNoiseBiome}; checked in the 1.21.1 sources).
+     * The biome at a block without loading a chunk or waiting for one. {@code ServerLevel.getBiome} asks
+     * {@code getChunk(..., BIOMES, false)}, which waits on a generation future when a chunk is half made; so
+     * a chunk that is loaded (full) gives its own biome, and anything else the generator's biome source
+     * ({@code getUncachedNoiseBiome}, which reads no chunk). Checked in the 1.21.1 sources.
      */
+    static Holder<Biome> biomeAt(ServerLevel level, BlockPos pos) {
+        int qx = QuartPos.fromBlock(pos.getX()), qy = QuartPos.fromBlock(pos.getY()), qz = QuartPos.fromBlock(pos.getZ());
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        return chunk != null ? chunk.getNoiseBiome(qx, qy, qz) : level.getUncachedNoiseBiome(qx, qy, qz);
+    }
+
+    /** The terrain name ({@code loc.<name>}) of the biome at a block, or null. */
     static String terrainAt(ServerLevel level, BlockPos pos) {
-        Holder<Biome> biome = level.getBiome(pos);
+        Holder<Biome> biome = biomeAt(level, pos);
         for (Map.Entry<String, List<TagKey<Biome>>> e : TERRAIN.entrySet())
             for (TagKey<Biome> tag : e.getValue())
                 if (biome.is(tag))
@@ -225,7 +243,8 @@ public final class Refs {
      */
     static String locator(Env env, int dx, int dz) {
         BlockPos at = env.talker();
-        int y = Mth.clamp(at.getY(), env.level().getMinBuildHeight(), env.level().getMaxBuildHeight() - 1);
+        // At sea level, not the talker's height: a talker in a mine would describe every far place as a cave.
+        int y = Mth.clamp(env.level().getSeaLevel(), env.level().getMinBuildHeight(), env.level().getMaxBuildHeight() - 1);
         String terrain = terrainAt(env.level(), new BlockPos(at.getX() + dx, y, at.getZ() + dz));
         String land = terrain == null || !has(ROOT + "loc." + terrain) ? null : english(ROOT + "loc." + terrain);
         if (TalkTuning.distance(dx, dz) < TalkTuning.HERE)

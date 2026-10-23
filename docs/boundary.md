@@ -1998,7 +1998,7 @@ it does to the knowledge tables, are TK40.
   once, by the ref's class: dictionary 5 for a village, camp or chief (the culture), dictionary 3 for a
   dragon, lair or ship (the body entity id), dictionary 2 for the goods. The talk reads it as a
   `TalkAnswer`; a talker's candidates see only `api/TalkFacts` (no wire types).
-- **Holders.** A villager of an adopted village asks as holder kind 1 with Java's village id; a wandering
+- **Holders.** A villager (not a child, TK16) of an adopted village asks as holder kind 1 with Java's village id; a wandering
   trader that is a live `human_caravan` group's member as kind 2 with the group's agent. Kinds 3 and 4 are
   not asked by Java yet (TK38).
 - **Test hooks.** `TalkReport` is `NativeEngine.talkReport(...)` (`NativeCodec.Orders.talkReport`), with
