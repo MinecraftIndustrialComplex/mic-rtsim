@@ -491,9 +491,9 @@ impl Ships {
             return;
         }
         let ok = if want {
-            w.close_lane(edge, at)
+            w.close_lane(edge, world_at(w, at))
         } else {
-            w.open_lane(edge, at)
+            w.open_lane(edge, world_at(w, at))
         };
         debug_assert!(ok, "lane {l}'s edge {edge} is a ships' lane");
         self.note(
@@ -591,7 +591,10 @@ impl Ships {
 
     /// A laid-up slot's relaunch is due (PC90). Its service laid up again since: it stays in port
     /// ([`Self::respawn`] lays it up). A player watching where it would appear: it waits for the
-    /// slot's next stay at its home dock, and again, until nobody watches. Otherwise the new ship
+    /// slot's next stay at its home dock, and again, until nobody watches. Due at a time the
+    /// world has already passed (the ships were switched off over it, and this is the switch-on's
+    /// catch-up: C25, PC103): the areas of that time are gone, so it waits for the slot's first
+    /// stay at its home dock after the world's present and is judged then. Otherwise the new ship
     /// takes the slot.
     pub(crate) fn relaunch(&mut self, w: &mut World, s: ShipId, at: Tick) {
         let Some(x) = self.ships.get(s) else {
@@ -602,19 +605,20 @@ impl Ships {
             return;
         }
         let laid = x.service.is_some_and(|v| self.service_laid_up(v));
-        if !laid && self.relaunch_in_view(w, s, at) {
-            let back = self.relaunch_time(s, at + 1);
+        let missed = w.now() > at;
+        if !laid && (missed || self.relaunch_in_view(w, s, at)) {
+            let back = self.relaunch_time(s, if missed { w.now() } else { at + 1 });
             if let Status::Lost { back: b, .. } = &mut self.ships[s].status {
                 *b = back;
             }
             self.stats.relaunches_put_off += 1;
             self.wait_to_relaunch(s, back);
-            self.note(
-                at,
-                "relaunch_put_off",
-                Some(s),
-                "a player watches its home dock: it waits for its next stay there".into(),
-            );
+            let why = if missed {
+                "it fell due while the ships were switched off: it waits for its next stay there"
+            } else {
+                "a player watches its home dock: it waits for its next stay there"
+            };
+            self.note(at, "relaunch_put_off", Some(s), why.into());
             return;
         }
         self.respawn(w, s, at);

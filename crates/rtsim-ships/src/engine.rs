@@ -735,6 +735,16 @@ fn tick_of(t: i64) -> Tick {
     Tick(t.max(0) as u64)
 }
 
+/// When a change the ships make at `at` reaches the world (its markets, stocks, lanes): at `at`,
+/// or at the world's present when the world has already passed it. That happens only in the
+/// switch-on's catch-up (C25, U10: the world ran on while the ships were off, and they run their
+/// missed events at once), and the world cannot change its past: a market stepped at a tick
+/// before its anchor broke the debug build and misbooked the flows (PC103). Elsewhere the world
+/// is run to each event's time first, so this is `at`.
+fn world_at(w: &World, at: Tick) -> Tick {
+    at.max(w.now())
+}
+
 /// An event's place for the archive: a block position, the frame being the dimension.
 fn spot(at: Tick, frame: u16, x: i32, z: i32) -> At {
     At::new(at.0, u32::from(frame), x, z)
@@ -1714,7 +1724,7 @@ impl Ships {
             dock_quanta: q.covering(wait.max(1)),
             cap_slot_milli: cap,
         };
-        let e = w.add_lane(spec, at);
+        let e = w.add_lane(spec, world_at(w, at));
         self.lanes[l as usize].edge = e;
     }
 
@@ -2067,7 +2077,7 @@ impl Ships {
         let node = hv.node;
         let mut ok = true;
         for dir in 0..2u8 {
-            ok &= w.set_lane_hazard(edge, dir, node, share, delay, at);
+            ok &= w.set_lane_hazard(edge, dir, node, share, delay, world_at(w, at));
         }
         if ok {
             // The heat follows the applied share (PC20): brought up to now under the old share,
@@ -3044,7 +3054,7 @@ impl Ships {
         }
         let cargo = x.cargo.clone();
         let quotes = x.quotes.clone();
-        let stocked = w.land_held(p.to, Some(p.from), &cargo, &quotes, at);
+        let stocked = w.land_held(p.to, Some(p.from), &cargo, &quotes, world_at(w, at));
         let x = &mut self.ships[id];
         for (g, a) in &stocked {
             if let Some(c) = x.cargo.get_mut(g) {
@@ -3699,7 +3709,7 @@ impl Ships {
         }
         // The loot: what the survivors carry, to the hold's room, at most a share of each surplus.
         let want = self.port_loot(w, s, &caps, room, i64::from(self.ships[s].crew));
-        let got = w.stock_to_held(node, &want, at);
+        let got = w.stock_to_held(node, &want, world_at(w, at));
         for (g, a) in &got {
             *self.ships[s].cargo.entry(*g).or_default() += *a;
             add(&mut self.ledger.looted_from_ports, *g, *a);
@@ -3867,7 +3877,7 @@ impl Ships {
         let cargo = std::mem::take(&mut self.ships[s].cargo);
         self.ships[s].quotes.clear();
         if !cargo.is_empty() {
-            let stocked = w.land_held(node, None, &cargo, &BTreeMap::new(), at);
+            let stocked = w.land_held(node, None, &cargo, &BTreeMap::new(), world_at(w, at));
             let mut left = cargo.clone();
             for (g, a) in &stocked {
                 add(&mut self.ledger.landed_at_havens, *g, *a);
@@ -3893,7 +3903,7 @@ impl Ships {
             .map(|p| std::mem::take(&mut p.district_loot))
             .unwrap_or_default();
         if !dl.is_empty() {
-            for (g, a) in w.stock_from_players(node, &dl, at) {
+            for (g, a) in w.stock_from_players(node, &dl, world_at(w, at)) {
                 add(&mut self.ledger.districts_landed, g, a);
             }
         }
