@@ -27,22 +27,32 @@ fn per_seed<T: Send>(seeds: &[u64], f: impl Fn(u64) -> T + Sync) -> Vec<T> {
     per_seed_on(6, seeds, f)
 }
 
-/// [`per_seed`] on up to `threads` threads (the long run's sixty jobs take more).
+/// [`per_seed`] on up to `threads` threads (the long runs' many jobs take more), each thread
+/// taking the next job as it finishes one; the results in seed order.
 fn per_seed_on<T: Send>(threads: usize, seeds: &[u64], f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, threads));
-    let chunk = seeds.len().div_ceil(threads).max(1);
-    std::thread::scope(|sc| {
-        let hs: Vec<_> = seeds
-            .chunks(chunk)
-            .map(|c| {
-                let f = &f;
-                sc.spawn(move || c.iter().map(|&s| f(s)).collect::<Vec<T>>())
+    let next = AtomicUsize::new(0);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads.min(seeds.len()))
+            .map(|_| {
+                let (f, next) = (&f, &next);
+                sc.spawn(move || {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&s) = seeds.get(i) else { break done };
+                        done.push((i, f(s)));
+                    }
+                })
             })
             .collect();
         hs.into_iter()
             .flat_map(|h| h.join().expect("a seed's run panicked"))
             .collect()
-    })
+    });
+    out.sort_by_key(|&(i, _)| i);
+    out.into_iter().map(|(_, x)| x).collect()
 }
 
 fn seeds() -> Vec<u64> {
@@ -1208,8 +1218,9 @@ fn coast_havens_cycle_with_assaults() {
         .iter()
         .flat_map(|&s| [2 * s, 2 * s + 1])
         .collect();
+    let cause = ShipTunables::default().assault_cause_days;
     let runs = per_seed(&jobs, |j| {
-        coast_cycle(j / 2, if j % 2 == 0 { 96 } else { 0 }, 30)
+        coast_cycle(j / 2, if j % 2 == 0 { cause } else { 0 }, 30)
     });
     for cy in &runs {
         eprintln!(
@@ -1252,6 +1263,12 @@ struct Life {
     min_open: usize,
     /// The longest a site stood shut at a census, in days (a spell still running counts).
     longest_shut: f64,
+    /// Days with every site shut at once, read every quarter day, and the longest such spell.
+    all_shut_days: f64,
+    longest_all_shut: f64,
+    /// Spells of every site shut longer than the refound base plus one retry, with the looks
+    /// that found no prey during each (the bar's exception).
+    long_all_shut: Vec<(f64, u32)>,
     /// Hunts in each window (a century, or a decade in the everyday cut).
     window_hunts: Vec<u64>,
     /// `assault_cause_days` (PC31; meaningless with the lifecycle off).
@@ -1304,8 +1321,13 @@ fn unattended(seed: u64, lifecycle: bool, cause_days: u32, windows: u64, years: 
     let (mut samples, mut hunts0) = (0u64, 0u64);
     let mut t = Tick::ZERO;
     let end = Tick::from_days(windows * years * YEAR);
+    // A spell of every site shut: when it began and the looks that found no prey in it (a shut
+    // haven's look booked again while its shut stands).
+    let (mut spell, mut backs) = (None::<(Tick, u32)>, vec![None::<Tick>; havens.len()]);
+    let bar = 2.0 * f64::from(tun.refound.base_days);
     while t < end {
-        t += 24 * TICKS_PER_DAY;
+        // Every quarter day, as `drive` steps: the run is the same, the spells exact to 6 hours.
+        t += TICKS_PER_DAY / 4;
         synth::drive(
             &mut world,
             &mut ships,
@@ -1315,6 +1337,36 @@ fn unattended(seed: u64, lifecycle: bool, cause_days: u32, windows: u64, years: 
             t,
             TICKS_PER_DAY / 4,
         );
+        let mut failed = 0;
+        for (i, &h) in havens.iter().enumerate() {
+            let back = ships.havens[h as usize].shut.map(|sh| sh.back);
+            if back.is_some() && backs[i].is_some() && back != backs[i] {
+                failed += 1;
+            }
+            backs[i] = back;
+        }
+        let all_shut = havens
+            .iter()
+            .all(|&h| ships.havens[h as usize].shut.is_some());
+        spell = match (spell, all_shut) {
+            (None, true) => Some((t, 0)),
+            (Some((t0, n)), true) => Some((t0, n + failed)),
+            (Some((t0, n)), false) => {
+                let len = day(t) - day(t0);
+                life.longest_all_shut = life.longest_all_shut.max(len);
+                if len > bar {
+                    life.long_all_shut.push((len, n));
+                }
+                None
+            }
+            (None, false) => None,
+        };
+        if all_shut {
+            life.all_shut_days += 0.25;
+        }
+        if !t.0.is_multiple_of(24 * TICKS_PER_DAY) {
+            continue;
+        }
         let open = havens
             .iter()
             .filter(|&&h| ships.havens[h as usize].shut.is_none())
@@ -1356,6 +1408,13 @@ fn unattended(seed: u64, lifecycle: bool, cause_days: u32, windows: u64, years: 
             hunts0 = ships.stats.hunts;
         }
     }
+    if let Some((t0, n)) = spell {
+        let len = day(t) - day(t0);
+        life.longest_all_shut = life.longest_all_shut.max(len);
+        if len > bar {
+            life.long_all_shut.push((len, n));
+        }
+    }
     life.open /= samples as f64;
     life.manned /= samples as f64;
     let counts = ships.haven_counts();
@@ -1378,7 +1437,8 @@ fn report(runs: &[Life]) {
             "seed {:>2} lifecycle {:<5} cause {:>2} sites {} slots {} navies {}: open {:.3} (min \
              {}), manned {:.3}, shuts {} (starved {}, broken {}), assaults {} of {} looks, \
              refounds {}, laid up {}, sinkings {}, hunts/yr {:.1}, toll {:.1} men ({:.2}/yr), \
-             fewest hunts in a window {}, longest shut {:.0} days",
+             fewest hunts in a window {}, longest shut {:.0} days, every site shut {:.4} of the \
+             time (longest {:.1} days)",
             l.seed,
             l.lifecycle,
             if l.lifecycle { l.cause_days } else { 0 },
@@ -1401,6 +1461,8 @@ fn report(runs: &[Life]) {
             l.toll_men / l.years as f64,
             l.window_hunts.iter().min().copied().unwrap_or(0),
             l.longest_shut,
+            l.all_shut_days / (l.years * YEAR) as f64,
+            l.longest_all_shut,
         );
     }
 }
@@ -1433,7 +1495,8 @@ fn summary(label: &str, on: &[Life], off: &[Life]) {
         "ALL {} seas, {} years each, {label}: sites open {open_mean:.3} (site-weighted \
          {open_weighted:.3}, lowest sea {open_lowest:.3}, fewest at a census {}), slots manned \
          {manned_mean:.3}; seas where a haven shut {shutting}; per sea-year: shuts {:.4}, \
-         refounds {:.4}, laid up {:.4}, hunts {:.2}, toll {:.3} men; longest shut spell {:.0} days",
+         refounds {:.4}, laid up {:.4}, hunts {:.2}, toll {:.3} men; longest shut spell {:.0} \
+         days; every site shut {:.5} of the sea-time, in {} seas (longest {:.1} days)",
         on.len(),
         on.first().map_or(0, |l| l.years),
         on.iter().map(|l| l.min_open).min().unwrap_or(0),
@@ -1443,6 +1506,9 @@ fn summary(label: &str, on: &[Life], off: &[Life]) {
         hunts_on / years,
         sum(on, &|l| l.toll_men) / years,
         on.iter().map(|l| l.longest_shut).fold(0.0, f64::max),
+        sum(on, &|l| l.all_shut_days) / (years * YEAR as f64),
+        on.iter().filter(|l| l.all_shut_days > 0.0).count(),
+        on.iter().map(|l| l.longest_all_shut).fold(0.0, f64::max),
     );
     eprintln!(
         "ALL lifecycle off: hunts {:.2} per sea-year; {label} has {:.2}% fewer (largest drop \
@@ -1455,16 +1521,19 @@ fn summary(label: &str, on: &[Life], off: &[Life]) {
     );
 }
 
-/// The lifecycle's bars on many worlds (EQUILIBRIUM.md S8b): no world ever has every site shut
-/// at once; across the worlds, havens do shut and refound (they neither all die nor all hold
-/// every site for good); every world hunts in every window; and open havens never exceed the
-/// sites found. With the lifecycle off nothing shuts and no toll is paid (S8's havens).
+/// The lifecycle's bars on many worlds (EQUILIBRIUM.md S8b): no world has every site shut for
+/// longer than the refound base plus one retry (96 days) unless looks in that spell found no
+/// prey (PC37: a sea the navies cleared for a season refills; one with no prey may not); across
+/// the worlds, havens do shut and refound (they neither all die nor all hold every site for
+/// good); every world hunts in every window; and open havens never exceed the sites found. With
+/// the lifecycle off nothing shuts and no toll is paid (S8's havens).
 fn check_lives(on: &[Life], off: &[Life]) {
     for l in on {
         assert!(
-            l.min_open >= 1,
-            "seed {}: every site shut at once: {l:?}",
-            l.seed
+            l.long_all_shut.iter().all(|&(_, failed)| failed >= 2),
+            "seed {}: every site shut past the refound base and a retry, with prey: {:?}",
+            l.seed,
+            l.long_all_shut
         );
         assert!(
             l.window_hunts.iter().all(|&n| n > 0),
@@ -1551,3 +1620,66 @@ fn unattended_havens_rise_and_fall() {
 fn unattended_havens_rise_and_fall_1000_years() {
     report_and_check(&lives(12, &seeds(), 10, 100));
 }
+
+/// The sweep that chose `assault_cause_days` (PC35): each gate in [`CAUSE_SWEEP`] on the coast
+/// (30 years, seeds 1, 7 and 30: the share of slots manned and breaks per decade) and on
+/// `sea_havens` (1,000 years, seeds 1 to 30: sites open, the lowest sea, the share of the time
+/// with every site of a sea shut and the longest such spell, hunts a year). Reports only.
+/// Release only (`cargo test --release -p rtsim-ships --test lifecycle -- --ignored
+/// assault_cause_sweep`).
+#[test]
+#[ignore = "long: run in release with --ignored"]
+fn assault_cause_sweep() {
+    let gates = CAUSE_SWEEP.len() as u64;
+    let gate = |j: u64| CAUSE_SWEEP[(j % gates) as usize];
+    let coast_jobs: Vec<u64> = [1u64, 7, 30]
+        .iter()
+        .flat_map(|&s| (0..gates).map(move |g| s * gates + g))
+        .collect();
+    let sea_jobs: Vec<u64> = seeds()
+        .iter()
+        .flat_map(|&s| (0..gates).map(move |g| s * gates + g))
+        .collect();
+    let coast = per_seed_on(16, &coast_jobs, |j| coast_cycle(j / gates, gate(j), 30));
+    let seas = per_seed_on(16, &sea_jobs, |j| {
+        unattended(j / gates, true, gate(j), 10, 100)
+    });
+    for &g in &CAUSE_SWEEP {
+        let c: Vec<&Cycle> = coast.iter().filter(|c| c.cause_days == g).collect();
+        let v: Vec<&Life> = seas.iter().filter(|l| l.cause_days == g).collect();
+        let n = v.len() as f64;
+        let sea_time: f64 = v.iter().map(|l| (l.years * YEAR) as f64).sum();
+        eprintln!(
+            "SWEEP cause {g:>3}: coast manned {} (breaks a decade {}); seas open {:.3} (lowest \
+             {:.3}, seed {}), every site shut {:.5} of the sea-time in {} seas (longest {:.1} \
+             days), hunts a year {:.1}, shuts {} (starved {}, broken {})",
+            c.iter()
+                .map(|c| format!("{:.3}", c.manned))
+                .collect::<Vec<_>>()
+                .join("/"),
+            c.iter()
+                .map(|c| format!("{:.2}", c.breaks as f64 * 10.0 / c.years as f64))
+                .collect::<Vec<_>>()
+                .join("/"),
+            v.iter().map(|l| l.open).sum::<f64>() / n,
+            v.iter().map(|l| l.open).fold(1.0, f64::min),
+            v.iter()
+                .min_by(|a, b| a.open.total_cmp(&b.open))
+                .map_or(0, |l| l.seed),
+            v.iter().map(|l| l.all_shut_days).sum::<f64>() / sea_time,
+            v.iter().filter(|l| l.all_shut_days > 0.0).count(),
+            v.iter().map(|l| l.longest_all_shut).fold(0.0, f64::max),
+            v.iter()
+                .map(|l| l.hunts as f64 / l.years as f64)
+                .sum::<f64>()
+                / n,
+            v.iter().map(|l| l.shuts).sum::<u64>(),
+            v.iter().map(|l| l.shuts - l.broken_shuts).sum::<u64>(),
+            v.iter().map(|l| l.broken_shuts).sum::<u64>(),
+        );
+    }
+    report(&seas);
+}
+
+/// The gates [`assault_cause_sweep`] tries, in days (PC35).
+const CAUSE_SWEEP: [u32; 4] = [96, 144, 192, 240];
