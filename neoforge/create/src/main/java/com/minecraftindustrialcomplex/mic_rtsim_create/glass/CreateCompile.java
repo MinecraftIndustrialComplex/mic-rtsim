@@ -571,7 +571,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     /**
-     * Whether a network still lists {@code k} as Create's guarded recount does (PATCHES.md row 52): its
+     * Whether a network still lists {@code k} as Create's guarded recount does (PATCHES.md row 53): its
      * chunk is not loaded (kept as Create last saw it), or it is the block entity there now.
      */
     private boolean listed(KineticBlockEntity k) {
