@@ -33,6 +33,7 @@ use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{MapTicket, PagedMap, PagedWheel, WheelTicket};
 use rtsim_kernel::page::{PageError, PageKey, SaveBatch};
 use rtsim_kernel::paging::SaveTicket;
+use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rows::{PageSource, PagedArena, PagedRows, Row, RowStats};
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
@@ -56,11 +57,13 @@ use crate::tunables::{DragonTunables, PreyKind};
 /// "RTDG" was the format before the indexes moved behind the meta (PF9), "RTD2" before tribute
 /// (SINK.md §4.6), "RTD3" before the oil gate (OILGATE.md), "RTD4" before the fields' daily watch
 /// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch), "RTD5" before
-/// the oil nests (OG-9e); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD6");
+/// the oil nests (OG-9e), "RTD6" before the lairs' renewal rule (EQUILIBRIUM.md S4: each lair's
+/// pressure, wait and fed share); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD7");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
-/// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN6");
+/// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
+/// lairs' renewal rule).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN7");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -500,6 +503,12 @@ fn put_lair(w: &mut Writer, l: &Lair) {
     put_items(w, &l.unplaced);
     w.var_i64(l.placed);
     w.var_u64(l.stacks);
+    let (p, p_day) = l.pressure.parts();
+    w.f32(p);
+    w.u32(p_day);
+    w.var_u64(l.due.0);
+    w.f32(l.fed);
+    w.var_u64(l.fed_at.0);
 }
 
 fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
@@ -526,6 +535,13 @@ fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
         unplaced: get_items(r)?,
         placed: r.var_i64()?,
         stacks: r.var_u64()?,
+        pressure: {
+            let p = r.f32()?;
+            Pressure::from_parts(p, r.u32()?)
+        },
+        due: Tick(r.var_u64()?),
+        fed: r.f32()?,
+        fed_at: Tick(r.var_u64()?),
     })
 }
 
@@ -869,7 +885,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m.into())
 }
 
-const STATS: usize = 45;
+const STATS: usize = 49;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -918,6 +934,10 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.lairs_placed,
         s.visitors_left,
         s.surveys,
+        s.player_losses,
+        s.starved_away,
+        s.arrivals_gated,
+        s.heirs_sent,
     ]
 }
 
@@ -968,6 +988,10 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         lairs_placed: v[42],
         visitors_left: v[43],
         surveys: v[44],
+        player_losses: v[45],
+        starved_away: v[46],
+        arrivals_gated: v[47],
+        heirs_sent: v[48],
     }
 }
 
