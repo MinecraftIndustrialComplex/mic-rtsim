@@ -2,18 +2,24 @@
 //! `rtsim-cli glass <world> [district] [--json | --graph]`: the glass box's paged state of a saved
 //! world (SECTIONS.md §8.2, slice S1), read from the confirmed save through the read-only open, as
 //! `rtsim-cli lines` reads train lines. Per district: its compile (records and counts), what
-//! replays it, its last and its passed window, and its ticking chunks. `--graph` writes the
-//! compile's records for offline checks (§9.4); slice S2 adds each node's section.
+//! replays it, its last and its passed window, its ticking chunks and its compile's sections
+//! (§5, slice S2: each section's nodes, stores, box and fingerprint, the stores they share and
+//! their judging groups). `--graph` writes the compile's records for offline checks (§9.4), with
+//! each node's section. A page the engine would drop at its restore (the format before sections,
+//! or sections its compile no longer cuts into, with the default `glass.sectionsMax`) is listed
+//! as dropped, with why.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::ExitCode;
 
 use rtsim_industry::glass::check::{DistrictGlass, WindowResult};
-use rtsim_industry::glass::page::read_district_page;
+use rtsim_industry::glass::page::{PageRead, read_district_page};
 use rtsim_industry::glass::report::replay_model;
+use rtsim_industry::glass::sections::{NONE, Sections};
 use rtsim_industry::ids::Good;
 use rtsim_industry::persist::GLASS_TABLE;
+use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::page::PageKey;
 use rtsim_kernel::rows::PageSource;
 use rtsim_view::industry::IndustryView;
@@ -105,8 +111,15 @@ fn report(world: &Path, only: Option<u64>, graph: bool) -> Result<Value, String>
             .read(PageKey::new(GLASS_TABLE, id))
             .map_err(|e| format!("glass page {id}: {e}"))?
             .ok_or_else(|| format!("glass page {id} is listed and missing"))?;
-        let dg = read_district_page(&b).map_err(|e| format!("glass page {id}: {e}"))?;
-        districts.push(district(iv, &saved.names, id, &dg, graph));
+        let max = Tunables::default().glass.sections_max;
+        match read_district_page(&b, max).map_err(|e| format!("glass page {id}: {e}"))? {
+            PageRead::Kept(dg) => districts.push(district(iv, &saved.names, id, &dg, graph)),
+            PageRead::Dropped(why) => districts.push(json!({
+                "district": id,
+                "name": name_of(iv, &saved.names, id),
+                "dropped": why,
+            })),
+        }
     }
     Ok(json!({
         "world": saved.scrub(&world.display().to_string()),
@@ -115,15 +128,41 @@ fn report(world: &Path, only: Option<u64>, graph: bool) -> Result<Value, String>
     }))
 }
 
-fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph: bool) -> Value {
-    let name = iv
-        .districts
+fn name_of(iv: &IndustryView, names: &Names, id: u64) -> Option<String> {
+    iv.districts
         .iter()
         .find(|d| d.id == id)
-        .and_then(|d| names.get(DICT_NAME, d.name));
+        .and_then(|d| names.get(DICT_NAME, d.name))
+        .map(str::to_string)
+}
+
+fn pos(p: rtsim_industry::ids::BlockPos) -> [i32; 3] {
+    [p.x, p.y, p.z]
+}
+
+/// A compile's sections (SECTIONS.md §5).
+fn sections(s: &Sections) -> Value {
+    json!({
+        "count": s.len(),
+        "merged": s.merged,
+        "groups": s.groups(),
+        "shared_stores": s.shared.iter().map(|(n, by)| json!({"store": n, "sections": by})).collect::<Vec<_>>(),
+        "list": s.list.iter().map(|x| json!({
+            "nodes": x.nodes.len(),
+            "stores": x.stores,
+            "working": x.working,
+            "low": x.low.map(pos),
+            "box": x.bbox.map(|(a, b)| [pos(a), pos(b)]),
+            "domains": x.domains,
+            "fingerprint": format!("{:x}", x.fingerprint),
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph: bool) -> Value {
     let mut v = json!({
         "district": id,
-        "name": name,
+        "name": name_of(iv, names, id),
         "replay": match dg.replay_model {
             replay_model::NONE => "none",
             replay_model::BLACK_BOX => "black box",
@@ -163,6 +202,7 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         "edited": c.edited,
         "last_window": c.last.as_ref().map(|w| window(iv, w)),
         "passed_window": c.passed.as_ref().map(|w| window(iv, w)),
+        "sections": sections(&c.sections),
     });
     if graph {
         let mut goods = BTreeSet::new();
@@ -177,6 +217,14 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         compile["graph_edges"] = serde_json::to_value(&g.edges).expect("serialize");
         compile["graph_recipes"] = serde_json::to_value(&g.recipes).expect("serialize");
         compile["graph_domains"] = serde_json::to_value(&g.domains).expect("serialize");
+        // each node's section by index, null for none (an idle node, or a store or virtual node)
+        compile["section_of"] = c
+            .sections
+            .section_of
+            .iter()
+            .map(|&s| if s == NONE { Value::Null } else { json!(s) })
+            .collect::<Vec<_>>()
+            .into();
         compile["goods"] = goods
             .into_iter()
             .map(|gd: Good| (gd.0.to_string(), json!(iv.good_name(gd))))
@@ -217,6 +265,13 @@ fn print_text(v: &Value) {
     );
     for d in &ds {
         let name = d["name"].as_str().unwrap_or("?");
+        if let Some(why) = d["dropped"].as_str() {
+            println!(
+                "  district {} '{name}': page dropped at a restore: {why}",
+                d["district"]
+            );
+            continue;
+        }
         let c = &d["compile"];
         let ticking = d["ticking_chunks"].as_array().map_or(0, Vec::len);
         if c.is_null() {
@@ -261,5 +316,27 @@ fn print_text(v: &Value) {
                 .as_str()
                 .map_or_else(String::new, |f| format!(" (fell back: {f})")),
         );
+        let sc = &c["sections"];
+        let groups = sc["groups"].as_array().map_or(0, Vec::len);
+        let shared = sc["shared_stores"].as_array().map_or(0, Vec::len);
+        println!(
+            "    {} sections ({} merged by the cap), {groups} judging groups, {shared} shared stores",
+            sc["count"], sc["merged"]
+        );
+        for (i, x) in sc["list"].as_array().into_iter().flatten().enumerate() {
+            println!(
+                "    section {i}: {} nodes, {} stores{}, low {}, box {}, fingerprint {}",
+                x["nodes"],
+                x["stores"].as_array().map_or(0, Vec::len),
+                if x["working"].as_bool() == Some(true) {
+                    ", working"
+                } else {
+                    ", storage"
+                },
+                x["low"],
+                x["box"],
+                x["fingerprint"].as_str().unwrap_or("?"),
+            );
+        }
     }
 }

@@ -309,8 +309,10 @@ public final class GlassCompiler {
                 return;
             }
             while (j.visiting && System.nanoTime() < deadline) {
-                if (!visitSome(j, deadline))
+                if (!visitSome(j, deadline)) {
                     j.visiting = false;
+                    j.g.groupResiduals();
+                }
             }
             if (!j.visiting && System.nanoTime() < deadline) {
                 boolean done = true;
@@ -392,7 +394,7 @@ public final class GlassCompiler {
                         break;
                     }
                 if (!claimed && j.g.inventoryAt(be.getBlockPos()) == null && hasCapability(j.level, be))
-                    j.g.addResidualPosition(be.getBlockPos());
+                    j.g.addResidual(be);
                 if ((++n & 7) == 0 && System.nanoTime() >= deadline)
                     return true;
                 continue;
@@ -484,7 +486,8 @@ public final class GlassCompiler {
         if (MicRtsim.LOGGER.isDebugEnabled())
             MicRtsim.LOGGER.debug("[mic_rtsim] glass: district {} compile {}: {} nodes, {} edges, {} recipes, {} domains{}",
                     st.district, st.compileNo, g.nodeCount(), g.edges().size(), g.recipeCount(), g.domains().size(),
-                    g.hasResidual() ? ", residual of " + g.residualPositions() + " block entities (" + g.residualKinds(8) + ")" : "");
+                    g.hasResidual() ? ", residual of " + g.residualPositions() + " block entities in " + g.residualGroups() + " groups ("
+                            + g.residualKinds(8) + ")" : "");
     }
 
     private void finishNotCompilable(Job j, long now) {

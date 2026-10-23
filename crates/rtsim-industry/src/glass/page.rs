@@ -15,6 +15,11 @@
 //! - The page starts with [`GLASS_MAGIC`], so an older format fails by name. A page that does not
 //!   decode makes the whole restore fail, as any other industry page does (the host then starts
 //!   the industry engine afresh and says so).
+//! - **Sections** (SECTIONS.md §5, slice S2): the compile's sections are not saved but recomputed
+//!   from its records, and the page keeps their fingerprints. A page whose fingerprints are not
+//!   those its compile cuts into now (a changed `glass.sectionsMax`, or a changed fold), or one of
+//!   the format before sections ([`GLASS_MAGIC_IGL1`]), drops that district's glass state alone
+//!   ([`PageRead::Dropped`]): the district learns again.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 
@@ -29,29 +34,74 @@ use super::solve::{GoodBound, Regime, Solution};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
-/// The glass page's magic ("IGL1": the first glass page format, G2-9).
-pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL1");
+/// The glass page's magic ("IGL2": the glass page with sections, SECTIONS.md §5).
+pub const GLASS_MAGIC: u32 = u32::from_le_bytes(*b"IGL2");
 
-/// A district's glass page.
+/// The magic of the glass page before sections (G2-9): read as a dropped district, never decoded.
+pub const GLASS_MAGIC_IGL1: u32 = u32::from_le_bytes(*b"IGL1");
+
+/// A district's glass page: the state, then its compile's section fingerprints (none without a
+/// compile).
 pub fn district_page(dg: &DistrictGlass) -> Vec<u8> {
     let mut w = Writer::new();
     w.u32(GLASS_MAGIC);
     dg.put(&mut w);
+    dg.compiled
+        .as_ref()
+        .map(|c| c.sections.fingerprints())
+        .put(&mut w);
     w.into_bytes()
 }
 
-/// The glass state a [`district_page`] holds.
-pub fn read_district_page(b: &[u8]) -> Result<DistrictGlass> {
+/// What a glass page reads back to.
+#[derive(Debug)]
+pub enum PageRead {
+    Kept(DistrictGlass),
+    /// The district's glass state is dropped, and why.
+    Dropped(&'static str),
+}
+
+impl PageRead {
+    /// The state, or None for a dropped one.
+    pub fn kept(self) -> Option<DistrictGlass> {
+        match self {
+            PageRead::Kept(dg) => Some(dg),
+            PageRead::Dropped(_) => None,
+        }
+    }
+}
+
+/// The glass state a [`district_page`] holds, its sections recomputed with `sections_max`
+/// (`glass.sectionsMax`). An error only for a page that does not decode.
+pub fn read_district_page(b: &[u8], sections_max: usize) -> Result<PageRead> {
     let mut r = Reader::new(b);
     let magic = r.u32()?;
+    if magic == GLASS_MAGIC_IGL1 {
+        return Ok(PageRead::Dropped(
+            "a page of the format before sections (IGL1)",
+        ));
+    }
     if magic != GLASS_MAGIC {
         return Err(CodecError::Invalid(format!(
-            "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: an older format"
+            "glass page magic {magic:#010x}, not {GLASS_MAGIC:#010x}: another format"
         )));
     }
-    let dg = DistrictGlass::get(&mut r)?;
+    let mut dg = DistrictGlass::get(&mut r)?;
+    let stored = Option::<Vec<u64>>::get(&mut r)?;
     r.finish()?;
-    Ok(dg)
+    match (dg.compiled.as_mut(), stored) {
+        (None, None) => {}
+        (Some(c), Some(fps)) => {
+            c.sections = super::sections::Sections::compute(&c.graph, sections_max);
+            if c.sections.fingerprints() != fps {
+                return Ok(PageRead::Dropped(
+                    "sections that are not those its compile cuts into now",
+                ));
+            }
+        }
+        _ => return invalid("glass page sections without their compile"),
+    }
+    Ok(PageRead::Kept(dg))
 }
 
 // ---- the compile's records (records.rs) ----------------------------------------------------

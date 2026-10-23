@@ -4479,6 +4479,7 @@ mod persist_impls {
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
             let mut glass = BTreeMap::new();
+            let mut glass_dropped = Vec::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
             let mut hashes = page_check_on().then(BTreeMap::new);
@@ -4515,8 +4516,17 @@ mod persist_impls {
                         clusters.push((k.id(), model, anchor, wake));
                     }
                     GLASS_TABLE => {
-                        let dg = crate::glass::page::read_district_page(&bytes)?;
-                        glass.insert(DistrictId(k.id()), dg);
+                        match crate::glass::page::read_district_page(
+                            &bytes,
+                            tun.glass.sections_max,
+                        )? {
+                            crate::glass::page::PageRead::Kept(dg) => {
+                                glass.insert(DistrictId(k.id()), dg);
+                            }
+                            crate::glass::page::PageRead::Dropped(why) => {
+                                glass_dropped.push((DistrictId(k.id()), why));
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -4553,6 +4563,11 @@ mod persist_impls {
             e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
             e.glass.districts = Tracked::restored(glass);
+            // A dropped glass page is deleted at the next save; the district learns again.
+            for &(id, _) in &glass_dropped {
+                e.glass.districts.mark(id);
+            }
+            e.glass.dropped_on_restore = glass_dropped;
             e.districts = Tracked::restored(districts);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);

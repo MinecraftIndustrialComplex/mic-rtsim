@@ -27,6 +27,7 @@ pub mod q;
 pub mod records;
 pub mod replay;
 pub mod report;
+pub mod sections;
 pub mod solve;
 pub mod store;
 #[cfg(test)]
@@ -76,6 +77,10 @@ pub struct Glass {
     /// to an entry marks it.
     pub districts: crate::tracked::Tracked<DistrictId, DistrictGlass>,
     pub stats: GlassStats,
+    /// Districts whose glass page the restore dropped (`page::PageRead::Dropped`: the format
+    /// before sections, or sections their compile no longer cuts into), for the host's one line.
+    /// Not saved.
+    pub dropped_on_restore: Vec<(DistrictId, &'static str)>,
 }
 
 /// An empty view, for a compile whose district the engine does not know yet.
@@ -98,7 +103,7 @@ fn empty_view<'a>(
 /// A node's `params` that are its state at the compile, not its build: a heater's burn left and
 /// heat level, a controller's output and the level it read. The rest (thresholds, burn per fuel,
 /// a tank's size, a source's moments) are its build.
-fn state_slots(kind: records::NodeKind) -> &'static [usize] {
+pub(crate) fn state_slots(kind: records::NodeKind) -> &'static [usize] {
     match kind {
         records::NodeKind::Heater => &[0, 1],
         records::NodeKind::Controller => &[2, 3],

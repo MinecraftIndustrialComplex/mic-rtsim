@@ -251,6 +251,10 @@ pub struct GlassTunables {
     /// events (or since its last closed-form cycle) before it counts as oscillating and the
     /// district falls back to the black box (GLASSBOX.md §4.5, choice G2-7). TUNABLE, PLACEHOLDER 64.
     pub breakpoints_per_event_max: u32,
+    /// `glass.sectionsMax`: sections one district's compile is cut into at most (SECTIONS.md §3.2
+    /// step 5); past it the smallest that share a store merge, then a domain, then the smallest.
+    /// TUNABLE, 64.
+    pub sections_max: usize,
 }
 
 impl Default for GlassTunables {
@@ -271,6 +275,7 @@ impl Default for GlassTunables {
             regime_cache: 4,
             probe_nodes_max: 16,
             breakpoints_per_event_max: 64,
+            sections_max: 64,
         }
     }
 }

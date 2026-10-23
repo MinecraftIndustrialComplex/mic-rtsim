@@ -4,16 +4,22 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.fluids.FluidStack;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +33,11 @@ import java.util.Objects;
  * <p><b>Stores</b> are the core's: every boundary inventory of the district's current revision is a STORE
  * node with its IND_INVENTORY index, made the first time a plugin asks for it ({@link #storeAt}) and at
  * the end for the rest, unless a plugin claimed the block as something else ({@link #claimStore}: a fluid
- * tank that is a boiler). <b>The residual</b> (G-B13) is one BLACK_BOX node for every block entity with a
- * capability that no extractor claimed; {@link #residualAt} joins a plugin's edge to it.
+ * tank that is a boiler). <b>The residual</b> (G-B13) is every block entity with a capability that no
+ * extractor claimed, in <b>groups</b> (SECTIONS.md §3.1, choice SC14): the residual blocks that touch by a
+ * face, or that a plugin links (an Ender channel's ends, {@link IndustryPlugin#links}), are one group, and
+ * each group is one BLACK_BOX node at its lowest corner, made on first use. {@link #residualAt} joins a
+ * plugin's edge to the group that holds a block, so an unknown block glues only the lines that touch it.
  *
  * <p>Units are the graph's (§9.3): items in items, fluids in millibuckets, rates per tick.
  */
@@ -53,8 +62,16 @@ public final class GraphBuilder {
     private final Long2IntOpenHashMap stores = new Long2IntOpenHashMap();
     private final LongOpenHashSet claimedStores = new LongOpenHashSet();
     private final LongOpenHashSet residualPositions = new LongOpenHashSet();
+    /** Plugin links from residual block entities, as position pairs: one group when both ends are residual. */
+    private final LongArrayList residualLinks = new LongArrayList();
+    /** Each residual position's group, once {@link #groupResiduals} ran (after every visit); null before. */
+    private Long2IntOpenHashMap residualGroup;
+    /** Per group: lowest corner x, y, z, the extent dx, dy, dz, and the FNV-1a hash of its sorted positions. */
+    private long[][] groupShape;
+    /** Per group: its BLACK_BOX node, or NONE until a plugin's edge first reaches it. */
+    private int[] groupNode;
+    private int residualNodes;
     private final Map<Long, District.Inventory> inventoryByPos = new HashMap<>();
-    private int residual = NONE;
     /** Why the district is not compilable (a REASON code), or 0. */
     int notCompilable;
     String notCompilableWhy;
@@ -259,25 +276,126 @@ public final class GraphBuilder {
         return residualPositions.contains(pos.asLong());
     }
 
-    /** The residual BLACK_BOX node if {@code pos} is one of its blocks, else NONE. */
+    /**
+     * The BLACK_BOX node of the residual group that holds {@code pos}, made on first use; NONE when {@code pos}
+     * is no residual block. For the extractors' {@code finish}: the groups are made after every visit.
+     */
     public int residualAt(BlockPos pos) {
-        if (!residualPositions.contains(pos.asLong()))
+        long key = pos.asLong();
+        if (!residualPositions.contains(key))
             return NONE;
-        return residual();
-    }
-
-    /** The district's one residual node (G-B13), made on first use. */
-    public int residual() {
-        if (residual == NONE) {
-            Node n = node(GlassRecords.Node.BLACK_BOX, GlassRecords.Model.BLACK_BOX, district.watch.isEmpty() ? BlockPos.ZERO : district.watch.get(0));
+        groupResiduals();
+        int gi = residualGroup.get(key);
+        if (groupNode[gi] == NONE) {
+            long[] sh = groupShape[gi];
+            Node n = node(GlassRecords.Node.BLACK_BOX, GlassRecords.Model.BLACK_BOX, new BlockPos((int) sh[0], (int) sh[1], (int) sh[2]));
+            n.params(sh[3], sh[4], sh[5], sh[6]);
             n.flags |= GlassRecords.Node.BOUNDED;
-            residual = n.index;
+            groupNode[gi] = n.index;
+            residualNodes++;
         }
-        return residual;
+        return groupNode[gi];
     }
 
-    void addResidualPosition(BlockPos pos) {
-        residualPositions.add(pos.asLong());
+    /**
+     * A block entity no extractor claimed, with a capability: a residual block, with the positions the
+     * plugins link it to (read without loading a chunk, as the district detection reads them).
+     */
+    void addResidual(BlockEntity be) {
+        if (residualGroup != null)
+            throw new IllegalStateException("a residual block after the residual groups were made");
+        BlockPos pos = be.getBlockPos().immutable();
+        long key = pos.asLong();
+        residualPositions.add(key);
+        for (IndustryPlugin plugin : IndustryApi.plugins())
+            plugin.links(be, t -> {
+                residualLinks.add(key);
+                residualLinks.add(t.asLong());
+            });
+    }
+
+    /**
+     * Makes the residual groups once: a union of the residual positions by their faces and by the plugins'
+     * links, each group numbered by its lowest position (the order the positions sort in), so a compile of
+     * the same blocks makes the same groups.
+     */
+    void groupResiduals() {
+        if (residualGroup != null)
+            return;
+        long[] sorted = residualPositions.toLongArray();
+        Arrays.sort(sorted);
+        Long2IntOpenHashMap index = new Long2IntOpenHashMap(sorted.length);
+        index.defaultReturnValue(-1);
+        for (int i = 0; i < sorted.length; i++)
+            index.put(sorted[i], i);
+        int[] parent = new int[sorted.length];
+        for (int i = 0; i < parent.length; i++)
+            parent[i] = i;
+        for (int i = 0; i < sorted.length; i++)
+            for (Direction d : Direction.values()) {
+                int j = index.get(BlockPos.offset(sorted[i], d));
+                if (j >= 0)
+                    union(parent, i, j);
+            }
+        for (int k = 0; k + 1 < residualLinks.size(); k += 2) {
+            int a = index.get(residualLinks.getLong(k)), b = index.get(residualLinks.getLong(k + 1));
+            if (a >= 0 && b >= 0)
+                union(parent, a, b);
+        }
+        // Groups in the order of their lowest position; a group's positions in sorted order.
+        int[] groupOfRoot = new int[sorted.length];
+        Arrays.fill(groupOfRoot, -1);
+        List<long[]> shapes = new ArrayList<>();
+        residualGroup = new Long2IntOpenHashMap(sorted.length);
+        for (int i = 0; i < sorted.length; i++) {
+            int r = find(parent, i);
+            if (groupOfRoot[r] < 0) {
+                groupOfRoot[r] = shapes.size();
+                shapes.add(new long[] {Long.MAX_VALUE, Long.MAX_VALUE, Long.MAX_VALUE, Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE,
+                        0xcbf29ce484222325L});
+            }
+            int gi = groupOfRoot[r];
+            residualGroup.put(sorted[i], gi);
+            long[] sh = shapes.get(gi);
+            long x = BlockPos.getX(sorted[i]), y = BlockPos.getY(sorted[i]), z = BlockPos.getZ(sorted[i]);
+            sh[0] = Math.min(sh[0], x);
+            sh[1] = Math.min(sh[1], y);
+            sh[2] = Math.min(sh[2], z);
+            sh[3] = Math.max(sh[3], x);
+            sh[4] = Math.max(sh[4], y);
+            sh[5] = Math.max(sh[5], z);
+            for (int b = 0; b < 8; b++) {
+                sh[6] ^= (sorted[i] >>> (8 * b)) & 0xff;
+                sh[6] *= 0x100000001b3L;
+            }
+        }
+        groupShape = new long[shapes.size()][];
+        for (int gi = 0; gi < groupShape.length; gi++) {
+            long[] sh = shapes.get(gi);
+            // lowest corner, extent from it, hash
+            groupShape[gi] = new long[] {sh[0], sh[1], sh[2], sh[3] - sh[0], sh[4] - sh[1], sh[5] - sh[2], sh[6]};
+        }
+        groupNode = new int[groupShape.length];
+        Arrays.fill(groupNode, NONE);
+    }
+
+    private static int find(int[] parent, int x) {
+        while (parent[x] != x) {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        return x;
+    }
+
+    private static void union(int[] parent, int a, int b) {
+        int ra = find(parent, a), rb = find(parent, b);
+        if (ra != rb)
+            parent[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+
+    /** The residual groups made (0 before {@link #groupResiduals}). */
+    int residualGroups() {
+        return groupShape == null ? 0 : groupShape.length;
     }
 
     int residualPositions() {
@@ -305,8 +423,9 @@ public final class GraphBuilder {
                 .collect(java.util.stream.Collectors.joining(", "));
     }
 
+    /** True when a plugin's edge reached a residual group: the compile is then a BLACK_BOX one. */
     boolean hasResidual() {
-        return residual != NONE;
+        return residualNodes > 0;
     }
 
     /** Every boundary inventory gets its STORE node (unless claimed), referenced or not. */
