@@ -167,10 +167,40 @@ impl ReportKind {
     pub const fn is_positive(self) -> bool {
         matches!(self, ReportKind::Trade | ReportKind::Rescue)
     }
+
+    /// Whether this is one of the news kinds (TALK.md §9.4, id [`FIRST_NEWS_KIND`] and up), whose
+    /// severity is always a small code (a rung, an outcome, 1 or 2 for a port) and never a
+    /// multiple of [`crate::SEVERITY_UNIT`].
+    pub const fn is_news(self) -> bool {
+        self as u16 >= FIRST_NEWS_KIND
+    }
+
+    /// How much a report weighs wherever its severity means "how much" in a structure that lasts:
+    /// a notable's memory and the table's importance order. A news kind's rung counts as
+    /// [`rung_weight`]; today's kinds keep their severity on the unit scale, where a mild assault
+    /// of 20 is legitimately small (TK33).
+    pub const fn magnitude(self, severity: u8) -> u8 {
+        if self.is_news() {
+            rung_weight(severity)
+        } else {
+            severity
+        }
+    }
 }
 
-const _: () = assert!(ReportKind::HavenFell as usize == ReportKind::SLOTS);
-const _: () = assert!(ReportKind::ALL.len() == ReportKind::COUNT);
+/// The first id of the news kinds (TALK.md §9.4).
+pub const FIRST_NEWS_KIND: u16 = 10;
+
+/// What a rung weighs against the unit scale: 100 plus 25 a step to four, so a rung 1 outweighs a
+/// fair trade's 100, a rung 4 outweighs it by half, and none weighs less than the unit. The one
+/// formula for "a code, not a multiple of the unit": the structures above use it for the news
+/// kinds, and a talker's ranking also for today's kinds whose severity is under 25, because the
+/// conflict records rungs on those too (a robbery of 2, a killing of 4).
+pub const fn rung_weight(rung: u8) -> u8 {
+    100 + 25 * if rung < 4 { rung } else { 4 }
+}
+
+const _: () = assert!(rung_weight(255) == 200);
 
 /// Bit 0 of [`Report::flags`]: `who` or `whom` is a player. Set by `Knowledge::record`, and
 /// what the table's importance order ranks first (SCALE.md §6). Bits 1 to 7 are the caller's.
@@ -299,11 +329,17 @@ pub type ReportId = Handle<ReportEntry>;
 /// older before newer, then milder before more severe, then by handle for a total order.
 pub(crate) type Importance = (bool, u64, u8, u64);
 
+/// A row's magnitude (see [`ReportKind::magnitude`]); the raw severity for a row of no kind.
+fn row_magnitude(row: &ReportRow) -> u8 {
+    row.kind()
+        .map_or(row.severity(), |k| k.magnitude(row.severity()))
+}
+
 fn importance(id: ReportId, row: &ReportRow) -> Importance {
     (
         row.flags() & FLAG_PLAYER != 0,
         row.at().0,
-        row.severity(),
+        row_magnitude(row),
         id.to_bits(),
     )
 }
@@ -352,16 +388,31 @@ impl ReportTable {
         self.arena.get(id).and_then(|e| e.row.unpack())
     }
 
+    /// Whether [`ReportTable::insert`] would keep a row: there is room, or it matters more than
+    /// the least important report held (a tie keeps the resident). Lets a caller refuse before it
+    /// changes anything else.
+    pub fn admits(&self, row: &ReportRow) -> bool {
+        if self.arena.len() < self.cap as usize {
+            return true;
+        }
+        let least = self.order.first().expect("a full table has an order");
+        // The new report would sit at this importance; its id is not known yet, so compare on the
+        // other fields.
+        let new = (
+            row.flags() & FLAG_PLAYER != 0,
+            row.at().0,
+            row_magnitude(row),
+        );
+        new > (least.0, least.1, least.2)
+    }
+
     pub fn insert(&mut self, row: ReportRow, expires: Tick) -> Inserted {
         let mut evicted = None;
+        if !self.admits(&row) {
+            return Inserted::Dropped;
+        }
         if self.arena.len() >= self.cap as usize {
             let least = *self.order.first().expect("a full table has an order");
-            // The new report would sit at this importance; its id is not known yet, so compare
-            // on the other fields and let a tie keep the resident.
-            let new = (row.flags() & FLAG_PLAYER != 0, row.at().0, row.severity());
-            if new <= (least.0, least.1, least.2) {
-                return Inserted::Dropped;
-            }
             self.order.remove(&least);
             let old = Handle::from_bits(least.3);
             let entry = self.arena.remove(old).expect("order names live reports");
@@ -575,6 +626,72 @@ mod tests {
         for (k, id) in want {
             assert_eq!(k as u16, id, "{k:?}");
         }
+    }
+
+    /// One formula for a rung (TK33): the news kinds always are rungs, today's kinds keep the unit
+    /// scale in the structures that last.
+    #[test]
+    fn magnitude_counts_news_rungs_on_the_unit_scale() {
+        use ReportKind::*;
+        for (kind, severity, want) in [
+            (Feud, 1, 125),
+            (Feud, 4, 200),
+            (Feud, 9, 200),
+            (Feud, 100, 200),
+            (PortClosed, 0, 100),
+            (Raid, 3, 175),
+            // Today's kinds are on the unit scale: a mild assault of 20 stays small.
+            (Assault, 20, 20),
+            (Assault, 100, 100),
+            (Robbery, 2, 2),
+            (Killing, 255, 255),
+        ] {
+            assert_eq!(kind.magnitude(severity), want, "{kind:?} {severity}");
+        }
+        assert_eq!(rung_weight(0), 100);
+        assert_eq!(rung_weight(2), 150);
+        assert_eq!(rung_weight(4), 200);
+        assert_eq!(rung_weight(200), 200, "past four is four");
+        assert_eq!(FIRST_NEWS_KIND, Feud as u16);
+        assert!(
+            ReportKind::ALL
+                .iter()
+                .all(|k| k.is_news() == (*k as u16 >= 10)),
+            "the news kinds are the ids from 10"
+        );
+    }
+
+    /// The board is full of reports, and a rung 1 feud outranks a fair trade of severity 100: the
+    /// table keeps the feud and evicts the trade. By raw severity (1 against 100) it would have
+    /// dropped the feud.
+    #[test]
+    fn a_rung_is_not_the_least_important_report_on_a_full_table() {
+        let mut t = ReportTable::new(1);
+        let trade = Report {
+            kind: ReportKind::Trade,
+            ..report(50, 100, 0)
+        };
+        let feud = Report {
+            kind: ReportKind::Feud,
+            ..report(50, 1, 0)
+        };
+        assert!(t.admits(&trade.pack()), "room");
+        let Inserted::Stored(_) = t.insert(trade.pack(), Tick(1_000)) else {
+            panic!("stored");
+        };
+        assert!(t.admits(&feud.pack()), "125 outweighs 100 at the same time");
+        match t.insert(feud.pack(), Tick(1_000)) {
+            Inserted::Evicted(_, _, old) => assert_eq!(old.row.kind(), Some(ReportKind::Trade)),
+            _ => panic!("the feud should evict the trade"),
+        }
+        // The other way round: a fair trade does not push a feud out, and `admits` says so
+        // without changing anything.
+        assert!(!t.admits(&trade.pack()));
+        assert!(matches!(
+            t.insert(trade.pack(), Tick(1_000)),
+            Inserted::Dropped
+        ));
+        assert_eq!(t.len(), 1);
     }
 
     /// A table indexed by `index()` has a slot for every kind, and no id that parses to a kind can
