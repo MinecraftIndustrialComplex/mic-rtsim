@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassGraphCommand;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
+import com.minecraftindustrialcomplex.mic_rtsim_create.KineticSyncPending;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.StaleKinetics;
@@ -51,7 +52,7 @@ import java.util.function.Supplier;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
 /**
- * SEC-1 slice S1, no chunk loads (SECTIONS.md §2.8, §9 and §10.1; PATCHES.md rows 50 to 56): Create's chain
+ * SEC-1 slice S1, no chunk loads (SECTIONS.md §2.8, §9 and §10.1; PATCHES.md rows 50 to 59): Create's chain
  * conveyors, its network recount and the compile never load a chunk of a district that is away, and a part
  * of a network that comes back stale is re-synced instead of broken.
  *
@@ -65,7 +66,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * {@code ChunkEvent.Load} and so B's {@code IND_CHUNK_LOADED}. A watch on every tick checks that B is not
  * FULL, that B's district counts no loaded chunk, and that no {@code IND_CHUNK_LOADED} for B was
  * journaled. (A chunk demoted from FULL to 34 and promoted again fires no event: the tests let B unload
- * fully first, so a promotion is the load the watch sees.)
+ * fully first, so a promotion is the load the watch sees; {@link #aDemotedChunkComesBackInStep} keeps B in
+ * memory instead.)
  *
  * <p>Away chunks are read only through {@link Loaded}; {@code GlassCorpusKit.be} and {@code speed} load.
  */
@@ -448,13 +450,15 @@ public final class SectionsChunkLoadGameTests {
     }
 
     /**
-     * A network's recount keeps an away source (PATCHES.md rows 53 and 54). Eight conveyors 30 blocks apart
-     * reach from A over 13 chunks to B, where a creative motor turns them; both ends have a cog and a
+     * A network's recount keeps an away source (PATCHES.md rows 53, 54 and 57). Eight conveyors 30 blocks
+     * apart reach from A over 13 chunks to B, where a creative motor turns them; both ends have a cog and a
      * millstone. With only A's radius-1 ticket left, B (13 chunks away) unloads and the conveyors between
      * are held below FULL. The recount (Create's {@code calculateCapacity}) keeps the motor as it last was,
      * without loading B: the capacity is unchanged and the motor still listed. A millstone added in A
      * makes the network recount its stress, with the same answer for the capacity. When B is forced again,
-     * the fresh motor joins and the next recount drops the stale one: one source, the same capacity.
+     * the fresh motor takes the kept one's place as it joins: one source, with no recount in between. B
+     * then unloads a second time and another millstone in A makes the network recount: one motor kept, the
+     * same capacity (without row 57, the motors of both visits were listed and counted).
      */
     @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
     public static void aNetworkRecountKeepsAnUnloadedSource(GameTestHelper helper) {
@@ -467,10 +471,10 @@ public final class SectionsChunkLoadGameTests {
         for (int k = 0; k < 8; k++)
             cs.add(new BlockPos(ax * 16 + 8 + 30 * k, Y, z));
         BlockPos c0 = cs.get(0), c7 = cs.get(7), motor = c7.below(), millA = c0.above().south(), millB = c7.above().south();
-        BlockPos added = c0.above().north();
+        BlockPos added = c0.above().north(), added2 = c0.above().east();
         long[] ids = new long[2];
         float[] cap = new float[3], stress = new float[2];
-        KineticBlockEntity[] oldMotor = {null};
+        KineticBlockEntity[] oldMotor = {null, null};
         int[] mark = {0};
         Watch watch = new Watch(helper, () -> {
             for (int cx = ax + 2; cx <= bx; cx++)
@@ -548,11 +552,34 @@ public final class SectionsChunkLoadGameTests {
                     check("the fresh motor joins the network", fresh != null && fresh != oldMotor[0] && net.get().sources.containsKey(fresh));
                 }))
                 .thenExecute(() -> {
+                    // no recount here: the kept motor left the network as the fresh one joined
+                    KineticNetwork n = net.get();
+                    oldMotor[1] = kinetic(level, motor);
+                    record(t, "B loaded again: sources, members, distinct positions", n.sources.size() + ", " + n.members.size() + ", " + positions(n));
+                    check("one source again: " + n.sources.size(), n.sources.size() == 1 && !n.sources.containsKey(oldMotor[0]));
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
+                    level.setChunkForced(bx, az, false);
+                })
+                .thenWaitUntil(io(() -> check("B unloads a second time: " + loadedChunks(ids[1]), unloaded(level, bx, az, ids[1]))))
+                .thenWaitUntil(io(() -> check("the chunks two or more from A are below FULL", !anyLoaded(level, ax + 2, bx, az))))
+                .thenExecute(() -> {
+                    mark[0] = loadedCount(ids[1], bx, az);
+                    watch.on = true;
+                    GlassCorpusKit.set(helper, added2, AllBlocks.MILLSTONE.getDefaultState());
+                })
+                .thenWaitUntil(() -> check("the second added millstone turns: " + speedOf(level, added2), Math.abs(speedOf(level, added2)) == 64))
+                .thenIdle(20)
+                .thenExecute(() -> {
                     KineticNetwork n = net.get();
                     float c = n.calculateCapacity();
-                    record(t, "B loaded again: capacity, sources", c + ", " + n.sources.size());
-                    check("one source again: " + n.sources.size(), n.sources.size() == 1 && !n.sources.containsKey(oldMotor[0]));
+                    record(t, "B away again: capacity, sources, members, distinct positions",
+                            c + ", " + n.sources.size() + ", " + n.members.size() + ", " + positions(n));
+                    check("one motor kept, the second visit's: " + n.sources.size(),
+                            n.sources.size() == 1 && n.sources.containsKey(oldMotor[1]));
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
                     check("the same capacity: " + c + " vs " + cap[0], c == cap[0]);
+                    watch.check("no chunk two or more from A loaded the second time");
+                    watch.on = false;
                 })
                 .thenExecute(() -> force(level, ax, bx, az, true))
                 .thenWaitUntil(io(() -> check("the fourteen chunks load for the clean-up", allLoaded(level, ax, bx, az))))
@@ -562,6 +589,14 @@ public final class SectionsChunkLoadGameTests {
                     force(level, ax, bx, az, false);
                 })
                 .thenSucceed();
+    }
+
+    /** The distinct positions a network lists. */
+    private static int positions(KineticNetwork n) {
+        java.util.Set<BlockPos> ps = new java.util.HashSet<>();
+        for (KineticBlockEntity m : n.members.keySet())
+            ps.add(m.getBlockPos());
+        return ps.size();
     }
 
     private static boolean anyLoaded(ServerLevel level, int minCx, int maxCx, int cz) {
@@ -577,7 +612,9 @@ public final class SectionsChunkLoadGameTests {
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
      * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
      * driver, and its members are bounded. {@code /rtsim district graph} writes the compile without loading
-     * anything either.
+     * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
+     * it (the network lists only what loaded this session): the next compile still finds the network
+     * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
      */
     @GameTest(template = YARD, batch = "sec1_4", timeoutTicks = 12000)
     public static void aCompileLoadsNoChunk(GameTestHelper helper) {
@@ -623,7 +660,29 @@ public final class SectionsChunkLoadGameTests {
                 .thenIdle(20)
                 .thenExecute(() -> {
                     watch.check("the dump loaded B");
+                    KineticNetwork n = kinetic(level, f.ca).getOrCreateNetwork();
+                    int bx = f.bx;
+                    n.members.keySet().removeIf(m -> m.getBlockPos().getX() >> 4 == bx);
+                    n.sources.keySet().removeIf(m -> m.getBlockPos().getX() >> 4 == bx);
+                    record(t, "as after a restart: sources, members, size", n.sources.size() + ", " + n.members.size() + ", " + n.getSize());
+                    check("nothing of B is listed", n.sources.isEmpty() && n.getSize() == n.members.size());
+                    GlassKit.Graph g = GlassKit.latest(f.da());
+                    mark[1] = g == null ? -1 : g.end().compile();
+                    ind().glass().requestCompile(ind().district(f.da()));
+                })
+                .thenWaitUntil(() -> {
+                    GlassKit.Graph g = GlassKit.latest(f.da());
+                    check("a new complete compile of A", g != null && g.complete() && g.end().compile() > mark[1]);
+                })
+                .thenExecute(() -> {
+                    watch.check("the second compile loaded B");
                     watch.on = false;
+                    GlassKit.Domain d = millDomain(GlassKit.latest(f.da()));
+                    record(t, "millstone A's domain, B unlisted", d);
+                    check("still one level: " + d.levels(), d.levels().size() == 1);
+                    check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
+                    check("still no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    checkBounded(GlassKit.latest(f.da()), d);
                 });
         restore(s, level, f).thenSucceed();
     }
@@ -849,5 +908,94 @@ public final class SectionsChunkLoadGameTests {
                     level.setChunkForced(bx, az, false);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * A chunk that drops below FULL and comes back without loading is re-synced (PATCHES.md rows 54 and 58;
+     * SECTIONS.md §2.8, choices SC37 and SC45). With A's radius-1 ticket and a FULL-only ticket on B, both
+     * unforced, B is FULL and does not tick. The FULL-only ticket goes: B drops to level 34 and stays in
+     * memory with its block entities. The motor in A is set to 128 RPM: CA follows, CB keeps 64 (rotation
+     * stops at B), and a network sync skips CB and marks it. The ticket comes back: B is FULL again with the
+     * same block entities (no load: no IND_CHUNK_LOADED), and CB gets the held-back update and CA's speed
+     * (without row 58 nothing attaches, and CB stays at 64 on CA's 128). Reversed to -64 RPM while B is FULL,
+     * CB follows and nothing breaks; forced, B ticks and turns millstone B on CA's network.
+     */
+    @GameTest(template = YARD, batch = "sec1_7", timeoutTicks = 12000)
+    public static void aDemotedChunkComesBackInStep(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        Adj f = Adj.at(helper, 5000, true);
+        ChunkPos b = new ChunkPos(f.bx, f.az);
+        String t = "aDemotedChunkComesBackInStep";
+        KineticBlockEntity[] cb = {null};
+        float[] before = {0};
+        int[] mark = {0, 0};
+        Watch watch = new Watch(helper, () -> {
+            int loads = loadedCount(f.db(), f.bx, f.az);
+            return loads != mark[0] ? "IND_CHUNK_LOADED for B: " + loads + " after " + mark[0] : null;
+        });
+        Supplier<Float> motorSpeed = () -> kinetic(level, f.motor).getGeneratedSpeed();
+        GameTestSequence s = build(helper, f, 64)
+                .thenExecute(() -> {
+                    level.getChunkSource().addRegionTicket(SEC1, f.a(), 1, f.a());
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
+                    level.setChunkForced(f.ax, f.az, false);
+                    level.setChunkForced(f.bx, f.az, false);
+                })
+                .thenWaitUntil(io(() -> check("A ticks, B is FULL and does not tick",
+                        Loaded.ticks(level, f.ca) && Loaded.at(level, f.cb) && !Loaded.ticks(level, f.cb))))
+                .thenExecute(() -> {
+                    cb[0] = kinetic(level, f.cb);
+                    check("CB turns with CA", cb[0] != null && cb[0].getSpeed() != 0 && cb[0].getSpeed() == speedOf(level, f.ca));
+                    before[0] = cb[0].getSpeed();
+                    mark[0] = loadedCount(f.db(), f.bx, f.az);
+                    watch.on = true;
+                    level.getChunkSource().removeRegionTicket(FULL_ONLY, b, 0, b);
+                })
+                .thenWaitUntil(io(() -> check("B drops below FULL", level.getChunkSource().getChunkNow(f.bx, f.az) == null)))
+                .thenExecute(() -> ((CreativeMotorBlockEntity) Loaded.blockEntity(level, f.motor)).generatedSpeed.setValue(128))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(t, "B below FULL, motor 128: CA, CB", speedOf(level, f.ca) + ", " + cb[0].getSpeed());
+                    check("CA follows the motor: " + speedOf(level, f.ca), speedOf(level, f.ca) == motorSpeed.get() && Math.abs(motorSpeed.get()) == 128);
+                    check("CB keeps its speed: " + cb[0].getSpeed(), cb[0].getSpeed() == before[0]);
+                    check("B is still below FULL", level.getChunkSource().getChunkNow(f.bx, f.az) == null);
+                    kinetic(level, f.ca).getOrCreateNetwork().sync();
+                    check("the sync skipped CB and marked it", ((KineticSyncPending) cb[0]).mic_rtsim$syncPending());
+                    mark[1] = StaleKinetics.resyncs();
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
+                })
+                .thenWaitUntil(io(() -> check("B is FULL again and CB re-synced: CB " + cb[0].getSpeed() + ", CA " + speedOf(level, f.ca),
+                        Loaded.at(level, f.cb) && StaleKinetics.resyncs() > mark[1])))
+                .thenExecute(() -> {
+                    KineticBlockEntity now = kinetic(level, f.cb), ca = kinetic(level, f.ca);
+                    record(t, "B FULL again: CB, CA, re-syncs, same object", cb[0].getSpeed() + ", " + ca.getSpeed() + ", "
+                            + (StaleKinetics.resyncs() - mark[1]) + ", " + (now == cb[0]));
+                    check("the same block entity: B did not load", now == cb[0]);
+                    check("B does not tick", !Loaded.ticks(level, f.cb));
+                    check("CB has CA's speed: CB " + cb[0].getSpeed() + ", CA " + ca.getSpeed(), cb[0].getSpeed() == ca.getSpeed());
+                    check("the held-back update was given", !((KineticSyncPending) cb[0]).mic_rtsim$syncPending());
+                    check("one network: " + ca.network + ", " + cb[0].network, ca.network != null && ca.network.equals(cb[0].network));
+                    ((CreativeMotorBlockEntity) Loaded.blockEntity(level, f.motor)).generatedSpeed.setValue(-64);
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(t, "reversed: CA, CB", speedOf(level, f.ca) + ", " + speedOf(level, f.cb));
+                    check("CB is not broken: " + level.getBlockState(f.cb), kinetic(level, f.cb) == cb[0] && !cb[0].isRemoved());
+                    check("CA and CB follow the motor: " + speedOf(level, f.ca) + ", " + speedOf(level, f.cb),
+                            speedOf(level, f.ca) == motorSpeed.get() && speedOf(level, f.cb) == speedOf(level, f.ca) && Math.abs(motorSpeed.get()) == 64);
+                    watch.check("B did not load");
+                    watch.on = false;
+                    level.setChunkForced(f.bx, f.az, true);
+                })
+                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, f.cb))))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    KineticBlockEntity ca = kinetic(level, f.ca), now = kinetic(level, f.cb);
+                    record(t, "B forced: CB, millstone B", speedOf(level, f.cb) + ", " + speedOf(level, f.millB));
+                    check("millstone B turns at 64 RPM: " + speedOf(level, f.millB), Math.abs(speedOf(level, f.millB)) == 64);
+                    check("CB on CA's network", now != null && ca.network != null && ca.network.equals(now.network));
+                });
+        restore(s, level, f).thenSucceed();
     }
 }

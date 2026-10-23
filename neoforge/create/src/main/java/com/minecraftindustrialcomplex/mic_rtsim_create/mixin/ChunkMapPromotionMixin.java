@@ -18,9 +18,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * vanilla runs no load ({@code ChunkStatusTasks.full} ran once; no {@code ChunkEvent.Load}) and Create attaches
  * nothing, so a kinetic part there that went stale while it was away would stay stale.
  * {@code ChunkMap.onFullChunkStatusChange} runs on the server thread when the holder's full status changes
- * (after the promotion's future completes, or at a demotion); at FULL the chunk is queued for
- * {@link StaleKinetics#chunkFull}, drained at the next server tick's start or end, outside whatever chunk
- * wait ran the promotion.
+ * (after the promotion's future completes, or at a demotion). A chunk demoted below FULL is noted; one noted
+ * that reaches FULL or more is queued for {@link StaleKinetics#chunkFull}, drained at the next server tick's
+ * start or end, outside whatever chunk wait ran the promotion. Chunks that never left FULL, and chunks
+ * loaded anew, are not queued.
  */
 @Mixin(value = ChunkMap.class, remap = false)
 public abstract class ChunkMapPromotionMixin {
@@ -30,7 +31,6 @@ public abstract class ChunkMapPromotionMixin {
 
     @Inject(method = "onFullChunkStatusChange", at = @At("TAIL"))
     private void mic_rtsim$fullAgain(ChunkPos pos, FullChunkStatus status, CallbackInfo ci) {
-        if (status == FullChunkStatus.FULL)
-            StaleKinetics.becameFull(level, pos);
+        StaleKinetics.fullStatusChanged(level, pos, status);
     }
 }

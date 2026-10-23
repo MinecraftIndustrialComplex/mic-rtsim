@@ -602,7 +602,6 @@ final class CreateCompile implements GlassExtractor.Compile {
         return speed;
     }
 
-    /** Whether a block entity lies outside the district's chunks. */
     /**
      * Whether a listed member of {@code net} inside the district links to a chunk outside it (choice SC44):
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
@@ -634,6 +633,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         return false;
     }
 
+    /** Whether a block entity lies outside the district's chunks. */
     private boolean outside(BlockEntity be) {
         BlockPos p = be.getBlockPos();
         return !g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4));
