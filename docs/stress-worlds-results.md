@@ -1240,6 +1240,7 @@ now says so when a watched train calls outside every district, and the engine en
 | SG52 | A departure the report flushes before the train's destination is known is journaled with no destination and an ETA of 0, stamped at the unwatched call; reported, not fixed | it needs a train that left and called at an unwatched station with no destination set at any tick between (Create sets one at once); the threat leg it books is one tick long |
 | SG53 | A station with no position or dimension is reported as unwatched too | such a station is in no district, so the leg is over |
 | SG54 | The GameTests read the engine's counts as changes over the journey and look for edges by the journey's own station ids; the report switch is reset by `forget` | the engine's counts run across the whole suite, and a failed control must not leave the switch off for the rest of the run |
+| SG58 | `unwatched_stops` and `self_edges_refused` are the run's counters and not in the globals page (a restore starts them at 0); the page keeps its layout | they were first added to the persisted `Stats`, which changed the page and made every save and every rtsim-view fixture from before unreadable, for two diagnostics the GameTests and the bench read in the session; the paging change of 10.10 (finding 3) is the one format change of these fixes |
 
 #### Deferred adopts (finding 4)
 
