@@ -1196,11 +1196,15 @@ impl Conflict {
         if w.knowledge.notable(chief).is_some() {
             return;
         }
-        self.succeed(w, f, at, None);
+        self.succeed(w, f, at, None, false);
     }
 
     /// The heir becomes chief (C24: it holds the grudges it inherited) and a new heir is named.
-    fn succeed(&mut self, w: &mut World, f: u32, at: Tick, killer: Option<ActorId>) {
+    /// `killed` is a chief killed in a fight, by `killer` when a player did it; else one dead of age.
+    /// The old chief leaves its band, if it was out with one: no party carries the chief flag
+    /// afterwards, so the band goes on without a chief body and a CHIEF_KILLED for it later is
+    /// stale, not the new chief's death (MZB-139).
+    fn succeed(&mut self, w: &mut World, f: u32, at: Tick, killer: Option<ActorId>, killed: bool) {
         let key = self.factions[f as usize].key;
         let node = self.factions[f as usize].node;
         let home = w.nodes[node].actor;
@@ -1232,6 +1236,15 @@ impl Conflict {
             x.chiefs = n + 2;
             x.chief_out = false;
         }
+        let led: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.faction == f && x.chief)
+            .map(|(h, _)| h)
+            .collect();
+        for p in led {
+            self.parties[p].chief = false;
+        }
         self.stats.successions += 1;
         // The grudges the new chief inherited become grievance against those players (C24).
         let feelings = w.knowledge.sentiment_snapshot(chief, at);
@@ -1247,11 +1260,15 @@ impl Conflict {
             let feud = self.feud_entry(f, p, at);
             feud.g.add(SignalKind::Killing, g, at, lambda);
         }
-        let what = match killer {
-            Some(_) => {
+        // A chief killed by no player (a mob, `/kill`, anything else) did not die of age (MZB-140).
+        let what = match (killed, killer) {
+            (true, Some(_)) => {
                 "its war chief is killed; the heir takes over, holding the grudge".to_string()
             }
-            None => "its chief dies of age; the heir takes over".to_string(),
+            (true, None) => {
+                "its war chief is killed, by no player; the heir takes over".to_string()
+            }
+            (false, _) => "its chief dies of age; the heir takes over".to_string(),
         };
         let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
         self.tape
@@ -5023,7 +5040,7 @@ impl Conflict {
             w.knowledge.witness(heir, r, at);
         }
         w.knowledge.die(chief, at);
-        self.succeed(w, f, at, killer);
+        self.succeed(w, f, at, killer, true);
         let bend = self.temper(f).bend(Trait::Bold, 1000, 50).max(1);
         let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
             / f64::from(bend)) as u64;
