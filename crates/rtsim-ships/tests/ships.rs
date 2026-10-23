@@ -907,13 +907,20 @@ fn sid(s: rtsim_ships::ShipId) -> u64 {
 fn the_archive_records_the_ships() {
     use rtsim_archive::{Row, Severity, kinds};
 
-    // The scripted coast, a month: the player's day 7 loot, day 9 sinking and the rest.
-    let mut c = synth::coastal(7, ShipTunables::default());
+    // The scripted coast, a month: the player's day 7 loot, day 9 sinking and the rest. With
+    // S8b's lifecycle off: its toll (§2.4.6a rule 1, PC1) takes 2.9 men from the pool before
+    // the sinking, so the slot the player sank waits for a crew until day 30.3, just past the
+    // month, and no pirate comes back to be taped. `lifecycle.rs` tapes a refound's ships back.
+    let tun = ShipTunables {
+        lifecycle: false,
+        ..ShipTunables::default()
+    };
+    let mut c = synth::coastal(7, tun.clone());
     c.ships.tape.set_on(true);
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     synth::Script::default().run(&mut c, &mut fake, Tick::ZERO, Tick::from_days(30));
     // The tape is not state: the same month with it off ends in the same hashes.
-    let mut off = synth::coastal(7, ShipTunables::default());
+    let mut off = synth::coastal(7, tun);
     let mut fake_off = FakeShips::new(f64::from(off.ships.tun.view_radius));
     synth::Script::default().run(&mut off, &mut fake_off, Tick::ZERO, Tick::from_days(30));
     assert!(off.ships.tape.is_empty());

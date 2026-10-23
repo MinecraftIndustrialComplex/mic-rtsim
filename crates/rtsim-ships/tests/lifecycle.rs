@@ -22,7 +22,12 @@ const YEAR: u64 = 96;
 
 /// `f` on each seed, a few seeds at a time on their own threads, in seed order.
 fn per_seed<T: Send>(seeds: &[u64], f: impl Fn(u64) -> T + Sync) -> Vec<T> {
-    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, 6));
+    per_seed_on(6, seeds, f)
+}
+
+/// [`per_seed`] on up to `threads` threads (the long run's sixty jobs take more).
+fn per_seed_on<T: Send>(threads: usize, seeds: &[u64], f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, threads));
     let chunk = seeds.len().div_ceil(threads).max(1);
     std::thread::scope(|sc| {
         let hs: Vec<_> = seeds
@@ -313,6 +318,7 @@ fn a_starving_haven_shuts_and_refounds() {
     let tun = ShipTunables::default();
     let starve = Tick::from_days(30).0;
     let cap = tun.crew_pool_cap * 1000;
+    let k = tun.hires_per_day / f64::from(tun.crew_pool_cap);
     per_seed(&seeds(), |seed| {
         let mut c = synth::coastal(seed, tun.clone());
         c.ships.tape.set_on(true);
@@ -324,6 +330,30 @@ fn a_starving_haven_shuts_and_refounds() {
         assert_eq!(manned(&c.ships, h), (2, 2), "fed: they rest in port");
         assert!(!c.ships.starving(h, c.ships.now()));
         assert_eq!(c.ships.havens[h as usize].fed_until, Tick(starve));
+        // The pool's one piecewise closed form (PC2): untouched since the founding (no hunt, no
+        // top-up), it hires toward the cap until the turn on day 30, then deserts at the same
+        // rate, `p_turn e^(-r t / cap)`.
+        let hv = &c.ships.havens[h as usize];
+        assert_eq!((hv.pool_milli, hv.pool_at), (6_000, Tick::ZERO));
+        let fed = |d: f64| f64::from(cap) - f64::from(cap - 6_000) * (-k * d).exp();
+        let read = |d: f64| {
+            f64::from(
+                c.ships
+                    .crew_pool_milli(h, Tick((d * TICKS_PER_DAY as f64) as u64)),
+            )
+        };
+        for d in [29.0, 30.0] {
+            assert!((read(d) - fed(d)).abs() <= 1.0, "seed {seed} day {d}");
+        }
+        let turn = read(30.0);
+        for d in [30.5, 33.0, 40.0] {
+            let want = turn * (-k * (d - 30.0)).exp();
+            assert!(
+                (read(d) - want).abs() <= 1.0,
+                "seed {seed} day {d}: {} against {want}",
+                read(d)
+            );
+        }
 
         // Starving: laid up, then shut.
         let mut t = c.ships.now();
@@ -357,6 +387,11 @@ fn a_starving_haven_shuts_and_refounds() {
         let mut last = full;
         for d in [1u64, 10, 30, 47] {
             let p = c.ships.crew_pool_milli(h, sh.since + d * TICKS_PER_DAY);
+            let want = f64::from(full) * (-k * d as f64).exp();
+            assert!(
+                (f64::from(p) - want).abs() <= 1.0,
+                "seed {seed} day {d}: {p} against {want}"
+            );
             assert!(p < last, "seed {seed} day {d}: {p} after {last}");
             last = p;
         }
@@ -620,13 +655,20 @@ fn check_lives(on: &[Life], off: &[Life]) {
     }
 }
 
-/// S8b `unattended_havens_rise_and_fall`, the everyday cut: three decades of four seas, the
-/// lifecycle on and off.
+/// Every seed's unattended run with the lifecycle on, then off, `threads` runs at a time.
+fn lives(threads: usize, seeds: &[u64], windows: u64, years: u64) -> (Vec<Life>, Vec<Life>) {
+    let jobs: Vec<u64> = seeds.iter().flat_map(|&s| [2 * s, 2 * s + 1]).collect();
+    let all = per_seed_on(threads, &jobs, |j| {
+        unattended(j / 2, j % 2 == 0, windows, years)
+    });
+    all.into_iter().partition(|l| l.lifecycle)
+}
+
+/// S8b `unattended_havens_rise_and_fall`, the everyday cut: three decades of three seas, the
+/// lifecycle on and off (seed 2's sea has havens that shut and refound within them).
 #[test]
 fn unattended_havens_rise_and_fall() {
-    let seeds = [1, 2, 3, 4];
-    let on = per_seed(&seeds, |seed| unattended(seed, true, 3, 10));
-    let off = per_seed(&seeds, |seed| unattended(seed, false, 3, 10));
+    let (on, off) = lives(6, &[1, 2, 3], 3, 10);
     report(&on);
     report(&off);
     check_lives(&on, &off);
@@ -638,8 +680,7 @@ fn unattended_havens_rise_and_fall() {
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn unattended_havens_rise_and_fall_1000_years() {
-    let on = per_seed(&seeds(), |seed| unattended(seed, true, 10, 100));
-    let off = per_seed(&seeds(), |seed| unattended(seed, false, 10, 100));
+    let (on, off) = lives(12, &seeds(), 10, 100);
     report(&on);
     report(&off);
     check_lives(&on, &off);

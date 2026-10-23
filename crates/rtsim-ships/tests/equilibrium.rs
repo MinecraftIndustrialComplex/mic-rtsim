@@ -24,6 +24,14 @@ fn coast(seed: u64) -> Coastal {
     synth::coastal(seed, ShipTunables::default())
 }
 
+/// The tunables with S8b's lifecycle (§2.4.6a) off: S8's havens, for the rules S8 set alone.
+fn s8_only() -> ShipTunables {
+    ShipTunables {
+        lifecycle: false,
+        ..ShipTunables::default()
+    }
+}
+
 /// `f` on each seed, a few seeds at a time on their own threads, in seed order.
 fn per_seed<T: Send>(seeds: &[u64], f: impl Fn(u64) -> T + Sync) -> Vec<T> {
     let threads = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(1, 6));
@@ -76,8 +84,8 @@ fn idle(c: &mut Coastal, fake: &mut FakeShips, to: Tick) {
 /// The scripted player (it watches, follows the hunted lane, fights in view and sinks one pirate
 /// on day 9) for `days`; then it logs off, the bodies leave with it, and the haven mans every
 /// slot again (within 120 days) before the coast is handed back.
-fn scripted(seed: u64, days: u64) -> (Coastal, FakeShips) {
-    let mut c = coast(seed);
+fn scripted(seed: u64, days: u64, tun: &ShipTunables) -> (Coastal, FakeShips) {
+    let mut c = synth::coastal(seed, tun.clone());
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     let mut script = Script::default();
     script.run(&mut c, &mut fake, Tick::ZERO, Tick::from_days(days));
@@ -162,13 +170,21 @@ fn refit_wait(s: &Ships, p: ShipId) -> Option<f64> {
 /// Every seed has both slots back within 180 days, and so does the model's harsher kill-all,
 /// which also empties the pool and adds 1 to the pressure. A second kill-all as soon as the fleet
 /// is back waits longer: the pressure is remembered.
+///
+/// Each kill-all runs with S8b's lifecycle (§2.4.6a) on and off. On, the toll (PC1) keeps the
+/// pool low while every slot is manned, so the slots wait longer for crews; a haven whose ships
+/// were all sunk is not shut (PC4) and stays fed until a month after its first refit is due
+/// (PC13), so a kill-all is still answered by refits and the 180-day band holds.
 #[test]
 fn kill_all_pirates() {
     let tun = ShipTunables::default();
+    let off = s8_only();
     let runs = per_seed(&seeds(), |seed| {
-        let mut out = [0.0; 3];
-        for harsh in [false, true] {
-            let (mut c, mut fake) = scripted(seed, 12);
+        // Lifecycle on: half back, all back, all back after the harsh kill-all; then off.
+        let mut out = [0.0; 6];
+        let variants = [(false, &tun), (true, &tun), (false, &off), (true, &off)];
+        for (i, (harsh, tun)) in variants.into_iter().enumerate() {
+            let (mut c, mut fake) = scripted(seed, 12, tun);
             let h = c.haven;
             let at = c.ships.now();
             let mut op = 0;
@@ -190,13 +206,19 @@ fn kill_all_pirates() {
                 .collect();
             let (half, all) = days_back(&mut c, &mut fake, at, 180);
             let all = all.unwrap_or_else(|| {
-                panic!("seed {seed} harsh {harsh}: not every slot back within 180 days")
+                panic!(
+                    "seed {seed} harsh {harsh} lifecycle {}: not every slot back within 180 days",
+                    tun.lifecycle
+                )
             });
+            let n = c.ships.havens[h as usize].counts;
+            assert_eq!(n.shuts, 0, "seed {seed}: a kill-all is answered by refits (PC4)");
+            let col = [0, 0, 3, 3][i];
             if harsh {
-                out[2] = all;
+                out[col + 2] = all;
             } else {
-                out[0] = half.expect("half before all");
-                out[1] = all;
+                out[col] = half.expect("half before all");
+                out[col + 1] = all;
                 // Again, as soon as they are back: the wait is longer.
                 let at = c.ships.now();
                 sink_all(&mut c, &mut op, at);
@@ -231,25 +253,31 @@ fn kill_all_pirates() {
             quantile(v, 0.95)
         )
     };
-    println!(
-        "kill-all, seeds 1 to 30 (days): half back {}, all back {}; with the pool emptied and \
-         P + 1, all back {}",
-        q(&col(0)),
-        q(&col(1)),
-        q(&col(2)),
-    );
+    for (on, c) in [("on", 0), ("off", 3)] {
+        println!(
+            "kill-all, seeds 1 to 30 (days), lifecycle {on}: half back {}, all back {}; with the \
+             pool emptied and P + 1, all back {}",
+            q(&col(c)),
+            q(&col(c + 1)),
+            q(&col(c + 2)),
+        );
+    }
 }
 
 /// S8 `crew_pool_is_bounded`: hires follow the closed form `cap - (cap - pool) e^(-r t / cap)`
 /// toward 18 (from the founding crew of 6), captures add crew up to the cap and never past it,
 /// and the pool and pressure read back exactly after a restart.
+///
+/// With the lifecycle off: S8's pool. With it on, every unwatched hunt start draws its toll on
+/// the pool (§2.4.6a rule 1, PC1) and a haven that starves deserts (rule 2, PC2), so the pool is
+/// no longer this one closed form from day 0; `lifecycle.rs` tests the toll and the turn.
 #[test]
 fn crew_pool_is_bounded() {
-    let tun = ShipTunables::default();
+    let tun = s8_only();
     let cap = tun.crew_pool_cap * 1000;
     let k = tun.hires_per_day / f64::from(tun.crew_pool_cap);
     per_seed(&seeds(), |seed| {
-        let mut c = coast(seed);
+        let mut c = synth::coastal(seed, tun.clone());
         let h = c.haven;
         let start = c.ships.havens[h as usize].pool_milli;
         assert_eq!(
