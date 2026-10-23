@@ -10,6 +10,7 @@ pub mod equilibrium;
 pub mod herds;
 pub mod industry;
 pub mod memory;
+pub mod mowzie;
 pub mod phase1;
 pub mod quiet;
 pub mod ships;
