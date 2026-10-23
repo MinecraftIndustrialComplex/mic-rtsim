@@ -3963,28 +3963,40 @@ impl Conflict {
     }
 
     /// A rout is one rescue report (C24: rescues count; K2-25, CL-D60) that only its real
-    /// witnesses learn first-hand (CL-D61, PLAN.md §8.7): the village the band marched on, always
-    /// (it was the one rescued); every village that hates the faction within `view_radius` of
-    /// where the band broke (the radius the engine gives a player's view, as [`Conflict::watcher`]
-    /// reads it); and every player base within that radius, which carries the news the way a
-    /// caravan carries a rescue home (CL-D61, "Base carries the news"). A base has no culture, so
-    /// no hate test; it is the market node the player's district or dwell place is, and the
-    /// engine has no other link from a district to a base. Every other village hears it later from
-    /// a traveller, at hearsay weight, through the knowledge layer's news: a base's board goes out
-    /// in a packet with the next messenger on each of its roads, as a village's does. The report
-    /// names whom the band was after (the node it marched on, else the feud's actor unless that is
-    /// the breaker, else no one) and the place it broke. A rout nobody witnessed records no report.
-    /// Knowledge dedups per report, so a report per witness made each village count the rout once
-    /// per witness.
+    /// witnesses learn first-hand (CL-D61, PLAN.md §8.7). The witnesses are:
+    ///
+    /// - the village the band marched on, always (it was the one rescued);
+    /// - every village that hates the faction within `view_radius` of where the band broke, read
+    ///   as [`Conflict::watcher`] reads a player's view (the raw distance, the edge included);
+    /// - the player's base the band marched on, always, and every player base within that radius
+    ///   of where it broke (CL-D61, "Base carries the news"): it is the market node the player's
+    ///   district or dwell place is. The engine has no link from a district to a base, so the
+    ///   base a district or position target names is the one within `view_radius` of it. A base
+    ///   has no culture, so no hate test; it carries the news the way a caravan carries a rescue
+    ///   home.
+    ///
+    /// Every other village hears it later from a traveller, at hearsay weight, through the
+    /// knowledge layer's news: a base's board goes out in a packet with the next messenger on each
+    /// of its roads, as a village's does. The report names whom the band was after (the node it
+    /// marched on, else the feud's actor unless that is the breaker, else no one) and the place it
+    /// broke. A rout nobody witnessed records no report. Knowledge dedups per report, so a report
+    /// per witness made each village count the rout once per witness.
+    ///
+    /// Where the band broke is [`Conflict::break_point`]: where the breaker stands for a watched
+    /// fight, where the band is on the road otherwise. The band's target decides which base it
+    /// marched on and which village, not the distance from the break point.
     fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
-        let x = &self.parties[p];
-        let frame = x.frame;
-        let (bx, bz) = self.party_pos(p, at);
+        let (frame, target, feud) = {
+            let x = &self.parties[p];
+            (x.frame, x.target, x.feud)
+        };
+        let (bx, bz) = self.break_point(w, p, player, at);
+        let aim = self.target_pos(w, target);
         // The rescued village: the node the band marched on, when it is a village. A feud's actor
         // is a player or the shared settlers, never a village, so `whom` names one only here.
-        let rescued = match x.target {
+        let rescued = match target {
             Target::Node(i) => w
                 .nodes
                 .get(i)
@@ -4003,23 +4015,44 @@ impl Conflict {
             .nodes
             .within(w, topo.of(frame), Pos::new(frame, bx, bz), view);
         let mut witnesses: Vec<ActorId> = rescued.into_iter().collect();
-        let mut bases: Vec<usize> = Vec::new();
+        let mut bases: BTreeSet<usize> = BTreeSet::new();
         for i in in_view {
             let n = &w.nodes[i];
             match n.kind {
                 NodeKind::Village(cu) if c.hates(cu.name()) && !witnesses.contains(&n.actor) => {
                     witnesses.push(n.actor);
                 }
-                NodeKind::PlayerBase { .. } => bases.push(i),
+                NodeKind::PlayerBase { .. } => {
+                    bases.insert(i);
+                }
                 _ => {}
             }
         }
+        // The base the band marched on: the node itself, else the base at the district or place.
+        match target {
+            Target::Node(i)
+                if w.nodes
+                    .get(i)
+                    .is_some_and(|n| matches!(n.kind, NodeKind::PlayerBase { .. })) =>
+            {
+                bases.insert(i);
+            }
+            Target::Node(_) => {}
+            Target::District(..) | Target::Pos(_) => {
+                for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
+                    if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. }) {
+                        bases.insert(i);
+                    }
+                }
+            }
+        }
         let (mut heard, mut told) = (0, 0);
-        if !witnesses.is_empty() || !bases.is_empty() {
-            let x = &self.parties[p];
-            let whom = match x.target {
+        let mut full = false;
+        let candidates = witnesses.len() + bases.len();
+        if candidates > 0 {
+            let whom = match target {
                 Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
-                _ => x.feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
+                _ => feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
             };
             let rep = w.knowledge.record(Report {
                 who: player,
@@ -4030,15 +4063,20 @@ impl Conflict {
                 at,
                 place: Place::new(frame, bx, 64, bz),
             });
-            for va in witnesses {
-                if w.knowledge.witness(va, rep, at) {
-                    heard += 1;
+            // A full table that keeps nothing hands back NULL, which nobody can witness.
+            full = rep.is_null();
+            if !full {
+                for va in witnesses {
+                    if w.knowledge.witness(va, rep, at) {
+                        heard += 1;
+                    }
                 }
-            }
-            // A base tells the next travellers at once: it has no market events to do it for it.
-            for i in bases {
-                if w.node_witnesses(i, rep, at) {
-                    told += 1;
+                // A base tells the next travellers at once: it has no market events to do it for
+                // it.
+                for i in bases {
+                    if w.node_witnesses(i, rep, at) {
+                        told += 1;
+                    }
                 }
             }
         }
@@ -4046,8 +4084,18 @@ impl Conflict {
             at,
             Some(f),
             "rescue",
-            if heard + told == 0 {
+            if candidates == 0 {
                 format!("nobody saw the {} band broken: no rescue report", c.name())
+            } else if full {
+                format!(
+                    "the report table is full: the {} band's rout is not recorded",
+                    c.name()
+                )
+            } else if heard + told == 0 {
+                format!(
+                    "no witness took the report of the {} band's rout ({candidates} in view)",
+                    c.name()
+                )
             } else {
                 format!(
                     "{heard} village(s) and {told} base(s) saw the {} band broken (the rest hear it from travellers)",
@@ -4055,6 +4103,25 @@ impl Conflict {
                 )
             },
         );
+    }
+
+    /// Where a band broke, for [`Conflict::rescue_news`]. A watched fight is centred on the
+    /// player who watches it (`start_fight`), who may stand up to `view_radius` from the band's
+    /// target, and the band's fighters are around them; so the breaker's latest report of their
+    /// position in the band's frame is where it broke, if that report is fresh enough for
+    /// [`Conflict::watcher`] to believe it. Otherwise (a band on the road, a breaker not reported
+    /// lately, or in another frame) it is where the band stands, [`Conflict::party_pos`]. Nothing
+    /// is saved for this: the position is a read.
+    fn break_point(&self, w: &World, p: Handle<Party>, breaker: ActorId, at: Tick) -> (i32, i32) {
+        let x = &self.parties[p];
+        if x.phase == Phase::Fighting
+            && let Some((pp, t)) = w.players.get(&breaker).and_then(|s| s.pos)
+            && pp.frame == x.frame
+            && at.0.saturating_sub(t.0) <= self.tun.player_stale_ticks
+        {
+            return (pp.x, pp.z);
+        }
+        self.party_pos(p, at)
     }
 
     // ---- seen on the march -----------------------------------------------------------------
@@ -4814,6 +4881,15 @@ impl Conflict {
                 }
                 self.go_home(w, p, boundary::RECALL_SETTLED, at);
             } else {
+                // A war band wiped out on the road is routed as one routed in a fight is: a
+                // rout, and a rescue report when a player broke it (CL-D61). It was counted
+                // nowhere before.
+                if self.parties[p].kind.is_war() {
+                    self.stats.routs += 1;
+                    if let Some(player) = self.parties[p].breaker {
+                        self.rescue_news(w, p, player, at);
+                    }
+                }
                 self.go_home(w, p, boundary::RECALL_ROUTED, at);
             }
         }
@@ -4889,7 +4965,11 @@ impl Conflict {
         if self.parties[p].phase == Phase::Fighting {
             self.end_fight(w, p, boundary::RECALL_ROUTED, at);
         } else if self.parties[p].phase != Phase::Home {
+            // A band routed on the road is a rescue as much as one routed in a fight (CL-D61).
             self.stats.routs += 1;
+            if let Some(player) = self.parties[p].breaker {
+                self.rescue_news(w, p, player, at);
+            }
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
         }
         self.note(
