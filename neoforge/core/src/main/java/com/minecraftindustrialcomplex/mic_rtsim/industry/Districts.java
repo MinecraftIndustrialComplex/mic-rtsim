@@ -397,8 +397,17 @@ public final class Districts {
     }
 
     public void discard(District d, int reason) {
+        discard(d, reason, 0);
+    }
+
+    /**
+     * A discard a station's call made ({@code station}, 0 for none): the engine discards the windows of
+     * the units the station's last {@code IND_STATION_PORTS} named (SECTIONS.md §3.6).
+     */
+    public void discard(District d, int reason, long station) {
         ByteBuffer r = ind.journal(IndRecords.IND_DISCARD, IndRecords.Discard.SIZE, reason);
         r.putLong(IndRecords.Discard.DISTRICT, d.id);
+        r.putLong(IndRecords.Discard.STATION, station);
         ind.commit(r);
     }
 

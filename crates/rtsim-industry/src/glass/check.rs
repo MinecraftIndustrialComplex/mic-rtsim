@@ -2122,7 +2122,47 @@ impl Compiled {
                 learned_sources: dg.replay.as_ref().map_or(0, |r| r.learned_sources()),
             },
             goods: goods.into_values().collect(),
+            units: self.unit_reports(dg),
         }
+    }
+
+    /// Each judging unit as the report shows it (choice SC74); empty with one unit or none.
+    fn unit_reports(&self, dg: &DistrictGlass) -> Vec<report::UnitReport> {
+        let frozen = dg.replay.as_ref().map(|r| r.frozen());
+        (0..self.unit_state.len())
+            .map(|u| {
+                let st = &self.unit_state[u];
+                let secs = self.units.sections.get(u).map_or(&[][..], |v| &v[..]);
+                let mut bbox: Option<(BlockPos, BlockPos)> = None;
+                for &s in secs {
+                    let Some((lo, hi)) = self.sections.list.get(s as usize).and_then(|x| x.bbox) else {
+                        continue;
+                    };
+                    bbox = Some(match bbox {
+                        None => (lo, hi),
+                        Some((a, b)) => (
+                            BlockPos { x: a.x.min(lo.x), y: a.y.min(lo.y), z: a.z.min(lo.z) },
+                            BlockPos { x: b.x.max(hi.x), y: b.y.max(hi.y), z: b.z.max(hi.z) },
+                        ),
+                    });
+                }
+                report::UnitReport {
+                    sections: secs.len() as u32,
+                    nodes: self.units.of_node.iter().filter(|&&x| x as usize == u).count() as u32,
+                    bbox,
+                    window_ticks: st.win.as_ref().map_or(0, |w| w.last.0.saturating_sub(w.start.0)),
+                    windows_completed: st.windows_completed,
+                    verdict: st.last.as_ref().map_or(report::verdict::NONE, |r| r.verdict),
+                    strikes: st.strikes,
+                    passed: st.passed.is_some(),
+                    stale: st.edited,
+                    may_replay: self.unit_may_replay(u as u16),
+                    frozen: frozen.is_some_and(|f| f.get(u).copied().unwrap_or(false)),
+                    unbounded: self.units.unbounded.get(u).copied().unwrap_or(false),
+                    ready_at: st.ready_at.0,
+                }
+            })
+            .collect()
     }
 
     /// The window in progress, judged as it stands (its verdicts are reported as NONE).

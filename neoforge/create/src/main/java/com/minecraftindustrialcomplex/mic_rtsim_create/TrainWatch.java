@@ -350,7 +350,7 @@ public final class TrainWatch {
                 if (d != null)
                     UNWATCHED.remove(train.id);
                 if (d != null && d.loadState() != IndRecords.LoadState.UNLOADED)
-                    ind.districts().discard(d, IndRecords.Discard.OTHER);
+                    ind.districts().discard(d, IndRecords.Discard.OTHER, CreateIds.of(st.id));
                 return;
             }
             // A leg from a district station begins: its next unwatched stop is reported again (SG50).
@@ -358,8 +358,8 @@ public final class TrainWatch {
             District d = ind.district(stop.district);
             if (d != null && stop.simulated && d.loadState() != IndRecords.LoadState.UNLOADED) {
                 // Simulated at arrival, loaded since: what its interfaces moved after the load is not a
-                // port anyone measured. Discard the window.
-                ind.districts().discard(d, IndRecords.Discard.OTHER);
+                // port anyone measured. Discard the windows of what its interfaces reach.
+                ind.districts().discard(d, IndRecords.Discard.OTHER, stop.station);
             }
             if (d != null && !stop.simulated) {
                 // Loaded: the carriages' change while they stood here crossed the boundary (§3.3).
@@ -372,12 +372,13 @@ public final class TrainWatch {
                 // Mail went to postboxes, each counted by its own district as IND_PACKAGE (Q6), not here.
                 if (mail != null)
                     port.addAll(mail, -1);
+                // The ports first: the engine maps the cargo through the station's latest (§4.4, SC75)
+                if (docked != null && CreateIds.of(docked.station) == stop.station && docked.dim.equals(stop.dim))
+                    ports(ind, d, stop.station, ind.level(stop.dim), docked.psis);
                 if (!port.isEmpty()) {
                     ind.port(d, IndRecords.Port.TRAIN_CARGO, IndRecords.NO_INVENTORY, CreateIds.of(train.id), 0, port);
                     cargoPorts++;
                 }
-                if (docked != null && CreateIds.of(docked.station) == stop.station && docked.dim.equals(stop.dim))
-                    ports(ind, d, stop.station, ind.level(stop.dim), docked.psis);
             }
             LEAVING.add(new Leaving(new WeakReference<>(train), stop.station, stop.district, ind.gameTime()));
         } catch (RuntimeException e) {
