@@ -741,7 +741,7 @@ With P8's bodies, the same events gain ships and crews.
 - The toll is arithmetic at an event that already exists (reaching the lane).
 - Nothing scans the world: only docks with a hot lane are checked.
 
-**Built.** See §4, row S8b, and the measured numbers in `docs/choices-ports.md`.
+**Built.** S8b-1, rules 1, 2, 4 and 5 (PC1 to PC6, PC11 to PC19), on branch `ports/lifecycle`: `ShipTunables::{lifecycle, starve_days, refound}`; in `rtsim-ships`' engine the toll, `fed_until` and the starving pool's closed form, laying up, shutting and refounding; the haven rows' new fields saved in `RTS2` with no migration; `check()` holds that a shut haven has no active ship, that each pool is within its cap and that each shut haven has exactly one live look. Tests (`tests/lifecycle.rs`): `a_hunt_pays_its_toll`, `a_starving_haven_shuts_and_refounds`, `no_refound_in_view`, `unattended_havens_rise_and_fall` and its thousand-year run on `synth::sea_havens` seeds 1 to 30. Measured over 1,000 years with the lifecycle on: havens shut in 4 of 30 seas (seed 2: 64 shuts, 63 refounds; seed 9: 14 and 13; seed 25: 1 and 1; seed 21: 1 and none, its site having no lane worth hunting); 0.980 of the sites open on average (lowest 0.785); every sea hunts in every century; tolls of 14 to 69 men a year a sea; 4.5% fewer hunts than with the lifecycle off (up to 25% in one sea, all in seas where nothing shut, so from the toll). With it off nothing shuts. With it on, S8's kill-all brings every slot back in 52.8 days [52.5, 52.8] (off: 52.5 [47.0, 52.8]) and `pirates_survive_unattended_1000_years` keeps every slot manned every century. Rules 3, 6, 7 and 8 are not built.
 
 #### 2.4.7 Frostmaw and Umvuthana (MOWZIE)
 
