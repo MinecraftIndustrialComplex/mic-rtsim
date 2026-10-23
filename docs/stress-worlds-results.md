@@ -1220,3 +1220,20 @@ Recommended option first in each; none is fixed here (SG49).
    closes before the unload. (b) Leave it and report the count per run, as here.
 6. **The first-tick and first-forceload stalls** (SG36). (a) Recommended: the mic_climate fix of
    10.8 (PA's `BiomeSampler` given the level's own `RandomState`). (b) Leave it: once per region.
+
+### 10.10 Fixes for 10.9's findings
+
+The coordinator relayed Ben's decisions on 10.9's findings: fix them, in this order, each on main
+and pushed alone, each after an adversarial review. Choices are numbered from SG50, with gaps for
+the fixes that follow.
+
+#### Self edges (finding 1)
+
+A train that left a district's station, called at a station outside every district and came back
+made an edge from the first station to itself, carrying the round trip's travel time. The bridge
+now says so when a watched train calls outside every district, and the engine ends the leg there.
+
+| # | Choice | Why |
+|---|---|---|
+| SG50 | New record IND_TRAIN_UNWATCHED (0x0416, train and station), sent by `TrainWatch.arrived` when the station is in no district, once a leg; the engine forgets the train's open leg | finding 1 (a); the leg between a district's station and an unwatched one is not a line the engine can use, and the next departure from a district starts a new leg. A train's second unwatched call sends nothing; a departure from a district re-arms it |
+| SG51 | The engine also refuses to book an edge whose ends are one station, and counts it (`self_edges_refused`) | defense in depth: an engine fed by an older bridge, or a replayed journal from before the record, must not learn a line from a station to itself. A GameTest on the native engine asserts the count stays 0 with the bridge fix, so the guard cannot hide a bridge regression |
