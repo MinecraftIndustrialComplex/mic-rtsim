@@ -4,6 +4,7 @@
 //! decision.
 
 use rtsim_kernel::clock::TICKS_PER_DAY;
+use rtsim_kernel::renewal::RenewalRule;
 use serde::Serialize;
 
 use crate::calendar::{Calendar, Season};
@@ -111,12 +112,31 @@ pub struct DragonTunables {
     /// Health a dragon loses in an abstract raid per share of its passes stopped by defences, as a
     /// share of max health, thousandths. PLACEHOLDER 400.
     pub raid_wound_milli: i64,
-    /// Hunts in a row that found nothing before the dragon moves to another roost or ranges far
-    /// (a migration). PLACEHOLDER 3.
-    pub fruitless_before_move: u8,
-    /// Days a roost must stand empty before a young dragon claims it (the respawn rule, P13).
-    /// TUNABLE, PLACEHOLDER 20.
+    /// Days a roost must stand empty before a young dragon claims it when no player has
+    /// pressed it (the respawn rule, P13; EQUILIBRIUM.md §2.4.1's base). TUNABLE, 20.
     pub respawn_delay_days: u64,
+    /// The longest a roost waits, however hard it was farmed (§2.4.1's cap). TUNABLE, 192.
+    pub respawn_cap_days: u64,
+    /// The half-life of a lair's pressure, days (§2.2's H, one game year). TUNABLE, 96.
+    pub respawn_half_life_days: u32,
+    /// A dragon older than `starve_leave_age_days` whose lair's fed share falls below this
+    /// leaves (§2.4.1's starve-leave). TUNABLE, 0.35.
+    pub starve_leave: f32,
+    pub starve_leave_age_days: u64,
+    /// A newcomer settles only where the hunting ground would feed it at least this share of
+    /// its need (§2.4.1's arrive-food), else the lair checks again after
+    /// `arrive_recheck_days`. TUNABLE, 0.5 and 24.
+    pub arrive_food: f32,
+    pub arrive_recheck_days: u64,
+    /// The fed share's moving-average time constant, days. TUNABLE, 30.
+    pub fed_tau_days: f32,
+    /// What the arrival gate reads for an empty lair (§2.4.1 and §3.4): the share of its need a
+    /// newcomer would catch there, `W / (W + gate_half)`, where W is `gate_village` with a
+    /// village in the nine regions around the lair (`gate_wild` without) plus `(N - R)^2 / K`
+    /// for each herd in them. TUNABLE, 300, 30 and 200 (the model's).
+    pub gate_village: f64,
+    pub gate_wild: f64,
+    pub gate_half: f64,
     /// Age in days of a dragon the respawn rule brings in. PLACEHOLDER 30 (stage 2: it grows into
     /// the roost).
     pub respawn_age_days: u64,
@@ -181,8 +201,17 @@ impl Default for DragonTunables {
             wound_unit_milli: 250,
             wound_shortens_milli: 3_000,
             raid_wound_milli: 400,
-            fruitless_before_move: 3,
             respawn_delay_days: 20,
+            respawn_cap_days: 192,
+            respawn_half_life_days: 96,
+            starve_leave: 0.35,
+            starve_leave_age_days: 60,
+            arrive_food: 0.5,
+            arrive_recheck_days: 24,
+            fed_tau_days: 30.0,
+            gate_village: 300.0,
+            gate_wild: 30.0,
+            gate_half: 200.0,
             respawn_age_days: 30,
             respawn_from_blocks: 3_000,
             view_radius: 160,
@@ -204,5 +233,14 @@ impl DragonTunables {
 
     pub fn season_weight(&self, season: Season, kind: PreyKind) -> i32 {
         self.season_percent[season.index()][kind.index()]
+    }
+
+    /// The lairs' renewal rule (EQUILIBRIUM.md §2.4.1: base 20, cap 192, H 96).
+    pub fn renewal(&self) -> RenewalRule {
+        RenewalRule {
+            base_days: self.respawn_delay_days as f32,
+            cap_days: self.respawn_cap_days as f32,
+            half_life_days: self.respawn_half_life_days as f32,
+        }
     }
 }
