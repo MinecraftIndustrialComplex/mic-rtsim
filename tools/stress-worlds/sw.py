@@ -22,7 +22,10 @@ shift its windows against the others'. Scenes are JSON:
      "adopt": [[x, y, z, radius], ...],          rtsim district adopt (rtsim arms only), optional dimension
      "idle": 60, "settle": 120, "busy": 300, "sample": 5,
      "unload_reload": 90,                        forceload remove all, wait, add again, wait
-     "rescan": true,                             `rtsim district rescan` after the busy window (rtsim arms)
+     "rescan": true,                             `rtsim district rescan` after the busy window (rtsim arms): timed
+                                                 over the ticks it takes (it is spread over ticks, DS-16, SG81)
+     "unload_after_adopts": 8000,                game ticks after the adopts before the unload begins, so every
+                                                 district's glass verdict closes first (SG82)
      "info_max": 12,                             districts to ask for info
      "ticks": {"busy": 6600, ...}}               phases run by game ticks, not seconds (below)
 
@@ -32,7 +35,8 @@ every arm has run that many game ticks since it reached it (read over RCON), so 
 holds the periodic detection pass or a simulated call that a wall-time phase would miss (choice
 SG43). Phases not named there keep their seconds.
 
-Every arm also gets a KubeJS script that records two numbers a tick for the `swticks` command (SG44):
+Every arm also gets a KubeJS script that records two numbers a tick for the `swticks` command (SG44;
+a gap over 10 s is a suspend of the laptop and is counted apart, "suspends", in no statistic, SG80):
 "ring", the server's tick time ring (what `neoforge tps` averages, which ends before
 ServerTickEvent.Post and so leaves out rtsim's Post handlers), and "gap", the wall time from one
 tick's end to the next (after every Post handler, so the whole tick; below 50 ms it includes the wait
@@ -76,8 +80,12 @@ let swMs = []
 let swGap = []
 let swGt = []
 let swTop = []
+let swSusp = []
 let swLast = -1
 let swPrev = 0
+// A gap over this is a suspend of the laptop (a lid close), not a tick: it is counted apart and left out of
+// every statistic and of the longest ticks (choice SG80; before it, a 1,726 s tick sat in one window's mean).
+const SW_SUSPEND_MS = 10000
 
 function swPct(a, p) {
     if (a.length == 0) return 0
@@ -112,6 +120,10 @@ ServerEvents.tick(event => {
     swLast = tc
     swPrev = now
     if (gap < 0) return
+    if (gap > SW_SUSPEND_MS) {
+        swSusp.push(gap)
+        return
+    }
     const ms = s.getTickTimesNanos()[tc % 100] / 1e6
     swMs.push(ms)
     swGap.push(gap)
@@ -131,6 +143,7 @@ ServerEvents.commandRegistry(event => {
             swMs = []
             swGap = []
             swGt = []
+            swSusp = []
             c.source.sendSystemMessage(Text.of('swticks: reset'))
             return 1
         }))
@@ -143,6 +156,7 @@ ServerEvents.commandRegistry(event => {
             c.source.sendSystemMessage(Text.of('swticks: now ' + c.source.getServer().getTickCount() + ' n ' + swGt.length
                 + ' from ' + (swGt.length ? swGt[0] : -1) + ' to ' + (swGt.length ? swGt[swGt.length - 1] : -1)
                 + ' ' + swStats('ring', swMs) + ' ' + swStats('gap', swGap)
+                + ' susp ' + swSusp.length + ' suspmax ' + swFmt(swSusp.length ? Math.max.apply(null, swSusp) : 0)
                 + ' top ' + top + ' ; boot ' + boot))
             return 1
         })))
@@ -517,7 +531,7 @@ class Server:
         st = r"mean ([\d.]+) p50 ([\d.]+) p95 ([\d.]+) p99 ([\d.]+) p999 ([\d.]+) max ([\d.]+) " \
              r"over50 (\d+) over100 (\d+) over250 (\d+) over1000 (\d+)"
         m = re.search(r"swticks: now (\d+) n (\d+) from (-?\d+) to (-?\d+) ring " + st + " gap " + st
-                      + r" top (.*?) ; boot (.*)", out)
+                      + r" susp (\d+) suspmax ([\d.]+) top (.*?) ; boot (.*)", out)
         if not m:
             return {"raw": out[:500]}
         g = m.groups()
@@ -531,7 +545,9 @@ class Server:
         r["from"], r["to"] = r["from"] + off, r["to"] + off
         trip = lambda s: [{"gap": float(a), "ring": float(b), "tick": int(c) + off}
                           for a, b, c in re.findall(r"([\d.]+)/([\d.]+)@(-?\d+)", s)]
-        r["top"], r["boot_top"] = trip(g[24]), trip(g[25])
+        # laptop suspends (a gap over 10 s) are counted apart and in no statistic (SG80)
+        r["suspends"], r["suspend_max_ms"] = int(g[24]), float(g[25])
+        r["top"], r["boot_top"] = trip(g[26]), trip(g[27])
         r["gametime_offset"] = off
         return r
 
@@ -639,6 +655,42 @@ def forceload(s, boxes, add=True):
         s.ev("forceload", add=add, box=list(b), out=out[:200])
 
 
+PERF_DETECTION = re.compile(r"detections (\d+) \((\d+) us in all, last (\d+) us over (\d+) ticks \((.*?)\), longest tick "
+                            r"(\d+) us: (.*?)\), declarations (\d+), detection (idle|under way or waiting)")
+
+
+def rescan_timed(s, timeout=300):
+    """One full detection on demand, timed over the ticks it runs (DS-16: `rtsim district rescan` records the
+    edit and returns; the detection runs a block entity budget a tick and its result follows). Polls
+    `rtsim district perf` until the detection is idle and has counted one more, and keeps the engine's own
+    numbers (work, ticks, phases, longest tick) with the wall time, the game ticks and the per-tick numbers
+    of the span (SG81)."""
+    def perf():
+        m = PERF_DETECTION.search(s.cmd("rtsim district perf"))
+        return m and {"detections": int(m.group(1)), "work_us": int(m.group(3)), "slices": int(m.group(4)),
+                      "phases": m.group(5), "longest_tick_us": int(m.group(6)), "longest_what": m.group(7),
+                      "declarations": int(m.group(8)), "state": m.group(9)}
+    before = perf()
+    s.swticks("reset")
+    g0, t0 = s.gametime(), time.time()
+    out = s.cmd("rtsim district rescan")
+    r = {"reply": out.strip()[:300], "g0": g0, "before": before}
+    while time.time() - t0 < timeout:
+        now = perf()
+        if now and now["state"] == "idle" and (before is None or now["detections"] > before["detections"]):
+            r["after"] = now
+            break
+        time.sleep(1)
+    else:
+        r["timed_out"] = True
+    r["seconds"], r["g1"] = time.time() - t0, s.gametime()
+    r["ticks"] = r["g1"] - g0 if g0 is not None and r["g1"] is not None else None
+    r["per_tick_ms"] = s.swticks("dump")
+    s.res["rescan"] = r
+    s.res["rescan_out"] = out
+    return r
+
+
 def scene_run(s, sc, profile_s, barrier=None):
     smp = sc.get("sample", 5)
     if barrier:
@@ -662,6 +714,7 @@ def scene_run(s, sc, profile_s, barrier=None):
             out = s.cmd(f"execute in {dim} positioned {x} {y} {z} run rtsim district adopt {r}")
             s.ev("adopt", at=list(b), out=out)
             log(s.run, "adopt", x, z, r, out.strip()[:120])
+    adopt_g = s.gametime()  # every arm, at the same point: the off arm has no adopts to make (SG82)
     s.wait_phase("settle2", sc.get("settle", 120) / 2, half)
     s.rtsim_report("settled", sc.get("info_max", 12))
     if barrier:
@@ -685,10 +738,21 @@ def scene_run(s, sc, profile_s, barrier=None):
                 break
             time.sleep(5)
     if sc.get("rescan") and s.rtsim:
-        # one full detection on demand, timed by the bridge (the periodic pass's work; choice SG17)
-        out = s.cmd("rtsim district rescan")
-        s.res["rescan_out"] = out
-        log(s.run, "rescan", out.strip()[:160])
+        # one full detection on demand (the periodic pass's work; choice SG17), spread over ticks (SG81)
+        r = rescan_timed(s)
+        a = r.get("after") or {}
+        log(s.run, "rescan", f"{r['seconds']:.1f} s, {r['ticks']} ticks, {a.get('work_us')} us of work over "
+            f"{a.get('slices')} ticks, longest tick {a.get('longest_tick_us')} us",
+            "(timed out)" if r.get("timed_out") else "")
+    if sc.get("unload_after_adopts"):
+        # a glass verdict needs 6,000 quiet ticks after the last recompile, and a district declared late (a
+        # deferred adopt) recompiles late: unload once every arm has run this many ticks since its adopts (SG82)
+        n = sc["unload_after_adopts"]
+        s.ev("verdicts", wait_ticks=n, since=adopt_g)
+        while not s.ran_ticks("verdicts", adopt_g, n):
+            time.sleep(5)
+            s.keep_segments()
+        s.rtsim_report("verdicts", sc.get("info_max", 12))
     if sc.get("unload_reload"):
         w = sc["unload_reload"]
         if barrier:

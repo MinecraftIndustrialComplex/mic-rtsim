@@ -1262,3 +1262,22 @@ adds the district's work, the later ones recount; so it should drain between dis
 re-run reads it in the perf line (detections, ticks per detection) and the declarations during the
 adopt loop.
 
+
+#### The bench scene (finding 5)
+
+Three things in 10.9's pairs came from the bench, not from the engine.
+
+- A glass verdict needs 6,000 quiet ticks after a district's last recompile. The 6,000-tick window closed
+  near the end of the busy window, a district declared late (a deferred adopt) recompiled late, and
+  the unload came before its verdict: `rtsim district info` sampled 0 to 5 of 12 with one, and the
+  reconcile count of a run depended on it (10.9 item 5).
+- The rescan was timed as the one RCON call. After the commands were spread over ticks (DS-16) the call
+  returns at once, and the time is the detection's.
+- A laptop suspend shows as one tick of minutes on every statistic: 10.9 (SG47) dropped it by hand.
+
+| # | Choice | Why |
+|---|---|---|
+| SG80 | `swticks` counts a tick whose gap is over 10 s as a suspend (`suspends`, `suspend_max_ms`), in none of the ring, gap or top statistics, and the dump line carries both | a minutes-long tick was the maximum, p999 and mean of the whole window; 10 s is far above any tick the bench saw and far below the suspends it dropped (238 s and 1,726 s, SG47) |
+| SG81 | The scene's `rescan` polls `rtsim district perf` until the detection is idle and counted one more, and keeps the engine's own work, ticks, phases and longest tick with the wall time, the game ticks and the `swticks` numbers of the span (`sw-result.json` `rescan`) | DS-16: the command returns when it has recorded the edit, so its wall time says nothing; the span's per-tick numbers are the detection's cost to the server |
+| SG82 | The scene key `unload_after_adopts` (game ticks, 8,000 in the generated scene) holds the unload until every arm has run that many ticks since its adopts, then takes a `verdicts` report; the generated scene also carries the `ticks` section of the 10.9 scene | 6,000 quiet ticks plus the recompile after the last late declaration; every arm waits by ticks so the pair stays level, and the off arm, which has no adopts, takes the same point |
+| SG83 | No full syn200 pair is run for these fixes | the brief: the pair is the main session's; a short smoke run only when `free -g` allows |
