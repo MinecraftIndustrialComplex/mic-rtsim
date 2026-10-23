@@ -128,7 +128,8 @@ struct Feeling {
     village: String,
     /// Toward the camp: a robbery counts -50 first-hand and half that heard (MZB-36).
     toward_camp: i8,
-    /// Toward each player it feels anything about: a rescue counts +25.
+    /// Toward each player it feels anything about: a rescue counts +25 first-hand and half that
+    /// heard, and only a rout somebody saw is a rescue report at all (CL-D61).
     toward_players: BTreeMap<String, i8>,
 }
 
