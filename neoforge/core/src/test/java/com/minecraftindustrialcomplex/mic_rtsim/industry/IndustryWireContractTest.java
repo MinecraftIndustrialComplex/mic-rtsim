@@ -86,7 +86,9 @@ class IndustryWireContractTest {
             "IND_SPAWN_SAMPLE", "IND_FIGHT", "IND_SURVEY", "IND_SURVEY_BLOCKS",
             "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE",
             // stress worlds' station fixes (SG30, SG32)
-            "IND_TRAIN_ARRIVED_APPROACH", "IND_STATION_PORTS");
+            "IND_TRAIN_ARRIVED_APPROACH", "IND_STATION_PORTS",
+            // the syn200 fixes (SG50)
+            "IND_TRAIN_UNWATCHED");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -606,6 +608,10 @@ class IndustryWireContractTest {
                     r.put32("inventory" + i, IndRecords.StationPorts.INVENTORIES + 4 * i, f.u32("inventory" + i));
                 return r;
             }
+            case "IND_TRAIN_UNWATCHED":
+                return journaled(n, IndRecords.IND_TRAIN_UNWATCHED, IndRecords.TrainUnwatched.SIZE, 0, f)
+                        .put64("train", IndRecords.TrainUnwatched.TRAIN, f.u64("train"))
+                        .put64("station", IndRecords.TrainUnwatched.STATION, f.u64("station"));
             case "IND_TRAIN_DEPARTED": {
                 int size = IndRecords.Train.DEPARTED_CARRIAGES + carriagesSize(f);
                 return journaled(n, IndRecords.IND_TRAIN_DEPARTED, size, f.count("n_carriages"), f)

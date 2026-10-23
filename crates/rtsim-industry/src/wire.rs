@@ -26,7 +26,7 @@ use crate::obs::{
     DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
     EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
     PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use crate::threat::ThreatClass;
 
@@ -66,6 +66,8 @@ pub const IND_STATION: u16 = 0x0413;
 pub const IND_PACKAGE: u16 = 0x0414;
 /// The inventories a station's Portable Storage Interfaces serve (choice SG32).
 pub const IND_STATION_PORTS: u16 = 0x0415;
+/// A train called at a station outside every district: its leg ends there (choice SG50).
+pub const IND_TRAIN_UNWATCHED: u16 = 0x0416;
 pub const IND_RECONCILE_RESULT: u16 = 0x0420;
 pub const IND_CARRIAGE_RESULT: u16 = 0x0421;
 pub const IND_SPAWN_SAMPLE: u16 = 0x0430;
@@ -81,7 +83,7 @@ pub const IND_DEPOSIT_DELTA: u16 = 0x8403;
 pub const IND_WRITE_PACKAGE: u16 = 0x8404;
 // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
-const OBS_KINDS: [u16; 28] = [
+const OBS_KINDS: [u16; 29] = [
     IND_STOCK_SAMPLE,
     IND_SWEEP_END,
     IND_DEPOSIT_SAMPLE,
@@ -104,6 +106,7 @@ const OBS_KINDS: [u16; 28] = [
     IND_STATION,
     IND_PACKAGE,
     IND_STATION_PORTS,
+    IND_TRAIN_UNWATCHED,
     IND_RECONCILE_RESULT,
     IND_CARRIAGE_RESULT,
     IND_SPAWN_SAMPLE,
@@ -725,6 +728,12 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.carriages(&c.carriages);
             w.finish()
         }
+        Obs::TrainUnwatched(c) => {
+            let mut w = W::obs(out, IND_TRAIN_UNWATCHED, 0, seq, at);
+            w.put_u64(c.train.0);
+            w.put_u64(c.station.0);
+            w.finish()
+        }
         Obs::Station(s) => {
             let mut w = W::obs(out, IND_STATION, 0, seq, at);
             w.put_u64(s.station.0);
@@ -1096,6 +1105,13 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 destination: (destination != 0).then_some(StationId(destination)),
                 eta_ticks: r.get_i64(56) as u64,
                 carriages,
+            })
+        }
+        IND_TRAIN_UNWATCHED => {
+            check(kind, size, 40)?;
+            Obs::TrainUnwatched(UnwatchedStop {
+                train: TrainId(r.get_u64(24)),
+                station: StationId(r.get_u64(32)),
             })
         }
         IND_STATION => {
@@ -1690,6 +1706,10 @@ mod tests {
                 eta_ticks: 0,
                 carriages: vec![],
             }),
+            Obs::TrainUnwatched(UnwatchedStop {
+                train: TrainId(77),
+                station: StationId(95),
+            }),
             Obs::Station(StationDecl {
                 station: StationId(78),
                 district: Some(d),
@@ -2073,6 +2093,7 @@ mod tests {
             Obs::Port(p) => 56 + 16 * p.goods.len(),
             Obs::TrainArrived(c) => 56 + carriage_bytes(&c.carriages),
             Obs::TrainDeparted(c) => 64 + carriage_bytes(&c.carriages),
+            Obs::TrainUnwatched(_) => 40,
             Obs::Station(_) => 64,
             Obs::Package(p) => 56 + 16 * p.goods.len(),
             Obs::StationPorts(p) => (40 + 4 * p.inventories.len()).div_ceil(8) * 8,
@@ -2118,6 +2139,7 @@ mod tests {
             Obs::Port(_) => 0x0410,
             Obs::TrainArrived(_) => 0x0411,
             Obs::TrainDeparted(_) => 0x0412,
+            Obs::TrainUnwatched(_) => 0x0416,
             Obs::Station(_) => 0x0413,
             Obs::Package(_) => 0x0414,
             Obs::StationPorts(_) => 0x0415,
@@ -2240,7 +2262,7 @@ mod tests {
 
     #[test]
     fn kind_constants_match_the_spec_table() {
-        let spec: [(u16, u16); 26] = [
+        let spec: [(u16, u16); 27] = [
             (IND_STOCK_SAMPLE, 0x0040),
             (IND_SWEEP_END, 0x0041),
             (IND_DEPOSIT_SAMPLE, 0x0042),
@@ -2261,6 +2283,7 @@ mod tests {
             (IND_TRAIN_DEPARTED, 0x0412),
             (IND_STATION, 0x0413),
             (IND_PACKAGE, 0x0414),
+            (IND_TRAIN_UNWATCHED, 0x0416),
             (IND_RECONCILE_RESULT, 0x0420),
             (IND_CARRIAGE_RESULT, 0x0421),
             (IND_SPAWN_SAMPLE, 0x0430),
@@ -2537,6 +2560,15 @@ mod tests {
                 ..
             })
         ));
+
+        let unwatched = enc_obs(Obs::TrainUnwatched(UnwatchedStop {
+            train: TrainId(5),
+            station: StationId(6),
+        }));
+        assert_eq!(unwatched.len(), 40);
+        assert_eq!(le32(&unwatched, 4), 0);
+        assert_eq!(le64(&unwatched, 24), 5);
+        assert_eq!(le64(&unwatched, 32), 6);
 
         let ports = enc_obs(Obs::StationPorts(StationPorts {
             station: StationId(9),
