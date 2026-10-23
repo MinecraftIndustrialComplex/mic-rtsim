@@ -2228,7 +2228,7 @@ mod tests {
         assert_eq!(facts_len, 528);
     }
 
-    // ---- TALKED (docs/boundary.md §13.4) ---------------------------------------------------
+    // ---- TALKED (docs/boundary.md §13.7) ---------------------------------------------------
 
     fn talked_bytes(village: u64, p: u64, op: u64) -> Vec<u8> {
         Talked {
