@@ -12,7 +12,7 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 /**
- * The far feed's two payloads (research/distant-horizons-2026-10-21.md §6.3, docs/boundary.md §12.2), both
+ * The far feed's three payloads (research/distant-horizons-2026-10-21.md §6.3, docs/boundary.md §12.2), all
  * optional, so a client without them (no far renderer, or an older mic_rtsim) still joins a server that has
  * them, and the other way round.
  *
@@ -20,15 +20,18 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
  *   <li>{@code mic_rtsim:far_sub}, client to server: what a far renderer wants (radius, detail tier, budget,
  *       kinds); radius 0 unsubscribes.</li>
  *   <li>{@code mic_rtsim:far}, server to client: a {@link FarWire} message, once a second while subscribed.</li>
+ *   <li>{@code mic_rtsim:far_shape}, server to client: a {@link FarShape}'s hash and bytes, once per shape per
+ *       subscriber after the message whose INTRO first names it (docs/choices-dh-feed.md DHT62).</li>
  * </ul>
  */
 public final class FarPayloads {
     /** The subscription's own version (its first field); the server ignores a subscription of another. */
-    public static final int SUB_VERSION = 1;
+    public static final int SUB_VERSION = 2;
     /** The largest message a client reads. */
     public static final int MAX_BYTES = 1 << 20;
 
     private static volatile Consumer<byte[]> clientHandler;
+    private static volatile ShapeHandler shapeHandler;
 
     private FarPayloads() {}
 
@@ -64,6 +67,28 @@ public final class FarPayloads {
         }
     }
 
+    /** One far shape ({@link FarShape}): its hash and its deflated bytes. */
+    public record Shape(long hash, byte[] data) implements CustomPacketPayload {
+        public static final Type<Shape> TYPE = new Type<>(ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, "far_shape"));
+        public static final StreamCodec<FriendlyByteBuf, Shape> CODEC = StreamCodec.of(
+                (buf, p) -> {
+                    buf.writeLong(p.hash);
+                    buf.writeByteArray(p.data);
+                },
+                buf -> new Shape(buf.readLong(), buf.readByteArray(FarShape.MAX_BYTES)));
+
+        @Override
+        public Type<Shape> type() {
+            return TYPE;
+        }
+    }
+
+    /** The client side's handler for far shapes. */
+    @FunctionalInterface
+    public interface ShapeHandler {
+        void accept(long hash, byte[] data);
+    }
+
     public static void register(IEventBus modBus) {
         modBus.addListener(FarPayloads::onRegister);
     }
@@ -79,10 +104,20 @@ public final class FarPayloads {
             if (h != null)
                 h.accept(p.data);
         });
+        r.playToClient(Shape.TYPE, Shape.CODEC, (p, ctx) -> {
+            ShapeHandler h = shapeHandler;
+            if (h != null)
+                h.accept(p.hash, p.data);
+        });
     }
 
     /** The client side's handler for far feed messages (the core's client entry sets it). */
     public static void setClientHandler(Consumer<byte[]> handler) {
         clientHandler = handler;
+    }
+
+    /** The client side's handler for far shapes (the core's client entry sets it). */
+    public static void setShapeHandler(ShapeHandler handler) {
+        shapeHandler = handler;
     }
 }
