@@ -559,6 +559,28 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
+/// `static native long[] nIndustryLines(long handle)`: the industry engine's learned train lines
+/// (`Engine::industry_lines`): the unwatched stops it took, the self edges it refused, the loaded
+/// calls it saw, then every edge as `(from, to, trips, travel ticks)`. Between steps; tests.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nIndustryLines<
+    'l,
+>(
+    mut env: EnvUnowned<'l>,
+    _class: JClass<'l>,
+    handle: jlong,
+) -> JLongArray<'l> {
+    env.with_env(|env| -> Result<JLongArray<'l>, JniError> {
+        // SAFETY: Java's contract on handles.
+        let e = unsafe { engine(handle) }?;
+        let v = e.industry_lines();
+        let arr = env.new_long_array(v.len())?;
+        arr.set_region(env, 0, &v)?;
+        Ok(arr)
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
 /// `static native double[] nGlassOffline(byte[] records, long district)`: the glass check of a
 /// record stream on a fresh industry engine (`engine::glass_offline`, the stub engine's
 /// GameTests); null when the district has no complete compile in it. No handle: pure.

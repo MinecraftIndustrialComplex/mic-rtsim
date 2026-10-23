@@ -675,7 +675,7 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::PowerLink { sink, source } => {
             return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
         }
-        Obs::Conditions(_) | Obs::CarriageResult(_) => {
+        Obs::Conditions(_) | Obs::CarriageResult(_) | Obs::TrainUnwatched(_) => {
             return true;
         }
     };
@@ -1018,6 +1018,28 @@ impl Engine {
     pub fn industry_notes(&self, district: u64, from: u64) -> Vec<String> {
         let st = lock(&self.state);
         notes(&st.industry.engine, district, from)
+    }
+
+    /// The learned train lines for tests, flat: the engine's unwatched stops taken (choice SG50), self
+    /// edges refused (SG51) and loaded calls seen, then every edge as `from, to, trips, travel ticks`
+    /// (station ids as the wire carries them). Between steps.
+    pub fn industry_lines(&self) -> Vec<i64> {
+        let st = lock(&self.state);
+        let e = &st.industry.engine;
+        let mut v = vec![
+            e.stats.unwatched_stops as i64,
+            e.stats.self_edges_refused as i64,
+            (e.stats.arrivals_approach + e.stats.arrivals_departure + e.stats.arrivals_late) as i64,
+        ];
+        for ((a, b), l) in e.lines() {
+            v.extend([
+                a.0 as i64,
+                b.0 as i64,
+                l.trips as i64,
+                l.travel_ticks as i64,
+            ]);
+        }
+        v
     }
 
     /// One district's threat state for tests (the roof gate, OG-11), flat: whether the engine
