@@ -1241,3 +1241,24 @@ now says so when a watched train calls outside every district, and the engine en
 | SG53 | A station with no position or dimension is reported as unwatched too | such a station is in no district, so the leg is over |
 | SG54 | The GameTests read the engine's counts as changes over the journey and look for edges by the journey's own station ids; the report switch is reset by `forget` | the engine's counts run across the whole suite, and a failed control must not leave the switch off for the rest of the run |
 
+#### Deferred adopts (finding 4)
+
+Behind the self edges: the adopts of the scene's loop run west to east while trains run, and
+DS-12's `adoptAround` left an adopt's chunks to the pass after a running detection. At 200
+districts 315 to 358 of the 400 adopts were deferred, and a district stayed undeclared for the
+time a train needed to reach its partner.
+
+| # | Choice | Why |
+|---|---|---|
+| SG55 | The adopted chunks join the running job of their dimension (`Rescan.join`, DS-14): a chunk it has not counted seeds in yet is scheduled as a root (again behind the cursor too, because a root that found the chunk unloaded counted nothing), with the districts owning or touching it, looked at whole as at a job's start | finding 4 (a); the job already works at the budget, and an adopted chunk costs it its own block entities and those of the districts around it, as the adopt's own detection would have |
+| SG56 | A chunk the job counted before the adopt gave it a seed has its seeds counted again where they stand, and is enqueued as a root if it has some now and the walk had not reached it; no pass of its own | the first build queued a pass for these chunks. The review showed that only a chunk's seed count depends on its seeds (stations, inventories, links and the kind cache do not), so a recount is enough and a pass would re-walk a whole district for nothing, newest first, ahead of other dimensions |
+| SG57 | `AdoptGameTests` set the interval to 100,000 ticks for the two deferred cases, so a pass that waits for it cannot finish inside the test, and assert that exactly one detection finished (a stale pass would be a second); a `@AfterBatch` restores the interval and the budget if a test fails | a test with the interval at 1 tick passes with the old code too, which is how the deferral went unseen |
+
+Not measured: a stream of adopts that each add new districts keeps joining one job, which commits only
+when it has drained, so the districts of such a loop are declared at the commits between. At 400
+adopts over about 880 ticks and 256 block entities a tick the budget is about 225,000 against
+roughly 60,000 block entities in the world (285 a district), and only the first adopt of a district
+adds the district's work, the later ones recount; so it should drain between districts. The syn200
+re-run reads it in the perf line (detections, ticks per detection) and the declarations during the
+adopt loop.
+
