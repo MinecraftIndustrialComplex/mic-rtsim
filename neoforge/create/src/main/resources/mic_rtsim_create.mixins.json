@@ -9,6 +9,7 @@
     "GlobalStationMixin",
     "KineticNetworkMixin",
     "PortableStorageInterfaceMixin",
+    "RotationPropagatorMixin",
     "TrainMixin"
   ],
   "injectors": {

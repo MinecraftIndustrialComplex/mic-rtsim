@@ -36,7 +36,8 @@ final class KineticWalk {
 
     /**
      * {@code RotationPropagator.getPotentialNeighbourLocations}: the six neighbours that are loaded, then
-     * the block entity's own additions ({@code addPropagationLocations}: cogs' diagonals, belts' other end).
+     * the block entity's own additions ({@code addPropagationLocations}: cogs' diagonals, belts' other end,
+     * chain conveyors' connections), kept only where loaded, as {@code RotationPropagatorMixin} keeps them.
      */
     static List<BlockPos> neighbours(KineticBlockEntity be) {
         List<BlockPos> out = new ArrayList<>();
@@ -52,7 +53,9 @@ final class KineticWalk {
         BlockState s = be.getBlockState();
         if (!(s.getBlock() instanceof IRotate block))
             return out;
-        return be.addPropagationLocations(block, s, out);
+        List<BlockPos> all = new ArrayList<>(be.addPropagationLocations(block, s, out));
+        all.removeIf(n -> !Loaded.at(level, n));
+        return all;
     }
 
     /** The side a block entity's live source is on, or null without one. */
