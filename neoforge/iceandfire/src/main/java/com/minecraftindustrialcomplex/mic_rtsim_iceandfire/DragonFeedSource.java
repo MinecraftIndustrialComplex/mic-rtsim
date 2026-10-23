@@ -15,7 +15,8 @@ import net.minecraft.server.level.ServerLevel;
  * §12.3): each puppet's body where it is this second, under the engine's agent id, so the far view moves from
  * the engine's leg to the body and back without a seam (the hand-over). The body wins over the engine's leg
  * of the same id ({@link #PRIORITY}); it carries the entity's network id, so a client that has the entity
- * hides the proxy, and one that does not draws it.
+ * hides the proxy, and one that does not draws it. It carries the dragon's age in days, so a far renderer draws
+ * it at its size between stages (docs/choices-dh-feed.md DHT60); the engine's legs say only the stage.
  *
  * <p>Its own file, apart from {@link DragonBridge}: the bridge only lends {@code forEachBody}.
  */
@@ -77,7 +78,8 @@ final class DragonFeedSource implements FarSource {
             FarState state = IafDragons.flying(d) ? FarState.FLY : FarState.ROOST;
             out.accept(new FarItem(agent, FarKind.DRAGON, species, variant, d.getDragonStage(),
                     PALETTE[Math.min(species, PALETTE.length - 1)][Math.floorMod(variant, 4)], state,
-                    new double[]{x + hx, y, z + hz, x - hx, y, z - hz}, null, e.getId(), PRIORITY));
+                    new double[]{x + hx, y, z + hz, x - hx, y, z - hz}, null, e.getId(), PRIORITY, null,
+                    Math.max(0, d.getAgeInDays())));
         });
     }
 }

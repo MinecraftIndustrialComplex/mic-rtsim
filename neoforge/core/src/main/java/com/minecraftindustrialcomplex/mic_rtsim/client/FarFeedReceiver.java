@@ -61,7 +61,8 @@ final class FarFeedReceiver {
     private static final class Obj {
         long id;
         FarKind kind;
-        int style, variant, size, rgb;
+        int style, variant, size, rgb, age = -1;
+        long shape;
         FarState state = FarState.MOVING;
         double[] prev, cur;
         double sampleTick, interval = 1.0;
@@ -93,7 +94,7 @@ final class FarFeedReceiver {
             if (kind == null || prev == null)
                 return;
             mover = new FarMover(new FarKey(FarFeedClient.SOURCE, new UUID(id, 0L), 0), kind, dim, prev, cur, sampleTick, interval,
-                    rgb, false, state, style, variant, size, circle, entity);
+                    rgb, false, state, style, variant, size, circle, entity, shape, age);
         }
     }
 
@@ -168,7 +169,8 @@ final class FarFeedReceiver {
             case FarWire.Gone g -> objs.remove(g.handle());
             case FarWire.Intro i -> {
                 Obj o = objs.get(i.handle());
-                if (o == null || o.id != i.id()) {
+                boolean same = o != null && o.id == i.id();
+                if (!same) {
                     o = new Obj();
                     objs.put(i.handle(), o);
                 }
@@ -178,6 +180,11 @@ final class FarFeedReceiver {
                 o.variant = i.variant();
                 o.size = i.size();
                 o.rgb = i.rgb();
+                o.shape = i.shape();
+                // A body says its age, the engine's leg does not: a dragon handed back to its leg keeps the age
+                // its body had, so it is not drawn a size smaller or bigger (docs/choices-dh-feed.md DHT60)
+                if (i.age() >= 0 || !same)
+                    o.age = i.age();
                 if (o.kind == null)
                     objs.remove(i.handle()); // a kind this client does not know
                 else
