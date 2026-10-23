@@ -76,7 +76,7 @@ use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
 
 mod blockade;
-pub use blockade::{HEAT_FLOOR_MILLI, PortChange, PortState};
+pub use blockade::{HEAT_FLOOR_MILLI, Lifted, PortChange, PortState};
 
 pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
