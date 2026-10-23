@@ -1926,7 +1926,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
-| 76 | u32 | reserved |
+| 76 | u32 | age: whole days at the record's time, as Ice and Fire's `getAgeInDays` counts them (24,000 ticks a day); 0 in a GONE record (DECISIONS.md DH-7) |
 
 | aux | State | Meaning |
 |---|---|---|
@@ -1949,6 +1949,9 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
   table and drops any record still on its way (the engine drops its own queue, GONE records included);
   the engine resends every dragon when the module comes back. A changed dragon whose page will not load
   is skipped and counted (`far_read_failed`): Java draws its last leg until it next changes.
+- **The age** sizes the far model between stages as Ice and Fire sizes the body (DH-7): the far feed's
+  INTRO carries it (§12.2). It is the age when the record was made, so a dragon that sends nothing for
+  days keeps its last age until its next record; at a hand-over the last record is the leg it arrived on.
 
 ### 12.2 The payloads and the far feed's message
 
@@ -1978,7 +1981,7 @@ GONE   5: handle
 
 - **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
   none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
-  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  the source does not say). The engine's legs say it since DH-7 (FAR_LEG's age, §12.1). `style`, `variant` and `size` are a dragon's
   species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE

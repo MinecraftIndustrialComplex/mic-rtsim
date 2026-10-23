@@ -41,7 +41,10 @@ import org.joml.Matrix4fStack;
  * {@link FarDragonView#shown}): the two match box for box and the fade shows one (DHT45).
  *
  * <p>Movers drawn as the real thing ({@link FarModelRenderer}) are drawn by that in the band too, with the same
- * hand-over; these boxes are for the rest.
+ * hand-over; these boxes are for the rest. The dragons, models and boxes together, are held to the tier's count
+ * ({@link FarDetail#dragons}), nearest first by horizontal distance, as the model renderer holds them
+ * (docs/choices-dh-feed.md DHT69): a slow machine on the lowest tier draws 8 at most, however many fly over its
+ * loaded chunks. The carriages' boxes are not counted here.
  *
  * <p>Render thread only.
  */
@@ -54,8 +57,16 @@ final class FarBandRenderer {
     /** This frame's light (red, green, blue) and fog (start, end, shape 0 sphere or 1 cylinder, then its colour). */
     private static final float[] LIGHT = new float[3], FOG = new float[7];
 
+    /** A dragon the band would draw this frame: where, how far (horizontally, squared), its heading, a box or not. */
+    private record Dragon(FarMover mover, double x, double y, double z, double d2, double hx, double hz, boolean box) {
+    }
+
+    private static final List<Dragon> DRAGONS = new ArrayList<>();
+
     // What the last frame did, for the log and the bench
     static int lastDrawn, lastBoxes;
+    /** Dragons the band counted last frame (models and boxes), and how many the tier's count left out. */
+    static int lastDragons, lastDragonsOver;
     static long nanos, frames;
     private static int errors;
 
@@ -108,6 +119,17 @@ final class FarBandRenderer {
         return d;
     }
 
+    /** Draws {@code cut}'s boxes about (x, y, z), those from {@code wingFrom} on in {@code wingRgb}; returns the buffer. */
+    private static BufferBuilder boxes(BufferBuilder buf, List<double[]> cut, double x, double y, double z, Vec3 cam,
+            int rgb, int wingFrom, int wingRgb) {
+        if (buf == null)
+            buf = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        float ox = (float) (x - cam.x), oy = (float) (y - cam.y), oz = (float) (z - cam.z);
+        for (int i = 0; i < cut.size(); i++)
+            box(buf, cut.get(i), ox, oy, oz, i >= wingFrom ? wingRgb : rgb);
+        return buf;
+    }
+
     /** For the bench: how far RenderSystem's matrices were from the stage's at the band, at most. */
     static float mvDrift, projDrift;
 
@@ -120,7 +142,7 @@ final class FarBandRenderer {
         BufferBuilder buf = null;
         int drawn = 0, boxes = 0;
         if (FarObjects.movers().isEmpty()) {
-            lastDrawn = lastBoxes = 0;
+            lastDrawn = lastBoxes = lastDragons = lastDragonsOver = 0;
             return;
         }
         Minecraft mc = Minecraft.getInstance();
@@ -134,61 +156,72 @@ final class FarBandRenderer {
         FOG[4] = fogColour[1];
         FOG[5] = fogColour[2];
         FOG[6] = fogColour[3];
+        DRAGONS.clear();
         try {
             for (FarMover m : FarObjects.movers()) {
-                if (!dimension.equals(m.dimension()))
+                if (!dimension.equals(m.dimension()) || m.kind() != FarKind.CARRIAGE && m.kind() != FarKind.DRAGON)
                     continue;
-                // Drawn as the real thing by the model renderer, or waiting for it a moment
-                if (FarModelRenderer.cover(m) != FarModelRenderer.Cover.BOX)
+                // Drawn as the real thing by the model renderer, or waiting for it a moment. A dragon model still
+                // takes its place in the dragons' count
+                FarModelRenderer.Cover c = FarModelRenderer.cover(m);
+                if (c == FarModelRenderer.Cover.WAIT || c == FarModelRenderer.Cover.MODEL && m.kind() != FarKind.DRAGON)
                     continue;
                 m.segmentAt(clock, SEG);
                 double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
                 if (!FarHide.bandDraws(m, level, x, y, z, cam))
                     continue;
-                List<double[]> cut;
-                int rgb = m.rgb(), wingFrom = Integer.MAX_VALUE, wingRgb = rgb;
-                double reach;
-                if (m.kind() == FarKind.CARRIAGE) {
-                    double rx = SEG[0] - SEG[3], ry = SEG[1] - SEG[4], rz = SEG[2] - SEG[5];
-                    reach = FarTrainView.reach(rx, ry, rz);
-                    if (!frustum.isVisible(new AABB(x - reach, y - 1, z - reach, x + reach,
-                            y + FarTrainView.HEIGHT + 1, z + reach)))
-                        continue;
-                    cut = FarTrainView.shownCut(m.key());
-                    if (cut == null)
-                        cut = StaircaseCutter.cut(rx, ry, rz, new StaircaseCutter.Shape(FarTrainView.WIDTH,
-                                FarTrainView.HEIGHT, FarTrainView.OVERHANG, STEP));
-                } else if (m.kind() == FarKind.DRAGON) {
-                    reach = FarDragonView.reach(m.size());
-                    if (!frustum.isVisible(new AABB(x - reach, y - reach, z - reach, x + reach, y + reach,
-                            z + reach)))
-                        continue;
-                    // DH's cut where DH draws it too; the finest, for the heading of the moment, elsewhere
-                    FarDragonView.Shown dh = FarDragonView.shown(m.key());
-                    int stage = dh != null ? dh.stage() : Math.max(1, Math.min(5, m.size()));
-                    int h = dh != null ? dh.heading() : DragonModel.headingStep(SEG[0] - SEG[3], SEG[2] - SEG[5]);
-                    double step = dh != null ? dh.step() : STEP;
-                    cut = new ArrayList<>(DragonModel.body(stage, h, step));
-                    DragonModel.Pose pose = DragonModel.poseAt(clock, tier.wingPoses,
-                            FarDragonView.flapSeed(m.key()), m.state());
-                    if (pose != null) {
-                        wingFrom = cut.size();
-                        wingRgb = FarDragonView.shade(rgb, FarDragonView.WING_SHADE);
-                        cut.addAll(DragonModel.wings(stage, h, pose, step));
-                    }
-                } else {
+                if (m.kind() == FarKind.DRAGON) {
+                    double dx = x - cam.x, dz = z - cam.z;
+                    DRAGONS.add(new Dragon(m, x, y, z, dx * dx + dz * dz, SEG[0] - SEG[3], SEG[2] - SEG[5],
+                            c == FarModelRenderer.Cover.BOX));
                     continue;
                 }
-                if (buf == null)
-                    buf = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS,
-                            DefaultVertexFormat.POSITION_COLOR);
-                float ox = (float) (x - cam.x), oy = (float) (y - cam.y), oz = (float) (z - cam.z);
-                for (int i = 0; i < cut.size(); i++)
-                    box(buf, cut.get(i), ox, oy, oz, i >= wingFrom ? wingRgb : rgb);
+                double rx = SEG[0] - SEG[3], ry = SEG[1] - SEG[4], rz = SEG[2] - SEG[5];
+                double reach = FarTrainView.reach(rx, ry, rz);
+                if (!frustum.isVisible(new AABB(x - reach, y - 1, z - reach, x + reach,
+                        y + FarTrainView.HEIGHT + 1, z + reach)))
+                    continue;
+                List<double[]> cut = FarTrainView.shownCut(m.key());
+                if (cut == null)
+                    cut = StaircaseCutter.cut(rx, ry, rz, new StaircaseCutter.Shape(FarTrainView.WIDTH,
+                            FarTrainView.HEIGHT, FarTrainView.OVERHANG, STEP));
+                buf = boxes(buf, cut, x, y, z, cam, m.rgb(), Integer.MAX_VALUE, m.rgb());
                 drawn++;
                 boxes += cut.size();
             }
+            // The tier's dragons, nearest first by horizontal distance, models and boxes together, as the model
+            // renderer counts them in the band (docs/choices-dh-feed.md DHT69); counted before the frustum
+            DRAGONS.sort((a, b) -> Double.compare(a.d2, b.d2));
+            for (int n = 0; n < DRAGONS.size() && n < tier.dragons; n++) {
+                Dragon d = DRAGONS.get(n);
+                if (!d.box)
+                    continue;
+                FarMover m = d.mover;
+                double x = d.x, y = d.y, z = d.z, reach = FarDragonView.reach(m.size());
+                if (!frustum.isVisible(new AABB(x - reach, y - reach, z - reach, x + reach, y + reach, z + reach)))
+                    continue;
+                // DH's cut where DH draws it too; the finest, for the heading of the moment, elsewhere
+                FarDragonView.Shown dh = FarDragonView.shown(m.key());
+                int stage = dh != null ? dh.stage() : Math.max(1, Math.min(5, m.size()));
+                int h = dh != null ? dh.heading() : DragonModel.headingStep(d.hx, d.hz);
+                double step = dh != null ? dh.step() : STEP;
+                List<double[]> cut = new ArrayList<>(DragonModel.body(stage, h, step));
+                int rgb = m.rgb(), wingFrom = Integer.MAX_VALUE, wingRgb = rgb;
+                DragonModel.Pose pose = DragonModel.poseAt(clock, tier.wingPoses, FarDragonView.flapSeed(m.key()),
+                        m.state());
+                if (pose != null) {
+                    wingFrom = cut.size();
+                    wingRgb = FarDragonView.shade(rgb, FarDragonView.WING_SHADE);
+                    cut.addAll(DragonModel.wings(stage, h, pose, step));
+                }
+                buf = boxes(buf, cut, x, y, z, cam, rgb, wingFrom, wingRgb);
+                drawn++;
+                boxes += cut.size();
+            }
+            lastDragons = Math.min(DRAGONS.size(), tier.dragons);
+            lastDragonsOver = Math.max(0, DRAGONS.size() - tier.dragons);
         } catch (RuntimeException e) {
+            DRAGONS.clear();
             // Leave the shared Tesselator as it was found, or the next renderer to begin one draws this garbage
             if (buf != null) {
                 MeshData half = buf.build();
@@ -197,6 +230,7 @@ final class FarBandRenderer {
             }
             throw e;
         }
+        DRAGONS.clear(); // holds no mover past the frame
         lastDrawn = drawn;
         lastBoxes = boxes;
         if (buf == null)

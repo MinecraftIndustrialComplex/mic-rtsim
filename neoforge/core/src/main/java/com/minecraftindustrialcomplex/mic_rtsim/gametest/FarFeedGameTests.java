@@ -54,6 +54,8 @@ public final class FarFeedGameTests {
 
     private static final String BODY = "mic_rtsim:gametest_far_dragon";
     private static final int STYLE = 2, VARIANT = 1, STAGE = 3, RGB = 0x445566;
+    /** The legs' age in days (DH-7): stage 3's, past its middle. */
+    private static final int AGE_DAYS = 63;
 
     /** The test's body source: what an embodied dragon's plugin would give, while {@link #item} is set. */
     private static final class BodySource implements FarSource {
@@ -102,6 +104,7 @@ public final class FarFeedGameTests {
         b.putLong(FarLegs.T0, t0);
         b.putLong(FarLegs.T1, t1);
         b.putInt(FarLegs.RADIUS, radius);
+        b.putInt(FarLegs.AGE, AGE_DAYS);
         SessionPlugin.EngineNames names = (kind, id) -> kind == Obs.DICT_DIMENSION && id == 3 ? dim
                 : kind == Obs.DICT_BODY && id == 7 ? BODY : null;
         session.farLegs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, state.wire, names);
@@ -190,7 +193,8 @@ public final class FarFeedGameTests {
             List<FarWire.Rec> r1 = of(m1, handle);
             FarWire.Intro intro = (FarWire.Intro) r1.get(0);
             check("its intro carries its looks: " + intro, intro.kind() == FarKind.DRAGON.wire && intro.style() == STYLE
-                    && intro.variant() == VARIANT && intro.size() == STAGE && intro.rgb() == RGB);
+                    && intro.variant() == VARIANT && intro.size() == STAGE && intro.rgb() == RGB
+                    && intro.age() == AGE_DAYS);
             check("it flies a leg", has(r1, FarWire.Leg.class) && !has(r1, FarWire.Sample.class)
                     && !has(r1, FarWire.Real.class));
             record("far feed hand-over", "first message", m1.recs().size() + " records, " + sent.get(0).length + " bytes");
