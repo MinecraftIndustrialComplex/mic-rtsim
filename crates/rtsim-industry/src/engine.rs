@@ -46,6 +46,7 @@ use crate::learn::{LinkKey, Sample};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
     Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -180,6 +181,12 @@ pub struct Stats {
     /// Simulated calls at a station with an exchange rule but no known ports: nothing moved
     /// (choice SG33).
     pub exchanges_portless: u64,
+    /// Calls at a station outside every district (IND_TRAIN_UNWATCHED, choice SG50): each ended
+    /// the train's leg. Not saved (choice SG58): a restore starts it at 0.
+    pub unwatched_stops: u64,
+    /// Arrivals at the station the train's leg began at, with no unwatched stop between: no edge
+    /// (choice SG51). Not saved (choice SG58): a restore starts it at 0.
+    pub self_edges_refused: u64,
 }
 
 /// World-level books: what the engine made, used, and moved out of the player's stores. With the
@@ -997,6 +1004,7 @@ impl Engine {
             Obs::Port(p) => self.port(at, p),
             Obs::TrainArrived(c) => self.train_arrived(at, c),
             Obs::TrainDeparted(d) => self.train_departed(at, d),
+            Obs::TrainUnwatched(u) => self.train_unwatched(u),
             Obs::Station(s) => {
                 if let Some(d) = s.district {
                     self.district_mut(d).stations.insert(s.station);
@@ -2640,35 +2648,60 @@ impl Engine {
         }
     }
 
-    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
-        // Line edges (§8.8).
-        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
-            let e = self.lines.entry((from, c.station)).or_default();
-            let first = e.trips == 0;
-            if first {
-                e.first = at;
+    /// A train's call outside every district (IND_TRAIN_UNWATCHED, choice SG50): the leg it began at
+    /// its last district station ends here. The next district station it reaches is no edge from
+    /// that one, and never an edge from that station to itself.
+    fn train_unwatched(&mut self, u: &UnwatchedStop) {
+        self.last_departure.remove(&u.train);
+        self.stats.unwatched_stops += 1;
+    }
+
+    /// One trip along the edge `(from, c.station)`: `from` is where the train's leg began at `depart`.
+    fn line_edge(
+        &mut self,
+        at: Tick,
+        c: &TrainCall,
+        from: StationId,
+        depart: Tick,
+        cargo: GoodVec,
+    ) {
+        let e = self.lines.entry((from, c.station)).or_default();
+        let first = e.trips == 0;
+        if first {
+            e.first = at;
+        }
+        e.trips += 1;
+        e.cargo.merge(&cargo);
+        e.travel_ticks += at.since(depart);
+        e.last = at;
+        if first && self.tape.is_on() {
+            // At the station it arrived at, or where it left from if that one was not declared.
+            let station = self
+                .stations
+                .get(&c.station)
+                .or_else(|| self.stations.get(&from));
+            if let Some(s) = station {
+                let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
+                let items = item_count(&self.goods, &cargo);
+                self.tape.event(
+                    kinds::INDUSTRY_LINE,
+                    p,
+                    u128::from(from.0),
+                    u128::from(c.station.0),
+                    items,
+                );
             }
-            e.trips += 1;
-            e.cargo.merge(&cargo);
-            e.travel_ticks += at.since(depart);
-            e.last = at;
-            if first && self.tape.is_on() {
-                // At the station it arrived at, or where it left from if that one was not declared.
-                let station = self
-                    .stations
-                    .get(&c.station)
-                    .or_else(|| self.stations.get(&from));
-                if let Some(s) = station {
-                    let p = At::new(at.0, s.decl.dim, s.decl.pos.x, s.decl.pos.z);
-                    let items = item_count(&self.goods, &cargo);
-                    self.tape.event(
-                        kinds::INDUSTRY_LINE,
-                        p,
-                        u128::from(from.0),
-                        u128::from(c.station.0),
-                        items,
-                    );
-                }
+        }
+    }
+
+    fn train_arrived(&mut self, at: Tick, c: &TrainCall) {
+        // Line edges (§8.8). A leg that ends where it began is no edge (choice SG51): the train went
+        // out and back through stops nothing watched, so its travel time is a round trip's.
+        if let Some((from, depart, cargo)) = self.last_departure.remove(&c.train) {
+            if from == c.station {
+                self.stats.self_edges_refused += 1;
+            } else {
+                self.line_edge(at, c, from, depart, cargo);
             }
         }
         if !c.simulated {
@@ -4247,27 +4280,58 @@ mod persist_impls {
         first,
         last
     });
-    persist_struct!(Stats {
-        observations,
-        models_adopted,
-        sims_started,
-        reconciles,
-        chunk_commands,
-        duplicate_results,
-        trims,
-        exchanges,
-        attacks,
-        attacks_skipped,
-        packages_written,
-        breakpoints,
-        cluster_settles,
-        reconciles_ahead,
-        pollution_pushes,
-        arrivals_approach,
-        arrivals_departure,
-        arrivals_late,
-        exchanges_portless,
-    });
+    // The counters a run keeps for its own readout (`unwatched_stops`, `self_edges_refused`, choice
+    // SG58) are not in the page: adding them would change the globals layout, and a save written
+    // before them would no longer read. A restore starts them at 0, like the session's own counts
+    // in the host.
+    impl Persist for Stats {
+        fn put(&self, w: &mut Writer) {
+            self.observations.put(w);
+            self.models_adopted.put(w);
+            self.sims_started.put(w);
+            self.reconciles.put(w);
+            self.chunk_commands.put(w);
+            self.duplicate_results.put(w);
+            self.trims.put(w);
+            self.exchanges.put(w);
+            self.attacks.put(w);
+            self.attacks_skipped.put(w);
+            self.packages_written.put(w);
+            self.breakpoints.put(w);
+            self.cluster_settles.put(w);
+            self.reconciles_ahead.put(w);
+            self.pollution_pushes.put(w);
+            self.arrivals_approach.put(w);
+            self.arrivals_departure.put(w);
+            self.arrivals_late.put(w);
+            self.exchanges_portless.put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            Ok(Self {
+                observations: Persist::get(r)?,
+                models_adopted: Persist::get(r)?,
+                sims_started: Persist::get(r)?,
+                reconciles: Persist::get(r)?,
+                chunk_commands: Persist::get(r)?,
+                duplicate_results: Persist::get(r)?,
+                trims: Persist::get(r)?,
+                exchanges: Persist::get(r)?,
+                attacks: Persist::get(r)?,
+                attacks_skipped: Persist::get(r)?,
+                packages_written: Persist::get(r)?,
+                breakpoints: Persist::get(r)?,
+                cluster_settles: Persist::get(r)?,
+                reconciles_ahead: Persist::get(r)?,
+                pollution_pushes: Persist::get(r)?,
+                arrivals_approach: Persist::get(r)?,
+                arrivals_departure: Persist::get(r)?,
+                arrivals_late: Persist::get(r)?,
+                exchanges_portless: Persist::get(r)?,
+                unwatched_stops: 0,
+                self_edges_refused: 0,
+            })
+        }
+    }
     persist_struct!(Books {
         minted,
         burned,
