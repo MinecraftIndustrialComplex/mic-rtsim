@@ -6,10 +6,10 @@
 //! with nobody watching.
 //!
 //! Each rule is judged on seeds 1 to 30 of the synthetic coast (`synth::coastal`: one haven with
-//! a sea and a sky pirate, two slots), with S8b's lifecycle on (unless a test turns it off) but
-//! no navy assaults (§2.4.6a rule 3): the coast's haven hunts lanes Saltmere's navy patrols, so
-//! with assaults on it is broken at nearly every look its fleet is out, and S8's refits would go
-//! unmeasured (docs/choices-ports.md PC34). `lifecycle.rs` judges the assaults.
+//! a sea and a sky pirate, two slots) at the defaults, S8b's lifecycle and its navy assaults
+//! (§2.4.6a rule 3) included, unless a test turns them off. The thirty-year unattended run alone
+//! has no assaults (docs/choices-ports.md PC34, PC38): it holds §3.6's band, set before rule 3 and
+//! by century, to each decade. `lifecycle.rs` judges the assaults.
 
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -24,12 +24,17 @@ const PLAYER: (u64, u64) = (0xAB, 0xCD);
 const SEEDS: std::ops::RangeInclusive<u64> = 1..=30;
 
 fn coast(seed: u64) -> Coastal {
-    synth::coastal(seed, s8_tun())
+    synth::coastal(seed, ShipTunables::default())
 }
 
-/// The tunables S8's rules are judged with: the defaults with no navy assaults (§2.4.6a rule 3,
-/// PC34).
-fn s8_tun() -> ShipTunables {
+/// The tunables [`pirates_survive_unattended_thirty_years`] is judged with: the defaults with no
+/// navy assaults (§2.4.6a rule 3, PC34, PC38). With them, a navy breaks the coast's haven 2 or 3
+/// times a decade (`assault_cause_days` 192), each break leaving a slot empty from the break until
+/// the site refounds 48 days after the shut, so a decade's share manned falls to 0.80 on seeds 1,
+/// 7 and 30, under §3.6's floor of 0.83, which was set before rule 3 and is a century's: a decade
+/// would measure the navy's breaks, not S8's refits. A century holds it with them (0.845 at the
+/// least, [`pirates_survive_unattended_1000_years`]).
+fn no_assaults() -> ShipTunables {
     ShipTunables {
         assault_every_days: 0,
         ..ShipTunables::default()
@@ -186,11 +191,12 @@ fn refit_wait(s: &Ships, p: ShipId) -> Option<f64> {
 /// Each kill-all runs with S8b's lifecycle (§2.4.6a) on and off. On, the toll (PC1) keeps the
 /// pool low while every slot is manned, so the slots wait longer for crews; a haven whose ships
 /// were all sunk is not shut (PC4) and stays fed until a month after its first refit is due
-/// (PC13), so a kill-all is still answered by refits and the 180-day band holds. No navy assaults
-/// (PC34): with them, Saltmere's navy breaks the emptied haven instead.
+/// (PC13), so a kill-all is still answered by refits and the 180-day band holds. Navy assaults
+/// are on at their defaults (PC38): every slot is back before the haven's cause clock could have
+/// run `assault_cause_days`, so no navy breaks it.
 #[test]
 fn kill_all_pirates() {
-    let tun = s8_tun();
+    let tun = ShipTunables::default();
     let off = s8_only();
     let runs = per_seed(&seeds(), |seed| {
         // Lifecycle on: half back, all back, all back after the harsh kill-all; then off.
@@ -432,7 +438,8 @@ fn a_haven_with_no_lane_worth_hunting_rests() {
 /// late report once made the pirate's homecoming stale (the fight sent it home again, and a
 /// pirate not hunting ignores that), so it idled forever with nothing booked: seed 4 of
 /// `sim ships` lost both its pirates that way. Now the pirate gets home, rests and sails again.
-/// No navy assaults (PC34): a broken haven lays its pirate up at home, which is not this bug.
+/// At the defaults, navy assaults included (PC38): the run ends inside `assault_cause_days`, so no
+/// navy breaks the haven (a broken haven lays its pirate up at home, which is not this bug).
 #[test]
 fn a_late_fight_report_never_strands_a_pirate() {
     let out = per_seed(&seeds(), |seed| {
@@ -513,11 +520,11 @@ struct Stretch {
     save_bytes: usize,
 }
 
-/// `stretches` of `years` each of the coast with nobody watching, censused every 24 days (the
-/// model's grid).
-fn unattended(seed: u64, stretches: u64, years: u64) -> Vec<Stretch> {
+/// `stretches` of `years` each of the coast with nobody watching, with tunables `tun`, censused
+/// every 24 days (the model's grid).
+fn unattended(seed: u64, stretches: u64, years: u64, tun: &ShipTunables) -> Vec<Stretch> {
     const YEAR: u64 = 96;
-    let mut c = coast(seed);
+    let mut c = synth::coastal(seed, tun.clone());
     let mut fake = FakeShips::new(f64::from(c.ships.tun.view_radius));
     let h = c.haven;
     let mut out = Vec::new();
@@ -569,14 +576,15 @@ fn check_unattended(seed: u64, ss: &[Stretch]) {
 /// seeds 1 to 30, censused on the model's 24-day grid. Every century every seed's haven still
 /// hunts, its slots are manned, its pool is within the cap, and the event queue and the save stay
 /// flat. Release only, for its length (`cargo test --release -p rtsim-ships --test equilibrium
-/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut. No navy
-/// assaults (PC34): `lifecycle.rs`'s `coast_havens_cycle_with_assaults` measures the coast with
-/// them.
+/// -- --ignored`); [`pirates_survive_unattended_thirty_years`] is its everyday cut. At the
+/// defaults, navy assaults included (PC38): Saltmere's navy breaks the haven from time to time,
+/// and every century still holds 0.845 of the slots at the least (measured at
+/// `assault_cause_days` 192).
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn pirates_survive_unattended_1000_years() {
     let runs = per_seed(&seeds(), |seed| {
-        let ss = unattended(seed, 10, 100);
+        let ss = unattended(seed, 10, 100, &ShipTunables::default());
         assert_eq!(ss.len(), 10);
         check_unattended(seed, &ss);
         ss
@@ -593,11 +601,12 @@ fn pirates_survive_unattended_1000_years() {
 }
 
 /// [`pirates_survive_unattended_1000_years`]'s rule over three decades on seeds 1, 7 and 30, with
-/// no navy assaults (PC34).
+/// no navy assaults ([`no_assaults`], PC34, PC38: a decade is too short to hold §3.6's century
+/// band through the navy's breaks).
 #[test]
 fn pirates_survive_unattended_thirty_years() {
     per_seed(&[1, 7, 30], |seed| {
-        let ss = unattended(seed, 3, 10);
+        let ss = unattended(seed, 3, 10, &no_assaults());
         assert_eq!(ss.len(), 3);
         check_unattended(seed, &ss);
     });

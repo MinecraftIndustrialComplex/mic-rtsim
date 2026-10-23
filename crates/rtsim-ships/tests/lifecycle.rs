@@ -2,8 +2,8 @@
 //! S8b (EQUILIBRIUM.md §2.4.6a; docs/choices-ports.md PC1 to PC8, PC30 on): havens that rise and
 //! fall. An unwatched hunt pays the square law's toll in crew, a haven with no hunt for 30 days
 //! starves and lays its ships up, a starving haven with no ship shuts, a navy breaks a weak haven
-//! that has robbed its patrolled lanes for a year, and a shut haven's site takes a new band out of
-//! every player's view once a fresh band would find prey.
+//! that has robbed its patrolled lanes for two years and lately, and a shut haven's site takes a
+//! new band out of every player's view once a fresh band would find prey.
 //!
 //! The rules are judged on the synthetic coast (`synth::coastal`: one haven, a sea and a sky
 //! pirate) and, for the lifecycle over many worlds, on `synth::sea_havens` (3 to 5 havens, 1 or 2
@@ -621,14 +621,12 @@ fn restarted(c: &Coastal, seed: u64, tun: &ShipTunables) -> Coastal {
 /// carried on. Three states: a slot laid up beside an active ship; a shut haven with its look
 /// pending; the same after one look found no prey. After the restart the escorts leave in both,
 /// the runs go on for 120 days, and the saved-and-restored run ends in the very state of the
-/// run that was never saved. No navy assaults (PC34): the way out of the first state is the
-/// wake, and a navy breaking the haven within the 120 days would hide it.
+/// run that was never saved. At the defaults, navy looks included (PC38): each run ends inside
+/// `assault_cause_days` of its start, so no navy breaks the haven, which would hide the first
+/// state's way out (the wake).
 #[test]
 fn a_restart_in_each_lifecycle_state_changes_nothing() {
-    let tun = ShipTunables {
-        assault_every_days: 0,
-        ..ShipTunables::default()
-    };
+    let tun = ShipTunables::default();
     let step = TICKS_PER_DAY / 96;
     let seeds: Vec<u64> = (1..=8).collect();
     let hits = per_seed(&seeds, |seed| {
@@ -700,6 +698,7 @@ fn a_restart_in_each_lifecycle_state_changes_nothing() {
             } else {
                 assert!(hv.counts.refounds >= 1, "seed {seed} state {state}");
             }
+            assert_eq!(a.ships.navy_counts().assaults, 0, "seed {seed}: broken");
             a.ships.check(&a.world).expect("check");
             b.ships.check(&b.world).expect("check restored");
             states += 1 << state;
@@ -901,7 +900,10 @@ fn a_navy_breaks_a_weak_haven() {
         let (mut looks, mut early) = (0, 0);
         let due = loop {
             looks += 1;
-            assert!(looks <= 200, "seed {seed}: never a weak moment in 400 days");
+            assert!(
+                looks <= 1000,
+                "seed {seed}: never a weak moment in 2,000 days"
+            );
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
             let held = hunts_the_patrol(s, nv, h, due);
@@ -1024,7 +1026,7 @@ fn a_navy_breaks_a_weak_haven() {
     });
 }
 
-/// S8b `a_navy_leaves_a_strong_haven_alone` (§2.4.6a rule 3, PC7, PC8). At every look of 600
+/// S8b `a_navy_leaves_a_strong_haven_alone` (§2.4.6a rule 3, PC7, PC8). At every look of 2,000
 /// days at which the haven is a target (PC31, PC35: it has robbed patrolled lanes long enough and
 /// lately) and the coast's ships hold still until it, its defence is set just above the gate:
 /// 12.8 men, its ships in port plus the rest ashore (the navy then believes it wins with p =
@@ -1039,7 +1041,7 @@ fn a_navy_leaves_a_strong_haven_alone() {
         let slots = c.ships.havens[h as usize].ships.clone();
         let mut fake = FakeShips::new(f64::from(tun.view_radius));
         let mut close = 0;
-        for _ in 0..300 {
+        for _ in 0..1000 {
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
             let still = slots
@@ -1061,7 +1063,7 @@ fn a_navy_leaves_a_strong_haven_alone() {
         }
         assert!(close > 0, "seed {seed}: no look at the gate");
         let n = c.ships.navy_counts();
-        assert_eq!((n.looked, n.assaults), (300, 0), "seed {seed}");
+        assert_eq!((n.looked, n.assaults), (1000, 0), "seed {seed}");
         c.ships.check(&c.world).expect("check");
     });
 }
@@ -1083,8 +1085,8 @@ fn no_assault_in_view() {
         while !a_target(&c.ships, nv, h, c.ships.now()) {
             let due = to_look(&mut c, &mut fake, nv);
             assert!(
-                due < Tick::from_days(300),
-                "seed {seed}: no target in 300 days"
+                due < Tick::from_days(800),
+                "seed {seed}: no target in 800 days"
             );
             set_pool(&mut c, h, cap);
             idle_by(&mut c, &mut fake, due + 1, 1);
@@ -1098,15 +1100,15 @@ fn no_assault_in_view() {
             synth::SCRIPT_PLAYER,
             pos,
             now,
-            now + 600 * TICKS_PER_DAY,
+            now + 900 * TICKS_PER_DAY,
         );
         let looked = c.ships.navy_counts().looked;
         let (mut looks, mut targets) = (0, 0);
         while targets < 10 {
             looks += 1;
             assert!(
-                looks <= 250,
-                "seed {seed}: {targets} target looks in 500 days"
+                looks <= 400,
+                "seed {seed}: {targets} target looks in 800 days"
             );
             let due = to_look(&mut c, &mut fake, nv);
             targets += usize::from(a_target(&c.ships, nv, h, due));
@@ -1124,7 +1126,7 @@ fn no_assault_in_view() {
         let mut looks = 0;
         while c.ships.havens[h as usize].broken_at.is_none() {
             looks += 1;
-            assert!(looks <= 300, "seed {seed}: not broken out of view");
+            assert!(looks <= 400, "seed {seed}: not broken out of view");
             let due = to_look(&mut c, &mut fake, nv);
             let weak = a_target(&c.ships, nv, h, due);
             set_pool(&mut c, h, if weak { 0 } else { cap });
@@ -1411,10 +1413,11 @@ impl CauseModel {
 }
 
 /// S8b `the_cause_clock_runs_on_patrolled_hunts_only` (§2.4.6a rule 3, PC31, PC35). The coast's
-/// haven hunts lanes Saltmere's navy patrols and, more often, lanes it does not. Over 400 days with the looks off, read every day, the engine's cause
-/// clock and its record of the navy's lanes hunted equal a clock rebuilt from the log of hunts:
-/// no clock starts on a hunt off the patrol, and one restarts after a month with no patrolled
-/// hunt. Over the seeds, hunts off the patrol come before the clock starts, and clocks restart.
+/// haven hunts lanes Saltmere's navy patrols and, more often, lanes it does not. Over 400 days
+/// with the looks off, read every day, the engine's cause clock and its record of the navy's
+/// lanes hunted equal a clock rebuilt from the log of hunts: no clock starts on a hunt off the
+/// patrol, and one restarts after a month with no patrolled hunt. Over the seeds, hunts off the
+/// patrol come before the clock starts, and clocks restart.
 #[test]
 fn the_cause_clock_runs_on_patrolled_hunts_only() {
     let tun = ShipTunables {
@@ -1459,8 +1462,8 @@ fn the_cause_clock_runs_on_patrolled_hunts_only() {
 }
 
 /// S8b `a_haven_back_on_the_patrol_waits_out_its_cause_again` (§2.4.6a rule 3, PC31, PC35). The
-/// coast with the navy looking every 2 days and the haven's pool at its cap at every look, so it
-/// is never broken; at each look a restored copy of the engine is asked whether an empty pool
+/// coast over 1,600 days with the navy looking every 2 days and the haven's pool at its cap at
+/// every look, so it is never broken; at each look a restored copy of the engine is asked whether an empty pool
 /// would break the haven then. It would exactly when the haven hunted a patrolled lane within
 /// `starve_days` and its clock, rebuilt from the log, has run `assault_cause_days`; so a haven
 /// that left the patrolled lanes for more than a month is not a target, nor on its return until
@@ -1479,7 +1482,7 @@ fn a_haven_back_on_the_patrol_waits_out_its_cause_again() {
         let mut fake = FakeShips::new(f64::from(tun.view_radius));
         let mut m = CauseModel::default();
         let (mut would, mut away, mut back) = (0u64, 0u64, 0u64);
-        for _ in 0..250 {
+        for _ in 0..800 {
             let due = to_look(&mut c, &mut fake, nv);
             m.catch_up(&c.ships, nv);
             let hv = &c.ships.havens[h as usize];
@@ -1773,7 +1776,7 @@ fn no_assault_while_a_haven_ship_is_embodied() {
         let mut looks = 0;
         while c.ships.havens[h as usize].broken_at.is_none() {
             looks += 1;
-            assert!(looks <= 300, "seed {seed}: not broken once the player left");
+            assert!(looks <= 400, "seed {seed}: not broken once the player left");
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
             let weak = a_target(s, nv, h, due)
@@ -1933,8 +1936,9 @@ fn coast_havens_cycle_with_assaults() {
 }
 
 /// The least share of the coast's slots manned over 30 years at the default
-/// `assault_cause_days` (PC38): the gate sweep's lowest seed, less a margin.
-const COAST_MANNED_FLOOR: f64 = 0.70;
+/// `assault_cause_days` (PC38): the sweep's bar, 0.83. Measured at 192: 0.867, 0.900 and 0.850 on
+/// seeds 1, 7 and 30.
+const COAST_MANNED_FLOOR: f64 = 0.83;
 
 // ---- many worlds, nobody watching ----------------------------------------------------------------
 
@@ -2250,7 +2254,7 @@ fn check_lives(on: &[Life], off: &[Life]) {
 
 /// The three arms of the unattended runs.
 struct Lives {
-    /// The lifecycle on, as built (a year of robbery before an assault, PC31).
+    /// The lifecycle on, as built (`assault_cause_days` of robbery before an assault, PC31, PC38).
     on: Vec<Life>,
     /// The lifecycle on with no wait before an assault (`assault_cause_days` 0), measured only.
     no_cause: Vec<Life>,
@@ -2297,14 +2301,14 @@ fn report_and_check(l: &Lives) {
 
 /// S8b `unattended_havens_rise_and_fall`, the everyday cut: three decades of three seas, the
 /// lifecycle on and off (seed 2's sea has havens that shut and refound within them), and on with
-/// no year of robbery before an assault (reported, not judged).
+/// no wait before an assault (reported, not judged).
 #[test]
 fn unattended_havens_rise_and_fall() {
     report_and_check(&lives(6, &[1, 2, 3], 3, 10));
 }
 
 /// S8b `unattended_havens_rise_and_fall` in full: ten centuries (96,000 game days) of seeds 1 to
-/// 30, the lifecycle on and off, and on with no year of robbery before an assault. Release only,
+/// 30, the lifecycle on and off, and on with no wait before an assault. Release only,
 /// for its length (`cargo test --release -p rtsim-ships --test lifecycle -- --ignored`).
 #[test]
 #[ignore = "long: run in release with --ignored"]
