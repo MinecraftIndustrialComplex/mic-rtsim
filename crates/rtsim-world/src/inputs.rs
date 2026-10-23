@@ -123,6 +123,9 @@ pub enum Input {
     Grant { key: u64, amount: Amount },
     /// TEST (WORKS_RAID): a village raided, as a dragon raid would (`tribute`: by a lair's dragon).
     Raided { key: u64, tribute: bool },
+    /// TALKED: a player talked with one of a village's ribbits (TK2); the village's sentiment toward
+    /// them rises by `bridge::TALK_CREDIT`.
+    Talked { key: u64, player: Uuid },
 }
 
 /// An input and the world tick it was applied at.
@@ -379,6 +382,24 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
             Some(&i) => w.village_raided(i, *tribute, at),
             None => out.refused = true,
         },
+        Input::Talked { key, player: p } => {
+            // Only a village is talked with (a base is a node too, and has no ribbits). The
+            // player actor is made only once the village is known, so a refused input adds none.
+            let village = nodes
+                .get(key)
+                .copied()
+                .filter(|&i| matches!(w.nodes[i].kind, NodeKind::Village(_)));
+            let Some(i) = village else {
+                out.refused = true;
+                return out;
+            };
+            let Some(a) = player(w, *p) else {
+                out.refused = true;
+                return out;
+            };
+            w.village_talked(i, a, at);
+            out.node = Some(i);
+        }
     }
     out
 }
@@ -615,6 +636,11 @@ impl Logged {
                 w.u64(*key);
                 w.u8(u8::from(*tribute));
             }
+            Input::Talked { key, player } => {
+                w.u8(21);
+                w.u64(*key);
+                put_uuid(w, player);
+            }
         }
     }
 
@@ -733,6 +759,10 @@ impl Logged {
                 key: r.u64()?,
                 tribute: r.u8()? != 0,
             },
+            21 => Input::Talked {
+                key: r.u64()?,
+                player: get_uuid(r)?,
+            },
             t => return Err(CodecError::Invalid(format!("phase 1 input tag {t}"))),
         };
         Ok(Logged { at, input })
@@ -841,6 +871,7 @@ mod tests {
                 key: 7,
                 tribute: true,
             },
+            Input::Talked { key: 7, player: p },
         ];
         let mut w = Writer::new();
         for (i, input) in inputs.iter().enumerate() {
@@ -858,5 +889,170 @@ mod tests {
             assert_eq!(&l.input, input);
         }
         r.finish().unwrap();
+    }
+
+    /// A world with no villages yet, and the node table `apply` keeps.
+    fn empty_world() -> (World, BTreeMap<u64, usize>) {
+        let (goods, ids) = crate::synth::goods();
+        let book = crate::synth::recipes(&ids);
+        let cfg = crate::WorldConfig::new(5);
+        (World::build(cfg, goods, book, Vec::new()), BTreeMap::new())
+    }
+
+    fn join(w: &mut World, nodes: &mut BTreeMap<u64, usize>, key: u64, culture: u8) {
+        let at = w.now().0;
+        let out = apply(
+            w,
+            nodes,
+            &Input::Join {
+                key,
+                culture,
+                frame: 0,
+                x: 100,
+                z: 100,
+                pop: 12,
+                resources: Vec::new(),
+            },
+            at,
+        );
+        assert!(!out.refused);
+    }
+
+    fn feeling(w: &World, village: usize, player: Uuid) -> Option<i8> {
+        let p = w.knowledge.actors().find(
+            rtsim_knowledge::ActorKind::Player,
+            crate::interest::uuid_hash(player.0, player.1),
+        )?;
+        Some(w.knowledge.sentiment(w.nodes[village].actor, p, w.now()))
+    }
+
+    #[test]
+    fn a_talked_adds_the_talk_credit_to_the_village_and_makes_the_player_as_a_trade_does() {
+        let (mut w, mut nodes) = empty_world();
+        join(&mut w, &mut nodes, 7, 1);
+        let p = (0x1234, 0x5678);
+        assert_eq!(feeling(&w, nodes[&7], p), None, "no actor before the talk");
+        let at = w.now().0;
+        let out = apply(&mut w, &mut nodes, &Input::Talked { key: 7, player: p }, at);
+        assert!(!out.refused);
+        assert_eq!(out.node, Some(nodes[&7]));
+        assert_eq!(
+            feeling(&w, nodes[&7], p),
+            Some(i8::try_from(crate::bridge::TALK_CREDIT).unwrap())
+        );
+        assert_eq!(feeling(&w, nodes[&7], p), Some(3), "TK2: +3");
+        // Another talk adds again: the daily cap is Java's, per village and player, kept on the player; the world only adds.
+        apply(&mut w, &mut nodes, &Input::Talked { key: 7, player: p }, at);
+        assert_eq!(feeling(&w, nodes[&7], p), Some(6));
+        // Another player starts from nothing.
+        assert_eq!(feeling(&w, nodes[&7], (1, 2)), None);
+    }
+
+    #[test]
+    fn a_talked_the_world_cannot_apply_is_refused_and_makes_nobody() {
+        let (mut w, mut nodes) = empty_world();
+        join(&mut w, &mut nodes, 7, 1);
+        let at = w.now().0;
+        let hash = w.state_hash();
+        // A village it does not know.
+        let out = apply(
+            &mut w,
+            &mut nodes,
+            &Input::Talked {
+                key: 99,
+                player: (3, 4),
+            },
+            at,
+        );
+        assert!(out.refused);
+        // The nil player.
+        let out = apply(
+            &mut w,
+            &mut nodes,
+            &Input::Talked {
+                key: 7,
+                player: (0, 0),
+            },
+            at,
+        );
+        assert!(out.refused);
+        assert_eq!(feeling(&w, nodes[&7], (3, 4)), None, "no actor was made");
+        assert_eq!(w.state_hash(), hash, "nothing changed");
+        // A base is a node, but nobody there talks.
+        let out = apply(
+            &mut w,
+            &mut nodes,
+            &Input::MarkBase {
+                key: 1 << 62 | 9,
+                frame: 0,
+                x: 10,
+                z: 10,
+                player: (3, 4),
+            },
+            at,
+        );
+        assert!(!out.refused);
+        let base = nodes[&(1 << 62 | 9)];
+        let hash = w.state_hash();
+        let out = apply(
+            &mut w,
+            &mut nodes,
+            &Input::Talked {
+                key: 1 << 62 | 9,
+                player: (3, 4),
+            },
+            at,
+        );
+        assert!(out.refused);
+        assert_eq!(w.state_hash(), hash);
+        assert_eq!(feeling(&w, base, (3, 4)), Some(0));
+    }
+
+    /// Replay (the log the pages keep) rebuilds the same world with a TALKED in it.
+    #[test]
+    fn a_talked_replays_to_the_same_world() {
+        let run = |w: &mut World, nodes: &mut BTreeMap<u64, usize>, log: &[Logged]| {
+            for l in log {
+                apply(w, nodes, &l.input, l.at);
+            }
+        };
+        let p = (0x1234, 0x5678);
+        let log = vec![
+            Logged {
+                at: 0,
+                input: Input::Join {
+                    key: 7,
+                    culture: 1,
+                    frame: 0,
+                    x: 100,
+                    z: 100,
+                    pop: 12,
+                    resources: Vec::new(),
+                },
+            },
+            Logged {
+                at: 500,
+                input: Input::Talked { key: 7, player: p },
+            },
+            Logged {
+                at: 900,
+                input: Input::Talked { key: 7, player: p },
+            },
+        ];
+        // Through the codec, as the pages carry it.
+        let mut wr = Writer::new();
+        log.iter().for_each(|l| l.encode(&mut wr));
+        let bytes = wr.into_bytes();
+        let mut r = Reader::new(&bytes);
+        let back: Vec<Logged> = (0..log.len())
+            .map(|_| Logged::decode(&mut r).unwrap())
+            .collect();
+        assert_eq!(back, log);
+        let (mut a, mut an) = empty_world();
+        let (mut b, mut bn) = empty_world();
+        run(&mut a, &mut an, &log);
+        run(&mut b, &mut bn, &back);
+        assert_eq!(a.state_hash(), b.state_hash());
+        assert_eq!(feeling(&a, an[&7], p), Some(6));
     }
 }

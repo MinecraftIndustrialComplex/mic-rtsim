@@ -109,6 +109,8 @@ public final class Districts {
     /** Block entities the last detection looked at in all, and in its biggest tick (counts, not time: GameTests gate on these). */
     long lastRescanLooked;
     long lastRescanLongestLooked;
+    /** The most one look at one chunk cost in the last detection: the part of a tick the budget does not bound. */
+    long lastRescanLongestItem;
     /** What the longest tick was: the commit's, or a look at this many block entities. */
     String maxSliceWhat = "";
     long declared;
@@ -160,9 +162,14 @@ public final class Districts {
         return lastRescanLooked;
     }
 
-    /** Block entities the last detection looked at in its biggest tick: at most the budget plus one chunk's. */
+    /** Block entities the last detection looked at in its biggest tick: under the budget before the last chunk, and that chunk. */
     public long lastRescanLongestLooked() {
         return lastRescanLongestLooked;
+    }
+
+    /** What the costliest single look at a chunk spent in the last detection (a tick's spend is at most the budget less one, plus this). */
+    public long lastRescanLongestItem() {
+        return lastRescanLongestItem;
     }
 
     /**
@@ -841,7 +848,7 @@ public final class Districts {
         /** Time in {@link #root}, in {@link #walk}, and in {@link #commit}. */
         long rootNanos, walkNanos, commitNanosAll;
         /** Block entities looked at in all, and in the biggest step. */
-        long looked, maxLooked;
+        long looked, maxLooked, maxItem;
         /** Run in one call by a command or a test: its one big tick is not a scheduling figure. */
         boolean manual;
         /** What to run when this detection is done and has committed ({@link #rescanSoon}). */
@@ -945,11 +952,15 @@ public final class Districts {
                     break;
                 if (cursor < pending.size()) {
                     long r0 = System.nanoTime();
-                    spent += root(pending.getLong(cursor++));
+                    int cost = root(pending.getLong(cursor++));
+                    spent += cost;
+                    maxItem = Math.max(maxItem, cost);
                     rootNanos += System.nanoTime() - r0;
                 } else if (!queue.isEmpty()) {
                     long w0 = System.nanoTime();
-                    spent += walk(queue.dequeueLong());
+                    int cost = walk(queue.dequeueLong());
+                    spent += cost;
+                    maxItem = Math.max(maxItem, cost);
                     walkNanos += System.nanoTime() - w0;
                 } else {
                     Set<Long> more = full ? Set.of() : grown();
@@ -981,6 +992,7 @@ public final class Districts {
                 lastRescanLongestNanos = maxSlice;
                 lastRescanLooked = looked;
                 lastRescanLongestLooked = maxLooked;
+                lastRescanLongestItem = maxItem;
                 lastRescanRootNanos = rootNanos;
                 lastRescanWalkNanos = walkNanos;
                 lastRescanCommitNanos = commitNanosAll;

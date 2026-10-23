@@ -1952,28 +1952,34 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 
 ### 12.2 The payloads and the far feed's message
 
-Two NeoForge payloads, both registered optional (`PayloadRegistrar.optional()`), so a client without them
-joins a server with them and the other way round. Neither goes through the engine.
+Three NeoForge payloads, all registered optional (`PayloadRegistrar.optional()`), so a client without them
+joins a server with them and the other way round. None goes through the engine.
 
-- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (1), `radius` (blocks, at most
+- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (2), `radius` (blocks, at most
   16,384, PLACEHOLDER), `tier` (0 OFF, 1 LOW, 2 MEDIUM, 3 HIGH), `budget` (objects, capped by the tier at
   0, 48, 128 and 320, PLACEHOLDER) and `kinds` (a mask of `1 << kind`: 2 dragons, 4 carriages). Radius,
   budget or kinds 0 unsubscribes. A subscription of another version is ignored. A client sends it only
   when the server has the channel, at most once a second, and only when it changed.
 - **`mic_rtsim:far`**, server to client: one byte array (at most 1 MiB), a far feed message, once a second
   while subscribed and something changed (the first one always).
+- **`mic_rtsim:far_shape`**, server to client: `i64 hash` (big-endian, as `FriendlyByteBuf.writeLong`) and
+  one byte array (at most 32 KiB, PLACEHOLDER): a far shape, what an object looks like (DHT61, DHT62).
 
 The message (`far/FarWire.java`; unsigned LEB128 varints, `zig` a zigzag varint):
 
 ```
-u8 version (1), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
-INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb
+u8 version (2), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
+INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb, i64 shape, zig age
 LEG    2: handle, u8 state, zig y-oy, zig x0-ox, zig z0-oz, zig x1-ox, zig z1-oz, zig t0-gameTime, varlong t1-t0, varint radius
 SAMPLE 3: handle, u8 state, zig lx-8ox, zig ly-8oy, zig lz-8oz, zig tx-lx, zig ty-ly, zig tz-lz
 REAL   4: handle, zig entity (-1: none)
 GONE   5: handle
 ```
 
+- **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
+  none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
+  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE
   frees the handle, and GONE records come first in a message so their handles can be reused in it. The
@@ -2001,7 +2007,34 @@ GONE   5: handle
   sampled mover is run on (DHT44): from where it is drawn, it heads for where its last two samples say
   it will be when the next one comes, and 10 ticks on past that (PLACEHOLDER) should the next be late,
   then waits; one that stopped or brakes to a stop stops there. A message that does not decode drops
-  every object, and the client subscribes again, so the server's RESET brings them back.
+  every object, and the client subscribes again, so the server's RESET brings them back. A dragon whose
+  INTRO says age -1 keeps the age an earlier INTRO of the same object gave (its body's, handed back to
+  its leg).
+
+**Shapes** (`far/FarShape.java`, DHT61, DHT62). A shape is a kind's raw layout, deflated (raw DEFLATE, no
+zlib header); its hash is over the raw bytes: FNV-1a 64, then `h ^= h >>> 33; h *= 0xff51afd7ed558ccd;
+h ^= h >>> 33`, and 0 becomes 1. The server sends each shape to a subscriber once, after the message whose
+INTRO first names it, nearest object first and at most 64 KiB a sweep (PLACEHOLDER; the rest go the next
+sweep; until they come the client draws nothing for the object for a short grace, about 2 s, then its box,
+DHT63). A RESET starts over on both sides: the server sends the
+shapes again after it, and the client forgets the ones it had when it reads it. Past 1,024 shapes sent
+(PLACEHOLDER) the server starts the subscriber's view over with a RESET, so neither side's set grows for a
+whole session. A client inflates each shape as it arrives (at most 1 MiB raw), checks the hash and the
+layout, and drops one that fails. A carriage's raw layout (`far/CarriageShape.java`, version 1, plain bytes as the message's):
+
+```
+u8 version (1), u8 assembly (Direction 3D data value: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
+varint palette size (at most 4,096), palette: varint global block state id each,
+zig min x, y, z, varint size x, y, z (1 to 1,024 each), varint block count (at most 65,536),
+per block, in (y, z, x) order: varint gap in the box's linear index ((y * sz + z) * sx + x) since the
+  last block (the first from -1), varint palette index,
+u8 bogey count (at most 4), per bogey: zig x, y, z, string style id, string size id (each at most 256
+  bytes), u8 upside down (0 or 1)
+```
+
+Coordinates are the contraption's own (Create's `Contraption.Blocks`, relative to its anchor, the leading
+bogey). The block state ids are the global ids chunk packets use, so they hold between one server and the
+clients joined to it. Block entity data, actors, storage, seats and glue are left out.
 
 ### 12.3 Sources and the filter
 
@@ -2011,8 +2044,8 @@ for each level a subscriber is in, and none when nobody is subscribed.
 | Source | Ids | What it gives |
 |---|---|---|
 | the engine's legs (core, priority 0) | the dragon's agent id | FLY, HUNT and ROOST legs from FAR_LEG |
-| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id |
-| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one |
+| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id and its age in days |
+| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one, and its shape (its blocks and bogeys, DHT61) |
 
 - **One item per id**: the highest priority wins, so a dragon's body replaces its leg on the same handle
   and gives it back when it goes (the hand-over, research note §5).
@@ -2025,24 +2058,24 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK56)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
 market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
 did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
-section is the wire.
+section is the wire. A ribbit's credited talk goes the other way, as TALKED (§13.7).
 
 Reference codec `crates/rtsim-jni/src/talk_wire.rs` (every record's bytes are pinned by its tests).
 The Java codec is `talk/TalkRecords.java`, pure (no Minecraft types), and `TalkRecordsTest` pins the
 same bytes as the Rust tests. The engine side is `engine/talk.rs`; the Java side is §13.6.
 
-### 13.1 Kind ranges (reserved)
+### 13.1 Kind ranges
 
 | Range | Direction | Class |
 |---|---|---|
 | 0x00C0 to 0x00CF | Java to engine | TALK latest-wins observations: TALK_ASK (0x00C0) |
-| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, slice 3; the engine does not decode it yet) |
+| 0x0A00 to 0x0AFF | Java to engine | TALK journaled observations: TALKED (0x0A00, §13.7) |
 | 0x8A00 to 0x8AFF | engine to Java | TALK commands (`cmdSeq` at 8): TALK_FACTS (0x8A00) |
 
 0x0B00 to 0x0BFF and 0x8B00 to 0x8BFF stay free.
@@ -2109,11 +2142,12 @@ when one is class 0 or DEAD, is TK36 and TK37.
   buffer that cannot hold the next answer keeps its ask for the next one.
 - **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
   without HOLDER (TK32).
+- **TALKED** is the one record that does change it, and is journaled: §13.7.
 
 ### 13.5 Test order 40: `TalkReport`
 
-TEST mode only (rtsim-host's fake Java keeps no 0x8A00 payloads, and the conflict and ports
-engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
+since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
 it does to the knowledge tables, are TK40.
@@ -2139,5 +2173,60 @@ it does to the knowledge tables, are TK40.
   `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
   ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are
   `gametest/TalkNewsGameTests`, each in a batch of its own because of the process-wide hooks.
-- **Nothing is written back.** An ask changes nothing in the world; the daily credit stays where slice 1
-  put it (TK1, TK2, TK25), and the engine hears of a talk only with TALKED, slice 3.
+- **Nothing is written back by an ask.** An ask changes nothing in the world; a villager's daily credit
+  stays where slice 1 put it (TK1, vanilla gossip), and the engine hears of a talk only with TALKED
+  (§13.7), which the Ribbits plugin sends for a credited talk with a resident ribbit (TK60).
+
+### 13.7 TALKED (0x0A00, journaled, aux 0): a ribbit's talk credits its village
+
+A player's first talk of a game day with a resident of a ribbit-culture village (TK60, TK70). The village's feeling
+toward the player rises by `TALK_CREDIT`, 3 (TK2). Not a report: nothing happened that news could carry.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | u16 | kind 0x0A00 |
+| 2 | u16 | size, 64 |
+| 4 | u16 | aux, 0 |
+| 6 | u16 | reserved |
+| 8 | u64 | obsSeq |
+| 16 | i64 | game time |
+| 24 | u64 | op id: 63 random bits with `Obs.JAVA_OP_BIT` set, drawn by the journal's `commitWithOpId` |
+| 32 | u64 | the village's Java id |
+| 40 | u64 | the player's UUID, most significant bits |
+| 48 | u64 | the player's UUID, least significant bits |
+| 56 | u32 | the talker's body: its entity type's name in dictionary 3 (`ribbits:ribbit`); the engine does not read it |
+| 60 | u32 | reserved, 0 |
+
+Pinned by `talk_wire::tests::the_talked_bytes_are_pinned` and Java's `TalkRecordsTest.theTalkedBytesArePinned`,
+the same 64 bytes for obsSeq 0x1234, game time 123456, op id 0x0A0B0C0D0E0F1011, village 0x0102030405060708
+and player (0x1111222233334444, 0x5555666677778888); `TalkRecordsTest` also builds it at the literal offsets above.
+
+**Exactly once.** Three layers, none of them new:
+
+1. Java sends at most one per village, player and game day (TK60), and writes that day on the player before it
+   journals; a talk with no session, a failed one or phase 1 off writes nothing (TK66).
+2. The kernel's `Replay` admits each journaled observation once, by its sequence and by its op id (the
+   `op_of` hook for TALKED returns the op id at 24): a record the engine has already seen, which a resent
+   hand-over or a replay after a crash brings again, is `AlreadyApplied`; a copy under a new sequence with
+   the same op id (`recommit`) is `DuplicateOp`. Phase 1 never sees either.
+3. What `Replay` admits becomes the phase 1 input `Talked { key, player }` (persist tag 21), appended to the
+   input log like every other input, so a crash replays it onto the same world once and the +3 is not
+   applied twice.
+
+**The engine side** (`engine/phase1.rs` `talked`, `engine/talk.rs`). It adds `TALK_CREDIT` to the village's
+feeling toward the player through `Knowledge::adjust`, and makes the player's actor if the village has
+never met them, as a trade does (a credited talk is a real meeting, unlike an ask, TK45). A TALKED that does
+not decode, names a village the world does not know or a base, or is by the nil player is refused and
+counted (`talked_refused`, warned in the log at each power of two) and never applied and never put in the input log (TK68). With phase 1
+off it is counted ignored, like every other kind. A scripted village (a test's) is left alone. Applied
+ones count in `talked`. Nothing is answered: the next TALK_ASK for that village reads the new feeling in
+TALK_FACTS.
+
+**The Java side** is `RibbitTalker.credit` in the Ribbits plugin: one `beginJournaled` and `commitWithOpId`
+of 64 bytes, after the day is written on the player.
+
+Tests: `rtsim-world` (the input applies, makes the player, is refused for a village that is not one,
+replays to the same world), `rtsim-jni` (`engine/talk.rs`: the credit shows in the next ask's sentiment,
+refusals, a scripted village), `tests/protocol.rs` `mod talk` (a talk credits live and across a crash;
+a malformed one is refused and the next still applies), and the GameTests `ribbit_talk_credits_the_village_once_a_day`
+and `ribbit_puppet_talks_without_credit` on the Ribbits jar.

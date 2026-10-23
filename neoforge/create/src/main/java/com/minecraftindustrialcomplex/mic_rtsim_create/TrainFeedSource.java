@@ -28,7 +28,8 @@ import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
  *
  * <p>Each carriage carries its entity's network id while the server has one, so a client that has the entity
  * hides the proxy, and one that does not (a carriage past the server's simulation distance but inside the
- * client's render distance has none) draws it.
+ * client's render distance has none) draws it. It also carries what the carriage looks like
+ * ({@link CarriageShapes}), so a far renderer draws the player's build rather than a box (DHT61).
  */
 public final class TrainFeedSource implements FarSource {
     /** A carriage far away: dark grey, like the shadowed side of a train (DHT choices). */
@@ -66,6 +67,7 @@ public final class TrainFeedSource implements FarSource {
     @Override
     public void collect(ServerLevel level, long gameTime, Consumer<FarItem> out) {
         ResourceKey<Level> dim = level.dimension();
+        CarriageShapes.sweep();
         for (Train train : Create.RAILWAYS.trains.values()) {
             List<Carriage> carriages = train.carriages;
             for (int i = 0; i < carriages.size() && i < 256; i++) {
@@ -76,7 +78,8 @@ public final class TrainFeedSource implements FarSource {
                 CarriageContraptionEntity e = c.anyAvailableEntity();
                 int entity = e != null && e.level() == level && !e.isRemoved() ? e.getId() : -1;
                 out.accept(new FarItem(id(train.id, i), FarKind.CARRIAGE, 0, 0, 0, COLOUR, FarState.MOVING,
-                        new double[]{ends[0].x, ends[0].y, ends[0].z, ends[1].x, ends[1].y, ends[1].z}, null, entity, 0));
+                        new double[]{ends[0].x, ends[0].y, ends[0].z, ends[1].x, ends[1].y, ends[1].z}, null, entity, 0,
+                        CarriageShapes.of(c, level), -1));
             }
         }
     }
