@@ -70,6 +70,16 @@ public interface FarLook {
         return true;
     }
 
+    /**
+     * Whether {@code body}, the real entity of a mover of this look's kind, is held back this frame
+     * (docs/choices-dh-feed.md DHT68): the look keeps vanilla from drawing it, so the far renderer draws the mover
+     * as if the body were not on the client yet and copies nothing of it. Ice and Fire's look holds a new dragon's
+     * body for the 5 ticks its animation takes to settle from the model's rest pose. False by default.
+     */
+    default boolean holds(Entity body) {
+        return false;
+    }
+
     /** What it holds and has done, for the bench's log. */
     String stats();
 }
