@@ -690,7 +690,7 @@ broken, and refounding at found sites.
 - The pool is at most its cap.
 - A site with prey is never empty longer than 384 days.
 - A port closes for at least 30 days and only after about a month of blockade; it reopens only
-  below a quarter of the closing heat.
+  when no lane of it is above a quarter of the full share (half the closing heat).
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.

@@ -1073,7 +1073,11 @@ fn summary_seas(world: &str, on: &[Sea], off: &[Sea]) {
     let years = on.first().map_or(0, |s| s.years);
     let sum = |v: &[Sea], f: &dyn Fn(&Sea) -> f64| v.iter().map(f).sum::<f64>();
     let spells: Vec<(f64, f64)> = on.iter().flat_map(|s| s.spells.iter().copied()).collect();
-    let mean = spells.iter().map(|x| x.0).sum::<f64>() / spells.len().max(1) as f64;
+    let mean = if spells.is_empty() {
+        0.0
+    } else {
+        spells.iter().map(|x| x.0).sum::<f64>() / spells.len() as f64
+    };
     let longest = spells.iter().map(|x| x.0).fold(0.0, f64::max);
     let over = spells.iter().map(|x| x.0 - x.1).fold(0.0, f64::max);
     let port_days = sum(on, &|s| (s.ports as u64 * s.years * YEAR) as f64);
@@ -1192,7 +1196,9 @@ fn seas(threads: usize, seeds: std::ops::RangeInclusive<u64>, years: u64) {
 
 /// Rule 7 on many seas: `synth::sea_havens` and `synth::coastal`, seeds 1 to 30, a century with
 /// nobody watching, closures on and off. Release only, for its length (`nice -n 10 cargo test
-/// --release -p rtsim-ships --test blockade -- --ignored many_seas_100`).
+/// --release -p rtsim-ships --test blockade -- --ignored --exact
+/// blockades_on_many_seas_100_years --nocapture`; without `--exact` the name also matches the
+/// ten-century run).
 #[test]
 #[ignore = "long: run in release with --ignored"]
 fn blockades_on_many_seas_100_years() {
