@@ -827,16 +827,23 @@ fn in_port(s: &Ships, h: u32) -> f64 {
         .sum()
 }
 
-/// Whether haven `h`'s pirates hunt a lane navy `nv`'s patrol sails (rule 3's targets).
-fn hunts_the_patrol(s: &Ships, nv: u32, h: u32) -> bool {
-    let sv = s.navies[nv as usize].service;
-    s.services[sv as usize]
-        .legs
+/// Whether one of haven `h`'s pirates began a hunt on a lane navy `nv`'s patrol sails within
+/// `starve_days` of `at` (rule 3's targets, PC35).
+fn hunts_the_patrol(s: &Ships, nv: u32, h: u32, at: Tick) -> bool {
+    let starve = (s.tun.starve_days * TICKS_PER_DAY as f64).round() as u64;
+    s.havens[h as usize]
+        .navy_hunts
         .iter()
-        .any(|g| s.threat(g.hop.lane).and_then(|t| t.haven) == Some(h))
+        .any(|&(n, t)| n == nv && at.0.saturating_sub(t.0) <= starve)
 }
 
-/// Whether haven `h` has held a patrolled lane for `assault_cause_days` at `at` (PC31).
+/// Whether navy `nv`'s patrol sails lane `l`.
+fn patrols(s: &Ships, nv: u32, l: u32) -> bool {
+    let sv = s.navies[nv as usize].service;
+    s.services[sv as usize].legs.iter().any(|g| g.hop.lane == l)
+}
+
+/// Whether haven `h` has robbed patrolled lanes for `assault_cause_days` at `at` (PC31).
 fn cause_served(s: &Ships, h: u32, at: Tick) -> bool {
     let cause = u64::from(s.tun.assault_cause_days) * TICKS_PER_DAY;
     s.havens[h as usize]
@@ -844,10 +851,10 @@ fn cause_served(s: &Ships, h: u32, at: Tick) -> bool {
         .is_some_and(|t0| at.0 >= t0.0 + cause)
 }
 
-/// Whether navy `nv` may assault haven `h` at `at`, out of view: its pirates hunt the patrol's
-/// lanes and the cause has run its year.
+/// Whether navy `nv` may assault haven `h` at `at`, out of view: its pirates hunted the patrol's
+/// lanes lately and the cause has run its course.
 fn a_target(s: &Ships, nv: u32, h: u32, at: Tick) -> bool {
-    hunts_the_patrol(s, nv, h) && cause_served(s, h, at)
+    hunts_the_patrol(s, nv, h, at) && cause_served(s, h, at)
 }
 
 /// Sets haven `h`'s men ashore to `milli` thousandths now.
@@ -870,16 +877,16 @@ fn sea_and_sky(c: &Coastal) -> (ShipId, ShipId) {
     (of(Medium::Sea), of(Medium::Sky))
 }
 
-/// S8b `a_navy_breaks_a_weak_haven` (§2.4.6a rule 3, PC7, PC8, PC31). The coast's sky lanes are
-/// escorted, so its sky pirate rests in port while its sea pirate hunts. Every look from the
+/// S8b `a_navy_breaks_a_weak_haven` (§2.4.6a rule 3, PC7, PC8, PC31, PC35). The coast's sky lanes
+/// are escorted, so its sky pirate rests in port while its sea pirate hunts. Every look from the
 /// haven's first hunt on a lane Saltmere's navy patrols finds its defence just below the gate:
 /// 12.6 men (`A / sqrt 2` is 12.73 for the navy's 2 x 6 x 1.5), its ships in port plus the rest
-/// ashore; other looks find the pool at its cap. For the first 96 days no look breaks it (a year
-/// of robbery first). The first look after, with the sky ship in port and the sea ship at sea,
-/// breaks the haven: the sky ship is sunk at once, by the navy, with no
+/// ashore; other looks find the pool at its cap. Until its cause clock has run
+/// `assault_cause_days` no look breaks it. The first look after, with the sky ship in port and
+/// the sea ship at sea, breaks the haven: the sky ship is sunk at once, by the navy, with no
 /// pressure; the men ashore are gone; nothing is refitted. The sea ship finishes its hunt and is
-/// laid up as it comes home, and the haven shuts then, counted broken, its site due to refound
-/// 48 days later (P = 0), which it does. The broken state reads back across a restart.
+/// laid up on the tick it comes home, and the haven shuts then, counted broken, its site due to
+/// refound 48 days later (P = 0), which it does. The broken state reads back across a restart.
 #[test]
 fn a_navy_breaks_a_weak_haven() {
     let tun = looks_often();
@@ -897,20 +904,20 @@ fn a_navy_breaks_a_weak_haven() {
             assert!(looks <= 200, "seed {seed}: never a weak moment in 400 days");
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
-            let held = hunts_the_patrol(s, nv, h);
+            let held = hunts_the_patrol(s, nv, h, due);
             let stays = s.havens[h as usize]
                 .ships
                 .iter()
                 .all(|&p| next_change(s, p).is_none_or(|t| t > due));
             if held && !cause_served(s, h, due) && stays && in_port(s, h) <= 12.6 {
-                // Weak, but the year is not out.
+                // Weak, but the cause has not run.
                 early += 1;
                 let pool = ((12.6 - in_port(s, h)) * 1000.0).round() as u32;
                 set_pool(&mut c, h, pool);
                 idle_by(&mut c, &mut fake, due + 1, 1);
                 assert!(
                     c.ships.havens[h as usize].broken_at.is_none(),
-                    "seed {seed}: broken before a year of robbery"
+                    "seed {seed}: broken before its cause has run"
                 );
                 continue;
             }
@@ -938,7 +945,7 @@ fn a_navy_breaks_a_weak_haven() {
             );
             assert_eq!(c.ships.stats.sinkings, sinkings);
         };
-        assert!(early > 0, "seed {seed}: no look within the year");
+        assert!(early > 0, "seed {seed}: no look before the cause had run");
         let hv = &c.ships.havens[h as usize];
         assert_eq!(hv.broken_at, Some(due), "seed {seed}: broken at the look");
         assert!(hv.shut.is_none(), "its sea ship is out");
@@ -976,15 +983,25 @@ fn a_navy_breaks_a_weak_haven() {
         c.ships.check(&c.world).expect("check");
         let sinkings = c.ships.stats.sinkings;
 
-        // The sea ship comes home and is laid up; the haven shuts, broken.
+        // The sea ship comes home and is laid up on the tick it docks; the haven shuts, broken.
         let mut t = c.ships.now();
+        let mut home = None;
         while c.ships.ship(sea).unwrap().is_active() {
+            if let Some(PState::Homebound { arrive }) = state(&c.ships, sea) {
+                home = Some(arrive);
+            }
             t += TICKS_PER_DAY / 96;
             assert!(t < due + 40 * TICKS_PER_DAY, "seed {seed}: never home");
             idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
         }
         let x = c.ships.ship(sea).unwrap();
         assert!(x.is_laid_up() && x.crew == 0, "seed {seed}: {x:?}");
+        let home = home.expect("it sailed home");
+        assert!(
+            matches!(x.status, rtsim_ships::engine::Status::Lost { since, .. } if since == home),
+            "seed {seed}: laid up at {:?}, home at {home:?}",
+            x.status
+        );
         assert_eq!(c.ships.stats.sinkings, sinkings, "laid up, not sunk");
         let hv = &c.ships.havens[h as usize];
         let sh = hv.shut.expect("shut with its last ship");
@@ -1007,9 +1024,9 @@ fn a_navy_breaks_a_weak_haven() {
     });
 }
 
-/// S8b `a_navy_leaves_a_strong_haven_alone` (§2.4.6a rule 3, PC7, PC8). At every look of 240
-/// days, once the haven has held a patrolled lane for a year, where the coast's ships hold still
-/// until it, its defence is set just above the gate:
+/// S8b `a_navy_leaves_a_strong_haven_alone` (§2.4.6a rule 3, PC7, PC8). At every look of 600
+/// days at which the haven is a target (PC31, PC35: it has robbed patrolled lanes long enough and
+/// lately) and the coast's ships hold still until it, its defence is set just above the gate:
 /// 12.8 men, its ships in port plus the rest ashore (the navy then believes it wins with p =
 /// 0.664, under 2/3). Other looks find the pool at its cap. No look breaks the haven.
 #[test]
@@ -1022,7 +1039,7 @@ fn a_navy_leaves_a_strong_haven_alone() {
         let slots = c.ships.havens[h as usize].ships.clone();
         let mut fake = FakeShips::new(f64::from(tun.view_radius));
         let mut close = 0;
-        for _ in 0..120 {
+        for _ in 0..300 {
             let due = to_look(&mut c, &mut fake, nv);
             let s = &c.ships;
             let still = slots
@@ -1044,16 +1061,16 @@ fn a_navy_leaves_a_strong_haven_alone() {
         }
         assert!(close > 0, "seed {seed}: no look at the gate");
         let n = c.ships.navy_counts();
-        assert_eq!((n.looked, n.assaults), (120, 0), "seed {seed}");
+        assert_eq!((n.looked, n.assaults), (300, 0), "seed {seed}");
         c.ships.check(&c.world).expect("check");
     });
 }
 
 /// S8b `no_assault_in_view` (§2.4.6a rule 3: nothing happens in a player's view). Once the coast's
-/// pirates have hunted a lane the navy patrols for a year, a player stands 100 blocks off the
-/// haven's dock, and at each look for 40 days the haven has nobody ashore (weak whatever is in
-/// port: 11 men at most against the gate's 12.73). No look breaks it. Once the player leaves, a
-/// look with the pool empty breaks it.
+/// haven is a target (PC31, PC35), a player stands 100 blocks off the haven's dock, and at each
+/// look the haven has nobody ashore (weak whatever is in port: 11 men at most against the gate's
+/// 12.73) until ten looks have found it a target. No look breaks it. Once the player leaves, a
+/// look at which it is a target, with the pool empty, breaks it.
 #[test]
 fn no_assault_in_view() {
     let tun = looks_often();
@@ -1081,11 +1098,15 @@ fn no_assault_in_view() {
             synth::SCRIPT_PLAYER,
             pos,
             now,
-            now + 400 * TICKS_PER_DAY,
+            now + 600 * TICKS_PER_DAY,
         );
         let looked = c.ships.navy_counts().looked;
-        for _ in 0..20 {
+        let (mut looks, mut targets) = (0, 0);
+        while targets < 10 {
+            looks += 1;
+            assert!(looks <= 250, "seed {seed}: {targets} target looks in 500 days");
             let due = to_look(&mut c, &mut fake, nv);
+            targets += usize::from(a_target(&c.ships, nv, h, due));
             set_pool(&mut c, h, 0);
             idle_by(&mut c, &mut fake, due + 1, 1);
             assert!(
@@ -1094,18 +1115,606 @@ fn no_assault_in_view() {
             );
         }
         let n = c.ships.navy_counts();
-        assert_eq!((n.looked, n.assaults), (looked + 20, 0), "seed {seed}");
-        // The player leaves: a look breaks the haven.
+        assert_eq!((n.looked, n.assaults), (looked + looks, 0), "seed {seed}");
+        // The player leaves: a look at a target breaks the haven.
         c.ships.player_left(&mut c.world, player);
         let mut looks = 0;
         while c.ships.havens[h as usize].broken_at.is_none() {
             looks += 1;
-            assert!(looks <= 20, "seed {seed}: not broken out of view");
+            assert!(looks <= 300, "seed {seed}: not broken out of view");
             let due = to_look(&mut c, &mut fake, nv);
-            set_pool(&mut c, h, 0);
+            let weak = a_target(&c.ships, nv, h, due);
+            set_pool(&mut c, h, if weak { 0 } else { cap });
             idle_by(&mut c, &mut fake, due + 1, 1);
+            assert_eq!(
+                c.ships.havens[h as usize].broken_at.is_some(),
+                weak,
+                "seed {seed}: broken exactly when a target, out of view"
+            );
         }
         assert_eq!(c.ships.navy_counts().assaults, 1);
+        c.ships.check(&c.world).expect("check");
+    });
+}
+
+/// Drives the coast look by look until navy `nv` breaks the haven at a look where it is a target,
+/// fed, and `ready` holds: the pool is emptied at those looks and filled to its cap at the
+/// others. The tick of the break, or `None` within `looks` looks.
+fn break_when(
+    c: &mut Coastal,
+    fake: &mut FakeShips,
+    nv: u32,
+    looks: usize,
+    ready: impl Fn(&Ships, Tick) -> bool,
+) -> Option<Tick> {
+    let h = c.haven;
+    let cap = c.ships.tun.crew_pool_cap * 1000;
+    for _ in 0..looks {
+        let due = to_look(c, fake, nv);
+        let s = &c.ships;
+        let go = a_target(s, nv, h, due) && !s.starving(h, due) && ready(s, due);
+        set_pool(c, h, if go { 0 } else { cap });
+        idle_by(c, fake, due + 1, 1);
+        if c.ships.havens[h as usize].broken_at.is_some() {
+            assert!(go, "broken at a look that was not ready");
+            return Some(due);
+        }
+    }
+    None
+}
+
+/// Whether pirate `p` is at sea past `due + 1`: active, not resting, its state holding on.
+fn at_sea(s: &Ships, p: ShipId, due: Tick) -> bool {
+    s.ship(p).is_some_and(Ship::is_active)
+        && !resting(s, p)
+        && next_change(s, p).is_some_and(|t| t > due + 1)
+}
+
+/// Pirate `p`'s state, if it has one.
+fn state(s: &Ships, p: ShipId) -> Option<PState> {
+    s.ship(p).and_then(|x| x.pirate.as_ref()).map(|x| x.state)
+}
+
+/// S8b review R1 (§2.4.6a rule 3, PC7): a haven broken with both its ships at sea, one of them
+/// then sunk at sea by a player. A broken haven refits nothing, so the loss books no refit
+/// (`check()` holds no live refit for a broken haven's ship): the slot stays lost, not laid up,
+/// and the player's loss presses the haven (S0). The other ship comes home and is laid up, the
+/// haven shuts broken, and its site refounds after `min(384, 48 x 2^P)` days with both slots.
+#[test]
+fn a_loss_at_sea_after_a_break_books_no_refit() {
+    let tun = looks_often();
+    let done = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        c.ships.tape.set_on(true);
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let (sea, sky) = sea_and_sky(&c);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let both = |s: &Ships, due: Tick| at_sea(s, sea, due) && at_sea(s, sky, due);
+        break_when(&mut c, &mut fake, nv, 300, both)?;
+        assert_eq!(manned(&c.ships, h), (2, 2), "seed {seed}");
+        c.ships.check(&c.world).expect("check after the break");
+        let x = c.ships.ship(sea).unwrap().clone();
+        let at = c.ships.now();
+        let o = Obs::Sunk(boundary::Sunk {
+            agent: Ship::agent(sea),
+            epoch: x.epoch,
+            by: boundary::By::Player,
+            dimension: 0,
+            player: (0xAB, 0xCD),
+            ship: 0,
+            op: 1 << 62 | 77,
+            pos: (0.0, 63.0, 0.0),
+        });
+        c.ships.ingest(&mut c.world, &o, &c.mask, at);
+        c.ships
+            .check(&c.world)
+            .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let x = c.ships.ship(sea).unwrap();
+        assert!(
+            matches!(x.status, rtsim_ships::engine::Status::Lost { since, .. } if since == at)
+                && !x.is_laid_up(),
+            "seed {seed}: sunk, not laid up: {x:?}"
+        );
+        let hv = &c.ships.havens[h as usize];
+        assert!(hv.pressure != Pressure::default(), "a player's loss presses");
+        assert!(hv.shut.is_none(), "seed {seed}: its sky ship is out");
+        let text = rtsim_archive::record::rows_on(&c.ships.tape)
+            .into_iter()
+            .filter_map(|(_, _, r)| match r {
+                rtsim_archive::Row::Event(e) if e.tick == at.0 => Some(format!("{e:?}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!text.is_empty(), "seed {seed}: the loss is taped");
+        // The sky ship comes home and is laid up; the haven shuts, broken.
+        let mut t = c.ships.now();
+        while c.ships.havens[h as usize].shut.is_none() {
+            t += TICKS_PER_DAY / 8;
+            assert!(t < at + 40 * TICKS_PER_DAY, "seed {seed}: never shut");
+            idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
+            c.ships
+                .check(&c.world)
+                .unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        }
+        assert!(c.ships.ship(sky).unwrap().is_laid_up(), "seed {seed}");
+        let hv = &c.ships.havens[h as usize];
+        let sh = hv.shut.unwrap();
+        assert!(sh.broken);
+        let wait = tun.refound.delay_ticks(hv.pressure, (sh.since.0 / TICKS_PER_DAY) as u32);
+        assert_eq!(sh.back, sh.since + wait.max(1), "seed {seed}");
+        assert!(wait > Tick::from_days(48).0, "seed {seed}: P > 0 waits longer");
+        idle(&mut c, &mut fake, sh.back + TICKS_PER_DAY / 4);
+        assert_eq!(c.ships.havens[h as usize].counts.refounds, 1, "seed {seed}");
+        assert_eq!(manned(&c.ships, h), (2, 2), "seed {seed}");
+        c.ships.check(&c.world).expect("check");
+        Some(seed)
+    });
+    let n = done.iter().flatten().count();
+    assert!(n >= 5, "only {n} seeds broke with both ships at sea: {done:?}");
+}
+
+/// S8b review R2 (§2.4.6a rule 3; the persist pattern): a restart while the haven is broken and
+/// open (both its ships at sea) continues exactly: both runs carried on for 150 days end in the
+/// same state.
+#[test]
+fn a_restart_while_broken_continues_exactly() {
+    let tun = looks_often();
+    let done = per_seed(&[1, 2, 3, 4, 5, 6, 7, 8], |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let nv = c.navy.expect("the coast's navy");
+        let (sea, sky) = sea_and_sky(&c);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let both = |s: &Ships, due: Tick| at_sea(s, sea, due) && at_sea(s, sky, due);
+        break_when(&mut c, &mut fake, nv, 300, both)?;
+        let mut d = restarted(&c, seed, &tun);
+        assert_eq!(d.ships.state_hash(), c.ships.state_hash(), "seed {seed}");
+        let end = c.ships.now() + 150 * TICKS_PER_DAY;
+        let mut fc = FakeShips::new(f64::from(tun.view_radius));
+        let mut fd = FakeShips::new(f64::from(tun.view_radius));
+        idle(&mut c, &mut fc, end);
+        idle(&mut d, &mut fd, end);
+        c.ships.check(&c.world).expect("check");
+        d.ships.check(&d.world).expect("check restored");
+        assert_eq!(c.ships.state_hash(), d.ships.state_hash(), "seed {seed}");
+        assert_eq!(c.ships.havens, d.ships.havens, "seed {seed}");
+        Some(c.ships.haven_counts().broken_shuts)
+    });
+    let n = done.iter().flatten().count();
+    assert!(n >= 3, "only {n} seeds broke with both ships at sea: {done:?}");
+}
+
+/// S8b review R4 (PC39): the tunables are the caller's, not the save's, so a load matches each
+/// navy's looks to them. A save made with the looks off, read with them on, has a look booked
+/// within `assault_every_days` of the restart; a save made with them on, read with them off, has
+/// its look voided (it fires stale and books no other). `check()` passes on both.
+#[test]
+fn a_restart_matches_the_navy_looks_to_the_tunables() {
+    let on = ShipTunables::default();
+    let off = ShipTunables {
+        assault_every_days: 0,
+        ..ShipTunables::default()
+    };
+    let every = u64::from(on.assault_every_days) * TICKS_PER_DAY;
+    for seed in [1, 2, 3] {
+        // Off, then on.
+        let mut c = synth::coastal(seed, off.clone());
+        let nv = c.navy.expect("the coast's navy");
+        let mut fake = FakeShips::new(f64::from(off.view_radius));
+        idle(&mut c, &mut fake, Tick::from_days(10));
+        assert_eq!(c.ships.assault_due(nv), None);
+        let mut d = restarted(&c, seed, &on);
+        let now = d.ships.now();
+        let due = d.ships.assault_due(nv).expect("a look booked on load");
+        assert!(due > now && due.0 <= now.0 + every, "seed {seed}: {due:?}");
+        d.ships.check(&d.world).expect("check, looks on");
+        idle(&mut d, &mut fake, now + 2 * every);
+        assert!(d.ships.navy_counts().looked >= 2, "seed {seed}");
+        d.ships.check(&d.world).expect("check, looks on");
+        // On, then off.
+        let mut c = synth::coastal(seed, on.clone());
+        let mut fake = FakeShips::new(f64::from(on.view_radius));
+        idle(&mut c, &mut fake, Tick::from_days(10));
+        assert!(c.ships.assault_due(nv).is_some());
+        let mut d = restarted(&c, seed, &off);
+        assert_eq!(d.ships.assault_due(nv), None, "seed {seed}: the look is void");
+        d.ships.check(&d.world).expect("check, looks off");
+        let (looked, stale) = (d.ships.navy_counts().looked, d.ships.stats.stale);
+        let now = d.ships.now();
+        idle(&mut d, &mut fake, now + 2 * every);
+        assert_eq!(d.ships.navy_counts().looked, looked, "seed {seed}");
+        assert!(d.ships.stats.stale > stale, "seed {seed}: the old look fired stale");
+        d.ships.check(&d.world).expect("check, looks off");
+        // The same tunables change nothing.
+        let e = restarted(&c, seed, &on);
+        assert_eq!(e.ships.state_hash(), c.ships.state_hash(), "seed {seed}");
+    }
+}
+
+/// The cause clock of a haven, rebuilt from the engine's log (PC31, PC35): it starts at the
+/// first hunt one of the haven's pirates begins on a lane the navy patrols, and restarts at one
+/// that comes more than `starve_days` after the last; a refound clears it. The coast's one haven
+/// owns every pirate hunt in the log.
+#[derive(Debug, Default)]
+struct CauseModel {
+    read: usize,
+    since: Option<Tick>,
+    last: Option<Tick>,
+    /// Hunts on lanes no navy patrols, and those of them while the clock had not started.
+    unpatrolled: u64,
+    unpatrolled_before: u64,
+    restarts: u64,
+}
+
+impl CauseModel {
+    fn catch_up(&mut self, s: &Ships, nv: u32) {
+        let starve = (s.tun.starve_days * TICKS_PER_DAY as f64).round() as u64;
+        for e in &s.log[self.read..] {
+            match e.kind {
+                "hunt" => {
+                    let lane: u32 = e
+                        .what
+                        .strip_prefix("hunts lane ")
+                        .and_then(|r| r.split(' ').next())
+                        .and_then(|l| l.parse().ok())
+                        .expect("a hunt names its lane");
+                    let at = Tick(e.tick);
+                    if !patrols(s, nv, lane) {
+                        self.unpatrolled += 1;
+                        self.unpatrolled_before += u64::from(self.since.is_none());
+                        continue;
+                    }
+                    let gap = self.last.is_none_or(|t| at.0 - t.0 > starve);
+                    if self.since.is_none() || gap {
+                        self.restarts += u64::from(self.since.is_some());
+                        self.since = Some(at);
+                    }
+                    self.last = Some(at);
+                }
+                "refound" if e.what.contains("is refounded") => {
+                    (self.since, self.last) = (None, None);
+                }
+                _ => {}
+            }
+        }
+        self.read = s.log.len();
+    }
+}
+
+/// S8b `the_cause_clock_runs_on_patrolled_hunts_only` (§2.4.6a rule 3, PC31, PC35). The coast's
+/// haven hunts lanes Saltmere's navy patrols and lanes it does not (its sky lanes and the sea
+/// lanes past Farpoint). Over 400 days with the looks off, read every day, the engine's cause
+/// clock and its record of the navy's lanes hunted equal a clock rebuilt from the log of hunts:
+/// no clock starts on a hunt off the patrol, and one restarts after a month with no patrolled
+/// hunt. Over the seeds, hunts off the patrol come before the clock starts, and clocks restart.
+#[test]
+fn the_cause_clock_runs_on_patrolled_hunts_only() {
+    let tun = ShipTunables {
+        assault_every_days: 0,
+        ..ShipTunables::default()
+    };
+    let models = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        c.ships.log_enabled = true;
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut m = CauseModel::default();
+        for d in 1..=400 {
+            idle(&mut c, &mut fake, Tick::from_days(d));
+            m.catch_up(&c.ships, nv);
+            let hv = &c.ships.havens[h as usize];
+            assert_eq!(
+                hv.holds_navy_lane_since, m.since,
+                "seed {seed} day {d}: the cause clock"
+            );
+            let last = hv.navy_hunts.iter().find(|e| e.0 == nv).map(|e| e.1);
+            if m.last.is_some_and(|t| Tick::from_days(d).0 - t.0 <= 30 * TICKS_PER_DAY) {
+                assert_eq!(last, m.last, "seed {seed} day {d}: the navy's last hunt");
+            }
+        }
+        c.ships.check(&c.world).expect("check");
+        m
+    });
+    let before: u64 = models.iter().map(|m| m.unpatrolled_before).sum();
+    let restarts: u64 = models.iter().map(|m| m.restarts).sum();
+    eprintln!(
+        "cause clock: {} hunts off the patrol ({before} before a clock started), {restarts} \
+         restarts over {} seeds",
+        models.iter().map(|m| m.unpatrolled).sum::<u64>(),
+        models.len()
+    );
+    assert!(before > 0, "no hunt off the patrol before a clock started");
+    assert!(restarts > 0, "no clock restarted");
+}
+
+/// S8b `a_haven_back_on_the_patrol_waits_out_its_cause_again` (§2.4.6a rule 3, PC31, PC35). The
+/// coast with the navy looking every 2 days and the haven's pool at its cap at every look, so it
+/// is never broken; at each look a restored copy of the engine is asked whether an empty pool
+/// would break the haven then. It would exactly when the haven hunted a patrolled lane within
+/// `starve_days` and its clock, rebuilt from the log, has run `assault_cause_days`; so a haven
+/// that left the patrolled lanes for more than a month is not a target, nor on its return until
+/// the cause has run again, though its first clock would have served. Over the seeds such looks
+/// occur, and each seed has looks that would break it.
+#[test]
+fn a_haven_back_on_the_patrol_waits_out_its_cause_again() {
+    let tun = looks_often();
+    let cap = tun.crew_pool_cap * 1000;
+    let cause = u64::from(tun.assault_cause_days) * TICKS_PER_DAY;
+    let starve = (tun.starve_days * TICKS_PER_DAY as f64).round() as u64;
+    let out = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        c.ships.log_enabled = true;
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut m = CauseModel::default();
+        let mut first = None::<Tick>;
+        let (mut would, mut spared) = (0u64, 0u64);
+        for _ in 0..250 {
+            let due = to_look(&mut c, &mut fake, nv);
+            m.catch_up(&c.ships, nv);
+            if first.is_none() {
+                first = m.since;
+            }
+            let hv = &c.ships.havens[h as usize];
+            let expect = hv.shut.is_none()
+                && m.last.is_some_and(|t| due.0 - t.0 <= starve)
+                && m.since.is_some_and(|t| due.0 >= t.0 + cause);
+            // The first clock would have served, but the haven left the patrol since.
+            if !expect && hv.shut.is_none() && first.is_some_and(|t| due.0 >= t.0 + cause) {
+                spared += u64::from(m.restarts > 0 || m.last.is_some_and(|t| due.0 - t.0 > starve));
+            }
+            let mut d = restarted(&c, seed, &tun);
+            set_pool(&mut d, h, 0);
+            let mut fd = FakeShips::new(f64::from(tun.view_radius));
+            idle_by(&mut d, &mut fd, due + 1, 1);
+            let broke = d.ships.havens[h as usize].broken_at.is_some();
+            assert_eq!(
+                broke,
+                expect,
+                "seed {seed} day {:.2}: clock {:?}, last patrolled hunt {:?}",
+                day(due),
+                m.since.map(day),
+                m.last.map(day)
+            );
+            would += u64::from(broke);
+            set_pool(&mut c, h, cap);
+            idle_by(&mut c, &mut fake, due + 1, 1);
+            assert!(c.ships.havens[h as usize].broken_at.is_none());
+        }
+        c.ships.check(&c.world).expect("check");
+        (seed, would, spared)
+    });
+    eprintln!("looks that would break / spared after leaving the patrol: {out:?}");
+    assert!(out.iter().all(|&(_, w, _)| w > 0), "a seed never a target");
+    assert!(out.iter().any(|&(_, _, s)| s > 0), "no haven spared after leaving the patrol");
+}
+
+/// S8b `a_broken_havens_pirate_turns_back_at_its_lane` (§2.4.6a rule 3, PC36). The haven is broken
+/// while one of its pirates sails out to a lane. At the lane it does not hunt: it turns for home
+/// at once, pays no toll, feeds nothing and robs nothing (the haven's hunts, fed-until, tolls and
+/// the ship's crew and hold are as they were, and the lane has no hunter of it), and is laid up
+/// on the tick it comes home.
+#[test]
+fn a_broken_havens_pirate_turns_back_at_its_lane() {
+    let tun = looks_often();
+    let done = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let (sea, sky) = sea_and_sky(&c);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let outbound = |s: &Ships, p: ShipId, due: Tick| {
+            s.ship(p).is_some_and(Ship::is_active)
+                && matches!(state(s, p), Some(PState::Outbound { arrive, .. }) if arrive > due + 1)
+        };
+        let ready = |s: &Ships, due: Tick| outbound(s, sea, due) || outbound(s, sky, due);
+        break_when(&mut c, &mut fake, nv, 400, ready)?;
+        let due = c.ships.havens[h as usize].broken_at.unwrap();
+        let p = if outbound(&c.ships, sea, due) { sea } else { sky };
+        let Some(PState::Outbound { lane, arrive }) = state(&c.ships, p) else {
+            unreachable!()
+        };
+        let hv = &c.ships.havens[h as usize];
+        let (fed, toll) = (hv.fed_until, hv.counts.toll_milli);
+        let hunts = c.ships.stats.hunts;
+        let x = c.ships.ship(p).unwrap();
+        let (crew, cargo) = (x.crew, x.cargo.clone());
+        idle_by(&mut c, &mut fake, arrive + 1, 1);
+        let home = match state(&c.ships, p) {
+            Some(PState::Homebound { arrive: home }) => home,
+            other => panic!("seed {seed}: at the lane it is {other:?}"),
+        };
+        let hv = &c.ships.havens[h as usize];
+        assert_eq!(c.ships.stats.hunts, hunts, "seed {seed}: no hunt");
+        assert_eq!((hv.fed_until, hv.counts.toll_milli), (fed, toll), "seed {seed}");
+        let x = c.ships.ship(p).unwrap();
+        assert_eq!((x.crew, &x.cargo), (crew, &cargo), "seed {seed}: no toll, no loot");
+        assert!(
+            c.ships.threat(lane).is_none_or(|t| !t.hunters.contains(&p)),
+            "seed {seed}: not a hunter of lane {lane}"
+        );
+        idle_by(&mut c, &mut fake, home + 1, 1);
+        let x = c.ships.ship(p).unwrap();
+        assert!(
+            x.is_laid_up()
+                && matches!(x.status, rtsim_ships::engine::Status::Lost { since, .. } if since == home),
+            "seed {seed}: laid up on coming home: {x:?}"
+        );
+        c.ships.check(&c.world).expect("check");
+        Some(seed)
+    });
+    let n = done.iter().flatten().count();
+    assert!(n >= 5, "only {n} seeds broke with a pirate outbound: {done:?}");
+}
+
+/// S8b `a_ship_home_in_view_rests_until_the_player_leaves` (§2.4.6a rule 3, PC33: nothing happens
+/// in a player's view). The haven is broken while its sea ship is at sea; a player then stands
+/// 100 blocks off its dock. The ship comes home in view, embodied, and rests rather than being
+/// laid up; for 30 days it rests on, active, and the haven stays open. The player leaves, the
+/// plugin releases the body, and the ship is laid up at its next decision; the haven shuts,
+/// broken, when its other ship is laid up too.
+#[test]
+fn a_ship_home_in_view_rests_until_the_player_leaves() {
+    let tun = looks_often();
+    let done = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let (sea, _) = sea_and_sky(&c);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let ready = |s: &Ships, due: Tick| {
+            at_sea(s, sea, due)
+                && matches!(
+                    state(s, sea),
+                    Some(PState::Hunting { until, .. }) if until > due + TICKS_PER_DAY / 4
+                )
+        };
+        break_when(&mut c, &mut fake, nv, 400, ready)?;
+        let now = c.ships.now();
+        let hv = &c.ships.havens[h as usize];
+        let (frame, dock) = (hv.frame, hv.dock);
+        let pos = rtsim_settle::Pos::new(frame, dock.0 + 100, dock.2);
+        let player = c.ships.player_stays(
+            &mut c.world,
+            synth::SCRIPT_PLAYER,
+            pos,
+            now,
+            now + 200 * TICKS_PER_DAY,
+        );
+        fake.set_player(
+            synth::SCRIPT_PLAYER,
+            f64::from(dock.0 + 100),
+            f64::from(dock.2),
+        );
+        // Home in view: it rests, embodied.
+        let mut t = now;
+        while !resting(&c.ships, sea) {
+            t += TICKS_PER_DAY / 96;
+            assert!(t < now + 40 * TICKS_PER_DAY, "seed {seed}: never home");
+            idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
+            assert!(
+                !c.ships.ship(sea).unwrap().is_laid_up(),
+                "seed {seed}: laid up in view"
+            );
+        }
+        assert!(c.ships.ship(sea).unwrap().embodied, "seed {seed}: home in view");
+        let home = c.ships.now();
+        idle_by(&mut c, &mut fake, home + 30 * TICKS_PER_DAY, TICKS_PER_DAY / 8);
+        let x = c.ships.ship(sea).unwrap();
+        assert!(x.is_active() && x.embodied, "seed {seed}: rests on in view: {x:?}");
+        assert!(c.ships.havens[h as usize].shut.is_none(), "seed {seed}");
+        // The player leaves: laid up at its next decision out of view.
+        let left = c.ships.now();
+        c.ships.player_left(&mut c.world, player);
+        fake.set_player(synth::SCRIPT_PLAYER, 1.0e9, 1.0e9);
+        let mut t = left;
+        while !c.ships.ship(sea).unwrap().is_laid_up() {
+            t += TICKS_PER_DAY / 96;
+            assert!(t < left + 10 * TICKS_PER_DAY, "seed {seed}: never laid up");
+            idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
+        }
+        let x = c.ships.ship(sea).unwrap();
+        assert!(!x.embodied && x.crew == 0, "seed {seed}: {x:?}");
+        // The sky ship may be out yet: the haven shuts, broken, with its last ship.
+        while c.ships.havens[h as usize].shut.is_none() {
+            t += TICKS_PER_DAY / 8;
+            assert!(t < left + 40 * TICKS_PER_DAY, "seed {seed}: never shut");
+            idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
+        }
+        let sh = c.ships.havens[h as usize].shut.unwrap();
+        assert!(sh.broken && sh.since > left, "seed {seed}: {sh:?}");
+        c.ships.check(&c.world).expect("check");
+        Some(seed)
+    });
+    let n = done.iter().flatten().count();
+    assert!(n >= 5, "only {n} seeds: {done:?}");
+}
+
+/// S8b `no_assault_while_a_haven_ship_is_embodied` (§2.4.6a rule 3: nothing happens in a player's
+/// view). Once the coast's haven is a target, a player follows its sea pirate onto each lane it
+/// hunts more than `view_radius` from the haven's dock, so the pirate is embodied while the dock
+/// is out of every view. At each look with a haven ship embodied the pool is emptied (weak at
+/// any defence in port); at the others it is at its cap. No look breaks it until ten looks have
+/// found it a target with a ship embodied; then, the player gone, a look at a target with the
+/// pool empty breaks it.
+#[test]
+fn no_assault_while_a_haven_ship_is_embodied() {
+    let tun = looks_often();
+    let cap = tun.crew_pool_cap * 1000;
+    per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let (sea, _) = sea_and_sky(&c);
+        let slots = c.ships.havens[h as usize].ships.clone();
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        while !a_target(&c.ships, nv, h, c.ships.now()) {
+            let due = to_look(&mut c, &mut fake, nv);
+            assert!(due < Tick::from_days(600), "seed {seed}: no target");
+            set_pool(&mut c, h, cap);
+            idle_by(&mut c, &mut fake, due + 1, 1);
+        }
+        let hv = &c.ships.havens[h as usize];
+        let (frame, dock) = (hv.frame, (hv.dock.0, hv.dock.2));
+        let far = f64::from(tun.view_radius) + 64.0;
+        let mut player = None;
+        let (mut looks, mut seen) = (0, 0);
+        while seen < 10 {
+            looks += 1;
+            assert!(looks <= 400, "seed {seed}: {seen} looks with a ship embodied");
+            let due = c.ships.assault_due(nv).expect("a navy looks");
+            while c.ships.now() < Tick(due.0 - 1) {
+                let t = (c.ships.now() + TICKS_PER_DAY / 8).min(Tick(due.0 - 1));
+                idle_by(&mut c, &mut fake, t, TICKS_PER_DAY / 96);
+                let now = c.ships.now();
+                match (player, state(&c.ships, sea)) {
+                    (None, Some(PState::Hunting { until, .. }))
+                        if c.ships.ship(sea).is_some_and(Ship::is_active) =>
+                    {
+                        let at = c.ships.position(&c.world, sea, now);
+                        let (dx, dz) = (f64::from(at.0 - dock.0), f64::from(at.1 - dock.1));
+                        if (dx * dx + dz * dz).sqrt() > far {
+                            let pos = rtsim_settle::Pos::new(frame, at.0, at.1);
+                            player = Some(c.ships.player_stays(
+                                &mut c.world,
+                                synth::SCRIPT_PLAYER,
+                                pos,
+                                now,
+                                until,
+                            ));
+                            fake.set_player(synth::SCRIPT_PLAYER, f64::from(at.0), f64::from(at.1));
+                        }
+                    }
+                    (Some(p), st) if !matches!(st, Some(PState::Hunting { .. })) => {
+                        c.ships.player_left(&mut c.world, p);
+                        fake.set_player(synth::SCRIPT_PLAYER, 1.0e9, 1.0e9);
+                        player = None;
+                    }
+                    _ => {}
+                }
+            }
+            let s = &c.ships;
+            let embodied = slots.iter().any(|&p| s.ship(p).is_some_and(|x| x.embodied));
+            let target = a_target(s, nv, h, due);
+            set_pool(&mut c, h, if embodied { 0 } else { cap });
+            idle_by(&mut c, &mut fake, due + 1, 1);
+            assert!(
+                c.ships.havens[h as usize].broken_at.is_none(),
+                "seed {seed}: broken with a ship embodied"
+            );
+            seen += usize::from(embodied && target);
+        }
+        if let Some(p) = player {
+            c.ships.player_left(&mut c.world, p);
+        }
+        fake.set_player(synth::SCRIPT_PLAYER, 1.0e9, 1.0e9);
+        let mut looks = 0;
+        while c.ships.havens[h as usize].broken_at.is_none() {
+            looks += 1;
+            assert!(looks <= 300, "seed {seed}: not broken once the player left");
+            let due = to_look(&mut c, &mut fake, nv);
+            let s = &c.ships;
+            let weak = a_target(s, nv, h, due)
+                && slots.iter().all(|&p| s.ship(p).is_none_or(|x| !x.embodied));
+            set_pool(&mut c, h, if weak { 0 } else { cap });
+            idle_by(&mut c, &mut fake, due + 1, 1);
+        }
         c.ships.check(&c.world).expect("check");
     });
 }
@@ -1138,7 +1747,7 @@ fn mean(v: &[f64]) -> f64 {
 
 /// `years` of the coast with assaults on and `assault_cause_days` at `cause_days`, nobody
 /// watching, read every quarter day: no break comes sooner than the cause after the haven opened,
-/// and its one site is never open twice.
+/// every break is one assault, and `check()` passes every 5 years.
 fn coast_cycle(seed: u64, cause_days: u32, years: u64) -> Cycle {
     let tun = ShipTunables {
         assault_cause_days: cause_days,
@@ -1186,8 +1795,6 @@ fn coast_cycle(seed: u64, cause_days: u32, years: u64) -> Cycle {
             _ => {}
         }
         was = hv.shut;
-        let open = usize::from(hv.shut.is_none());
-        assert!(open <= 1, "seed {seed}: more open than sites");
         if t.0.is_multiple_of(24 * TICKS_PER_DAY) {
             let (up, n) = manned(&c.ships, h);
             cy.manned += up as f64 / n as f64;
@@ -1206,12 +1813,13 @@ fn coast_cycle(seed: u64, cause_days: u32, years: u64) -> Cycle {
     cy
 }
 
-/// S8b `coast_havens_cycle_with_assaults` (§2.4.6a rule 3, PC31): 30 years of the coast with
-/// nobody watching and Saltmere's navy assaulting, a year of robbery first and with no such wait
-/// (`assault_cause_days` 96 and 0), on seeds 1, 7 and 30. It reports the share of slots manned,
-/// breaks per decade, the mean days from opening to a break and the mean days shut; it asserts
-/// only what holds by construction: a hunt in every 5-year window, no break sooner than the
-/// cause after the haven opened, and never more open havens than sites.
+/// S8b `coast_havens_cycle_with_assaults` (§2.4.6a rule 3, PC31, PC35, PC38): 30 years of the
+/// coast with nobody watching and Saltmere's navy assaulting, at the default
+/// `assault_cause_days` and with no such wait (0), on seeds 1, 7 and 30. It reports the share of
+/// slots manned, breaks per decade, the mean days from opening to a break and the mean days shut.
+/// It asserts a hunt in every 5-year window and no break sooner than the cause after the haven
+/// opened; at the default, that the navy breaks the haven on every seed and the share manned
+/// stays at least `COAST_MANNED_FLOOR`.
 #[test]
 fn coast_havens_cycle_with_assaults() {
     let jobs: Vec<u64> = [1u64, 7, 30]
@@ -1242,8 +1850,21 @@ fn coast_havens_cycle_with_assaults() {
             cy.seed,
             cy.cause_days
         );
+        if cy.cause_days == cause {
+            assert!(cy.breaks > 0, "seed {}: the navy never broke the haven", cy.seed);
+            assert!(
+                cy.manned >= COAST_MANNED_FLOOR,
+                "seed {}: manned {:.3} under {COAST_MANNED_FLOOR}",
+                cy.seed,
+                cy.manned
+            );
+        }
     }
 }
+
+/// The least share of the coast's slots manned over 30 years at the default
+/// `assault_cause_days` (PC38): the gate sweep's lowest seed, less a margin.
+const COAST_MANNED_FLOOR: f64 = 0.70;
 
 // ---- many worlds, nobody watching ----------------------------------------------------------------
 
@@ -1683,3 +2304,4 @@ fn assault_cause_sweep() {
 
 /// The gates [`assault_cause_sweep`] tries, in days (PC35).
 const CAUSE_SWEEP: [u32; 4] = [96, 144, 192, 240];
+
