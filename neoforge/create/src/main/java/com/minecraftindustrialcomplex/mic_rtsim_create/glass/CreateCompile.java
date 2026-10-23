@@ -310,7 +310,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (be instanceof CreativeFluidTankBlockEntity)
             return K.CREATIVE_TANK;
         if (be instanceof FluidTankBlockEntity t) {
-            FluidTankBlockEntity c = t.getControllerBE();
+            FluidTankBlockEntity c = tankController(t);
             return c != null && c.boiler != null && c.boiler.attachedEngines > 0 ? K.BOILER : null;
         }
         if (be instanceof SteamEngineBlockEntity)
@@ -381,6 +381,14 @@ final class CreateCompile implements GlassExtractor.Compile {
             return null;
         }
         return c.getBlockEntity(p, net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.IMMEDIATE);
+    }
+
+    /** A tank's controller through {@link #blockAt} ({@code getControllerBE} reads the level); null where it is not loaded. */
+    private FluidTankBlockEntity tankController(FluidTankBlockEntity t) {
+        if (t.isController())
+            return t;
+        BlockPos c = t.getController();
+        return c != null && blockAt(c) instanceof FluidTankBlockEntity x ? x : null;
     }
 
     /** {@code Level.getBlockState} where the chunk is loaded; null (a stop, counted) where it is not. */
@@ -1764,7 +1772,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     /** A burner's heat edges into a boiler above it (a basin's come from basinEdges). */
     private void heatEdges(Info i) {
         BlockPos above = i.be.getBlockPos().above();
-        if (blockAt(above) instanceof FluidTankBlockEntity t && t.getControllerBE() != null) {
+        if (blockAt(above) instanceof FluidTankBlockEntity t && tankController(t) != null) {
             int b = acceptFluid.get(t.getController().asLong());
             if (b != NONE && infos.get(b) != null && infos.get(b).kind == K.BOILER) {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.HEAT, i.node.index, b);
