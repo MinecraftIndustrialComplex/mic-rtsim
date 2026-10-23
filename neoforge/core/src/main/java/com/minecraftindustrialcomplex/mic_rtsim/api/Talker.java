@@ -26,7 +26,12 @@ public interface Talker {
         return true;
     }
 
-    /** Its voice, a dotted path ("villager.farmer"); lines fall back by dropping the last part, then "any". */
+    /**
+     * Its voice, a dotted path ("villager.farmer"). Every level of the chain that has lines for a topic
+     * contributes (TK31): the voice itself, then each parent made by dropping the last part
+     * ("villager"), each parent at 0.6 of the weight of the level below it. {@code any} is used only
+     * when no level has lines for the topic.
+     */
     String voice(Entity entity, ServerPlayer player);
 
     /** The speaker as chat shows it before the line. */
