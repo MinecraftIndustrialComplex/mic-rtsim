@@ -54,9 +54,14 @@ public final class FakePlayers {
         return p;
     }
 
-    /** A player that remembers the system messages it was sent (still sending them). */
+    /**
+     * A player that remembers the system messages it was sent (still sending them). {@link #heard} keeps
+     * the talk lines only (keys under {@code mic_rtsim.talk.}), because a player on the server's list
+     * also hears whatever other tests broadcast; {@link #raw} keeps everything.
+     */
     public static final class Hearer extends ServerPlayer {
         public final java.util.List<net.minecraft.network.chat.Component> heard = new java.util.ArrayList<>();
+        public final java.util.List<net.minecraft.network.chat.Component> raw = new java.util.ArrayList<>();
         public final java.util.List<net.minecraft.network.chat.Component> overlay = new java.util.ArrayList<>();
 
         Hearer(net.minecraft.server.MinecraftServer server, ServerLevel level, GameProfile profile,
@@ -66,7 +71,14 @@ public final class FakePlayers {
 
         @Override
         public void sendSystemMessage(net.minecraft.network.chat.Component message, boolean overlayBar) {
-            (overlayBar ? overlay : heard).add(message);
+            if (overlayBar) {
+                overlay.add(message);
+            } else {
+                raw.add(message);
+                if (message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents t
+                        && t.getKey().startsWith("mic_rtsim.talk."))
+                    heard.add(message);
+            }
             super.sendSystemMessage(message, overlayBar);
         }
     }
