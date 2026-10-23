@@ -89,19 +89,30 @@ public final class Talk {
             TalkDays days = entity.getData(RtsimAttachments.TALK_DAYS);
             if (days.creditedOn(player.getUUID(), day))
                 return;
-            talker.credit(entity, player);
+            // The day is written first: a plugin whose credit throws after applying it cannot credit on every click.
             entity.setData(RtsimAttachments.TALK_DAYS, days.with(player.getUUID(), day));
+            talker.credit(entity, player);
         } catch (Throwable e) {
             failed(talker, "credit", e);
         }
     }
 
-    private static final java.util.Set<Class<?>> REPORTED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final Map<String, Long> REPORTED = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Each distinct failure (talker class and where) is logged at most once a minute. */
+    static final long REPORT_EVERY_MS = 60_000L;
 
-    /** A talker threw: logged once per talker class with the stack trace; the click stays cancelled. */
+    /** A talker threw: logged with the stack trace at most once a minute per (class, where); the click stays cancelled. */
     public static void failed(Object talker, String what, Throwable e) {
-        if (REPORTED.add(talker.getClass()))
-            MicRtsim.LOGGER.error("TALK: {} threw in {} (reported once per class; the click stays cancelled)", talker.getClass().getName(), what, e);
+        long now = System.currentTimeMillis();
+        String key = talker.getClass().getName() + "|" + what;
+        if (REPORTED.size() > 256)
+            REPORTED.values().removeIf(t -> now - t >= REPORT_EVERY_MS);
+        Long last = REPORTED.get(key);
+        if (last != null && now - last < REPORT_EVERY_MS)
+            return;
+        REPORTED.put(key, now);
+        MicRtsim.LOGGER.error("TALK: {} threw in {} (logged at most once a minute per class and place; the click stays cancelled)",
+                talker.getClass().getName(), what, e);
     }
 
     private static void remember(UUID player, String key) {
@@ -165,7 +176,11 @@ public final class Talk {
     private static final Map<UUID, Look> LOOKS = new HashMap<>();
     private static final int LOOK_BOUND = 64;
 
-    /** Keeps a goal-driven mob looking at the player for this many ticks (the server tick calls {@link #tickLooks}). */
+    /**
+     * Keeps a goal-driven mob looking at the player for this many ticks: the look is applied now and again
+     * after every server tick (a one-off look is overwritten by a look goal on the next tick). A look goal
+     * that runs in the same tick still wins that tick, so the look holds "unless a look goal is running".
+     */
     public static void lookAt(Mob mob, ServerPlayer player, int ticks) {
         mob.getLookControl().setLookAt(player);
         if (LOOKS.size() >= LOOK_BOUND && !LOOKS.containsKey(mob.getUUID()))
@@ -217,31 +232,34 @@ public final class Talk {
         ServerLevel level = ctx.level();
         BlockPos pos = ctx.entity().blockPosition();
         out.add("fluff", 1.0);
-        long t = level.getDayTime() % DAY;
-        boolean day = false;
-        if (t >= 23000 || t < 1000)
-            out.add("fluff.dawn", 0.5);
-        else if (t < 11500) {
-            day = true;
-            out.add("fluff.day", 0.5);
-        } else if (t < 13000)
-            out.add("fluff.dusk", 0.5);
-        else
-            out.add("fluff.night", 0.5);
-
-        // Weather means something only under a sky: a dimension with sky light and no ceiling.
+        // Time of day and weather mean something only under a sky: a dimension with sky light and no
+        // ceiling (not the Nether, not the End's void), and for the sun and the rain, open sky overhead.
         if (level.dimensionType().hasSkyLight() && !level.dimensionType().hasCeiling()) {
-            if (!level.isRaining()) {
-                if (day)
-                    out.add("fluff.clear", 0.5);
-            } else if (level.canSeeSky(pos)) {
-                Biome.Precipitation p = level.getBiome(pos).value().getPrecipitationAt(pos);
-                if (p == Biome.Precipitation.SNOW)
-                    out.add("fluff.snow", 0.5);
-                else if (p == Biome.Precipitation.RAIN) {
-                    out.add("fluff.rain", 0.5);
-                    if (level.isThundering())
-                        out.add("fluff.thunder", 0.5);
+            boolean open = level.canSeeSky(pos);
+            long t = level.getDayTime() % DAY;
+            if (t >= 23000 || t < 1000)
+                out.add("fluff.dawn", 0.5);
+            else if (t < 11500) {
+                if (open && !level.isRaining())
+                    out.add("fluff.day", 0.5);
+            } else if (t < 13000)
+                out.add("fluff.dusk", 0.5);
+            else
+                out.add("fluff.night", 0.5);
+
+            if (open) {
+                if (!level.isRaining()) {
+                    if (t >= 1000 && t < 11500)
+                        out.add("fluff.clear", 0.5);
+                } else {
+                    Biome.Precipitation p = level.getBiome(pos).value().getPrecipitationAt(pos);
+                    if (p == Biome.Precipitation.SNOW)
+                        out.add("fluff.snow", 0.5);
+                    else if (p == Biome.Precipitation.RAIN) {
+                        out.add("fluff.rain", 0.5);
+                        if (level.isThundering())
+                            out.add("fluff.thunder", 0.5);
+                    }
                 }
             }
         }
