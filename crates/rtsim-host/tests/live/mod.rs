@@ -119,6 +119,8 @@ fn populate(j: &mut Java) {
         dimension: dim,
         structure,
         pos: (750, 64, 250),
+        home_bodies: 0,
+        census: 0,
     }));
     j.idle();
     j.idle();
