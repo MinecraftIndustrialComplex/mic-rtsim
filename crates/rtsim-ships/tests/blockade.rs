@@ -11,7 +11,8 @@ use rtsim_archive::kinds;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rng::fnv1a64;
-use rtsim_ships::engine::{LaneThreat, PortState, ShipId, Status};
+use rtsim_ships::boundary::Cmd;
+use rtsim_ships::engine::{LaneThreat, PState, PortState, ShipId, Status};
 use rtsim_ships::synth::{self, Coastal, FakeShips, Script};
 use rtsim_ships::timetable::ServiceKind;
 use rtsim_ships::{ShipTunables, Ships};
@@ -810,6 +811,222 @@ fn blockade_off_changes_nothing() {
              {pb:#018x}"
         );
     }
+}
+
+/// The pirates' hunts on the coast that began after `after` on one of `lanes`: (pirate, start).
+fn hunts_begun(c: &Coastal, lanes: &[u32], after: Tick) -> Vec<(ShipId, Tick, u32)> {
+    let mut out = Vec::new();
+    for hv in &c.ships.havens {
+        for &p in &hv.ships {
+            if let Some(PState::Hunting { lane, since, .. }) = c
+                .ships
+                .ship(p)
+                .filter(|x| x.is_active())
+                .and_then(|x| x.pirate.as_ref())
+                .map(|x| x.state)
+                && since > after
+                && lanes.contains(&lane)
+            {
+                out.push((p, since, lane));
+            }
+        }
+    }
+    out
+}
+
+/// PC91: a closed lane is not worth hunting. On the blockade coast, seeds 1 to 4, from the
+/// closure to the reopening: no pirate begins a hunt on either of dock 3's lanes, although their
+/// payments keep flowing for a while (which once made the lane look worth it).
+#[test]
+fn pirates_begin_no_hunt_on_a_closed_lane() {
+    let tun = ShipTunables::default();
+    let mut paid = 0;
+    for seed in 1..=4u64 {
+        let (mut c, mut fake) = blockade_coast(seed, &tun);
+        assert!(run_until(&mut c, &mut fake, Tick::from_days(90), |c, _| c
+            .ships
+            .port_closed(TARGET)));
+        let closed = c.ships.port(TARGET).and_then(|p| p.closed).expect("closed");
+        let lanes = c.ships.dock_lanes(TARGET).to_vec();
+        let mut begun = Vec::new();
+        let mut pay_seen = false;
+        let reopened = run_until(&mut c, &mut fake, closed + 90 * TICKS_PER_DAY, |c, _| {
+            if !c.ships.port_closed(TARGET) {
+                return true;
+            }
+            for &l in &lanes {
+                let e = &c.world.edges[c.ships.lanes[l as usize].edge as usize];
+                pay_seen |= e
+                    .dirs
+                    .iter()
+                    .any(|d| d.pay.values().any(|p| p.current_rate() > 0));
+            }
+            begun.extend(hunts_begun(c, &lanes, closed));
+            false
+        });
+        assert!(reopened, "seed {seed}: never reopened");
+        begun.sort();
+        begun.dedup();
+        assert!(
+            begun.is_empty(),
+            "seed {seed}: hunts begun on a closed lane after the closure (day {:.1}): {:?}",
+            day(closed),
+            begun
+                .iter()
+                .map(|&(p, t, l)| (p, day(t), l))
+                .collect::<Vec<_>>()
+        );
+        paid += usize::from(pay_seen);
+    }
+    eprintln!("seeds whose closed lanes still carried payments: {paid} of 4");
+}
+
+/// Steps the coast by 50 ticks to `to` with a player standing at `at` (observed every step, as
+/// the plugin's PLAYER record), checking the engine daily. Each `Materialize` of a ship in
+/// `watch` after `from` passes to `seen` with the step's end.
+#[allow(clippy::too_many_arguments)]
+fn stand(
+    c: &mut Coastal,
+    fake: &mut FakeShips,
+    at: (i32, i32),
+    to: Tick,
+    mut seen: impl FnMut(&Coastal, ShipId, (f64, f64), Tick),
+    watch: &[ShipId],
+) {
+    fake.set_player(PLAYER, f64::from(at.0), f64::from(at.1));
+    let mut t = c.ships.now();
+    while t < to {
+        c.ships
+            .observe_player(&mut c.world, PLAYER, rtsim_settle::Pos::new(0, at.0, at.1), t);
+        t = (t + 50).min(to);
+        c.ships.run_until(&mut c.world, &mut NoInfrastructure, t);
+        let cmds = c.ships.take_commands();
+        for cmd in &cmds {
+            if let Cmd::Materialize(m) = cmd
+                && let Some(id) = rtsim_ships::Ship::id_of_agent(m.agent)
+                && watch.contains(&id)
+            {
+                seen(c, id, (m.pos.0, m.pos.2), t);
+            }
+        }
+        let mut obs = fake.apply(&cmds, t);
+        obs.extend(fake.step(t));
+        for o in obs {
+            c.ships.ingest(&mut c.world, &o, &c.mask, t);
+        }
+        if t.0.is_multiple_of(TICKS_PER_DAY) {
+            c.ships.check(&c.world).expect("checks");
+        }
+    }
+}
+
+/// PC90: a relaunch never happens in a player's view. Seeds 1 to 3; both of dock 3's services
+/// start their loops at dock 0. A player stands at dock 0 from two days before the reopening to
+/// four days after it: every slot's relaunch falls due while he watches, and every one is put
+/// off to the slot's next stay there, so none of the laid-up ships appears. He then walks to
+/// the middle of the services' first lane, out of sight of the dock, for six days: the ships
+/// relaunch at dock 0 unseen and first materialize at the edge of his view as they sail into
+/// it, never closer.
+#[test]
+fn a_relaunch_never_happens_in_view() {
+    let tun = ShipTunables::default();
+    let view = f64::from(tun.view_radius);
+    let mut entered = 0;
+    for seed in 1..=3u64 {
+        let (mut c0, mut f0) = blockade_coast(seed, &tun);
+        assert!(run_until(&mut c0, &mut f0, Tick::from_days(200), |c, _| c
+            .ships
+            .stats
+            .reopenings
+            > 0));
+        let reopen = c0.ships.now();
+        let (mut c, mut fake) = blockade_coast(seed, &tun);
+        let from = Tick((reopen.0 - 2 * TICKS_PER_DAY) / STEP * STEP);
+        run_until(&mut c, &mut fake, from, |_, _| false);
+        assert!(c.ships.port_closed(TARGET), "seed {seed}");
+        let services = calling(&c.ships, TARGET);
+        let laid: Vec<ShipId> = fleet(&c.ships, &services)
+            .into_iter()
+            .filter(|&id| c.ships.ship(id).is_some_and(|x| x.is_laid_up()))
+            .collect();
+        assert!(!laid.is_empty(), "seed {seed}");
+        let home = c.ships.services[services[0] as usize].legs[0].from_dock;
+        assert!(
+            services
+                .iter()
+                .all(|&v| c.ships.services[v as usize].legs[0].from_dock == home),
+            "seed {seed}: the services start their loops at different docks"
+        );
+        let dock = (c.ships.docks[home as usize].x, c.ships.docks[home as usize].z);
+        // At the home dock: nothing relaunches.
+        let mut near = Vec::new();
+        stand(
+            &mut c,
+            &mut fake,
+            dock,
+            reopen + 4 * TICKS_PER_DAY,
+            |_, id, _, t| near.push((id, day(t))),
+            &laid,
+        );
+        assert_eq!(c.ships.stats.reopenings, 1, "seed {seed}");
+        let put_off = c.ships.stats.relaunches_put_off;
+        assert!(
+            put_off >= laid.len() as u64,
+            "seed {seed}: {put_off} relaunches put off for {} slots",
+            laid.len()
+        );
+        assert!(
+            laid.iter()
+                .all(|&id| c.ships.ship(id).is_some_and(|x| !x.is_active())),
+            "seed {seed}: a slot relaunched at the dock he watched"
+        );
+        assert!(
+            near.is_empty(),
+            "seed {seed}: laid-up ships appeared: {near:?}"
+        );
+        // Mid-lane, out of sight of the dock: they relaunch, and sail into view.
+        let ln = &c.ships.lanes[c.ships.services[services[0] as usize].legs[0].hop.lane as usize];
+        let mid = ln.path.at(ln.path.length() / 2);
+        let gap = f64::from(mid.0 - dock.0).hypot(f64::from(mid.1 - dock.1));
+        assert!(gap > 2.0 * view, "seed {seed}: the lane's middle is {gap:.0} from the dock");
+        let mut first: Vec<(ShipId, f64, f64)> = Vec::new();
+        stand(
+            &mut c,
+            &mut fake,
+            mid,
+            reopen + 10 * TICKS_PER_DAY,
+            |_, id, pos, t| {
+                if !first.iter().any(|f| f.0 == id) {
+                    let d = (pos.0 - f64::from(mid.0)).hypot(pos.1 - f64::from(mid.1));
+                    first.push((id, d, day(t)));
+                }
+            },
+            &laid,
+        );
+        for &(id, d, at) in &first {
+            assert!(
+                d >= view,
+                "seed {seed}: {id:?} first seen {d:.0} blocks from the player on day {at:.2}"
+            );
+        }
+        let active = laid
+            .iter()
+            .filter(|&&id| c.ships.ship(id).is_some_and(|x| x.is_active()))
+            .count();
+        assert!(
+            active * 4 >= laid.len() * 3,
+            "seed {seed}: {active} of {} relaunched",
+            laid.len()
+        );
+        entered += first.len();
+        eprintln!(
+            "seed {seed}: {} laid up, {put_off} relaunches put off at the watched dock, {active} \
+             relaunched once he left it; first seen mid-lane (blocks from him, day): {:?}",
+            laid.len(),
+            first.iter().map(|f| (f.1.round(), f.2)).collect::<Vec<_>>()
+        );
+    }
+    assert!(entered > 0, "no relaunched ship came into view");
 }
 
 // ---- many seas, nobody watching ------------------------------------------------------------------
