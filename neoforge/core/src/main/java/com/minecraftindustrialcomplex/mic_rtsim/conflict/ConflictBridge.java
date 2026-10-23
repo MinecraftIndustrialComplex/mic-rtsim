@@ -177,6 +177,8 @@ public final class ConflictBridge implements SessionPlugin {
         Demand demand;
         UUID player;
         boolean guarded, insulted;
+        /** The envoy's: players other than its demand's who struck it, each answered once (their own insult, MZB-145). */
+        final Set<UUID> struckBy = new HashSet<>();
         /** The envoy's: DEMAND_SETTLED's outcome once its demand is closed, 0 while open (the envoy then says it). */
         int settled;
         /** The envoy's: the good its demand asked for, kept after settlement so a click offering it is answered. */
@@ -1750,7 +1752,7 @@ public final class ConflictBridge implements SessionPlugin {
     /**
      * LivingIncomingDamageEvent: a guarded member takes no hit unless a player (not a machine, not a
      * spectator) is the attacker or the projectile's owner, or the damage bypasses invulnerability. A
-     * player's hit lifts the guard and is an insult (ENVOY_ANSWER 3, once). True to cancel.
+     * player's hit lifts the guard and is an insult (ENVOY_ANSWER 3, once per player). True to cancel.
      */
     boolean blockHit(LivingEntity victim, DamageSource source, long now) {
         Slot sl = guarded(victim);
@@ -1766,7 +1768,13 @@ public final class ConflictBridge implements SessionPlugin {
         return true;
     }
 
-    /** A player struck the envoy or a guard: all get their target goals back; the insult is answered once. */
+    /**
+     * A player struck the envoy or a guard: all get their target goals back, for any player's blow. The
+     * insult is answered once. A blow from the demand's player (or any player's, for a demand to none)
+     * closes the demand: the envoy takes nothing more and the engine refuses it. Another player's blow is
+     * that player's own insult (the engine books it against them, answered once per player) and leaves the
+     * demand open to its player (MZB-145).
+     */
     private void struck(Party p, UUID player, long now) {
         p.guarded = false;
         for (Stack st : p.stacks)
@@ -1775,8 +1783,12 @@ public final class ConflictBridge implements SessionPlugin {
                     ConflictBodies.restoreTargets(sl.entity, sl.stripped);
                     sl.stripped = null;
                 }
-        if (!p.insulted) {
-            p.insulted = true;
+        if (p.player == null || p.player.equals(player)) {
+            if (!p.insulted) {
+                p.insulted = true;
+                answer(p, ConflictRecords.ANSWER_ATTACKED, player, now);
+            }
+        } else if (p.struckBy.add(player)) {
             answer(p, ConflictRecords.ANSWER_ATTACKED, player, now);
         }
     }
