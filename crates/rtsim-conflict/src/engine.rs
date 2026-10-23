@@ -4109,19 +4109,29 @@ impl Conflict {
     /// player who watches it (`start_fight`), who may stand up to `view_radius` from the band's
     /// target, and the band's fighters are around them; so the breaker's latest report of their
     /// position in the band's frame is where it broke, if that report is fresh enough for
-    /// [`Conflict::watcher`] to believe it. Otherwise (a band on the road, a breaker not reported
-    /// lately, or in another frame) it is where the band stands, [`Conflict::party_pos`]. Nothing
-    /// is saved for this: the position is a read.
+    /// [`Conflict::watcher`] to believe it and the player is within `view_radius` of the band
+    /// (the raw distance `watcher` reads). The breaker is the last player who killed any member,
+    /// and the rout can come later from a mob's kills or a chief felled by no player, with the
+    /// breaker gone anywhere: a player who has walked off did not see the band break, and the
+    /// band's own place is where it did. That place, [`Conflict::party_pos`], is also the answer
+    /// for a band on the road, a breaker not reported lately, or one in another frame. Nothing is
+    /// saved for this: the position is a read.
     fn break_point(&self, w: &World, p: Handle<Party>, breaker: ActorId, at: Tick) -> (i32, i32) {
         let x = &self.parties[p];
+        let band = self.party_pos(p, at);
         if x.phase == Phase::Fighting
             && let Some((pp, t)) = w.players.get(&breaker).and_then(|s| s.pos)
             && pp.frame == x.frame
             && at.0.saturating_sub(t.0) <= self.tun.player_stale_ticks
+            && tdist(
+                self.topo.of(x.frame),
+                pxz(pp),
+                (i64::from(band.0), i64::from(band.1)),
+            ) <= f64::from(self.tun.view_radius)
         {
             return (pp.x, pp.z);
         }
-        self.party_pos(p, at)
+        band
     }
 
     // ---- seen on the march -----------------------------------------------------------------
