@@ -33,6 +33,7 @@ use rtsim_conflict::scenario::{self, BACK_DAY, OFFLINE_DAY, Options, Outcome, Ru
 use rtsim_conflict::{Step, synth};
 use rtsim_industry::district::AttackReport;
 use rtsim_kernel::clock::TICKS_PER_DAY;
+use rtsim_settle::NodeKind;
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 use serde::Serialize;
@@ -108,6 +109,8 @@ struct RunOut {
     ledger: BTreeMap<&'static str, BTreeMap<String, f64>>,
     unmapped_industry_goods: BTreeMap<String, i64>,
     haven_stock: BTreeMap<String, f64>,
+    /// What each village feels at the end, toward the camp and toward the players.
+    feelings: Vec<Feeling>,
     stats: ConflictStats,
     log: Vec<LogEntry>,
     plugin_commands: Vec<(f64, String)>,
@@ -115,6 +118,16 @@ struct RunOut {
     state_hashes: (String, String),
     /// The archive rows every tape of the run took per game day.
     archive: Rate,
+}
+
+/// A village's sentiment at the run's end (rtsim-knowledge's scale, -127 to 127; it fades).
+#[derive(Serialize)]
+struct Feeling {
+    village: String,
+    /// Toward the camp: a robbery counts -50 first-hand and half that heard (MZB-36).
+    toward_camp: i8,
+    /// Toward each player it feels anything about: a rescue counts +25.
+    toward_players: BTreeMap<String, i8>,
 }
 
 #[derive(Serialize)]
@@ -280,6 +293,26 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64, days: u64) -> RunOut {
             )
         })
         .collect();
+    let (camp, now) = (c.factions[f as usize].actor, w.now());
+    let feelings = w
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| matches!(n.kind, NodeKind::Village(_)))
+        .map(|(i, n)| Feeling {
+            village: rtsim_world::synth::NAMES
+                .get(i)
+                .map_or_else(|| format!("node {}", n.key), |s| s.to_string()),
+            toward_camp: w.knowledge.sentiment(n.actor, camp, now),
+            toward_players: w
+                .knowledge
+                .sentiment_snapshot(n.actor, now)
+                .into_iter()
+                .filter(|(a, _)| w.knowledge.actors().is_player(*a))
+                .map(|(a, v)| (c.actor_name(w, a), v))
+                .collect(),
+        })
+        .collect();
     let feuds = c
         .feuds_of(f)
         .iter()
@@ -298,6 +331,7 @@ fn run_out(o: Outcome, v: Variant, wall_ms: f64, days: u64) -> RunOut {
         ledger,
         unmapped_industry_goods: c.ledger.unmapped.clone(),
         haven_stock,
+        feelings,
         stats: c.stats,
         log: c.log.clone(),
         plugin_commands: o
@@ -397,6 +431,13 @@ fn print_report(r: &Results) {
             }
             println!("{:7.2}  {:<9} {}", l.day, l.kind, l.what);
         }
+        let camp: Vec<String> = run
+            .feelings
+            .iter()
+            .filter(|f| f.toward_camp != 0)
+            .map(|f| format!("{} {}", f.village, f.toward_camp))
+            .collect();
+        println!("  villages toward the camp at the end: {}", camp.join(", "));
         for c in &run.checks {
             println!(
                 "  [{}] {}: {}",
