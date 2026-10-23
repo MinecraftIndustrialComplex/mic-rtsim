@@ -14,7 +14,7 @@ import net.minecraft.world.item.ItemStack;
 import java.util.List;
 
 /**
- * The engine's answer as candidates (TALK.md §5.2, §5.3, TK49 to TK55): the moods its facts give and one
+ * The engine's answer as candidates (TALK.md §5.2, §5.3, TK49 to TK56): the moods its facts give and one
  * candidate per news item, with the arguments of the line each would be told with. The weights are
  * {@link TalkTuning}'s.
  */

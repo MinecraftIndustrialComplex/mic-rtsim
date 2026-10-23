@@ -5,7 +5,7 @@ import java.util.List;
 
 /**
  * Every number the engine's answer is turned into speech with (TALK.md §5.2, §5.3, §6; TK4, TK29, TK49 to
- * TK55): weights, thresholds and bands, in one place. All of it is TUNABLE; none of it is on the wire.
+ * TK56): weights, thresholds and bands, in one place. All of it is TUNABLE; none of it is on the wire.
  * Pure: no Minecraft types, so a unit test loads it.
  */
 public final class TalkTuning {
@@ -20,13 +20,13 @@ public final class TalkTuning {
     public static final double MOOD_AFRAID = 4.0;
     /** The same within 10 days: uneasy. TK4. */
     public static final double MOOD_UNEASY = 2.0;
-    /** A camp's feud with the holder (TK49). */
+    /** A camp's feud with the holder (TK56). */
     public static final double MOOD_FEUD = 2.0;
-    /** A dragon's assault on the holder, or one seen near it (TK49). */
+    /** A dragon's assault on the holder, or one seen near it (TK56). */
     public static final double MOOD_DRAGON = 3.0;
     /** The scarcest good is dear, the glutted one cheap, a scarce food hunger. TK4. */
     public static final double MOOD_PRICES = 1.5;
-    /** A closed port or a blockade (TK49). */
+    /** A closed port or a blockade (TK56). */
     public static final double MOOD_PORT = 2.0;
 
     // ---- mood thresholds (TUNABLE) ----
