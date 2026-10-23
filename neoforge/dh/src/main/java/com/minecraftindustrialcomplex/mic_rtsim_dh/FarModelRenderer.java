@@ -228,7 +228,7 @@ final class FarModelRenderer {
             if (c == Cover.WAIT)
                 waiting++;
             boolean placeholder = c == Cover.BOX && m.kind() == FarKind.DRAGON;
-            if (c != Cover.MODEL && !placeholder || FarHide.entityPresent(m, level, x, y, z))
+            if (c != Cover.MODEL && !placeholder || FarHide.entityPresent(m, level, x, y, z, cam))
                 continue;
             Item it = ITEMS.size() < POOL.size() ? POOL.get(ITEMS.size()) : null;
             if (it == null)
@@ -335,7 +335,7 @@ final class FarModelRenderer {
             if (it.placeholder)
                 continue;
             // Live once a frame, and where the band draws it too (DH's vanilla fade) both draw the baked frame
-            it.drawLive = it.live && !FarHide.bandDraws(m, level, it.x, it.y, it.z);
+            it.drawLive = it.live && !FarHide.bandDraws(m, level, it.x, it.y, it.z, cam);
             float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
@@ -427,7 +427,7 @@ final class FarModelRenderer {
         int dragons = 0, carriages = 0;
         for (Item it : ITEMS) {
             FarMover m = it.mover;
-            if (!FarHide.bandDraws(m, level, it.x, it.y, it.z))
+            if (!FarHide.bandDraws(m, level, it.x, it.y, it.z, cam))
                 continue;
             if (m.kind() == FarKind.DRAGON ? dragons++ >= tier.dragons : carriages++ >= tier.feedObjects)
                 continue;
