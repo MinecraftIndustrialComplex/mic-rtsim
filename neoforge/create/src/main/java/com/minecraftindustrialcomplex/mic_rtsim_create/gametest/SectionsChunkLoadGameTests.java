@@ -1320,9 +1320,20 @@ public final class SectionsChunkLoadGameTests {
                     check("B is in no district: " + districtAt(helper, f.millB), districtAt(helper, f.millB) == null);
                     check("the chain turns B's millstone: " + speedOf(level, f.millB), speedOf(level, f.millB) != 0);
                 })
+                .thenExecute(() -> {
+                    // A's first compile may have run before the chain joined B to A's network: a chunk a
+                    // network reaches only after a compile is indexed at the next one (SC77)
+                    mark[1] = ind().glass().compileNo(f.da());
+                    ind().glass().requestCompile(ind().district(f.da()));
+                })
+                .thenWaitUntil(() -> check("A recompiled once B turns: " + ind().glass().compileNo(f.da()) + " after " + mark[1],
+                        ind().glass().compileNo(f.da()) > mark[1] && !ind().glass().pending(f.da())))
                 .thenWaitUntil(() -> {
                     long[] by = ind().glass().reachedBy(level.dimension(), chunkB);
-                    check("A's compile reaches B: " + java.util.Arrays.toString(by), by.length == 1 && by[0] == f.da());
+                    var lg = ind().glass().lastGraph(f.da());
+                    check("A's compile reaches B: " + java.util.Arrays.toString(by) + " (compile " + ind().glass().compileNo(f.da())
+                            + ", pending " + ind().glass().pending(f.da()) + ", reached " + (lg == null ? "no graph" : lg.reachedChunks)
+                            + ", B " + chunkB + ", A's chunks " + ind().district(f.da()).chunks + ")", by.length == 1 && by[0] == f.da());
                     check("and not M, which the chain only spans", ind().glass().reachedBy(level.dimension(), chunkM).length == 0);
                     check("A's compile is not pending", !ind().glass().pending(f.da()));
                 })

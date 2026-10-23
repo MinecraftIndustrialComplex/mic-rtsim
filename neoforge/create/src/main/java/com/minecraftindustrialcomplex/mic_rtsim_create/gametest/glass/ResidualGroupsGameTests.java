@@ -143,7 +143,9 @@ public final class ResidualGroupsGameTests {
                     District d = districtAt(helper, a1);
                     check("the build's chunk is a district", d != null && districtAt(helper, c) == d && districtAt(helper, b) == d);
                     GlassKit.Graph g = GlassKit.latest(d.id);
-                    check("a complete compile", g != null && g.complete());
+                    check("a whole compile: " + (g == null ? "none" : g.describe()) + " (compile " + ind().glass().compileNo(d.id)
+                            + ", pending " + ind().glass().pending(d.id) + ", " + ind().glass().recordsDropped() + " records dropped)",
+                            g != null && g.whole());
                     id[0] = d.id;
                 })
                 .thenExecute(() -> {
@@ -188,7 +190,7 @@ public final class ResidualGroupsGameTests {
                 })
                 .thenWaitUntil(() -> {
                     GlassKit.Graph g = GlassKit.latest(id[0]);
-                    check("a new complete compile", g != null && g.complete() && g.end().compile() > mark[0]);
+                    check("a new whole compile", g != null && g.whole() && g.end().compile() > mark[0]);
                 })
                 .thenExecute(() -> {
                     GlassKit.Graph g = GlassKit.latest(id[0]);
