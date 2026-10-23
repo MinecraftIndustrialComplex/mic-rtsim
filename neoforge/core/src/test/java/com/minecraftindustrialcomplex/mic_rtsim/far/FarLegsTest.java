@@ -83,4 +83,33 @@ class FarLegsTest {
         legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.FLY.wire, NAMES);
         assertEquals(1, legs.size());
     }
+
+    @Test
+    void aDragonThatStopsFlyingKeepsTheWayItFlew() {
+        // An embodied dragon spawns facing its last flown leg's way, whatever its record now is (DHT41)
+        FarLegs legs = new FarLegs();
+        ByteBuffer b = record(RUST);
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.FLY.wire, NAMES);
+        FarLegs.Rec fly = legs.get(0x44L << 56 | 7);
+        double n = Math.hypot(4096 + 1200, -77 - 300);
+        assertEquals((4096 + 1200) / n, fly.hx(), 1e-9);
+        assertEquals((-77 - 300) / n, fly.hz(), 1e-9);
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.HUNT.wire, NAMES);
+        legs.accept(b, 0, FarLegs.FAR_LEG, FarLegs.SIZE, FarState.ROOST.wire, NAMES);
+        FarLegs.Rec roost = legs.get(0x44L << 56 | 7);
+        assertEquals(FarState.ROOST, roost.state());
+        assertEquals(fly.hx(), roost.hx(), 0.0, "a hunt or a roost does not say which way it flew");
+        assertEquals(fly.hz(), roost.hz(), 0.0);
+    }
+
+    @Test
+    void aStyleSaysHowFarAboveItsFeetABodysMiddleIs() {
+        // The engine's y is the feet; the body source samples the middle, so the leg is drawn that much higher
+        FarLegs.Style s = new FarLegs.Style(1, new int[]{0x101010}, new double[]{0.4, 1.0, 2.0});
+        assertEquals(0.4, s.centre(1), 0.0);
+        assertEquals(2.0, s.centre(3), 0.0);
+        assertEquals(2.0, s.centre(5), 0.0, "past the last stage known: the last");
+        assertEquals(0.4, s.centre(0), 0.0);
+        assertEquals(0.0, new FarLegs.Style(1, new int[]{0x101010}).centre(3), 0.0, "none registered");
+    }
 }

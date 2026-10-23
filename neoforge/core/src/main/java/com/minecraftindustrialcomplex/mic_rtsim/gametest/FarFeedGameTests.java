@@ -212,7 +212,10 @@ public final class FarFeedGameTests {
             List<FarWire.Rec> r3 = of(sweep(helper, sent), handle);
             check("a moving body sends only its sample: " + r3, r3.size() == 1 && r3.get(0) instanceof FarWire.Sample);
 
-            // 4. The body is still: nothing goes out for it
+            // 4. The body is still: its sample once more, unchanged, so a client stops it there (DHT44); then nothing
+            List<FarWire.Rec> stop = of(sweep(helper, sent), handle);
+            check("a body that stopped sends its sample once more: " + stop,
+                    stop.size() == 1 && stop.get(0) instanceof FarWire.Sample);
             List<FarWire.Rec> r4 = of(sweep(helper, sent), handle);
             check("a still body sends nothing: " + r4, r4.isEmpty());
 

@@ -17,7 +17,10 @@
 //! **Havens** carry their crew pool (thousandths, as of a tick) and their pressure, and a lost
 //! pirate's refit event its plan (EQUILIBRIUM.md §2.4.6, slice S8, 2026-10-22), in the same `RTS2`
 //! format: no saved world holds a haven or a pirate yet (no plugin sends HAVEN_FOUND), and saves
-//! from before a release are not migrated.
+//! from before a release are not migrated. Slice S8b (§2.4.6a, 2026-10-22) adds to each haven row
+//! the tick it starves from, whether it is shut (since, when its site looks again, broken), the
+//! stamp of its one live look and its lifecycle counters, and the look itself (`Ev::Refound`,
+//! tag 12) to the wheel: still `RTS2`, for the same reason.
 //!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
@@ -50,9 +53,9 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView, Promoted, Role,
-    SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats, ShipTickets, Ships,
-    Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate,
+    PlayerView, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange,
+    ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -693,6 +696,16 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u64(ship.to_bits());
             w.u32(plan);
         }
+        Ev::Refound { haven, epoch } => {
+            w.u8(12);
+            w.u32(haven);
+            w.u32(epoch);
+        }
+        Ev::Assault { navy, epoch } => {
+            w.u8(13);
+            w.u32(navy);
+            w.u32(epoch);
+        }
     }
 }
 
@@ -751,6 +764,14 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             ship: handle(r)?,
             plan: r.u32()?,
         },
+        12 => Ev::Refound {
+            haven: r.u32()?,
+            epoch: r.u32()?,
+        },
+        13 => Ev::Assault {
+            navy: r.u32()?,
+            epoch: r.u32()?,
+        },
         t => return bad(format!("event tag {t}")),
     })
 }
@@ -795,13 +816,16 @@ fn put_stats(w: &mut Writer, s: &ShipStats) {
         s.rebuilds,
         s.captains_died,
         s.bored,
+        s.port_raids,
+        s.items_from_ports,
+        s.port_raid_lost_milli,
     ] {
         w.var_u64(v);
     }
 }
 
 fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
-    let mut v = [0u64; 25];
+    let mut v = [0u64; 28];
     for x in &mut v {
         *x = r.var_u64()?;
     }
@@ -831,6 +855,9 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
         rebuilds: v[22],
         captains_died: v[23],
         bored: v[24],
+        port_raids: v[25],
+        items_from_ports: v[26],
+        port_raid_lost_milli: v[27],
     })
 }
 
@@ -844,6 +871,7 @@ fn put_ledger(w: &mut Writer, l: &ShipLedger) {
         &l.from_districts,
         &l.districts_landed,
         &l.districts_lost,
+        &l.looted_from_ports,
     ] {
         put_big(w, m);
     }
@@ -864,6 +892,7 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ShipLedger> {
         from_districts: get_big(r)?,
         districts_landed: get_big(r)?,
         districts_lost: get_big(r)?,
+        looted_from_ports: get_big(r)?,
         districts_unmapped: BTreeMap::new(),
     };
     for _ in 0..r.len_prefix(2)? {
@@ -1026,6 +1055,42 @@ impl Ships {
             let (p, at) = h.pressure.parts();
             w.f32(p);
             w.u32(at);
+            w.u64(h.fed_until.0);
+            match h.shut {
+                None => w.u8(0),
+                Some(sh) => {
+                    w.u8(1);
+                    w.u64(sh.since.0);
+                    w.u64(sh.back.0);
+                    w.bool(sh.broken);
+                }
+            }
+            for t in [h.broken_at, h.holds_navy_lane_since] {
+                match t {
+                    None => w.u8(0),
+                    Some(t) => {
+                        w.u8(1);
+                        w.u64(t.0);
+                    }
+                }
+            }
+            put_usize(w, h.navy_hunts.len());
+            for &(nv, t) in &h.navy_hunts {
+                w.var_u64(u64::from(nv));
+                w.u64(t.0);
+            }
+            w.u32(h.epoch);
+            let c = h.counts;
+            for v in [
+                c.toll_milli,
+                c.laid_up,
+                c.shuts,
+                c.refounds,
+                c.broken_shuts,
+                c.relaunched,
+            ] {
+                w.var_u64(v);
+            }
             put_usize(w, h.ships.len());
             h.ships.iter().for_each(|s| w.u64(s.to_bits()));
             put_usize(w, h.lanes.len());
@@ -1039,6 +1104,9 @@ impl Ships {
             w.var_u64(u64::from(n.service));
             put_usize(w, n.ships.len());
             n.ships.iter().for_each(|s| w.u64(s.to_bits()));
+            w.u32(n.epoch);
+            w.var_u64(n.counts.looked);
+            w.var_u64(n.counts.assaults);
         }
         self.wheel.encode_with(w, |e, w| put_ev(w, e));
         put_usize(w, self.players.len());
@@ -1100,6 +1168,7 @@ impl Ships {
         s.ships = ships;
         s.threats = threats;
         s.rebuild_indexes()?;
+        s.restore_navy_looks();
         // The whole table is in memory already: check every row's service.
         for (_, x) in s.ships.iter() {
             if x.service.is_some_and(|v| v as usize >= s.services.len()) {
@@ -1124,6 +1193,38 @@ impl Ships {
             let pool_milli = get_u32(r)?;
             let pool_at = Tick(r.u64()?);
             let (p, at) = (r.f32()?, r.u32()?);
+            let fed_until = Tick(r.u64()?);
+            let shut = match r.u8()? {
+                0 => None,
+                1 => Some(Shut {
+                    since: Tick(r.u64()?),
+                    back: Tick(r.u64()?),
+                    broken: r.bool()?,
+                }),
+                t => return bad(format!("haven shut tag {t}")),
+            };
+            let mut opt_tick = || -> codec::Result<Option<Tick>> {
+                Ok(match r.u8()? {
+                    0 => None,
+                    1 => Some(Tick(r.u64()?)),
+                    t => return bad(format!("haven tick tag {t}")),
+                })
+            };
+            let broken_at = opt_tick()?;
+            let holds_navy_lane_since = opt_tick()?;
+            let n = r.len_prefix(9)?;
+            let navy_hunts = (0..n)
+                .map(|_| Ok((get_u32(r)?, Tick(r.u64()?))))
+                .collect::<codec::Result<Vec<_>>>()?;
+            let epoch = r.u32()?;
+            let counts = HavenCounts {
+                toll_milli: r.var_u64()?,
+                laid_up: r.var_u64()?,
+                shuts: r.var_u64()?,
+                refounds: r.var_u64()?,
+                broken_shuts: r.var_u64()?,
+                relaunched: r.var_u64()?,
+            };
             let n = r.len_prefix(8)?;
             let hs = (0..n)
                 .map(|_| handle(r))
@@ -1142,6 +1243,13 @@ impl Ships {
                 pressure: Pressure::from_parts(p, at),
                 ships: hs,
                 lanes: hl,
+                fed_until,
+                shut,
+                broken_at,
+                holds_navy_lane_since,
+                navy_hunts,
+                epoch,
+                counts,
             });
         }
         let mut navies = Vec::new();
@@ -1154,12 +1262,19 @@ impl Ships {
             let ns = (0..n)
                 .map(|_| handle(r))
                 .collect::<codec::Result<Vec<_>>>()?;
+            let epoch = r.u32()?;
+            let counts = NavyCounts {
+                looked: r.var_u64()?,
+                assaults: r.var_u64()?,
+            };
             navies.push(Navy {
                 node,
                 dock,
                 medium,
                 service,
                 ships: ns,
+                epoch,
+                counts,
             });
         }
         let wheel: TimingWheel<Ev> = TimingWheel::decode_with(r, get_ev)?;
@@ -1414,6 +1529,7 @@ impl Ships {
         );
         s.threats = PagedRows::open(THREAT_TABLE, threat_per, source, tb, threat_len);
         s.rebuild_indexes().map_err(&fmt)?;
+        s.restore_navy_looks();
         Ok(s)
     }
 
