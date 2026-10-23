@@ -237,11 +237,19 @@ impl Link {
             match Industry::restore(pages, Tunables::default()) {
                 Ok(e) => {
                     // A glass page of another format or other sections drops its district's
-                    // glass state alone (SECTIONS.md §5): that district learns again.
-                    for (d, why) in &e.glass.dropped_on_restore {
+                    // glass state alone (SECTIONS.md §5): one line, and those districts learn again.
+                    let dropped = &e.glass.dropped_on_restore;
+                    if !dropped.is_empty() {
+                        let ids: Vec<String> = dropped
+                            .iter()
+                            .take(16)
+                            .map(|(d, why)| format!("{} ({why})", d.0))
+                            .collect();
                         log_warn(&format!(
-                            "district {}'s glass page is dropped ({why}): it learns again",
-                            d.0
+                            "{} districts' glass pages are dropped, so they learn again: {}{}",
+                            dropped.len(),
+                            ids.join(", "),
+                            if dropped.len() > 16 { ", ..." } else { "" }
                         ));
                     }
                     Some(e)
