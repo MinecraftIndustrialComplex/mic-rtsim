@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! S8b-3 (EQUILIBRIUM.md §2.4.6a rule 6; docs/choices-ports.md PC9 and PC40 to PC47): pirates
+//! S8b-3 (EQUILIBRIUM.md §2.4.6a rule 6; docs/choices-ports.md PC9, PC40 to PC47, PC72): pirates
 //! raid port villages. A hunt's coast raid that finds no player district or train takes the port
 //! village at the hunted lane's nearer end, if nobody watches it and the pirate believes it wins
 //! (`p = A² / (A² + D²) > 2/3` against `pop x 0.25`). The square law costs the crew, booked as
-//! the toll's; the survivors carry off 10 items a man, at most 600 per mille of each stock,
-//! through `World::stock_to_held` into the hold, and the haven's landing carries them home.
+//! the toll's; the survivors carry off 10 items a man, at most 600 per mille of each line's
+//! surplus over its target (PC72), through `World::stock_to_held` into the hold, and the haven's
+//! landing carries them home.
 //!
 //! The worlds are `synth::sea_havens` (12-person ports, so a full sea crew of 6 raids them) and,
 //! for the rules that decline, `synth::coastal` (ports of 30 to 72, which no pirate raids).
