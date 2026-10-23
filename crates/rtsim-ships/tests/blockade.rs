@@ -294,7 +294,7 @@ fn hover(full: i64, centre: i64, tun: &ShipTunables) -> (usize, usize, PortState
             }
         }
         let heats: Vec<i64> = lanes.iter().map(|th| th.heat(t, tau)).collect();
-        changes += p.step(&heats, full, min_closed, t).len();
+        changes += p.step(&heats, full, min_closed, 0, t).len();
         let above = heats.iter().all(|&h| h >= centre);
         if naive_above.is_some_and(|a| a != above) {
             naive_flips += 1;

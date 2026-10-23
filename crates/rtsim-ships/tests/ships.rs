@@ -124,11 +124,16 @@ fn nobody_watching_costs_no_ship_events() {
     assert_eq!(st.materialized, 0);
     assert_eq!(st.promotions, 0);
     // Every event was a pirate's: four a hunt at most (decide, reach, bored, home), plus the
-    // first decisions, and the checks of the ports their hunts warmed (§2.4.6a rule 7, PC25).
+    // first decisions, the checks of the ports their hunts warmed (§2.4.6a rule 7, PC25), and
+    // one relaunch for each ship a closure laid up, once its port reopened (PC87).
     let pirates = c.ships.havens.iter().map(|h| h.ships.len()).sum::<usize>() as u64;
     assert!(st.hunts > 0);
     assert!(
-        st.events <= 4 * (st.hunts + st.fruitless) + pirates + st.port_checks,
+        st.events
+            <= 4 * (st.hunts + st.fruitless)
+                + pirates
+                + st.port_checks
+                + st.ships_laid_up_by_closure,
         "{st:?} with {pirates} pirates"
     );
     for (k, _) in c.ships.pending_by_kind() {
@@ -141,7 +146,8 @@ fn nobody_watching_costs_no_ship_events() {
                 "refit",
                 "dock_check"
             ]
-            .contains(&k),
+            .contains(&k)
+                || (k == "relaunch" && st.reopenings > 0),
             "a pending {k} event with nobody watching"
         );
     }

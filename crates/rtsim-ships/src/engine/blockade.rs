@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Ports that close under blockade (EQUILIBRIUM.md §2.4.6a rule 7, slice S8b-4; choices PC20 to
-//! PC25 and PC80 to PC89). The ships engine's half: the world's lanes close and open with
+//! PC25 and PC80 to PC99). The ships engine's half: the world's lanes close and open with
 //! `World::close_lane` and `World::open_lane` (S8b-4a).
 //!
 //! - **Heat** (PC20). Each lane's threat row keeps an exponential average of its applied hazard
@@ -14,18 +14,23 @@
 //!   unopposed (sea 120‰, sky 100‰ by default). A port is blockaded once every lane is at least
 //!   a quarter of full, closes when every lane is at least half, reopens when no lane is above a
 //!   quarter once it has been closed `blockade_min_closed_days`, and is no longer blockaded when
-//!   open with no lane above an eighth (PC82). [`PortState::step`] is the rule.
-//! - **Derived state** (PC22, PC80). Only the ports' states are stored. A merchant service is
-//!   laid up when any dock it calls at is closed; a lane is closed when either end is closed or
-//!   it has services and every one is laid up (a patrol never is). Whatever order ports close and
-//!   reopen in, the world's lanes and the ships agree with that rule.
+//!   open with no lane above an eighth (PC82). A reopened port does not close again for
+//!   `blockade_min_open_days` (PC99). [`PortState::step`] is the rule.
+//! - **Derived state** (PC22, PC80, PC93). The ports' states are stored, and since when each
+//!   laid-up service has been laid up. A merchant service is laid up when any dock it calls at is
+//!   closed; a lane is closed when either end is closed or it has merchant services and every one
+//!   is laid up (a patrol sailing it does not keep it open: PC94). Whatever order ports close and
+//!   reopen in, the world's lanes and the ships agree with that rule. A port cold, open, not
+//!   blockaded and past its minimum open spell has no state (PC96).
 //! - **Ships** (PC23, PC24, PC50). A laid-up service's ship out of view and holding no promoted
 //!   cargo is laid up at once (`Status::Lost` with `back` [`LAID_UP`]). One in view, or with a
 //!   player aboard, keeps its timetable until it leaves view: the voyage under way at the closure
 //!   keeps its cargo (those consignments still land), and every later one sails with empty holds
 //!   (PC81). One holding promoted cargo lays up once the cargo lands. Navy ships keep sailing. A
-//!   reopening relaunches each laid-up slot at its home dock (`Ev::Respawn` at
-//!   `relaunch_time`).
+//!   reopening relaunches each laid-up slot at its home dock (`Ev::Relaunch` at
+//!   `relaunch_time`), never in a player's view: a watched home dock puts it off to the slot's
+//!   next stay there (PC90). Laying up and relaunching each make the slot's old body stale
+//!   (PC95), and a slot laid up gives up its booked voyages (PC92).
 
 use rtsim_settle::NodeKind;
 
@@ -45,6 +50,9 @@ pub struct PortState {
     pub closed: Option<Tick>,
     /// When its one live check is due; `None` when none is booked.
     pub check: Option<Tick>,
+    /// When it last reopened, while that is less than `blockade_min_open_days` ago (PC99): it
+    /// cannot close again until then. `None` otherwise.
+    pub reopened: Option<Tick>,
     /// Stamps the live check: booking one bumps it, so an older check is stale.
     pub epoch: u32,
 }
@@ -72,25 +80,35 @@ pub enum PortChange {
 }
 
 impl PortState {
-    /// One check's rule (PC21, PC82), pure: from the port's lanes' heats at `at` (thousandths)
-    /// and `full`, the share of one full-crew pirate hunting unopposed. In order: a port closed
-    /// for at least `min_closed` ticks with no lane above a quarter reopens; an open blockaded
-    /// port with no lane above an eighth is no longer blockaded; a port not blockaded whose every
-    /// lane is at least a quarter is blockaded; an open port whose every lane is at least half
-    /// closes. Each threshold that ends a state lies below the one that began it (half and a
-    /// quarter, a quarter and an eighth), so a heat hovering at a threshold cannot flap the
-    /// state from check to check. A port with no lanes is never blockaded.
-    pub fn step(&mut self, heats: &[i64], full: i64, min_closed: u64, at: Tick) -> Vec<PortChange> {
+    /// One check's rule (PC21, PC82, PC99), pure: from the port's lanes' heats at `at`
+    /// (thousandths) and `full`, the share of one full-crew pirate hunting unopposed. In order: a
+    /// port closed for at least `min_closed` ticks with no lane above a quarter reopens; an open
+    /// blockaded port with no lane above an eighth is no longer blockaded; a port not blockaded
+    /// whose every lane is at least a quarter is blockaded; an open port whose every lane is at
+    /// least half closes, unless it reopened less than `min_open` ticks ago. Each threshold that
+    /// ends a state lies below the one that began it (half and a quarter, a quarter and an
+    /// eighth), so a heat hovering at a threshold cannot flap the state from check to check. A
+    /// port with no lanes is never blockaded.
+    pub fn step(
+        &mut self,
+        heats: &[i64],
+        full: i64,
+        min_closed: u64,
+        min_open: u64,
+        at: Tick,
+    ) -> Vec<PortChange> {
         let (eighth, quarter, half) = (full / 8, full / 4, full / 2);
         let any = !heats.is_empty() && quarter > 0;
         let all_at_least = |x: i64| any && heats.iter().all(|&h| h >= x);
         let none_above = |x: i64| heats.iter().all(|&h| h <= x);
+        let nerve_back = |r: Option<Tick>| r.is_none_or(|r| at.0 >= r.0.saturating_add(min_open));
         let mut out = Vec::new();
         if let Some(since) = self.closed
             && none_above(quarter)
             && at.0 >= since.0.saturating_add(min_closed)
         {
             self.closed = None;
+            self.reopened = Some(at);
             out.push(PortChange::Reopened);
         }
         if self.closed.is_none() && self.blockaded.is_some() && none_above(eighth) {
@@ -101,9 +119,12 @@ impl PortState {
             self.blockaded = Some(at);
             out.push(PortChange::Blockaded);
         }
-        if self.closed.is_none() && all_at_least(half) {
+        if self.closed.is_none() && nerve_back(self.reopened) && all_at_least(half) {
             self.closed = Some(at);
             out.push(PortChange::Closed);
+        }
+        if nerve_back(self.reopened) {
+            self.reopened = None;
         }
         out
     }
@@ -111,6 +132,11 @@ impl PortState {
 
 fn ticks_of_days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64).round().max(1.0) as u64
+}
+
+/// Days as ticks, 0 allowed.
+fn ticks_or_none(d: f64) -> u64 {
+    (d * TICKS_PER_DAY as f64).round().max(0.0) as u64
 }
 
 impl Ships {
@@ -135,6 +161,10 @@ impl Ships {
 
     fn min_closed_ticks(&self) -> u64 {
         ticks_of_days(self.tun.blockade_min_closed_days)
+    }
+
+    fn min_open_ticks(&self) -> u64 {
+        ticks_or_none(self.tun.blockade_min_open_days)
     }
 
     /// Lane `l`'s heat at `t` (no earlier than its last share change), thousandths: a pure read.
@@ -187,21 +217,11 @@ impl Ships {
                 .any(|g| self.port_closed(g.from_dock) || self.port_closed(g.to_dock))
     }
 
-    /// Since when service `s` has been laid up: the earliest closure among the closed ports it
-    /// calls at (each has been closed without a break since its own). `None` when it sails.
+    /// Since when service `s` has been laid up without a break (PC93): kept from the closure that
+    /// laid it up until the reopening that ends it, so another of its ports closing or reopening
+    /// in between does not move it. `None` when it sails.
     pub fn laid_up_since(&self, s: u32) -> Option<Tick> {
-        if self.ports.is_empty() {
-            return None;
-        }
-        let sv = self.services.get(s as usize)?;
-        if sv.kind != ServiceKind::Merchant {
-            return None;
-        }
-        sv.legs
-            .iter()
-            .flat_map(|g| [g.from_dock, g.to_dock])
-            .filter_map(|d| self.ports.get(&d).and_then(|p| p.closed))
-            .min()
+        self.laid_up.get(&s).copied()
     }
 
     /// Whether ship `id`'s voyage `voyage` carries nothing because its service is laid up: it
@@ -221,15 +241,22 @@ impl Ships {
             .is_none_or(|(_, _, t, _)| t.depart >= since.0 as i64)
     }
 
-    /// Whether lane `l` is closed by the rule (PC22): either end is a closed port, or it has
-    /// services and every one is laid up.
+    /// Whether lane `l` is closed by the rule (PC22, PC94): either end is a closed port, or it
+    /// has merchant services and every one is laid up. A patrol sailing it does not keep it
+    /// open: trade needs merchants.
     pub fn lane_shut(&self, l: u32) -> bool {
         let ln = &self.lanes[l as usize];
         if self.port_closed(ln.a) || self.port_closed(ln.b) {
             return true;
         }
-        let hops = &self.lane_hops[l as usize];
-        !hops.is_empty() && hops.iter().all(|&(s, _)| self.service_laid_up(s))
+        if self.ports.is_empty() {
+            return false;
+        }
+        let mut merchants = self.lane_hops[l as usize]
+            .iter()
+            .filter(|&&(s, _)| self.services[s as usize].kind == ServiceKind::Merchant)
+            .peekable();
+        merchants.peek().is_some() && merchants.all(|&(s, _)| self.service_laid_up(s))
     }
 
     /// Whether ship `s` is a merchant still sailing for a laid-up service: in view, or holding a
@@ -296,7 +323,13 @@ impl Ships {
             .max_by_key(|(l, h)| (**h, std::cmp::Reverse(**l)))
             .and_then(|(&l, _)| self.threat(l).and_then(|t| t.haven));
         let was = p.closed;
-        let changes = p.step(&heats, full, self.min_closed_ticks(), at);
+        let changes = p.step(
+            &heats,
+            full,
+            self.min_closed_ticks(),
+            self.min_open_ticks(),
+            at,
+        );
         let mut moved = false;
         for c in &changes {
             match c {
@@ -321,10 +354,15 @@ impl Ships {
         for &c in &changes {
             self.port_event(w, d, c, hottest, &heats, at);
         }
+        // Checks go on while a lane is warm, or the port is blockaded, closed or within its
+        // minimum open spell. Otherwise the port has nothing to keep (PC96): its state goes, so
+        // the map holds only live ports and is empty when no lane is hunted.
         let warm = lanes.iter().any(|&l| self.lane_warm(l, at));
-        if warm || p.closed.is_some() || p.blockaded.is_some() {
+        if warm || p.closed.is_some() || p.blockaded.is_some() || p.reopened.is_some() {
             let when = at + self.check_ticks();
             self.book_check(d, when);
+        } else {
+            self.ports.remove(&d);
         }
     }
 
@@ -399,6 +437,11 @@ impl Ships {
             }
             touched.extend(sv.legs.iter().map(|g| g.hop.lane));
             let laid = self.service_laid_up(s);
+            if laid {
+                self.laid_up.entry(s).or_insert(at);
+            } else {
+                self.laid_up.remove(&s);
+            }
             let ids: Vec<ShipId> = self.service_ships[s as usize].ids().collect();
             for id in ids {
                 if laid {
@@ -450,7 +493,9 @@ impl Ships {
     }
 
     /// A merchant slot laid up in port (PC15's `LAID_UP`): no relaunch is due until its service
-    /// sails again. Its crew stays with it; nothing is held, so nothing is lost.
+    /// sails again. Its crew stays with it; nothing is held, so nothing is lost. Its epoch moves
+    /// on, so a late report about its last body changes nothing (PC95), and its booked voyages
+    /// are given up now rather than at their ends (PC92).
     pub(crate) fn lay_up_merchant(&mut self, s: ShipId, at: Tick) {
         let x = &mut self.ships[s];
         x.status = Status::Lost {
@@ -458,6 +503,15 @@ impl Ships {
             back: LAID_UP,
         };
         x.quotes.clear();
+        x.epoch = x.epoch.wrapping_add(1);
+        let booked: Vec<u64> = self
+            .booked
+            .range((s, 0)..=(s, u64::MAX))
+            .map(|(&(_, v), _)| v)
+            .collect();
+        for voyage in booked {
+            self.schedule(at, Ev::Unbook { ship: s, voyage });
+        }
         self.stats.ships_laid_up_by_closure += 1;
         self.note(
             at,
@@ -467,7 +521,8 @@ impl Ships {
         );
     }
 
-    /// Relaunches laid-up merchant `s` at its home dock (PC24), its service sailing again.
+    /// Books the relaunch of laid-up merchant `s` at its home dock (PC24), its service sailing
+    /// again: at the slot's next stay there. Its epoch moves on (PC95).
     fn relaunch_laid_up(&mut self, s: ShipId, at: Tick) {
         if !self
             .ships
@@ -477,25 +532,80 @@ impl Ships {
             return;
         }
         let back = self.relaunch_time(s, at);
-        if let Status::Lost { back: b, .. } = &mut self.ships[s].status {
+        let x = &mut self.ships[s];
+        if let Status::Lost { back: b, .. } = &mut x.status {
             *b = back;
         }
-        self.schedule(back, Ev::Respawn { ship: s });
+        x.epoch = x.epoch.wrapping_add(1);
+        self.schedule(back, Ev::Relaunch { ship: s });
+    }
+
+    /// A laid-up slot's relaunch is due (PC90). Its service laid up again since: it stays in port
+    /// ([`Self::respawn`] lays it up). A player watching where it would appear: it waits for the
+    /// slot's next stay at its home dock, and again, until nobody watches. Otherwise the new ship
+    /// takes the slot.
+    pub(crate) fn relaunch(&mut self, w: &mut World, s: ShipId, at: Tick) {
+        let Some(x) = self.ships.get(s) else {
+            return;
+        };
+        if !matches!(x.status, Status::Lost { back, .. } if back <= at) {
+            self.stats.stale += 1;
+            return;
+        }
+        let laid = x.service.is_some_and(|v| self.service_laid_up(v));
+        if !laid && self.relaunch_in_view(w, s, at) {
+            let back = self.relaunch_time(s, at + 1);
+            if let Status::Lost { back: b, .. } = &mut self.ships[s].status {
+                *b = back;
+            }
+            self.stats.relaunches_put_off += 1;
+            self.schedule(back, Ev::Relaunch { ship: s });
+            self.note(
+                at,
+                "relaunch_put_off",
+                Some(s),
+                "a player watches its home dock: it waits for its next stay there".into(),
+            );
+            return;
+        }
+        self.respawn(w, s, at);
+    }
+
+    /// Whether a player's interest centre is within sight of where slot `s` would appear at `at`
+    /// (its timetable's place then, its home dock's berth): the view radius and a body's radius,
+    /// as a meeting counts it, on the same frame.
+    fn relaunch_in_view(&self, w: &World, s: ShipId, at: Tick) -> bool {
+        let frame = self.ships[s].frame;
+        let here = self.position(w, s, at);
+        let reach = u64::from(self.tun.view_radius) + u64::from(self.tun.body_radius);
+        self.players.values().any(|v| {
+            v.interest
+                .and_then(|st| w.legs.get(st.leg).filter(|r| r.generation == st.generation))
+                .is_some_and(|r| {
+                    r.path.frame == frame
+                        && r.path.t0 <= at
+                        && at <= r.path.t1
+                        && self.sdist(frame, (r.path.x0, r.path.z0), here) <= reach
+                })
+        })
     }
 
     // ---- invariants ----------------------------------------------------------------------------
 
     /// Rule 7's invariants: the world's lanes match the rule, a laid-up merchant slot belongs to
-    /// a laid-up service, a ship still sailing for one is in view or holds promoted cargo, only
-    /// trade ports have a state, every warm, blockaded or closed port has exactly one live check, and each
-    /// lane's heat is consistent with its stored tick. A whole-table pass.
+    /// a laid-up service and was laid up no earlier than it, the laid-up services are exactly
+    /// those calling at a closed port, a ship still sailing for one is in view or holds promoted
+    /// cargo, only trade ports have a state, every port with a state has exactly one live check
+    /// (and has one while warm), every booked check is its port's live one, and each lane's heat
+    /// is consistent with its stored tick. A whole-table pass.
     pub(crate) fn check_ports(&self, w: &World) -> Result<(), String> {
         let now = self.now();
         if !self.blockades_on() {
-            if !self.ports.is_empty() {
+            if !self.ports.is_empty() || !self.laid_up.is_empty() {
                 return Err(format!(
-                    "closures are off but {} ports have a state",
-                    self.ports.len()
+                    "closures are off but {} ports have a state and {} services are laid up",
+                    self.ports.len(),
+                    self.laid_up.len()
                 ));
             }
             for (l, t) in self.lane_threats() {
@@ -529,9 +639,19 @@ impl Ships {
         }
         let mut live: BTreeMap<u32, Vec<Tick>> = BTreeMap::new();
         for (when, e) in self.wheel.iter() {
-            if let Ev::DockCheck { dock, epoch } = *e
-                && self.ports.get(&dock).is_some_and(|p| p.epoch == epoch)
-            {
+            if let Ev::DockCheck { dock, epoch } = *e {
+                // Every booked check is live: a port's state can go and come back with its epoch
+                // counted from 0 again, so no stale one may wait in the wheel (PC96).
+                if !self
+                    .ports
+                    .get(&dock)
+                    .is_some_and(|p| p.epoch == epoch && p.check == Some(when))
+                {
+                    return Err(format!(
+                        "a stale check of dock {dock} (epoch {epoch}) at {when:?}: {:?}",
+                        self.ports.get(&dock)
+                    ));
+                }
                 live.entry(dock).or_default().push(when);
             }
         }
@@ -551,12 +671,14 @@ impl Ships {
                 Some(t) if checks != [t] => {
                     return Err(format!("port {d}'s check at {t:?}, live checks {checks:?}"));
                 }
-                None if !checks.is_empty() => {
-                    return Err(format!(
-                        "port {d} has no check booked, live checks {checks:?}"
-                    ));
-                }
+                // A port with nothing left to check has no state (PC96).
+                None => return Err(format!("port {d} has a state but no check: {p:?}")),
                 _ => {}
+            }
+            if let Some(r) = p.reopened
+                && (p.closed.is_some() || r > now)
+            {
+                return Err(format!("port {d} reopened at {r:?} but: {p:?}"));
             }
             if p.closed.is_some() {
                 for &l in self.dock_lanes(d) {
@@ -566,12 +688,25 @@ impl Ships {
                     }
                 }
             }
-            let warm = self.dock_lanes(d).iter().any(|&l| self.lane_warm(l, now));
-            if (warm || p.closed.is_some() || p.blockaded.is_some()) && p.check.is_none() {
-                return Err(format!(
-                    "port {d} is warm, blockaded or closed with no check: {p:?}"
-                ));
+        }
+        for v in 0..self.services.len() as u32 {
+            let laid = self.service_laid_up(v);
+            match self.laid_up.get(&v) {
+                Some(&t) if !laid || t > now => {
+                    return Err(format!(
+                        "service {v} is kept laid up since {t:?} but calls at no closed port"
+                    ));
+                }
+                None if laid => {
+                    return Err(format!(
+                        "service {v} calls at a closed port but is not kept laid up"
+                    ));
+                }
+                _ => {}
             }
+        }
+        if let Some((&v, _)) = self.laid_up.range(self.services.len() as u32..).next() {
+            return Err(format!("laid-up service {v} does not exist"));
         }
         // A warm lane's trade ends have a check, whether or not they have a state yet.
         for (l, _) in self.lane_threats() {
@@ -605,6 +740,16 @@ impl Ships {
                 return Err(format!(
                     "merchant {id:?} is laid up but its service sails: {:?}",
                     x.status
+                ));
+            }
+            if let Status::Lost { since, back } = x.status
+                && back == LAID_UP
+                && x.service
+                    .and_then(|s| self.laid_up_since(s))
+                    .is_some_and(|t| since < t)
+            {
+                return Err(format!(
+                    "merchant {id:?} laid up at {since:?}, before its service was"
                 ));
             }
             if x.is_laid_up() && (x.promoted.is_some() || !x.cargo.is_empty()) {

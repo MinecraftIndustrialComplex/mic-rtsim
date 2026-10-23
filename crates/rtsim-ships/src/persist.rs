@@ -721,6 +721,10 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(dock);
             w.u32(epoch);
         }
+        Ev::Relaunch { ship } => {
+            w.u8(14);
+            w.u64(ship.to_bits());
+        }
     }
 }
 
@@ -787,6 +791,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             dock: r.u32()?,
             epoch: r.u32()?,
         },
+        14 => Ev::Relaunch { ship: handle(r)? },
         t => return bad(format!("event tag {t}")),
     })
 }
@@ -871,10 +876,15 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
     })
 }
 
-/// The ports' blockade states and closures' counters (§2.4.6a rule 7, S8b-4), appended to the
-/// resident state: written only once a port has a state or a counter moved, so a run with
-/// closures off saves exactly the bytes it did before.
-fn put_blockades(w: &mut Writer, ports: &BTreeMap<u32, PortState>, s: &ShipStats) {
+/// The ports' blockade states, the laid-up services and the closures' counters (§2.4.6a rule 7,
+/// S8b-4), appended to the resident state: written only once a port has a state or a counter
+/// moved, so a run with closures off saves exactly the bytes it did before.
+fn put_blockades(
+    w: &mut Writer,
+    ports: &BTreeMap<u32, PortState>,
+    laid_up: &BTreeMap<u32, Tick>,
+    s: &ShipStats,
+) {
     let counts = [
         s.blockades,
         s.closures,
@@ -882,26 +892,36 @@ fn put_blockades(w: &mut Writer, ports: &BTreeMap<u32, PortState>, s: &ShipStats
         s.ships_laid_up_by_closure,
         s.closed_dock_days,
         s.port_checks,
+        s.relaunches_put_off,
     ];
-    if ports.is_empty() && counts.iter().all(|&c| c == 0) {
+    if ports.is_empty() && laid_up.is_empty() && counts.iter().all(|&c| c == 0) {
         return;
     }
     w.u8(1);
     put_usize(w, ports.len());
     for (d, p) in ports {
         w.var_u64(u64::from(*d));
-        for t in [p.blockaded, p.closed, p.check] {
+        for t in [p.blockaded, p.closed, p.check, p.reopened] {
             put_opt_tick(w, t);
         }
         w.u32(p.epoch);
     }
+    put_usize(w, laid_up.len());
+    for (v, t) in laid_up {
+        w.var_u64(u64::from(*v));
+        w.u64(t.0);
+    }
     counts.iter().for_each(|&c| w.var_u64(c));
 }
 
-fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMap<u32, PortState>> {
+/// The ports and laid-up services [`put_blockades`] wrote.
+type Blockades = (BTreeMap<u32, PortState>, BTreeMap<u32, Tick>);
+
+fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockades> {
     let mut ports = BTreeMap::new();
+    let mut laid_up = BTreeMap::new();
     if r.is_empty() {
-        return Ok(ports);
+        return Ok((ports, laid_up));
     }
     match r.u8()? {
         1 => {}
@@ -917,6 +937,7 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMa
         let blockaded = get_opt_tick(r)?;
         let closed = get_opt_tick(r)?;
         let check = get_opt_tick(r)?;
+        let reopened = get_opt_tick(r)?;
         let epoch = r.u32()?;
         ports.insert(
             d,
@@ -924,9 +945,19 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMa
                 blockaded,
                 closed,
                 check,
+                reopened,
                 epoch,
             },
         );
+    }
+    let mut last: Option<u32> = None;
+    for _ in 0..r.len_prefix(9)? {
+        let v = get_u32(r)?;
+        if last.is_some_and(|l| l >= v) {
+            return bad("laid-up services out of order".into());
+        }
+        last = Some(v);
+        laid_up.insert(v, Tick(r.u64()?));
     }
     s.blockades = r.var_u64()?;
     s.closures = r.var_u64()?;
@@ -934,7 +965,8 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<BTreeMa
     s.ships_laid_up_by_closure = r.var_u64()?;
     s.closed_dock_days = r.var_u64()?;
     s.port_checks = r.var_u64()?;
-    Ok(ports)
+    s.relaunches_put_off = r.var_u64()?;
+    Ok((ports, laid_up))
 }
 
 fn put_opt_tick(w: &mut Writer, t: Option<Tick>) {
@@ -1213,7 +1245,7 @@ impl Ships {
         put_stats(w, &self.stats);
         put_usize(w, self.outbox.len());
         self.outbox.iter().for_each(|c| put_cmd(w, c));
-        put_blockades(w, &self.ports, &self.stats);
+        put_blockades(w, &self.ports, &self.laid_up, &self.stats);
     }
 
     /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with. Its row tables are
@@ -1371,7 +1403,7 @@ impl Ships {
             outbox.push(get_cmd(r)?);
         }
         let mut stats = stats;
-        let ports = get_blockades(r, &mut stats)?;
+        let (ports, laid_up) = get_blockades(r, &mut stats)?;
         if !r.is_empty() {
             return bad(format!("{} trailing bytes", r.remaining()));
         }
@@ -1390,6 +1422,7 @@ impl Ships {
         s.ledger = ledger;
         s.stats = stats;
         s.ports = ports;
+        s.laid_up = laid_up;
         s.outbox = outbox;
         s.built = built;
         Ok(s)

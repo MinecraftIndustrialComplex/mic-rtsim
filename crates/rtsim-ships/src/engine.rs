@@ -489,6 +489,12 @@ pub(crate) enum Ev {
         dock: u32,
         epoch: u32,
     },
+    /// A merchant slot laid up by a closure is relaunched at its home dock (§2.4.6a rule 7,
+    /// PC87, PC90): unless a player watches that dock then, when it waits for the slot's next
+    /// home-dock stay.
+    Relaunch {
+        ship: ShipId,
+    },
 }
 
 /// Counters for tests, the bench and the CLI.
@@ -521,13 +527,15 @@ pub struct ShipStats {
     pub bored: u64,
     /// Ports that close under blockade (§2.4.6a rule 7): blockades begun, ports closed and
     /// reopened, merchant ships laid up by a closure (each time one is), and the days ports were
-    /// closed (whole days, credited at each reopening), and the ports' checks run.
+    /// closed (whole days, credited at each reopening), the ports' checks run, and relaunches
+    /// put off to a later home-dock stay because a player watched the home dock (PC90).
     pub blockades: u64,
     pub closures: u64,
     pub reopenings: u64,
     pub ships_laid_up_by_closure: u64,
     pub closed_dock_days: u64,
     pub port_checks: u64,
+    pub relaunches_put_off: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -585,6 +593,10 @@ pub struct Ships {
     /// touched have one, so the map grows with the docks pirates hunt near, never with the
     /// network; empty with closures off.
     pub ports: BTreeMap<u32, PortState>,
+    /// Laid-up merchant services, by service: since when each has been laid up without a break
+    /// (PC93). Kept, not derived: which ports are closed says whether a service is laid up, but
+    /// not since when once the earliest of its closed ports reopens.
+    pub(crate) laid_up: BTreeMap<u32, Tick>,
     /// Per dock: the lanes with it at an end, in lane order (an index, rebuilt on load).
     pub(crate) dock_lanes: Vec<Vec<u32>>,
     /// Per lane: the (service, hop) pairs that sail it.
@@ -720,6 +732,7 @@ impl Ships {
             navies: Vec::new(),
             threats: PagedRows::new(THREAT_TABLE, THREAT_ROWS_PER_PAGE),
             ports: BTreeMap::new(),
+            laid_up: BTreeMap::new(),
             dock_lanes: Vec::new(),
             lane_hops: Vec::new(),
             service_ships: Vec::new(),
@@ -1238,6 +1251,11 @@ impl Ships {
         if ln.medium != medium || ln.edge == u32::MAX {
             return None;
         }
+        // A closed lane carries nothing new to take (§2.4.6a rule 7, PC91), though its flows'
+        // pay may still be draining.
+        if w.lane_closed(ln.edge) {
+            return None;
+        }
         if let Some(t) = self.threat(l)
             && let Some(other) = t.haven
             && other != h
@@ -1704,12 +1722,6 @@ impl Ships {
             .collect();
         for &l in &touched {
             self.refresh_patrol(w, l, at);
-        }
-        // A patrol keeps a lane open that only laid-up merchants sailed (PC22).
-        if !self.ports.is_empty() {
-            for &l in &touched {
-                self.settle_lane(w, l, at);
-            }
         }
         self.note(
             at,
@@ -2364,6 +2376,7 @@ impl Ships {
             Ev::Refit { ship, plan } => self.refit(w, ship, plan, at),
             Ev::Refound { haven, epoch } => self.haven_look(w, haven, epoch, at),
             Ev::DockCheck { dock, epoch } => self.dock_check(w, dock, epoch, at),
+            Ev::Relaunch { ship } => self.relaunch(w, ship, at),
         }
     }
 
@@ -2395,8 +2408,14 @@ impl Ships {
                 let Some(ox) = self.ships.get(o) else {
                     continue;
                 };
-                if let Some((_, d)) = sv.departure_at_or_before(ox.offset, j as usize, t.depart - 1)
-                {
+                // A slot laid up by a closure sails nothing from its lay-up on (PC92).
+                let before = match ox.status {
+                    Status::Lost { since, back } if back == LAID_UP => {
+                        (t.depart - 1).min(since.0 as i64 - 1)
+                    }
+                    _ => t.depart - 1,
+                };
+                if let Some((_, d)) = sv.departure_at_or_before(ox.offset, j as usize, before) {
                     prev = Some(prev.map_or(d, |p: i64| p.max(d)));
                 }
             }
@@ -4982,6 +5001,7 @@ impl Ships {
                 Ev::Refit { .. } => "refit",
                 Ev::Refound { .. } => "refound",
                 Ev::DockCheck { .. } => "dock_check",
+                Ev::Relaunch { .. } => "relaunch",
             };
             *m.entry(k).or_insert(0) += 1;
         }
