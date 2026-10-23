@@ -1166,6 +1166,53 @@ mod tests {
         let _ = m2;
     }
 
+    /// Counted stores (§4.2): a vault between lines whose every goods edge runs to a mover Java
+    /// counts at; past `glass.countedStoresMax` the lowest positions first; a row cap's cut counts
+    /// only stores the full cut counts and still shares (choice SC78).
+    #[test]
+    fn the_counted_stores_are_those_counted_movers_reach_up_to_the_cap() {
+        let (b, [_, _, _, _, vault, f3, _]) = vault_between_two_lines();
+        let s = Sections::compute_counted(&b.graph(), 64, 256);
+        assert_eq!(s.counted, vec![vault]);
+        assert_eq!(s.group_of, vec![0, 1]);
+        // A belt at the vault: Java does not count it, and the vault joins the two lines.
+        let mut belt = vault_between_two_lines().0;
+        belt.nodes[f3 as usize].model = model::BELT;
+        let s = Sections::compute_counted(&belt.graph(), 64, 256);
+        assert!(s.counted.is_empty());
+        assert_eq!(s.group_of, vec![0, 0]);
+        // Three lines on two vaults: with room for one, the lower is counted.
+        let mut b = B::new();
+        let src = b.store(0);
+        let f1 = b.mover(1);
+        let m1 = b.machine(2);
+        let f2 = b.mover(3);
+        let va = b.store(4);
+        let f3 = b.mover(5);
+        let m2 = b.machine(6);
+        let f4 = b.mover(7);
+        let vb = b.store(8);
+        let f5 = b.mover(9);
+        let m3 = b.machine(10);
+        b.link(&[src, f1, m1, f2, va, f3, m2, f4, vb, f5, m3]);
+        let g = b.graph();
+        assert_eq!(Sections::compute_counted(&g, 64, 256).counted, vec![va, vb]);
+        let one = Sections::compute_counted(&g, 64, 1);
+        assert_eq!(one.counted, vec![va]);
+        assert_eq!(one.group_of, vec![0, 1, 1]);
+        assert!(Sections::compute_counted(&g, 64, 0).counted.is_empty());
+        // Cut to two sections, one vault is interior; the other is still counted.
+        let cut = Sections::cut_counted(&g, 2, 64, 256);
+        assert_eq!(cut.len(), 2);
+        assert_eq!(cut.counted.len(), 1);
+        assert!(cut.shared.iter().any(|(h, _)| *h == cut.counted[0]));
+        // The keys name the counted stores: the same sections counted otherwise differ.
+        assert_ne!(
+            Sections::compute_counted(&g, 64, 256).cut_keys(),
+            Sections::compute_counted(&g, 64, 1).cut_keys()
+        );
+    }
+
     #[test]
     fn a_belt_into_a_machine_is_one_section() {
         let mut b = B::new();

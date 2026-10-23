@@ -69,9 +69,16 @@ pub struct GlassStats {
     /// Glass replays started, and those that fell back to the black box (§4.5).
     pub replays: u64,
     pub fallbacks: u64,
-    /// IND_COUNT_SAMPLEs read for a compile held, and IND_COUNT_SETs sent (SECTIONS.md §4.2).
-    pub count_samples: u64,
-    pub count_sets_sent: u64,
+}
+
+/// This run's count traffic (SECTIONS.md §4.2), for operators and tests. Not saved (the globals
+/// page keeps [`GlassStats`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CountStats {
+    /// IND_COUNT_SAMPLEs read for the compile held.
+    pub samples: u64,
+    /// IND_COUNT_SETs sent.
+    pub sets_sent: u64,
 }
 
 /// The glass box's state across districts.
@@ -83,6 +90,7 @@ pub struct Glass {
     /// to an entry marks it.
     pub districts: crate::tracked::Tracked<DistrictId, DistrictGlass>,
     pub stats: GlassStats,
+    pub count_stats: CountStats,
     /// Districts whose glass page the restore dropped (`page::PageRead::Dropped`: the format
     /// before sections, or sections their compile no longer cuts into), for the host's one line.
     /// Not saved.
@@ -313,7 +321,7 @@ impl Glass {
                     && c.graph.end.compile == s.compile
                 {
                     c.count_sample(s.sweep, &s.counts);
-                    self.stats.count_samples += 1;
+                    self.count_stats.samples += 1;
                 }
             }
             GlassObs::ChunkTicking(t) => {
@@ -858,7 +866,7 @@ impl Glass {
             } else {
                 self.count_held.insert(d, (set.compile, set.pairs.clone()));
             }
-            self.stats.count_sets_sent += 1;
+            self.count_stats.sets_sent += 1;
             out.push(set);
         }
         out

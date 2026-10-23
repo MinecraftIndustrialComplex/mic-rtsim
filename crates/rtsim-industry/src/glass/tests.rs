@@ -4841,7 +4841,7 @@ mod replay_path {
     mod units {
         use super::*;
         use crate::glass::check::{Liveness, UnitState};
-        use crate::glass::page::{GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3};
+        use crate::glass::page::{GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4};
         use crate::glass::page::{PageRead, district_page, read_district_page};
         use crate::glass::replay::Replay;
         use crate::glass::report::discard;
@@ -5444,7 +5444,7 @@ mod replay_path {
             assert_eq!(r.rows_len(), c.rows_len());
             assert_eq!(r.ports_at, c.ports_at);
             assert_eq!(district_page(&back), page);
-            for magic in [GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3] {
+            for magic in [GLASS_MAGIC_IGL2, GLASS_MAGIC_IGL3, GLASS_MAGIC_IGL4] {
                 let mut old = page.clone();
                 old[..4].copy_from_slice(&magic.to_le_bytes());
                 assert!(matches!(
@@ -6918,6 +6918,574 @@ mod replay_path {
             );
             let c = e.glass.districts[&D].compiled.as_ref().expect("compile");
             assert_eq!((c.window(), c.unit_window(uc)), before);
+        }
+
+        /// Counted stores between units (SECTIONS.md §4.1, §4.2; slice S3).
+        mod counted {
+            use super::*;
+            use crate::glass::page::{PageRead, district_page, read_district_page};
+
+            /// Line A presses brass (inventory 0) into sheets at x 0 to 2 and drops them into a
+            /// vault (1) at x 20 through a chute; line B's mover (`b_mover`: a funnel, counted,
+            /// or a belt, not) takes sheets from the vault into a press making crushed (2) at x 40
+            /// to 42. A presses one per 10 ticks, B one per `b_ticks`. Returns the builder and
+            /// [p0, chute, vault, mover, p1].
+            pub(super) fn vault_lines(b_ticks: u32, b_mover: u32) -> (B, [u32; 5]) {
+                let mut b = B::default();
+                let (i0, v, o1) = (b.store(0), b.store(1), b.store(2));
+                let r0 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+                let r1 = b.recipe(&[(SHEET, 1)], &[(CRUSHED, 1)]);
+                let p0 = b.machine(model::PRESS, r0, 1, 10);
+                let fast = || RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 1, 1)
+                };
+                let c0 = b.node(NodeKind::Mover, model::CHUTE, 0, vec![fast()]);
+                let f1 = b.node(NodeKind::Mover, b_mover, 0, vec![fast()]);
+                let p1 = b.machine(model::PRESS, r1, 1, b_ticks);
+                b.edge(i0, p0);
+                b.edge(p0, c0);
+                b.edge_k(EdgeKind::Chute, c0, v, &[]);
+                b.edge(v, f1);
+                b.edge(f1, p1);
+                b.edge(p1, o1);
+                for (n, x) in [
+                    (i0, 0),
+                    (p0, 1),
+                    (c0, 2),
+                    (v, 20),
+                    (f1, 40),
+                    (p1, 41),
+                    (o1, 42),
+                ] {
+                    b.nodes[n as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                b.window = 2000;
+                (b, [p0, c0, v, f1, p1])
+            }
+
+            /// What the world holds at a sweep: A made `made` sheets and its chute put them in
+            /// the vault, B's mover took `took` since its counters started, the vault holds
+            /// `stock` (less when a player took some) and B's store `crushed`, and each pair's
+            /// counters started at `since` (chute, mover); `sample` false sends no count sample.
+            #[derive(Clone, Copy)]
+            pub(super) struct At {
+                pub made: i64,
+                pub took: i64,
+                pub stock: i64,
+                pub crushed: i64,
+                pub since: (i64, i64),
+                pub sample: bool,
+            }
+
+            /// The counts of the vault's two pairs at a sweep.
+            pub(super) fn counts(ids: [u32; 5], a: At) -> Vec<Count> {
+                let [_, c0, v, f1, _] = ids;
+                vec![
+                    Count {
+                        mover: c0,
+                        store: v,
+                        good: Some(SHEET),
+                        since: a.since.0,
+                        moved_in: a.made,
+                        moved_out: 0,
+                    },
+                    Count {
+                        mover: f1,
+                        store: v,
+                        good: Some(SHEET),
+                        since: a.since.1,
+                        moved_in: 0,
+                        moved_out: a.took,
+                    },
+                ]
+            }
+
+            pub(super) fn vault_invs(a: At) -> VecMap<u32, Inventory> {
+                let mut v = VecMap::new();
+                v.insert(0, inventory(0, &[(BRASS, 100_000 - a.made)]));
+                v.insert(1, inventory(1, &[(SHEET, a.stock)]));
+                v.insert(2, inventory(2, &[(CRUSHED, a.crushed)]));
+                v
+            }
+
+            /// The steady run: A makes one sheet per 10 ticks, B takes one per 20.
+            pub(super) fn steady(t: u64) -> At {
+                let (made, took) = ((t / 10) as i64, (t / 20) as i64);
+                At {
+                    made,
+                    took,
+                    stock: made - took,
+                    crushed: took,
+                    since: (0, 0),
+                    sample: true,
+                }
+            }
+
+            /// Sweeps a compile every 100 ticks from `from` to `to` (both included), sweep number
+            /// t / 100, each with its count sample first when `world(t)` sends one.
+            pub(super) fn drive_v(
+                c: &mut Compiled,
+                ids: [u32; 5],
+                from: u64,
+                to: u64,
+                world: impl Fn(u64) -> At,
+                tun: &GlassTunables,
+            ) {
+                let goods = goods();
+                let ports = GoodVec::new();
+                let mut t = from;
+                while t <= to {
+                    let a = world(t);
+                    let sweep = (t / 100) as u32;
+                    if a.sample {
+                        c.count_sample(sweep, &counts(ids, a));
+                    }
+                    let inv = vault_invs(a);
+                    let view = View {
+                        revision: 1,
+                        sweep,
+                        inventories: &inv,
+                        ports: &ports,
+                    };
+                    if t == 0 {
+                        c.start(&view, &goods, tun);
+                    }
+                    c.sweep(Tick(t), &view, &goods, tun);
+                    t += 100;
+                }
+            }
+
+            fn row(st: &UnitState, g: Good) -> (u32, f64, f64) {
+                let r = st.last.as_ref().expect("judged");
+                let x = r.goods.iter().find(|x| x.good == g).expect("a row");
+                (x.verdict, x.measured, x.predicted)
+            }
+
+            fn units_of(c: &Compiled, ids: [u32; 5]) -> (u16, u16) {
+                (unit_of(c, ids[0]), unit_of(c, ids[4]))
+            }
+
+            /// §4.1: with the vault's moves counted, each line is judged on what its own movers
+            /// put in and took out: A's sheets are what its chute dropped in, B's what its funnel
+            /// took, and the vault's residue (stock less every counted move) is nothing.
+            #[test]
+            fn a_counted_vault_judges_each_line_on_its_own_moves() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert_eq!(c.sections.counted, vec![v]);
+                assert_eq!(c.units.counted, vec![v]);
+                assert!(c.units.active() && c.units.len() == 2);
+                let (ua, ub) = units_of(&c, ids);
+                assert_ne!(ua, ub);
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                assert_eq!(c.units.pairs, pairs);
+                assert_eq!(c.units.pairs_of[ua as usize], pairs);
+                assert_eq!(c.units.pairs_of[ub as usize], pairs);
+                assert_eq!(c.units.counted_store_of_inv(1), Some(v));
+                drive_v(&mut c, ids, 0, 3200, steady, &tun);
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::PASS, "unit {u}");
+                    assert_eq!(st.passed, Some((Tick(1200), 2000)));
+                }
+                let (va, ma, pa) = row(&c.unit_state[ua as usize], SHEET);
+                assert!(
+                    va == verdict::PASS && close(ma, 0.1) && close(pa, 0.1),
+                    "{ma} {pa}"
+                );
+                let (vb, mb, pb) = row(&c.unit_state[ub as usize], SHEET);
+                assert!(
+                    vb == verdict::PASS && close(mb, -0.05) && close(pb, -0.05),
+                    "{mb} {pb}"
+                );
+                let (_, mc, _) = row(&c.unit_state[ub as usize], CRUSHED);
+                assert!(close(mc, 0.05));
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+                // Each unit opened its window on the sweep's pairs.
+                assert_eq!(
+                    c.unit_state[ua as usize].count_since,
+                    vec![
+                        (BlockPos::new(2, 64, 0), BlockPos::new(20, 64, 0), 0),
+                        (BlockPos::new(40, 64, 0), BlockPos::new(20, 64, 0), 0),
+                    ]
+                );
+            }
+
+            /// Not counted: a belt takes from the vault (Java cannot count it), so the two lines
+            /// are one judging group; counted but never sampled, neither line opens a window while
+            /// the district's passes; past `glass.countedStoresMax` (none here) the lines join.
+            #[test]
+            fn an_uncounted_or_unsampled_vault_judges_no_line_apart() {
+                let tun = GlassTunables::default();
+                let (b, _) = vault_lines(20, model::BELT);
+                let c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert!(c.sections.counted.is_empty() && c.units.counted.is_empty());
+                assert!(!c.units.active());
+
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| At {
+                        sample: false,
+                        ..steady(t)
+                    },
+                    &tun,
+                );
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u), None);
+                    assert_eq!(verdict_of(&c.unit_state[u as usize]), verdict::NONE);
+                    assert!(!c.unit_may_replay(u));
+                }
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+
+                let capped = GlassTunables {
+                    counted_stores_max: 0,
+                    ..GlassTunables::default()
+                };
+                let c = Compiled::new(b.graph(), Tick(0), &capped, &BTreeSet::new());
+                assert!(c.units.counted.is_empty() && !c.units.active());
+            }
+
+            /// A player takes sheets from the vault: a move the model lacks, in the residue of
+            /// every line at the vault, so both fail on sheets alone, as the district does.
+            #[test]
+            fn a_residue_at_the_vault_fails_every_line_there_on_its_good() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let taken = |t: u64| {
+                    if t < 1500 {
+                        0
+                    } else {
+                        ((t - 1500) / 100 * 4) as i64
+                    }
+                };
+                drive_v(
+                    &mut c,
+                    ids,
+                    0,
+                    3200,
+                    |t| {
+                        let s = steady(t);
+                        At {
+                            stock: s.stock - taken(t),
+                            ..s
+                        }
+                    },
+                    &tun,
+                );
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::FAIL, "unit {u}");
+                    let r = st.last.as_ref().expect("judged");
+                    for g in &r.goods {
+                        assert_eq!(g.verdict == verdict::FAIL, g.good == SHEET, "{:?}", g.good);
+                    }
+                }
+                let d = c.last.as_ref().expect("the district judged");
+                assert_eq!(d.verdict, verdict::FAIL, "{d:?}");
+                for g in &d.goods {
+                    assert_eq!(g.verdict == verdict::FAIL, g.good == SHEET, "{:?}", g.good);
+                }
+            }
+
+            /// A pair whose counters started again (Java forgot them) starts every window at its
+            /// store again from that sweep, with no warm-up; a sweep whose sample lacks a pair
+            /// loses them, and they open again after a warm-up.
+            #[test]
+            fn a_pair_restarted_restarts_its_windows_and_one_missing_loses_them() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let restarted = |t: u64| {
+                    let s = steady(t);
+                    if t < 2000 {
+                        return s;
+                    }
+                    At {
+                        took: ((t - 2000) / 20) as i64,
+                        since: (0, 2000),
+                        ..s
+                    }
+                };
+                drive_v(&mut c, ids, 0, 3200, restarted, &tun);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u).map(|w| w.0), Some(Tick(2000)), "unit {u}");
+                    assert_eq!(verdict_of(&c.unit_state[u as usize]), verdict::NONE);
+                }
+                drive_v(&mut c, ids, 3300, 4000, restarted, &tun);
+                for u in [ua, ub] {
+                    let st = &c.unit_state[u as usize];
+                    assert_eq!(verdict_of(st), verdict::PASS, "unit {u}: {:?}", st.last);
+                    assert_eq!(st.passed, Some((Tick(2000), 2000)));
+                }
+                // The sample at 4100 lacks the chute's pair: both lose their windows and warm up.
+                let missing = |t: u64| At {
+                    sample: t != 4100,
+                    ..restarted(t)
+                };
+                drive_v(&mut c, ids, 4100, 4100, missing, &tun);
+                let ready = Tick(4100 + tun.warmup_ticks + c.graph.longest_latency);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u), None);
+                    assert_eq!(c.unit_state[u as usize].ready_at, ready);
+                }
+                drive_v(&mut c, ids, 4200, ready.0, missing, &tun);
+                for u in [ua, ub] {
+                    assert_eq!(c.unit_window(u).map(|w| w.0), Some(ready));
+                }
+            }
+
+            /// A line taking from a vault that runs dry inside a sweep takes what it held: the
+            /// drain clamp's shortfall is its takers', so B still passes and A (which made
+            /// nothing) is not charged for it. B presses one per tick, so the vault (fed, held
+            /// down to a stack) holds 70 at the sweep before it runs dry and B takes them in 70
+            /// ticks; its press makes into the void, as the clamp corrects the store's good alone
+            /// (a machine's outputs are not, here or at an interior store).
+            #[test]
+            fn a_vault_run_dry_is_short_in_its_takers_line() {
+                let (mut b, ids) = vault_lines(1, model::FUNNEL_ANDESITE);
+                let o1 = &mut b.nodes[2];
+                assert_eq!(o1.inventory, Some(2));
+                (o1.kind, o1.model, o1.inventory) = (NodeKind::Sink, model::SINK_VOID, None);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let (ua, ub) = units_of(&c, ids);
+                let dry = |t: u64| {
+                    let took = (t as i64).min(2270);
+                    // A's brass is gone (`made` all of it long ago): it makes nothing now.
+                    At {
+                        made: 100_000,
+                        took,
+                        stock: 2270 - took,
+                        crushed: 0,
+                        since: (0, 0),
+                        sample: true,
+                    }
+                };
+                drive_v(&mut c, ids, 0, 3200, dry, &tun);
+                let (vb, mb, pb) = row(&c.unit_state[ub as usize], SHEET);
+                assert_eq!(vb, verdict::PASS, "measured {mb} predicted {pb}");
+                assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+                assert!(c.last.as_ref().is_some_and(|r| r.verdict == verdict::PASS));
+            }
+
+            /// Goods ported into the vault (a train's or a package's) are no line's production:
+            /// the residue subtracts them, and both lines pass. Through the glass box: the count
+            /// samples come as IND_COUNT_SAMPLE.
+            #[test]
+            fn ports_into_a_counted_vault_are_no_lines_production() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let goods = goods();
+                let ported = |t: u64| if t < 2000 { 0 } else { 50 };
+                let mut t = 0;
+                while t <= 3200 {
+                    if t == 2000 {
+                        g.port_one(D, 1, 1, SHEET, 50);
+                    }
+                    let a = steady(t);
+                    let sweep = (t / 100) as u32;
+                    let s = GlassObs::CountSample(CountSample {
+                        district: D,
+                        sweep,
+                        compile: 1,
+                        counts: counts(ids, a),
+                    });
+                    g.ingest(Tick(t), &s, None, &goods, &tun);
+                    let inv = vault_invs(At {
+                        stock: a.stock + ported(t),
+                        ..a
+                    });
+                    let ports = GoodVec::new();
+                    let view = View {
+                        revision: 1,
+                        sweep,
+                        inventories: &inv,
+                        ports: &ports,
+                    };
+                    g.sweep(Tick(t), D, &view, &Liveness::All, &goods, &tun);
+                    t += 100;
+                }
+                assert_eq!(g.count_stats.samples, 33);
+                let c = comp(&g, D);
+                let (ua, ub) = units_of(c, ids);
+                for u in [ua, ub] {
+                    assert_eq!(
+                        verdict_of(&c.unit_state[u as usize]),
+                        verdict::PASS,
+                        "unit {u}"
+                    );
+                }
+                // Another compile's sample counts for nothing.
+                let s = GlassObs::CountSample(CountSample {
+                    district: D,
+                    sweep: 33,
+                    compile: 2,
+                    counts: counts(ids, steady(3300)),
+                });
+                g.ingest(Tick(3300), &s, None, &goods, &tun);
+                assert_eq!(g.count_stats.samples, 33);
+            }
+
+            /// IND_COUNT_SET (§4.2): sent for each compile with counted pairs, again after a
+            /// resend END or a new session's compile, never twice for the same set, and empty once
+            /// the district has none to count.
+            #[test]
+            fn count_sets_follow_the_compiles_pairs() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                let set = |compile: u32, pairs: &[(u32, u32)]| CountSet {
+                    district: D,
+                    compile,
+                    pairs: pairs.to_vec(),
+                };
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                assert!(g.take_count_sets().is_empty());
+                // A sweep that changes nothing sends nothing.
+                let inv = vault_invs(steady(0));
+                glass_sweep(&mut g, D, 100, &inv, &GoodVec::new(), &Liveness::All, &tun);
+                assert!(g.take_count_sets().is_empty());
+                // A resend of the compile held: Java may have lost the set.
+                let mut resend = records_for(&b, 1, D);
+                if let Some(GlassObs::End(e)) = resend.last_mut() {
+                    e.flags |= end_flags::RESEND;
+                }
+                ingest_all(&mut g, 200, &resend, &tun);
+                assert_eq!(g.stats.resends_ignored, 1);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                // A newer compile names its own numbers.
+                ingest_all(&mut g, 300, &records_for(&b, 2, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(2, &pairs)]);
+                // A new session: Java counts nothing until its compile comes, kept or not.
+                g.session_start(Tick(400), &tun);
+                assert!(g.take_count_sets().is_empty());
+                ingest_all(&mut g, 500, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.stats.compiles_kept, 1);
+                assert_eq!(g.take_count_sets(), vec![set(1, &pairs)]);
+                // A belt in the funnel's place counts nothing: the set Java holds goes.
+                let (belt, _) = vault_lines(20, model::BELT);
+                ingest_all(&mut g, 600, &records_for(&belt, 2, D), &tun);
+                assert_eq!(g.take_count_sets(), vec![set(2, &[])]);
+                ingest_all(&mut g, 700, &records_for(&belt, 3, D), &tun);
+                assert!(g.take_count_sets().is_empty());
+                assert_eq!(g.count_stats.sets_sent, 5);
+            }
+
+            /// Through the engine: the compile's count set goes out as a command, and the count
+            /// samples Java sends before each sweep's end judge the lines apart.
+            #[test]
+            fn the_engine_sends_the_count_set_and_judges_by_the_samples() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let mut e = engine();
+                let mut sets = Vec::new();
+                for t in setup(&b, 3) {
+                    for c in feed(&mut e, &t) {
+                        if let Cmd::CountSet(s) = c {
+                            sets.push(s);
+                        }
+                    }
+                }
+                let mut pairs = vec![(c0, v), (f1, v)];
+                pairs.sort_unstable();
+                assert_eq!(
+                    sets,
+                    vec![CountSet {
+                        district: D,
+                        compile: 1,
+                        pairs
+                    }]
+                );
+                let mut k = 0;
+                let mut t = 100;
+                while t <= 3200 {
+                    k += 1;
+                    let a = steady(t);
+                    let mut s = vec![at(
+                        t,
+                        Obs::Glass(GlassObs::CountSample(CountSample {
+                            district: D,
+                            sweep: k,
+                            compile: 1,
+                            counts: counts(ids, a),
+                        })),
+                    )];
+                    let (brass, sheet, crushed) = (
+                        [(BRASS, 100_000 - a.made)],
+                        [(SHEET, a.stock)],
+                        [(CRUSHED, a.crushed)],
+                    );
+                    sweep(&mut s, k, t, &[&brass, &sheet, &crushed]);
+                    for x in &s {
+                        for c in feed(&mut e, x) {
+                            assert!(!matches!(c, Cmd::CountSet(_)), "sent again at {t}");
+                        }
+                    }
+                    t += 100;
+                }
+                assert_eq!(e.glass.count_stats.samples, 32);
+                let c = comp(&e.glass, D);
+                let (ua, ub) = units_of(c, ids);
+                for u in [ua, ub] {
+                    assert_eq!(
+                        verdict_of(&c.unit_state[u as usize]),
+                        verdict::PASS,
+                        "unit {u}"
+                    );
+                }
+            }
+
+            /// The page keeps each unit's window base at its counted stores, and its cut keys name
+            /// the counted stores: read with another `glass.countedStoresMax`, it is dropped.
+            #[test]
+            fn a_page_keeps_the_counted_bases_and_drops_on_another_count_cap() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let c = g
+                    .districts
+                    .get_mut(&D)
+                    .and_then(|dg| dg.compiled.as_mut())
+                    .expect("a compile");
+                drive_v(c, ids, 100, 2000, steady, &tun);
+                let (ua, _) = units_of(c, ids);
+                assert!(!c.unit_state[ua as usize].count_since.is_empty());
+                let dg = &g.districts[&D];
+                let page = district_page(dg);
+                let back = read_district_page(&page, tun.sections_max, tun.counted_stores_max)
+                    .expect("decodes")
+                    .kept()
+                    .expect("kept");
+                let r = back.compiled.as_ref().expect("compile");
+                let c = comp(&g, D);
+                assert_eq!(r.unit_state, c.unit_state);
+                assert_eq!(r.units, c.units);
+                assert_eq!(district_page(&back), page);
+                assert!(matches!(
+                    read_district_page(&page, tun.sections_max, 0),
+                    Ok(PageRead::Dropped(_))
+                ));
+            }
         }
     }
 }
