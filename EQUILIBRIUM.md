@@ -688,10 +688,13 @@ broken, and refounding at found sites.
      of its time closed; the band between an eighth and a quarter does the same for the blockade.
      A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
      how a blockade lifts by itself.
+   - **Switched off.** With the ships module off (C25), the world's lanes stay as the ships left
+     them, closed ones too, as the lanes' hazards do, and no check runs. Switched on again, the
+     ships run the time they missed, checks included, and the rule applies from there (PC101).
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
    - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
-     PC80 to PC100; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
+     PC80 to PC101; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
      `crates/rtsim-ships/tests/blockade.rs`), with its news: Blockade, PortClosed and PortReopened,
      one report per change (rule 8, PC100, `a_port_change_is_news`). Measured over 1,000 years on `synth::sea_havens`, seeds
      1 to 30, nobody watching, with navy assaults and port raids at their defaults: per sea per
