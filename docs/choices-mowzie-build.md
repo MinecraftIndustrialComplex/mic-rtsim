@@ -333,6 +333,17 @@ under its own heading.
   The restart half (the engine resends a kept notice at session start) is M1's rtsim-jni test, and the
   Java side of a resent notice is the FACTION_NOTICE this test sends. NOTICE_SHOWN's aux is checked
   against the notice's serial (FACTION_NOTICE offset 60).
+- **MZB-130** (a member that is not hostile chats; TALK slice 4): `ConflictTalker.chats` is true for a
+  live member that is not the envoy and not hostile to this player, and hostile is what makes its
+  attitude HOSTILE: no raid or rout (an envoy party is neither), the player is not its target, and the
+  camp has no reason against him (`reasonFor < 0`: no open demand of the faction's to him or to anyone,
+  no kept notice). The core then adds its fluff, mood and news; a hostile member and the envoy keep only
+  this talker's lines (warn with the reason, insult, the envoy's one line). Fork: a chatting member keeps
+  the plain `hostile.warn` among its candidates at weight 1, so a stranger still hears "keep your
+  distance" now and then, rather than dropping the camp's own line; the voice stays `<culture>`. Test 14
+  checks it with a bystander after the settlers' demand (to anyone) is withdrawn: the guard chats with
+  him, is WARY, and says no reason line and no insult; it does not chat with the player it has a reason
+  against, and the envoy chats with no one.
 
 ## M4 Camp reconciler, engine
 

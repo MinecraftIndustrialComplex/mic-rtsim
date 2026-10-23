@@ -29,8 +29,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>The envoy (voice {@code envoy.<culture>}) says its demand with its reason, the same line every time
  * while it is open, then why it takes nothing (its settlement, a blow, its deadline); only to the player
  * the demand is to (anyone for the settlers'). Every other member (voice {@code <culture>}) warns, with the reason when the camp has one,
- * or insults in a raid or a rout. Beasts (an {@link Animal}, a ravager) do not talk. Holder: the faction
- * (3); no small talk, no credit (TK6).
+ * or insults in a raid or a rout. A member hostile to the player (a raid or a rout, the player its target,
+ * or the camp has a reason against him) makes no small talk; one that is not chats (TALK slice 4, MZB-130):
+ * the core adds its fluff, mood and news to the plain warning. The envoy never chats. Beasts (an
+ * {@link Animal}, a ravager) do not talk. Holder: the faction (3); no credit (TK6).
  */
 public final class ConflictTalker implements Talker {
     static final ConflictTalker INSTANCE = new ConflictTalker();
@@ -135,10 +137,13 @@ public final class ConflictTalker implements Talker {
         ConflictBridge.Party p = sl.stack.party;
         if (sl.envoy)
             return Attitude.WARY;
-        if (insults(p) || player.getUUID().equals(p.targetPlayer)
-                || ConflictBridge.INSTANCE.reasonFor(p.faction, player.getUUID()) >= 0)
-            return Attitude.HOSTILE;
-        return Attitude.WARY;
+        return hostile(p, player) ? Attitude.HOSTILE : Attitude.WARY;
+    }
+
+    /** Hostile to this player: a raid or a rout, the player its target, or the camp has a reason against him (MZB-124). */
+    private static boolean hostile(ConflictBridge.Party p, ServerPlayer player) {
+        return insults(p) || player.getUUID().equals(p.targetPlayer)
+                || ConflictBridge.INSTANCE.reasonFor(p.faction, player.getUUID()) >= 0;
     }
 
     /** A raid is on (a band out to fight, or one attacking), or it is losing a fight (routed). */
@@ -149,9 +154,14 @@ public final class ConflictTalker implements Talker {
                 || (p.recalling && p.recallReason == ConflictRecords.RECALL_ROUTED);
     }
 
+    /**
+     * A live member that is not the envoy and not hostile to this player makes small talk (TALK slice 4,
+     * MZB-130); a hostile member and the envoy say only this talker's lines.
+     */
     @Override
     public boolean chats(Entity entity, ServerPlayer player) {
-        return false;
+        ConflictBridge.Slot sl = member(entity, player);
+        return sl != null && !sl.envoy && !hostile(sl.stack.party, player);
     }
 
     @Override
