@@ -645,22 +645,28 @@ broken, and refounding at found sites.
      hazard change, which is already an event).
    - **Blockade begun.** A port's dock is under blockade when every lane of it is at least a quarter
      as hot as one full-crew pirate of its medium hunting it without pause (sea 6 x 20 = 120‰, so
-     30‰; sky 25‰). This is news, not yet a closure.
+     30‰; sky 25‰). This is news, not yet a closure. An open port stops being blockaded when no
+     lane of it is above an eighth (PC82).
    - **Closed.** When every lane of the dock is at least half that hot (sea 60‰, sky 50‰), about a
      month of being hunted half the time, the dock closes:
-     - the lanes touching it carry nothing new (the world edge's capacity drops to 0; consignments
-       already sailing land);
-     - every service that calls there lays up. A ship out of every player's view leaves the
-       timetable at once. A ship in view, or with a player aboard, keeps sailing its timetable,
-       with empty holds, until its body is out of every player's view, and lays up then, so no ship
-       vanishes in front of anyone and no player is ever dropped in the sea or the sky;
-     - a lane left with no active service carries nothing either.
+     - the lanes touching it carry nothing new (the world edge is closed, `Edge::closed`, S8b-4a;
+       its capacity is untouched; consignments already sailing land);
+     - every merchant service that calls there lays up; the navy keeps sailing. A ship out of every
+       player's view leaves the timetable at once. A ship in view, or with a player aboard, keeps
+       sailing its timetable until its body is out of every player's view, and lays up then, so no
+       ship vanishes in front of anyone and no player is ever dropped in the sea or the sky. The
+       voyage under way at the closure keeps its cargo, which lands; later voyages sail with empty
+       holds (PC81). A ship holding promoted cargo lays up once the cargo lands;
+     - a lane whose services are all laid up is closed as well.
+     - Only the ports' states are stored: which services are laid up and which lanes are closed
+       follow from them, whatever order ports closed in (PC80).
    - **Reopened.** A closed dock reopens when no lane of it is hotter than a quarter of the full
      share, and not before 30 days after it closed. Its services' ships come back at their slots'
-     next home-dock stays (the existing relaunch path, so no ship appears in view), and the lanes'
-     capacities return.
+     next home-dock stays (the existing relaunch path, so no ship appears in view), and the lanes
+     open again. Goods offered from the next boundary take the lane's lag before they land (PC87).
    - **Why it cannot flap.** The band between a quarter and a half, the month-long average and the
-     30-day minimum closure keep a port from closing and reopening faster than about once a season.
+     30-day minimum closure keep a port from closing and reopening faster than about once a season;
+     the band between an eighth and a quarter does the same for the blockade.
      A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
      how a blockade lifts by itself.
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
