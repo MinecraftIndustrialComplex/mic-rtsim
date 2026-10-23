@@ -252,7 +252,8 @@ TALK_FACTS (§9.2); slice 4 builds it with M3.
 4. **Rate limits** (TK3): a talker answers the same player once per 40 ticks (a click inside that is
    still cancelled, silently), and anyone once per 10 ticks. In memory, never saved.
 5. **Speak:** `ServerPlayer.sendSystemMessage` to the talking player only; the talker looks at them
-   (a villager's `LOOK_TARGET` memory for 40 ticks) and plays its ambient sound, which everyone near
+   for 40 ticks (a villager's `LOOK_TARGET` memory; any other mob's look control, set again each
+   tick, so a running look goal wins only its own tick) and plays its ambient sound, which everyone near
    hears, as vanilla's own murmur. Talking to a villager or a wandering trader counts in vanilla's
    "Talked to Villagers" statistic.
 
