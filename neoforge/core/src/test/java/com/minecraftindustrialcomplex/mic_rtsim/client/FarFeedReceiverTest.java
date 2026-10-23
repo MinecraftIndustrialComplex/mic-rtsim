@@ -200,6 +200,67 @@ class FarFeedReceiverTest {
         forwardOnly(200, drawn);
     }
 
+    /** A dragon's segment, one block along the heading (hx, hz), centred on (x, 200, z). */
+    private static double[] dragon(double x, double z, double hx, double hz) {
+        return new double[]{x + hx * 0.5, 200, z + hz * 0.5, x - hx * 0.5, 200, z - hz * 0.5};
+    }
+
+    private static double centreZ(FarMover m, double at) {
+        double[] s = new double[6];
+        m.segmentAt(at, s);
+        return (s[2] + s[5]) / 2.0;
+    }
+
+    @Test
+    void aDragonStoppingToHoverFarPastWhereItWasRunOnToGoesBackToIt() {
+        long g0 = 20_000;
+        // East at 2 blocks a tick, sampled at x 0, 40 and 80
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566),
+                FarWire.Sample.of(0, FarState.FLY.wire, dragon(0, 0, 1, 0)));
+        for (int k = 1; k <= 2; k++) {
+            advance(20);
+            send(0, g0 + 20L * k, FarWire.Sample.of(0, FarState.FLY.wire, dragon(40 * k, 0, 1, 0)));
+        }
+        // It stops to hover two blocks on, where the server finds it a second later and again the second after;
+        // the run on had it 40 blocks on by then, too far past to wait there (HOLD)
+        advance(20);
+        double ranOnTo = centreX(mover(), FarClock.ticks());
+        assertTrue(ranOnTo - 82.0 > FarFeedReceiver.HOLD, "run on to " + ranOnTo);
+        send(0, g0 + 60, FarWire.Sample.of(0, FarState.FLY.wire, dragon(82, 0, 1, 0)));
+        advance(20);
+        send(0, g0 + 80, FarWire.Sample.of(0, FarState.FLY.wire, dragon(82, 0, 1, 0)));
+        advance(100);
+        assertEquals(82.0, centreX(mover(), FarClock.ticks()), 1e-6, "back where it hovers, not left 40 blocks on");
+    }
+
+    @Test
+    void aCirclingDragonIsDrawnOnItsCircleNotOffOnTheTangent() {
+        long g0 = 30_000;
+        // Round a circle of radius 40 about the origin at 1.5 blocks a tick, sampled every second
+        double r = 40.0, w = 1.5 / r;
+        double worst = 0.0;
+        for (int t = 0; t <= 400; t++) {
+            if (t > 0)
+                FarClock.advance();
+            double a = w * t;
+            if (t % 20 == 0) {
+                FarWire.Rec s = FarWire.Sample.of(0, FarState.FLY.wire,
+                        dragon(r * Math.cos(a), r * Math.sin(a), -Math.sin(a), Math.cos(a)));
+                if (t == 0)
+                    send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566), s);
+                else
+                    send(0, g0 + t, s);
+            }
+            if (t < 60)
+                continue; // the turn is known from the third sample
+            double now = FarClock.ticks();
+            double dx = centreX(mover(), now) - r * Math.cos(a), dz = centreZ(mover(), now) - r * Math.sin(a);
+            worst = Math.max(worst, Math.sqrt(dx * dx + dz * dz));
+        }
+        // Run on along the tangent instead, it was drawn up to 22 blocks off the circle
+        assertTrue(worst < 4.0, "off the circle by " + worst);
+    }
+
     @Test
     void aJumpIsDrawnAtOnce() {
         long g = steadyTrain(10_000);
