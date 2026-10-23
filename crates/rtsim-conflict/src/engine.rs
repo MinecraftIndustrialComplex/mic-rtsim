@@ -4003,28 +4003,28 @@ impl Conflict {
                 .nodes
                 .get(i)
                 .filter(|n| matches!(n.kind, NodeKind::Village(_)))
-                .map(|n| n.actor),
+                .map(|_| i),
             _ => None,
         };
         // The nodes in view of the rout: the node index's cells around where it broke, in node
         // order. The villages among them that hate the faction see it (a village that does not was
         // not rescued, and one friendly to the band would be crediting the player for killing its
-        // friends); the player bases among them all do.
+        // friends); the player bases among them all do, if a player still marks them (an
+        // abandoned base keeps its node and roads for news already on them, but nobody is there).
         self.nodes.refresh(w);
         let topo = self.topo.clone();
         let view = f64::from(self.tun.view_radius);
         let in_view = self
             .nodes
             .within(w, topo.of(frame), Pos::new(frame, bx, bz), view);
-        let mut witnesses: Vec<ActorId> = rescued.into_iter().collect();
+        let mut villages: Vec<usize> = rescued.into_iter().collect();
         let mut bases: BTreeSet<usize> = BTreeSet::new();
         for i in in_view {
-            let n = &w.nodes[i];
-            match n.kind {
-                NodeKind::Village(cu) if c.hates(cu.name()) && !witnesses.contains(&n.actor) => {
-                    witnesses.push(n.actor);
+            match w.nodes[i].kind {
+                NodeKind::Village(cu) if c.hates(cu.name()) && !villages.contains(&i) => {
+                    villages.push(i);
                 }
-                NodeKind::PlayerBase { .. } => {
+                NodeKind::PlayerBase { .. } if w.base_active(i) => {
                     bases.insert(i);
                 }
                 _ => {}
@@ -4041,13 +4041,16 @@ impl Conflict {
                     if w.nodes
                         .get(i)
                         .is_some_and(|n| matches!(n.kind, NodeKind::PlayerBase { .. }))
+                        && w.base_active(i)
                     {
                         bases.insert(i);
                     }
                 }
                 Target::District(..) | Target::Pos(_) => {
                     for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
-                        if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. }) {
+                        if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. })
+                            && w.base_active(i)
+                        {
                             bases.insert(i);
                         }
                     }
@@ -4056,7 +4059,7 @@ impl Conflict {
         }
         let (mut heard, mut told) = (0, 0);
         let mut full = false;
-        let candidates = witnesses.len() + bases.len();
+        let candidates = villages.len() + bases.len();
         if candidates > 0 {
             let whom = match target {
                 Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
@@ -4074,13 +4077,14 @@ impl Conflict {
             // A full table that keeps nothing hands back NULL, which nobody can witness.
             full = rep.is_null();
             if !full {
-                for va in witnesses {
-                    if w.knowledge.witness(va, rep, at) {
+                // A node that saw it tells the next travellers at once: a village's feelings go
+                // out with the next commands and its news does not wait for its next market
+                // event, and a base has no market events to do it for it.
+                for i in villages {
+                    if w.node_witnesses(i, rep, at) {
                         heard += 1;
                     }
                 }
-                // A base tells the next travellers at once: it has no market events to do it for
-                // it.
                 for i in bases {
                     if w.node_witnesses(i, rep, at) {
                         told += 1;
