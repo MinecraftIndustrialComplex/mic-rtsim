@@ -1079,12 +1079,11 @@ fn closures_survive_save_and_restore() {
 /// The hashes of the parent for three runs: the coast's scripted player for 30 days (seed 7)
 /// and two seas unattended for 96 days, each over the ships' and the world's save bytes after
 /// the format's magic (so a format bump alone changes nothing here). The parent is main at
-/// 18356257 (S8b-2, S8b-3, RTS3, TALK slice 2a and the ports' news landed; both sea runs'
-/// hashes differ from 257d2715's, the coast's do not) with this branch's world half (S8b-4a,
-/// `crates/rtsim-world`
-/// and `crates/rtsim-travel`, which main does not have: its edge record has no closed flag), so
-/// the world hashes compare the same layout. Printed by the same scenarios built on that tree
-/// (`git archive` of main, the world half patched in).
+/// 92fb5b3f (S8b-2, S8b-3 with its surplus-only raids, RTS3, TALK slice 2a and the ports' news
+/// landed; both sea runs' hashes differ from 18356257's, the coast's do not) with this branch's
+/// world half (S8b-4a, `crates/rtsim-world` and `crates/rtsim-travel`, which main does not have:
+/// its edge record has no closed flag), so the world hashes compare the same layout. Printed by
+/// the same scenarios built on that tree (`git archive` of main, the world half patched in).
 const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
@@ -1093,13 +1092,13 @@ const PARENT: [(&str, u64, u64); 3] = [
     ),
     (
         "sea_havens 1 unattended 96 days",
-        0xb717_8258_8a21_df9f,
-        0xaed4_77ab_b6c2_a2a5,
+        0xc111_a5ab_f099_e354,
+        0x72e1_88c5_3087_657e,
     ),
     (
         "sea_havens 2 unattended 96 days",
-        0x6f8d_aca5_c777_938c,
-        0x3ce5_5f9c_732b_0d30,
+        0x49ce_1716_2f28_027b,
+        0x7a1b_ab1b_37f6_dd1f,
     ),
 ];
 
