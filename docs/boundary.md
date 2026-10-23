@@ -1906,8 +1906,8 @@ what changed in its view (§12.2). Choices are DHT25 and up in `docs/choices-dh-
 | 0x0C00 to 0x0CFF | Java to engine | far view journaled observations (none yet) |
 | 0x8C00 to 0x8CFF | engine to Java | far view commands (`cmdSeq` at 8) |
 
-0x00C0 to 0x00CF, 0x0A00 to 0x0BFF and 0x8A00 to 0x8BFF stay free for the next simulation families
-(DHT26).
+0x00C0 to 0x00CF, 0x0A00 to 0x0AFF and 0x8A00 to 0x8AFF are TALK's (TALK.md §9, TK10); 0x0B00 to
+0x0BFF and 0x8B00 to 0x8BFF stay free for the next simulation families (DHT26).
 
 **FAR_LEG (0x8C00, aux = state, size 80).** Reference codec `crates/rtsim-ecology/src/far.rs`, read by
 the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides (`far::tests` and
