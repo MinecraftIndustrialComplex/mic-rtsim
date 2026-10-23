@@ -202,8 +202,7 @@ public final class AdoptGameTests {
                     IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null);
                     Districts districts = ind().districts();
                     check("spread over at least four ticks, not " + districts.lastRescanSlices(), districts.lastRescanSlices() >= 4);
-                    check("no tick looked at more than the budget and one chunk (" + districts.lastRescanLongestLooked() + ")",
-                            districts.lastRescanLongestLooked() <= BUDGET + FILLER + 2);
+                    checkTickBudget(districts, level, BUDGET, ms[0]);
                     checkAfter(helper, test, ms[0], z[0], (int) z[1], LOCAL_CHUNKS * (FILLER + 4));
                     freeChunks(level, forced);
                 })
