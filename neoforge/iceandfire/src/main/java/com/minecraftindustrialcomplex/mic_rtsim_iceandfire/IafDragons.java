@@ -185,6 +185,29 @@ public final class IafDragons {
         d.hasHomePosition = true;
     }
 
+    /**
+     * Faces a body not yet in the level along {@code yaw}: its body and head as well as its yaw, and their last
+     * tick's too, so neither its spawn packet (which carries the head's yaw, and the client takes the body's
+     * from it) nor its first tick turns it.
+     */
+    public static void face(DragonBaseEntity d, float yaw) {
+        d.setYRot(yaw);
+        d.yRotO = yaw;
+        d.setYBodyRot(yaw);
+        d.yBodyRotO = yaw;
+        d.setYHeadRot(yaw);
+        d.yHeadRotO = yaw;
+    }
+
+    /** Ice and Fire's flight ceiling ({@code maxFlight}, 256 by default and in the pack). */
+    public static int maxFlight() {
+        try {
+            return com.iafenvoy.iceandfire.config.IafCommonConfig.INSTANCE.dragon.maxFlight.getValue();
+        } catch (RuntimeException | LinkageError e) {
+            return 256;
+        }
+    }
+
     // ---- steering -------------------------------------------------------------------------------
 
     /** Points the dragon's flight at a target and keeps it flying (awake, airborne). */

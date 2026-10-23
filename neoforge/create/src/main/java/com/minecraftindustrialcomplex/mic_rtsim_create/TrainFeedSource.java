@@ -17,6 +17,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 
 /**
  * Create trains for the far feed (research/distant-horizons-2026-10-21.md §4.1, §13 item 2; docs/boundary.md
@@ -47,6 +48,19 @@ public final class TrainFeedSource implements FarSource {
     @Override
     public String name() {
         return "Create trains";
+    }
+
+    /**
+     * A carriage's entity is joining a server level (Create spawns one when its carriage reaches an
+     * entity-ticking chunk): the subscribers holding the carriage hear its id at once, ahead of the entity's
+     * spawn packet, so the client hides the far carriage the frame the real one appears
+     * (docs/choices-dh-feed.md DHT40). The next sweep's item says the same.
+     */
+    static void joining(EntityJoinLevelEvent event) {
+        if (event.getLevel() instanceof ServerLevel level && event.getEntity() instanceof CarriageContraptionEntity cce
+                && cce.trainId != null && cce.carriageIndex >= 0 && cce.carriageIndex < 256)
+            com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.farEntityJoining(level, id(cce.trainId, cce.carriageIndex),
+                    cce.getId());
     }
 
     @Override
