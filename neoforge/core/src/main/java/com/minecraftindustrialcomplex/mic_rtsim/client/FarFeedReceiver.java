@@ -310,7 +310,7 @@ final class FarFeedReceiver {
             // A second sample in the same tick: the run so far
             v = o.velocity;
             acc = o.acc;
-            turn = o.turn;
+            turn = o.kind == FarKind.DRAGON ? o.turn : null;
         }
         o.acc = acc;
         o.turn = turn;
@@ -398,7 +398,7 @@ final class FarFeedReceiver {
     /**
      * Where a sampled mover will be: each point on along its velocity since the sample before, at its speed at
      * the sample, speeding up or slowing down as it was (at most doubling its speed a sample), and stopping where
-     * slowing brings it to rest. A mover that was turning goes on turning as it was, on an arc across the ground
+     * slowing brings it to rest. A dragon that was turning goes on turning as it was, on an arc across the ground
      * (its climb or dive kept) from its heading at the sample (half a gap's turn past its heading over the last
      * gap), {@link #TURN_ON} of its last turn, then straight on; a straight run would take a circling dragon off
      * on the tangent.

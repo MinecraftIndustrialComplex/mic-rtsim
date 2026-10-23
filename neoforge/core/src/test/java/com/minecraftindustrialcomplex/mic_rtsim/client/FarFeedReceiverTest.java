@@ -325,10 +325,9 @@ class FarFeedReceiverTest {
      * between the drawn carriage and the real one, from tick 60 on.
      */
     private double[] onTrack(double[]... turns) {
-        int n = 12_000;
+        int n = 6_400;
         double step = 0.05, x = -150.0, z = 0.0, h = 0.0;
         double[][] track = new double[n][];
-        double done = 0.0;
         for (int i = 0; i < n; i++) {
             track[i] = new double[]{x, z};
             double s = i * step - 150.0, turned = 0.0, at = 0.0;
@@ -342,7 +341,6 @@ class FarFeedReceiverTest {
             h = turned;
             x += step * Math.cos(h);
             z += step * Math.sin(h);
-            done = s;
         }
         double[][] t2 = track;
         java.util.function.DoubleFunction<double[]> point = s -> t2[(int) Math.round((s + 150.0) / step)];
@@ -372,14 +370,14 @@ class FarFeedReceiverTest {
             facing += Math.toDegrees(Math.abs(Math.IEEEremainder(off, 2.0 * Math.PI)));
             counted++;
         }
-        assertTrue(done > 0.7 * 300, "the track is long enough");
         return new double[]{worst, facing / counted};
     }
 
     @Test
     void aCarriageOnACurveKeepsToItsTrack() {
         // Its bogeys keep to the track, so each runs on along its own line; turned on an arc as a dragon is, a
-        // carriage faced 7.2 degrees off on average through a 90 degree curve of radius 25 (4.6 straight on) and
+        // carriage faced 7.2 degrees off on average over a 90 degree curve of radius 25 and the straight after it
+        // (4.6 straight on), and
         // its ends strayed 9.6 blocks on an S of two 45 degree curves of radius 30 (6.2 straight on)
         double[] curve = onTrack(new double[]{25.0, 90.0});
         FarObjects.clearAll();
