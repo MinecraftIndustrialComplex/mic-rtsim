@@ -3525,6 +3525,19 @@ impl Ships {
         let took: Amount = got.values().sum();
         let items = took / MILLI;
         self.stats.items_from_ports += items.max(0) as u64;
+        // The news (PC10): PortRaided, the haven against the port's village, at the dock.
+        let who = w.nodes[self.havens[h as usize].node].actor;
+        let place = Place::new(dock.frame, dock.x, y16(dock.y), dock.z);
+        Self::port_report(
+            w,
+            ReportKind::PortRaided,
+            who,
+            w.nodes[node].actor,
+            node,
+            place,
+            1,
+            at,
+        );
         let key = w.nodes[node].key;
         let severity = if items > 0 {
             Severity::Notable
@@ -4980,9 +4993,57 @@ impl Ships {
 
     /// The news of haven `h`'s fall to navy `nv` (§2.4.6a rule 3, PC10): the HavenFell report,
     /// kind 20, with `who` the navy's home node's actor, `whom` the haven's node's actor and
-    /// `place` the haven's dock, severity 2. Its report kind is being added with the rest of
-    /// PC10's news; until then nothing is recorded here.
-    fn haven_fell(&mut self, _w: &mut World, _nv: u32, _h: u32, _at: Tick) {}
+    /// `place` the haven's dock, severity 2; the navy's port and the places in sight of the haven
+    /// witness it.
+    fn haven_fell(&mut self, w: &mut World, nv: u32, h: u32, at: Tick) {
+        let port = self.navies[nv as usize].node;
+        let hv = &self.havens[h as usize];
+        let place = Place::new(hv.frame, hv.dock.0, y16(hv.dock.1), hv.dock.2);
+        let (who, whom) = (w.nodes[port].actor, w.nodes[hv.node].actor);
+        Self::port_report(w, ReportKind::HavenFell, who, whom, port, place, 2, at);
+    }
+
+    /// Records one piece of S8b's news (§2.4.6a rule 7, PC10): `who` did it to `whom` at `place`,
+    /// `severity` a small code (TALK.md §9.4: news kinds are rungs, never on the unit scale, and
+    /// carry no sentiment and no vanilla gossip), witnessed by the settlements in sight of
+    /// `place` and by node `told`, which saw it or did it. Messengers, bands and caravans carry it
+    /// on from there, as every report; nothing goes to chat (CL-9).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn port_report(
+        w: &mut World,
+        kind: ReportKind,
+        who: ActorId,
+        whom: ActorId,
+        told: usize,
+        place: Place,
+        severity: u8,
+        at: Tick,
+    ) {
+        debug_assert!(kind.is_news(), "{kind:?} is not a news kind");
+        let id = w.knowledge.record(Report {
+            who,
+            whom,
+            kind,
+            severity,
+            flags: 0,
+            at,
+            place,
+        });
+        let near: Vec<(ActorId, Place)> = (0..w.nodes.len())
+            .map(|i| {
+                let q = w.nodes[i].pos;
+                (w.nodes[i].actor, Place::new(q.frame, q.x, 64, q.z))
+            })
+            .collect();
+        let near = w.near_images(place, near);
+        let mut seen = witnesses(place, w.cfg.knowledge.witness_radius, near);
+        seen.push(w.nodes[told].actor);
+        seen.sort();
+        seen.dedup();
+        for a in seen {
+            w.knowledge.witness(a, id, at);
+        }
+    }
 
     /// Whether a fresh band at haven `h` would find prey (§2.4.6a rule 5, PC5): a full crew of
     /// one of its media, with a sound hull, sees a lane worth hunting by [`Self::decide`]'s own
@@ -5742,6 +5803,11 @@ impl rtsim_world::interest::Viewer for Ships {
         let _ = area;
         self.seen_ships(w, player, found);
     }
+}
+
+/// A block height as a report's place stores it (16 bits), clamped.
+fn y16(y: i32) -> i16 {
+    y.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 fn medium_bit(m: Medium) -> u32 {
