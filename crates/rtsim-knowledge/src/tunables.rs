@@ -14,11 +14,12 @@ pub const SEVERITY_UNIT: u8 = 100;
 /// Everything tunable, so a scenario or a test can override one value without forking the code.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tunables {
-    /// Report lifetimes in ticks, by kind (indexed by [`ReportKind::index`]). TUNABLE (P18:
-    /// set from a soak).
-    pub lifetime: [u64; ReportKind::COUNT],
-    /// Sentiment change toward `who` for a first-hand report of severity [`SEVERITY_UNIT`].
-    pub delta: [i16; ReportKind::COUNT],
+    /// Report lifetimes in ticks, by kind (indexed by [`ReportKind::index`], so sized by
+    /// [`ReportKind::SLOTS`]: the gap ids are unused slots). TUNABLE (P18: set from a soak).
+    pub lifetime: [u64; ReportKind::SLOTS],
+    /// Sentiment change toward `who` for a first-hand report of severity [`SEVERITY_UNIT`]. News
+    /// kinds (TALK.md §9.4) are 0: news is not a grudge, and a 0 writes no sentiment at all.
+    pub delta: [i16; ReportKind::SLOTS],
     /// Second-hand news counts this many percent of first-hand. PLACEHOLDER (P18).
     pub hearsay_percent: u8,
     /// Mean ticks per one-step decay of a sentiment of magnitude m is
@@ -51,8 +52,8 @@ pub struct Tunables {
 impl Default for Tunables {
     fn default() -> Self {
         let day = TICKS_PER_DAY;
-        let mut lifetime = [0u64; ReportKind::COUNT];
-        let mut delta = [0i16; ReportKind::COUNT];
+        let mut lifetime = [0u64; ReportKind::SLOTS];
+        let mut delta = [0i16; ReportKind::SLOTS];
         for k in ReportKind::ALL {
             // Lifetimes (P18, Ben: "Vanilla + Veloren + soak"; lengthened now that news travels
             // separately from cargo, overnight choice PR7). Veloren's were murder 15 in-game days
@@ -73,6 +74,18 @@ impl Default for Tunables {
                 // life; a dragon resenses a working district once a day, so it stays resented
                 // while the district works and forgets it ten days after it stops.
                 ReportKind::Encroachment => (10 * day, -25),
+                // TALK news kinds (TALK.md §9.4, TK11): all PLACEHOLDER lifetimes, delta 0 (news is
+                // not a grudge, CONFLICT-LIFE.md §2.17). A feud's news lasts 10 days, a raid's 20,
+                // a pact or a fallen notable 30; the ports' kinds live as a robbery does, 6.
+                ReportKind::Feud => (10 * day, 0),
+                ReportKind::PactSworn | ReportKind::PactBroken => (30 * day, 0),
+                ReportKind::Raid => (20 * day, 0),
+                ReportKind::Fell => (30 * day, 0),
+                ReportKind::PortRaided
+                | ReportKind::Blockade
+                | ReportKind::PortClosed
+                | ReportKind::PortReopened
+                | ReportKind::HavenFell => (6 * day, 0),
             };
             lifetime[k.index()] = life;
             delta[k.index()] = d;
