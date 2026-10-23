@@ -455,9 +455,11 @@ public final class SectionsChunkLoadGameTests {
      * millstone. With only A's radius-1 ticket left, B (13 chunks away) unloads and the conveyors between
      * are held below FULL. The recount (Create's {@code calculateCapacity}) keeps the motor as it last was,
      * without loading B: the capacity is unchanged and the motor still listed. A millstone added in A
-     * makes the network recount its stress, with the same answer for the capacity. When B is forced again,
-     * the fresh motor takes the kept one's place as it joins: one source, with no recount in between. B
-     * then unloads a second time and another millstone in A makes the network recount: one motor kept, the
+     * makes the network recount its stress, with the same answer for the capacity. B then loads FULL and
+     * does not tick: its fresh motor exists and has not joined, and a recount still keeps the kept motor.
+     * When B is forced, the fresh motor takes the kept one's place as it joins: one source, with no recount
+     * in between, the network's unloaded share (set by hand, as a network loaded from a save has one) left
+     * alone, and the network's current stress, not the one B saved at the unload. B then unloads a second time and another millstone in A makes the network recount: one motor kept, the
      * same capacity (without row 57, the motors of both visits were listed and counted).
      */
     @GameTest(template = YARD, batch = "sec1_3", timeoutTicks = 16000)
@@ -466,7 +468,7 @@ public final class SectionsChunkLoadGameTests {
         ServerLevel level = helper.getLevel();
         String t = "aNetworkRecountKeepsAnUnloadedSource";
         int ax = farChunk(helper, true, 4600), az = farChunk(helper, false, 4600), bx = ax + 13, z = az * 16 + 8;
-        ChunkPos a = new ChunkPos(ax, az);
+        ChunkPos a = new ChunkPos(ax, az), b = new ChunkPos(bx, az);
         List<BlockPos> cs = new ArrayList<>();
         for (int k = 0; k < 8; k++)
             cs.add(new BlockPos(ax * 16 + 8 + 30 * k, Y, z));
@@ -545,6 +547,26 @@ public final class SectionsChunkLoadGameTests {
                     check("the away motor is still listed", n.sources.containsKey(oldMotor[0]));
                     watch.check("no chunk two or more from A loaded");
                     watch.on = false;
+                    // B's chunk loads FULL and does not tick: its block entities exist and have not joined
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
+                })
+                .thenWaitUntil(io(() -> {
+                    KineticBlockEntity fresh = kinetic(level, motor);
+                    check("the fresh motor loads", fresh != null && fresh != oldMotor[0]);
+                }))
+                .thenExecute(() -> {
+                    KineticBlockEntity fresh = kinetic(level, motor);
+                    KineticNetwork n = net.get();
+                    check("B's chunk does not tick", !Loaded.ticks(level, motor));
+                    check("the fresh motor has not joined", !n.members.containsKey(fresh));
+                    // a recount before the fresh motor's first tick keeps the kept one, the motor's capacity with it
+                    float c = n.calculateCapacity();
+                    n.calculateStress();
+                    record(t, "B FULL, not ticking: capacity, sources", c + ", " + n.sources.size());
+                    check("the recount keeps the kept motor: " + c + " vs " + cap[0], c == cap[0] && n.sources.containsKey(oldMotor[0]));
+                    // as a network loaded from a save with parts still unloaded: the join must leave that share alone
+                    unloadedShare(n, new float[] {100f, 50f, 3f});
+                    level.getChunkSource().removeRegionTicket(FULL_ONLY, b, 0, b);
                     level.setChunkForced(bx, az, true);
                 })
                 .thenWaitUntil(io(() -> {
@@ -555,6 +577,12 @@ public final class SectionsChunkLoadGameTests {
                     // no recount here: the kept motor left the network as the fresh one joined
                     KineticNetwork n = net.get();
                     oldMotor[1] = kinetic(level, motor);
+                    float[] u = unloadedShare(n, new float[] {0f, 0f, 0f});
+                    record(t, "the unloaded share after the join (set 100, 50, 3)", u[0] + ", " + u[1] + ", " + u[2]);
+                    check("the join leaves the unloaded share: " + u[0] + ", " + u[1] + ", " + u[2], u[0] == 100f && u[1] == 50f && u[2] == 3f);
+                    float have = field(oldMotor[1], KineticBlockEntity.class, "stress"), want = field(n, KineticNetwork.class, "currentStress");
+                    record(t, "the fresh motor's stress, the network's (and at the unload)", have + ", " + want + " (" + stress[0] + ")");
+                    check("the fresh motor takes the network's current stress: " + have + " vs " + want, have == want);
                     record(t, "B loaded again: sources, members, distinct positions", n.sources.size() + ", " + n.members.size() + ", " + positions(n));
                     check("one source again: " + n.sources.size(), n.sources.size() == 1 && !n.sources.containsKey(oldMotor[0]));
                     check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
@@ -589,6 +617,39 @@ public final class SectionsChunkLoadGameTests {
                     force(level, ax, bx, az, false);
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * A network's unloaded capacity, stress and member count (private in Create), set to {@code set}; the
+     * values before.
+     */
+    private static float[] unloadedShare(KineticNetwork n, float[] set) {
+        float[] was = {field(n, KineticNetwork.class, "unloadedCapacity"), field(n, KineticNetwork.class, "unloadedStress"), 0};
+        try {
+            var m = KineticNetwork.class.getDeclaredField("unloadedMembers");
+            m.setAccessible(true);
+            was[2] = m.getInt(n);
+            m.setInt(n, (int) set[2]);
+            for (String f : List.of("unloadedCapacity", "unloadedStress")) {
+                var x = KineticNetwork.class.getDeclaredField(f);
+                x.setAccessible(true);
+                x.setFloat(n, f.equals("unloadedCapacity") ? set[0] : set[1]);
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new net.minecraft.gametest.framework.GameTestAssertException("Create moved a network field: " + e);
+        }
+        return was;
+    }
+
+    /** A private float field of Create's (the test only). */
+    private static float field(Object o, Class<?> c, String name) {
+        try {
+            var f = c.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.getFloat(o);
+        } catch (ReflectiveOperationException e) {
+            throw new net.minecraft.gametest.framework.GameTestAssertException("Create moved " + name + ": " + e);
+        }
     }
 
     /** The distinct positions a network lists. */
@@ -664,6 +725,14 @@ public final class SectionsChunkLoadGameTests {
                     int bx = f.bx;
                     n.members.keySet().removeIf(m -> m.getBlockPos().getX() >> 4 == bx);
                     n.sources.keySet().removeIf(m -> m.getBlockPos().getX() >> 4 == bx);
+                    // and the mixin's record of who joined where (PATCHES.md row 57), as a restart's new network has none
+                    try {
+                        var byPos = KineticNetwork.class.getDeclaredField("mic_rtsim$byPos");
+                        byPos.setAccessible(true);
+                        byPos.set(n, null);
+                    } catch (ReflectiveOperationException e) {
+                        throw new net.minecraft.gametest.framework.GameTestAssertException("no per-position record: " + e);
+                    }
                     record(t, "as after a restart: sources, members, size", n.sources.size() + ", " + n.members.size() + ", " + n.getSize());
                     check("nothing of B is listed", n.sources.isEmpty() && n.getSize() == n.members.size());
                     GlassKit.Graph g = GlassKit.latest(f.da());

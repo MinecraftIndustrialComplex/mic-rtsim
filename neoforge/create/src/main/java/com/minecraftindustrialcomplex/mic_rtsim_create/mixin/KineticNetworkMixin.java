@@ -32,17 +32,23 @@ import java.util.Map;
  * <ul>
  *   <li>The recount's lookup of a block entity whose chunk is not loaded answers the listed block entity
  *       itself: it stays, as Create last saw it, so the loaded part keeps an away source's last capacity
- *       and an away member's last stress. Where the chunk is loaded the test is Create's own.</li>
+ *       and an away member's last stress. So does the lookup that finds, in its place, a new object of the
+ *       same network that has not joined yet (its chunk loaded and is FULL, but has not ticked: a block
+ *       entity joins at its first tick); it leaves when that one joins. Otherwise the test is Create's own.</li>
  *   <li>When a block entity joins ({@code add}, or {@code addSilently} at its chunk's load), another one
- *       listed at its position (the object kept for it while its chunk was away) leaves the network: one
- *       object per position, so a part that unloads, loads and unloads again is counted once, not once per
- *       visit. At {@code addSilently} the new one takes the kept one's place without being counted out of
- *       the network's unloaded share again: the first load already did that.</li>
+ *       that joined at its position before (the object kept for it while its chunk was away) leaves the
+ *       network: one object per position, so a part that unloads, loads and unloads again is counted once,
+ *       not once per visit. At {@code addSilently} the new one takes the kept one's place without being
+ *       counted out of the network's unloaded share again (the first join at that position already did
+ *       that, even when a recount has dropped the kept one since), and takes the network's current
+ *       capacity and stress: it loaded what its chunk saved at the unload, which misses every change the
+ *       network made while it was away.</li>
  *   <li>{@code sync} skips a listed block entity whose chunk is not loaded: on an overstress change
  *       {@code onSpeedChanged} runs, which on some block entities reads the blocks around it (a gantry
  *       shaft), and so loaded the chunk. The skipped one is marked ({@link KineticSyncPending}) and gets
  *       the update when its chunk is FULL again ({@code StaleKinetics.chunkFull}); one whose chunk unloaded
- *       is never saved again (its chunk saved it at the unload), and its new object loads as Create saved it.</li>
+ *       is never saved again (its chunk saved it at the unload), and its new object gets the update as it
+ *       joins (above).</li>
  *   <li>{@code remove}, which marks one member to recount the network at its next tick
  *       ({@code networkDirty}), also marks the first member whose chunk ticks: a member that does not tick
  *       would never recount it, and with the kept block entities such members stay listed.</li>
@@ -56,6 +62,8 @@ public abstract class KineticNetworkMixin {
     public Map<KineticBlockEntity, Float> sources;
     @Shadow
     public Map<KineticBlockEntity, Float> members;
+    @Shadow
+    public Long id;
 
     /** The block entity that last joined at each position (runtime only). */
     @Unique
@@ -65,9 +73,15 @@ public abstract class KineticNetworkMixin {
             target = "Lnet/minecraft/world/level/Level;getBlockEntity(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/entity/BlockEntity;"),
             require = 2)
     private BlockEntity mic_rtsim$keepUnloaded(Level level, BlockPos pos, Operation<BlockEntity> original, @Local KineticBlockEntity be) {
-        if (level instanceof ServerLevel && !Loaded.at(level, pos))
+        if (!(level instanceof ServerLevel))
+            return original.call(level, pos);
+        if (!Loaded.at(level, pos))
             return be;
-        return original.call(level, pos);
+        BlockEntity found = original.call(level, pos);
+        if (found != be && found instanceof KineticBlockEntity o && !members.containsKey(o) && id != null
+                && id.equals(o.network))
+            return be;
+        return found;
     }
 
     @Inject(method = "add", at = @At("HEAD"))
@@ -89,10 +103,14 @@ public abstract class KineticNetworkMixin {
         if (be.isSource())
             sources.put(be, be.calculateAddedStressCapacity());
         members.put(be, be.calculateStressApplied());
+        ((KineticNetworkInvoker) (Object) this).mic_rtsim$updateFromNetwork(be);
         ci.cancel();
     }
 
-    /** Records {@code be} at its position; the other block entity listed there (kept for it), or null. */
+    /**
+     * Records {@code be} at its position; the other block entity that joined there before (kept for it while
+     * its chunk was away, listed still or dropped by a recount since), or null.
+     */
     @Unique
     private KineticBlockEntity mic_rtsim$join(KineticBlockEntity be) {
         if (!(be.getLevel() instanceof ServerLevel) || members.containsKey(be))
@@ -100,7 +118,7 @@ public abstract class KineticNetworkMixin {
         if (mic_rtsim$byPos == null)
             mic_rtsim$byPos = new Long2ObjectOpenHashMap<>();
         KineticBlockEntity kept = mic_rtsim$byPos.put(be.getBlockPos().asLong(), be);
-        return kept != null && kept != be && members.containsKey(kept) ? kept : null;
+        return kept != null && kept != be ? kept : null;
     }
 
     @WrapOperation(method = "sync", at = @At(value = "INVOKE",
