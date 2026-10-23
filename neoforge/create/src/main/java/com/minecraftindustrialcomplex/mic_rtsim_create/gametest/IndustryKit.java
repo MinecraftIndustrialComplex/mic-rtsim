@@ -85,6 +85,27 @@ public final class IndustryKit {
         return i;
     }
 
+    /**
+     * A wait on the engine, which takes the journal's records on its own thread: the GameTest server ticks as fast as
+     * it can, so on a busy machine (a glass replay's step still running, other jobs) a timeout in ticks passes before
+     * the engine has taken a record Java handed over. While the check fails, the tick waits 5 ms, so a timeout of
+     * 4,000 ticks is at least 20 seconds of the engine's time.
+     */
+    public static Runnable paced(Runnable check) {
+        return () -> {
+            try {
+                check.run();
+            } catch (RuntimeException e) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                throw e;
+            }
+        };
+    }
+
     public static void check(String what, boolean ok) {
         if (!ok)
             throw new GameTestAssertException(what);
