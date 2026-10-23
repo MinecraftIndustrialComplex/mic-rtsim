@@ -519,7 +519,7 @@ only). The ports agent records 16 to 20.
 ## 10. Cost (D1)
 
 Nothing runs until a player talks. A talk is one 64-byte ask, a board scan of at most 256 reports and
-a sort, and an answer of at most 432 bytes; the Java side is a few map lookups and one chat message.
+a sort, and an answer of at most 528 bytes (48 + 4 × 120); the Java side is a few map lookups and one chat message.
 Per player, at most one line each 10 ticks. The variant counts are read once at start. No tick
 handler, no saved state except the villager's day cap and the ribbit credit.
 
