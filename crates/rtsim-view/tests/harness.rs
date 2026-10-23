@@ -294,6 +294,8 @@ fn every_module_world(world: &Path) {
         dimension: dim,
         structure,
         pos: (CAMP_AT.0, 64, CAMP_AT.1),
+        home_bodies: 0,
+        census: 0,
     }));
     j.idle();
     j.conflict_obs(&CO::Signal(cb::TerritorySignal {
