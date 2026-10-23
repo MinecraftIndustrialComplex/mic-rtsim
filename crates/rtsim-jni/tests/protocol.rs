@@ -3040,10 +3040,14 @@ mod herds {
 mod conflict {
     use super::*;
     use rtsim_conflict::boundary::{self as cb, Cmd as C, Obs as O};
+    use rtsim_conflict::culture::PartyKind;
+    use rtsim_conflict::engine::{Party, Phase, Target};
     use rtsim_conflict::{Step, synth};
     use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT};
     use rtsim_kernel::clock::TICKS_PER_DAY;
+    use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
+    use rtsim_settle::Pos;
 
     /// The core's four phase 1 modules and CONFLICT (bit 5).
     const MODULES: u32 = 0b1111 | MODULE_CONFLICT;
@@ -3111,6 +3115,8 @@ mod conflict {
             dimension: dim,
             structure,
             pos: (at.0, 64, at.1),
+            home_bodies: 0,
+            census: 0,
         }));
     }
 
@@ -3651,6 +3657,630 @@ mod conflict {
             }])
             .is_err()
         );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The Mowzie commands (MOWZIE.md §2) through CONFLICT_COMMAND: BAND_MARCH's dimension,
+    /// culture (dictionary kind 5) and unit bodies, CAMP_RECONCILE's line bodies and AMBUSH_SPOT's
+    /// dimension go out in the engine's dictionary, the rest as given.
+    #[test]
+    fn the_mowzie_commands_go_out_in_the_engines_dictionary() {
+        let dir = tmpdir("conflict-order-mowzie");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.idle();
+        let (warrior, culture) = (41, 7);
+        let agent = 0x43 << 56 | 0xD0D;
+        let march = C::March(cb::BandMarch {
+            agent,
+            revision: 2,
+            dimension: dim,
+            faction: CAMP,
+            culture,
+            kind: 3,
+            phase: cb::MARCH_OUT,
+            flags: cb::MARCH_CHIEF,
+            partner: 0,
+            muster_end: 5_000,
+            units: vec![(warrior, 6)],
+            waypoints: vec![(10, 20, 6_000), (300, -40, 9_000)],
+        });
+        let reconcile = C::Reconcile(cb::CampReconcile {
+            faction: CAMP,
+            epoch: (1 << 63) | 9,
+            op: 0x43 << 56 | 0x55,
+            flags: 0,
+            throne: (0.0, 0.0, 0.0),
+            direction: 0.0,
+            lines: vec![
+                cb::ReconcileLine {
+                    slot: 1,
+                    generation: 1,
+                    body: warrior,
+                    action: cb::ACTION_SPAWN,
+                    flags: 0,
+                    a: 0,
+                    b: 0,
+                },
+                cb::ReconcileLine {
+                    slot: 0,
+                    generation: 0,
+                    body: 0,
+                    action: cb::ACTION_REMOVE,
+                    flags: 0,
+                    a: 0x1234,
+                    b: 0x5678,
+                },
+            ],
+        });
+        let spot = C::AmbushSpot(cb::AmbushSpot {
+            agent,
+            epoch: 1,
+            flags: 0,
+            dimension: dim,
+            faction: CAMP,
+            track: (1.0, 64.0, 2.0),
+            spot: (5.0, 64.0, 6.0),
+            reach: 8.0,
+        });
+        let names = vec![
+            (
+                wire::DICT_BODY,
+                warrior,
+                "mic_rtsim:conflict/goblin/warrior".to_string(),
+            ),
+            (
+                wire::DICT_CULTURE,
+                culture,
+                "mic_rtsim:conflict/goblin".to_string(),
+            ),
+        ];
+        for cmd in [&march, &reconcile, &spot] {
+            let mut record = Vec::new();
+            cb::encode_cmd(0, cmd, &mut record);
+            e.order(vec![Order::ConflictCommand {
+                names: names.clone(),
+                record,
+            }])
+            .unwrap();
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::March(m) => Some(m.clone()),
+                _ => None,
+            })
+            .expect("the ordered BAND_MARCH");
+        assert_eq!(
+            java_name(&j, wire::DICT_CULTURE, got.culture).as_deref(),
+            Some("mic_rtsim:conflict/goblin")
+        );
+        assert_eq!(
+            java_name(&j, wire::DICT_BODY, got.units[0].0).as_deref(),
+            Some("mic_rtsim:conflict/goblin/warrior")
+        );
+        assert_eq!(got.dimension, dim);
+        assert_eq!(
+            (got.muster_end, got.waypoints.clone(), got.partner),
+            (5_000, vec![(10, 20, 6_000), (300, -40, 9_000)], 0),
+            "a test's order is in game time already"
+        );
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::Reconcile(r) => Some(r.clone()),
+                _ => None,
+            })
+            .expect("the ordered CAMP_RECONCILE");
+        assert_eq!(
+            java_name(&j, wire::DICT_BODY, got.lines[0].body).as_deref(),
+            Some("mic_rtsim:conflict/goblin/warrior")
+        );
+        assert_eq!(
+            (got.lines[1].body, got.lines[1].a, got.lines[1].b),
+            (0, 0x1234, 0x5678),
+            "a line with no body keeps 0"
+        );
+        let got = cmds(&j)
+            .find_map(|c| match c {
+                C::AmbushSpot(a) => Some(*a),
+                _ => None,
+            })
+            .expect("the ordered AMBUSH_SPOT");
+        assert_eq!((got.dimension, got.reach), (dim, 8.0));
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.commands_written, 3);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A conflict session with the camp founded, its territory back, the fake plugin answering
+    /// as `PLAYER` and the player standing in the territory.
+    fn camp(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        let dir = tmpdir(name);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+        j.players = vec![(PLAYER, dim, base)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        let _ = e.conflict_log(true);
+        j.idle();
+        found(&mut j, CAMP_AT);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (dir, e, j)
+    }
+
+    /// DIFFICULTY, journaled at the present game time (MZB-17).
+    fn difficulty(j: &mut Java, difficulty: u32) {
+        let seq = j.conflict_obs(&O::Difficulty(cb::Difficulty { difficulty }));
+        assert!(seq > 0, "journaled");
+        j.idle();
+    }
+
+    /// War bands, as BAND_MATERIALIZE puts them on the arc around the players.
+    fn war_bands(j: &Java) -> usize {
+        cmds(j)
+            .filter(|c| matches!(c, C::Materialize(m) if m.flags & cb::BAND_HOSTILE != 0))
+            .count()
+    }
+
+    /// MOWZIE.md §4.12 (ledger 14): DIFFICULTY is journaled (MZB-17), applied at its game time
+    /// as `Conflict::ingest` applies it; an unchanged value changes nothing. On Peaceful no war
+    /// party leaves however far the grievance climbs, though the notice, the envoy and the scouts
+    /// still come; back on Normal the climb resumes and a raid follows. A DIFFICULTY sent while
+    /// the module is off is ignored, as every journaled record is (U10).
+    #[test]
+    fn on_peaceful_no_war_party_leaves_and_on_normal_the_raid_follows() {
+        let (_dir, e, mut j) = camp("conflict-peaceful");
+        j.conflict_plugin.answer = synth::Answer::Refuse;
+        j.game_time += 5000;
+        let gt = j.game_time;
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert!(
+            e.with_conflict(|c, _| c.peaceful),
+            "the engine is on Peaceful"
+        );
+        let since = e.with_conflict(|c, _| c.peaceful_since);
+        assert_eq!(
+            since,
+            rtsim_kernel::clock::Tick(gt as u64),
+            "applied at its game time"
+        );
+        // Again, unchanged, later: nothing changes, the span still starts at the first.
+        j.game_time += 500;
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert_eq!(e.with_conflict(|c, _| c.peaceful_since), since);
+        signal(&mut j, 4, 60, PLAYER);
+        j.idle();
+        let f = feud(&e, PLAYER).expect("a feud with the killer");
+        assert!(f.grievance > 400.0, "far past the raid's rung: {f:?}");
+        advance_until(&mut j, 1_000, 3 * DAY, "the demand refused", |j| {
+            cmds(j).any(|c| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_REFUSED))
+        });
+        let start = j.game_time;
+        advance_until(&mut j, 1_000, 9 * DAY, "eight days of Peaceful", |j| {
+            j.game_time >= start + 8 * DAY
+        });
+        let (st, link) = e.conflict_stats();
+        let war: u64 = [PartyKind::Raid, PartyKind::Invasion, PartyKind::Siege]
+            .iter()
+            .map(|k| st.parties[k.index()])
+            .sum();
+        assert_eq!(war, 0, "no war party on Peaceful: {st:?}");
+        assert_eq!(war_bands(&j), 0, "no war band in view");
+        assert!(
+            st.parties[PartyKind::Envoy.index()] >= 1,
+            "the envoy still came: {st:?}"
+        );
+        let f = feud(&e, PLAYER).unwrap();
+        assert!(
+            !f.step.is_war(),
+            "the feud holds below the war rungs: {f:?}"
+        );
+        assert_eq!(link.ignored, 0, "{link:?}");
+
+        // Normal: the climb resumes and a raid comes to the base.
+        difficulty(&mut j, cb::DIFFICULTY_NORMAL);
+        assert!(!e.with_conflict(|c, _| c.peaceful));
+        advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
+            war_bands(j) > 0
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // With the module off, DIFFICULTY is ignored like every journaled record (U10): the
+        // plugin sends it again at the next session start. Switched on, the next one applies.
+        let dir = tmpdir("conflict-peaceful-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = 0b1111;
+        j.idle();
+        let (_, before) = e.conflict_stats();
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.ignored, before.ignored + 1, "ignored while off");
+        assert!(!e.with_conflict(|c, _| c.peaceful), "not applied while off");
+        j.modules(MODULES);
+        j.idle();
+        assert!(!e.with_conflict(|c, _| c.peaceful), "nor when switched on");
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert!(e.with_conflict(|c, _| c.peaceful), "the next one applies");
+        // The retired latest-wins id is read as nothing.
+        let mut b = vec![0u8; 16];
+        b[0..2].copy_from_slice(&0x0093u16.to_le_bytes());
+        b[2..4].copy_from_slice(&16u16.to_le_bytes());
+        assert!(cb::decode_obs(&b).is_err(), "0x0093 is retired");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MOWZIE.md §4.12 (ledger 14): a notice nobody played (no NOTICE_SHOWN) is kept in the feud's
+    /// row and sent again after its faction's TERRITORY at each session start, a crash's
+    /// included; NOTICE_SHOWN for it (journaled) ends that, and the next session sends none.
+    #[test]
+    fn an_unplayed_notice_is_resent_at_each_session_start_until_shown() {
+        let (dir, e, mut j) = camp("conflict-notice");
+        j.conflict_plugin.play_notices = false;
+        signal(&mut j, 2, 300, PLAYER);
+        j.idle();
+        let notice = cmds(&j)
+            .find_map(|c| match c {
+                C::Notice(n) => Some(*n),
+                _ => None,
+            })
+            .expect("FACTION_NOTICE");
+        assert_eq!((notice.faction, notice.player), (CAMP, PLAYER));
+        j.game_time += 100;
+        j.conflict_flush();
+        j.idle();
+        assert_eq!(e.with_conflict(|c, _| c.kept_notices()), vec![notice]);
+        save(&e, &mut j);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // The crash restart: the territory, then the kept notice.
+        let restart = |saved: WorldSave, gt: i64| {
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            j.conflict_plugin.play_notices = false;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            (e, j)
+        };
+        let (e, mut j) = restart(saved, gt);
+        let order: Vec<&str> = cmds(&j)
+            .filter(|c| matches!(c, C::Territory(_) | C::Notice(_)))
+            .map(|c| c.name())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["TERRITORY", "FACTION_NOTICE"],
+            "the territory, then the kept notice"
+        );
+        let again = cmds(&j)
+            .find_map(|c| match c {
+                C::Notice(n) => Some(*n),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(again, notice, "the same notice");
+
+        // A NOTICE_SHOWN for another serial or a stranger changes nothing; the right one ends it.
+        j.conflict_obs(&O::NoticeShown(cb::NoticeShown {
+            faction: CAMP,
+            serial: notice.serial + 1,
+            player: PLAYER,
+        }));
+        j.conflict_obs(&O::NoticeShown(cb::NoticeShown {
+            faction: CAMP,
+            serial: notice.serial,
+            player: PLAYER2,
+        }));
+        j.idle();
+        assert_eq!(e.with_conflict(|c, _| c.kept_notices().len()), 1);
+        j.conflict_obs(&O::NoticeShown(cb::NoticeShown {
+            faction: CAMP,
+            serial: notice.serial,
+            player: PLAYER,
+        }));
+        j.idle();
+        assert!(e.with_conflict(|c, _| c.kept_notices().is_empty()));
+        assert_eq!(e.with_conflict(|c, _| c.stats.notices_shown), 1);
+
+        // A crash before the pages hold the NOTICE_SHOWN (MZB-31): the pages still keep the
+        // notice, the journal's replay ends it, and only then are kept notices sent, so none is.
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, mut j) = restart(saved, gt);
+        assert!(cmds(&j).any(|c| matches!(c, C::Territory(t) if t.faction == CAMP)));
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Notice(_))),
+            "a notice shown before the crash is not sent after the replay"
+        );
+        assert!(e.with_conflict(|c, _| c.kept_notices().is_empty()));
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.notices_shown),
+            1,
+            "the replay ended it, once"
+        );
+        save(&e, &mut j);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // The next session: the territory, no notice.
+        let (e, j) = restart(saved, gt);
+        assert!(cmds(&j).any(|c| matches!(c, C::Territory(t) if t.faction == CAMP)));
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Notice(_))),
+            "a shown notice is not sent again"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the camp's, the rail's,
+    /// the chief's) is decoded, counted as deferred and dropped; one with an op id spends it, so
+    /// the same record again is not counted twice.
+    #[test]
+    fn later_slices_records_are_counted_and_dropped() {
+        let (_dir, e, mut j) = camp("conflict-deferred");
+        let casualties = e.with_conflict(|c, _| c.stats.casualties);
+        let death = O::CampDeath(cb::CampDeath {
+            faction: CAMP,
+            by: cb::BY_PLAYER,
+            body: 0,
+            flags: 0,
+            slot: 3,
+            generation: 1,
+            killer: PLAYER,
+            op: (1 << 63) | 0xDEAD,
+        });
+        j.conflict_obs(&death);
+        j.conflict_obs(&death);
+        j.conflict_obs(&O::CampOut(cb::CampOut {
+            faction: CAMP,
+            epoch: 7,
+        }));
+        j.conflict_obs(&O::ChiefState(cb::ChiefState {
+            faction: CAMP,
+            flags: 1,
+            health: 120.0,
+        }));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (_, link) = e.conflict_stats();
+        assert_eq!((link.deferred, link.ignored), (3, 0), "{link:?}");
+        assert!(
+            e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
+            "the engine spent the op id, as Conflict::ingest does (MZB-23)"
+        );
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            casualties,
+            "nothing reached the conflict"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Runs the camp's feud with `PLAYER` to its envoy, embodied in view.
+    fn envoy_in_view(j: &mut Java) -> cb::EnvoyMaterialize {
+        signal(j, 2, 300, PLAYER);
+        advance_until(j, 600, 2 * DAY, "an envoy in view", |j| {
+            cmds(j).any(|c| matches!(c, C::Envoy(_)))
+        });
+        let envoy = cmds(j)
+            .find_map(|c| match c {
+                C::Envoy(x) => Some(x.clone()),
+                _ => None,
+            })
+            .unwrap();
+        j.game_time += 20;
+        j.conflict_flush();
+        j.idle();
+        envoy
+    }
+
+    fn wipe(j: &mut Java, envoy: &cb::EnvoyMaterialize, by: u32, killer: (u64, u64)) {
+        for &(body, count) in &envoy.members {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: envoy.agent,
+                epoch: envoy.epoch,
+                by,
+                body,
+                count,
+                killer,
+            }));
+        }
+        j.idle();
+    }
+
+    /// MOWZIE.md ledger 14: an envoy wiped out by no player (a mob) withdraws its
+    /// demand: DEMAND_SETTLED outcome 5, the feud stays on Envoy with no climb. Killed by a
+    /// player, the demand stays open.
+    #[test]
+    fn an_envoy_wiped_out_by_a_mob_withdraws_its_demand() {
+        let (_dir, e, mut j) = camp("conflict-withdrawn");
+        let envoy = envoy_in_view(&mut j);
+        assert!(feud(&e, PLAYER).unwrap().demand.is_some());
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let settled: Vec<cb::DemandSettled> = cmds(&j)
+            .filter_map(|c| match c {
+                C::Settled(s) => Some(*s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(settled.len(), 1, "{settled:?}");
+        assert_eq!(
+            (settled[0].outcome, settled[0].faction, settled[0].player),
+            (cb::SETTLED_WITHDRAWN, CAMP, PLAYER)
+        );
+        let f = feud(&e, PLAYER).unwrap();
+        assert!(f.demand.is_none(), "withdrawn: {f:?}");
+        assert_eq!(f.step, Step::Envoy, "the feud stays on Envoy");
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Recall(r) if r.agent == envoy.agent)),
+            "nobody is left to recall (MZB-32)"
+        );
+        let (st, _) = e.conflict_stats();
+        assert_eq!((st.withdrawn, st.expired), (1, 0));
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        let (_dir, e, mut j) = camp("conflict-envoy-killed");
+        let envoy = envoy_in_view(&mut j);
+        wipe(&mut j, &envoy, cb::BY_PLAYER, PLAYER);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Settled(s) if s.outcome == cb::SETTLED_WITHDRAWN)),
+            "a player's killing withdraws nothing"
+        );
+        assert!(
+            feud(&e, PLAYER).unwrap().demand.is_some(),
+            "the demand stands"
+        );
+        assert_eq!(e.conflict_stats().0.withdrawn, 0);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Orders a war party of `kind` from the camp at `BASE` for `PLAYER`'s feud, now, the feud on
+    /// `step` (made first by a small signal).
+    fn order(e: &Engine, j: &mut Java, kind: PartyKind, step: Step) -> Handle<Party> {
+        signal(j, 2, 30, PLAYER);
+        j.idle();
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD) as u16;
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        let p = e.with_conflict_mut(|c, w| {
+            let a = c.player(w, PLAYER);
+            let at = at.max(c.now());
+            let target = Target::Pos(Pos::new(dim, BASE.0, BASE.1));
+            let p = c
+                .order_party(w, CAMP, kind, target, Some(a), at)
+                .expect("ordered");
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            c.feud_mut(f, a).expect("the feud").step = step;
+            p
+        });
+        j.idle();
+        p
+    }
+
+    /// Puts `PLAYER`'s feud on `step` now, still served by `p`, with a grievance over every
+    /// threshold so that no step falls by decay within the test (the small signal's would).
+    fn on_step(e: &Engine, p: Handle<Party>, step: Step) {
+        e.with_conflict_mut(|c, w| {
+            let a = c.player(w, PLAYER);
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let now = c.now();
+            let x = c.feud_mut(f, a).expect("the feud");
+            assert_eq!(x.party, Some(p), "the party serves the feud");
+            x.step = step;
+            x.g = rtsim_conflict::Grievance::new(now);
+            x.g.level[rtsim_conflict::SignalKind::Killing.index()] = 400.0;
+        });
+    }
+
+    fn party(e: &Engine, p: Handle<Party>) -> Option<(Phase, bool)> {
+        e.with_conflict(|c, _| c.parties.get(p).map(|x| (x.phase, x.embodied)))
+    }
+
+    fn recalls(j: &Java, from: usize, p: Handle<Party>) -> Vec<u32> {
+        j.conflict[from..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                C::Recall(r) if r.agent == Party::agent(p) => Some(r.reason),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// MZB-15 (review): Peaceful stops a raid already out on the road, embodied in view. It goes
+    /// home with RECALL_SETTLED, its feud a rung back, and no body of it spawns again.
+    #[test]
+    fn peaceful_turns_back_an_embodied_raid_on_the_road() {
+        let (_dir, e, mut j) = camp("conflict-peaceful-out");
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let from = j.conflict.len();
+        let held = e.conflict_stats().0.peace_held;
+        on_step(&e, p, Step::Raid);
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert_eq!(party(&e, p).map(|x| x.0), Some(Phase::Home), "turned back");
+        assert_eq!(recalls(&j, from, p), vec![cb::RECALL_SETTLED]);
+        assert_eq!(e.conflict_stats().0.peace_held, held + 1);
+        assert_eq!(
+            feud(&e, PLAYER).unwrap().step,
+            Step::Scouts,
+            "a rung below the raid it never made"
+        );
+        let from = j.conflict.len();
+        j.game_time += 20;
+        advance_until(&mut j, 600, 2 * DAY, "home", |j| party(&j.e, p).is_none());
+        assert!(
+            !j.conflict[from..]
+                .iter()
+                .any(|(_, c)| matches!(c, C::Materialize(m) if m.agent == Party::agent(p))),
+            "no body of it spawns on Peaceful"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-15 (review): Peaceful ends a watched fight with RECALL_SETTLED; the feud keeps its
+    /// step (the raid came).
+    #[test]
+    fn peaceful_ends_a_watched_fight() {
+        let (_dir, e, mut j) = camp("conflict-peaceful-fight");
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        let from = j.conflict.len();
+        let held = e.conflict_stats().0.peace_held;
+        on_step(&e, p, Step::Raid);
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert_eq!(
+            party(&e, p).map(|x| x.0),
+            Some(Phase::Home),
+            "the fight ended"
+        );
+        assert_eq!(recalls(&j, from, p), vec![cb::RECALL_SETTLED]);
+        assert_eq!(e.conflict_stats().0.peace_held, held + 1);
+        assert_eq!(feud(&e, PLAYER).unwrap().step, Step::Raid);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-15 (review): Peaceful sends home a siege waiting at a place nobody watches, with no
+    /// recall (nothing of it is in Minecraft); the feud keeps its step.
+    #[test]
+    fn peaceful_sends_home_a_waiting_siege() {
+        let (_dir, e, mut j) = camp("conflict-peaceful-siege");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(PLAYER, dim, [20_000.5, 64.0, 20_000.5])];
+        j.idle();
+        let p = order(&e, &mut j, PartyKind::Siege, Step::Siege);
+        advance_until(&mut j, 600, 4 * DAY, "the siege waiting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Waiting)
+        });
+        let from = j.conflict.len();
+        let held = e.conflict_stats().0.peace_held;
+        on_step(&e, p, Step::Siege);
+        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
+        assert_eq!(party(&e, p).map(|x| x.0), Some(Phase::Home), "sent home");
+        assert!(recalls(&j, from, p).is_empty(), "nothing to recall");
+        assert_eq!(e.conflict_stats().0.peace_held, held + 1);
+        assert_eq!(feud(&e, PLAYER).unwrap().step, Step::Siege);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 }
