@@ -1227,12 +1227,17 @@ fn pay_to(r: &mut Run, agent: u64, epoch: u32, count: i32, good: GoodId, op: u64
 
 /// ENVOY_ANSWER from the player at `e`.
 fn answer_to(r: &mut Run, e: &boundary::EnvoyMaterialize, answer: u32, at: Tick) {
+    answer_from(r, e.agent, e.epoch, answer, synth::PLAYER, at);
+}
+
+/// ENVOY_ANSWER from `player` at the party `agent`, `epoch`.
+fn answer_from(r: &mut Run, agent: u64, epoch: u32, answer: u32, player: boundary::Uuid, at: Tick) {
     r.ingest(
         Obs::EnvoyAnswer(boundary::EnvoyAnswer {
-            agent: e.agent,
-            epoch: e.epoch,
+            agent,
+            epoch,
             answer,
-            player: synth::PLAYER,
+            player,
         }),
         at,
     );
@@ -1358,6 +1363,34 @@ fn an_insult_answer_adds_the_insult_to_a_refusal() {
         insult > 1.9 * weight && insult <= 2.0 * weight + 1e-9,
         "the insult is envoy_insult_kills killings: {g_ref} to {g_att} (weight {weight})"
     );
+}
+
+/// MZB-144 (re-review P3-1): ENVOY_ANSWER is an envoy's. For a war band that has a feud (a stale or
+/// misrouted record) it used to book the insult and refuse the feud's demand.
+#[test]
+fn an_attacked_answer_for_a_war_band_does_nothing() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let (agent, epoch) = (Party::agent(band), r.c.parties[band].epoch);
+    assert_eq!(
+        r.c.parties[band].feud,
+        Some(r.p),
+        "it serves the player's feud"
+    );
+    let lambda = r.c.cultures.get(0).lambda;
+    let at = r.c.now() + 5;
+    let g = |r: &Run| r.c.feud(r.f, r.p).unwrap().g.total_at(at + 100, lambda);
+    let before = g(&r);
+    answer_from(
+        &mut r,
+        agent,
+        epoch,
+        boundary::ANSWER_ATTACKED,
+        synth::PLAYER,
+        at,
+    );
+    assert_eq!(g(&r), before, "no insult booked");
+    assert!(settled(&r).is_empty(), "nothing refused");
 }
 
 /// A raid band on the way, ordered at `Tick(20)` after two killings.

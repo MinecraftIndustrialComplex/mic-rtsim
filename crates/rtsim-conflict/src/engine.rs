@@ -4838,6 +4838,10 @@ impl Conflict {
                 let Some(p) = self.party_of(a.agent, a.epoch) else {
                     return;
                 };
+                // Only an envoy has a guard to strike or a demand to refuse (MZB-144).
+                if self.parties[p].kind != PartyKind::Envoy {
+                    return;
+                }
                 let f = self.parties[p].faction;
                 let Some(actor) = self.parties[p].feud else {
                     return;
