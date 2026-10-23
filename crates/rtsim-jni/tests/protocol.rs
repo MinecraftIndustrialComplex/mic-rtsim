@@ -2424,6 +2424,92 @@ mod ships {
         );
     }
 
+    /// A trade port's state through the native engine: whether the ships hold it closed, and
+    /// whether the world holds each of its lanes closed.
+    fn port_shut(e: &Engine, d: u32) -> (bool, Vec<bool>) {
+        e.with_ships(|s, w| {
+            let lanes = s
+                .dock_lanes(d)
+                .iter()
+                .map(|&l| w.lane_closed(s.lanes[l as usize].edge))
+                .collect();
+            (s.port_closed(d), lanes)
+        })
+    }
+
+    /// PC101 (C25, U10): switching the ships off lifts every port closure, so no lane of the
+    /// world stays closed by a module that is not running. A closed port (closed by hand, as its
+    /// check would close it) opens with its lanes at the switch-off, and closes again once the
+    /// ships are back on. A session that starts with the ships off lifts the closure its pages
+    /// hold and writes them once; switched on in the next session they read back clean, the port
+    /// open.
+    #[test]
+    fn switching_the_ships_off_lifts_their_port_closures() {
+        let dir = tmpdir("ships-lift");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        let d = e
+            .with_ships(|s, w| (0..s.docks.len() as u32).find(|&d| s.is_trade_port(w, d)))
+            .expect("a trade port");
+        let n = e.with_ships(|s, _| s.dock_lanes(d).len());
+        assert!(n > 0, "the port has lanes");
+        let (shut, open) = ((true, vec![true; n]), (false, vec![false; n]));
+        assert_eq!(port_shut(&e, d), open);
+        assert!(e.with_ships_mut(|s, w| s.close_port(w, d)));
+        assert_eq!(port_shut(&e, d), shut);
+        j.idle();
+        assert_eq!(port_shut(&e, d), shut, "closed while the ships run");
+
+        // Switched off: the port and its lanes open.
+        j.modules(0b1111);
+        j.idle();
+        assert_eq!(port_shut(&e, d), open, "lifted at the switch-off");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert_eq!(e.with_ships(|s, _| s.stats.reopenings), 1);
+
+        // On again: it can close again; then the session ends with it closed.
+        j.modules(MODULES);
+        j.idle();
+        assert_eq!(port_shut(&e, d), open);
+        assert!(e.with_ships_mut(|s, w| s.close_port(w, d)));
+        j.idle();
+        assert_eq!(port_shut(&e, d), shut, "closed again");
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let closed_page = page(&dir).expect("a ships page");
+
+        // A session off from its start: the closure the pages hold is lifted, and written.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        j.idle();
+        assert_eq!(port_shut(&e, d), open, "lifted at the session's start");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert_eq!(
+            e.with_ships(|s, _| (s.stats.closures, s.stats.reopenings)),
+            (2, 2)
+        );
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_ne!(page(&dir), Some(closed_page), "the lift is written");
+
+        // On in the next session: the pages read back clean, the port open in the ships and in
+        // the world.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.idle();
+        assert_eq!(e.ships_restore_check(), (None, false));
+        assert_eq!(port_shut(&e, d), open, "open after the restore");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// One interest area per player across the modules (U2): with a dragon at rest by the lane
     /// and the ships sailing it, the player reported every 20 ticks has one leg in the shared
     /// index, and both the dragon and a ship enter the player's view through it.
