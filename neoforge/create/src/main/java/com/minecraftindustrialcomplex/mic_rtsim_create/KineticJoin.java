@@ -18,8 +18,8 @@ public interface KineticJoin {
      * not yet) lists it through {@code addSilently}, which counts it out of the unloaded share (Create's
      * {@code addSilently} returns early for a member). During a {@code sync} of that network both wait for
      * the sync to end ({@code KineticNetworkMixin}), and it becomes a member then unless it left (removed,
-     * cleared, moved to another network) first. Nothing once {@code initialize} has run or this has, or on a
-     * client.
+     * cleared, moved to another network) first. Nothing once {@code initialize} has run or this has, or off a
+     * server level (a client, a ponder scene).
      */
     void mic_rtsim$join();
 }
