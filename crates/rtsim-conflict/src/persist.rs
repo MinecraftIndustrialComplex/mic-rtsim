@@ -55,8 +55,9 @@ use crate::tunables::ConflictTunables;
 
 /// The blob ([`Conflict::save`]). RTC2: rows by `PagedRows::encode_all` (RTC1 held a vector of
 /// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
-/// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag follows
-/// presence, and a feud carries its kept notice (MOWZIE.md ledger 14).
+/// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag and its
+/// start and the last notice's serial follow presence, and a feud carries its kept notice and its
+/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22).
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC4");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -410,6 +411,7 @@ fn put_feud(w: &mut Writer, x: &Feud) {
         boundary::encode_cmd(0, &Cmd::Notice(**n), &mut b);
         w.bytes(&b);
     });
+    w.u8(u8::from(x.envoy_again));
 }
 
 fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
@@ -434,6 +436,7 @@ fn get_feud(r: &mut Reader<'_>) -> codec::Result<Feud> {
             Ok((_, Cmd::Notice(n), _)) => Ok(Box::new(n)),
             _ => bad("a kept notice that is not FACTION_NOTICE".into()),
         })?,
+        envoy_again: r.u8()? != 0,
     })
 }
 
@@ -971,6 +974,8 @@ impl Conflict {
         }
         put_presence(w, &self.presence);
         w.u8(u8::from(self.peaceful));
+        w.u64(self.peaceful_since.0);
+        w.var_u64(u64::from(self.notice_serial));
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1022,6 +1027,8 @@ impl Conflict {
         }
         get_presence(r, &mut c.presence)?;
         c.peaceful = r.u8()? != 0;
+        c.peaceful_since = Tick(r.u64()?);
+        c.notice_serial = get_u32(r)?;
         Ok(c)
     }
 

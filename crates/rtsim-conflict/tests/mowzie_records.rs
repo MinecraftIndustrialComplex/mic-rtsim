@@ -221,8 +221,8 @@ fn a_war_party_mustering_when_peaceful_begins_stands_down() {
 }
 
 /// MOWZIE.md §4.12: a notice is never lost. Unplayed, it is kept with its feud and sent again at
-/// every session start, a restart included; NOTICE_SHOWN for another step changes nothing, for
-/// its own step it ends the resending.
+/// every session start (after the replay, `resend_notices`), a restart included; NOTICE_SHOWN for
+/// another serial changes nothing, for its own it ends the resending.
 #[test]
 fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     let mut r = Run::new(34, quiet_goblins());
@@ -238,6 +238,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     // A session start sends it again, after the faction's territory.
     let mark = r.cmds.len();
     r.c.session_start();
+    r.c.resend_notices();
     r.flush(r.c.now());
     assert_eq!(r.notices_since(mark), vec![n]);
     let territory = r.cmds[mark..]
@@ -254,24 +255,27 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     assert_eq!(r.c.kept_notices(), vec![n]);
     let mark = r.cmds.len();
     r.c.session_start();
+    assert!(r.notices_since(mark).is_empty(), "not before the replay");
+    r.c.resend_notices();
     r.flush(r.c.now());
     assert_eq!(r.notices_since(mark), vec![n], "again after the restart");
-    // Shown for another step: kept.
+    assert_eq!(n.serial, 1, "the feud's first notice");
+    // Shown for another serial: kept.
     let at = r.c.now() + 5;
-    let shown = |step| {
+    let shown = |serial| {
         Obs::NoticeShown(boundary::NoticeShown {
             faction: synth::CAMP,
-            step,
+            serial,
             player: synth::PLAYER,
         })
     };
-    r.ingest(shown(Step::Envoy as u32), at);
+    r.ingest(shown(2), at);
     assert_eq!(r.c.kept_notices(), vec![n]);
     // A stranger's NOTICE_SHOWN, or one for a camp that is not there: nothing.
     r.ingest(
         Obs::NoticeShown(boundary::NoticeShown {
             faction: synth::CAMP,
-            step: n.step,
+            serial: n.serial,
             player: (7, 7),
         }),
         at,
@@ -279,18 +283,19 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     r.ingest(
         Obs::NoticeShown(boundary::NoticeShown {
             faction: 0xDEAD,
-            step: n.step,
+            serial: n.serial,
             player: synth::PLAYER,
         }),
         at,
     );
     assert_eq!(r.c.kept_notices(), vec![n]);
     // Shown: never again.
-    r.ingest(shown(n.step), at);
+    r.ingest(shown(n.serial), at);
     assert!(r.c.kept_notices().is_empty());
     assert_eq!(r.c.stats.notices_shown, 1);
     let mark = r.cmds.len();
     r.c.session_start();
+    r.c.resend_notices();
     r.flush(r.c.now());
     assert!(r.notices_since(mark).is_empty(), "not resent once shown");
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
@@ -379,32 +384,344 @@ fn an_envoy_wiped_out_by_no_player_withdraws_its_demand() {
         g1 > g0 * 0.99 && g1 <= g0,
         "no relief and no insult: {g0} to {g1}"
     );
-    // Past the old deadline: nothing came due, nothing climbed, no second demand.
+    // No recall: nobody is left in Minecraft (MZB-32).
+    assert!(
+        !r.cmds
+            .iter()
+            .any(|(_, c)| matches!(c, Cmd::Recall(x) if x.agent == e.agent)),
+        "nothing to recall"
+    );
+    // To the old deadline: nothing came due, nothing climbed, no second demand. At it a fresh
+    // envoy goes with a new demand (MZB-22).
     r.watch = false;
+    r.run(Tick(deadline.0 - 1));
+    assert_eq!(r.c.stats.demands, 1);
     r.run(deadline + TICKS_PER_DAY);
     assert_eq!(r.c.stats.expired, 0, "no refusal");
-    assert_eq!(r.c.stats.demands, 1);
+    assert_eq!(r.c.stats.demands, 2, "a fresh envoy at the old deadline");
     assert!(r.step() <= Step::Envoy, "no climb: {:?}", r.step());
     assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 0);
     assert_eq!(settled(&r), vec![boundary::SETTLED_WITHDRAWN]);
 }
 
-/// The same envoy struck down by the player: an insult, as before. The demand stays open, the
-/// killings add to the grievance, and the demand runs out unmet at its deadline.
+/// MZB-22 (review): a withdrawn demand never makes a faster war. The feud is far past the
+/// scouts' rung when its envoy falls to a mob; it holds on Envoy, climbing nowhere, until the
+/// old deadline, and then sends a fresh envoy with a new demand instead of climbing.
 #[test]
-fn an_envoy_a_player_kills_leaves_the_demand_to_run_out() {
+fn a_withdrawn_demand_past_the_scouts_rung_holds_to_its_deadline() {
     let mut r = Run::new(36, quiet_goblins());
     let e = envoy_met(&mut r);
-    let g0 = r.c.feud_view(synth::CAMP, r.p).unwrap().grievance;
     let deadline = r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline;
-    wipe(&mut r, &e, boundary::BY_PLAYER);
-    assert_eq!(r.c.stats.withdrawn, 0);
-    assert!(r.c.feud(r.f, r.p).unwrap().demand.is_some(), "still open");
-    assert!(settled(&r).is_empty());
-    let g1 = r.c.feud_view(synth::CAMP, r.p).unwrap().grievance;
-    assert!(g1 > g0 + 10.0, "the killings count: {g0} to {g1}");
+    let at = r.c.now() + 20;
+    r.kill(20.0, at);
+    let g = r.c.feud_view(synth::CAMP, r.p).unwrap().grievance;
+    assert!(g > 100.0, "far past the scouts' 50: {g}");
+    wipe(&mut r, &e, boundary::BY_MOB);
+    assert_eq!(r.c.stats.withdrawn, 1);
     r.watch = false;
-    r.run(deadline + TICKS_PER_DAY);
-    assert_eq!(r.c.stats.expired, 1, "unmet at its deadline");
-    assert_eq!(settled(&r), vec![boundary::SETTLED_EXPIRED]);
+    // The Envoy rung's dwell is half a day; the deadline is days off.
+    assert!(deadline > r.c.now() + TICKS_PER_DAY, "{deadline:?}");
+    r.run(Tick(deadline.0 - 1));
+    assert_eq!(r.step(), Step::Envoy, "held on Envoy");
+    assert_eq!(
+        r.c.stats.escalations[Step::Scouts.index()],
+        0,
+        "no climb before the old deadline"
+    );
+    assert_eq!(r.c.stats.demands, 1);
+    assert_eq!(r.c.stats.parties[PartyKind::Envoy.index()], 1);
+    r.run(deadline + 1);
+    assert_eq!(r.c.stats.demands, 2, "a fresh envoy with a new demand");
+    assert_eq!(r.c.stats.parties[PartyKind::Envoy.index()], 2);
+    assert_eq!(r.step(), Step::Envoy);
+    assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 0);
+    let fresh = r.c.feud(r.f, r.p).unwrap().demand.unwrap();
+    assert!(fresh.deadline > deadline, "{fresh:?}");
+    // A save keeps the hold's end (the hold itself ends with the fresh envoy).
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(back.state_hash(), r.c.state_hash());
+}
+
+/// The hold is saved: a restart between the withdrawal and the old deadline still holds, and
+/// still sends the fresh envoy at the deadline.
+#[test]
+fn a_withdrawn_demand_holds_across_a_restart() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let deadline = r.c.feud(r.f, r.p).unwrap().demand.unwrap().deadline;
+    let at = r.c.now() + 20;
+    r.kill(20.0, at);
+    wipe(&mut r, &e, boundary::BY_MOB);
+    r.watch = false;
+    r.run(r.c.now() + TICKS_PER_DAY);
+    r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert!(r.c.feud(r.f, r.p).unwrap().envoy_again, "the hold is saved");
+    r.run(deadline + 1);
+    assert_eq!(r.c.stats.demands, 2);
+    assert_eq!(r.c.stats.escalations[Step::Scouts.index()], 0);
+}
+
+fn shown(n: &boundary::Notice) -> Obs {
+    Obs::NoticeShown(boundary::NoticeShown {
+        faction: n.faction,
+        serial: n.serial,
+        player: n.player,
+    })
+}
+
+/// MZB-10 (review): NOTICE_SHOWN names its notice by serial, not by step. A feud's second notice
+/// (the feud calmed below Notice and climbed to it again) is not cleared by a late answer to its
+/// first, both on the Notice rung.
+#[test]
+fn a_late_answer_to_an_older_notice_leaves_the_newer_kept() {
+    let mut r = Run::new(37, quiet_goblins());
+    r.plugin.play_notices = false;
+    r.kill(2.0, Tick(10));
+    r.run(day(0.25));
+    let first = r.notices_since(0);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].serial, 1);
+    // Back to None (the notice stays kept), then a killing climbs to Notice again.
+    let mut d = 0.25;
+    while r.step() > Step::None {
+        d += 0.5;
+        assert!(d < 200.0, "never calmed");
+        r.run(day(d));
+    }
+    assert_eq!(r.c.kept_notices(), first, "kept while it calms");
+    let mark = r.cmds.len();
+    let at = r.c.now() + 10;
+    r.kill(2.0, at);
+    r.run(day(d + 0.25));
+    let second = r.notices_since(mark);
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert_eq!(second[0].step, first[0].step, "the same rung");
+    assert_eq!(second[0].serial, 2);
+    assert_eq!(
+        r.c.kept_notices(),
+        second,
+        "the later notice replaces the first"
+    );
+    // The plugin answers the first late: the second stays kept.
+    let at = r.c.now() + 5;
+    r.ingest(shown(&first[0]), at);
+    assert_eq!(r.c.kept_notices(), second);
+    assert_eq!(r.c.stats.notices_shown, 0);
+    r.ingest(shown(&second[0]), at);
+    assert!(r.c.kept_notices().is_empty());
+    assert_eq!(r.c.stats.notices_shown, 1);
+    // The count is saved: the next notice after a restart is the third.
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(back.notice_serial, 2);
+}
+
+/// MZB-10 (review): a notice to a player the engine knows only from the world's own records (a
+/// signal another module booked, never `Conflict::player`) is matched by its NOTICE_SHOWN too.
+#[test]
+fn a_notice_to_a_player_known_only_to_the_world_is_cleared_when_shown() {
+    let mut r = Run::new(38, quiet_goblins());
+    r.plugin.play_notices = false;
+    let stranger = (0x51, 0x52);
+    let a = r.w.player_uuid(stranger.0, stranger.1);
+    let sig = Signal {
+        faction: Some(synth::CAMP),
+        kind: SignalKind::Killing,
+        amount: 2.0,
+        actor: a,
+        pos: synth::REFINERY_POS,
+        district: Some(synth::REFINERY),
+    };
+    r.c.signal(&mut r.w, sig, Tick(10));
+    r.run(day(0.25));
+    let sent = r.notices_since(0);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].player, stranger, "named from the world's records");
+    assert_eq!(r.c.kept_notices(), sent);
+    let at = r.c.now() + 5;
+    r.ingest(shown(&sent[0]), at);
+    assert!(r.c.kept_notices().is_empty(), "matched on the kept notice");
+    assert_eq!(r.c.stats.notices_shown, 1);
+}
+
+/// MZB-16 (review): the end of Peaceful sets off no burst. Several players' feuds are held below
+/// the raid rung across eight days of Peaceful; once the world is Easy, each raids after its own
+/// dwell, paused over the Peaceful span, and a jitter of its own: no two on the same tick, and
+/// none before its dwell.
+#[test]
+fn feuds_held_over_peaceful_raid_one_by_one_after() {
+    let mut r = Run::new(39, quiet_goblins());
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(1));
+    let players: Vec<ActorId> = (0..5u64)
+        .map(|i| r.c.player(&mut r.w, (0x100 + i, 0x200 + i)))
+        .collect();
+    let killings = |r: &mut Run, at: Tick| {
+        for &p in &players {
+            let sig = Signal {
+                faction: Some(synth::CAMP),
+                kind: SignalKind::Killing,
+                amount: 20.0,
+                actor: p,
+                pos: synth::REFINERY_POS,
+                district: Some(synth::REFINERY),
+            };
+            r.c.signal(&mut r.w, sig, at);
+        }
+    };
+    let mut d = 0.0;
+    while d < 8.0 {
+        let at = r.c.now().max(day(d));
+        killings(&mut r, at);
+        d += 2.0;
+        r.run(day(d));
+    }
+    assert_eq!(r.war_parties(), 0, "none on Peaceful");
+    let scouts = r.c.cultures.get(0).dwell_ticks[Step::Scouts.index()];
+    let mut held = Vec::new();
+    for &p in &players {
+        let x = r.c.feud(r.f, p).unwrap();
+        assert_eq!(x.step, Step::Scouts, "held below the raid");
+        assert!(x.party.is_none() && x.demand.is_none());
+        held.push((p, x.since));
+    }
+    let easy = r.c.now();
+    r.ingest(difficulty(boundary::DIFFICULTY_EASY), easy);
+    assert!(!r.c.peaceful);
+    // To each raid, event by event, so each tick is exact.
+    let mut raided: Vec<(ActorId, Tick)> = Vec::new();
+    let end = easy + 3 * scouts + TICKS_PER_DAY;
+    while raided.len() < players.len() && r.c.now() < end {
+        let next = r.c.next_due().unwrap_or(end).min(end).max(r.c.now() + 1);
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, next);
+        r.flush(next);
+        for &p in &players {
+            let x = r.c.feud(r.f, p).unwrap();
+            if x.step == Step::Raid && !raided.iter().any(|e| e.0 == p) {
+                raided.push((p, r.c.now()));
+            }
+        }
+    }
+    assert_eq!(
+        raided.len(),
+        players.len(),
+        "every held feud raids: {raided:?}"
+    );
+    let mut ticks: Vec<Tick> = raided.iter().map(|e| e.1).collect();
+    ticks.sort();
+    ticks.dedup();
+    assert_eq!(ticks.len(), players.len(), "no two on one tick: {raided:?}");
+    for (p, at) in &raided {
+        let since = held.iter().find(|h| h.0 == *p).unwrap().1;
+        // Reached during Peaceful, so the whole dwell comes after it.
+        assert!(since > Tick(1));
+        assert!(
+            *at >= easy + scouts,
+            "{p:?} raided at {at:?}, before its dwell"
+        );
+        assert!(*at < easy + 2 * scouts + TICKS_PER_DAY, "{at:?}");
+    }
+}
+
+/// MZB-15 (review): Peaceful stops what is already out. A raid on its way goes home at once
+/// (RECALL_SETTLED if it was embodied), its feud a rung back; a watched fight ends; no war body
+/// spawns while it is Peaceful.
+#[test]
+fn entering_peaceful_turns_back_a_raid_already_out() {
+    let mut r = Run::new(40, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.c.feud_mut(r.f, r.p).unwrap().party = Some(band);
+    // Past its muster: out on the road.
+    let mut t = Tick(20);
+    while r.c.parties[band].phase != rtsim_conflict::engine::Phase::Out {
+        t += 600;
+        assert!(t < day(3.0), "never left");
+        r.run(t);
+    }
+    let at = r.c.now() + 1;
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), at);
+    assert_eq!(
+        r.c.parties[band].phase,
+        rtsim_conflict::engine::Phase::Home,
+        "turned back"
+    );
+    assert_eq!(
+        r.step(),
+        Step::Scouts,
+        "a rung below the raid it never made"
+    );
+    assert!(r.c.feud(r.f, r.p).unwrap().party.is_none());
+    assert_eq!(r.c.stats.peace_held, 1);
+    // The player watches its road home: nothing spawns.
+    r.watch = true;
+    let before = r.cmds.len();
+    r.run(r.c.now() + 2 * TICKS_PER_DAY);
+    assert!(
+        !r.cmds[before..]
+            .iter()
+            .any(|(_, c)| matches!(c, Cmd::Materialize(m) if m.agent == rtsim_conflict::engine::Party::agent(band))),
+        "no war body spawns on Peaceful"
+    );
+    assert_eq!(r.war_parties(), 1, "only the one ordered");
+}
+
+/// MZB-17 (review): DIFFICULTY is journaled; the engine applies it at its game time and an
+/// unchanged value changes nothing.
+#[test]
+fn an_unchanged_difficulty_changes_nothing() {
+    let mut r = Run::new(41, quiet_goblins());
+    r.c.log_enabled = true;
+    r.ingest(difficulty(boundary::DIFFICULTY_NORMAL), Tick(5));
+    assert!(!r.c.peaceful);
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(10));
+    assert!(r.c.peaceful);
+    assert_eq!(r.c.peaceful_since, Tick(10));
+    let h = r.c.state_hash();
+    let notes = r.c.log.len();
+    r.ingest(difficulty(boundary::DIFFICULTY_PEACEFUL), Tick(10));
+    assert_eq!(r.c.state_hash(), h);
+    assert_eq!(r.c.log.len(), notes);
+    assert_eq!(r.c.peaceful_since, Tick(10), "the span starts at the first");
+}
+
+/// MZB-23 (review): a record whose engine half comes later spends its op id, as rtsim-jni does.
+#[test]
+fn a_deferred_record_spends_its_op_id() {
+    let mut r = Run::new(42, quiet_goblins());
+    let op = 0xABCD;
+    assert!(Conflict::later(&Obs::CampDeath(boundary::CampDeath {
+        faction: synth::CAMP,
+        by: boundary::BY_MOB,
+        body: 1,
+        flags: 0,
+        slot: 0,
+        generation: 0,
+        killer: (0, 0),
+        op,
+    })));
+    r.ingest(
+        Obs::CampDeath(boundary::CampDeath {
+            faction: synth::CAMP,
+            by: boundary::BY_MOB,
+            body: 1,
+            flags: 0,
+            slot: 0,
+            generation: 0,
+            killer: (0, 0),
+            op,
+        }),
+        Tick(5),
+    );
+    assert!(r.c.op_applied(op), "spent");
+    let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert!(back.op_applied(op), "and saved");
 }

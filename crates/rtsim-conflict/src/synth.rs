@@ -507,7 +507,7 @@ impl FakeConflict {
                     at + 1,
                     Obs::NoticeShown(boundary::NoticeShown {
                         faction: n.faction,
-                        step: n.step,
+                        serial: n.serial,
                         player: n.player,
                     }),
                 );
