@@ -60,8 +60,10 @@ const DIST_PREFIX: u64 = 0x4449_5354;
 /// still not a caravan.
 const LAIR_PREFIX: u64 = LAIR_TAG >> 32;
 
-/// A severity under this is read as a rung, whatever the kind, when ranking news (TK33): the
-/// conflict records rungs on today's kinds too (a robbery of 2, a rescue of 2, a killing of 4).
+/// A severity under this is read as a rung, whatever the kind, when ranking news (TK33). Only a
+/// guard now: the conflict once recorded rungs on today's kinds (a robbery of 2, a rescue of 2, a
+/// killing of 4), and since MZB-36 (b053f0f5) it records them on `SEVERITY_UNIT` like every other
+/// module, so no record of today's kinds should fall under it.
 pub const RUNG_LIMIT: u8 = 25;
 
 /// What TALK counts (`Engine::talk_stats`).
@@ -82,6 +84,10 @@ pub struct Stats {
     /// TEST reports posted, and refused.
     pub posted: u64,
     pub post_refused: u64,
+    /// TALKED records applied: a village credited a talk (TK2).
+    pub talked: u64,
+    /// TALKED records refused: undecodable, an unknown village, a nil player.
+    pub talked_refused: u64,
 }
 
 /// TALK's state the step keeps (`State::talk`). Nothing here is saved: an ask lives for a few
@@ -168,6 +174,15 @@ fn refuse(st: &mut State, why: &str) {
     let n = st.talk.stats.refused;
     if n.is_power_of_two() {
         log_warn(&format!("{why}; skipped ({n} refused so far)"));
+    }
+}
+
+/// Counts a refused TALKED and logs it when the count reaches a power of two.
+pub(super) fn refuse_talked(st: &mut State, why: &str) {
+    st.talk.stats.talked_refused += 1;
+    let n = st.talk.stats.talked_refused;
+    if n.is_power_of_two() {
+        log_warn(&format!("{why}; skipped ({n} TALKED refused so far)"));
     }
 }
 
@@ -423,8 +438,9 @@ pub const fn kind_weight(kind: ReportKind) -> u64 {
 /// as it is. A small code (a rung, an outcome, 1 or 2 for a port) counts as
 /// [`rtsim_knowledge::report::rung_weight`]: 100 plus 25 a step to four, so a rung 4 feud outweighs
 /// a rung 1 by 25 percent and a rung 1 outweighs a fair trade. A code is the news kinds' severity
-/// always, and any kind's under [`RUNG_LIMIT`]: the conflict records a robbery, a rescue or a
-/// killing by its rung (2, 2, 4), not on the base-delta scale (TK33). Nothing weighs less than 25.
+/// always, and any kind's under [`RUNG_LIMIT`] (a guard, TK33). A robbery, a rescue or a killing the
+/// conflict records is on the unit scale (MZB-36), so it counts as it is, beside a villager's own:
+/// the ranking compares a camp's robbery and a player's like for like. Nothing weighs less than 25.
 pub fn severity_term(kind: ReportKind, severity: u8) -> u64 {
     u64::from(if kind.is_news() || severity < RUNG_LIMIT {
         rung_weight(severity)
@@ -939,8 +955,10 @@ mod tests {
     use rtsim_space::topology::Topology;
 
     use super::*;
-    use crate::talk_wire::{encode_asks, news::SIZE as NEWS_SIZE};
-    use crate::wire::{Records, put_u32};
+    use crate::talk_wire::{
+        TALKED, Talked, encode_asks, news::SIZE as NEWS_SIZE, talked as talked_at,
+    };
+    use crate::wire::{Records, put_u16, put_u32, put_u64};
 
     const NOW: u64 = 300_000;
     const DAY: u64 = 24_000;
@@ -1179,8 +1197,8 @@ mod tests {
         assert_eq!(severity_term(ReportKind::PortClosed, 0), 100);
         assert_eq!(severity_term(ReportKind::Assault, 100), 100);
         assert_eq!(severity_term(ReportKind::Assault, 101), 101);
-        // The conflict records some old kinds by rung (Robbery 2, Rescue 2, Killing 4): under 25 a
-        // severity of any kind is a rung.
+        // Under 25 a severity of any kind is read as a rung: a guard since MZB-36, when the conflict
+        // stopped recording Robbery 2, Rescue 2 and Killing 4 and moved to the unit scale.
         assert_eq!(severity_term(ReportKind::Robbery, 2), 150);
         assert_eq!(severity_term(ReportKind::Killing, 4), 200);
         assert_eq!(severity_term(ReportKind::Assault, 0), 100);
@@ -2227,5 +2245,120 @@ mod tests {
             .unwrap();
         assert_eq!(facts_len, facts::NEWS + MAX_NEWS * NEWS_SIZE);
         assert_eq!(facts_len, 528);
+    }
+
+    // ---- TALKED (docs/boundary.md §13.7) ---------------------------------------------------
+
+    fn talked_bytes(village: u64, p: u64, op: u64) -> Vec<u8> {
+        Talked {
+            obs_seq: 1,
+            game_time: NOW as i64,
+            op_id: op,
+            village,
+            player: (p, p + 1),
+            body: 0,
+        }
+        .encode()
+    }
+
+    /// Hands phase 1 a TALKED record `Replay` admitted, as the step's journaled point does.
+    fn journal_talked(st: &mut State, bytes: &[u8]) {
+        let rec = Rec {
+            kind: TALKED,
+            aux: 0,
+            bytes,
+        };
+        assert!(super::super::phase1::claims(&rec), "phase 1 claims TALKED");
+        super::super::phase1::journaled(st, &rec);
+    }
+
+    #[test]
+    fn a_talked_adds_three_to_its_villages_feeling_and_the_next_ask_hears_it() {
+        let mut st = world();
+        let ask = |id| ask_of(id, ask::holder::VILLAGE, 8, 5, 0);
+        assert_eq!(answer_one(&mut st, ask(1)).sentiment, 0, "strangers");
+        assert!(
+            st.phase1
+                .world
+                .knowledge
+                .actors()
+                .find(ActorKind::Player, uuid_hash(5, 6))
+                .is_none(),
+            "an ask never creates the player's actor (TK45)"
+        );
+        journal_talked(&mut st, &talked_bytes(8, 5, 0xAA));
+        assert_eq!(st.talk.stats.talked, 1);
+        assert_eq!(st.talk.stats.talked_refused, 0);
+        let f = answer_one(&mut st, ask(2));
+        assert_eq!(f.flags & facts::HOLDER, facts::HOLDER);
+        assert_eq!(f.sentiment, 3, "TALK_CREDIT");
+        assert_eq!(
+            rtsim_world::bridge::TALK_CREDIT,
+            3,
+            "TK2: the tunable is the one the brief names"
+        );
+        // Another player's feeling is untouched, and so is another village's.
+        let other = ask_of(3, ask::holder::VILLAGE, 8, 50, 0);
+        assert_eq!(answer_one(&mut st, other).sentiment, 0);
+        let elsewhere = ask_of(4, ask::holder::VILLAGE, 7, 5, 0);
+        assert_eq!(answer_one(&mut st, elsewhere).sentiment, 0);
+        // A second talk (another ribbit of the village, another op) adds again.
+        journal_talked(&mut st, &talked_bytes(8, 5, 0xAB));
+        assert_eq!(answer_one(&mut st, ask(5)).sentiment, 6);
+    }
+
+    #[test]
+    fn a_talked_that_cannot_be_applied_is_refused_and_counted_never_applied() {
+        let mut st = world();
+        let ask = |id| ask_of(id, ask::holder::VILLAGE, 8, 5, 0);
+        let good = talked_bytes(8, 5, 0xAA);
+        // Truncated and oversized records.
+        journal_talked(&mut st, &good[..56]);
+        let mut big = good.clone();
+        big.extend_from_slice(&[0; 8]);
+        put_u16(&mut big, wire::R_SIZE, 72);
+        journal_talked(&mut st, &big);
+        assert_eq!(st.talk.stats.talked_refused, 2);
+        // A village the world does not know, and a key that is a base, not a village.
+        journal_talked(&mut st, &talked_bytes(99, 5, 0xAB));
+        assert_eq!(st.talk.stats.talked_refused, 3);
+        st.phase1
+            .input_for_test(rtsim_world::inputs::Input::MarkBase {
+                key: 1 << 62 | 9,
+                frame: 0,
+                x: 10,
+                z: 10,
+                player: (5, 6),
+            });
+        journal_talked(&mut st, &talked_bytes(1 << 62 | 9, 5, 0xAC));
+        assert_eq!(st.talk.stats.talked_refused, 4, "a base has no ribbits");
+        // The nil player.
+        let mut nil = good.clone();
+        put_u64(&mut nil, talked_at::PLAYER_MOST, 0);
+        put_u64(&mut nil, talked_at::PLAYER_LEAST, 0);
+        journal_talked(&mut st, &nil);
+        assert_eq!(st.talk.stats.talked_refused, 5);
+        assert_eq!(st.talk.stats.talked, 0, "none applied");
+        assert_eq!(answer_one(&mut st, ask(1)).sentiment, 0);
+        // The refused inputs left no trace in the log (a replay would apply nothing either).
+        assert!(
+            !st.phase1.logged_talked_for_test(),
+            "a refused TALKED is not logged"
+        );
+        // And the same record, whole, is applied: the refusals were the records' fault.
+        journal_talked(&mut st, &good);
+        assert_eq!(st.talk.stats.talked, 1);
+        assert_eq!(answer_one(&mut st, ask(2)).sentiment, 3);
+    }
+
+    #[test]
+    fn a_talked_of_a_scripted_village_is_left_alone() {
+        let mut st = world();
+        st.phase1.script_for_test(8);
+        journal_talked(&mut st, &talked_bytes(8, 5, 0xAA));
+        assert_eq!(st.talk.stats.talked, 0);
+        assert_eq!(st.talk.stats.talked_refused, 0, "skipped, not refused");
+        let a = ask_of(1, ask::holder::VILLAGE, 8, 5, 0);
+        assert_eq!(answer_one(&mut st, a).sentiment, 0);
     }
 }
