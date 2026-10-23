@@ -941,8 +941,8 @@ in three, for example `loot_table/entities/umvuthana_rage.json`) and lie in grov
   stock, up to `loot_share_milli` (150 in 1,000, goblin's), eaten: the village has less to sell. Breaking
   a plundering pack makes the village it marched on, and any village that hates the tribe within
   the view radius (160 blocks) of where the pack broke, think better of the player: a rescue report
-  they witness first-hand (CONFLICT-LIFE.md §7, CL-D61). Every other village hears it from
-  travellers, at hearsay weight.
+  they witness first-hand, as does a player base within that radius (CONFLICT-LIFE.md §7, CL-D61).
+  Every other village hears it from travellers, at hearsay weight; a base tells them.
 
 **MZ-8, decided: raptor hunts are owed and plunder is eaten.** Reason: C16 to C18 already require
 attacks to land while the owner is away; a tribe raid that did nothing unwatched would break them.
@@ -2194,7 +2194,8 @@ read, not edited):
    schedule (`plunder_mean_days` 12, goblin's): a raptor pack takes the village's leather and wool.
 2. The village has less wool and leather to sell. Tomas, passing through, sees the pack and breaks
    it: the village the pack marched on saw it and thinks better of him at once; the other villages
-   hear of the rescue from travellers, later, and think a little better of him (CL-D61).
+   hear of the rescue from travellers, later, and think a little better of him (CL-D61). Had it
+   been his base the pack broke on, the base would have told the travellers.
 
 **D. Clearing a range, and what comes back.**
 1. Iva kills the Frostmaw by her line on day 9.5, as in A. The den is empty.

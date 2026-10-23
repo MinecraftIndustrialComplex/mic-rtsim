@@ -288,6 +288,22 @@ impl World {
         id
     }
 
+    /// Node `i` saw `report` first-hand and tells the next travellers (CL-D61): the report goes on
+    /// its board at the full delta, and in a packet with the next messenger on each of its roads.
+    /// A village does this with its next market event; a player base has none of its own (it keeps
+    /// no stock and no curves), so a witnessing base must be told to send. The base is the news'
+    /// source: everyone else learns it from a packet, at hearsay weight. False if the node already
+    /// knew the report.
+    pub fn node_witnesses(&mut self, i: usize, report: ReportId, at: Tick) -> bool {
+        self.run_until(at);
+        let actor = self.nodes[i].actor;
+        let new = self.knowledge.witness(actor, report, at);
+        self.touch_sentiment(i);
+        self.flush_gossip();
+        self.emit(i, at, false);
+        new
+    }
+
     /// A member left the caravan with nobody to blame (a mob killed it, another mod removed it, a
     /// creature taken by no player): its cargo leaves the sim with it, no report is made, and a
     /// group left with no leader breaks up (C25). `alive`: it was taken, not killed.

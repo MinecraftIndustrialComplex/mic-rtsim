@@ -1681,8 +1681,9 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
   engine's per-class tunables. **Watched**, the director above.
 - **The real witnesses of a rout** hear when a player breaks one of a faction's bands (a rescue report,
-  C24; CL-D61): the village the band marched on and every village that hates the faction within the
-  view radius of where the band broke. Every other village hears it from travellers. Villages that
+  C24; CL-D61): the village the band marched on, every village that hates the faction within the
+  view radius of where the band broke, and every player base within it. Every other village hears it
+  from travellers. Villages that
   hate a faction also remember the raids on them (a robbery report against the faction).
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands

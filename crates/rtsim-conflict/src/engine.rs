@@ -3964,13 +3964,18 @@ impl Conflict {
 
     /// A rout is one rescue report (C24: rescues count; K2-25, CL-D60) that only its real
     /// witnesses learn first-hand (CL-D61, PLAN.md §8.7): the village the band marched on, always
-    /// (it was the one rescued), and every village that hates the faction within `view_radius` of
+    /// (it was the one rescued); every village that hates the faction within `view_radius` of
     /// where the band broke (the radius the engine gives a player's view, as [`Conflict::watcher`]
-    /// reads it). Every other village hears it later from a traveller, at hearsay weight, through
-    /// the knowledge layer's news. The report names whom the band was after (the node it marched
-    /// on, else the feud's actor unless that is the breaker, else no one) and the place it broke.
-    /// A rout nobody witnessed records no report. Knowledge dedups per report, so a report per
-    /// witness made each village count the rout once per witness.
+    /// reads it); and every player base within that radius, which carries the news the way a
+    /// caravan carries a rescue home (CL-D61, "Base carries the news"). A base has no culture, so
+    /// no hate test; it is the market node the player's district or dwell place is, and the
+    /// engine has no other link from a district to a base. Every other village hears it later from
+    /// a traveller, at hearsay weight, through the knowledge layer's news: a base's board goes out
+    /// in a packet with the next messenger on each of its roads, as a village's does. The report
+    /// names whom the band was after (the node it marched on, else the feud's actor unless that is
+    /// the breaker, else no one) and the place it broke. A rout nobody witnessed records no report.
+    /// Knowledge dedups per report, so a report per witness made each village count the rout once
+    /// per witness.
     fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
@@ -3987,9 +3992,10 @@ impl Conflict {
                 .map(|n| n.actor),
             _ => None,
         };
-        // The villages in view of the rout: the node index's cells around where it broke, in node
-        // order, whose culture the faction hates (a village that does not was not rescued, and
-        // one friendly to the band would be crediting the player for killing its friends).
+        // The nodes in view of the rout: the node index's cells around where it broke, in node
+        // order. The villages among them that hate the faction see it (a village that does not was
+        // not rescued, and one friendly to the band would be crediting the player for killing its
+        // friends); the player bases among them all do.
         self.nodes.refresh(w);
         let topo = self.topo.clone();
         let view = f64::from(self.tun.view_radius);
@@ -3997,16 +4003,19 @@ impl Conflict {
             .nodes
             .within(w, topo.of(frame), Pos::new(frame, bx, bz), view);
         let mut witnesses: Vec<ActorId> = rescued.into_iter().collect();
+        let mut bases: Vec<usize> = Vec::new();
         for i in in_view {
             let n = &w.nodes[i];
-            if matches!(n.kind, NodeKind::Village(cu) if c.hates(cu.name()))
-                && !witnesses.contains(&n.actor)
-            {
-                witnesses.push(n.actor);
+            match n.kind {
+                NodeKind::Village(cu) if c.hates(cu.name()) && !witnesses.contains(&n.actor) => {
+                    witnesses.push(n.actor);
+                }
+                NodeKind::PlayerBase { .. } => bases.push(i),
+                _ => {}
             }
         }
-        let mut heard = 0;
-        if !witnesses.is_empty() {
+        let (mut heard, mut told) = (0, 0);
+        if !witnesses.is_empty() || !bases.is_empty() {
             let x = &self.parties[p];
             let whom = match x.target {
                 Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
@@ -4026,16 +4035,22 @@ impl Conflict {
                     heard += 1;
                 }
             }
+            // A base tells the next travellers at once: it has no market events to do it for it.
+            for i in bases {
+                if w.node_witnesses(i, rep, at) {
+                    told += 1;
+                }
+            }
         }
         self.note(
             at,
             Some(f),
             "rescue",
-            if heard == 0 {
+            if heard + told == 0 {
                 format!("nobody saw the {} band broken: no rescue report", c.name())
             } else {
                 format!(
-                    "{heard} village(s) saw the {} band broken (the rest hear it from travellers)",
+                    "{heard} village(s) and {told} base(s) saw the {} band broken (the rest hear it from travellers)",
                     c.name()
                 )
             },
