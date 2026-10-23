@@ -70,7 +70,8 @@ class FarFeedReceiverTest {
         double t1 = FarClock.ticks() + 100;
         assertEquals(100.5, centreX(leg, t1), 1e-6);
 
-        // Embodied at x 103: the mover starts from where it was drawn and reaches the sample in a second
+        // Embodied at x 103: the mover starts from where it was drawn and goes on at the leg's pace, so a second
+        // later it is where the body will be, 20 blocks past the sample (DHT44), not a second behind it
         advance(100);
         double now = FarClock.ticks();
         double drawn = centreX(leg, now);
@@ -80,7 +81,7 @@ class FarFeedReceiverTest {
         assertEquals(leg.key(), body.key(), "the same mover");
         assertEquals(42, body.entity(), "it carries the body's entity id");
         assertEquals(drawn, centreX(body, now), 1e-6, "no jump at the hand-over");
-        assertEquals(103.0, centreX(body, now + 20), 1e-6, "a second later it is at the sample");
+        assertEquals(123.0, centreX(body, now + 20), 1e-6, "a second later it is where the body is");
 
         // Back to the engine: its leg starts at x 120, with no entity
         advance(20);
@@ -94,6 +95,70 @@ class FarFeedReceiverTest {
 
         send(0, g0 + 121, new FarWire.Gone(0));
         assertNull(mover(), "gone");
+    }
+
+    /** A carriage centred on x, 10 blocks between bogeys, running along x. */
+    private static double[] carriage(double x) {
+        return new double[]{x + 5.5, 64, 0.5, x - 4.5, 64, 0.5};
+    }
+
+    private void sample(long gameTime, double x) {
+        send(0, gameTime, FarWire.Sample.of(0, FarState.MOVING.wire, carriage(x)));
+    }
+
+    /** A carriage at 1 block a tick, sampled at x 0, 20 and 40 a second apart; returns the game time of the last. */
+    private long steadyTrain(long g0) {
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.CARRIAGE.wire, 0, 0, 0, 0x808080),
+                FarWire.Sample.of(0, FarState.MOVING.wire, carriage(0)));
+        advance(20);
+        sample(g0 + 20, 20);
+        advance(20);
+        sample(g0 + 40, 40);
+        return g0 + 40;
+    }
+
+    @Test
+    void aSteadyTrainIsDrawnWhereItIsNotASecondBehind() {
+        long g = steadyTrain(10_000);
+        double now = FarClock.ticks();
+        assertEquals(40.5, centreX(mover(), now), 1e-6, "at its newest sample as it comes");
+        assertEquals(60.5, centreX(mover(), now + 20), 1e-6, "a second on, where the next sample will put it");
+        advance(20);
+        double drawn = centreX(mover(), FarClock.ticks());
+        sample(g + 20, 60);
+        assertEquals(drawn, centreX(mover(), FarClock.ticks()), 1e-6, "no jump when it comes");
+        assertEquals(80.5, centreX(mover(), FarClock.ticks() + 20), 1e-6);
+    }
+
+    @Test
+    void aLateSampleRunsItOnALittleThenItWaits() {
+        steadyTrain(10_000);
+        double now = FarClock.ticks();
+        assertEquals(40.5 + 20 + FarFeedReceiver.RUN_ON_TICKS, centreX(mover(), now + 20 + FarFeedReceiver.RUN_ON_TICKS),
+                1e-6, "on at its pace past where the next sample was due");
+        assertEquals(40.5 + 20 + FarFeedReceiver.RUN_ON_TICKS, centreX(mover(), now + 200), 1e-6, "then it waits");
+    }
+
+    @Test
+    void aTrainBrakingToAStopStopsWhereItStood() {
+        long g = steadyTrain(10_000);
+        // It brakes at 1/40 block a tick a tick: 15 blocks in the next second, 5 in the one after, then it
+        // stands (the server sends the last sample once more)
+        double furthest = 0;
+        long[] at = {g + 20, g + 40, g + 60};
+        double[] x = {55, 60, 60};
+        for (int k = 0; k < 3; k++) {
+            for (int t = 0; t < 20; t++) {
+                FarClock.advance();
+                furthest = Math.max(furthest, centreX(mover(), FarClock.ticks()));
+            }
+            sample(at[k], x[k]);
+        }
+        double now = FarClock.ticks();
+        assertEquals(60.5, centreX(mover(), now + 20), 1e-6, "where it stopped a second on");
+        assertEquals(60.5, centreX(mover(), now + 200), 1e-6, "and there it stays");
+        // Run on at the speed it had, it passes the stop by a few blocks before the samples bring it back
+        assertTrue(furthest - 60.5 < 6.0, "past the stop by " + (furthest - 60.5));
     }
 
     @Test
