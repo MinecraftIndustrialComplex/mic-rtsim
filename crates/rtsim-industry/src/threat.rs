@@ -650,6 +650,11 @@ pub fn loot(t: &Threat, cargo: &GoodVec, tun: &ThreatTunables) -> GoodVec {
 pub const REGION_BLOCKS: i32 = 512;
 /// Time-window size of the leg index, in ticks. TUNABLE, PLACEHOLDER one day.
 pub const LEG_WINDOW_TICKS: u64 = TICKS_PER_DAY;
+/// The longest a booked leg lasts, in ticks (30 days). TUNABLE, PLACEHOLDER. A booking indexes one
+/// entry per cell for every window of its span, so a train that stalls (an ETA of distance over a
+/// near-zero speed) must not book years of windows; a restore refuses a longer one, so a corrupt
+/// page cannot ask for an unbounded index (ID10).
+pub const LEG_MAX_TICKS: u64 = 30 * TICKS_PER_DAY;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Leg {
@@ -717,11 +722,14 @@ impl LegIndex {
     pub fn book_on(
         &mut self,
         topo: &rtsim_space::topology::Topology,
-        leg: Leg,
+        mut leg: Leg,
         dim: u32,
         from: (i32, i32),
         to: (i32, i32),
     ) -> u64 {
+        // A leg lasts at most `LEG_MAX_TICKS` and ends after it began (what a restore accepts).
+        let latest = Tick(leg.depart.0.saturating_add(LEG_MAX_TICKS));
+        leg.eta = leg.eta.max(leg.depart).min(latest);
         if !topo.is_flat() {
             let id = self.next;
             self.next += 1;
@@ -1522,6 +1530,44 @@ mod tests {
         );
     }
 
+    /// A booking lasts at most `LEG_MAX_TICKS` (a stalled train's ETA is years), and a restore
+    /// refuses a page whose leg lasts longer or ends before it began, instead of indexing every
+    /// window of it (ID10).
+    #[test]
+    fn a_leg_is_bounded_in_time_and_a_page_with_a_longer_one_is_refused() {
+        let mut idx = LegIndex::default();
+        let id = idx.book(booked(1, 100, u64::MAX), 0, (0, 0), (1_100, 0));
+        let leg = idx.get(id).unwrap();
+        assert_eq!(
+            leg.eta.0 - leg.depart.0,
+            LEG_MAX_TICKS,
+            "clamped, not years of windows"
+        );
+        assert!(
+            idx.in_region(0, (0, 0), Tick(0), Tick(10)).is_empty(),
+            "a window before the departure holds nothing"
+        );
+        let early = idx.book(booked(2, 5_000, 100), 0, (0, 0), (0, 0));
+        assert_eq!(
+            idx.get(early).unwrap().eta,
+            Tick(5_000),
+            "never before it began"
+        );
+        let back = LegIndex::from_pages(idx.next_id(), idx.pages()).unwrap();
+        assert_eq!(back, idx);
+        // A page written by something else: the same legs, one lasting past the bound or ending early.
+        for (depart, eta) in [(0, u64::MAX), (0, LEG_MAX_TICKS + 1), (10, 9)] {
+            let mut bad = idx.clone();
+            let b = bad.legs.get_mut(&id).unwrap();
+            b.leg.depart = Tick(depart);
+            b.leg.eta = Tick(eta);
+            assert!(
+                LegIndex::from_pages(bad.next_id(), bad.pages()).is_err(),
+                "a leg from tick {depart} to {eta}"
+            );
+        }
+    }
+
     #[test]
     fn synthetic_threats_are_reproducible() {
         let st = SynthStream {
@@ -1761,7 +1807,16 @@ mod persist_impls {
                         return invalid(&format!("leg {id} in the leg page {page} (next {next})"));
                     }
                     prev = Some(id);
-                    rows.insert(id, Booked::get(&mut r)?);
+                    let b = Booked::get(&mut r)?;
+                    // A booking is clamped to this span ([`LegIndex::book_on`]); a page that holds
+                    // another would ask for an index of any size.
+                    if b.leg.eta < b.leg.depart || b.leg.eta.0 - b.leg.depart.0 > LEG_MAX_TICKS {
+                        return invalid(&format!(
+                            "leg {id} lasts from tick {} to {}",
+                            b.leg.depart.0, b.leg.eta.0
+                        ));
+                    }
+                    rows.insert(id, b);
                 }
                 r.finish()?;
             }
