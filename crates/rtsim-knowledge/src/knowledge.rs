@@ -338,7 +338,7 @@ impl Knowledge {
             }
         }
         if let Some(n) = self.notables.get_mut(&holder) {
-            let mut salience = u32::from(report.severity);
+            let mut salience = u32::from(report.kind.magnitude(report.severity));
             if hearsay {
                 salience = salience * u32::from(self.tunables.hearsay_percent) / 100;
             }
@@ -395,6 +395,14 @@ impl Knowledge {
     /// Gossip writes for the bridge since the last call (C20).
     pub fn take_vanilla_gossip(&mut self) -> Vec<VanillaGossip> {
         std::mem::take(&mut self.vanilla)
+    }
+
+    /// Drops the queued gossip writes that came of one report and keeps every other module's.
+    /// Returns how many it dropped. For a scripted report that must not play out as a grudge.
+    pub fn drop_vanilla_gossip_of(&mut self, report: ReportId) -> usize {
+        let before = self.vanilla.len();
+        self.vanilla.retain(|g| g.report != report);
+        before - self.vanilla.len()
     }
 
     // ---- Expiry ----

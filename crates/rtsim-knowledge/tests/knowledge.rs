@@ -425,3 +425,70 @@ fn every_report_is_archived_as_made() {
         assert_eq!(e.magnitude, i32::from(SEVERITY_UNIT));
     }
 }
+
+/// A notable's memory ranks the news kinds by their rung's weight (TK33): a rung 1 feud is worth
+/// 125, more than a fair trade's 100, so a full memory forgets the trade first. By raw severity
+/// the feud would have been 1. Today's kinds keep the unit scale: a mild assault of 20 is 20.
+#[test]
+fn a_notable_remembers_a_rung_at_its_weight() {
+    let mut w = world(9);
+    let chief = w.k.create_notable(
+        0xC41EF,
+        w.oakford,
+        ActorId::NULL,
+        Tick(0),
+        100 * TICKS_PER_DAY,
+    );
+    let feud = w.k.record(Report {
+        kind: ReportKind::Feud,
+        severity: 1,
+        ..robbery(&w, w.oakford, 10)
+    });
+    let mild = w.k.record(Report {
+        kind: ReportKind::Assault,
+        severity: 20,
+        ..robbery(&w, w.oakford, 11)
+    });
+    let trade = w.k.record(Report {
+        kind: ReportKind::Trade,
+        severity: SEVERITY_UNIT,
+        ..robbery(&w, w.oakford, 12)
+    });
+    for id in [feud, mild, trade] {
+        assert!(w.k.witness(chief, id, Tick(100)));
+    }
+    let n = w.k.notable(chief).unwrap();
+    let salience = |id| {
+        n.memories()
+            .iter()
+            .find(|m| m.report() == id)
+            .map(|m| m.salience())
+            .unwrap()
+    };
+    assert_eq!(salience(feud), 125);
+    assert_eq!(salience(mild), 20);
+    assert_eq!(salience(trade), 100);
+}
+
+/// A scripted report's own gossip can be dropped without dropping anyone else's.
+#[test]
+fn only_the_named_reports_gossip_is_dropped() {
+    let mut w = world(10);
+    let first = w.k.record(robbery(&w, w.oakford, 10));
+    w.k.witness(w.oakford, first, Tick(11));
+    let second = w.k.record(robbery(&w, w.brindle, 12));
+    w.k.witness(w.brindle, second, Tick(13));
+    // A news kind queues none, so there is nothing of its to drop.
+    let news = w.k.record(Report {
+        kind: ReportKind::Raid,
+        severity: 3,
+        ..robbery(&w, w.oakford, 14)
+    });
+    w.k.witness(w.oakford, news, Tick(15));
+    assert_eq!(w.k.drop_vanilla_gossip_of(news), 0);
+    assert_eq!(w.k.drop_vanilla_gossip_of(second), 1);
+    let left = w.k.take_vanilla_gossip();
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].report, first, "the other report's write survives");
+    assert_eq!(w.k.drop_vanilla_gossip_of(first), 0, "taken already");
+}
