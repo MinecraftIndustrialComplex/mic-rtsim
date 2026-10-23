@@ -621,18 +621,25 @@ impl Replay {
         })
     }
 
-    /// Sets every part's gates and residual from the units replaying now; returns the parts whose
-    /// own nodes' gates or whose residual changed (another part's nodes never run in a part's
-    /// process).
+    /// Sets every part's gates, and a whole replay's residual, from the units replaying now;
+    /// returns the parts whose own nodes' gates or whose residual changed (another part's nodes
+    /// never run in a part's process). A replay split into parts started with no residual (a
+    /// residual keeps the district one part), and units only go off while it runs, so it never
+    /// gets one: a part's own stores would hand it shares weighed for the whole.
     fn set_gates(&mut self, comp: &Compiled, tun: &GlassTunables) -> Vec<usize> {
         let on = self.on();
         let p = &self.parts[0];
         let gate = gate_of(comp, &p.sim, &p.unit_of, &on);
+        let whole = self.parts.len() == 1;
         let mut changed = Vec::new();
         for (i, p) in self.parts.iter_mut().enumerate() {
-            let before = std::mem::take(&mut p.residual);
-            p.residual(comp, tun, &on);
-            if p.residual != before || (0..gate.len()).any(|v| p.mine[v] && p.gated[v] != gate[v]) {
+            let mut moved = false;
+            if whole {
+                let before = std::mem::take(&mut p.residual);
+                p.residual(comp, tun, &on);
+                moved = p.residual != before;
+            }
+            if moved || (0..gate.len()).any(|v| p.mine[v] && p.gated[v] != gate[v]) {
                 changed.push(i);
             }
             p.gated.clone_from(&gate);
