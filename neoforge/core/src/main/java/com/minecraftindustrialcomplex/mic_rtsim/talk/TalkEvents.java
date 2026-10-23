@@ -29,14 +29,18 @@ public final class TalkEvents {
         Talkers.registerBuiltin(ResourceLocation.withDefaultNamespace("wandering_trader"), new TraderTalker(), true);
     }
 
+    /** Who talked in which tick: their off-hand item use in that tick is cancelled too. */
+    private static final OffHandGuard GUARD = new OffHandGuard();
+
     public static void register() {
         registerBuiltins();
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.EntityInteract.class, TalkEvents::onInteract);
+        bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.RightClickItem.class, TalkEvents::onUseItem);
         bus.addListener(net.neoforged.neoforge.event.tick.ServerTickEvent.Post.class, e -> Talk.tickLooks());
         bus.addListener(PlayerEvent.PlayerLoggedOutEvent.class, e -> Talk.forget(e.getEntity().getUUID()));
-        bus.addListener(ServerStartedEvent.class, e -> Talk.clear());
-        bus.addListener(ServerStoppedEvent.class, e -> Talk.clear());
+        bus.addListener(ServerStartedEvent.class, e -> clear());
+        bus.addListener(ServerStoppedEvent.class, e -> clear());
     }
 
     /** Mowzie's Mobs' freeze and Cataclysm's stun cancel interactions at NORMAL priority: a held player does not talk. */
@@ -82,6 +86,7 @@ public final class TalkEvents {
         if (talker == null)
             return;
         event.setCanceled(true);
+        GUARD.talked(sp.getUUID(), sp.serverLevel().getGameTime());
         if (!main) {
             event.setCancellationResult(InteractionResult.CONSUME);
             return;
@@ -92,5 +97,24 @@ public final class TalkEvents {
         } catch (Throwable e) {
             Talk.failed(talker, "speak", e);
         }
+    }
+
+    /**
+     * When the type does not always talk, the client does not cancel: after the two interact packets it
+     * sends a separate use of the off-hand item. That use is cancelled for a player who just talked, so
+     * a pearl, food or a bow in the off hand does not fire with the talk.
+     */
+    private static void onUseItem(PlayerInteractEvent.RightClickItem event) {
+        if (event.getLevel().isClientSide() || event.getHand() != InteractionHand.OFF_HAND || !(event.getEntity() instanceof ServerPlayer sp))
+            return;
+        if (GUARD.justTalked(sp.getUUID(), sp.serverLevel().getGameTime())) {
+            event.setCanceled(true);
+            event.setCancellationResult(InteractionResult.CONSUME);
+        }
+    }
+
+    private static void clear() {
+        GUARD.clear();
+        Talk.clear();
     }
 }
