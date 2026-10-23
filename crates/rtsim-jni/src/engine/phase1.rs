@@ -35,6 +35,7 @@
 
 mod catalog;
 mod cmds;
+mod view;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
