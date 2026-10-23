@@ -16,8 +16,15 @@ import java.util.UUID;
 
 /**
  * What the far feed's messages say, as far registry movers ({@link FarFeedClient#SOURCE}): the objects by their
- * handles, each a leg on the far clock or a sample it moves to over the next second. Plain Java, apart from
- * {@link FarFeedClient}'s networking, so a unit test can play the hand-over through it.
+ * handles, each a leg on the far clock or a run of samples. Plain Java, apart from {@link FarFeedClient}'s
+ * networking, so a unit test can play the hand-over through it.
+ *
+ * <p>A sample says where the object was when the server swept, a second after the last; drawn as it came, a
+ * mover would trail the real thing by that second. So a moving object is run on (docs/choices-dh-feed.md
+ * DHT44): from its last two samples, its speed along its way and how that speed changes, it is drawn where it
+ * will be by the time the next sample comes, from where it is drawn now, and a little past that should the
+ * sample be late. One that stopped (the server sends the same sample once more) or is braking to a stop stops
+ * where it does.
  *
  * <p>A flown leg is timed in game time and drawn on the far clock (client ticks), so the two are tied by an
  * offset: the far clock minus the client's game time, which vanilla keeps to the server's once a second.
@@ -33,6 +40,12 @@ final class FarFeedReceiver {
     static final double JOIN_TICKS = 40.0;
     /** The offset may wander this far, in ticks, before the legs are timed again. */
     static final double RETIME_TICKS = 2.0;
+    /** A sample that comes late: the mover runs on this long past where the next was due, then waits. */
+    static final double RUN_ON_TICKS = 10.0;
+    /** The furthest a mover is run on from its newest sample, in ticks. */
+    static final double MAX_RUN_TICKS = SAMPLE_TICKS + RUN_ON_TICKS + 10.0;
+    /** Slower than this (an eighth of a block a sample, what the server does not send) is standing still. */
+    static final double STILL = 0.125 / SAMPLE_TICKS;
 
     private final Map<Integer, Obj> objs = new HashMap<>();
     /** Far clock minus game time, as the legs are timed; NaN until known. */
@@ -52,6 +65,12 @@ final class FarFeedReceiver {
         double hx = 1.0, hz = 0.0;
         /** A flown leg's start in game time, or Long.MIN_VALUE. */
         long legT0 = Long.MIN_VALUE;
+        /** The newest sample and its time on the far clock; null before the first, and after a leg. */
+        double[] last;
+        double lastTick;
+        /** Its mean velocity since the sample before (blocks a tick, both points), and over how many ticks. */
+        double[] velocity;
+        double velocityTicks;
         String dim;
         FarMover mover;
 
@@ -170,12 +189,7 @@ final class FarFeedReceiver {
                 Obj o = objs.get(s.handle());
                 if (o == null)
                     return;
-                double[] seg = s.segment();
-                double[] drawn = o.drawnAt(now);
-                o.prev = drawn != null ? drawn : seg;
-                o.cur = seg;
-                o.sampleTick = now;
-                o.interval = SAMPLE_TICKS;
+                sample(o, s.segment(), Math.min(now, m.gameTime() + offset), now);
                 o.circle = null;
                 o.legT0 = Long.MIN_VALUE;
                 o.state = stateOf(s.state());
@@ -196,9 +210,141 @@ final class FarFeedReceiver {
         return s == null || s == FarState.GONE ? FarState.MOVING : s;
     }
 
+    /**
+     * A sample {@code seg}, taken at far clock {@code at}, as the mover's next stretch from {@code now}: from where
+     * it is drawn, through where it is expected one sample later, and on at that pace a little longer
+     * (DHT44). Its velocity is from the sample before (or, the first after a leg, the leg's as drawn), and how
+     * its speed changes from the velocity before that; a mover braking to a stop stops there.
+     */
+    private static void sample(Obj o, double[] seg, double at, double now) {
+        double[] drawn = o.drawnAt(now);
+        double[] v = null;
+        double[] acc = null;
+        if (o.last != null && at - o.lastTick >= 1.0) {
+            boolean stood = o.velocity == null || still(o.velocity);
+            // A gap after standing: it set off at most a sweep ago, as the server sends every second it moves
+            double dt = stood ? Math.min(at - o.lastTick, SAMPLE_TICKS) : at - o.lastTick;
+            v = new double[6];
+            for (int i = 0; i < 6; i++)
+                v[i] = (seg[i] - o.last[i]) / dt;
+            if (!stood) {
+                // The change of speed, not of velocity: a dragon turning at one speed neither speeds up nor slows
+                double span = (dt + o.velocityTicks) / 2.0;
+                acc = new double[2];
+                for (int p = 0; p < 2; p++)
+                    acc[p] = (speed(v, p) - speed(o.velocity, p)) / span;
+            }
+            o.velocity = v;
+            o.velocityTicks = dt;
+        } else if (o.last == null && drawn != null && o.mover != null) {
+            // The first sample after a leg: it goes on as the leg was taking it
+            double[] back = new double[6];
+            o.mover.segmentAt(now - 1.0, back);
+            v = new double[6];
+            for (int i = 0; i < 6; i++)
+                v[i] = drawn[i] - back[i];
+            o.velocity = v;
+            o.velocityTicks = SAMPLE_TICKS;
+        } else if (o.last == null) {
+            o.velocity = null;
+        } else {
+            v = o.velocity; // a second sample in the same tick: the run so far
+        }
+        o.last = seg;
+        o.lastTick = at;
+        Run run = new Run(seg, at, v, acc, o.velocityTicks);
+        double[] from = drawn != null ? drawn : run.at(now);
+        double due = Math.min(now + SAMPLE_TICKS, at + MAX_RUN_TICKS);
+        double end = Math.min(now + SAMPLE_TICKS + RUN_ON_TICKS, at + MAX_RUN_TICKS);
+        if (!run.moving() || run.stopsBy(end))
+            end = due;
+        if (end - now < 1.0) {
+            // Too long since the sample to run it on: hold where the run ends
+            o.prev = o.cur = run.at(end);
+            o.sampleTick = now;
+            o.interval = 1.0;
+            return;
+        }
+        double[] there = run.at(due), to = new double[6];
+        double k = (end - now) / (due - now);
+        for (int i = 0; i < 6; i++)
+            to[i] = from[i] + (there[i] - from[i]) * k;
+        o.prev = from;
+        o.cur = to;
+        o.sampleTick = now;
+        o.interval = end - now;
+    }
+
+    private static double speed(double[] v, int p) {
+        return Math.sqrt(v[3 * p] * v[3 * p] + v[3 * p + 1] * v[3 * p + 1] + v[3 * p + 2] * v[3 * p + 2]);
+    }
+
+    private static boolean still(double[] v) {
+        return speed(v, 0) < STILL && speed(v, 1) < STILL;
+    }
+
+    /**
+     * Where a sampled mover will be: each point on along the line of its velocity since the sample before, at
+     * its speed at the sample, speeding up or slowing down as it was (at most doubling its speed a sample), and
+     * stopping where slowing brings it to rest.
+     *
+     * @param v     the mean velocity over the last gap (6 values), or null for none
+     * @param acc   each point's change of speed, blocks a tick a tick, or null for none
+     * @param ticks the last gap, over which {@code v} is the mean
+     */
+    private record Run(double[] seg, double at, double[] v, double[] acc, double ticks) {
+        boolean moving() {
+            return v != null && (speedAt(0) >= STILL || speedAt(1) >= STILL);
+        }
+
+        /** True when a point comes to rest before {@code t}. */
+        boolean stopsBy(double t) {
+            for (int p = 0; p < 2 && v != null; p++) {
+                double u = speedAt(p), a = accAt(p, u);
+                if (u >= STILL && a < 0.0 && at + u / -a < t)
+                    return true;
+            }
+            return false;
+        }
+
+        double[] at(double t) {
+            double[] out = seg.clone();
+            if (v == null)
+                return out;
+            double tau = Math.max(-SAMPLE_TICKS, Math.min(t - at, MAX_RUN_TICKS));
+            for (int p = 0; p < 2; p++) {
+                double mean = speed(v, p), u = speedAt(p);
+                if (u < STILL || mean < 1e-9)
+                    continue;
+                double a = accAt(p, u), d;
+                if (tau < 0.0)
+                    d = u * tau;
+                else if (a < 0.0 && tau > u / -a)
+                    d = u * u / (2.0 * -a);
+                else
+                    d = u * tau + 0.5 * a * tau * tau;
+                for (int i = 0; i < 3; i++)
+                    out[3 * p + i] += v[3 * p + i] / mean * d;
+            }
+            return out;
+        }
+
+        /** The point's speed at the sample: the mean over the gap and half a gap of its change; 0 if it stopped. */
+        private double speedAt(int p) {
+            double u = speed(v, p) + (acc != null ? acc[p] * ticks / 2.0 : 0.0);
+            return Math.max(0.0, u);
+        }
+
+        private double accAt(int p, double u) {
+            return acc == null ? 0.0 : Math.min(acc[p], u / SAMPLE_TICKS);
+        }
+    }
+
     /** A leg as a mover on the far clock: game time {@code t} is far clock {@code t + offset}. */
     private void leg(Obj o, FarWire.Leg l, double now) {
         FarState state = stateOf(l.state());
+        o.last = null;
+        o.velocity = null;
         double x0 = l.x0() + 0.5, z0 = l.z0() + 0.5, x1 = l.x1() + 0.5, z1 = l.z1() + 0.5, y = l.y();
         double[] before = o.drawnAt(now);
         o.state = state;
