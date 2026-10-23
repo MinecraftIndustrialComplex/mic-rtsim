@@ -412,9 +412,13 @@ fn grudge_line() -> Dragons {
         "the lair keeps it"
     );
     assert!(d.lairs[l as usize].occupants.is_empty());
-    // Not before the respawn delay; then a young dragon claims the lair and takes the grudge over.
+    // Not before the lair's wait; then a young dragon claims the lair and takes the grudge over.
+    // Both deaths were the player's, so the wait is the base doubled twice (EQUILIBRIUM.md
+    // §2.4.1): 80 days, not 20.
     d.player_left(&mut w, player);
-    let delay = d.tun.respawn_delay_days * TICKS_PER_DAY;
+    assert_eq!(d.stats.player_losses, 2);
+    let delay = d.tun.renewal().delay_ticks(d.lairs[l as usize].pressure, 0);
+    assert_eq!(delay, 80 * TICKS_PER_DAY);
     d.run_until(&mut w, &mut NoInfrastructure, Tick(700 + delay - 10));
     assert_eq!(d.stats.respawns, 0);
     d.run_until(&mut w, &mut NoInfrastructure, Tick(700 + delay + 20_000));
@@ -1129,8 +1133,10 @@ fn the_archive_records_the_dragons() {
     );
     assert!(claims[0].tick > arrive[0].tick);
 
-    // A mated pair hatches a young one at its lair.
+    // A mated pair hatches a young one at its lair. Nothing feeds this pair, so it would starve
+    // out of the lair before the hatching (EQUILIBRIUM.md §2.4.1); the hatching is the subject.
     let (mut w, mut d) = world(23);
+    d.tun.starve_leave = 0.0;
     let l = d.add_lair(
         &mut w,
         8,

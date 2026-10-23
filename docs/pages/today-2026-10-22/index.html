@@ -68,6 +68,10 @@ section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 2
 .tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
 .meta { font-size: 15px; color: var(--muted); margin: 0 0 14px; }
 .state { display: inline-block; font-size: 14px; font-weight: 600; color: var(--done-ink); background: var(--done-bg); border: 1px solid var(--done-line); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 3px; }
+.state.plan { color: var(--muted); background: var(--card); border-color: var(--line); }
+.answered { list-style: none; padding: 0; margin: 10px 0; }
+.answered li { padding: 8px 0; border-top: 1px solid var(--line); margin: 0; max-width: 46em; }
+.answered li:first-child { border-top: 0; }
 .open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
 .cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
 code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
@@ -109,28 +113,32 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#ds12">Adopt</a>
   <a href="#climate">Climate</a>
   <a href="#s8">Ships</a>
+  <a href="#s4">Dragons</a>
   <a href="#g2-9">Glass and saves</a>
+  <a href="#sec1">SEC-1</a>
+  <a href="#talk">TALK</a>
+  <a href="#syn200">Stress run</a>
   <a href="#history">History</a>
   <a href="#progress">In progress</a>
 </nav>
 <main>
 <header data-ss-id="header">
   <h1 data-ss-id="headline">Landed on 22 October: Death Worm nests, pirates that keep sailing, and an adopt that no longer grows with the world</h1>
-  <p class="dek" data-ss-id="dek">One card for each thing that landed today, with its commit on mic-rtsim main (mic-climate's on its own repo). Three of them ask you something; each says what it recommends, and none blocks anything. The far view, alliances and the aloft Umvuthi have pages of their own, linked below.</p>
-  <p class="lead" data-ss-id="lead">The oil's Death Worm nests are in and on by default. Two sim stories that had been failing unseen pass again. Adopting a district now costs the same on any world. mic_climate's first-tick stall is fixed but not released. Pirates now sail for the whole thousand-day run. Each district's glass state is its own page, and since this evening a save writes only the pages that changed, so a quiet world's save is about 17 KB at any size.</p>
+  <p class="dek" data-ss-id="dek">One card for each thing that landed today, with its commit on mic-rtsim main (mic-climate's on its own repo). Three of them asked you something, and you answered all three this evening, with SEC-1's six questions and those on the pages below. The far view, alliances and news, and the Mowzie build have pages of their own, linked below.</p>
+  <p class="lead" data-ss-id="lead">The oil's Death Worm nests are in and on by default. Two sim stories that had been failing unseen pass again. Adopting a district now costs the same on any world. mic_climate's first-tick stall is fixed and released in 0.2.1. Pirates now sail for the whole thousand-day run. Each district's glass state is its own page, and since this evening a save writes only the pages that changed, so a quiet world's save is about 17 KB at any size.</p>
   <div class="tiles" data-ss-id="tiles">
-    <div class="tile" data-ss-id="kpi-landed"><div class="n">7</div><div class="t">changes landed, plus a history scan</div></div>
-    <div class="tile" data-ss-id="kpi-ask"><div class="n">3</div><div class="t">for you, none blocking: mic_climate 0.2.1, pirate attrition, the glass saves</div></div>
-    <div class="tile" data-ss-id="kpi-prog"><div class="n">2</div><div class="t">in progress: SEC-1's design and herds</div></div>
+    <div class="tile" data-ss-id="kpi-landed"><div class="n">8</div><div class="t">changes landed, plus a history scan and a 200-district stress run</div></div>
+    <div class="tile" data-ss-id="kpi-ask"><div class="n">0</div><div class="t">wait on you from today: all answered, among them SEC-1's six, CL-10, TALK's three and the ports</div></div>
+    <div class="tile" data-ss-id="kpi-prog"><div class="n">7</div><div class="t">in progress: the Mowzie build, news in place of chat notices, TALK, ports, the SEC-1 build, the far view gallery, the stress run's fixes</div></div>
   </div>
 </header>
 
 <section id="elsewhere" data-ss-id="elsewhere" data-ss-section>
   <h2 data-ss-id="elsewhere-h">Also today, on their own pages</h2>
   <ul class="elsewhere" data-ss-id="elsewhere-list">
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). Two things for you there.</li>
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (a92c5f3). Four questions for you there.</li>
-    <li><a href="https://spacesheep.dev/@benmac/rtsim-mowzie"><strong>The Umvuthi aloft</strong></a>: the chief rides above the rear of the march (MZ-16's second round, provisional). Four things wait there.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; pictures and video are being captured for a gallery.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices pushed for conflict. You hear the news by talking to villagers, ribbits and clans (CL-10, being designed as TALK; you answered its three questions, <a href="#talk">below</a>), and an envoy speaks to you in chat when you talk to it.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-mowzie"><strong>The Umvuthi aloft, and the Mowzie build</strong></a>: you chose aloft and answered "All three" for the rest. The build has started: M1 to M3 of 12 slices are being built, each reviewed before it lands.</li>
   </ul>
 </section>
 
@@ -167,40 +175,44 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="climate" data-ss-id="climate" data-ss-section>
-  <h2 data-ss-id="climate-h">mic_climate: the first-tick stall is fixed, not yet released <span class="state">Landed</span></h2>
-  <p class="meta" data-ss-id="climate-meta">mic-climate master 6d875a4, the fix in 16988a6.</p>
+  <h2 data-ss-id="climate-h">mic_climate: the first-tick stall is fixed and released <span class="state">Released</span></h2>
+  <p class="meta" data-ss-id="climate-meta">mic-climate master 6d875a4, the fix in 16988a6; released as 0.2.1; the pack repins it in its master commit 016d8fc.</p>
   <p data-ss-id="climate-p">The first temperature query in a region nobody had loaded stalled the server tick for 1.2 to 3.6 seconds. Project Atmosphere 0.9.1.2 built a new <code>RandomState</code> for every forecast square, and C2ME compiled its density functions again each time. mic_climate now shares one <code>RandomState</code> for each server (<code>BiomeSamplerMixin</code>). Samples taken on the server thread went from 190 to 0. The GameTests pass 37 of 37 with Project Atmosphere and without it, and 1,875 sampled points are identical before and after. What remains is the one build at start-up.</p>
-  <p data-ss-id="climate-pin">The pack still pins mic_climate 0.2.0, so players do not have the fix yet.</p>
-  <div class="decision" data-ss-id="climate-ask">
-    <h3>Release mic_climate 0.2.1? <span class="open-tag">For you</span></h3>
-    <ul class="opts">
-      <li><span class="k">(a) Yes (recommended):</span> raise the version, build, run both GameTest runs again, publish the GitHub release and repin the pack.</li>
-      <li><span class="k">(b) Not yet:</span> keep 0.2.0 in the pack and the fix on master.</li>
-    </ul>
-    <p class="who">Yours because it is a release and changes the pack.</p>
-  </div>
+  <p data-ss-id="climate-pin"><a href="https://github.com/MinecraftIndustrialComplex/mic-climate/releases/tag/0.2.1">mic_climate 0.2.1</a> is released, and the pack's master repins it (016d8fc). The GameTests passed 37 of 37 again, with Project Atmosphere and without it.</p>
 </section>
 
 <section id="s8" data-ss-id="s8" data-ss-section>
   <h2 data-ss-id="s8-h">EQUILIBRIUM S8: pirates keep sailing <span class="state">Landed</span></h2>
   <p class="meta" data-ss-id="s8-meta">e442612, choices T36 to T39.</p>
   <p data-ss-id="s8-p"><code>sim ships --days 1000</code> now keeps both pirates on all 30 seeds, still sailing on day 996.7 or later, with 271 to 356 hunts a seed. Before, no seed had a pirate left after day 77.6. A fight report that arrives late can no longer strand a pirate (T39). <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium">The equilibrium page</a> has the plan this is part of.</p>
-  <div class="decision" data-ss-id="s8-ask">
-    <h3>Should unattended havens lose crew? <span class="open-tag">For you</span></h3>
-    <p>A haven nobody visits keeps every pirate slot manned (1.00), above the plan's band of 0.83 to 0.94 (T37). Bringing it down would need a new kind of loss: a rolled chance, or fights with nobody there, both of which the engine's rules forbid.</p>
-    <ul class="opts">
-      <li><span class="k">(a) Keep it as is (recommended):</span> a haven nobody watches stays fully manned. The test holds the band's floor, not its ceiling.</li>
-      <li><span class="k">(b) Enforce the band's top:</span> add a loss mechanic, with a rule change to allow it.</li>
+  <div class="box" data-ss-id="s8-ports">
+    <h3>Ports: answered, being built <span class="state plan">Being built</span></h3>
+    <p>Asked whether havens nobody visits should lose crew, you asked back: "Huh, shouldn't ports be able to get raided, shut down, have new ones form, etc?" The port lifecycle that came of it asked you two things, and you answered both:</p>
+    <ul>
+      <li><strong>PORTS-1, "Navies too".</strong> A navy can break a pirate haven while nobody watches, but only when it believes it will win, and the result is certain, not rolled. A broken haven is founded again at its site after up to 384 days. This is an exception to "only players break a faction", for havens only.</li>
+      <li><strong>PORTS-2, "Close under blockade".</strong> A trade port whose every lane has been at a haven's full danger for 30 days lays up its ships until the blockade lifts. Pirates also raid port villages for their market stock.</li>
     </ul>
-    <p class="who">Yours because it would change one of the engine's rules.</p>
+    <p>An agent is building it now.</p>
   </div>
+</section>
+
+<section id="s4" data-ss-id="s4" data-ss-section>
+  <h2 data-ss-id="s4-h">EQUILIBRIUM S4: dragons come back to empty lairs, slower where you hunt them <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="s4-meta">bac9ff80, choices EQC22 to EQC33 in <code>docs/overnight-choices-equilibrium.md</code>. S1 (a4cd627) and S2 (2d5b07b) landed earlier.</p>
+  <ul data-ss-id="s4-list">
+    <li><strong>The wait:</strong> a lair that loses its dragon waits <code>min(192, 20 x 2<sup>P</sup>)</code> days for a new one, where P rises with each dragon players kill there. A lair nobody hunts waits 20 days; the most is 192.</li>
+    <li><strong>Starving:</strong> a dragon whose fed share has stayed below 0.35 for 30 days leaves, for an empty lair nearby or off the map.</li>
+    <li><strong>Arrivals:</strong> a newcomer comes only if the region around the lair can feed it, from a village or from herds.</li>
+    <li><strong>On 30 seeds:</strong> lairs are held 83% of the time with a roaming player, against the model's 89%. After every dragon is killed, half are back in 48 days, as the model predicts.</li>
+    <li><strong>Not yet:</strong> one GameTest waits on S3, the site ledger and kill credit, which is not built. The Mowzie build adds those pieces when it reaches its last slice.</li>
+  </ul>
 </section>
 
 <section id="g2-9" data-ss-id="g2-9" data-ss-section>
   <h2 data-ss-id="g2-h">G2-9: each district's glass state is its own page, and saves write only what changed <span class="state">Landed</span></h2>
   <p class="meta" data-ss-id="g2-meta">G2-9 in 0bc2f02 (choices G2-80 to G2-85, docs at 903190a); the saves in b5cd4d2 (choices ID1 to ID9 in <code>docs/choices-industry-dirty-pages.md</code>).</p>
   <p data-ss-id="g2-p">The glass works' state is now saved a district at a time, as a page of its own (table 0x4903, magic <code>IGL1</code>). A district loaded back replays exactly as before, and the compile numbers survive a restart (G2-81). No migration; the GameTest worlds were deleted.</p>
-  <p data-ss-id="g2-cost">That made saves bigger (G2-83): every industry page was written whole at every save, and a glass page is about twelve times a district page. So the coordinator took G2-83's option (a) while you were away, and it landed this evening: a save now writes only the pages that changed since the last one, plus the small globals page. A quiet district costs nothing to save.</p>
+  <p data-ss-id="g2-cost">That made saves bigger (G2-83): every industry page was written whole at every save, and a glass page is about twelve times a district page. So the coordinator took G2-83's option (a) while you were away, it landed this evening, and you confirmed it: a save now writes only the pages that changed since the last one, plus the small globals page. A quiet district costs nothing to save.</p>
   <table class="nums" data-ss-id="g2-table">
     <thead><tr><th scope="col">Quiet districts</th><th scope="col" class="num">Written a save, before G2-9</th><th scope="col" class="num">With G2-9</th><th scope="col" class="num">With changed-page saves</th></tr></thead>
     <tbody>
@@ -210,22 +222,61 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </tbody>
   </table>
   <p class="cap" data-ss-id="g2-cap">Quiet districts replaying 10-node factories, beside 10 busy export lines whose 30 pages change every day; those and the globals page are the 17.5 KB. The save's time on the step thread at 10,000 went from 396 to 527 ms to 97 to 161 microseconds, flat in the district count. The heap and the CPU for each sim day did not change measurably (a loaded laptop). Blank: not measured.</p>
+  <p data-ss-id="g2-confirmed"><strong>Confirmed:</strong> your answer was (a), keep saving only the pages that changed.</p>
   <ul data-ss-id="g2-notes">
     <li><strong>A restart writes every page once:</strong> the first save after it is as big as before; from the second on, only changed pages.</li>
     <li><strong>A missed change cannot slip by quietly:</strong> a check mode hashes every page at each save and fails if one changed without being marked. It ran through the industry tests, the G2-9 restore tests and the benches, and found none.</li>
     <li><strong>The page format did not change,</strong> so no save was wiped.</li>
   </ul>
-  <div class="decision" data-ss-id="g2-ask">
-    <h3>Confirm: save only the pages that changed <span class="open-tag">For you</span></h3>
-    <p>Built and landed, but provisional until you confirm it. Going back is one call in the save path; the format is the same either way.</p>
-    <ul class="opts">
-      <li><span class="k">(a) Keep changed-page saves (recommended).</span></li>
-      <li><span class="k">(b) Keep them and also slim the glass page,</span> perhaps a quarter smaller. It now matters only for the first save after a compile or a restart.</li>
-      <li><span class="k">(c) Go back to writing every page.</span></li>
-    </ul>
-    <p class="who">Yours because it changes how a world is saved.</p>
-  </div>
   <p class="cap" data-ss-id="g2-globals">One more thing to know, not to decide: the globals page is still written whole at every save. It is 105 to 128 bytes today, but it grows with the districts that are surveyed or due, so a large server with many of them would write it every time. Splitting it into pages is the next step if it ever shows in a save's size.</p>
+</section>
+
+<section id="sec1" data-ss-id="sec1" data-ss-section>
+  <h2 data-ss-id="sec1-h">SEC-1: factories split into sections at their links and stores <span class="state plan">Being built</span></h2>
+  <p class="meta" data-ss-id="sec1-meta">SECTIONS.md on mic-rtsim main; your answers recorded there and in DECISIONS.md (9e1457ff).</p>
+  <p data-ss-id="sec1-p">The design for your "Cut at links and stores" came back today, and you answered its six questions, each with the recommended option. Districts stop joining merely because their chunks touch: only a physical link joins them. Inside a district the factory is cut at its stores into sections, each a working line between stores. A section learns, replays and goes stale on its own, and the district stays the unit of loading. An edit stales only the sections around it, and a replay that fails freezes only the sections it names while the rest go on.</p>
+  <h3 data-ss-id="sec1-answers-h">Your six answers</h3>
+  <ol data-ss-id="sec1-answers">
+    <li><strong>Shaft networks</strong> are a shared input that sections cut through, so one network running a whole building does not make the building one section.</li>
+    <li><strong>Rotation across districts:</strong> districts on one shaft network stay apart but replay together. Past 16 districts on one network they are not coupled, and each learns its rates on its own.</li>
+    <li><strong>A store shared by sections:</strong> what goes in and out is counted at Create's movers (funnels, chutes, arms, basins, frogports, packagers and pipes). Hoppers and other mods' movers there are not counted, and their sections are judged together.</li>
+    <li><strong>Packages between districts</strong> sit in a package store owned by no district, with its own saved data.</li>
+    <li><strong>A chain with one end loaded:</strong> packages are modelled both ways, the G2-11 way. They wait on the last loaded conveyor and the far district's replay draws them; a reset leaves at worst a duplicate, never a loss.</li>
+    <li><strong>Packagers are not cuts:</strong> the cut is at the chain, and a packager's packages are counted at the frogport or postbox they pass through.</li>
+  </ol>
+  <p data-ss-id="sec1-next">The build has started, slice by slice. The first of seven slices, under way now, stops the compile, Create's chain conveyors and Create's network recount from loading chunks, which today can pull a district nobody is near into a partial load. Saves get new formats with a loud reset and no migration, as for everything before release.</p>
+</section>
+
+<section id="talk" data-ss-id="talk" data-ss-section>
+  <h2 data-ss-id="talk-h">TALK: talking to villagers, and its first three questions <span class="state plan">In design</span></h2>
+  <p class="meta" data-ss-id="talk-meta">TALK.md on branch feat/talk (f23c1b60), not landed yet.</p>
+  <p data-ss-id="talk-p">Your CL-10 answer is being designed and built as TALK: shift-click a villager, a ribbit or a clan member and it answers with small talk, with how it feels and with what it may have seen, and talking raises your standing with it a little. The design asked you three things, and you answered all three:</p>
+  <ol data-ss-id="talk-answers">
+    <li><strong>TQ-1, sharing the gesture with Carry On: "Talk wins on talkers"</strong>, as recommended. Shift + right-click on a villager, a wandering trader or a ribbit always talks. Carry On can no longer pick those up, and still carries every other mob and every block.</li>
+    <li><strong>TQ-2, how players find out they can talk: "Nothing".</strong> No hint and no guide line; players find it for themselves.</li>
+    <li><strong>TQ-3, names: "Generated names and directions, both are cool ideas!"</strong> Villages, camps and chiefs get generated two-part names, the same for every player. Lines mix naming with a direction and distance, "Mudhollow raided Lowmarsh, a day's ride east", and describing by place, "the goblins in the hills raided the village a day's ride east".</li>
+  </ol>
+  <p data-ss-id="talk-ports">Villagers will talk about <a href="#s8">port</a> news too: raids, blockades, closures, reopenings and havens falling. Any further questions from TALK will come to you.</p>
+</section>
+
+<section id="syn200" data-ss-id="syn200" data-ss-section>
+  <h2 data-ss-id="syn200-h">The 200-district stress run again: rtsim is about 1.3% of a tick <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="syn200-meta">33ce3e55; <code>docs/stress-worlds-results.md</code> section 10.9, choices SG43 to SG49. Run on main at b5cd4d2.</p>
+  <p data-ss-id="syn200-p">The synthetic world our own generator builds: 200 districts, 6,400 factories and 360 cargo trains, run with and without rtsim side by side, and once with rtsim on both sides as a control.</p>
+  <ul data-ss-id="syn200-list">
+    <li><strong>Cost:</strong> rtsim takes 1.6 to 1.7 ms of a 122 to 133 ms tick, about 1.3%, inside the control's noise (its two identical servers ran 3.3 ms apart).</li>
+    <li><strong>The old measure missed most of it.</strong> <code>neoforge tps</code> is measured before the end-of-tick handlers run, where most of rtsim's work is. A new whole-tick measure catches them, and its difference matches rtsim's own cost to 0.03 ms.</li>
+    <li><strong>Detection is spread out:</strong> the periodic pass now runs over 363 ticks, and the worst rtsim tick fell from 201 to 230 ms to 34 to 51 ms.</li>
+    <li><strong>Stations:</strong> all 720 learned both their load and their unload, none wrong. Factory chests changed only by their own machines' work.</li>
+    <li><strong>The first-tick stall</strong> was still there, as expected: the run used mic_climate 0.2.0, and the fix is <a href="#climate">0.2.1</a>.</li>
+  </ul>
+  <h3 data-ss-id="syn200-fix-h">Found, and being fixed now</h3>
+  <ul data-ss-id="syn200-fixes">
+    <li><strong>Trains made edges from a station to itself</strong> when a station's district was not yet declared. Fix: the bridge reports a stop at a station nobody watches, so no false edge starts; and adopts that wait now join the detection already running.</li>
+    <li><strong>The one-call rescan got two to three times slower.</strong> Fix: budget it over ticks, after a profile finds what grew.</li>
+    <li><strong>The globals page is rewritten whole on every save</strong> and grows with the line legs it holds. Fix: the legs get pages of their own, so a save writes only the changed ones.</li>
+  </ul>
+  <p class="cap" data-ss-id="syn200-cap">The coordinator picked these fixes; each can be undone.</p>
 </section>
 
 <section id="history" data-ss-id="history" data-ss-section>
@@ -237,11 +288,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <section id="progress" data-ss-id="progress" data-ss-section>
   <h2 data-ss-id="progress-h">In progress</h2>
   <ul data-ss-id="progress-list">
-    <li><strong>SEC-1, splitting a factory at its links and stores:</strong> the design is being written and comes back to you.</li>
-    <li><strong>EQUILIBRIUM S1, the census of who is alive,</strong> is built (a4cd627, EQC1 to EQC8). <strong>S2, herds,</strong> is being built.</li>
+    <li><strong>The Mowzie build:</strong> M1 records, M2 cultures and M3 the conflict bridge are being built, each reviewed before it lands (MOWZIE.md section 9, b11a3cab). <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#build">The slices</a>.</li>
+    <li><strong>No chat notices for conflict:</strong> an agent is removing the chat notices the game sends today and routing them to news. <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#news">How news travels</a>.</li>
+    <li><strong>Ports:</strong> the port lifecycle is being built, with your PORTS-1 and PORTS-2 answers (<a href="#s8">above</a>).</li>
+    <li><strong>TALK:</strong> shift-click a villager, a ribbit or a clan member to talk to it, your CL-10 answer. In design (TALK.md, on branch feat/talk); you answered its first three questions (<a href="#talk">above</a>), and any more will come to you.</li>
+    <li><strong>SEC-1:</strong> the build has started, slice by slice, beginning with the one that stops Create's chain conveyors and network recount from loading chunks (<a href="#sec1">above</a>).</li>
+    <li><strong>The stress run's fixes:</strong> the three in <a href="#syn200">its card</a>.</li>
+    <li><strong>The far view gallery:</strong> trains and dragons in Distant Horizons are being recorded on worlds we generated ourselves, for a separate private page.</li>
+    <li><strong>EQUILIBRIUM:</strong> S1, the census of who is alive (a4cd627), S2, herds that settle and come back (2d5b07b), and now S4, dragons (<a href="#s4">above</a>), are built. S3, the site ledger and kill credit, comes with the Mowzie build's last slice.</li>
   </ul>
 </section>
 </main>
-<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers, the stress run, TALK's questions and the dragons. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
 </body>
 </html>
