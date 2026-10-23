@@ -4726,6 +4726,41 @@ impl Ships {
                 ));
             }
         }
+        // The lifecycle (§2.4.6a): a shut haven has no active ship, and exactly one live look
+        // (an open one at most one); a laid-up ship's crew is ashore.
+        let mut looks = vec![0usize; self.havens.len()];
+        for (_, e) in self.wheel.iter() {
+            if let Ev::Refound { haven, epoch } = *e
+                && self
+                    .havens
+                    .get(haven as usize)
+                    .is_some_and(|hv| hv.epoch == epoch)
+            {
+                looks[haven as usize] += 1;
+            }
+        }
+        for (h, hv) in self.havens.iter().enumerate() {
+            let ships = hv
+                .ships
+                .iter()
+                .filter_map(|&s| self.ships.get(s).map(|x| (s, x)));
+            for (s, x) in ships {
+                if hv.shut.is_some() && x.is_active() {
+                    return Err(format!("haven {h} is shut but its ship {s:?} is active"));
+                }
+                if x.is_laid_up() && x.crew != 0 {
+                    return Err(format!("laid-up ship {s:?} keeps {} crew aboard", x.crew));
+                }
+            }
+            let want = if hv.shut.is_some() { 1..=1 } else { 0..=1 };
+            if !want.contains(&looks[h]) {
+                return Err(format!(
+                    "haven {h} ({}) has {} live looks",
+                    if hv.shut.is_some() { "shut" } else { "open" },
+                    looks[h]
+                ));
+            }
+        }
         for (l, t) in self.lane_threats() {
             for &h in &t.hunters {
                 let hunting = self
