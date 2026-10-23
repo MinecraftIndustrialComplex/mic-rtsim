@@ -375,7 +375,7 @@ fn a_raid_hits_the_nearer_end() {
         for e in s.ships.log.iter().filter(|e| e.kind == "port raid") {
             let w: Vec<&str> = e.what.split_whitespace().collect();
             let key: u64 = w[3].parse().expect("the village key");
-            let lane: usize = w[6].parse().expect("the lane");
+            let lane: usize = w[6].trim_end_matches(':').parse().expect("the lane");
             let h = owner[e.ship.as_ref().expect("a ship")];
             let hv = &s.ships.havens[h];
             let ln = &s.ships.lanes[lane];
@@ -395,4 +395,137 @@ fn a_raid_hits_the_nearer_end() {
         n
     });
     assert!(seen.iter().sum::<usize>() > 20, "{seen:?}");
+}
+
+// ---- the measurement -----------------------------------------------------------------------------
+
+/// One world's unattended run (`years` model years), with port raids on or off.
+#[derive(Clone, Debug, Default)]
+struct Measure {
+    raids: u64,
+    items: u64,
+    /// Each raid's share of the village's whole stock it took, and its items.
+    shares: Vec<f64>,
+    hunts: u64,
+    /// The mean share of the havens' slots manned at a 24-day census.
+    manned: f64,
+    lost_men: f64,
+}
+
+fn run_measure<M: rtsim_ships::water::WaterMask>(
+    mut world: World,
+    mut ships: Ships,
+    mask: &M,
+    havens: &[u32],
+    years: u64,
+) -> Measure {
+    ships.log_enabled = true;
+    let mut fake = FakeShips::new(f64::from(ships.tun.view_radius));
+    let slots: usize = havens
+        .iter()
+        .map(|&h| ships.havens[h as usize].ships.len())
+        .sum();
+    let (mut up_sum, mut samples) = (0.0, 0u64);
+    let mut t = Tick::ZERO;
+    while t < Tick::from_days(years * 96) {
+        t += 24 * TICKS_PER_DAY;
+        synth::drive(
+            &mut world,
+            &mut ships,
+            &mut fake,
+            &mut NoInfrastructure,
+            mask,
+            t,
+            TICKS_PER_DAY / 4,
+        );
+        let up: usize = havens
+            .iter()
+            .map(|&h| {
+                ships.havens[h as usize]
+                    .ships
+                    .iter()
+                    .filter(|&&p| ships.ship(p).is_some_and(|x| x.is_active()))
+                    .count()
+            })
+            .sum();
+        up_sum += up as f64 / slots as f64;
+        samples += 1;
+    }
+    ships.check(&world).expect("check");
+    let mut m = Measure {
+        raids: ships.stats.port_raids,
+        items: ships.stats.items_from_ports,
+        hunts: ships.stats.hunts,
+        manned: up_sum / samples as f64,
+        lost_men: ships.stats.port_raid_lost_milli as f64 / 1000.0,
+        ..Measure::default()
+    };
+    for e in ships.log.iter().filter(|e| e.kind == "port raid") {
+        // "raids port village K from lane L: N of S items there; ..."
+        let w: Vec<&str> = e.what.split_whitespace().collect();
+        let (n, stock): (f64, f64) = (w[7].parse().unwrap(), w[9].parse().unwrap());
+        m.shares.push(if stock > 0.0 { n / stock } else { 0.0 });
+    }
+    m
+}
+
+fn measure(kind: &str, seed: u64, carry: u32, years: u64) -> Measure {
+    let tun = ShipTunables {
+        port_raid_carry: carry,
+        ..ShipTunables::default()
+    };
+    match kind {
+        "sea_havens" => {
+            let s = synth::sea_havens(seed, tun);
+            run_measure(s.world, s.ships, &s.mask, &s.havens, years)
+        }
+        _ => {
+            let mut c = synth::coastal(seed, tun);
+            if kind == "coastal_pop12" {
+                set_pops(&mut c.world, 12);
+            }
+            run_measure(c.world, c.ships, &c.mask, &[c.haven], years)
+        }
+    }
+}
+
+/// The numbers for the doc (docs/choices-ports.md PC46): port raids per year per sea, items per
+/// raid, the share of a village's stock a raid takes (mean and max), hunts per year and the
+/// haven's manned share, with `port_raid_carry` 10 against 0, seeds 1 to 30. Run in release:
+/// `nice -n 10 cargo test --release -p rtsim-ships --test port_raids -- --ignored --nocapture`.
+#[test]
+#[ignore = "long: ten model years on 30 seeds, three worlds, carry 10 and 0"]
+fn port_raids_measured() {
+    let years = 10;
+    for kind in ["coastal", "coastal_pop12", "sea_havens"] {
+        let on = per_seed(&seeds(), |s| measure(kind, s, 10, years));
+        let off = per_seed(&seeds(), |s| measure(kind, s, 0, years));
+        let n = on.len() as f64;
+        let mean = |v: &[Measure], f: fn(&Measure) -> f64| v.iter().map(f).sum::<f64>() / n;
+        let raids: u64 = on.iter().map(|m| m.raids).sum();
+        let items: u64 = on.iter().map(|m| m.items).sum();
+        let shares: Vec<f64> = on.iter().flat_map(|m| m.shares.iter().copied()).collect();
+        let (smean, smax) = (
+            shares.iter().sum::<f64>() / shares.len().max(1) as f64,
+            shares.iter().copied().fold(0.0, f64::max),
+        );
+        eprintln!(
+            "{kind}: carry 10 against 0, {} seeds x {years} years\n  port raids per year per sea \
+             {:.2} (carry 0: {:.2})\n  items per raid {:.1}\n  share of a village's stock per \
+             raid: mean {:.3}, max {:.3} ({} raids)\n  men lost per raid {:.2}\n  hunts per year \
+             {:.1} (carry 0: {:.1})\n  haven manned share {:.3} (carry 0: {:.3})",
+            on.len(),
+            raids as f64 / n / years as f64,
+            off.iter().map(|m| m.raids).sum::<u64>() as f64 / n / years as f64,
+            items as f64 / raids.max(1) as f64,
+            smean,
+            smax,
+            shares.len(),
+            on.iter().map(|m| m.lost_men).sum::<f64>() / raids.max(1) as f64,
+            mean(&on, |m| m.hunts as f64) / years as f64,
+            mean(&off, |m| m.hunts as f64) / years as f64,
+            mean(&on, |m| m.manned),
+            mean(&off, |m| m.manned),
+        );
+    }
 }
