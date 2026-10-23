@@ -226,9 +226,9 @@ public final class DragonBridge implements SessionPlugin {
     public int oilConfigSent = -1;
     /** The obsSeq of this session's first OIL_CONFIG (the one sent at session start); -1 before it. */
     public long sessionOilConfigSeq = -1;
-    /** The flags of each body's DRAGON_MATERIALIZE this session, the last 1,024 agents (GameTests). */
     /** Bodies materialized above Ice and Fire's flight ceiling, for the log ({@link #aboveCeiling}). */
     private int aboveCeiling;
+    /** The flags of each body's DRAGON_MATERIALIZE this session, the last 1,024 agents (GameTests). */
     private final Map<Long, Integer> materializeFlags = new LinkedHashMap<>() {
         @Override
         protected boolean removeEldestEntry(Map.Entry<Long, Integer> eldest) {
@@ -559,9 +559,9 @@ public final class DragonBridge implements SessionPlugin {
             return true;
         }
         if ((flags & Materialize.FLAG_HOSTILE) != 0) {
-            UUID target = new UUID(b.getLong(at + Materialize.TARGET_PLAYER_MOST), b.getLong(at + Materialize.TARGET_PLAYER_LEAST));
+            UUID prey = new UUID(b.getLong(at + Materialize.TARGET_PLAYER_MOST), b.getLong(at + Materialize.TARGET_PLAYER_LEAST));
             // The level's own players: a GameTest's players stand in the level, not in the player list.
-            Player player = level.getPlayerByUUID(target);
+            Player player = level.getPlayerByUUID(prey);
             if (player != null && !player.isSpectator())
                 d.setTarget(player);
         }
