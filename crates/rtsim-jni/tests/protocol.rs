@@ -4327,13 +4327,24 @@ mod conflict {
         .unwrap();
         j.idle();
         assert_eq!(e.talk_stats().posted, 1);
+        // The board also holds the camp's own Feud against the killer, recorded at the rung the
+        // killing reached (TK26): two stories, each told as the camp's own.
         let (len, f) = ask_holder(&mut j, 7, kind, CAMP, PLAYER2, both).unwrap();
-        assert_eq!(f.news.len(), 1);
-        assert_eq!(len, facts::record_size(1, true), "48 + 120 + 48");
-        let n = &f.news[0];
-        assert_eq!(n.kind, rtsim_knowledge::ReportKind::Raid as u16);
+        assert_eq!(f.news.len(), 2, "the post and the feud");
+        assert_eq!(len, facts::record_size(2, true), "48 + 2 x 120 + 48");
+        let of = |k: rtsim_knowledge::ReportKind| {
+            f.news
+                .iter()
+                .find(|n| n.kind == k as u16)
+                .unwrap_or_else(|| panic!("a {k:?} in the news"))
+        };
+        let n = of(rtsim_knowledge::ReportKind::Raid);
         assert_eq!(n.talk_flags & (news::BY_US | news::TO_US), news::BY_US);
         assert_eq!((n.who.class, n.who.a), (reference::class::CAMP, CAMP));
+        let n = of(rtsim_knowledge::ReportKind::Feud);
+        assert_eq!(n.talk_flags & (news::BY_US | news::TO_US), news::BY_US);
+        assert_eq!((n.who.class, n.who.a), (reference::class::CAMP, CAMP));
+        assert_eq!(n.severity, view.step as u8, "the rung");
         assert!(f.faction.is_some());
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
