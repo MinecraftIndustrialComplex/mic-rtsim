@@ -829,16 +829,20 @@ mod tests {
     use crate::synth;
 
     /// Closes trade port `d` now as a check would (blockaded and closed at `at`, its next check
-    /// booked) and lays up what the rule says.
+    /// booked unless one is: a port within its minimum open spell keeps its checks, and a second
+    /// would leave a stale one in the wheel) and lays up what the rule says.
     fn close(c: &mut synth::Coastal, d: u32, at: Tick) {
         let (w, s) = (&mut c.world, &mut c.ships);
         assert!(s.is_trade_port(w, d), "dock {d}");
         let p = s.ports.entry(d).or_default();
         p.blockaded = p.blockaded.or(Some(at));
         p.closed = Some(at);
+        let booked = p.check.is_some();
         s.stats.closures += 1;
-        let when = at + s.check_ticks();
-        s.book_check(d, when);
+        if !booked {
+            let when = at + s.check_ticks();
+            s.book_check(d, when);
+        }
         s.resettle(w, d, at);
         s.check(w).expect("checks after the closure");
     }
@@ -920,8 +924,9 @@ mod tests {
     /// closes on day 10 and `b` on day 20; `a` reopens at its first check after day 40 and the
     /// service stays laid up since day 10, its ships in port; `b` reopens at its first after day
     /// 50 and the service sails: its lay-up is forgotten and its ships are booked to relaunch.
-    /// `a` closing again on day 70 lays it up since day 70. Once both ports are open, cold and
-    /// past their blockade, neither keeps a state (PC96).
+    /// `a` closing again, on day 70 or once its minimum open spell (PC99) is over if that is
+    /// later, lays it up since then. Once both ports are open, cold, past their blockade and past
+    /// their open spells, neither keeps a state (PC96).
     #[test]
     fn a_service_calling_at_two_closed_ports() {
         let mut c = quiet_coast(2);
@@ -945,11 +950,19 @@ mod tests {
             ids.iter().all(|&id| !c.ships.ships[id].is_laid_up()),
             "every slot relaunched or booked to"
         );
-        let t5 = Tick::from_days(70);
+        // A check never closes a port within its open spell, so neither does this one.
+        let spell = c.ships.min_open_ticks();
+        let nerve = c
+            .ships
+            .port(a)
+            .and_then(|p| p.reopened)
+            .map_or(0, |r| r.0 + spell);
+        let t5 = Tick::from_days(nerve.div_ceil(TICKS_PER_DAY).max(70));
         run(&mut c, t5);
         close(&mut c, a, t5);
         assert_eq!(c.ships.laid_up_since(v), Some(t5));
-        run(&mut c, Tick::from_days(130));
+        let until = t5 + c.ships.min_closed_ticks() + spell + 3 * c.ships.check_ticks();
+        run(&mut c, until);
         assert!(!c.ships.service_laid_up(v));
         assert!(
             c.ships.ports.is_empty(),
