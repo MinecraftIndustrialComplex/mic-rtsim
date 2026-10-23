@@ -149,12 +149,20 @@ fn a_frostmaw_climbs_to_raid_repeats_and_calms_to_notice() {
     let p = c.player(&mut w, synth::PLAYER);
     let raid = theta(&c, f, Step::Raid);
     // Between Raid and Invasion (twice Raid's threshold): it raids and repeats, never invades.
-    let mut seen = feed(&mut c, &mut w, f, p,
+    let mut seen = feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
         1.5 * raid,
         Tick(10),
         Tick::from_days(60),
     );
-    seen.extend(feed(&mut c, &mut w, f, p,
+    seen.extend(feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
         0.0,
         Tick::from_days(60),
         Tick::from_days(160),
@@ -192,7 +200,10 @@ fn a_frostmaw_climbs_to_raid_repeats_and_calms_to_notice() {
         .collect();
     assert!(homes.len() > repeats.len() && repeats.len() >= 3);
     for (h, r) in homes.iter().zip(&repeats) {
-        assert!((4.0 - 1e-6..4.0 + 1e-3).contains(&(r - h)), "home {h}, again {r}");
+        assert!(
+            (4.0 - 1e-6..4.0 + 1e-3).contains(&(r - h)),
+            "home {h}, again {r}"
+        );
     }
     c.check(&w).expect("books");
     let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save()).unwrap();
@@ -208,7 +219,11 @@ fn an_umvuthana_grove_climbs_to_invasion_and_never_besieges() {
     assert_eq!(w.nodes[node].kind, NodeKind::Haven(MarketCulture::Human));
     let p = c.player(&mut w, synth::PLAYER);
     let inv = theta(&c, f, Step::Invasion);
-    let seen = feed(&mut c, &mut w, f, p,
+    let seen = feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
         3.0 * inv,
         Tick(10),
         Tick::from_days(80),
@@ -260,8 +275,8 @@ fn tribute_with_no_market_price_uses_the_fallback() {
     assert_eq!(x.g.anchor, d.made);
     let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
     let g = x.g.total_at(d.made, lambda);
-    let bend = Temperament::from_seed(c.factions[f as usize].chief_seed)
-        .bend(Trait::Aggressive, 1000, 50);
+    let bend =
+        Temperament::from_seed(c.factions[f as usize].chief_seed).bend(Trait::Aggressive, 1000, 50);
     let want = (0.5 * g * f64::from(bend) / 1000.0 * 9.0).ceil() as i64;
     assert_eq!(d.tribute, want, "grievance {g}, bend {bend}");
     // About 9 times what goblins would ask in emeralds.
@@ -277,7 +292,11 @@ fn an_empty_top_rung_ends_the_climb() {
     let (mut w, mut c, f) = setup_with(14, cultures, "goblin");
     let p = c.player(&mut w, synth::PLAYER);
     let siege = theta(&c, f, Step::Siege);
-    let seen = feed(&mut c, &mut w, f, p,
+    let seen = feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
         2.0 * siege,
         Tick(10),
         Tick::from_days(80),
@@ -298,7 +317,15 @@ fn only_raid_among_the_war_rungs() {
         let (mut w, mut c, f) = setup_with(15, cultures, "goblin");
         let p = c.player(&mut w, synth::PLAYER);
         let inv = theta(&c, f, Step::Invasion);
-        let seen = feed(&mut c, &mut w, f, p, 2.0 * inv, Tick(10), Tick::from_days(60));
+        let seen = feed(
+            &mut c,
+            &mut w,
+            f,
+            p,
+            2.0 * inv,
+            Tick(10),
+            Tick::from_days(60),
+        );
         let r = rungs(&seen);
         assert_eq!(
             r,
@@ -357,7 +384,11 @@ fn a_repeat_waits_while_cowed() {
     let before = c.stats.repeats;
     feed(&mut c, &mut w, f, p, 2.0 * raid, t, Tick(cowed.0 - HOUR));
     assert_eq!(c.stats.repeats, before, "none while cowed");
-    feed(&mut c, &mut w, f, p,
+    feed(
+        &mut c,
+        &mut w,
+        f,
+        p,
         2.0 * raid,
         Tick(cowed.0 - HOUR),
         Tick(cowed.0 + 2 * HOUR),
@@ -409,7 +440,11 @@ fn a_step_down_from_siege_crosses_two_empty_rungs() {
     assert!(c.parties[band].chief);
     c.run_until(&mut w, &mut NoInfrastructure, Tick(100));
     c.chief_killed(&mut w, band, Some(p), Tick(100));
-    assert_eq!(c.feud(f, p).unwrap().step, Step::Envoy, "Siege, Scouts, Envoy");
+    assert_eq!(
+        c.feud(f, p).unwrap().step,
+        Step::Envoy,
+        "Siege, Scouts, Envoy"
+    );
 
     // A calm from Siege lands on Scouts.
     let (mut w, mut c, f) = setup_with(18, cultures, "goblin");
@@ -440,7 +475,11 @@ fn destroyed_loot_leaves_the_books() {
         )
         .expect("plunderers");
     // A watched band carries items off from a player's containers.
-    let iron = w.goods.find("iron").or_else(|| w.goods.ids().next()).unwrap();
+    let iron = w
+        .goods
+        .find("iron")
+        .or_else(|| w.goods.ids().next())
+        .unwrap();
     let looted = Obs::Looted(boundary::BandLooted {
         agent: Party::agent(p),
         epoch: 0,
@@ -451,7 +490,11 @@ fn destroyed_loot_leaves_the_books() {
         }],
     });
     c.ingest(&mut w, &mut NoInfrastructure, &looted, Tick(20));
-    assert_eq!(c.parties[p].from_players.get(&iron), None, "nothing carried");
+    assert_eq!(
+        c.parties[p].from_players.get(&iron),
+        None,
+        "nothing carried"
+    );
     let mut t = Tick(20);
     while !c.parties.is_empty() {
         t = c.next_due().unwrap_or(Tick(t.0 + TICKS_PER_DAY));

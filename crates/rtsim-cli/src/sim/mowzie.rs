@@ -346,7 +346,10 @@ fn den_ladder(seed: u64, slice: &'static str) -> RunOut {
         order.starts_with(&[Step::Notice, Step::Raid, Step::Notice, Step::None])
             && st.escalations[Step::Envoy.index()] == 0
             && st.escalations[Step::Scouts.index()] == 0,
-        format!("{order:?}; Raid's threshold {raid:.1}, the grievance held near {:.1}", 1.5 * raid),
+        format!(
+            "{order:?}; Raid's threshold {raid:.1}, the grievance held near {:.1}",
+            1.5 * raid
+        ),
     );
     let again = days(&c, "repeat");
     let turns = &tr.turns;
@@ -409,8 +412,11 @@ fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
             && let Some(d) = x.demand
         {
             let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
-            let bend = Temperament::from_seed(c.factions[f as usize].chief_seed)
-                .bend(Trait::Aggressive, 1000, 50);
+            let bend = Temperament::from_seed(c.factions[f as usize].chief_seed).bend(
+                Trait::Aggressive,
+                1000,
+                50,
+            );
             // The grievance the demand was priced on: the climb committed it, and no kill came
             // later that day.
             let g = x.g.total_at(d.made, lambda);
@@ -473,14 +479,11 @@ fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
 /// The engine's books and a save that loads to the same state.
 fn books(out: &mut Vec<Check>, c: &Conflict, w: &World) {
     let ok = c.check(w);
-    check(
-        out,
-        "books balance",
-        ok.is_ok(),
-        format!("{ok:?}"),
-    );
+    check(out, "books balance", ok.is_ok(), format!("{ok:?}"));
     let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save());
-    let same = back.as_ref().is_ok_and(|b| b.state_hash() == c.state_hash());
+    let same = back
+        .as_ref()
+        .is_ok_and(|b| b.state_hash() == c.state_hash());
     check(
         out,
         "a save loads to the same state",

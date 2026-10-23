@@ -1747,8 +1747,7 @@ impl Conflict {
                 let base = self.culture(f).def.tribute_per_grievance * g;
                 let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50);
                 let per_coin = self.tribute_per_coin(w, f, good);
-                let tribute =
-                    ((base * f64::from(bend) / 1000.0 * per_coin).ceil() as i64).max(1);
+                let tribute = ((base * f64::from(bend) / 1000.0 * per_coin).ceil() as i64).max(1);
                 let deadline = at + days_to_ticks(self.culture(f).def.demand_days);
                 let feud = self.feud_mut(f, a).expect("exists");
                 feud.demand = Some(Demand {
