@@ -30,7 +30,9 @@
 //!   hash beside the meta page, checked on load. The ships live in the phase 1 world (lanes are its edges, voyages its legs), so
 //!   while they are active the phase 1 link snapshots at every save, in the same commit.
 //! - **The switch** (C25, U10): `Module.SHIPS` (bit 6). Off, the ships ignore their records,
-//!   run nothing, write nothing and keep the page they had.
+//!   run nothing, write nothing and keep the page they had, but that a switch-off (or a session
+//!   that starts with them off) first lifts every port closure, so no lane of the world stays
+//!   closed by a module that is not running (PC101).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -273,19 +275,27 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
-    // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (no save writes them).
+    // The first record of the engine's only session: what it holds is its pages as read (the
+    // world they live in was read with them), so a switch that is off from the start keeps
+    // exactly those (no save writes them), but for a closure the pages still hold (the ships ran
+    // when they were saved): it is lifted, as a switch-off lifts it (PC101), and the next save
+    // writes the pages once.
     st.ships.enabled = module_mask & MODULE_SHIPS != 0;
+    if !st.ships.enabled {
+        lift_closures(st);
+    }
     st.ships.reset_due = true;
     reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: what the ships hold is written once more as it is now and then kept;
-/// queued commands are dropped (all per session). On: the reset is due.
+/// The switch changed (MODULES, U10). Off: every port closure is lifted (PC101); what the ships
+/// hold is then written once more as it is and kept; queued commands are dropped (all per
+/// session). On: the reset is due.
 fn set_enabled(st: &mut State, on: bool) {
     let was = st.ships.enabled;
     st.ships.enabled = on;
     if was && !on {
+        lift_closures(st);
         // Nothing decided before the switch goes out after it: bodies of before are gone when it
         // comes back on.
         let _ = st.ships.engine.take_commands();
@@ -296,6 +306,27 @@ fn set_enabled(st: &mut State, on: bool) {
         st.ships.reset_due = true;
     }
     reset_if_due(st);
+}
+
+/// The ships stop running (PC101): a switched-off module keeps no port of the world closed. Every
+/// closure, blockade and minimum open spell is lifted at the world's present, the closed ports'
+/// lanes open in the world, their laid-up slots are booked to relaunch (by PC90's rule, at the
+/// switch-on's catch-up: PC103) and every lane's heat drops to 0 (`Ships::lift_closures`). The
+/// world is saved with the next save, and so are the ships' pages.
+fn lift_closures(st: &mut State) {
+    if !st.ships.active() {
+        return;
+    }
+    let l = st.ships.engine.lift_closures(&mut st.phase1.world);
+    if !l.any() {
+        return;
+    }
+    st.phase1.taint();
+    st.ships.pager.save_due = true;
+    log_info(&format!(
+        "ships switched off: {} port closures lifted ({} ports blockaded or closed, {} lanes' heat dropped); their lanes are open",
+        l.closed, l.ports, l.lanes
+    ));
 }
 
 /// Bodies of an earlier session (or of before a switch-off) are gone: every ship is abstract.
@@ -729,6 +760,22 @@ impl super::Engine {
     pub fn with_ships<R>(&self, f: impl FnOnce(&Ships, &rtsim_world::World) -> R) -> R {
         let st = super::lock(&self.state);
         f(&st.ships.engine, &st.phase1.world)
+    }
+
+    /// Runs `f` on the ships and the phase 1 world they live in, under the state lock, for a test
+    /// that changes them (`Ships::close_port`); what the ships decided joins the command queue,
+    /// and the world and the ships' pages are saved with the next save. For tests and debugging,
+    /// between steps only.
+    pub fn with_ships_mut<R>(&self, f: impl FnOnce(&mut Ships, &mut rtsim_world::World) -> R) -> R {
+        let mut st = super::lock(&self.state);
+        let st = &mut *st;
+        let r = f(&mut st.ships.engine, &mut st.phase1.world);
+        st.phase1.taint();
+        st.ships.pager.save_due = true;
+        if st.ships.enabled {
+            take_commands(st);
+        }
+        r
     }
 
     /// Whether the last start read the ships back to the state hash they were saved with

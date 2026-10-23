@@ -84,7 +84,8 @@ public final class FarView {
                 sent.put(i.id(), s);
             }
             s.missed = 0;
-            FarWire.Intro intro = new FarWire.Intro(s.handle, i.id(), i.kind().wire, i.style(), i.variant(), i.size(), i.rgb());
+            FarWire.Intro intro = new FarWire.Intro(s.handle, i.id(), i.kind().wire, i.style(), i.variant(), i.size(), i.rgb(),
+                    i.shapeHash(), i.age());
             if (fresh || !intro.equals(s.intro)) {
                 out.add(intro);
                 s.intro = intro;

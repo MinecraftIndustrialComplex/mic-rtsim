@@ -13,7 +13,7 @@
 //! - **write** ([`write_resends`], [`write_queue`]): commands into the command buffer, with the
 //!   bridge's sequences, the DICT records they need first, and what does not fit left for later;
 //! - **save** ([`save`], [`saved`]): the engine's own pages changed since the last save (tables
-//!   0x4900 to 0x4903, F36, G2-9, docs/choices-industry-dirty-pages.md) and the link's page,
+//!   0x4900 to 0x4904, F36, G2-9, ID10, docs/choices-industry-dirty-pages.md) and the link's page,
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
@@ -32,7 +32,9 @@ use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
 use rtsim_industry::obs::{Obs, Timed};
-use rtsim_industry::persist::{CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE};
+use rtsim_industry::persist::{
+    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE,
+};
 use rtsim_industry::threat::Threat;
 use rtsim_industry::tunables::Tunables;
 use rtsim_industry::wire as iw;
@@ -50,8 +52,15 @@ pub const KEY_LINK: PageKey = PageKey::new(1, 0x49);
 const LINK_MAGIC: u32 = u32::from_le_bytes(*b"RTJI");
 const LINK_VERSION: u16 = 1;
 
-/// The industry engine's own page tables (rtsim-industry `persist.rs`, F36; the glass box's, G2-9).
-pub const TABLES: [u16; 4] = [GLOBAL_TABLE, DISTRICT_TABLE, CLUSTER_TABLE, GLASS_TABLE];
+/// The industry engine's own page tables (rtsim-industry `persist.rs`, F36; the glass box's, G2-9;
+/// the booked train legs', ID10).
+pub const TABLES: [u16; 5] = [
+    GLOBAL_TABLE,
+    DISTRICT_TABLE,
+    CLUSTER_TABLE,
+    GLASS_TABLE,
+    LEG_TABLE,
+];
 
 /// docs/industry-boundary.md §2.2.
 pub const DICT_GOOD: u32 = 0x10;

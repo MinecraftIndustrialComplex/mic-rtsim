@@ -6,16 +6,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * TALK's two records (docs/boundary.md §13), offsets from the start of the record. Mirrors
- * {@code crates/rtsim-jni/src/talk_wire.rs} (the reference codec): the bytes of one ask and one facts
- * record are pinned on both sides ({@code TalkRecordsTest} here). Pure: no Minecraft types, so a unit
- * test loads it.
+ * TALK's three records (docs/boundary.md §13), offsets from the start of the record. Mirrors
+ * {@code crates/rtsim-jni/src/talk_wire.rs} (the reference codec): the bytes of one ask, one facts
+ * record and one TALKED are pinned on both sides ({@code TalkRecordsTest} here). Pure: no Minecraft
+ * types, so a unit test loads it.
  *
  * <ul>
  *   <li><b>TALK_ASK</b> (0x00C0, Java to the engine, latest wins, aux = n): Java's open questions,
  *       {@code n} asks of {@link Ask#SIZE} bytes from offset 8.</li>
  *   <li><b>TALK_FACTS</b> (0x8A00, engine to Java, aux = news n): one answer, 48 bytes of facts and then
  *       {@code n} news items of {@link News#SIZE} bytes, each with three refs of {@link Ref#SIZE} bytes.</li>
+ *   <li><b>TALKED</b> (0x0A00, Java to the engine, <i>journaled</i>): one credited talk with a ribbit,
+ *       {@link Talked#SIZE} bytes. Sent by the Ribbits plugin; the engine applies it once by its op id.</li>
  * </ul>
  *
  * Every value is little-endian. A decode of a record that is too short for its own {@code n}, or that
@@ -26,6 +28,7 @@ public final class TalkRecords {
 
     public static final int TALK_ASK = 0x00C0;
     public static final int TALK_FACTS = 0x8A00;
+    public static final int TALKED = 0x0A00;
 
     public static boolean isTalkCommand(int kind) {
         return kind >= 0x8A00 && kind <= 0x8AFF;
@@ -265,6 +268,41 @@ public final class TalkRecords {
         b.putInt(Facts.GLUTTED_RATIO, f.gluttedRatio);
         for (int i = 0; i < n; i++)
             f.news.get(i).write(b, Facts.NEWS + i * News.SIZE);
+        return rec;
+    }
+
+    // ---- talked ---------------------------------------------------------------------------------
+
+    /**
+     * One credited talk (TK2): the village that felt it, who talked, and the talker's body (Java's
+     * dictionary id of its entity type, 0 for unknown). The header, observation sequence and game time are
+     * the journal's ({@code beginJournaled}); the op id is filled in by {@code commitWithOpId}.
+     */
+    public record Talked(long village, long playerMost, long playerLeast, int body) {
+        public static final int SIZE = 64;
+        public static final int OP_ID = 24, VILLAGE = 32, PLAYER_MOST = 40, PLAYER_LEAST = 48, BODY = 56, RESERVED = 60;
+    }
+
+    /** Writes a TALKED's own fields into a journaled record the boundary began, with absolute puts (not the op id). */
+    public static void writeTalked(ByteBuffer b, Talked t) {
+        b.putLong(Talked.VILLAGE, t.village);
+        b.putLong(Talked.PLAYER_MOST, t.playerMost);
+        b.putLong(Talked.PLAYER_LEAST, t.playerLeast);
+        b.putInt(Talked.BODY, t.body);
+        b.putInt(Talked.RESERVED, 0);
+    }
+
+    /** A whole TALKED record (what the journal writes; for tests and tools). */
+    public static byte[] encodeTalked(long obsSeq, long gameTime, long opId, Talked t) {
+        byte[] rec = new byte[Talked.SIZE];
+        ByteBuffer b = ByteBuffer.wrap(rec).order(ByteOrder.LITTLE_ENDIAN);
+        b.putShort(R_KIND, (short) TALKED);
+        b.putShort(R_SIZE, (short) rec.length);
+        b.putInt(R_AUX, 0);
+        b.putLong(8, obsSeq);
+        b.putLong(16, gameTime);
+        b.putLong(Talked.OP_ID, opId);
+        writeTalked(b, t);
         return rec;
     }
 }
