@@ -27,9 +27,10 @@
 //! slot's relaunch (`Ev::Relaunch`, tag 15) to the wheel, and one trailing section after the
 //! resident state, written only once a port has a state, a service is laid up or a closure
 //! counter moved (so a run with closures off saves the bytes it did before, after the magic):
-//! the ports' states, the laid-up services' ticks and the closures' counters. A reader that finds
-//! no bytes left reads it as empty. The new tags and the section change the layout, so the
-//! format is `RTS4` (2026-10-23); an `RTS3` save is refused by name like the older ones.
+//! the ports' states, the laid-up services' ticks, the slots' idle spells (PC92) and the
+//! closures' counters. A reader that finds no bytes left reads it as empty. The new tags and the
+//! section change the layout, so the format is `RTS4` (2026-10-23); an `RTS3` save is refused by
+//! name like the older ones.
 //!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
@@ -63,8 +64,9 @@ use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
     Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate,
-    PlayerView, PortState, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger,
-    ShipRange, ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
+    PlayerView, PortState, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipId,
+    ShipLedger, ShipRange, ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE,
+    THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -918,15 +920,12 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
     })
 }
 
-/// The ports' blockade states, the laid-up services and the closures' counters (§2.4.6a rule 7,
-/// S8b-4), appended to the resident state: written only once a port has a state or a counter
-/// moved, so a run with closures off saves exactly the bytes it did before.
-fn put_blockades(
-    w: &mut Writer,
-    ports: &BTreeMap<u32, PortState>,
-    laid_up: &BTreeMap<u32, Tick>,
-    s: &ShipStats,
-) {
+/// The ports' blockade states, the laid-up services, the slots' idle spells and the closures'
+/// counters (§2.4.6a rule 7, S8b-4), appended to the resident state: written only once a port
+/// has a state or a counter moved, so a run with closures off saves exactly the bytes it did
+/// before.
+fn put_blockades(w: &mut Writer, ships: &Ships) {
+    let (ports, laid_up, idle, s) = (&ships.ports, &ships.laid_up, &ships.idle, &ships.stats);
     let counts = [
         s.blockades,
         s.closures,
@@ -936,7 +935,7 @@ fn put_blockades(
         s.port_checks,
         s.relaunches_put_off,
     ];
-    if ports.is_empty() && laid_up.is_empty() && counts.iter().all(|&c| c == 0) {
+    if ports.is_empty() && laid_up.is_empty() && idle.is_empty() && counts.iter().all(|&c| c == 0) {
         return;
     }
     w.u8(1);
@@ -953,17 +952,28 @@ fn put_blockades(
         w.var_u64(u64::from(*v));
         w.u64(t.0);
     }
+    put_usize(w, idle.len());
+    for (id, (from, to)) in idle {
+        w.u64(id.to_bits());
+        w.u64(from.0);
+        w.u64(to.0);
+    }
     counts.iter().for_each(|&c| w.var_u64(c));
 }
 
-/// The ports and laid-up services [`put_blockades`] wrote.
-type Blockades = (BTreeMap<u32, PortState>, BTreeMap<u32, Tick>);
+/// The ports, laid-up services and idle spells [`put_blockades`] wrote.
+type Blockades = (
+    BTreeMap<u32, PortState>,
+    BTreeMap<u32, Tick>,
+    BTreeMap<ShipId, (Tick, Tick)>,
+);
 
 fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockades> {
     let mut ports = BTreeMap::new();
     let mut laid_up = BTreeMap::new();
+    let mut idle = BTreeMap::new();
     if r.is_empty() {
-        return Ok((ports, laid_up));
+        return Ok((ports, laid_up, idle));
     }
     match r.u8()? {
         1 => {}
@@ -1001,6 +1011,15 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockad
         last = Some(v);
         laid_up.insert(v, Tick(r.u64()?));
     }
+    let mut last: Option<ShipId> = None;
+    for _ in 0..r.len_prefix(24)? {
+        let id: ShipId = handle(r)?;
+        if last.is_some_and(|l| l >= id) {
+            return bad("idle spells out of order".into());
+        }
+        last = Some(id);
+        idle.insert(id, (Tick(r.u64()?), Tick(r.u64()?)));
+    }
     s.blockades = r.var_u64()?;
     s.closures = r.var_u64()?;
     s.reopenings = r.var_u64()?;
@@ -1008,7 +1027,7 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockad
     s.closed_dock_days = r.var_u64()?;
     s.port_checks = r.var_u64()?;
     s.relaunches_put_off = r.var_u64()?;
-    Ok((ports, laid_up))
+    Ok((ports, laid_up, idle))
 }
 
 fn put_opt_tick(w: &mut Writer, t: Option<Tick>) {
@@ -1313,7 +1332,7 @@ impl Ships {
         put_stats(w, &self.stats);
         put_usize(w, self.outbox.len());
         self.outbox.iter().for_each(|c| put_cmd(w, c));
-        put_blockades(w, &self.ports, &self.laid_up, &self.stats);
+        put_blockades(w, self);
     }
 
     /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with. Its row tables are
@@ -1495,7 +1514,7 @@ impl Ships {
             outbox.push(get_cmd(r)?);
         }
         let mut stats = stats;
-        let (ports, laid_up) = get_blockades(r, &mut stats)?;
+        let (ports, laid_up, idle) = get_blockades(r, &mut stats)?;
         if !r.is_empty() {
             return bad(format!("{} trailing bytes", r.remaining()));
         }
@@ -1515,6 +1534,7 @@ impl Ships {
         s.stats = stats;
         s.ports = ports;
         s.laid_up = laid_up;
+        s.idle = idle;
         s.outbox = outbox;
         s.built = built;
         Ok(s)
