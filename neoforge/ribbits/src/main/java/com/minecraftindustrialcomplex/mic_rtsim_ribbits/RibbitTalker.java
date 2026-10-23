@@ -30,6 +30,8 @@ import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.NeoForgeRegistries;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -60,8 +62,8 @@ public final class RibbitTalker implements Talker {
     /**
      * {@code mic_rtsim_ribbits:talk_days}, on the player: for each village, the last game day a talk with one
      * of its ribbits was credited (TK60). The core's {@link TalkDays} keeps the map and its codec, with a
-     * village's id as the key (see {@link #key}); at most 16 villages, the oldest dropped. Saved with the
-     * player and kept when he dies.
+     * village's id as the key (see {@link #key}). Kept to 16 villages by dropping the oldest day, but never
+     * a village of today ({@link #credited}, TK69). Saved with the player and kept when he dies.
      */
     public static final Supplier<AttachmentType<TalkDays>> DAYS = TYPES.register("talk_days",
             () -> AttachmentType.builder(() -> TalkDays.EMPTY)
@@ -74,6 +76,33 @@ public final class RibbitTalker implements Talker {
     /** A village's key in a player's {@link #DAYS}: its id in the low bits of an otherwise empty UUID. */
     public static UUID key(long village) {
         return new UUID(0L, village);
+    }
+
+    /** How many villages a player's record keeps once none of them is from today. */
+    public static final int KEEP = TalkDays.CAP;
+
+    /**
+     * {@code days} with {@code village} credited on {@code today}. Over {@link #KEEP} villages the one with the
+     * oldest day before today is dropped, and a village credited today is never dropped: the core's own
+     * {@link TalkDays#with} would drop one of today's on a tie, and that village could be credited a second time
+     * the same day (TK69). Today's entries may therefore exceed the cap; the next day trims them.
+     */
+    public static TalkDays credited(TalkDays days, UUID village, long today) {
+        List<TalkDays.Entry> out = new ArrayList<>(days.entries().size() + 1);
+        for (TalkDays.Entry e : days.entries())
+            if (!e.player().equals(village))
+                out.add(e);
+        out.add(new TalkDays.Entry(village, today));
+        while (out.size() > KEEP) {
+            int oldest = -1;
+            for (int i = 0; i < out.size(); i++)
+                if (out.get(i).day() < today && (oldest < 0 || out.get(i).day() < out.get(oldest).day()))
+                    oldest = i;
+            if (oldest < 0)
+                break;
+            out.remove(oldest);
+        }
+        return new TalkDays(List.copyOf(out));
     }
 
     // ---- who it is ------------------------------------------------------------------------------
@@ -90,12 +119,17 @@ public final class RibbitTalker implements Talker {
     }
 
     /**
-     * The adopted village a ribbit lives in, or null. A puppet (a caravan's merchant, a band's musician) is
-     * a visitor wherever it stands and has no village here: the core's {@code villageOf} would name the
-     * village it is passing through.
+     * The adopted ribbit village a ribbit lives in, or null. A puppet (a caravan's merchant, a band's musician)
+     * is a visitor wherever it stands and has no village here: the core's {@code villageOf} would name the
+     * village it is passing through. And the village must be a ribbit village (TK70): {@code villageOf} falls
+     * back to where the ribbit stands, so a homed or wild ribbit in an adopted human village would otherwise
+     * credit that village and speak its news.
      */
     private static Village village(Entity ribbit) {
-        return RtsimApi.group(ribbit) != null ? null : RtsimApi.villageOf(ribbit);
+        if (RtsimApi.group(ribbit) != null)
+            return null;
+        Village v = RtsimApi.villageOf(ribbit);
+        return v != null && MicRtsimRibbits.CULTURE.equals(v.culture) ? v : null;
     }
 
     @Override
@@ -154,7 +188,7 @@ public final class RibbitTalker implements Talker {
         PuppetGroup group = RtsimApi.group(entity);
         if (group != null)
             return RibbitMerchantAdapter.NAME.equals(group.kind.name()) ? new TalkHolder(TalkHolder.CARAVAN, group.agent) : null;
-        Village v = RtsimApi.villageOf(entity);
+        Village v = village(entity);
         return v == null ? null : new TalkHolder(TalkHolder.VILLAGE, v.id);
     }
 
@@ -252,7 +286,7 @@ public final class RibbitTalker implements Talker {
         TalkDays days = player.getData(DAYS);
         if (days.creditedOn(key(v.id), day))
             return;
-        player.setData(DAYS, days.with(key(v.id), day));
+        player.setData(DAYS, credited(days, key(v.id), day));
         journal(session, v.id, player, entity);
     }
 

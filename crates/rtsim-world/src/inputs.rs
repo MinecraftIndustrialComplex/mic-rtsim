@@ -941,7 +941,7 @@ mod tests {
             Some(i8::try_from(crate::bridge::TALK_CREDIT).unwrap())
         );
         assert_eq!(feeling(&w, nodes[&7], p), Some(3), "TK2: +3");
-        // Another talk adds again: the daily cap is Java's, per ribbit; the world only adds.
+        // Another talk adds again: the daily cap is Java's, per village and player, kept on the player; the world only adds.
         apply(&mut w, &mut nodes, &Input::Talked { key: 7, player: p }, at);
         assert_eq!(feeling(&w, nodes[&7], p), Some(6));
         // Another player starts from nothing.

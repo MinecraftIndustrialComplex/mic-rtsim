@@ -2025,7 +2025,7 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK68)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
@@ -2146,7 +2146,7 @@ it does to the knowledge tables, are TK40.
 
 ### 13.7 TALKED (0x0A00, journaled, aux 0): a ribbit's talk credits its village
 
-A player's first talk of a game day with a resident of a ribbit village (TK60). The village's feeling
+A player's first talk of a game day with a resident of a ribbit-culture village (TK60, TK70). The village's feeling
 toward the player rises by `TALK_CREDIT`, 3 (TK2). Not a report: nothing happened that news could carry.
 
 | Offset | Size | Field |
@@ -2157,7 +2157,7 @@ toward the player rises by `TALK_CREDIT`, 3 (TK2). Not a report: nothing happene
 | 6 | u16 | reserved |
 | 8 | u64 | obsSeq |
 | 16 | i64 | game time |
-| 24 | u64 | op id: the record's own observation sequence with `Obs.JAVA_OP_BIT` set |
+| 24 | u64 | op id: 63 random bits with `Obs.JAVA_OP_BIT` set, drawn by the journal's `commitWithOpId` |
 | 32 | u64 | the village's Java id |
 | 40 | u64 | the player's UUID, most significant bits |
 | 48 | u64 | the player's UUID, least significant bits |
@@ -2172,9 +2172,10 @@ and player (0x1111222233334444, 0x5555666677778888); `TalkRecordsTest` also buil
 
 1. Java sends at most one per village, player and game day (TK60), and writes that day on the player before it
    journals; a talk with no session, a failed one or phase 1 off writes nothing (TK66).
-2. The kernel's `Replay` admits each journaled observation once, by its sequence and its op id (the
+2. The kernel's `Replay` admits each journaled observation once, by its sequence and by its op id (the
    `op_of` hook for TALKED returns the op id at 24): a record the engine has already seen, which a resent
-   hand-over or a replay after a crash brings again, is skipped before phase 1 sees it.
+   hand-over or a replay after a crash brings again, is `AlreadyApplied`; a copy under a new sequence with
+   the same op id (`recommit`) is `DuplicateOp`. Phase 1 never sees either.
 3. What `Replay` admits becomes the phase 1 input `Talked { key, player }` (persist tag 21), appended to the
    input log like every other input, so a crash replays it onto the same world once and the +3 is not
    applied twice.

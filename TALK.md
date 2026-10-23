@@ -324,9 +324,10 @@ and a ribbit sends TALKED (§9.2), journaled, and the engine adjusts the ribbit 
 toward them by **+3** (TK2) through the phase 1 world's input log (so a crash replays it). The cap is
 per village, not per ribbit: once a game day per player, kept on the player in the Ribbits plugin's
 own saved attachment `mic_rtsim_ribbits:talk_days` (village id to the last game day credited, at most
-16 villages, kept through death, TK60). The credit lands on the village's sentiment, which every ribbit of
+16 villages, kept through death, TK60; only older days are trimmed, TK69). The credit lands on the village's sentiment, which every ribbit of
 the village shares, so a cap per ribbit would let ten ribbits give +30, past the friend line at 25.
-A puppet (a caravan's merchant, a band's musician) gives none (TK61). rtsim's sentiment fades weak
+A puppet (a caravan's merchant, a band's musician) gives none (TK61), and neither does a ribbit standing in an
+adopted village of another culture (TK70). rtsim's sentiment fades weak
 feelings in hours (a +3 is gone in about 7,500 ticks), so talk alone never makes a friend (25): it
 lifts a player hovering under the sorcerers' -25 back over it for the day, which is "mildly".
 
