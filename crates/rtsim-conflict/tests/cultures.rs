@@ -75,8 +75,16 @@ fn kill(c: &mut Conflict, w: &mut World, a: ActorId, amount: f64, at: Tick) {
     );
 }
 
+/// The feud at the end of an hour: its rung, whether a party is out for it, and since when.
+#[derive(Clone, Copy, Debug)]
+struct Sample {
+    step: Step,
+    out: bool,
+    since: Tick,
+}
+
 /// Kills enough each day from `from` to `to` that the grievance settles near `peak` (half-life 6
-/// days), running the engine hour by hour; returns each hour's rung.
+/// days), running the engine hour by hour; returns each hour's feud.
 fn feed(
     c: &mut Conflict,
     w: &mut World,
@@ -85,30 +93,49 @@ fn feed(
     peak: f64,
     from: Tick,
     to: Tick,
-) -> Vec<(Tick, Step)> {
+) -> Vec<Sample> {
     let amount = peak * (1.0 - 0.5f64.powf(1.0 / 6.0)) / 8.0;
     let mut seen = Vec::new();
     let mut t = from;
     while t < to {
-        if (t.0 - from.0) % TICKS_PER_DAY == 0 && amount > 0.0 {
+        if (t.0 - from.0).is_multiple_of(TICKS_PER_DAY) && amount > 0.0 {
             kill(c, w, a, amount, t);
         }
         t = Tick(t.0 + HOUR);
         c.run_until(w, &mut NoInfrastructure, t);
-        seen.push((t, c.feud(f, a).map_or(Step::None, |x| x.step)));
+        seen.push(c.feud(f, a).map_or(
+            Sample {
+                step: Step::None,
+                out: false,
+                since: t,
+            },
+            |x| Sample {
+                step: x.step,
+                out: x.party.is_some(),
+                since: x.since,
+            },
+        ));
     }
     seen
 }
 
 /// The distinct rungs in order.
-fn rungs(seen: &[(Tick, Step)]) -> Vec<Step> {
+fn rungs(seen: &[Sample]) -> Vec<Step> {
     let mut v: Vec<Step> = Vec::new();
-    for &(_, s) in seen {
-        if v.last() != Some(&s) {
-            v.push(s);
+    for x in seen {
+        if v.last() != Some(&x.step) {
+            v.push(x.step);
         }
     }
     v
+}
+
+/// The days the feud's parties turned for home (`since` once the feud has no party out).
+fn turns(seen: &[Sample]) -> Vec<f64> {
+    seen.windows(2)
+        .filter(|w| w[0].out && !w[1].out)
+        .map(|w| w[1].since.0 as f64 / TICKS_PER_DAY as f64)
+        .collect()
 }
 
 /// `sim mowzie` run 1's M2 part: a Frostmaw den, angered by kills in its range, climbs from
@@ -156,18 +183,14 @@ fn a_frostmaw_climbs_to_raid_repeats_and_calms_to_notice() {
     );
     // Each repeat came 4 days after the band turned for home (`since`, MZB-51), the den's own
     // walk back being part of them.
-    let homes: Vec<f64> = c
-        .log
-        .iter()
-        .filter(|e| e.kind == "bored")
-        .map(|e| e.day)
-        .collect();
+    let homes = turns(&seen);
     let repeats: Vec<f64> = c
         .log
         .iter()
         .filter(|e| e.kind == "repeat")
         .map(|e| e.day)
         .collect();
+    assert!(homes.len() > repeats.len() && repeats.len() >= 3);
     for (h, r) in homes.iter().zip(&repeats) {
         assert!((4.0 - 1e-6..4.0 + 1e-3).contains(&(r - h)), "home {h}, again {r}");
     }
