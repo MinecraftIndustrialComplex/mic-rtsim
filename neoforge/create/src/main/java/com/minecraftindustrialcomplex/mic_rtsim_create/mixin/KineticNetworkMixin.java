@@ -48,10 +48,13 @@ import java.util.Map;
  *       shaft), and so loaded the chunk. The skipped one is marked ({@link KineticSyncPending}) and gets
  *       the update when its chunk is FULL again ({@code StaleKinetics.chunkFull}); one whose chunk unloaded
  *       is never saved again (its chunk saved it at the unload), and its new object gets the update as it
- *       joins (above).</li>
+ *       joins (above). A kept block entity that was removed (its chunk unloaded and loaded again) is skipped
+ *       unmarked: its {@code onSpeedChanged} would act on the world for a dead part.</li>
  *   <li>{@code remove}, which marks one member to recount the network at its next tick
  *       ({@code networkDirty}), also marks the first member whose chunk ticks: a member that does not tick
- *       would never recount it, and with the kept block entities such members stay listed.</li>
+ *       would never recount it, and with the kept block entities such members stay listed. A block entity
+ *       removed before it joined takes the one kept for it out with it (Create returns early for a
+ *       non-member).</li>
  * </ul>
  * Server levels only; nothing changes where every chunk of the network is loaded and no position is listed
  * twice.
@@ -78,9 +81,11 @@ public abstract class KineticNetworkMixin {
         if (!Loaded.at(level, pos))
             return be;
         BlockEntity found = original.call(level, pos);
-        if (found != be && found instanceof KineticBlockEntity o && !members.containsKey(o) && id != null
-                && id.equals(o.network))
+        if (Loaded.keptFor((KineticNetwork) (Object) this, be, found))
             return be;
+        // dropped by this recount (another block, or a part that joined in its place): forget its position
+        if (found != be && mic_rtsim$byPos != null)
+            mic_rtsim$byPos.remove(pos.asLong(), be);
         return found;
     }
 
@@ -124,17 +129,48 @@ public abstract class KineticNetworkMixin {
     @WrapOperation(method = "sync", at = @At(value = "INVOKE",
             target = "Lcom/simibubi/create/content/kinetics/KineticNetwork;updateFromNetwork(Lcom/simibubi/create/content/kinetics/base/KineticBlockEntity;)V"))
     private void mic_rtsim$syncLoaded(KineticNetwork net, KineticBlockEntity be, Operation<Void> original) {
-        if (be.getLevel() instanceof ServerLevel level && !Loaded.at(level, be.getBlockPos())) {
-            ((KineticSyncPending) be).mic_rtsim$setSyncPending(true);
-            return;
+        if (be.getLevel() instanceof ServerLevel level) {
+            // a kept block entity whose chunk unloaded: its new object gets the update as it joins
+            if (be.isRemoved())
+                return;
+            if (!Loaded.at(level, be.getBlockPos())) {
+                ((KineticSyncPending) be).mic_rtsim$setSyncPending(true);
+                return;
+            }
         }
         original.call(net, be);
+    }
+
+    /**
+     * A block entity that leaves before it joined (the new object of a kept one, broken before its first
+     * tick): Create's {@code remove} returns early for it, so the kept one would stay counted until some other
+     * recount. It leaves with it.
+     */
+    @Inject(method = "remove", at = @At("HEAD"))
+    private void mic_rtsim$removeKeptOfUnjoined(KineticBlockEntity removed, CallbackInfo ci) {
+        if (mic_rtsim$byPos == null || members.containsKey(removed) || !(removed.getLevel() instanceof ServerLevel))
+            return;
+        long key = removed.getBlockPos().asLong();
+        KineticBlockEntity kept = mic_rtsim$byPos.get(key);
+        // the kept one is dead (its chunk unloaded); a live member at the position is never taken out
+        if (kept == null || kept == removed || !kept.isRemoved() || !members.containsKey(kept))
+            return;
+        sources.remove(kept);
+        members.remove(kept);
+        mic_rtsim$byPos.remove(key);
+        mic_rtsim$dirtyTicking();
     }
 
     @Inject(method = "remove", at = @At("TAIL"))
     private void mic_rtsim$dirtyATickingMember(KineticBlockEntity removed, CallbackInfo ci) {
         if (mic_rtsim$byPos != null)
             mic_rtsim$byPos.remove(removed.getBlockPos().asLong(), removed);
+        mic_rtsim$dirtyTicking();
+    }
+
+    /** Marks the first member whose chunk ticks to recount the network at its next tick. */
+    @Unique
+    private void mic_rtsim$dirtyTicking() {
         for (KineticBlockEntity m : members.keySet()) {
             if (!(m.getLevel() instanceof ServerLevel level))
                 return;
