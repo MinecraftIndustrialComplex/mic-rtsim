@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.talk;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.TalkCandidates;
 import com.minecraftindustrialcomplex.mic_rtsim.api.TalkContext;
+import com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder;
 import com.minecraftindustrialcomplex.mic_rtsim.api.Talker;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -40,6 +41,18 @@ public final class VillagerTalker implements Talker {
     public String home(Entity entity) {
         Village village = RtsimApi.villageOf(entity);
         return village == null ? null : Names.village(village.id);
+    }
+
+    /**
+     * An adopted village's folk ask the engine what the village knows (TK49); an unadopted one speaks at once.
+     * A child has no holder: its voice is fluff only (TK16), and news would fall to the shared lines.
+     */
+    @Override
+    public TalkHolder holder(Entity entity) {
+        if (((Villager) entity).isBaby())
+            return null;
+        Village village = RtsimApi.villageOf(entity);
+        return village == null ? null : new TalkHolder(TalkHolder.VILLAGE, village.id);
     }
 
     @Override
