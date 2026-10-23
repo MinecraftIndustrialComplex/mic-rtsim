@@ -483,14 +483,16 @@ final class CreateCompile implements GlassExtractor.Compile {
                 for (KineticBlockEntity s : net.sources.keySet())
                     if (s.getBlockPos().equals(rootPos))
                         root = s; // the root's chunk is not loaded: the network keeps it as Create last saw it
-            float rootSpeed = root == null ? 0 : root.getGeneratedSpeed();
+            float rootSpeed = root == null ? referenceSpeed(net) : root.getGeneratedSpeed();
             if (rootSpeed == 0 && root != null)
                 rootSpeed = root.getTheoreticalSpeed();
             boolean overstressed = false;
             // a network whose members lie outside the district's chunks (another district's, or no
             // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
-            // every other district on it (choice SC11), the boiler's district included
-            boolean crossing = false;
+            // every other district on it (choice SC11), the boiler's district included. Members whose chunk
+            // has not loaded this session are not listed, only counted (KineticNetwork.initFromTE's
+            // unloadedMembers, in getSize): a network with any is crossing too (choice SC44)
+            boolean crossing = net.getSize() > net.members.size();
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
@@ -575,6 +577,27 @@ final class CreateCompile implements GlassExtractor.Compile {
     private boolean listed(KineticBlockEntity k) {
         BlockPos p = k.getBlockPos();
         return !Loaded.at(level, p) || Loaded.blockEntity(level, p) == k;
+    }
+
+    /**
+     * The speed a domain's ratios are relative to when its root is neither loaded nor listed (its chunk has
+     * not loaded this session, so Create holds no block entity for it, choice SC44): the theoretical speed
+     * of the listed member in a loaded chunk with the lowest position that turns, else 0 (the ratios are
+     * then unknown and the members bounded).
+     */
+    private float referenceSpeed(com.simibubi.create.content.kinetics.KineticNetwork net) {
+        long best = Long.MAX_VALUE;
+        float speed = 0;
+        for (KineticBlockEntity m : net.members.keySet()) {
+            BlockPos p = m.getBlockPos();
+            if (!Loaded.at(level, p) || !listed(m) || m.getTheoreticalSpeed() == 0)
+                continue;
+            if (p.asLong() < best) {
+                best = p.asLong();
+                speed = m.getTheoreticalSpeed();
+            }
+        }
+        return speed;
     }
 
     /** Whether a block entity lies outside the district's chunks. */
