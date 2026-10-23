@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.MobAccessor;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -69,8 +70,8 @@ public final class ConflictBodies {
     /**
      * Makes a body at (x, y, z) facing {@code yaw}, not yet added to the level: {@code finalizeSpawn} with
      * spawn type EVENT, called directly (no FinalizeSpawnEvent, so no other mod re-rolls it, as
-     * {@code HerdBodies} does), then out of vanilla's raids and patrols, persistence-required. Null when the
-     * type made no mob.
+     * {@code HerdBodies} does), then out of vanilla's raids and patrols. Null when the type made no mob.
+     * The bridge makes it persistence-required ({@link #hold}) before it joins the level.
      */
     @SuppressWarnings("deprecation") // finalizeSpawn is called directly, on purpose
     public static Mob create(ServerLevel level, EntityType<?> type, double x, double y, double z, float yaw) {
@@ -91,8 +92,22 @@ public final class ConflictBodies {
             r.setCanJoinRaid(false);
             r.setPatrolLeader(false);
         }
-        m.setPersistenceRequired();
         return m;
+    }
+
+    /** Makes a body persistence-required while it is a party's; returns whether it already was. */
+    public static boolean hold(Mob m) {
+        boolean was = m.isPersistenceRequired();
+        m.setPersistenceRequired();
+        return was;
+    }
+
+    /**
+     * A body leaving the party as an ordinary mob (a take, MZB-102): persistence-required only if it was
+     * before the bridge held it, so a carried-off raider despawns as any other would (UR-1).
+     */
+    public static void release(Mob m, boolean was) {
+        ((MobAccessor) m).mic_rtsim$setPersistenceRequired(was);
     }
 
     /**

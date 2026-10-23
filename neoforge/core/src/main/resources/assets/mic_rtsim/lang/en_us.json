@@ -394,6 +394,7 @@
   "mic_rtsim.talk.envoy.envoy.settled.expired.0": "Your time ran out. We are done talking.",
   "mic_rtsim.talk.envoy.envoy.settled.refused.0": "You refused. Remember that we asked.",
   "mic_rtsim.talk.envoy.envoy.settled.withdrawn.0": "We are going home.",
+  "mic_rtsim.talk.envoy.envoy.settled.struck.0": "You struck us. We are done talking.",
   "mic_rtsim.talk.envoy.envoy.settled.other.0": "It is settled.",
   "mic_rtsim.talk.goblin.hostile.warn.0": "Goblin ground! Walk off it, or we eat your boots.",
   "mic_rtsim.talk.goblin.hostile.warn.1": "Shiny pockets, you have. Go away before the boss sees them.",

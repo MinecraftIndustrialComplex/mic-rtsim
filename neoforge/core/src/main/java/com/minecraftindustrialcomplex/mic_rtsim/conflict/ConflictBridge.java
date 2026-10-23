@@ -9,6 +9,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.Talk;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -69,13 +73,16 @@ import java.util.function.Predicate;
  * entry; the envoy's whole party) is its own group (ledger 25, MZ-17 (a)): placed only when every chunk its
  * members stand in ticks entities, else pending, never reported NOT_TICKING. Once a tick the bridge reads
  * each chunk a pending stack waits on, and tests a pending stack only when one of them changed or its
- * place moved into another chunk ({@link #pendingTests}). A placed stack with a member that leaves the
- * area goes back to pending. Members keep their place in a two-abreast stack as its anchor walks
+ * place moved into another chunk ({@link #pendingTests}). A placed stack goes back to pending only when a
+ * member is out of the area and its place is too; a member out of the area whose place still ticks is
+ * moved back to it (MZB-125), and a requeued stack comes again no sooner than {@value #REQUEUE_COOLDOWN}
+ * ticks later. Members keep their place in a two-abreast stack as its anchor walks
  * (BAND_STEER), through {@link ConflictFollowGoal}. BAND_RECALL despawns each stack out of view or at the
  * timeout, then reports every living member, placed or pending, as a survivor (BAND_DEMATERIALIZED).
  *
- * <p><b>Words.</b> None (Ben, 2026-10-22, MZB-101): no chat, action bar or title. A notice is a sound; an
- * envoy's demand is its name; news goes to {@link ConflictNews}.
+ * <p><b>Words.</b> None of its own (Ben, 2026-10-22, MZB-101): no chat, action bar or title. A notice is a
+ * sound; an envoy is named "<Culture> Envoy" and says its demand only to the player who clicks it
+ * ({@link ConflictTalker}, CL-1); news goes to {@link ConflictNews}.
  */
 public final class ConflictBridge implements SessionPlugin {
     public static final ConflictBridge INSTANCE = new ConflictBridge();
@@ -103,6 +110,14 @@ public final class ConflictBridge implements SessionPlugin {
     static final double STACK_SPACING = 4.0;
     /** A stack whose bodies could not be made is tried again after this many ticks. */
     static final int RETRY_FAILED = 100;
+    /**
+     * A stack taken back to pending (its place stopped ticking), or a member whose body went, comes again
+     * no sooner than this many ticks later: no flicker of healed, re-geared bodies at an edge (MZB-125,
+     * PLACEHOLDER).
+     */
+    public static final int REQUEUE_COOLDOWN = 200;
+    /** A slot's chunk before it is watched. */
+    static final long NO_CHUNK = Long.MIN_VALUE;
     /**
      * M1's records (DIFFICULTY, NOTICE_SHOWN): sent once M1's engine half is on main. Until then the
      * engine on main does not know their kinds.
@@ -164,7 +179,7 @@ public final class ConflictBridge implements SessionPlugin {
         /** The envoy's: its demand while open, whom it is to (null: any player), the guard and the answers sent. */
         Demand demand;
         UUID player;
-        boolean guarded, insulted, refused;
+        boolean guarded, insulted;
         /** The envoy's: DEMAND_SETTLED's outcome once its demand is closed, 0 while open (the envoy then says it). */
         int settled;
 
@@ -220,8 +235,10 @@ public final class ConflictBridge implements SessionPlugin {
         double hx = 1.0, hz = 0.0;
         StackState state = StackState.PENDING;
         boolean dirty = true;
+        /** Not before this tick: a pending stack's next placing, a placed stack's refill of a body that went. */
         long retryAt;
-        Set<Long> chunks = Set.of();
+        /** The chunks a pending stack waits on (empty while unwatched). */
+        final LongOpenHashSet chunks = new LongOpenHashSet(4);
         /** Times placed (GameTests: a stack that walked out and came back is placed twice). */
         int placings;
         /** Times tested while pending, and times its place moved into other chunks (GameTests, ledger 25). */
@@ -234,8 +251,13 @@ public final class ConflictBridge implements SessionPlugin {
         }
 
         double[] anchor(long now) {
-            double f = t1 <= t0 ? 1.0 : Mth.clamp((double) (now - t0) / (double) (t1 - t0), 0.0, 1.0);
+            double f = walked(now);
             return new double[]{ax + (ex - ax) * f, az + (ez - az) * f};
+        }
+
+        /** How far along its line the anchor is at {@code now}, 0 to 1. */
+        double walked(long now) {
+            return t1 <= t0 ? 1.0 : Mth.clamp((double) (now - t0) / (double) (t1 - t0), 0.0, 1.0);
         }
 
         /** The anchor walks from where it is now to (tx, tz), arriving at {@code arrive} or at {@code speed}. */
@@ -324,6 +346,10 @@ public final class ConflictBridge implements SessionPlugin {
         final double lat, back;
         UUID uuid;
         Mob entity;
+        /** Whether the body was persistence-required before the bridge made it so (a take gives that back). */
+        boolean ownPersistence;
+        /** The chunk its place was in when its pending stack was last watched ({@link #NO_CHUNK}: none). */
+        long chunk = NO_CHUNK;
         boolean alive = true;
         Death pendingDeath;
         List<ItemEntity> drops;
@@ -343,25 +369,48 @@ public final class ConflictBridge implements SessionPlugin {
         }
 
         double[] placeXZ(long now) {
-            double[] a = stack.anchor(now);
-            double rx = -stack.hz, rz = stack.hx;
-            return new double[]{a[0] + rx * lat - stack.hx * back, a[1] + rz * lat - stack.hz * back};
+            double f = stack.walked(now);
+            return new double[]{placeX(f), placeZ(f)};
+        }
+
+        /** Its place's x and z with the anchor {@code f} along its line (no allocation: these run every tick). */
+        double placeX(double f) {
+            Stack st = stack;
+            return st.ax + (st.ex - st.ax) * f - st.hz * lat - st.hx * back;
+        }
+
+        double placeZ(double f) {
+            Stack st = stack;
+            return st.az + (st.ez - st.az) * f + st.hx * lat - st.hz * back;
+        }
+
+        /** The chunk its place is in at {@code now}. */
+        long placeChunk(long now) {
+            double f = stack.walked(now);
+            return ChunkPos.asLong(Mth.floor(placeX(f)) >> 4, Mth.floor(placeZ(f)) >> 4);
+        }
+
+        /** Whether its place ticks entities now. */
+        boolean placeTicks(ServerLevel level, long now, BlockPos.MutableBlockPos at) {
+            double f = stack.walked(now);
+            return RtsimSession.entitiesTickAt(level, at.set(Mth.floor(placeX(f)), level.getSeaLevel(), Mth.floor(placeZ(f))));
         }
 
         /** Its place at the mob's level's game time, on the ground where loaded. */
         Vec3 place(Mob m) {
-            double[] p = placeXZ(m.level().getGameTime());
+            double f = stack.walked(m.level().getGameTime());
+            double x = placeX(f), z = placeZ(f);
             double y = m.getY();
-            int bx = Mth.floor(p[0]), bz = Mth.floor(p[1]);
+            int bx = Mth.floor(x), bz = Mth.floor(z);
             if (m.level().hasChunk(bx >> 4, bz >> 4))
                 y = m.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
-            return new Vec3(p[0], y, p[1]);
+            return new Vec3(x, y, z);
         }
 
         /** Horizontal blocks between the mob and its place (flat, MZB-104). */
         double lag(Mob m) {
-            double[] p = placeXZ(m.level().getGameTime());
-            return Math.hypot(m.getX() - p[0], m.getZ() - p[1]);
+            double f = stack.walked(m.level().getGameTime());
+            return Math.hypot(m.getX() - placeX(f), m.getZ() - placeZ(f));
         }
 
         public Mob entity() {
@@ -407,6 +456,11 @@ public final class ConflictBridge implements SessionPlugin {
         final Set<Stack> stacks = new HashSet<>(2);
     }
 
+    /** One position reused by the tick's chunk reads (server thread only). */
+    private final BlockPos.MutableBlockPos probe = new BlockPos.MutableBlockPos();
+    /** The parties of one pass, reused each tick. */
+    private final List<Party> passing = new ArrayList<>();
+
     private RtsimSession session;
     private final Map<Long, Party> byAgent = new LinkedHashMap<>();
     private final Map<UUID, Slot> byUuid = new HashMap<>();
@@ -415,14 +469,15 @@ public final class ConflictBridge implements SessionPlugin {
     private final Map<Long, Camp> camps = new HashMap<>();
     private final Map<NoticeKey, Notice> notices = new LinkedHashMap<>();
     private final Map<SignalKey, SignalBatch> signals = new LinkedHashMap<>();
-    private final Map<ResourceKey<Level>, Map<Long, Watch>> watches = new HashMap<>();
+    private final Map<ResourceKey<Level>, Long2ObjectOpenHashMap<Watch>> watches = new HashMap<>();
     private Difficulty difficulty;
     private boolean held;
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, placed, requeued, pendingTests, watchFlips, placeMoves, casualties, chiefsKilled,
             taken, recalled, dematerialized, steered, tributes, answers, signalsCounted, signalsJournaled, noticesPlayed,
-            territoryCommands, settledCommands, campsReported, looted, malformed, unknownCommands, blockedHits, blockedTargets;
+            territoryCommands, settledCommands, campsReported, looted, malformed, unknownCommands, blockedHits, blockedTargets,
+            strays, refills, demandsShown, paymentsRefused, noticeHearers;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -452,7 +507,7 @@ public final class ConflictBridge implements SessionPlugin {
         materialized = rejected = placed = requeued = pendingTests = watchFlips = placeMoves = casualties = chiefsKilled = 0;
         taken = recalled = dematerialized = steered = tributes = answers = signalsCounted = signalsJournaled = 0;
         noticesPlayed = territoryCommands = settledCommands = campsReported = looted = malformed = unknownCommands = 0;
-        blockedHits = blockedTargets = 0;
+        blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = 0;
         lastSettled = 0;
         difficulty = s.server().getWorldData().getDifficulty();
         sendDifficulty(s.gameTime());
@@ -482,9 +537,21 @@ public final class ConflictBridge implements SessionPlugin {
         notices.clear();
     }
 
-    /** The server stopped: camps belong to its world. */
+    /**
+     * The server stopped: nothing of its world outlives it. Camps, territories, kept notices, signal
+     * batches and watches go, and the session with them (its parties went back at its end).
+     */
     void serverStopped() {
         camps.clear();
+        byAgent.clear();
+        byUuid.clear();
+        territories.clear();
+        notices.clear();
+        signals.clear();
+        watches.clear();
+        held = false;
+        difficulty = null;
+        session = null;
     }
 
     /** Removes a party's bodies and forgets it, journaling nothing (the session failed). */
@@ -830,8 +897,9 @@ public final class ConflictBridge implements SessionPlugin {
         int first = p.stacks.size();
         boolean chiefFlag = (pflags & ConflictRecords.Materialize.FLAG_CHIEF) != 0;
         for (int i = 0; i < m; i++) {
-            if (counts[i] == 0)
-                continue;
+            boolean chief = chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0;
+            if (counts[i] == 0 && !chief)
+                continue; // a chief's stack with no units left is the chief alone
             Kind k = kinds.get(i);
             Stack st = new Stack(p, p.stacks.size(), wave);
             double side = (i - (m - 1) / 2.0) * STACK_SPACING;
@@ -849,7 +917,7 @@ public final class ConflictBridge implements SessionPlugin {
             st.hz = hz;
             for (int g = 0; g < counts[i]; g++)
                 st.slots.add(new Slot(st, false, false, k.body(), k.javaBody(), k.type(), lateral(g, counts[i]), ROW * (g / 2)));
-            if (chiefFlag && (sflags[i] & ConflictRecords.Materialize.STACK_CHIEF) != 0) {
+            if (chief) {
                 // The war chief is no unit of the band (the engine counts it apart): an extra body of the
                 // stack's kind at its rear (MZB-109).
                 st.slots.add(new Slot(st, true, false, k.body(), k.javaBody(), k.type(), 0.0, ROW * ((counts[i] + 1) / 2)));
@@ -1036,6 +1104,7 @@ public final class ConflictBridge implements SessionPlugin {
                 return false;
             }
             m.setData(RtsimAttachments.AGENT, tag);
+            sl.ownPersistence = ConflictBodies.hold(m);
             made.add(m);
         }
         // Registered before any joins: the join check already knows them.
@@ -1088,24 +1157,40 @@ public final class ConflictBridge implements SessionPlugin {
 
     // ---- the pending stacks' chunks -------------------------------------------------------------
 
+    /** The chunks a stack's living members' places are in now (GameTests; the tick uses {@link #watch}). */
     private static Set<Long> chunksOf(Stack st, long now) {
         Set<Long> out = new HashSet<>(4);
-        for (Slot sl : st.slots) {
-            if (!sl.alive)
-                continue;
-            double[] q = sl.placeXZ(now);
-            out.add(ChunkPos.asLong(Mth.floor(q[0]) >> 4, Mth.floor(q[1]) >> 4));
-        }
+        for (Slot sl : st.slots)
+            if (sl.alive)
+                out.add(sl.placeChunk(now));
         return out;
     }
 
-    /** Watches the chunks a pending stack's members would stand in; a change of chunks marks it for a test. */
+    /**
+     * Watches the chunks a pending stack's members would stand in; a change of chunks marks it for a test.
+     * Each member's chunk is kept, so a stack whose places stay in their chunks costs no allocation
+     * (D1): the set is rebuilt only when a place crosses a chunk edge or a member dies.
+     */
     private void watch(Stack st, ServerLevel level, long now) {
-        Set<Long> now2 = chunksOf(st, now);
+        boolean moved = st.chunks.isEmpty();
+        for (Slot sl : st.slots) {
+            long c = sl.alive ? sl.placeChunk(now) : NO_CHUNK;
+            if (c != sl.chunk) {
+                sl.chunk = c;
+                moved = true;
+            }
+        }
+        if (!moved)
+            return;
+        LongOpenHashSet now2 = new LongOpenHashSet(4);
+        for (Slot sl : st.slots)
+            if (sl.chunk != NO_CHUNK)
+                now2.add(sl.chunk);
         if (now2.equals(st.chunks))
             return;
-        Map<Long, Watch> w = watches.computeIfAbsent(st.party.dimension, k -> new HashMap<>());
-        for (long c : st.chunks) {
+        Long2ObjectOpenHashMap<Watch> w = watches.computeIfAbsent(st.party.dimension, k -> new Long2ObjectOpenHashMap<>());
+        for (LongIterator it = st.chunks.iterator(); it.hasNext(); ) {
+            long c = it.nextLong();
             if (now2.contains(c))
                 continue;
             Watch x = w.get(c);
@@ -1115,13 +1200,14 @@ public final class ConflictBridge implements SessionPlugin {
                     w.remove(c);
             }
         }
-        for (long c : now2) {
+        for (LongIterator it = now2.iterator(); it.hasNext(); ) {
+            long c = it.nextLong();
             if (st.chunks.contains(c))
                 continue;
             Watch x = w.get(c);
             if (x == null) {
                 x = new Watch();
-                x.ticking = RtsimSession.entitiesTickAt(level, new BlockPos(ChunkPos.getX(c) * 16 + 8, level.getSeaLevel(), ChunkPos.getZ(c) * 16 + 8));
+                x.ticking = RtsimSession.entitiesTickAt(level, centre(level, c));
                 w.put(c, x);
             }
             x.stacks.add(st);
@@ -1131,15 +1217,24 @@ public final class ConflictBridge implements SessionPlugin {
             st.moves++;
             st.dirty = true;
         }
-        st.chunks = now2;
+        st.chunks.clear();
+        st.chunks.addAll(now2);
+    }
+
+    /** The centre of chunk {@code c} at sea level, in the reused {@link #probe}. */
+    private BlockPos centre(ServerLevel level, long c) {
+        return probe.set(ChunkPos.getX(c) * 16 + 8, level.getSeaLevel(), ChunkPos.getZ(c) * 16 + 8);
     }
 
     private void unwatch(Stack st) {
+        for (Slot sl : st.slots)
+            sl.chunk = NO_CHUNK;
         if (st.chunks.isEmpty())
             return;
-        Map<Long, Watch> w = watches.get(st.party.dimension);
+        Long2ObjectOpenHashMap<Watch> w = watches.get(st.party.dimension);
         if (w != null) {
-            for (long c : st.chunks) {
+            for (LongIterator it = st.chunks.iterator(); it.hasNext(); ) {
+                long c = it.nextLong();
                 Watch x = w.get(c);
                 if (x != null) {
                     x.stacks.remove(st);
@@ -1148,17 +1243,15 @@ public final class ConflictBridge implements SessionPlugin {
                 }
             }
         }
-        st.chunks = Set.of();
+        st.chunks.clear();
     }
 
     /** Reads every watched chunk once; one whose entity-ticking state changed marks its stacks for a test. */
     private void pollWatches() {
         for (var e : watches.entrySet()) {
             ServerLevel level = level(e.getKey());
-            for (var c : e.getValue().entrySet()) {
-                long k = c.getKey();
-                boolean t = level != null && RtsimSession.entitiesTickAt(level,
-                        new BlockPos(ChunkPos.getX(k) * 16 + 8, level.getSeaLevel(), ChunkPos.getZ(k) * 16 + 8));
+            for (var c : e.getValue().long2ObjectEntrySet()) {
+                boolean t = level != null && RtsimSession.entitiesTickAt(level, centre(level, c.getLongKey()));
                 Watch w = c.getValue();
                 if (t != w.ticking) {
                     w.ticking = t;
@@ -1194,10 +1287,12 @@ public final class ConflictBridge implements SessionPlugin {
         if (!held)
             return; // D1: no faction, nothing to do
         settleDeaths(now);
-        for (Party p : List.copyOf(byAgent.values()))
+        passing.clear();
+        passing.addAll(byAgent.values());
+        for (Party p : passing)
             pass(p, now);
         pollWatches();
-        for (Party p : List.copyOf(byAgent.values())) {
+        for (Party p : passing) {
             if (byAgent.get(p.agent) != p || p.recalling)
                 continue;
             ServerLevel level = level(p.dimension);
@@ -1207,6 +1302,7 @@ public final class ConflictBridge implements SessionPlugin {
                 if (st.state == StackState.PENDING && st.dirty)
                     tryPlace(st, level, now);
         }
+        passing.clear();
         flushSignals(now, false);
         if (now % NOTICE_CHECK == 0)
             checkNotices(now);
@@ -1249,30 +1345,78 @@ public final class ConflictBridge implements SessionPlugin {
             state(p, now);
     }
 
-    /** A placed stack with a member out of the area (removed, elsewhere, or not ticking) goes back to pending. */
+    /**
+     * A placed stack keeps to the area (MZB-125). A member out of it (not ticking where it stands, or its
+     * body gone) whose place still ticks is moved back to its place, or, its body gone, made again at its
+     * place after {@value #REQUEUE_COOLDOWN} ticks; the stack goes back to pending (every body out of the
+     * world, made again no sooner than that) only when such a member's place stops ticking too, or
+     * Peaceful took a hostile body. A member that fights out of its place in a ticking chunk is left alone.
+     */
     private void checkPlaced(Stack st, ServerLevel level, long now) {
+        if (level == null) {
+            requeue(st, null, now);
+            return;
+        }
+        boolean refill = false;
         for (Slot sl : st.slots) {
             if (!sl.alive || sl.pendingDeath != null)
                 continue;
             Mob e = sl.entity;
-            boolean in = e != null && !e.isRemoved() && level != null && e.level() == level
-                    && RtsimSession.entitiesTickAt(level, e.blockPosition());
-            if (in)
+            boolean present = e != null && !e.isRemoved() && e.level() == level;
+            if (present && RtsimSession.entitiesTickAt(level, e.blockPosition()))
                 continue;
-            for (Slot x : st.slots)
-                if (x.alive && x.pendingDeath == null)
-                    despawn(x);
-            if (st.party.recalling) {
-                st.state = StackState.GONE;
-            } else {
-                st.state = StackState.PENDING;
-                st.dirty = true;
-                requeued++;
-                if (level != null)
-                    watch(st, level, now);
+            if (!sl.placeTicks(level, now, probe)
+                    || (!present && level.getDifficulty() == Difficulty.PEACEFUL && ConflictBodies.hostile(sl.type))) {
+                requeue(st, level, now);
+                return;
             }
+            if (present) {
+                Vec3 q = sl.place(e);
+                e.stopRiding();
+                e.teleportTo(q.x, q.y, q.z);
+                e.getNavigation().stop();
+                strays++;
+            } else {
+                if (e != null) {
+                    despawn(sl); // gone from the world (another dimension, unloaded): a body to make again
+                    st.retryAt = Math.max(st.retryAt, now + REQUEUE_COOLDOWN);
+                }
+                refill = true;
+            }
+        }
+        if (refill && now >= st.retryAt && !st.party.recalling)
+            refill(st, level, now);
+    }
+
+    /** Makes again, at their places, the bodies of a placed stack's members whose bodies went. */
+    private void refill(Stack st, ServerLevel level, long now) {
+        int n = 0;
+        for (Slot sl : st.slots)
+            if (sl.alive && sl.pendingDeath == null && sl.entity == null)
+                n++;
+        if (n == 0 || !session.spendSpawnBudget(n))
+            return;
+        if (spawn(st, level, now))
+            refills += n;
+        else
+            st.retryAt = now + RETRY_FAILED;
+    }
+
+    /** Takes a placed stack back to pending: its bodies out of the world, made again no sooner than {@value #REQUEUE_COOLDOWN} ticks on. */
+    private void requeue(Stack st, ServerLevel level, long now) {
+        for (Slot x : st.slots)
+            if (x.alive && x.pendingDeath == null)
+                despawn(x);
+        if (st.party.recalling) {
+            st.state = StackState.GONE;
             return;
         }
+        st.state = StackState.PENDING;
+        st.dirty = true;
+        st.retryAt = now + REQUEUE_COOLDOWN;
+        requeued++;
+        if (level != null)
+            watch(st, level, now);
     }
 
     private void recallStep(Party p, long now) {
@@ -1460,7 +1604,7 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     private void settleDeaths(long now) {
-        for (Party p : List.copyOf(byAgent.values()))
+        for (Party p : byAgent.values()) // journals and forgets members, never parties
             settleDeaths(p, now);
     }
 
@@ -1506,6 +1650,7 @@ public final class ConflictBridge implements SessionPlugin {
                 ConflictBodies.restoreTargets(e, sl.stripped);
                 e.setCustomName(null);
                 e.setCustomNameVisible(false);
+                ConflictBodies.release(e, sl.ownPersistence);
                 session.carryOnEntity(e, List.of(r.array()), r.getLong(Obs.OBS_SEQ));
             }
         }
@@ -1647,34 +1792,60 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     /**
-     * A player right-clicks the envoy with the main hand (EntityInteract, highest): with the demanded item,
-     * pays what is still owed of the stack in hand (TRIBUTE_PAID, a Java op id; taken even in creative);
-     * an empty hand, standing, refuses (ENVOY_ANSWER 2, once; MZB-110). Crouching with an empty hand is
-     * TALK's gesture (the envoy says its demand, MZB-122), so it is left alone. Only the player the demand
-     * is to, or anyone for the settlers. True when the click was the envoy's (cancel the interaction).
+     * A player right-clicks the envoy (EntityInteract, highest; MZB-110). No click refuses: a demand is
+     * refused only by a blow (ENVOY_ANSWER 3, {@link #struck}) or runs out at its deadline. The demand's
+     * player holding the demanded good pays what is still owed from the main hand, or from the off hand
+     * when the main hand is empty (or, on the off hand's own click, holds something else): TRIBUTE_PAID
+     * with a Java op id, taken even in creative, and only while the demand is open (not after its
+     * deadline, a blow or its settlement). Each such click, and an empty-handed plain click, is answered
+     * with the envoy's line, the same as TALK's and to that player only (MZB-122): what is still owed, or
+     * why it takes nothing. Crouching with an empty main hand and no good is TALK's own gesture, left to
+     * it. A settlers' demand (no player) is only shown. Another player's click on an envoy not sent to
+     * them is ordinary. True when the click was the envoy's (cancel the interaction).
      */
     boolean interact(Player player, Entity target, InteractionHand hand, long now) {
         Slot sl = live(target);
-        if (sl == null || !sl.envoy || !sl.alive || hand != InteractionHand.MAIN_HAND || player instanceof FakePlayer)
+        if (sl == null || !sl.envoy || !sl.alive || !(player instanceof ServerPlayer sp) || player instanceof FakePlayer)
             return false;
         Party p = sl.stack.party;
-        Demand d = p.demand;
-        if (d == null || (p.player != null && !p.player.equals(player.getUUID())))
+        if (p.player != null && !p.player.equals(player.getUUID()))
             return false;
-        ItemStack inHand = player.getItemInHand(hand);
-        if (inHand.isEmpty()) {
-            if (player.isSecondaryUseActive())
-                return false;
-            if (!p.refused) {
-                p.refused = true;
-                answer(p, ConflictRecords.ANSWER_REFUSED, player.getUUID(), now);
-            }
+        if (p.demand == null && p.settled == 0)
+            return false;
+        Item good = p.demand != null ? p.demand.item : null;
+        ItemStack main = player.getMainHandItem(), off = player.getOffhandItem();
+        boolean mainGood = good != null && main.is(good), offGood = good != null && off.is(good);
+        if (hand == InteractionHand.OFF_HAND) {
+            // The main hand's click came first and answered an empty or paying main hand.
+            if (main.isEmpty() || mainGood)
+                return true;
+            return offGood && pay(sp, target, p, off, now);
+        }
+        if (mainGood)
+            return pay(sp, target, p, main, now);
+        if (!main.isEmpty())
+            return false;
+        if (offGood)
+            return pay(sp, target, p, off, now);
+        if (player.isSecondaryUseActive())
+            return false; // TALK's gesture: it says the same line
+        say(sp, target);
+        return true;
+    }
+
+    /**
+     * Takes what is owed of the good in {@code held} (TRIBUTE_PAID) when the demand is open and to this
+     * player, else nothing; either way the envoy says its line (what is still owed, or why it took none).
+     */
+    private boolean pay(ServerPlayer player, Entity envoy, Party p, ItemStack held, long now) {
+        Demand d = p.demand;
+        if (p.player == null || closed(p, now) != null) {
+            paymentsRefused++;
+            say(player, envoy);
             return true;
         }
-        if (d.item == null || d.remaining <= 0 || !inHand.is(d.item))
-            return false;
-        int n = Math.min(inHand.getCount(), d.remaining);
-        inHand.shrink(n);
+        int n = Math.min(held.getCount(), d.remaining);
+        held.shrink(n);
         d.remaining -= n;
         int item = session.itemId(d.item);
         ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.TRIBUTE_PAID, ConflictRecords.TributePaid.size(1), 1, now);
@@ -1687,41 +1858,57 @@ public final class ConflictBridge implements SessionPlugin {
         r.putInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_COUNT, n);
         session.boundary().commitWithOpId(r, ConflictRecords.TributePaid.OP_ID);
         tributes++;
-        nameEnvoy(p);
+        say(player, envoy);
         return true;
     }
 
-    /** The envoy's name is its demand (the only words it has, MZB-101); none once settled or paid. */
+    /** The envoy's line to this player (TALK's limits apply: at most once per {@link com.minecraftindustrialcomplex.mic_rtsim.talk.RateLimit#PAIR} ticks). */
+    private void say(ServerPlayer player, Entity envoy) {
+        try {
+            if (Talk.speak(ConflictTalker.INSTANCE, envoy, player))
+                demandsShown++;
+        } catch (Throwable e) {
+            Talk.failed(ConflictTalker.INSTANCE, "speak", e);
+        }
+    }
+
+    /** The paid outcome's word, said once the tribute is all paid and before the engine settles. */
+    static final String CLOSED_PAID = "paid";
+
+    /**
+     * Why an envoy's demand takes nothing now, as its settled line's key ({@code envoy.settled.<key>}),
+     * or null while it is open: its settlement's outcome; "struck" after a blow; "other" for a demand of
+     * nothing; "expired" from its deadline on; "paid" once its tribute is all paid.
+     */
+    static String closed(Party p, long now) {
+        Demand d = p.demand;
+        if (d == null)
+            return ConflictTalker.outcomeKey(p.settled);
+        if (p.insulted)
+            return "struck";
+        boolean tribute = (d.flags & ConflictRecords.Envoy.DEMAND_TRIBUTE) != 0 && d.item != null;
+        boolean stop = (d.flags & ConflictRecords.Envoy.DEMAND_STOP) != 0;
+        if (!tribute && !stop)
+            return "other";
+        if (now >= d.deadline)
+            return "expired";
+        if (tribute && d.remaining <= 0)
+            return CLOSED_PAID;
+        return null;
+    }
+
+    /** The envoy is named "<Culture> Envoy" while its demand is open, and no more (MZB-101: its demand is said only to its player). */
     private void nameEnvoy(Party p) {
-        Mob envoy = null;
+        Slot envoy = null;
         for (Stack st : p.stacks)
             for (Slot sl : st.slots)
                 if (sl.envoy && sl.alive && sl.entity != null)
-                    envoy = sl.entity;
+                    envoy = sl;
         if (envoy == null)
             return;
-        Component name = demandText(p.demand);
-        envoy.setCustomName(name);
-        envoy.setCustomNameVisible(name != null);
-    }
-
-    /** "135 Gold Nugget, or stop mining"; "135 Gold Nugget"; "Stop mining"; null for none. */
-    static Component demandText(Demand d) {
-        if (d == null)
-            return null;
-        boolean tribute = (d.flags & ConflictRecords.Envoy.DEMAND_TRIBUTE) != 0 && d.remaining > 0 && d.itemName != null;
-        boolean stop = (d.flags & ConflictRecords.Envoy.DEMAND_STOP) != 0;
-        Component what = signalWord(d.signal);
-        if (tribute) {
-            Component item = d.item != null ? d.item.getDescription() : Component.literal(d.itemName);
-            if (stop)
-                return Component.translatableWithFallback("mic_rtsim.conflict.envoy.tribute_or_stop", "%s %s, or stop %s",
-                        d.remaining, item, what);
-            return Component.translatableWithFallback("mic_rtsim.conflict.envoy.tribute", "%s %s", d.remaining, item);
-        }
-        if (stop)
-            return Component.translatableWithFallback("mic_rtsim.conflict.envoy.stop", "Stop %s", what);
-        return null;
+        Component name = p.demand == null ? null : ConflictTalker.envoyName(envoy.body);
+        envoy.entity.setCustomName(name);
+        envoy.entity.setCustomNameVisible(name != null);
     }
 
     static Component signalWord(int signal) {
@@ -1804,7 +1991,10 @@ public final class ConflictBridge implements SessionPlugin {
         return null;
     }
 
-    /** Plays each kept notice to its player once they are in range, then forgets it. */
+    /**
+     * Plays each kept notice once its player is in range, then forgets it. A settlers' notice (no player)
+     * plays to every player in range on the tick the first one comes in range (MZB-118).
+     */
     private void checkNotices(long now) {
         if (notices.isEmpty())
             return;
@@ -1813,21 +2003,23 @@ public final class ConflictBridge implements SessionPlugin {
             ServerLevel level = level(n.dimension());
             if (level == null)
                 continue;
-            ServerPlayer to = null;
+            boolean played = false;
             if (n.player() != null) {
                 ServerPlayer p = playerIn(level, n.player());
-                if (p != null && !p.isSpectator() && inRange(n, p))
-                    to = p;
+                if (p != null && !p.isSpectator() && inRange(n, p)) {
+                    play(n, p);
+                    played = true;
+                }
             } else {
                 for (ServerPlayer p : level.players())
                     if (!p.isSpectator() && !(p instanceof FakePlayer) && inRange(n, p)) {
-                        to = p;
-                        break;
+                        play(n, p);
+                        played = true;
+                        noticeHearers++;
                     }
             }
-            if (to == null)
+            if (!played)
                 continue;
-            play(n, to);
             it.remove();
             noticesPlayed++;
             shown(n, now);

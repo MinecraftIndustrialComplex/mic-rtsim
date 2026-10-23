@@ -10,8 +10,9 @@ import java.util.EnumSet;
  * Keeps a party member at its place in its stack as the stack's anchor walks (MZB-106): while it has no
  * target and is more than {@link ConflictBridge#LEASH} blocks from its place, it walks there. Added at
  * priority {@value #PRIORITY} with the MOVE flag, below the illagers' attack goals (2 to 4), so a member
- * with a target fights, and above strolling (8), so an idle member keeps up. Goals are never saved: it
- * lives only on the puppet.
+ * with a target fights, and above strolling (8), so an idle member keeps up. A member that strays into a
+ * chunk that does not tick never runs this goal; the bridge moves it back instead (MZB-125). The lag test
+ * allocates nothing, as it runs every tick. Goals are never saved: it lives only on the puppet.
  */
 final class ConflictFollowGoal extends Goal {
     static final int PRIORITY = 5;

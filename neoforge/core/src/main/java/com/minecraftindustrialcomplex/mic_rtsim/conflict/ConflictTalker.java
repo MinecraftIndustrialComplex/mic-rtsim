@@ -22,12 +22,13 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The core's talker for conflict bodies (TALK.md §4, §5.4, §5.5; CL-1): a body talks only while it is a
- * live member of a party the bridge holds, and only when a player crouch-clicks it (TALK's gesture), so
- * this is player-initiated chat and nothing else in the conflict sends words (MZB-101).
+ * live member of a party the bridge holds, and only when a player crouch-clicks it (TALK's gesture) or
+ * clicks the envoy ({@link ConflictBridge#interact}), so this is player-initiated chat and nothing else in
+ * the conflict sends words (MZB-101).
  *
  * <p>The envoy (voice {@code envoy.<culture>}) says its demand with its reason, the same line every time
- * until the demand is settled, then the settlement; only to the player the demand is to (anyone for the
- * settlers'). Every other member (voice {@code <culture>}) warns, with the reason when the camp has one,
+ * while it is open, then why it takes nothing (its settlement, a blow, its deadline); only to the player
+ * the demand is to (anyone for the settlers'). Every other member (voice {@code <culture>}) warns, with the reason when the camp has one,
  * or insults in a raid or a rout. Beasts (an {@link Animal}, a ravager) do not talk. Holder: the faction
  * (3); no small talk, no credit (TK6).
  */
@@ -93,13 +94,19 @@ public final class ConflictTalker implements Talker {
         return c == null ? "conflict" : c;
     }
 
+    /** "Goblin Envoy" ("Envoy" for a body kind of no culture): the envoy as it speaks and as it is named (MZB-101). */
+    static Component envoyName(String body) {
+        String c = culture(body);
+        return c == null ? Talk.tr("mic_rtsim.talk.speaker.envoy.plain") : Talk.tr("mic_rtsim.talk.speaker.envoy", cultureName(c));
+    }
+
     /** "Goblin Envoy"; "Goblin"; a named war chief by its name. */
     @Override
     public Component speaker(Entity entity, ServerPlayer player) {
         ConflictBridge.Slot sl = ConflictBridge.INSTANCE.live(entity);
         String c = sl == null ? null : culture(sl.body);
         if (sl != null && sl.envoy)
-            return c == null ? Talk.tr("mic_rtsim.talk.speaker.envoy.plain") : Talk.tr("mic_rtsim.talk.speaker.envoy", cultureName(c));
+            return envoyName(sl.body);
         if (sl != null && sl.chief && entity.hasCustomName())
             return Talk.tr("mic_rtsim.talk.speaker.named", entity.getCustomName());
         return c == null ? entity.getType().getDescription() : cultureName(c);
@@ -171,20 +178,19 @@ public final class ConflictTalker implements Talker {
     /**
      * The envoy's one line (TALK.md §5.5, MZB-121): while the demand is open, {@code envoy.demand.<form>}
      * (tribute, stop, or tribute_or_stop) with (1) the reason, (2) how many are still owed, (3) the good,
-     * (4) the signal to stop and (5) the deadline; once settled, {@code envoy.settled.<outcome>}.
+     * (4) the signal to stop and (5) the deadline; once it takes nothing, {@code envoy.settled.<why>}
+     * ({@link ConflictBridge#closed}: the settlement's outcome, struck, expired, or paid before the engine
+     * settles).
      */
     private static void envoy(TalkContext ctx, ConflictBridge.Party p, String voice, TalkCandidates out) {
         ConflictBridge.Demand d = p.demand;
-        if (d == null) {
-            out.add("envoy.settled." + outcomeKey(p.settled), 1);
+        String closed = ConflictBridge.closed(p, ctx.gameTime());
+        if (closed != null) {
+            out.add("envoy.settled." + closed, 1);
             return;
         }
         boolean tribute = (d.flags & ConflictRecords.Envoy.DEMAND_TRIBUTE) != 0 && d.remaining > 0 && d.itemName != null;
         boolean stop = (d.flags & ConflictRecords.Envoy.DEMAND_STOP) != 0;
-        if (!tribute && !stop) {
-            out.add("envoy.settled.paid", 1); // all paid; the engine's DEMAND_SETTLED is on its way
-            return;
-        }
         String form = tribute && stop ? "tribute_or_stop" : tribute ? "tribute" : "stop";
         Component item = !tribute ? Component.empty() : d.item != null ? d.item.getDescription() : Component.literal(d.itemName);
         out.add("envoy.demand." + form, 1, reason(voice, d.signal), d.remaining, item, ConflictBridge.signalWord(d.signal),
