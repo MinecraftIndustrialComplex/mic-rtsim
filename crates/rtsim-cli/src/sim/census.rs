@@ -515,34 +515,27 @@ mod tests {
         assert!(c.capacity > 0 && c.members <= c.capacity, "{c:?}");
     }
 
-    /// With nobody watching nothing presses: every kind keeps its sites, no site breaks, every
-    /// pressure is 0, and from the first year on each kind's members stay between a quarter of
-    /// its capacity and twice its start. The coast runs with no navy assaults: they break havens
-    /// with no player (§2.4.6a rule 3, Ben's exception for havens), and its haven, beside
-    /// Saltmere's navy, would be broken at nearly every look its fleet is out (choices-ports.md
-    /// PC34).
+    /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no
+    /// site breaks, and from the first year on each kind's members stay between a quarter of its
+    /// capacity and twice its start. Every kind runs at its defaults, the coast's navy assaults
+    /// included: a navy breaks a haven with no player (§2.4.6a rule 3, Ben's exception for
+    /// havens), so `ship.haven` may count a broken site, with no pressure, and while it is broken
+    /// its slots may stand empty until its site refounds (choices-ports.md PC34, PC38).
     #[test]
     fn census_is_flat_with_no_player() {
         for k in Kind::ALL {
-            let rows = if k == Kind::Ships {
-                let tun = rtsim_ships::ShipTunables {
-                    assault_every_days: 0,
-                    ..rtsim_ships::ShipTunables::default()
-                };
-                run_on(Scenario::ships(5, tun), 480, 24)
-            } else {
-                run(k, 5, 480, 24)
-            };
+            let rows = run(k, 5, 480, 24);
             let first = &rows[0].1;
             for (day, cs) in &rows {
                 assert_eq!(kinds(cs), kinds(first), "{} day {day}", k.name());
                 for (c, c0) in cs.iter().zip(first) {
                     let at = format!("{} day {day}: {c:?}", k.name());
+                    let navy = c.kind == "ship.haven" && c.broken > 0;
                     assert_eq!(c.sites, c0.sites, "{at}");
-                    assert_eq!(c.broken, 0, "{at}");
+                    assert!(c.broken == 0 || navy, "{at}");
                     assert_eq!(c.mean_p(), 0.0, "{at}");
                     assert!(c.members <= 2 * c0.members.max(c.capacity) + 4, "{at}");
-                    if *day >= 96 {
+                    if *day >= 96 && !navy {
                         assert!(4 * c.members >= c.capacity, "{at}");
                     }
                 }

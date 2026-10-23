@@ -1104,7 +1104,10 @@ fn no_assault_in_view() {
         let (mut looks, mut targets) = (0, 0);
         while targets < 10 {
             looks += 1;
-            assert!(looks <= 250, "seed {seed}: {targets} target looks in 500 days");
+            assert!(
+                looks <= 250,
+                "seed {seed}: {targets} target looks in 500 days"
+            );
             let due = to_look(&mut c, &mut fake, nv);
             targets += usize::from(a_target(&c.ships, nv, h, due));
             set_pool(&mut c, h, 0);
@@ -1216,7 +1219,10 @@ fn a_loss_at_sea_after_a_break_books_no_refit() {
             "seed {seed}: sunk, not laid up: {x:?}"
         );
         let hv = &c.ships.havens[h as usize];
-        assert!(hv.pressure != Pressure::default(), "a player's loss presses");
+        assert!(
+            hv.pressure != Pressure::default(),
+            "a player's loss presses"
+        );
         assert!(hv.shut.is_none(), "seed {seed}: its sky ship is out");
         let text = rtsim_archive::record::rows_on(&c.ships.tape)
             .into_iter()
@@ -1240,9 +1246,14 @@ fn a_loss_at_sea_after_a_break_books_no_refit() {
         let hv = &c.ships.havens[h as usize];
         let sh = hv.shut.unwrap();
         assert!(sh.broken);
-        let wait = tun.refound.delay_ticks(hv.pressure, (sh.since.0 / TICKS_PER_DAY) as u32);
+        let wait = tun
+            .refound
+            .delay_ticks(hv.pressure, (sh.since.0 / TICKS_PER_DAY) as u32);
         assert_eq!(sh.back, sh.since + wait.max(1), "seed {seed}");
-        assert!(wait > Tick::from_days(48).0, "seed {seed}: P > 0 waits longer");
+        assert!(
+            wait > Tick::from_days(48).0,
+            "seed {seed}: P > 0 waits longer"
+        );
         idle(&mut c, &mut fake, sh.back + TICKS_PER_DAY / 4);
         assert_eq!(c.ships.havens[h as usize].counts.refounds, 1, "seed {seed}");
         assert_eq!(manned(&c.ships, h), (2, 2), "seed {seed}");
@@ -1250,7 +1261,10 @@ fn a_loss_at_sea_after_a_break_books_no_refit() {
         Some(seed)
     });
     let n = done.iter().flatten().count();
-    assert!(n >= 5, "only {n} seeds broke with both ships at sea: {done:?}");
+    assert!(
+        n >= 5,
+        "only {n} seeds broke with both ships at sea: {done:?}"
+    );
 }
 
 /// S8b review R2 (§2.4.6a rule 3; the persist pattern): a restart while the haven is broken and
@@ -1280,7 +1294,10 @@ fn a_restart_while_broken_continues_exactly() {
         Some(c.ships.haven_counts().broken_shuts)
     });
     let n = done.iter().flatten().count();
-    assert!(n >= 3, "only {n} seeds broke with both ships at sea: {done:?}");
+    assert!(
+        n >= 3,
+        "only {n} seeds broke with both ships at sea: {done:?}"
+    );
 }
 
 /// S8b review R4 (PC39): the tunables are the caller's, not the save's, so a load matches each
@@ -1316,13 +1333,20 @@ fn a_restart_matches_the_navy_looks_to_the_tunables() {
         idle(&mut c, &mut fake, Tick::from_days(10));
         assert!(c.ships.assault_due(nv).is_some());
         let mut d = restarted(&c, seed, &off);
-        assert_eq!(d.ships.assault_due(nv), None, "seed {seed}: the look is void");
+        assert_eq!(
+            d.ships.assault_due(nv),
+            None,
+            "seed {seed}: the look is void"
+        );
         d.ships.check(&d.world).expect("check, looks off");
         let (looked, stale) = (d.ships.navy_counts().looked, d.ships.stats.stale);
         let now = d.ships.now();
         idle(&mut d, &mut fake, now + 2 * every);
         assert_eq!(d.ships.navy_counts().looked, looked, "seed {seed}");
-        assert!(d.ships.stats.stale > stale, "seed {seed}: the old look fired stale");
+        assert!(
+            d.ships.stats.stale > stale,
+            "seed {seed}: the old look fired stale"
+        );
         d.ships.check(&d.world).expect("check, looks off");
         // The same tunables change nothing.
         let e = restarted(&c, seed, &on);
@@ -1339,6 +1363,10 @@ struct CauseModel {
     read: usize,
     since: Option<Tick>,
     last: Option<Tick>,
+    /// The clock as PC31 first ran it, from the first patrolled hunt since the haven opened with
+    /// no restart.
+    first: Option<Tick>,
+    patrolled: u64,
     /// Hunts on lanes no navy patrols, and those of them while the clock had not started.
     unpatrolled: u64,
     unpatrolled_before: u64,
@@ -1363,6 +1391,8 @@ impl CauseModel {
                         self.unpatrolled_before += u64::from(self.since.is_none());
                         continue;
                     }
+                    self.patrolled += 1;
+                    self.first.get_or_insert(at);
                     let gap = self.last.is_none_or(|t| at.0 - t.0 > starve);
                     if self.since.is_none() || gap {
                         self.restarts += u64::from(self.since.is_some());
@@ -1371,7 +1401,7 @@ impl CauseModel {
                     self.last = Some(at);
                 }
                 "refound" if e.what.contains("is refounded") => {
-                    (self.since, self.last) = (None, None);
+                    (self.since, self.last, self.first) = (None, None, None);
                 }
                 _ => {}
             }
@@ -1381,8 +1411,7 @@ impl CauseModel {
 }
 
 /// S8b `the_cause_clock_runs_on_patrolled_hunts_only` (§2.4.6a rule 3, PC31, PC35). The coast's
-/// haven hunts lanes Saltmere's navy patrols and lanes it does not (its sky lanes and the sea
-/// lanes past Farpoint). Over 400 days with the looks off, read every day, the engine's cause
+/// haven hunts lanes Saltmere's navy patrols and, more often, lanes it does not. Over 400 days with the looks off, read every day, the engine's cause
 /// clock and its record of the navy's lanes hunted equal a clock rebuilt from the log of hunts:
 /// no clock starts on a hunt off the patrol, and one restarts after a month with no patrolled
 /// hunt. Over the seeds, hunts off the patrol come before the clock starts, and clocks restart.
@@ -1407,7 +1436,9 @@ fn the_cause_clock_runs_on_patrolled_hunts_only() {
                 "seed {seed} day {d}: the cause clock"
             );
             let last = hv.navy_hunts.iter().find(|e| e.0 == nv).map(|e| e.1);
-            if m.last.is_some_and(|t| Tick::from_days(d).0 - t.0 <= 30 * TICKS_PER_DAY) {
+            if m.last
+                .is_some_and(|t| Tick::from_days(d).0 - t.0 <= 30 * TICKS_PER_DAY)
+            {
                 assert_eq!(last, m.last, "seed {seed} day {d}: the navy's last hunt");
             }
         }
@@ -1417,8 +1448,9 @@ fn the_cause_clock_runs_on_patrolled_hunts_only() {
     let before: u64 = models.iter().map(|m| m.unpatrolled_before).sum();
     let restarts: u64 = models.iter().map(|m| m.restarts).sum();
     eprintln!(
-        "cause clock: {} hunts off the patrol ({before} before a clock started), {restarts} \
-         restarts over {} seeds",
+        "cause clock: {} hunts on the patrol, {} off it ({before} before a clock started), \
+         {restarts} restarts over {} seeds",
+        models.iter().map(|m| m.patrolled).sum::<u64>(),
         models.iter().map(|m| m.unpatrolled).sum::<u64>(),
         models.len()
     );
@@ -1446,21 +1478,19 @@ fn a_haven_back_on_the_patrol_waits_out_its_cause_again() {
         let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
         let mut fake = FakeShips::new(f64::from(tun.view_radius));
         let mut m = CauseModel::default();
-        let mut first = None::<Tick>;
-        let (mut would, mut spared) = (0u64, 0u64);
+        let (mut would, mut away, mut back) = (0u64, 0u64, 0u64);
         for _ in 0..250 {
             let due = to_look(&mut c, &mut fake, nv);
             m.catch_up(&c.ships, nv);
-            if first.is_none() {
-                first = m.since;
-            }
             let hv = &c.ships.havens[h as usize];
-            let expect = hv.shut.is_none()
-                && m.last.is_some_and(|t| due.0 - t.0 <= starve)
-                && m.since.is_some_and(|t| due.0 >= t.0 + cause);
-            // The first clock would have served, but the haven left the patrol since.
-            if !expect && hv.shut.is_none() && first.is_some_and(|t| due.0 >= t.0 + cause) {
-                spared += u64::from(m.restarts > 0 || m.last.is_some_and(|t| due.0 - t.0 > starve));
+            let lately = m.last.is_some_and(|t| due.0 - t.0 <= starve);
+            let served = |clock: Option<Tick>| clock.is_some_and(|t| due.0 >= t.0 + cause);
+            let expect = hv.shut.is_none() && lately && served(m.since);
+            // Looks PC31's first clock (no restart) would have passed: off the patrol for over
+            // a month, or back on it with the clock started again and not yet run.
+            if hv.shut.is_none() && served(m.first) && !expect {
+                away += u64::from(!lately);
+                back += u64::from(lately);
             }
             let mut d = restarted(&c, seed, &tun);
             set_pool(&mut d, h, 0);
@@ -1481,11 +1511,18 @@ fn a_haven_back_on_the_patrol_waits_out_its_cause_again() {
             assert!(c.ships.havens[h as usize].broken_at.is_none());
         }
         c.ships.check(&c.world).expect("check");
-        (seed, would, spared)
+        (seed, would, away, back)
     });
-    eprintln!("looks that would break / spared after leaving the patrol: {out:?}");
-    assert!(out.iter().all(|&(_, w, _)| w > 0), "a seed never a target");
-    assert!(out.iter().any(|&(_, _, s)| s > 0), "no haven spared after leaving the patrol");
+    eprintln!("(seed, looks that would break, spared off the patrol, spared on return): {out:?}");
+    assert!(
+        out.iter().all(|&(_, w, _, _)| w > 0),
+        "a seed never a target"
+    );
+    assert!(
+        out.iter().any(|&(_, _, a, _)| a > 0),
+        "no look off the patrol"
+    );
+    assert!(out.iter().any(|&(_, _, _, b)| b > 0), "no look on a return");
 }
 
 /// S8b `a_broken_havens_pirate_turns_back_at_its_lane` (§2.4.6a rule 3, PC36). The haven is broken
@@ -1508,7 +1545,11 @@ fn a_broken_havens_pirate_turns_back_at_its_lane() {
         let ready = |s: &Ships, due: Tick| outbound(s, sea, due) || outbound(s, sky, due);
         break_when(&mut c, &mut fake, nv, 400, ready)?;
         let due = c.ships.havens[h as usize].broken_at.unwrap();
-        let p = if outbound(&c.ships, sea, due) { sea } else { sky };
+        let p = if outbound(&c.ships, sea, due) {
+            sea
+        } else {
+            sky
+        };
         let Some(PState::Outbound { lane, arrive }) = state(&c.ships, p) else {
             unreachable!()
         };
@@ -1524,9 +1565,17 @@ fn a_broken_havens_pirate_turns_back_at_its_lane() {
         };
         let hv = &c.ships.havens[h as usize];
         assert_eq!(c.ships.stats.hunts, hunts, "seed {seed}: no hunt");
-        assert_eq!((hv.fed_until, hv.counts.toll_milli), (fed, toll), "seed {seed}");
+        assert_eq!(
+            (hv.fed_until, hv.counts.toll_milli),
+            (fed, toll),
+            "seed {seed}"
+        );
         let x = c.ships.ship(p).unwrap();
-        assert_eq!((x.crew, &x.cargo), (crew, &cargo), "seed {seed}: no toll, no loot");
+        assert_eq!(
+            (x.crew, &x.cargo),
+            (crew, &cargo),
+            "seed {seed}: no toll, no loot"
+        );
         assert!(
             c.ships.threat(lane).is_none_or(|t| !t.hunters.contains(&p)),
             "seed {seed}: not a hunter of lane {lane}"
@@ -1542,7 +1591,10 @@ fn a_broken_havens_pirate_turns_back_at_its_lane() {
         Some(seed)
     });
     let n = done.iter().flatten().count();
-    assert!(n >= 5, "only {n} seeds broke with a pirate outbound: {done:?}");
+    assert!(
+        n >= 5,
+        "only {n} seeds broke with a pirate outbound: {done:?}"
+    );
 }
 
 /// S8b `a_ship_home_in_view_rests_until_the_player_leaves` (§2.4.6a rule 3, PC33: nothing happens
@@ -1594,11 +1646,22 @@ fn a_ship_home_in_view_rests_until_the_player_leaves() {
                 "seed {seed}: laid up in view"
             );
         }
-        assert!(c.ships.ship(sea).unwrap().embodied, "seed {seed}: home in view");
+        assert!(
+            c.ships.ship(sea).unwrap().embodied,
+            "seed {seed}: home in view"
+        );
         let home = c.ships.now();
-        idle_by(&mut c, &mut fake, home + 30 * TICKS_PER_DAY, TICKS_PER_DAY / 8);
+        idle_by(
+            &mut c,
+            &mut fake,
+            home + 30 * TICKS_PER_DAY,
+            TICKS_PER_DAY / 8,
+        );
         let x = c.ships.ship(sea).unwrap();
-        assert!(x.is_active() && x.embodied, "seed {seed}: rests on in view: {x:?}");
+        assert!(
+            x.is_active() && x.embodied,
+            "seed {seed}: rests on in view: {x:?}"
+        );
         assert!(c.ships.havens[h as usize].shut.is_none(), "seed {seed}");
         // The player leaves: laid up at its next decision out of view.
         let left = c.ships.now();
@@ -1657,7 +1720,10 @@ fn no_assault_while_a_haven_ship_is_embodied() {
         let (mut looks, mut seen) = (0, 0);
         while seen < 10 {
             looks += 1;
-            assert!(looks <= 400, "seed {seed}: {seen} looks with a ship embodied");
+            assert!(
+                looks <= 400,
+                "seed {seed}: {seen} looks with a ship embodied"
+            );
             let due = c.ships.assault_due(nv).expect("a navy looks");
             while c.ships.now() < Tick(due.0 - 1) {
                 let t = (c.ships.now() + TICKS_PER_DAY / 8).min(Tick(due.0 - 1));
@@ -1851,7 +1917,11 @@ fn coast_havens_cycle_with_assaults() {
             cy.cause_days
         );
         if cy.cause_days == cause {
-            assert!(cy.breaks > 0, "seed {}: the navy never broke the haven", cy.seed);
+            assert!(
+                cy.breaks > 0,
+                "seed {}: the navy never broke the haven",
+                cy.seed
+            );
             assert!(
                 cy.manned >= COAST_MANNED_FLOOR,
                 "seed {}: manned {:.3} under {COAST_MANNED_FLOOR}",
@@ -2242,7 +2312,7 @@ fn unattended_havens_rise_and_fall_1000_years() {
     report_and_check(&lives(12, &seeds(), 10, 100));
 }
 
-/// The sweep that chose `assault_cause_days` (PC35): each gate in [`CAUSE_SWEEP`] on the coast
+/// The sweep that chose `assault_cause_days` (PC38): each gate in [`CAUSE_SWEEP`] on the coast
 /// (30 years, seeds 1, 7 and 30: the share of slots manned and breaks per decade) and on
 /// `sea_havens` (1,000 years, seeds 1 to 30: sites open, the lowest sea, the share of the time
 /// with every site of a sea shut and the longest such spell, hunts a year). Reports only.
@@ -2271,9 +2341,10 @@ fn assault_cause_sweep() {
         let n = v.len() as f64;
         let sea_time: f64 = v.iter().map(|l| (l.years * YEAR) as f64).sum();
         eprintln!(
-            "SWEEP cause {g:>3}: coast manned {} (breaks a decade {}); seas open {:.3} (lowest \
+            "SWEEP cause {g:>3}: coast manned {:.3} ({}; breaks a decade {}); seas open {:.3} (lowest \
              {:.3}, seed {}), every site shut {:.5} of the sea-time in {} seas (longest {:.1} \
              days), hunts a year {:.1}, shuts {} (starved {}, broken {})",
+            c.iter().map(|c| c.manned).sum::<f64>() / c.len() as f64,
             c.iter()
                 .map(|c| format!("{:.3}", c.manned))
                 .collect::<Vec<_>>()
@@ -2302,6 +2373,5 @@ fn assault_cause_sweep() {
     report(&seas);
 }
 
-/// The gates [`assault_cause_sweep`] tries, in days (PC35).
+/// The gates [`assault_cause_sweep`] tries, in days (PC38).
 const CAUSE_SWEEP: [u32; 4] = [96, 144, 192, 240];
-
