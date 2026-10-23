@@ -219,6 +219,10 @@ pub struct Haven {
     /// ships at sea are laid up as they come home, and with none left it shuts, broken. A refound
     /// clears it. `None` while whole.
     pub broken_at: Option<Tick>,
+    /// Since when it has held a lane a navy patrols (§2.4.6a rule 3, PC31): the first hunt it
+    /// began on one since it last opened. A navy assaults it only `assault_cause_days` after.
+    /// `None` until then; a refound clears it.
+    pub holds_navy_lane_since: Option<Tick>,
     /// The stamp of the haven's one live [`Ev::Refound`]: a newer look voids the older.
     pub epoch: u32,
     /// What the lifecycle did here (tests, `sim`; saved with the row so a restart keeps them).
@@ -870,6 +874,16 @@ impl Ships {
         c
     }
 
+    /// When navy `nv`'s port next looks for a haven to assault ([`Ev::Assault`]), if it will. A
+    /// pass over the wheel: tests and tools.
+    pub fn assault_due(&self, nv: u32) -> Option<Tick> {
+        self.wheel
+            .iter()
+            .filter(|(_, e)| matches!(e, Ev::Assault { navy } if *navy == nv))
+            .map(|(t, _)| t)
+            .min()
+    }
+
     pub fn pending_events(&self) -> usize {
         self.wheel.len()
     }
@@ -1012,6 +1026,7 @@ impl Ships {
             fed_until: at + self.starve_ticks(),
             shut: None,
             broken_at: None,
+            holds_navy_lane_since: None,
             epoch: 0,
             counts: HavenCounts::default(),
         });
@@ -3075,7 +3090,17 @@ impl Ships {
             t.haven = Some(h);
         }
         let claimed = t.haven != held;
+        let patrolled = t.haven == Some(h) && t.patrol_milli > 0;
         t.add_hunter(s);
+        // The haven now holds a lane a navy patrols: the cause of an assault starts here (PC31).
+        let hv = &mut self.havens[h as usize];
+        if patrolled
+            && hv.holds_navy_lane_since.is_none()
+            && hv.shut.is_none()
+            && hv.broken_at.is_none()
+        {
+            hv.holds_navy_lane_since = Some(at);
+        }
         if let Some(p) = self.ships[s].pirate.as_mut() {
             p.state = PState::Hunting {
                 lane,
@@ -4422,6 +4447,7 @@ impl Ships {
         hv.fed_until = fed;
         hv.shut = None;
         hv.broken_at = None;
+        hv.holds_navy_lane_since = None;
         hv.epoch = hv.epoch.wrapping_add(1);
         hv.counts.refounds += 1;
         let slots = hv.ships.clone();
@@ -4441,8 +4467,9 @@ impl Ships {
     /// Navy `nv`'s port looks for a haven to assault (§2.4.6a rule 3, PC7, PC8; Ben's PORTS-1
     /// (a), havens only). Its force is its full complement, `A = navy_ships x navy_crew x
     /// navy_strength`; a haven qualifies if it is open and whole, its pirates hunt a lane the
-    /// navy's patrol sails, none of its ships is in a player's view and no player's interest
-    /// centre is within `view_radius` of its dock. Its defence `D` is its men ashore at pirate
+    /// navy's patrol sails, it has held a patrolled lane for `assault_cause_days` since it last
+    /// opened (PC31), none of its ships is in a player's view and no player's interest centre is
+    /// within `view_radius` of its dock. Its defence `D` is its men ashore at pirate
     /// strength plus the strength of its ships resting in port (ships at sea do not defend). The
     /// navy believes it wins with `p = A² / (A² + D²)` (the square law's weights, as
     /// [`Self::hunt_value`]) and goes only if `p x loot - (1 - p) x crew > 0` and the square law
@@ -4466,12 +4493,21 @@ impl Ships {
             .iter()
             .filter_map(|g| self.threat(g.hop.lane).and_then(|th| th.haven))
             .collect();
+        let cause = u64::from(t.assault_cause_days) * TICKS_PER_DAY;
         let mut best = None::<(f64, u32)>;
         for h in targets {
             let Some(hv) = self.havens.get(h as usize) else {
                 continue;
             };
             if hv.shut.is_some() || hv.broken_at.is_some() {
+                continue;
+            }
+            // A year of robbery first (PC31).
+            if cause > 0
+                && hv
+                    .holds_navy_lane_since
+                    .is_none_or(|t0| at.0 < t0.0.saturating_add(cause))
+            {
                 continue;
             }
             if hv

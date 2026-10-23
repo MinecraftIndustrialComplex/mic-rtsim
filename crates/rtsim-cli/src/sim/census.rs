@@ -120,20 +120,22 @@ pub enum Scenario {
 }
 
 impl Scenario {
+    /// The `ships` scenario with tunables `tun`.
+    pub fn ships(seed: u64, tun: rtsim_ships::ShipTunables) -> Self {
+        let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
+        Scenario::Ships(Box::new(Sea {
+            c: rtsim_ships::synth::coastal(seed, tun),
+            fake,
+        }))
+    }
+
     pub fn new(kind: Kind, seed: u64) -> Self {
         match kind {
             Kind::Ecology => Scenario::Ecology(Box::new(Ecology::new(seed))),
             Kind::Ranges => {
                 Scenario::Ecology(Box::new(Ecology::ranges(seed, Ecology::herd_tunables())))
             }
-            Kind::Ships => {
-                let tun = rtsim_ships::ShipTunables::default();
-                let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
-                Scenario::Ships(Box::new(Sea {
-                    c: rtsim_ships::synth::coastal(seed, tun),
-                    fake,
-                }))
-            }
+            Kind::Ships => Self::ships(seed, rtsim_ships::ShipTunables::default()),
             Kind::Conflict => {
                 use rtsim_conflict::synth;
                 let (mut w, _) = synth::world(seed);
@@ -317,7 +319,11 @@ impl Ecology {
 
 /// A census every `every` days from day 0 to `days`, with nobody watching: (day, every kind).
 pub fn run(kind: Kind, seed: u64, days: u64, every: u64) -> Vec<(u64, Vec<KindCensus>)> {
-    let mut s = Scenario::new(kind, seed);
+    run_on(Scenario::new(kind, seed), days, every)
+}
+
+/// [`run`] on a scenario already built.
+pub fn run_on(mut s: Scenario, days: u64, every: u64) -> Vec<(u64, Vec<KindCensus>)> {
     let mut out = vec![(0, s.census())];
     let mut d = 0;
     while d < days {
@@ -511,11 +517,22 @@ mod tests {
 
     /// With nobody watching nothing presses: every kind keeps its sites, no site breaks, every
     /// pressure is 0, and from the first year on each kind's members stay between a quarter of
-    /// its capacity and twice its start.
+    /// its capacity and twice its start. The coast runs with no navy assaults: they break havens
+    /// with no player (§2.4.6a rule 3, Ben's exception for havens), and its haven, beside
+    /// Saltmere's navy, would be broken at nearly every look its fleet is out (choices-ports.md
+    /// PC33).
     #[test]
     fn census_is_flat_with_no_player() {
         for k in Kind::ALL {
-            let rows = run(k, 5, 480, 24);
+            let rows = if k == Kind::Ships {
+                let tun = rtsim_ships::ShipTunables {
+                    assault_every_days: 0,
+                    ..rtsim_ships::ShipTunables::default()
+                };
+                run_on(Scenario::ships(5, tun), 480, 24)
+            } else {
+                run(k, 5, 480, 24)
+            };
             let first = &rows[0].1;
             for (day, cs) in &rows {
                 assert_eq!(kinds(cs), kinds(first), "{} day {day}", k.name());
