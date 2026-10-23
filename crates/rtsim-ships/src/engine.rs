@@ -105,7 +105,8 @@ pub enum Role {
 pub enum Status {
     Active,
     /// Sunk or captured at `since`; relaunched at `back` (merchants and navies), or refitted from
-    /// then once the haven's pool can man it (pirates, EQUILIBRIUM.md §2.4.6).
+    /// then once the haven's pool can man it (pirates, EQUILIBRIUM.md §2.4.6). A pirate laid up
+    /// (§2.4.6a rule 2) is lost with `back` [`LAID_UP`].
     Lost {
         since: Tick,
         back: Tick,
@@ -181,6 +182,11 @@ impl Ship {
     pub fn is_active(&self) -> bool {
         matches!(self.status, Status::Active)
     }
+
+    /// A pirate laid up for want of prey (§2.4.6a rule 2): lost with no refit due.
+    pub fn is_laid_up(&self) -> bool {
+        matches!(self.status, Status::Lost { back, .. } if back == LAID_UP)
+    }
 }
 
 /// A pirate haven (C24): a world node of kind Haven whose market sells what its pirates take.
@@ -202,7 +208,54 @@ pub struct Haven {
     pub ships: Vec<ShipId>,
     /// Lanes within its pirates' reach, in lane order.
     pub lanes: Vec<u32>,
+    /// Fed while `at < fed_until` (§2.4.6a rule 2, PC2): each hunt start sets it `starve_days`
+    /// ahead, and so do the founding and a refound. After it the pool deserts instead of hiring
+    /// ([`Ships::crew_pool_milli`]).
+    pub fed_until: Tick,
+    /// Shut down (§2.4.6a rule 4, PC4): no active ship, and starving (or, from rule 3, broken).
+    /// `None` while open.
+    pub shut: Option<Shut>,
+    /// The stamp of the haven's one live [`Ev::Refound`]: a newer look voids the older.
+    pub epoch: u32,
+    /// What the lifecycle did here (tests, `sim`; saved with the row so a restart keeps them).
+    pub counts: HavenCounts,
 }
+
+/// A shut haven (§2.4.6a rule 4): since when, when its site next looks for a new band (rule 5),
+/// and whether a navy broke it (rule 3, a later slice; false while only starving shuts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shut {
+    pub since: Tick,
+    pub back: Tick,
+    pub broken: bool,
+}
+
+/// A haven's lifecycle counters (§2.4.6a): kept on the haven rows, not in [`ShipStats`], so a
+/// save with no haven (every saved world today, T36) keeps its bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct HavenCounts {
+    /// Crew paid in tolls (rule 1), thousandths of a man: the square law's share.
+    pub toll_milli: u64,
+    /// Ships laid up (rule 2).
+    pub laid_up: u64,
+    /// Times shut (rule 4).
+    pub shuts: u64,
+    /// Times refounded (rule 5).
+    pub refounds: u64,
+}
+
+impl HavenCounts {
+    fn add(&mut self, o: &HavenCounts) {
+        self.toll_milli += o.toll_milli;
+        self.laid_up += o.laid_up;
+        self.shuts += o.shuts;
+        self.refounds += o.refounds;
+    }
+}
+
+/// A laid-up slot's `Status::Lost::back` (§2.4.6a rule 2, PC3): never due, so no refit looks at
+/// it until its haven is fed again (PC11) or refounds.
+pub const LAID_UP: Tick = Tick(u64::MAX);
 
 /// A navy (M2): a patrol service from a base.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -390,6 +443,13 @@ pub(crate) enum Ev {
     Refit {
         ship: ShipId,
         plan: u32,
+    },
+    /// A haven's look (§2.4.6a rules 4 and 5): open, it shuts if it then has no active ship and
+    /// starves (booked at the turn when its last ship went while it was fed); shut, its site
+    /// takes a new band or looks again. `epoch` as the haven's: one live look per haven.
+    Refound {
+        haven: u32,
+        epoch: u32,
     },
 }
 
@@ -740,7 +800,8 @@ impl Ships {
     }
 
     /// The census (EQUILIBRIUM.md S1) now: `ship.haven`, K its slots, its members the pirates
-    /// afloat (not lost and not yet refitted), P its refit pressure; renewals are refits.
+    /// afloat (not lost and not yet refitted), P its refit pressure; a shut haven is `broken`
+    /// (§2.4.6a rule 4); renewals are refits and refounds.
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
         let mut c = rtsim_kernel::census::KindCensus::new("ship.haven");
         let day = day_num(self.now);
@@ -753,12 +814,21 @@ impl Ships {
             c.site(
                 up as u64,
                 hv.ships.len() as u64,
-                false,
+                hv.shut.is_some(),
                 hv.pressure.now(day, self.tun.refit.half_life_days),
             );
         }
-        c.renewals = self.stats.rebuilds;
+        c.renewals = self.stats.rebuilds + self.haven_counts().refounds;
         vec![c]
+    }
+
+    /// Every haven's lifecycle counters, summed (§2.4.6a).
+    pub fn haven_counts(&self) -> HavenCounts {
+        let mut c = HavenCounts::default();
+        for hv in &self.havens {
+            c.add(&hv.counts);
+        }
+        c
     }
 
     pub fn pending_events(&self) -> usize {
@@ -899,6 +969,11 @@ impl Ships {
             pressure: Pressure::default(),
             ships: Vec::new(),
             lanes: Vec::new(),
+            // A new band counts as fed for its first month (§2.4.6a rule 5), founding as refound.
+            fed_until: at + self.starve_ticks(),
+            shut: None,
+            epoch: 0,
+            counts: HavenCounts::default(),
         });
         self.refresh_haven_lanes(h);
         let mut first_crew = 0;
@@ -917,18 +992,52 @@ impl Ships {
 
     // ---- a haven's crew pool and refits (EQUILIBRIUM.md §2.4.6) ---------------------------------
 
-    /// Haven `h`'s crew pool at `at`, thousandths. Hires add `r (1 - pool/cap)` a day, so from
-    /// `pool0` at `pool_at` it is `cap - (cap - pool0) e^(-r t / cap)`: one closed form, no event.
+    /// `starve_days` in ticks (§2.4.6a rule 2).
+    fn starve_ticks(&self) -> u64 {
+        (self.tun.starve_days.max(0.0) * TICKS_PER_DAY as f64).round() as u64
+    }
+
+    /// When haven `h`'s hires stop and its men start to desert (§2.4.6a rule 2, PC2): its
+    /// `fed_until`, or never with the lifecycle off (S8's pool).
+    fn fed_until(&self, h: u32) -> Tick {
+        if self.tun.lifecycle {
+            self.havens[h as usize].fed_until
+        } else {
+            Tick(u64::MAX)
+        }
+    }
+
+    /// Whether haven `h` starves at `at`: no hunt begun within `starve_days` (§2.4.6a rule 2).
+    pub fn starving(&self, h: u32, at: Tick) -> bool {
+        at >= self.fed_until(h)
+    }
+
+    /// Haven `h`'s crew pool at `at`, thousandths. Fed, hires add `r (1 - pool/cap)` a day, so
+    /// from `pool0` at `pool_at` it is `cap - (cap - pool0) e^(-r t / cap)` (§2.4.6); after
+    /// `fed_until` it deserts at the same rate, `p_turn e^(-r t / cap)` (§2.4.6a rule 2, PC2).
+    /// One piecewise closed form, no event.
     pub fn crew_pool_milli(&self, h: u32, at: Tick) -> u32 {
         let hv = &self.havens[h as usize];
-        let cap = self.tun.crew_pool_cap * 1000;
-        if hv.pool_milli >= cap || self.tun.hires_per_day <= 0.0 || at <= hv.pool_at {
+        if self.tun.hires_per_day <= 0.0 || at <= hv.pool_at {
             return hv.pool_milli;
         }
-        let days = (at.0 - hv.pool_at.0) as f64 / TICKS_PER_DAY as f64;
+        let cap = self.tun.crew_pool_cap * 1000;
         let k = self.tun.hires_per_day / f64::from(self.tun.crew_pool_cap.max(1));
-        let short = f64::from(cap - hv.pool_milli) * (-k * days).exp();
-        cap - (short.round() as u32).min(cap - hv.pool_milli)
+        let turn = self.fed_until(h).max(hv.pool_at);
+        let mut p = hv.pool_milli;
+        // Hires, up to the turn.
+        let fed_to = at.min(turn);
+        if fed_to > hv.pool_at && p < cap {
+            let days = (fed_to.0 - hv.pool_at.0) as f64 / TICKS_PER_DAY as f64;
+            let short = f64::from(cap - p) * (-k * days).exp();
+            p = cap - (short.round() as u32).min(cap - p);
+        }
+        // Desertion, after it.
+        if at > turn {
+            let days = (at.0 - turn.0) as f64 / TICKS_PER_DAY as f64;
+            p = ((f64::from(p) * (-k * days).exp()).round() as u32).min(p);
+        }
+        p
     }
 
     /// Haven `h`'s pool read at `at` and stored as of `at`, before it changes.
@@ -940,8 +1049,9 @@ impl Ships {
     }
 
     /// When haven `h`'s pool will hold `need` crew (whole), from `at`: `at` if it does now, never
-    /// (`None`) if hires cannot get there. The inverse of [`Self::crew_pool_milli`], a tick late
-    /// so the closed form reads at least `need` then.
+    /// (`None`) if hires cannot get there before the haven starves (§2.4.6a rule 2: after
+    /// `fed_until` the pool only falls, and only a hunt start can feed it again). The inverse of
+    /// [`Self::crew_pool_milli`], a tick late so the closed form reads at least `need` then.
     fn crew_ready_at(&self, h: u32, need: u32, at: Tick) -> Option<Tick> {
         let have = self.crew_pool_milli(h, at);
         let need = need * 1000;
@@ -949,12 +1059,14 @@ impl Ships {
             return Some(at);
         }
         let cap = self.tun.crew_pool_cap * 1000;
-        if need > cap || self.tun.hires_per_day <= 0.0 {
+        let fed = self.fed_until(h);
+        if need > cap || self.tun.hires_per_day <= 0.0 || at >= fed {
             return None;
         }
         let k = self.tun.hires_per_day / f64::from(self.tun.crew_pool_cap.max(1));
         let days = (f64::from(cap - have) / f64::from((cap - need).max(1))).ln() / k;
-        Some(at + (days * TICKS_PER_DAY as f64).ceil() as u64 + 1)
+        let t = at + (days * TICKS_PER_DAY as f64).ceil() as u64 + 1;
+        (t <= fed).then_some(t)
     }
 
     /// Crew joining haven `h`'s pool (captured crews, M2), up to the cap. A slot that is due its
@@ -964,6 +1076,9 @@ impl Ships {
         let cap = self.tun.crew_pool_cap * 1000;
         let hv = &mut self.havens[h as usize];
         hv.pool_milli = (hv.pool_milli + crew.saturating_mul(1000)).min(cap.max(hv.pool_milli));
+        if hv.shut.is_some() {
+            return;
+        }
         let waiting: Vec<ShipId> = self.havens[h as usize]
             .ships
             .iter()
@@ -1039,6 +1154,47 @@ impl Ships {
         );
         let p = if wa + wd > 0.0 { wa / (wa + wd) } else { 0.0 };
         p * t.hunt_loot_value - (1.0 - p) * t.hunt_crew_value
+    }
+
+    /// Lane `l` as a pirate of haven `h`, of `medium` and strength `a`, sees it from port: if it
+    /// may hunt it and it is worth hunting (§2.4.6 (b)), its flow volume, its patrols and
+    /// escorts, and the square law's surviving share against those. Not its medium, not yet a
+    /// world edge, held by another haven's hunters, empty, or not worth it: `None`. What
+    /// [`Self::decide`] chooses among, and what a refound asks of a site (§2.4.6a rule 5, PC5).
+    fn huntable(
+        &self,
+        w: &World,
+        h: u32,
+        medium: Medium,
+        a: f64,
+        l: u32,
+    ) -> Option<(i64, f64, f64)> {
+        let ln = &self.lanes[l as usize];
+        if ln.medium != medium || ln.edge == u32::MAX {
+            return None;
+        }
+        if let Some(t) = self.threat(l)
+            && let Some(other) = t.haven
+            && other != h
+            && (!t.hunters.is_empty() || t.share > 0)
+        {
+            return None;
+        }
+        let vol = self.lane_volume(w, l);
+        if vol <= 0 {
+            return None;
+        }
+        let defence = self.threat(l).map_or(0.0, |t| t.defence());
+        // Only a lane worth hunting (§2.4.6 (b)): escorted or patrolled beyond that, it is
+        // left alone, and with no such lane the pirate rests in port.
+        if self.hunt_value(a, medium, defence) <= 0.0 {
+            return None;
+        }
+        let surv = fight::square_law(a, defence, &self.tun);
+        if surv <= 0.0 {
+            return None;
+        }
+        Some((vol, defence, surv))
     }
 
     fn refresh_haven_lanes(&mut self, h: u32) {
@@ -2096,6 +2252,7 @@ impl Ships {
             }
             Ev::Respawn { ship } => self.respawn(w, ship, at),
             Ev::Refit { ship, plan } => self.refit(w, ship, plan, at),
+            Ev::Refound { haven, epoch } => self.haven_look(w, haven, epoch, at),
         }
     }
 
@@ -2711,31 +2868,10 @@ impl Ships {
         let home = (hv.dock.0, hv.dock.2);
         let mut cands: Vec<(u32, f64)> = Vec::new();
         for &l in &hv.lanes {
+            let Some((vol, _, surv)) = self.huntable(w, h, medium, a, l) else {
+                continue;
+            };
             let ln = &self.lanes[l as usize];
-            if ln.medium != medium || ln.edge == u32::MAX {
-                continue;
-            }
-            if let Some(t) = self.threat(l)
-                && let Some(other) = t.haven
-                && other != h
-                && (!t.hunters.is_empty() || t.share > 0)
-            {
-                continue;
-            }
-            let vol = self.lane_volume(w, l);
-            if vol <= 0 {
-                continue;
-            }
-            let defence = self.threat(l).map_or(0.0, |t| t.defence());
-            // Only a lane worth hunting (§2.4.6 (b)): escorted or patrolled beyond that, it is
-            // left alone, and with no such lane the pirate rests in port.
-            if self.hunt_value(a, medium, defence) <= 0.0 {
-                continue;
-            }
-            let surv = fight::square_law(a, defence, &self.tun);
-            if surv <= 0.0 {
-                continue;
-            }
             // Bold captains mind patrols less: the survival share is raised to a power from 2
             // (timid) to 0 (reckless).
             let exp = 2.0 - f64::from(tm.bold) / 128.0;
@@ -2751,6 +2887,12 @@ impl Ships {
         let total: f64 = cands.iter().map(|c| c.1).sum();
         if cands.is_empty() || total <= 0.0 {
             self.stats.fruitless += 1;
+            // No prey while the haven starves: the ship is laid up (§2.4.6a rule 2, PC3). One
+            // in a player's view rests on instead, so nothing vanishes before their eyes.
+            if self.starving(h, at) && !self.ships[s].embodied {
+                self.lay_up(w, s, at);
+                return;
+            }
             let until = at + self.tun.pirate_rest_ticks;
             if let Some(p) = self.ships[s].pirate.as_mut() {
                 p.state = PState::Resting { until };
@@ -2825,6 +2967,14 @@ impl Ships {
             return;
         };
         let h = self.haven_of(s).expect("a pirate");
+        if self.tun.lifecycle {
+            // §2.4.6a rule 1: the fight it judged the lane by costs men; a ship it costs the
+            // last man is lost before the hunt begins (and so does not feed the haven).
+            if !self.ships[s].embodied && self.pay_toll(w, s, h, lane, at) {
+                return;
+            }
+            self.feed(h, at);
+        }
         let tm = self.temperament(s);
         let defence = self.threat(lane).map_or(0.0, |t| t.defence());
         let surv = fight::square_law(self.strength(s), defence, &self.tun);
@@ -3792,11 +3942,16 @@ impl Ships {
                 day_of(back)
             ),
         );
+        // Its haven's last ship gone: it shuts if it starves (§2.4.6a rule 4).
+        self.haven_quiet(h, at);
     }
 
     /// A lost pirate ship's slot is refitted when its wait is over and the haven's pool can man
     /// it (§2.4.6): the lost row comes back with a new captain. Short of crew, it waits for the
-    /// moment hires make up the crew (one event), or less if a capture fills the pool first.
+    /// moment hires make up the crew (one event), or less if a capture fills the pool first. A
+    /// haven that starves first stops hiring (§2.4.6a rule 2), so the slot looks again at the
+    /// turn instead, when a hunt begun since may have fed it on; a shut haven refits nothing
+    /// (rule 4): its slots wait for a refound (rule 5).
     fn refit(&mut self, w: &mut World, s: ShipId, plan: u32, at: Tick) {
         let Some(x) = self.ships.get(s) else {
             return;
@@ -3807,12 +3962,17 @@ impl Ships {
         let Some(h) = self.haven_of(s) else {
             return;
         };
+        if self.havens[h as usize].shut.is_some() {
+            return;
+        }
         let need = self.tun.medium(x.medium).pirate_crew;
         let pool = self.crew_pool_milli(h, at);
         if pool < need * 1000 {
-            // Never, if hires cannot reach a crew: a capture wakes it.
+            // Never, if hires cannot reach a crew: a capture wakes it, and so does a hunt start
+            // that feeds a starving haven again (PC11).
             let ready = self.crew_ready_at(h, need, at).map(|t| t.max(at + 1));
-            if let Some(t) = ready {
+            let turn = (self.tun.lifecycle && !self.starving(h, at)).then(|| self.fed_until(h));
+            if let Some(t) = ready.or(turn) {
                 let plan = self.bump(s);
                 self.schedule(t, Ev::Refit { ship: s, plan });
             }
@@ -3835,6 +3995,20 @@ impl Ships {
         }
         self.take_crew(h, need, at);
         self.stats.rebuilds += 1;
+        self.launch(w, s, h, at);
+        self.note(
+            at,
+            "rebuilt",
+            Some(s),
+            format!("haven {h} launches a new ship"),
+        );
+    }
+
+    /// Launches a new ship in pirate slot `s` of haven `h`, reusing the lost row: a new captain,
+    /// a full crew, a sound hull, resting before it decides (§2.4.6). The caller has found the
+    /// crew: from the pool for a refit, the new band itself for a refound (§2.4.6a rule 5).
+    fn launch(&mut self, w: &mut World, s: ShipId, h: u32, at: Tick) {
+        let need = self.tun.medium(self.ships[s].medium).pirate_crew;
         let node = self.havens[h as usize].node;
         let haven_actor = w.nodes[node].actor;
         let seed = fnv1a64(&[self.ships[s].seed.to_le_bytes(), at.0.to_le_bytes()].concat());
@@ -3871,12 +4045,292 @@ impl Ships {
             nid(w, node),
             i64::from(need),
         );
+    }
+
+    // ---- havens that rise and fall (EQUILIBRIUM.md §2.4.6a, slice S8b) -------------------------
+
+    /// The toll of a hunt (§2.4.6a rule 1, PC1): pirate `s`, unembodied, reaching lane `lane`
+    /// pays for the fight it judged the lane by. Its crew `c` of strength `A` against a merchant
+    /// crew and the lane's defence `D` loses `c x (1 - square_law(A, D))` men, in thousandths:
+    /// the square law's share, never a roll. Haven `h`'s pool pays first (the men ashore who
+    /// make up the losses); what it lacks comes off the crew in whole men, rounded up. A crew
+    /// paid to the last man loses its ship, as a fight would (no killer, so no pressure).
+    /// Whether the ship was lost.
+    fn pay_toll(&mut self, w: &mut World, s: ShipId, h: u32, lane: u32, at: Tick) -> bool {
+        let a = self.strength(s);
+        let mt = self.tun.medium(self.ships[s].medium);
+        let d = f64::from(mt.merchant_crew) * self.tun.merchant_strength
+            + self.threat(lane).map_or(0.0, |t| t.defence());
+        let crew = self.ships[s].crew;
+        let lost = 1.0 - fight::square_law(a, d, &self.tun);
+        let toll = (f64::from(crew) * 1000.0 * lost).round() as u32;
+        if toll == 0 {
+            return false;
+        }
+        self.settle_pool(h, at);
+        let hv = &mut self.havens[h as usize];
+        let from_pool = toll.min(hv.pool_milli);
+        hv.pool_milli -= from_pool;
+        hv.counts.toll_milli += u64::from(toll);
+        let men = (toll - from_pool).div_ceil(1000);
+        self.ships[s].crew = crew.saturating_sub(men);
+        if self.log_enabled {
+            self.note(
+                at,
+                "toll",
+                Some(s),
+                format!(
+                    "the hunt on lane {lane} costs {:.2} men: {:.2} from haven {h}'s pool, \
+                     {men} from the crew",
+                    f64::from(toll) / 1000.0,
+                    f64::from(from_pool) / 1000.0
+                ),
+            );
+        }
+        men > 0 && self.lose_if_crewless(w, s, 0, None, at)
+    }
+
+    /// A hunt begins from haven `h` (§2.4.6a rule 2, PC2): the haven is fed for `starve_days`
+    /// more. The pool is settled first, so the closed form keeps what it read before the turn
+    /// moved. A haven fed again after starving wakes its waiting slots (PC11).
+    fn feed(&mut self, h: u32, at: Tick) {
+        let was_starving = self.starving(h, at);
+        self.settle_pool(h, at);
+        let until = at + self.starve_ticks();
+        let hv = &mut self.havens[h as usize];
+        hv.fed_until = hv.fed_until.max(until);
+        if was_starving {
+            self.wake_slots(h, at);
+        }
+    }
+
+    /// A starving haven fed again (PC11): every slot that waits on crew (its refit due) or lies
+    /// laid up looks for its refit now, re-planned so any older look is void.
+    fn wake_slots(&mut self, h: u32, at: Tick) {
+        let waiting: Vec<ShipId> = self.havens[h as usize]
+            .ships
+            .iter()
+            .copied()
+            .filter(|&s| {
+                self.ships
+                    .get(s)
+                    .is_some_and(|x| matches!(x.status, Status::Lost { back, .. } if back <= at))
+            })
+            .collect();
+        for s in waiting {
+            if let Status::Lost { back, .. } = &mut self.ships[s].status
+                && *back == LAID_UP
+            {
+                *back = at;
+            }
+            let plan = self.bump(s);
+            self.schedule(at, Ev::Refit { ship: s, plan });
+        }
+    }
+
+    /// A ship laid up (§2.4.6a rule 2, PC3): no lane worth hunting while its haven starves, so
+    /// its crew goes ashore (capped as [`Self::add_crew`] caps it) and the row is kept lost with
+    /// no refit due ([`LAID_UP`]) until the haven is fed again or refounds. Not sunk: no sinking
+    /// counted, no pressure, no "sunk" on the tape. Its captain dies to the books (grudges pass
+    /// to the haven, as at a sinking); what its hold kept stays there, still held.
+    fn lay_up(&mut self, w: &mut World, s: ShipId, at: Tick) {
+        let Some(h) = self.haven_of(s) else {
+            return;
+        };
+        let crew = self.ships[s].crew;
+        self.settle_pool(h, at);
+        let cap = self.tun.crew_pool_cap * 1000;
+        let hv = &mut self.havens[h as usize];
+        hv.pool_milli = (hv.pool_milli + crew.saturating_mul(1000)).min(cap.max(hv.pool_milli));
+        hv.counts.laid_up += 1;
+        if let Some(l) = self.ships[s].pirate.as_mut().and_then(|p| p.leg.take()) {
+            w.legs.cancel(l.leg);
+        }
+        if let Some(c) = self.ships[s].pirate.as_ref().map(|p| p.captain)
+            && w.knowledge.notable(c).is_some()
+        {
+            w.knowledge.die(c, at);
+        }
+        let x = &mut self.ships[s];
+        x.crew = 0;
+        x.status = Status::Lost {
+            since: at,
+            back: LAID_UP,
+        };
+        x.plan = x.plan.wrapping_add(1);
+        self.set_embodied(s, false);
         self.note(
             at,
-            "rebuilt",
+            "laid_up",
             Some(s),
-            format!("haven {h} launches a new ship"),
+            format!("is laid up: haven {h} starves and no lane is worth hunting"),
         );
+        self.haven_quiet(h, at);
+    }
+
+    /// Haven `h` has just lost an active ship (sunk, laid up, or paid out in tolls): with none
+    /// left it shuts if it starves (§2.4.6a rule 4, PC4), or looks again when it would starve.
+    /// A haven whose ships were sunk while it was fed stays open: its slots refit as before.
+    fn haven_quiet(&mut self, h: u32, at: Tick) {
+        if !self.tun.lifecycle || self.havens[h as usize].shut.is_some() {
+            return;
+        }
+        let active = self.havens[h as usize]
+            .ships
+            .iter()
+            .any(|&s| self.ships.get(s).is_some_and(Ship::is_active));
+        if active {
+            return;
+        }
+        if self.starving(h, at) {
+            self.shut(h, false, at);
+        } else {
+            let hv = &mut self.havens[h as usize];
+            hv.epoch = hv.epoch.wrapping_add(1);
+            let (t, epoch) = (hv.fed_until, hv.epoch);
+            self.schedule(t, Ev::Refound { haven: h, epoch });
+        }
+    }
+
+    /// Haven `h` shuts (§2.4.6a rule 4, PC4): its slots' pending refits are void, and its site
+    /// looks for a new band after `refound.delay_ticks(P, day)` (rule 5). Pressure is kept, so
+    /// a site players cleared stays empty for longer.
+    fn shut(&mut self, h: u32, broken: bool, at: Tick) {
+        let rule = self.tun.refound;
+        let hv = &self.havens[h as usize];
+        let back = at + rule.delay_ticks(hv.pressure, day_num(at)).max(1);
+        let slots = hv.ships.clone();
+        for s in slots {
+            if self.ships.get(s).is_some_and(|x| !x.is_active()) {
+                self.bump(s);
+            }
+        }
+        let hv = &mut self.havens[h as usize];
+        hv.shut = Some(Shut {
+            since: at,
+            back,
+            broken,
+        });
+        hv.epoch = hv.epoch.wrapping_add(1);
+        hv.counts.shuts += 1;
+        let epoch = hv.epoch;
+        self.schedule(back, Ev::Refound { haven: h, epoch });
+        self.note(
+            at,
+            "shut",
+            None,
+            format!(
+                "haven {h} shuts: no ship and no hunt; its site looks again from day {:.2}",
+                day_of(back)
+            ),
+        );
+    }
+
+    /// Haven `h`'s look (its [`Ev::Refound`]): open, it shuts if it starves with no ship
+    /// (rule 4); shut and due, its site tries for a new band (rule 5).
+    fn haven_look(&mut self, w: &mut World, h: u32, epoch: u32, at: Tick) {
+        let Some(hv) = self.havens.get(h as usize) else {
+            return;
+        };
+        if !self.tun.lifecycle || hv.epoch != epoch {
+            self.stats.stale += 1;
+            return;
+        }
+        match hv.shut {
+            None => self.haven_quiet(h, at),
+            Some(sh) if at >= sh.back => self.try_refound(w, h, at),
+            Some(_) => {}
+        }
+    }
+
+    /// A shut haven's site tries for a new band (§2.4.6a rule 5, PC5, PC6): only out of every
+    /// player's view, and only if a fresh band would find a lane worth hunting. Then it opens
+    /// with a quarter of the pool's cap ashore, fed for `starve_days`, and every slot launches
+    /// a new ship with its own crew (the band brings them; none come from the pool). Otherwise
+    /// the site looks again after `refound.base_days`.
+    fn try_refound(&mut self, w: &mut World, h: u32, at: Tick) {
+        let in_view = self.dock_in_view(w, h, at);
+        if in_view || !self.has_prey(w, h) {
+            let base = f64::from(self.tun.refound.base_days) * TICKS_PER_DAY as f64;
+            let again = at + (base.round() as u64).max(1);
+            let hv = &mut self.havens[h as usize];
+            hv.epoch = hv.epoch.wrapping_add(1);
+            if let Some(sh) = hv.shut.as_mut() {
+                sh.back = again;
+            }
+            let epoch = hv.epoch;
+            self.schedule(again, Ev::Refound { haven: h, epoch });
+            self.note(
+                at,
+                "refound",
+                None,
+                format!(
+                    "haven {h}'s site stays empty ({}); it looks again on day {:.2}",
+                    if in_view {
+                        "a player is near"
+                    } else {
+                        "no prey"
+                    },
+                    day_of(again)
+                ),
+            );
+            return;
+        }
+        let cap = self.tun.crew_pool_cap * 1000;
+        let fed = at + self.starve_ticks();
+        let hv = &mut self.havens[h as usize];
+        hv.pool_milli = cap / 4;
+        hv.pool_at = at;
+        hv.fed_until = fed;
+        hv.shut = None;
+        hv.epoch = hv.epoch.wrapping_add(1);
+        hv.counts.refounds += 1;
+        let slots = hv.ships.clone();
+        for s in slots {
+            if self.ships.get(s).is_some_and(|x| !x.is_active()) {
+                self.launch(w, s, h, at);
+            }
+        }
+        self.note(
+            at,
+            "refound",
+            None,
+            format!("haven {h} is refounded: a new band moves in"),
+        );
+    }
+
+    /// Whether a fresh band at haven `h` would find prey (§2.4.6a rule 5, PC5): a full crew of
+    /// one of its media, with a sound hull, sees a lane worth hunting by [`Self::decide`]'s own
+    /// filters.
+    fn has_prey(&self, w: &World, h: u32) -> bool {
+        let hv = &self.havens[h as usize];
+        [Medium::Sea, Medium::Sky]
+            .into_iter()
+            .filter(|&m| hv.media & medium_bit(m) != 0)
+            .any(|m| {
+                let a = f64::from(self.tun.medium(m).pirate_crew) * self.tun.pirate_strength;
+                hv.lanes
+                    .iter()
+                    .any(|&l| self.huntable(w, h, m, a, l).is_some())
+            })
+    }
+
+    /// Whether a player's interest centre is within `view_radius` of haven `h`'s dock at `at`,
+    /// on the same frame (§2.4.6a rule 5: nothing appears in a player's view).
+    fn dock_in_view(&self, w: &World, h: u32, at: Tick) -> bool {
+        let hv = &self.havens[h as usize];
+        let dock = (hv.dock.0, hv.dock.2);
+        self.players.values().any(|v| {
+            v.interest
+                .and_then(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
+                .is_some_and(|r| {
+                    r.path.frame == hv.frame
+                        && r.path.t0 <= at
+                        && at <= r.path.t1
+                        && self.sdist(hv.frame, (r.path.x0, r.path.z0), dock)
+                            <= u64::from(self.tun.view_radius)
+                })
+        })
     }
 
     // ---- observations --------------------------------------------------------------------------
@@ -4304,6 +4758,7 @@ impl Ships {
                 Ev::Home { .. } => "home",
                 Ev::Respawn { .. } => "respawn",
                 Ev::Refit { .. } => "refit",
+                Ev::Refound { .. } => "refound",
             };
             *m.entry(k).or_insert(0) += 1;
         }
