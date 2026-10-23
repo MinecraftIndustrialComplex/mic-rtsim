@@ -303,6 +303,10 @@ pub struct Compiled {
     /// after it (the compile no longer matches the blocks until Java recompiles: no replay).
     pub passed: Option<WindowResult>,
     pub edited: bool,
+    /// The goods the district's last concluded window failed on, carried from the compile before
+    /// until this one's first district window concludes: a recompile does not lift the veto on a
+    /// unit (SECTIONS.md §3.4, choice SC66). Sorted; [`Compiled::district_failing`] reads it.
+    pub veto: Vec<Good>,
     pub windows_completed: u32,
     pub strikes: u32,
     /// Per (inventory, good): its stock as of the last sweep, spent and refilled as the model
@@ -376,6 +380,9 @@ pub struct DistrictGlass {
     /// Chunks that stopped running (unloaded, or stopped block-ticking) since the last sweep that
     /// sampled: a unit lying in one did not run throughout that sweep (§3.4).
     pub stopped: BTreeSet<crate::ids::ChunkPos>,
+    /// The district went away since its last sweep ([`super::Glass::away`]): the first sweep back
+    /// runs no unit (choice SC59).
+    pub away: bool,
 }
 
 /// What a sweep sees of the district.
@@ -668,6 +675,31 @@ fn rows_of(rows: &[Row], unit: u16) -> std::ops::Range<usize> {
     rows.partition_point(|r| r.unit < unit)..rows.partition_point(|r| r.unit <= unit)
 }
 
+/// Of the failing goods (or `only` that good), the one the model is most optimistic on: it
+/// predicts more throughput than measured. Its η (measured over predicted, in 0 to 1), the good,
+/// and whether it is produced.
+fn most_optimistic(goods: &[GoodResult], only: Option<Good>) -> Option<(f64, Good, bool)> {
+    let mut worst: Option<(f64, Good, bool)> = None;
+    for r in goods {
+        if r.verdict != report::verdict::FAIL
+            || r.predicted == 0.0
+            || !r.predicted.is_finite()
+            || only.is_some_and(|g| g != r.good)
+        {
+            continue;
+        }
+        let s = r.predicted.signum();
+        if s * r.measured >= s * r.predicted {
+            continue;
+        }
+        let eta = (r.measured / r.predicted).clamp(0.0, 1.0);
+        if worst.is_none_or(|w| eta < w.0) {
+            worst = Some((eta, r.good, r.predicted > 0.0));
+        }
+    }
+    worst
+}
+
 /// The cumulative prediction a good sampled before any flow starts with: exact, or unbounded on
 /// a unit or district holding a black box or a port; a batch of one.
 fn sampled_cum(unbounded: bool) -> Cum {
@@ -788,6 +820,7 @@ impl Compiled {
             last: None,
             passed: None,
             edited: false,
+            veto: Vec::new(),
             windows_completed: 0,
             strikes: 0,
             stock_est: BTreeMap::new(),
@@ -1445,9 +1478,20 @@ impl Compiled {
                 }
             }
         }
+        // A unit holding a node of a model demoted here (G-B14) is unbounded as one holding a
+        // black box is: the solve treats the node as one.
+        let mut unbounded = self.units.unbounded.clone();
+        if !self.regime.demoted.is_empty() {
+            for (v, n) in self.graph.nodes.iter().enumerate() {
+                let u = self.units.of_node[v];
+                if u != super::sections::NONE && self.regime.demoted.contains(&n.model) {
+                    unbounded[u as usize] = true;
+                }
+            }
+        }
         for &(u, g) in y.keys() {
-            let unbounded = self.units.unbounded[u as usize];
-            row_mut(&mut self.rows, u, g, || sampled_cum(unbounded));
+            let ub = unbounded[u as usize];
+            row_mut(&mut self.rows, u, g, || sampled_cum(ub));
         }
         let mut times = vec![0.0; take.len()];
         for (u, st) in self.unit_state.iter_mut().enumerate() {
@@ -1605,6 +1649,12 @@ impl Compiled {
     /// (in-edges for a produced good, out-edges for a consumed one), the nearest node with flow whose
     /// own capacity binds; else the nearest machine; else the nearest node.
     pub fn limiting(&self, good: Good, produced: bool) -> Option<u32> {
+        self.limiting_in(good, produced, None)
+    }
+
+    /// [`Compiled::limiting`] from the store edges of unit `unit` alone, or of every store (None).
+    /// The search stops at stores, and a store's sections are its unit's, so it stays in the unit.
+    fn limiting_in(&self, good: Good, produced: bool, unit: Option<u16>) -> Option<u32> {
         let g = &self.graph;
         let mut queue: Vec<u32> = Vec::new();
         let mut seen = vec![false; g.nodes.len()];
@@ -1614,6 +1664,10 @@ impl Compiled {
                 continue;
             }
             let ed = g.edge(e);
+            let store = if into { ed.to } else { ed.from };
+            if unit.is_some_and(|u| self.units.of_node[store as usize] != u) {
+                continue;
+            }
             let v = if into { ed.from } else { ed.to };
             if !seen[v as usize] {
                 seen[v as usize] = true;
@@ -1690,34 +1744,31 @@ impl Compiled {
     }
 
     /// On a failed window: derate the limiting node of the most optimistic good, probe upstream of
-    /// it, and after `glass.mismatchStrikes` failed windows demote its kind (G-B14). Returns the
-    /// probe set to send and a newly demoted model, if any.
+    /// it, and after `glass.mismatchStrikes` failed windows demote its kind (G-B14). With the units
+    /// active, the search starts in the unit whose own last window failed worst on that good, and
+    /// the derate is that window's (choice SC61); with none, over the district. Returns the probe
+    /// set to send and a newly demoted model, if any.
     fn act(&mut self, res: &WindowResult, tun: &GlassTunables) -> (Option<Vec<u32>>, Option<u32>) {
         if res.verdict != report::verdict::FAIL {
             self.strikes = 0;
             return (None, None);
         }
         self.strikes += 1;
-        // The most optimistic failing good: the model predicts more throughput than measured.
-        let mut worst: Option<(f64, Good, bool)> = None;
-        for r in &res.goods {
-            if r.verdict != report::verdict::FAIL || r.predicted == 0.0 || !r.predicted.is_finite()
-            {
-                continue;
-            }
-            let s = r.predicted.signum();
-            if s * r.measured >= s * r.predicted {
-                continue;
-            }
-            let eta = (r.measured / r.predicted).clamp(0.0, 1.0);
-            if worst.is_none_or(|w| eta < w.0) {
-                worst = Some((eta, r.good, r.predicted > 0.0));
-            }
-        }
-        let Some((eta, good, produced)) = worst else {
+        let Some((eta, good, produced)) = most_optimistic(&res.goods, None) else {
             return (None, None);
         };
-        let Some(v) = self.limiting(good, produced) else {
+        let local = self
+            .unit_state
+            .iter()
+            .enumerate()
+            .filter_map(|(u, st)| {
+                let r = st.last.as_ref()?;
+                let (e, _, p) = most_optimistic(&r.goods, Some(good))?;
+                Some((e, u as u16, p))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .and_then(|(e, u, p)| Some((self.limiting_in(good, p, Some(u))?, e)));
+        let Some((v, eta)) = local.or_else(|| Some((self.limiting(good, produced)?, eta))) else {
             return (None, None);
         };
         // η is a measurement: a relative 1e-9 up keeps a float slope of 0.4999999999 at 1/2.
@@ -1792,8 +1843,9 @@ impl Compiled {
         // The units first: each open one that ran is sampled, the others lose their windows.
         let nu = self.unit_state.len();
         let ran = |u: usize| unit_live.get(u).copied().unwrap_or(false);
+        // Warming up or not: a unit that did not run warms up afresh once it runs again.
         for u in 0..nu {
-            if self.unit_state[u].win.is_some() && !ran(u) {
+            if !ran(u) {
                 self.discard_unit(u as u16, at, tun);
             }
         }
@@ -1823,6 +1875,7 @@ impl Compiled {
                     self.edited = false;
                 }
                 self.last = Some(res);
+                self.veto.clear();
                 // The next window starts here, with this sample.
                 self.win = Some(Window {
                     start: at,
@@ -2177,9 +2230,25 @@ impl Compiled {
             })
     }
 
-    /// May unit `u` replay (SECTIONS.md §3.4)? Its own last window passed and no edit staled it
-    /// since, and the district's last concluded window failed on none of the goods it touches. With
-    /// the units not active, the district's rule (G-B4, [`Compiled::eligible`]).
+    /// The goods the district's last concluded window failed on: this compile's, else those the
+    /// compile before carried over (`veto`).
+    pub fn district_failing(&self) -> Vec<Good> {
+        match &self.last {
+            Some(r) => r
+                .goods
+                .iter()
+                .filter(|g| g.verdict == report::verdict::FAIL)
+                .map(|g| g.good)
+                .collect(),
+            None => self.veto.clone(),
+        }
+    }
+
+    /// May unit `u` replay (SECTIONS.md §3.4)? Its own last window passed on at least one good
+    /// (a window with nothing judged proves nothing, choice SC66) and no edit staled it since, and
+    /// the district's last concluded window failed on none of the goods the unit touches: those of
+    /// its last window, its open rows and its bounds under the current solve. With the units not
+    /// active, the district's rule (G-B4, [`Compiled::eligible`]).
     pub fn unit_may_replay(&self, u: u16) -> bool {
         if self.unit_state.is_empty() {
             return self.eligible();
@@ -2194,17 +2263,20 @@ impl Compiled {
         else {
             return false;
         };
-        if st.edited {
+        if st.edited || !own.goods.iter().any(|g| g.verdict == report::verdict::PASS) {
             return false;
         }
-        let failing: BTreeSet<Good> = self.last.as_ref().map_or(BTreeSet::new(), |r| {
-            r.goods
-                .iter()
-                .filter(|g| g.verdict == report::verdict::FAIL)
-                .map(|g| g.good)
-                .collect()
-        });
-        !own.goods.iter().any(|g| failing.contains(&g.good))
+        let failing = self.district_failing();
+        if failing.is_empty() {
+            return true;
+        }
+        let touched = own
+            .goods
+            .iter()
+            .map(|g| g.good)
+            .chain(self.rows[rows_of(&self.rows, u)].iter().map(|r| r.good))
+            .chain(self.ubounds.iter().filter(|b| b.unit == u).map(|b| b.good));
+        !touched.into_iter().any(|g| failing.contains(&g))
     }
 
     /// May section `s` replay: its unit's rule ([`Compiled::unit_may_replay`]); an idle node's
@@ -2407,6 +2479,7 @@ mod persist_impls {
             self.last.put(w);
             self.passed.put(w);
             self.edited.put(w);
+            self.veto.put(w);
             self.windows_completed.put(w);
             self.strikes.put(w);
             self.stock_est.put(w);
@@ -2445,6 +2518,7 @@ mod persist_impls {
                 last: Persist::get(r)?,
                 passed: Persist::get(r)?,
                 edited: Persist::get(r)?,
+                veto: Persist::get(r)?,
                 windows_completed: Persist::get(r)?,
                 strikes: Persist::get(r)?,
                 stock_est: Persist::get(r)?,
