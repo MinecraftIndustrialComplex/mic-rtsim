@@ -233,6 +233,45 @@ fn a_failed_save_writes_its_leg_pages_again() {
     restore(&disk);
 }
 
+/// What the docs say a leg costs (docs/stress-worlds-results.md 10.10): a leg of four carriages
+/// carrying two goods each, over a line of a few regions, is under 100 bytes in its page.
+#[test]
+fn a_leg_page_is_under_a_hundred_bytes_a_leg() {
+    let mut e = engine();
+    let carriages = |n: u64| -> Vec<rtsim_industry::obs::Carriage> {
+        (0..4)
+            .map(|i| rtsim_industry::obs::Carriage {
+                index: i,
+                item_slots: 36,
+                fluid_capacity: 0,
+                goods: rtsim_industry::ids::GoodVec::from_pairs([
+                    (IRON, 640 + n as i64),
+                    (Good(2), 64),
+                ]),
+            })
+            .collect()
+    };
+    for i in 0..LEGS_PER_PAGE {
+        send(
+            &mut e,
+            100 + i,
+            Obs::TrainDeparted(TrainDeparture {
+                train: TrainId(i % 7),
+                station: WEST,
+                district: D1,
+                destination: Some(EAST),
+                eta_ticks: 200,
+                carriages: carriages(i),
+            }),
+        );
+    }
+    let pages = e.legs().pages();
+    assert_eq!(pages.len(), 1);
+    let per = pages[0].1.len() as f64 / LEGS_PER_PAGE as f64;
+    eprintln!("a leg page: {} bytes, {per:.1} a leg", pages[0].1.len());
+    assert!(per < 100.0, "{per} bytes a leg");
+}
+
 /// A leg page of another format, in another page's key, or past the id counter does not restore.
 #[test]
 fn a_leg_page_that_does_not_fit_its_key_or_counter_is_refused() {

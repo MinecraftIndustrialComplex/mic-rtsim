@@ -3044,7 +3044,7 @@ impl Engine {
                     from: dep.station,
                     to: dep.destination,
                     depart: at,
-                    eta: at + dep.eta_ticks.max(1),
+                    eta: at + dep.eta_ticks.clamp(1, threat::LEG_MAX_TICKS),
                     cargo: dep
                         .carriages
                         .iter()
@@ -4285,7 +4285,12 @@ mod persist_impls {
         ports
     });
 
+    /// The globals page starts with this, so a page of another format fails by name, not by whatever
+    /// field its bytes happen to decode as (ID10).
+    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB1");
+
     fn globals(e: &Engine, w: &mut Writer) {
+        w.u32(GLOBAL_MAGIC);
         e.world_seed.put(w);
         e.goods.put(w);
         e.next_cluster.put(w);
@@ -4582,6 +4587,12 @@ mod persist_impls {
             }
             let g = global.ok_or_else(|| CodecError::Invalid("no globals page".into()))?;
             let mut r = Reader::new(&g);
+            let magic = r.u32()?;
+            if magic != GLOBAL_MAGIC {
+                return Err(CodecError::Invalid(format!(
+                    "globals page magic {magic:#010x}, not {GLOBAL_MAGIC:#010x}: an older format"
+                )));
+            }
             let world_seed = u64::get(&mut r)?;
             let mut e = Engine::new(world_seed, tun, Tick::ZERO);
             e.goods = Persist::get(&mut r)?;
