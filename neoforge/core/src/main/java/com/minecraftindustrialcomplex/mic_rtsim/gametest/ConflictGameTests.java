@@ -1063,15 +1063,17 @@ public final class ConflictGameTests {
                     record(test, "the envoy's name", n);
                     check("it says its demand: " + n, n != null && n.contains("killing"));
                     mark[2] = bridge().settledCommands;
+                    long answered = bridge().answers;
                     ServerPlayer pl = player[0];
                     check("an empty hand", pl.getMainHandItem().isEmpty());
                     pl.setShiftKeyDown(true);
                     pl.interactOn(emissary, InteractionHand.MAIN_HAND);
                     pl.setShiftKeyDown(false);
-                    check("ENVOY_ANSWER 2", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 1);
+                    check("refused", bridge().answers == answered + 1);
                 })
                 .thenWaitUntil(() -> {
                     keep.run();
+                    check("ENVOY_ANSWER 2 journaled", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 1);
                     check("DEMAND_SETTLED", bridge().settledCommands > mark[2]);
                 })
                 .thenExecute(() -> {
