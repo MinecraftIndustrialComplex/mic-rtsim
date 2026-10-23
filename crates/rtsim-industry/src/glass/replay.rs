@@ -620,16 +620,17 @@ impl Replay {
         })
     }
 
-    /// Sets every part's gates from the units replaying now; returns the parts whose gates changed.
+    /// Sets every part's gates from the units replaying now; returns the parts whose own nodes'
+    /// gates changed (another part's nodes never run in a part's process).
     fn set_gates(&mut self, comp: &Compiled) -> Vec<usize> {
         let p = &self.parts[0];
         let gate = gate_of(comp, &p.sim, &p.unit_of, &self.on());
         let mut changed = Vec::new();
         for (i, p) in self.parts.iter_mut().enumerate() {
-            if p.gated != gate {
-                p.gated.clone_from(&gate);
+            if (0..gate.len()).any(|v| p.mine[v] && p.gated[v] != gate[v]) {
                 changed.push(i);
             }
+            p.gated.clone_from(&gate);
         }
         changed
     }
@@ -682,6 +683,16 @@ impl Replay {
     /// Per unit: a fallback froze it.
     pub fn frozen(&self) -> &[bool] {
         &self.frozen
+    }
+
+    /// Fallbacks that froze units since the start.
+    pub fn freezes(&self) -> u32 {
+        self.freezes
+    }
+
+    /// Per node: gated off because its unit does not replay, or its domain's driver's does not.
+    pub fn gated(&self) -> &[bool] {
+        &self.parts[0].gated
     }
 
     /// Does the replay gate its units as `comp` would start one now: the same units, the same
@@ -1255,11 +1266,12 @@ impl Part {
                 if !release {
                     self.steps += 1;
                 }
-                if self.steps > tun.breakpoints_per_event_max {
-                    return Err(Fallback::Oscillating);
-                }
+                // Counted first: the stop past the limit names its unit too.
                 if let Some(u) = self.unit_of_stop(w) {
                     *self.hits.entry(u).or_insert(0) += 1;
+                }
+                if self.steps > tun.breakpoints_per_event_max {
+                    return Err(Fallback::Oscillating);
                 }
                 match w {
                     Stop::InputEmpty(k @ PoolKey::Store(_, inv, g)) => {

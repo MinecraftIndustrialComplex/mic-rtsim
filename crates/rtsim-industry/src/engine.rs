@@ -1206,7 +1206,7 @@ impl Engine {
             if self.glass.districts.get(&e.district).is_some_and(
                 |g| matches!((&g.replay, &g.compiled), (Some(r), Some(c)) if !r.same_units(c)),
             ) {
-                self.mark(e.district);
+                self.dirty.insert(e.district);
             }
         }
         if !e.live || e.creative || e.overstressed {
@@ -1805,6 +1805,7 @@ impl Engine {
         };
         let cut = rp.cut_edges();
         let parts = rp.parts();
+        let frozen = rp.frozen().iter().filter(|&&f| f).count();
         dg.replay = Some(rp);
         dg.replay_model = crate::glass::report::replay_model::GLASS;
         dg.replay_since = Some(at);
@@ -1827,11 +1828,14 @@ impl Engine {
         });
         self.stats.sims_started += 1;
         self.glass.stats.replays += 1;
-        let what = if whole {
+        let mut what = if whole {
             "glass replay starts".to_string()
         } else {
             format!("glass replay starts over {covered} inventories ({cut} cut edges)")
         };
+        if frozen > 0 {
+            what.push_str(&format!(", {frozen} units frozen"));
+        }
         self.note(d, at, what);
         self.after_cluster(h, at);
         // A first regime blocked at once stops silently: take it as its breakpoint.
@@ -1878,13 +1882,25 @@ impl Engine {
             dirty.insert(d);
             return;
         }
+        let fz = rp.freezes();
         let r = clusters.apply(h, at, |c, at| match why {
             Some((id, w)) => rp.on_stop(comp, c, id, w, at, goods, &tun.glass),
             None => rp.refresh(comp, c, at, goods, &tun.glass),
         });
+        let frozen = rp.frozen().iter().filter(|&&f| f).count();
+        let froze = rp.freezes() > fz;
         match r {
             Some(Err(f)) => self.glass_fallback(d, f, at),
-            _ => self.after_cluster(h, at),
+            _ => {
+                if froze {
+                    self.note(
+                        d,
+                        at,
+                        format!("glass replay freezes units: {frozen} frozen, the rest go on"),
+                    );
+                }
+                self.after_cluster(h, at);
+            }
         }
     }
 
