@@ -7,12 +7,15 @@ import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.IRotate;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
@@ -30,16 +33,18 @@ import java.util.Objects;
  * <ul>
  *   <li>loaded anew: each block entity's first attach ({@code KineticBlockEntityMixin}) re-syncs it;</li>
  *   <li>FULL again without loading (it dropped below FULL and stayed in memory, ticket level 34 to 44): no
- *       block entity attaches, so the chunk is queued at its promotion ({@code ChunkMapPromotionMixin}) and
- *       re-synced here at the next server tick's start or end ({@link #chunkFull}), before Create's next
- *       propagation can meet the stale part and break it.</li>
+ *       block entity attaches, so the chunk is noted at its demotion and queued at its promotion
+ *       ({@code ChunkMapPromotionMixin}), and re-synced here at the next server tick's start or end
+ *       ({@link #chunkFull}), before Create's next propagation can meet the stale part and break it.</li>
  * </ul>
  */
 public final class StaleKinetics {
     private StaleKinetics() {}
 
     private static int resyncs;
-    /** Chunks that became FULL, per level, until the next drain (server thread only). */
+    /** Chunks that dropped below FULL and are still in memory, per level (server thread only). */
+    private static final Map<ServerLevel, LongOpenHashSet> AWAY = new IdentityHashMap<>();
+    /** Chunks of {@link #AWAY} that are FULL again, per level, until the next drain (server thread only). */
     private static final Map<ServerLevel, LongLinkedOpenHashSet> FULL_AGAIN = new IdentityHashMap<>();
 
     /** Re-syncs since the server started (for tests). */
@@ -50,12 +55,33 @@ public final class StaleKinetics {
     static void register() {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Pre e) -> drain());
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post e) -> drain());
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerStoppedEvent e) -> FULL_AGAIN.clear());
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ChunkEvent.Unload e) -> {
+            if (e.getLevel() instanceof ServerLevel level) {
+                LongOpenHashSet away = AWAY.get(level);
+                if (away != null)
+                    away.remove(e.getChunk().getPos().toLong());
+            }
+        });
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener((ServerStoppedEvent e) -> {
+            AWAY.clear();
+            FULL_AGAIN.clear();
+        });
     }
 
-    /** {@code ChunkMap.onFullChunkStatusChange} to FULL (a promotion, or a demotion from block ticking): queued. */
-    public static void becameFull(ServerLevel level, ChunkPos pos) {
-        FULL_AGAIN.computeIfAbsent(level, l -> new LongLinkedOpenHashSet()).add(pos.toLong());
+    /**
+     * {@code ChunkMap.onFullChunkStatusChange}: a chunk below FULL is noted away until it unloads; one that is
+     * FULL or more again while noted is queued for {@link #chunkFull}. A promotion by several steps at once
+     * reports only its last status (each step cancels the one before), so any status from FULL on counts.
+     */
+    public static void fullStatusChanged(ServerLevel level, ChunkPos pos, FullChunkStatus status) {
+        long c = pos.toLong();
+        if (!status.isOrAfter(FullChunkStatus.FULL)) {
+            AWAY.computeIfAbsent(level, l -> new LongOpenHashSet()).add(c);
+            return;
+        }
+        LongOpenHashSet away = AWAY.get(level);
+        if (away != null && away.remove(c))
+            FULL_AGAIN.computeIfAbsent(level, l -> new LongLinkedOpenHashSet()).add(c);
     }
 
     private static void drain() {
