@@ -41,8 +41,8 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
-    Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus, Party, Phase,
-    Source, Target,
+    Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus, Party, Phase,
+    Line, Retired, Slot, SlotState, Source, Target, Throne,
 };
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -57,13 +57,15 @@ use crate::tunables::ConflictTunables;
 /// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
 /// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag and its
 /// start and the last notice's serial follow presence, and a feud carries its kept notice and its
-/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC4");
+/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22). RTC5: a faction carries its cap, its members
+/// away and its camp ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC5");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
-/// ends with the Peaceful flag, its start and the last notice's serial.
+/// ends with the Peaceful flag, its start and the last notice's serial. 4: a faction row carries
+/// its camp (M4), so every page of rows and every wheel event may differ.
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 3;
+const META_VERSION: u16 = 4;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -326,6 +328,105 @@ fn put_faction(w: &mut Writer, x: &Faction) {
     }
     w.bool(x.chief_out);
     w.bool(x.crystal);
+    w.var_u64(u64::from(x.cap));
+    w.var_u64(u64::from(x.away));
+    put_opt(w, &x.camp, |w, c| put_camp(w, c));
+}
+
+fn put_camp(w: &mut Writer, c: &Camp) {
+    w.u64(c.epoch);
+    w.var_u64(u64::from(c.seq));
+    w.var_u64(u64::from(c.refill));
+    put_opt(w, &c.refill_at, |w, t| w.u64(t.0));
+    put_usize(w, c.slots.len());
+    for s in &c.slots {
+        w.var_u64(u64::from(s.id));
+        w.u32(s.generation);
+        w.var_u64(u64::from(s.body));
+        w.u8(s.state as u8);
+        w.u64(s.party.to_bits());
+        w.u8(s.misses);
+        w.u64(s.missed_at.0);
+        put_opt(w, &s.line, |w, l| {
+            w.u8(l.action);
+            w.u64(l.op);
+        });
+    }
+    put_usize(w, c.retired.len());
+    for t in &c.retired {
+        w.var_u64(u64::from(t.slot));
+        w.u32(t.generation);
+        w.bool(t.died);
+    }
+    put_opt(w, &c.throne, |w, t| {
+        w.f64(t.spot.0);
+        w.f64(t.spot.1);
+        w.f64(t.spot.2);
+        w.f32(t.direction);
+    });
+}
+
+fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
+    let epoch = r.u64()?;
+    let seq = get_u32(r)?;
+    let refill = get_u32(r)?;
+    let refill_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    let n = r.len_prefix(25)?;
+    let mut slots: Vec<Slot> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let id = get_u32(r)?;
+        let generation = r.u32()?;
+        let body = get_u32(r)?;
+        let tag = r.u8()?;
+        let state = SlotState::from_u8(tag)
+            .ok_or_else(|| CodecError::Invalid(format!("slot state {tag}")))?;
+        let party = handle(r)?;
+        let misses = r.u8()?;
+        let missed_at = Tick(r.u64()?);
+        let line = get_opt(r, |r| {
+            Ok(Line {
+                action: r.u8()?,
+                op: r.u64()?,
+            })
+        })?;
+        if slots.last().is_some_and(|l| l.id >= id) || generation == 0 {
+            return bad(format!("slot {id} out of order or with generation 0"));
+        }
+        slots.push(Slot {
+            id,
+            generation,
+            body,
+            state,
+            party,
+            misses,
+            missed_at,
+            line,
+        });
+    }
+    let n = r.len_prefix(6)?;
+    let mut retired = Vec::with_capacity(n);
+    for _ in 0..n {
+        retired.push(Retired {
+            slot: get_u32(r)?,
+            generation: r.u32()?,
+            died: r.bool()?,
+        });
+    }
+    let throne = get_opt(r, |r| {
+        Ok(Throne {
+            spot: (r.f64()?, r.f64()?, r.f64()?),
+            direction: r.f32()?,
+        })
+    })?;
+    Ok(Camp {
+        epoch,
+        seq,
+        refill,
+        refill_at,
+        slots,
+        retired,
+        throne,
+    })
 }
 
 fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
@@ -354,6 +455,9 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         },
         chief_out: r.bool()?,
         crystal: r.bool()?,
+        cap: get_u32(r)?,
+        away: get_u32(r)?,
+        camp: get_opt(r, |r| get_camp(r))?.map(Box::new),
     })
 }
 
@@ -621,6 +725,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::Refill { faction, stamp } => {
+            w.u8(7);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -654,6 +763,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             train: r.u64()?,
         },
         6 => Ev::Plunder {
+            faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        7 => Ev::Refill {
             faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
@@ -731,6 +844,12 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.peace_held,
         s.notices_shown,
         s.repeats,
+        s.camp_censuses,
+        s.camp_orders,
+        s.camp_lines,
+        s.camp_answers,
+        s.camp_deaths,
+        s.camp_written_off,
     ]);
     v
 }
@@ -781,6 +900,12 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.peace_held = n();
     s.notices_shown = n();
     s.repeats = n();
+    s.camp_censuses = n();
+    s.camp_orders = n();
+    s.camp_lines = n();
+    s.camp_answers = n();
+    s.camp_deaths = n();
+    s.camp_written_off = n();
     s
 }
 
