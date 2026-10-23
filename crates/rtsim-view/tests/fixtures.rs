@@ -5,16 +5,18 @@
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
 //! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit MERGEHEAD
-//!   (Mowzie M2 merged with main 82e5655, which has M1: the phase 1 world's catalogue has 10
-//!   goods, `gold_nugget` last; the conflict's pages are RTC4 with meta version 3, each feud's
-//!   kept notice with its serial and its Envoy hold, the Peaceful flag and start and the last
-//!   notice serial, each faction's crystal, the destroyed loot and the repeats; a node may be a
-//!   lair, tag 3; the ships' pages are RTS3, S8b-3's stats and ledger; the dragons' pages are RTD7
-//!   and RTN7, each lair's pressure, wait and fed share, and the nest table; the herds' pages are
-//!   VERSION 4, each herd row its range's K, range, home and vacancy; an industry district's glass
-//!   state is a page of table 0x4903 starting with IGL1, and the industry globals end with the
-//!   glass counters and records received; an industry district page starts with IDS4, the
-//!   stations' ports and five threat classes). Villages, roads, news, herds,
+//!   (Mowzie M2 merged with main 4b207a3: the phase 1 world's catalogue has 10 goods,
+//!   `gold_nugget` last; the conflict's pages are RTC4 with meta version 3, each feud's kept
+//!   notice with its serial and its Envoy hold, the Peaceful flag and start and the last notice
+//!   serial, each faction's crystal, the destroyed loot and the repeats; a node may be a lair, tag
+//!   3; the ships' pages are RTS4, each port's blockade state and each laid-up slot's idle spells
+//!   in a trailing section written only with closures on, and the world's pages are RTW4, each
+//!   edge's closed flag; S8b-3's ships stats and ledger; the dragons' pages are RTD7 and RTN7,
+//!   each lair's pressure, wait and fed share, and the nest table; the herds' pages are VERSION 4,
+//!   each herd row its range's K, range, home and vacancy; an industry district's glass state is a
+//!   page of table 0x4903 starting with IGL1, and the industry globals end with the glass counters
+//!   and records received; an industry district page starts with IDS4, the stations' ports and
+//!   five threat classes). Villages, roads, news, herds,
 //!   a district and its glass page; no caravan is on the road when the server stops (the harness
 //!   world draws caravans). A herd's route draws only when a herd is on the move at the save,
 //!   which depends on when the server stops: 6638edc's save had one, while both runs of 98d6d34

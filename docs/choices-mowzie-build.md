@@ -158,6 +158,28 @@ under its own heading.
   (`CodecError::TooMany`). At the cap CAMP_CENSUS, the largest, is 49,240 bytes, so the u16 size
   always fits, and `finish` asserts it does. 1,024 is past any camp, party or route this slice can
   make (PLACEHOLDER).
+- **MZB-36** (The conflict's reports on the severity unit; the TALK review's finding): the conflict
+  records its Robbery (a camp plunders a village), Rescue (a player routs a band: each village that
+  hates the camp within `rescue_news_blocks`) and Killing (the war chief's killer, seen by the chief
+  and the heir) at `SEVERITY_UNIT`, the kind's base delta, not at the rung codes 2, 2 and 4. The
+  knowledge layer reads severity as a share of the unit, so a robbery moved the village's feeling for
+  the camp by -1 instead of -50, a rescue by 0 instead of +25 (and wrote no vanilla gossip, which
+  K2-25 promises), and the heir's feeling for the chief's killer by -5 instead of -125. The unit, not
+  the rungs times 100: every other module records these kinds at the unit (rtsim-world, ships,
+  ecology, which grows a robbery's severity with what it took), and rungs times 100 would make one
+  robbery count twice a caravan's and one killing reach the clamp. The news kinds (10 and up) keep
+  their rung codes (`ReportKind::magnitude`). TALK's `severity_term` still reads any severity under
+  25 as a rung (TK33); no module records one now, so that rule only guards. Measured on `sim conflict`,
+  seeds 1 to 24, 24 and 96 days, base against fix: escalations, parties, chiefs killed, casualties,
+  goods stolen and every check identical; the heir's grudge adds 9.8 more killing grievance at day 24
+  (65.1 to 74.9, the ignore run), none by day 96 (inherited raid grudges already hold the heir's
+  feeling near the clamp). Villages' feeling for the camp at day 24 goes from 0 to -15.0 on average,
+  -52.3 for the most resentful village (0 to 3.7 of 9 villages resent it), -40.6 and -113.6 at day
+  96; the player's best feeling at a village from 0 to +88 at day 24 and +116 at day 96 (each rout is
+  first-hand news to every hating village in range). The conflict census (16 seeds, 960 days, nobody
+  watching) is identical: no player means no rescue or killing report, and nothing in the conflict
+  reads a village's feeling for a camp. `sim conflict`'s results gain a `feelings` block (each
+  village's feeling for the camp and the players at the end).
 
 ## M2 Cultures
 

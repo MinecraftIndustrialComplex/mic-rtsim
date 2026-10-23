@@ -30,7 +30,7 @@ use rtsim_industry::obs::{
     DefenceSurvey, DepositPluginId, DepositSample, Direction, DiscardReason, DistrictDecl,
     EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl, LoadState, NotLearnable, Obs,
     PackageEvent, PortKind, PortTransfer, ReconcileResult, ResultEntry, SpawnSample, StationDecl,
-    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture,
+    StationPorts, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
 };
 use rtsim_industry::threat::ThreatClass;
 use rtsim_industry::wire;
@@ -1170,6 +1170,25 @@ fn main() {
             &mut out,
             name,
             wire::IND_STATION_PORTS,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        let name = "IND_TRAIN_UNWATCHED";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let o = Obs::TrainUnwatched(UnwatchedStop {
+            train: TrainId(f.u64("train", g.u64())),
+            station: StationId(f.u64("station", g.u64())),
+        });
+        obs(
+            &mut out,
+            name,
+            wire::IND_TRAIN_UNWATCHED,
             seq,
             Timed { at, obs: o },
             &f,
