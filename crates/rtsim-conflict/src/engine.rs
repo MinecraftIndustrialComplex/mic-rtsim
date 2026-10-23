@@ -2350,17 +2350,19 @@ impl Conflict {
         // settlers'.
         // A payment to an envoy settles that envoy's own demand and no other (MZB-137): one that
         // reaches an envoy whose demand is over (settled, expired, withdrawn) is a gift, not a
-        // payment on another demand open for the payer or the settlers.
+        // payment on another demand open for the payer or the settlers. The demand is the one
+        // that names the envoy (`demand.envoy`), found among the faction's feuds: an envoy going
+        // home has no feud of its own any more (`go_home`), and its demand is still open
+        // (MZB-143).
         let who = match envoy {
             Some(agent) => Party::of_agent(agent)
                 .filter(|p| self.parties.get(*p).is_some_and(|x| x.faction == f))
-                .and_then(|p| self.parties[p].feud.map(|a| (p, a)))
-                .filter(|&(p, a)| {
-                    self.feud(f, a)
-                        .and_then(|x| x.demand)
-                        .is_some_and(|d| d.envoy == Some(p))
-                })
-                .map(|(_, a)| a),
+                .and_then(|p| {
+                    self.feuds_of(f)
+                        .iter()
+                        .find(|(_, x)| x.demand.is_some_and(|d| d.envoy == Some(p)))
+                        .map(|e| e.0)
+                }),
             None => [payer, settlers]
                 .into_iter()
                 .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some())),
