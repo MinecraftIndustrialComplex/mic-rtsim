@@ -688,7 +688,8 @@ broken, and refounding at found sites.
      next home-dock stays, never while a player watches the home dock: a watched dock puts the
      relaunch off to the slot's next stay there (PC90). The lanes open again. Goods offered from
      the next boundary take the lane's lag before they land (PC87). A reopened port does not close
-     again for 48 days (`blockade_min_open_days`, PC99); it may still be blockaded.
+     again for 192 days (two game years, `blockade_min_open_days`, PC99); it may still be
+     blockaded.
    - **Why it cannot flap.** The band between a quarter and a half, the month-long average and the
      30-day minimum closure keep a port from closing and reopening faster than about once a season,
      and the minimum open spell after a reopening (PC99) keeps one hunted port from spending most
@@ -705,16 +706,22 @@ broken, and refounding at found sites.
    - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
      PC80 to PC101; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
      `crates/rtsim-ships/tests/blockade.rs`), with its news: Blockade, PortClosed and PortReopened,
-     one report per change (rule 8, PC100, `a_port_change_is_news`). Measured over 1,000 years on `synth::sea_havens`, seeds
-     1 to 30, nobody watching, with navy assaults and port raids at their defaults: per sea per
-     decade 1.26 blockades and 0.60 closures; closed spells of 33.2 days on average and 43 at the
-     longest, never more than 12 days past the last day a lane was above a quarter; 0.10% of
-     port-days closed, and 14.5% for the most closed port (54.4% without the 48-day open spell,
-     PC99); 30 of 589 ports ever closed, in 19 of 30 seas; 75.71 hunts a sea-year against 74.15 with
-     closures off; havens open 0.908 of the time (0.885 off); hunts in every century; never every
-     sea port of a sea closed at once, and no navy ship laid up. Every sky port of a sea was closed
-     at once on 2,132 sea-days, in 5 seas (the navy patrols only the sea). `synth::coastal`, whose
-     navy patrols the lanes, never closes a port.
+     one report per change (rule 8, PC100, `a_port_change_is_news`). Measured over 1,000
+     years on `synth::sea_havens`, seeds 1 to 30, nobody watching, with navy assaults and port
+     raids (surplus-only since PC72) at their defaults: per sea per decade 0.21 blockades and 0.79
+     closures; closed spells of 38.9 days on average and 48 at the longest, never more than 11
+     days past the last day a lane was above a quarter; 0.16% of port-days closed, and 18.0% for
+     the most closed port (44.0% with a 48-day open spell, PC99). The three most closed ports
+     (seeds 10, 3 and 15) close again at the first check the open spell allows: a player there
+     sees each closure last 36 to 43 days on average, then 192 days open. 28 of 589 ports ever
+     closed, in 15 of 30 seas; 84.00 hunts a sea-year against 86.60 with closures off; havens
+     open 0.954 of the time (0.950 off); hunts in every century; never every sea port of a sea
+     closed at once, and no navy ship laid up. Every sky port of a sea was closed at once on 1,950
+     sea-days, in 3 seas: seed 21's two sky ports on 1,830, seed 10's four on 90 and seed 12's two
+     on 30 (the navy patrols only the sea). `synth::coastal`, whose navy patrols the lanes, never
+     closes a port, but its blockades' news parts its runs from those with closures off (22.16
+     hunts a sea-year against 22.43, havens open 0.979 against 0.982; seed 12's two runs are equal
+     with the port news not recorded).
 8. **News travels in the world, never in chat (CL-9).**
    - New report kinds 16 to 20 (`rtsim-knowledge`, reserved for ports and ships): PortRaided (16), Blockade
      begun (17), PortClosed (18), PortReopened (19) and HavenFell (20). `who` is the haven (the navy's
@@ -741,7 +748,7 @@ broken, and refounding at found sites.
   again. Every sea with prey hunts in every century.
 - While the ships run, a port closes for at least 30 days and only after about a month of being
   hunted half the time; it reopens only when no lane of it is above a quarter of the full share
-  (half the closing heat), and once reopened it stays open at least 48 days.
+  (half the closing heat), and once reopened it stays open at least 192 days.
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
