@@ -79,6 +79,25 @@ pub enum PortChange {
     Lifted = 4,
 }
 
+/// What [`Ships::lift_closures`] lifted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lifted {
+    /// Ports that were closed: open again, their lanes too, their laid-up slots booked to
+    /// relaunch.
+    pub closed: u32,
+    /// Ports that were closed, blockaded or within their minimum open spell.
+    pub ports: u32,
+    /// Lanes whose heat dropped to 0.
+    pub lanes: u32,
+}
+
+impl Lifted {
+    /// Whether anything changed.
+    pub fn any(&self) -> bool {
+        self.ports > 0 || self.lanes > 0
+    }
+}
+
 impl PortState {
     /// One check's rule (PC21, PC82, PC99), pure: from the port's lanes' heats at `at`
     /// (thousandths) and `full`, the share of one full-crew pirate hunting unopposed. In order: a
@@ -665,6 +684,91 @@ impl Ships {
             Some(s),
             format!("finds lane {lane} closed and turns for haven {h}"),
         );
+        true
+    }
+
+    // ---- the switch -----------------------------------------------------------------------------
+
+    /// The ships are switched off (C25), or a session starts with them off (PC101): every port's
+    /// blockade is lifted, as if it had never been, at the world's present (the ships' own time
+    /// if that is later), so no lane opens at a time the world has passed. A closed port reopens
+    /// through the reopening's path ([`Self::resettle`]: its lanes open in the world, its laid-up
+    /// slots are booked to relaunch at their home docks by PC90's rule, which the switch-on's
+    /// catch-up then applies, PC103), a blockade and a minimum open spell end, and every lane's
+    /// heat drops to 0 at the ships' own time, so on the switch-on the heat builds again from
+    /// the lanes' shares as usual. Each port keeps its live check (its tick and epoch), so the
+    /// wheel holds no stale one: a port left with nothing to check loses its state there (PC96).
+    /// No tape row and no news: nothing happened at the port. A closure lifted counts as a
+    /// reopening in `stats` (with its closed days), so every closure counted still ends in one.
+    /// A pass over the ports with a state and the lanes with a threat row.
+    pub fn lift_closures(&mut self, w: &mut World) -> Lifted {
+        let at = self.now.max(w.now());
+        let mut out = Lifted::default();
+        let mut reopened = Vec::new();
+        for (&d, p) in &mut self.ports {
+            if let Some(since) = p.closed {
+                reopened.push(d);
+                self.stats.reopenings += 1;
+                self.stats.closed_dock_days += at.0.saturating_sub(since.0) / TICKS_PER_DAY;
+            }
+            if p.closed.is_some() || p.blockaded.is_some() || p.reopened.is_some() {
+                out.ports += 1;
+            }
+            *p = PortState {
+                check: p.check,
+                epoch: p.epoch,
+                ..PortState::default()
+            };
+        }
+        out.closed = reopened.len() as u32;
+        let (now, tau) = (self.now, self.heat_tau());
+        let warm: Vec<u32> = self
+            .lane_threats()
+            .into_iter()
+            .filter(|(_, t)| t.heat_nano_at(now, tau) != 0 || t.heat_nano != 0)
+            .map(|(l, _)| l)
+            .collect();
+        for l in warm {
+            let t = self.threat_mut(l);
+            t.heat_nano = 0;
+            t.heat_at = t.heat_at.max(now);
+            out.lanes += 1;
+        }
+        for d in reopened {
+            let node = self.docks[d as usize].node;
+            self.note(
+                at,
+                "port",
+                None,
+                format!("dock {d} (node {node}) is open: the ships were switched off"),
+            );
+            self.resettle(w, d, at);
+        }
+        out
+    }
+
+    /// Closes trade port `d` now, as a check that found its every lane at half of full would
+    /// (blockaded and closed now, its minimum open spell forgotten, its next check booked unless
+    /// one is), with no tape row and no news. For tests that need a closed port without pirates
+    /// (rtsim-jni's switch tests). `false` when closures are off, `d` is no trade port or it is
+    /// closed already.
+    #[doc(hidden)]
+    pub fn close_port(&mut self, w: &mut World, d: u32) -> bool {
+        if !self.blockades_on() || !self.is_trade_port(w, d) || self.port_closed(d) {
+            return false;
+        }
+        let at = self.now;
+        let p = self.ports.entry(d).or_default();
+        p.reopened = None;
+        p.blockaded = p.blockaded.or(Some(at));
+        p.closed = Some(at);
+        let booked = p.check.is_some();
+        self.stats.closures += 1;
+        if !booked {
+            let when = at + self.check_ticks();
+            self.book_check(d, when);
+        }
+        self.resettle(w, d, at);
         true
     }
 
