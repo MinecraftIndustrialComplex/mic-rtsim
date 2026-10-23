@@ -27,7 +27,9 @@
 //! census grid): slots manned, each pirate's crew, the crew pool and the haven's pressure, and
 //! the hunts, fights, losses and refits since the last count. The player camps on the hunted lane
 //! the whole time and every fight costs the pirates crew, so the pool's hires and the refits are
-//! what keep the haven at sea: before S8 its hunts ended around day 77.
+//! what keep the haven at sea: before S8 its hunts ended around day 77. Since S8b-2 Saltmere's
+//! navy may break the haven (§2.4.6a rule 3): shut, it has no ship until its site refounds, which
+//! the check allows only within the refound base plus one retry (PC37).
 //!
 //! It also counts the event archive's rows (R, VIEWER.md §10.4) of the main run: the world's two
 //! tapes and the ships' are on. The restored twin beside it records nothing.
@@ -171,7 +173,11 @@ struct CensusRow {
     fights: u64,
     pirates_lost: u64,
     refits: u64,
+    /// Slots relaunched by a refound (§2.4.6a rule 5).
+    relaunched: u64,
     captures: u64,
+    /// Shut at the count (§2.4.6a rule 4: broken by a navy, or starved).
+    shut: bool,
 }
 
 #[derive(Serialize)]
@@ -183,6 +189,13 @@ struct Persistence {
     counts_with_a_ship: usize,
     /// Counting windows with a hunt, of all.
     windows_with_hunts: usize,
+    /// The counts the haven was shut at (§2.4.6a rule 4), and the windows it was shut for the
+    /// whole of: a shut haven has no ship and hunts nothing.
+    counts_shut: usize,
+    windows_shut: usize,
+    /// The longest shut seen, from its start to the day its site next looks for a band (each
+    /// failed look moves that day on by the refound base), days.
+    longest_shut_days: f64,
 }
 
 #[derive(Serialize)]
@@ -254,24 +267,35 @@ fn persistence(o: &Options, tun: &ShipTunables) -> Persistence {
     let mut rows = Vec::new();
     let mut last = c.ships.stats;
     let mut lost_seen = 0u64;
+    let mut relaunched_seen = 0u64;
+    let (mut windows_shut, mut longest_shut) = (0usize, 0f64);
     let mut d = 0;
     while d < o.persist_days {
         let next = (d + STEP).min(o.persist_days);
         script.run(&mut c, &mut fake, Tick::from_days(d), Tick::from_days(next));
+        let start = Tick::from_days(d);
         d = next;
         let at = Tick::from_days(d);
         let s = &c.ships;
         let hv = &s.havens[h];
+        if let Some(sh) = hv.shut {
+            windows_shut += usize::from(sh.since <= start);
+            longest_shut = longest_shut.max((sh.back.0 - sh.since.0) as f64 / TICKS_PER_DAY as f64);
+        }
         let crews: Vec<Option<u32>> = hv
             .ships
             .iter()
             .map(|&p| s.ship(p).filter(|x| x.is_active()).map(|x| x.crew))
             .collect();
-        // Pirates lost since the last count: the refits since, and the change in empty slots.
+        // Pirates lost since the last count (sunk, paid out in tolls or laid up): the slots that
+        // came back since (refitted, or relaunched by a refound, §2.4.6a rule 5) and the change
+        // in empty slots.
         let empty = crews.iter().filter(|c| c.is_none()).count() as u64;
         let st = s.stats;
         let refits = st.rebuilds - last.rebuilds;
-        let lost = refits + empty - lost_seen;
+        let relaunched = hv.counts.relaunched - relaunched_seen;
+        relaunched_seen = hv.counts.relaunched;
+        let lost = refits + relaunched + empty - lost_seen;
         lost_seen = empty;
         rows.push(CensusRow {
             day: d,
@@ -285,7 +309,9 @@ fn persistence(o: &Options, tun: &ShipTunables) -> Persistence {
             fights: st.fights_observed - last.fights_observed,
             pirates_lost: lost,
             refits,
+            relaunched,
             captures: st.captures - last.captures,
+            shut: hv.shut.is_some(),
         });
         last = st;
     }
@@ -300,6 +326,9 @@ fn persistence(o: &Options, tun: &ShipTunables) -> Persistence {
         },
         counts_with_a_ship: rows.iter().filter(|r| r.manned > 0).count(),
         windows_with_hunts: rows.iter().filter(|r| r.hunts > 0).count(),
+        counts_shut: rows.iter().filter(|r| r.shut).count(),
+        windows_shut,
+        longest_shut_days: longest_shut,
         rows,
     }
 }
@@ -529,20 +558,30 @@ pub fn main(o: Options) -> i32 {
     let persist = persistence(&o, &tun);
     let mut checks = checks;
     if o.persist_days > 0 {
-        // Every count has a ship, and the haven hunts in every window but at most one (the one in
-        // which the scripted player's escort sits on the hunted lane, or a refit wait).
+        // Every count the haven is open at has a ship, and it hunts in every window it was not
+        // shut for the whole of but at most one (the one in which the scripted player's escort
+        // sits on the hunted lane, or a refit wait). A navy may break it (§2.4.6a rule 3): shut,
+        // it has no ship, and its site must look for a new band within the refound base plus
+        // one retry (PC37), so the pirates come back.
         let n = persist.rows.len();
+        let bar = 2.0 * f64::from(tun.refound.base_days);
         checks.push(Check {
             name: "pirates persist",
-            ok: persist.counts_with_a_ship == n && persist.windows_with_hunts + 1 >= n,
+            ok: persist.counts_with_a_ship + persist.counts_shut == n
+                && persist.windows_with_hunts + persist.windows_shut + 1 >= n
+                && persist.longest_shut_days <= bar,
             detail: format!(
-                "{} days with the player on the hunted lane: a ship in {} of {n} counts, hunts in {} of {n} windows, {:.2} of the slots manned, {} pirates lost and {} refitted",
+                "{} days with the player on the hunted lane: a ship in {} of {n} counts and shut at {}, hunts in {} of {n} windows and shut for {}, the longest shut {:.1} days (at most {bar:.0}), {:.2} of the slots manned, {} pirates lost, {} refitted and {} relaunched by a refound",
                 persist.days,
                 persist.counts_with_a_ship,
+                persist.counts_shut,
                 persist.windows_with_hunts,
+                persist.windows_shut,
+                persist.longest_shut_days,
                 persist.manned_share,
                 persist.rows.iter().map(|r| r.pirates_lost).sum::<u64>(),
                 persist.rows.iter().map(|r| r.refits).sum::<u64>(),
+                persist.rows.iter().map(|r| r.relaunched).sum::<u64>(),
             ),
         });
     }
@@ -736,8 +775,18 @@ fn print_report(r: &Results, s: &Ships) {
             p.days
         );
         println!(
-            "  {:>5} {:>6} {:<12} {:>5} {:>5} {:>6} {:>6} {:>7} {:>5} {:>7}",
-            "day", "manned", "crews", "pool", "P", "hunts", "fights", "lost", "refit", "capture"
+            "  {:>5} {:>6} {:<12} {:>5} {:>5} {:>6} {:>6} {:>7} {:>5} {:>7} {:>7}",
+            "day",
+            "manned",
+            "crews",
+            "pool",
+            "P",
+            "hunts",
+            "fights",
+            "lost",
+            "refit",
+            "refound",
+            "capture"
         );
         for r in &p.rows {
             let crews: Vec<String> = r
@@ -746,7 +795,7 @@ fn print_report(r: &Results, s: &Ships) {
                 .map(|c| c.map_or("-".into(), |c| c.to_string()))
                 .collect();
             println!(
-                "  {:>5} {:>4}/{:<1} {:<12} {:>5.1} {:>5.2} {:>6} {:>6} {:>7} {:>5} {:>7}",
+                "  {:>5} {:>4}/{:<1} {:<12} {:>5.1} {:>5.2} {:>6} {:>6} {:>7} {:>5} {:>7} {:>7}",
                 r.day,
                 r.manned,
                 r.slots,
@@ -757,6 +806,7 @@ fn print_report(r: &Results, s: &Ships) {
                 r.fights,
                 r.pirates_lost,
                 r.refits,
+                r.relaunched,
                 r.captures
             );
         }

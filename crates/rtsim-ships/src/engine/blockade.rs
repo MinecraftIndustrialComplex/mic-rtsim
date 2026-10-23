@@ -593,39 +593,23 @@ impl Ships {
     // ---- pirates --------------------------------------------------------------------------------
 
     /// A pirate that reaches lane `lane` and finds it closed since it sailed (PC91): no hunt
-    /// begins, so no share, no toll and no feeding; it turns for home at once, a fruitless
-    /// sortie. Whether the lane was closed.
-    pub(crate) fn reach_closed_lane(&mut self, w: &mut World, s: ShipId, lane: u32, at: Tick) -> bool {
+    /// begins, so no share, no toll and no feeding; it turns for home at once (SHIP_DEPART
+    /// reason 1, bored), a fruitless sortie. A broken haven's pirate turns back first, for that
+    /// (PC36). Whether the lane was closed.
+    pub(crate) fn reach_closed_lane(
+        &mut self,
+        w: &mut World,
+        s: ShipId,
+        lane: u32,
+        at: Tick,
+    ) -> bool {
         let edge = self.lanes[lane as usize].edge;
         if edge == u32::MAX || !w.lane_closed(edge) {
             return false;
         }
         self.stats.fruitless += 1;
         let h = self.haven_of(s).expect("a pirate");
-        let dock = self.havens[h as usize].dock;
-        let from = self.pirate_pos(w, s, at);
-        let path = self.sail_path(s, from, (dock.0, dock.2), at);
-        let arrive = path.t1;
-        let plan = self.bump(s);
-        self.book_pirate_leg(w, s, path);
-        if let Some(p) = self.ships[s].pirate.as_mut() {
-            p.state = PState::Homebound { arrive };
-        }
-        if self.ships[s].embodied {
-            let epoch = self.ships[s].epoch;
-            self.outbox.push(Cmd::Depart(boundary::Depart {
-                agent: Ship::agent(s),
-                epoch,
-                reason: 1,
-                timeout_ticks: 2_400,
-                pos: (
-                    f64::from(dock.0),
-                    f64::from(self.cruise_y_of(s)),
-                    f64::from(dock.2),
-                ),
-            }));
-        }
-        self.schedule(arrive, Ev::Home { ship: s, plan });
+        self.sail_home(w, s, 1, at);
         self.note(
             at,
             "leave",
@@ -888,7 +872,10 @@ mod tests {
         run(&mut c, t2);
         close(&mut c, b, t2);
         assert_eq!(c.ships.laid_up_since(v), Some(t1));
-        let id = c.ships.service_ships[v as usize].ids().next().expect("a ship");
+        let id = c.ships.service_ships[v as usize]
+            .ids()
+            .next()
+            .expect("a ship");
         let gap = (0..10_000u64)
             .find(|&n| {
                 c.ships
@@ -990,8 +977,8 @@ mod tests {
                         .map(|&(v, _)| v)
                         .filter(|&v| c.ships.services[v as usize].kind == ServiceKind::Merchant)
                         .collect();
-                    let all_laid =
-                        !merchants.is_empty() && merchants.iter().all(|&v| c.ships.service_laid_up(v));
+                    let all_laid = !merchants.is_empty()
+                        && merchants.iter().all(|&v| c.ships.service_laid_up(v));
                     let at_port = ln.a == d || ln.b == d;
                     assert_eq!(
                         c.world.lane_closed(edge),
@@ -1004,7 +991,12 @@ mod tests {
                 }
             }
         }
-        eprintln!("patrolled lanes away from the closed port closed by their laid-up merchants: {beyond}");
-        assert!(beyond > 0, "no patrolled lane away from a closed port was judged");
+        eprintln!(
+            "patrolled lanes away from the closed port closed by their laid-up merchants: {beyond}"
+        );
+        assert!(
+            beyond > 0,
+            "no patrolled lane away from a closed port was judged"
+        );
     }
 }

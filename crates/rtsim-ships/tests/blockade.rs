@@ -7,9 +7,12 @@
 //! reach, so they hunt dock 3's lanes. The many-worlds measurement runs on `synth::sea_havens`
 //! and `synth::coastal`.
 
+use std::sync::{Arc, RwLock};
+
 use rtsim_archive::kinds;
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_kernel::rng::fnv1a64;
 use rtsim_ships::boundary::Cmd;
 use rtsim_ships::engine::{LaneThreat, PState, PortState, ShipId, Status};
@@ -719,12 +722,9 @@ fn a_ship_sunk_while_it_waits_to_lay_up_lays_up_at_its_respawn() {
     let tun = ShipTunables::default();
     let mut judged = 0;
     for seed in 1..=3u64 {
-        let Some((mut c, mut fake, m, closed)) = ride_through_closure(
-            seed,
-            &tun,
-            |c, at| c.ships.now() >= at + TICKS_PER_DAY,
-            50,
-        ) else {
+        let Some((mut c, mut fake, m, closed)) =
+            ride_through_closure(seed, &tun, |c, at| c.ships.now() >= at + TICKS_PER_DAY, 50)
+        else {
             continue;
         };
         assert!(c.ships.waiting_to_lay_up(m));
@@ -744,7 +744,10 @@ fn a_ship_sunk_while_it_waits_to_lay_up_lays_up_at_its_respawn() {
         ashore(&mut c, &mut fake);
         let laid = c.ships.stats.ships_laid_up_by_closure;
         run_until(&mut c, &mut fake, back + STEP, |_, _| false);
-        assert!(c.ships.port_closed(TARGET), "seed {seed}: reopened before the respawn");
+        assert!(
+            c.ships.port_closed(TARGET),
+            "seed {seed}: reopened before the respawn"
+        );
         let x = c.ships.ship(m).expect("a ship");
         assert!(
             matches!(x.status, Status::Lost { since, .. } if since == back) && x.is_laid_up(),
@@ -761,7 +764,10 @@ fn a_ship_sunk_while_it_waits_to_lay_up_lays_up_at_its_respawn() {
         assert!(!x.is_laid_up(), "seed {seed}: not relaunched: {x:?}");
         judged += 1;
     }
-    assert!(judged > 0, "no seed had the ridden ship in view at the closure");
+    assert!(
+        judged > 0,
+        "no seed had the ridden ship in view at the closure"
+    );
 }
 
 /// A ship still in view when its port reopens simply trades again (PC23, PC81): its service is
@@ -773,12 +779,9 @@ fn a_ship_in_view_at_the_reopening_sails_on() {
     let tun = ShipTunables::default();
     let mut judged = 0;
     for seed in 1..=3u64 {
-        let Some((mut c, mut fake, m, _)) = ride_through_closure(
-            seed,
-            &tun,
-            |c, _| c.ships.stats.reopenings > 0,
-            100,
-        ) else {
+        let Some((mut c, mut fake, m, _)) =
+            ride_through_closure(seed, &tun, |c, _| c.ships.stats.reopenings > 0, 100)
+        else {
             continue;
         };
         let reopened = c.ships.now();
@@ -815,7 +818,10 @@ fn a_ship_in_view_at_the_reopening_sails_on() {
         );
         judged += 1;
     }
-    assert!(judged > 0, "no seed had the ridden ship in view at the closure");
+    assert!(
+        judged > 0,
+        "no seed had the ridden ship in view at the closure"
+    );
 }
 
 /// A shuttle built to a port while it is closed ([`Ships::connect`], a port joining late) is
@@ -869,7 +875,8 @@ fn a_shuttle_to_a_closed_port_starts_laid_up() {
 }
 
 /// Persistence (rule 6): a restart in each blockade state, compared by `state_hash` with the run
-/// that was never saved, then both carried on 120 days. Three states: blockaded and open; closed
+/// that was never saved (the one-blob form, and the paged form's meta page), then both carried
+/// on 120 days. Three states: blockaded and open; closed
 /// with a promoted ship still sailing (waiting to lay up); closed past its minimum. Each state is
 /// left the way the rule says within the 120 days, so the comparison covers it.
 #[test]
@@ -920,6 +927,32 @@ fn closures_survive_save_and_restore() {
             assert_eq!(b.ships.pending_by_kind(), a.ships.pending_by_kind());
             assert_eq!(b.ships.stats.closures, stats.closures);
             b.ships.check(&b.world).expect("restored checks");
+            // The paged form too: the meta page carries the same trailing blockades section.
+            {
+                let mut q = restarted(&a, seed, &tun);
+                let dir = std::env::temp_dir().join(format!(
+                    "rtsim-ships-blockade-{}-{seed}-{state}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&dir);
+                let store = Arc::new(RwLock::new(
+                    PageStore::open(&dir, Durability::NoSync).expect("a store"),
+                ));
+                let meta = PageKey::new(0x5300, 1);
+                q.ships.attach_store(store.clone(), 1 << 20);
+                let mut batch = SaveBatch::new();
+                let t = q.ships.save_paged(&mut batch, meta);
+                store.write().unwrap().commit(batch, 1).expect("commit");
+                q.ships.saved(t);
+                let opened =
+                    Ships::open_paged(store, 1 << 20, meta, tun.clone()).expect("opens paged");
+                assert_eq!(
+                    opened.ports, a.ships.ports,
+                    "seed {seed} state {state}: paged"
+                );
+                assert_eq!(opened.state_hash(), a.ships.state_hash(), "paged");
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             let mut fb = FakeShips::new(f64::from(tun.view_radius));
             fb.bodies = fa.bodies.clone();
             fb.seq = fa.seq;
@@ -962,24 +995,27 @@ fn closures_survive_save_and_restore() {
     eprintln!("restarts judged per state: {hits:?}");
 }
 
-/// The hashes of the parent commit (03f9a3f6, S8b-1 merged, before S8b-4b) for three runs: the
-/// coast's scripted player for 30 days (seed 7) and two seas unattended for 96 days. Printed by
-/// the same scenarios built on that commit.
+/// The hashes of the parent for three runs: the coast's scripted player for 30 days (seed 7)
+/// and two seas unattended for 96 days. The parent is main at 257d2715 (S8b-2 and S8b-3 landed)
+/// with this branch's world half (S8b-4a, `crates/rtsim-world` and `crates/rtsim-travel`, which
+/// main does not have: its edge record has no closed flag), so the world hashes compare the same
+/// save format. Printed by the same scenarios built on that tree (`git archive` of main, the
+/// world half patched in).
 const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
-        0x4ee1_ab87_3239_177a,
+        0x9f9e_f581_a35c_2713,
         0x8543_149d_9ec4_39c2,
     ),
     (
         "sea_havens 1 unattended 96 days",
-        0x83df_6cad_c994_afcd,
-        0x3c13_3644_f099_8bf7,
+        0xb077_173b_3774_d83b,
+        0xf609_3b33_aba3_9baa,
     ),
     (
         "sea_havens 2 unattended 96 days",
-        0xd67f_506a_8c6a_61e0,
-        0x7add_52d0_3b00_6e73,
+        0x6a65_2eff_cf2e_f2c0,
+        0x55fb_2e01_b2b7_0d13,
     ),
 ];
 
@@ -1115,8 +1151,12 @@ fn stand(
     fake.set_player(PLAYER, f64::from(at.0), f64::from(at.1));
     let mut t = c.ships.now();
     while t < to {
-        c.ships
-            .observe_player(&mut c.world, PLAYER, rtsim_settle::Pos::new(0, at.0, at.1), t);
+        c.ships.observe_player(
+            &mut c.world,
+            PLAYER,
+            rtsim_settle::Pos::new(0, at.0, at.1),
+            t,
+        );
         t = (t + 50).min(to);
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, t);
         let cmds = c.ships.take_commands();
@@ -1176,7 +1216,10 @@ fn a_relaunch_never_happens_in_view() {
                 .all(|&v| c.ships.services[v as usize].legs[0].from_dock == home),
             "seed {seed}: the services start their loops at different docks"
         );
-        let dock = (c.ships.docks[home as usize].x, c.ships.docks[home as usize].z);
+        let dock = (
+            c.ships.docks[home as usize].x,
+            c.ships.docks[home as usize].z,
+        );
         // At the home dock: nothing relaunches.
         let mut near = Vec::new();
         stand(
@@ -1207,7 +1250,10 @@ fn a_relaunch_never_happens_in_view() {
         let ln = &c.ships.lanes[c.ships.services[services[0] as usize].legs[0].hop.lane as usize];
         let mid = ln.path.at(ln.path.length() / 2);
         let gap = f64::from(mid.0 - dock.0).hypot(f64::from(mid.1 - dock.1));
-        assert!(gap > 2.0 * view, "seed {seed}: the lane's middle is {gap:.0} from the dock");
+        assert!(
+            gap > 2.0 * view,
+            "seed {seed}: the lane's middle is {gap:.0} from the dock"
+        );
         let mut first: Vec<(ShipId, f64, f64)> = Vec::new();
         stand(
             &mut c,

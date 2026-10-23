@@ -120,20 +120,22 @@ pub enum Scenario {
 }
 
 impl Scenario {
+    /// The `ships` scenario with tunables `tun`.
+    pub fn ships(seed: u64, tun: rtsim_ships::ShipTunables) -> Self {
+        let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
+        Scenario::Ships(Box::new(Sea {
+            c: rtsim_ships::synth::coastal(seed, tun),
+            fake,
+        }))
+    }
+
     pub fn new(kind: Kind, seed: u64) -> Self {
         match kind {
             Kind::Ecology => Scenario::Ecology(Box::new(Ecology::new(seed))),
             Kind::Ranges => {
                 Scenario::Ecology(Box::new(Ecology::ranges(seed, Ecology::herd_tunables())))
             }
-            Kind::Ships => {
-                let tun = rtsim_ships::ShipTunables::default();
-                let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
-                Scenario::Ships(Box::new(Sea {
-                    c: rtsim_ships::synth::coastal(seed, tun),
-                    fake,
-                }))
-            }
+            Kind::Ships => Self::ships(seed, rtsim_ships::ShipTunables::default()),
             Kind::Conflict => {
                 use rtsim_conflict::synth;
                 let (mut w, _) = synth::world(seed);
@@ -317,7 +319,11 @@ impl Ecology {
 
 /// A census every `every` days from day 0 to `days`, with nobody watching: (day, every kind).
 pub fn run(kind: Kind, seed: u64, days: u64, every: u64) -> Vec<(u64, Vec<KindCensus>)> {
-    let mut s = Scenario::new(kind, seed);
+    run_on(Scenario::new(kind, seed), days, every)
+}
+
+/// [`run`] on a scenario already built.
+pub fn run_on(mut s: Scenario, days: u64, every: u64) -> Vec<(u64, Vec<KindCensus>)> {
     let mut out = vec![(0, s.census())];
     let mut d = 0;
     while d < days {
@@ -509,9 +515,12 @@ mod tests {
         assert!(c.capacity > 0 && c.members <= c.capacity, "{c:?}");
     }
 
-    /// With nobody watching nothing presses: every kind keeps its sites, no site breaks, every
-    /// pressure is 0, and from the first year on each kind's members stay between a quarter of
-    /// its capacity and twice its start.
+    /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no
+    /// site breaks, and from the first year on each kind's members stay between a quarter of its
+    /// capacity and twice its start. Every kind runs at its defaults, the coast's navy assaults
+    /// included: a navy breaks a haven with no player (§2.4.6a rule 3, Ben's exception for
+    /// havens), so `ship.haven` may count a broken site, with no pressure, and while it is broken
+    /// its slots may stand empty until its site refounds (choices-ports.md PC34, PC38).
     #[test]
     fn census_is_flat_with_no_player() {
         for k in Kind::ALL {
@@ -521,11 +530,12 @@ mod tests {
                 assert_eq!(kinds(cs), kinds(first), "{} day {day}", k.name());
                 for (c, c0) in cs.iter().zip(first) {
                     let at = format!("{} day {day}: {c:?}", k.name());
+                    let navy = c.kind == "ship.haven" && c.broken > 0;
                     assert_eq!(c.sites, c0.sites, "{at}");
-                    assert_eq!(c.broken, 0, "{at}");
+                    assert!(c.broken == 0 || navy, "{at}");
                     assert_eq!(c.mean_p(), 0.0, "{at}");
                     assert!(c.members <= 2 * c0.members.max(c.capacity) + 4, "{at}");
-                    if *day >= 96 {
+                    if *day >= 96 && !navy {
                         assert!(4 * c.members >= c.capacity, "{at}");
                     }
                 }
