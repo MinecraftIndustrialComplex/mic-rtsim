@@ -74,7 +74,11 @@ fn depart(e: &mut Engine, at: u64, station: StationId, district: DistrictId, to:
 }
 
 fn unwatched(e: &mut Engine, at: u64, station: StationId) {
-    send(e, at, Obs::TrainUnwatched(UnwatchedStop { train: T, station }));
+    send(
+        e,
+        at,
+        Obs::TrainUnwatched(UnwatchedStop { train: T, station }),
+    );
 }
 
 fn trips(e: &Engine, a: StationId, b: StationId) -> u64 {
@@ -98,7 +102,10 @@ fn out_and_back_through_an_unwatched_station_makes_no_self_edge() {
         "self edges: {:?}",
         e.lines().keys().collect::<Vec<_>>()
     );
-    assert!(e.lines().is_empty(), "the unwatched stop ended the leg: no edge at all");
+    assert!(
+        e.lines().is_empty(),
+        "the unwatched stop ended the leg: no edge at all"
+    );
     assert_eq!(e.stats.unwatched_stops, 1);
     assert_eq!(e.stats.self_edges_refused, 0);
 }
