@@ -80,7 +80,6 @@ public final class TalkGameTests {
                 .thenExecute(() -> v[0] = farmer(helper, 5.5, 5.5))
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
-                    check("Ben has not been hinted yet", !ben.getData(RtsimAttachments.TALK_HINTED));
                     InteractionResult[] r = click(ben, v[0], true);
                     check("the main hand swings once: " + r[0], r[0] == InteractionResult.SUCCESS);
                     check("the off hand is consumed silently: " + r[1], r[1] == InteractionResult.CONSUME);
@@ -94,8 +93,6 @@ public final class TalkGameTests {
                             line.getFallback() != null && !line.getFallback().equals(line.getKey()));
                     check("the say template carries its English too", say.getFallback() != null && say.getFallback().contains("%2$s"));
                     check("Alex received nothing: " + alex.heard.size(), alex.heard.isEmpty());
-                    check("Ben is hinted by talking", ben.getData(RtsimAttachments.TALK_HINTED));
-                    check("Alex is not", !alex.getData(RtsimAttachments.TALK_HINTED));
                     record("talk", "line", line.getKey() + " = " + line.getFallback());
                     record("talk", "speaker", ((Component) say.getArgs()[0]).getString());
                 })
@@ -143,8 +140,7 @@ public final class TalkGameTests {
                             ben.containerMenu instanceof MerchantMenu);
                     ben.closeContainer();
                     check("closed again", ben.containerMenu == ben.inventoryMenu);
-                    check("the first closed trade screen hinted nobody twice: ben already hinted by talking",
-                            ben.overlay.isEmpty());
+                    check("closing the trade screen puts nothing on the action bar", ben.overlay.isEmpty());
                     FakePlayers.remove(ben);
                 })
                 .thenSucceed();
@@ -205,18 +201,13 @@ public final class TalkGameTests {
                     click(ben, v[0], true);
                     check("a stick in hand: the villager says nothing: " + ben.heard.size(), ben.heard.isEmpty());
                     check("and gains no gossip", minorPositive(v[0], ben.getUUID()) == 0);
-                    check("and is not hinted", !ben.getData(RtsimAttachments.TALK_HINTED));
                     click(ben, t[0], true);
                     check("a stick in hand: a crouching click on the trader opens its trades as vanilla does: " + ben.containerMenu,
                             ben.containerMenu instanceof MerchantMenu);
                     check("and nothing was said: " + ben.heard.size(), ben.heard.isEmpty());
                     ben.closeContainer();
-                    check("the first closed trade screen shows the hint on the action bar: " + ben.overlay.size(), ben.overlay.size() == 1);
-                    check("and marks him hinted", ben.getData(RtsimAttachments.TALK_HINTED));
+                    check("closing it puts nothing on the action bar: " + ben.overlay.size(), ben.overlay.isEmpty());
                     ben.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-                    click(ben, t[0], false);
-                    ben.closeContainer();
-                    check("never again: " + ben.overlay.size(), ben.overlay.size() == 1);
                     FakePlayers.remove(ben);
                 })
                 .thenSucceed();
