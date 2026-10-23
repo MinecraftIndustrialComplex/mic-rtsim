@@ -56,8 +56,8 @@ class FarFeedTest {
         assertThrows(IllegalArgumentException.class, () -> FarWire.decode(java.util.Arrays.copyOf(b, b.length - 1)));
         byte[] extra = java.util.Arrays.copyOf(b, b.length + 1);
         assertThrows(IllegalArgumentException.class, () -> FarWire.decode(extra));
-        byte[] v2 = b.clone();
-        v2[0] = 2;
+        byte[] v2 = b.clone(); // another version
+        v2[0] = FarWire.VERSION + 1;
         assertThrows(IllegalArgumentException.class, () -> FarWire.decode(v2));
     }
 

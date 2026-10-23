@@ -3735,7 +3735,7 @@ impl Conflict {
         if reason == boundary::RECALL_ROUTED {
             self.stats.routs += 1;
             if let Some(player) = self.parties[p].breaker {
-                self.rescue_news(w, f, player, at);
+                self.rescue_news(w, p, player, at);
             }
         }
         if reason == boundary::RECALL_BORED {
@@ -3779,40 +3779,56 @@ impl Conflict {
         self.go_home(w, p, reason, at);
     }
 
-    /// Villages that hate the faction hear that a player broke its band (C24: rescues count).
-    fn rescue_news(&mut self, w: &mut World, f: u32, player: ActorId, at: Tick) {
+    /// Villages that hate the faction hear that a player broke its band (C24: rescues count). A
+    /// rout is one report (K2-25, CL-D60): every village in range whose culture the faction hates
+    /// witnesses it, and the others hear it only as news. Knowledge dedups per report, so a report
+    /// per witness made each village count the rout once per witness. The report names whom the
+    /// band was after (the node it marched on, else the feud's actor unless that is the breaker,
+    /// else no one) and the place it broke.
+    fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
+        let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let camp = self.factions[f as usize].pos;
         let r = f64::from(self.tun.rescue_news_blocks);
-        let mut heard = 0;
         // The villages in news range: the node index's cells around the camp, in node order.
         self.nodes.refresh(w);
         let topo = self.topo.clone();
         let near = self.nodes.within(w, topo.of(camp.frame), camp, r);
-        for i in near {
-            let n = &w.nodes[i];
-            let NodeKind::Village(cu) = n.kind else {
-                continue;
+        let witnesses: Vec<ActorId> = near
+            .into_iter()
+            .filter_map(|i| {
+                let n = &w.nodes[i];
+                let NodeKind::Village(cu) = n.kind else {
+                    return None;
+                };
+                (c.hates(cu.name())
+                    && n.pos.frame == camp.frame
+                    && tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) <= r)
+                    .then_some(n.actor)
+            })
+            .collect();
+        let mut heard = 0;
+        if !witnesses.is_empty() {
+            let x = &self.parties[p];
+            let whom = match x.target {
+                Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
+                _ => x.feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
             };
-            let hates_us = c.hates(cu.name());
-            if !hates_us
-                || n.pos.frame != camp.frame
-                || tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) > r
-            {
-                continue;
-            }
-            let (va, pos) = (n.actor, n.pos);
+            let frame = x.frame;
+            let (bx, bz) = self.party_pos(p, at);
             let rep = w.knowledge.record(Report {
                 who: player,
-                whom: va,
+                whom,
                 kind: ReportKind::Rescue,
                 severity: SEVERITY_UNIT,
                 flags: 0,
                 at,
-                place: Place::new(pos.frame, pos.x, 64, pos.z),
+                place: Place::new(frame, bx, 64, bz),
             });
-            if w.knowledge.witness(va, rep, at) {
-                heard += 1;
+            for va in witnesses {
+                if w.knowledge.witness(va, rep, at) {
+                    heard += 1;
+                }
             }
         }
         self.note(
