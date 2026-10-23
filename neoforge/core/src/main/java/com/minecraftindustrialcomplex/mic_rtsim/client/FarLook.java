@@ -45,9 +45,10 @@ public interface FarLook {
     void clear();
 
     /**
-     * The far feed started over (a RESET, docs/choices-dh-feed.md DHT70): frees what it baked and placed for the
-     * movers it was drawing, which the feed sends again, and keeps what {@link #prewarm} loaded, so the next bake
-     * pays no cold first draw. Everything ({@link #clear}) by default.
+     * The far feed started over (a RESET, docs/choices-dh-feed.md DHT70): what it baked and placed for movers the
+     * feed does not send again goes, {@link FarLookReset#GRACE_NANOS} later ({@link FarLookReset}); what the movers
+     * sent again ask for stays, and so does what {@link #prewarm} loaded, so the next bake pays no cold first draw.
+     * Everything ({@link #clear}) by default.
      */
     default void reset() {
         clear();

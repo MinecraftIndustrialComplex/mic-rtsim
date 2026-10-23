@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
 import com.iafenvoy.iceandfire.entity.LightningDragonEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
+import com.minecraftindustrialcomplex.mic_rtsim.client.FarLookReset;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarModel;
 import com.minecraftindustrialcomplex.mic_rtsim.client.NullVertexConsumer;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKey;
@@ -137,6 +138,8 @@ public final class DragonLook implements FarLook {
     private ClientLevel levelOf;
     /** New bodies held back while their animation settles (DHT68). */
     final DragonArrivals arrivals = new DragonArrivals();
+    /** The far feed's last RESET, until what nobody asked for again since is freed (DHT70). */
+    private final FarLookReset resets = new FarLookReset();
     private long clock, lastSweep;
     private int errors;
     private long setsBaked, bakeNanos;
@@ -270,7 +273,7 @@ public final class DragonLook implements FarLook {
         clock = now;
         ClientLevel level = Minecraft.getInstance().level;
         if (level != levelOf) {
-            clear();
+            clearFor(level);
             levelOf = level;
         }
         if (level == null)
@@ -280,6 +283,8 @@ public final class DragonLook implements FarLook {
             lastSweep = now;
             sweep(now);
         }
+        if (resets.due(now))
+            freeUnasked();
         long t0 = System.nanoTime();
         // The oldest ask first; a set bakes to its end before the next starts, unless the budget runs out
         Iterator<Map.Entry<Integer, Long>> it = wanted.entrySet().iterator();
@@ -402,7 +407,7 @@ public final class DragonLook implements FarLook {
         if (level == null)
             return;
         if (level != levelOf) {
-            clear();
+            clearFor(level);
             levelOf = level;
         }
         long t0 = System.nanoTime();
@@ -598,27 +603,48 @@ public final class DragonLook implements FarLook {
 
     @Override
     public void clear() {
-        reset();
-        arrivals.clear(Minecraft.getInstance().level);
-        failed.clear();
-        lastYaw.clear();
-        renderSizes.clear();
-        java.util.Arrays.fill(probes, null);
-        levelOf = null;
+        clearFor(null);
     }
 
-    /**
-     * The far feed started over (docs/choices-dh-feed.md DHT70): the pose sets and the live stand-ins go; the
-     * probes the prewarm drew and their render sizes stay, as do the headings last seen (a dragon at rest is drawn
-     * facing the way it last flew) and the looks that would not bake (they would not bake again).
-     */
-    @Override
-    public void reset() {
+    /** Frees everything, the arrivals of every level but {@code keep} with it (null: every one). */
+    private void clearFor(ClientLevel keep) {
         for (Poses p : sets.values())
             p.close();
         sets.clear();
         wanted.clear();
         standIns.clear();
+        resets.clear();
+        failed.clear();
+        lastYaw.clear();
+        renderSizes.clear();
+        java.util.Arrays.fill(probes, null);
+        levelOf = null;
+        arrivals.clear(keep);
+    }
+
+    /**
+     * The far feed started over (docs/choices-dh-feed.md DHT70): the pose sets, live stand-ins and asks that no
+     * mover asks for again within {@link FarLookReset#GRACE_NANOS} go then ({@link #freeUnasked}); the probes the
+     * prewarm drew and their render sizes stay, as do the headings last seen (a dragon at rest is drawn facing the
+     * way it last flew) and the looks that would not bake (they would not bake again).
+     */
+    @Override
+    public void reset() {
+        resets.reset(clock);
+    }
+
+    /** A RESET's grace is over: frees what no mover asked for since. */
+    private void freeUnasked() {
+        sets.entrySet().removeIf(e -> {
+            Poses p = e.getValue();
+            Long asked = wanted.get(e.getKey());
+            boolean stale = p.ready() ? resets.stale(p.used) : asked == null || resets.stale(asked);
+            if (stale)
+                p.close();
+            return stale;
+        });
+        wanted.values().removeIf(resets::stale);
+        standIns.values().removeIf(st -> resets.stale(st.used));
     }
 
     @Override

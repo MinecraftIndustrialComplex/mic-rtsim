@@ -6,11 +6,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarObjects;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
 import com.mojang.blaze3d.vertex.PoseStack;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
-import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.client.Minecraft;
@@ -27,25 +26,28 @@ import net.minecraft.world.entity.Entity;
  * mover names is held:
  *
  * <ul>
- *   <li>vanilla's render of it is cancelled, through GeckoLib's cancelable {@code GeoRenderEvent.Entity.Pre},
+ *   <li>vanilla's render of its model is cancelled, through GeckoLib's cancelable {@code GeoRenderEvent.Entity.Pre},
  *       posted on NeoForge's bus (no mixin; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so
- *       NeoForge's own RenderLivingEvent never fires for it);</li>
+ *       NeoForge's own RenderLivingEvent never fires for it). Its name tag, leash and shadow are not the model's
+ *       and are still drawn;</li>
  *   <li>its renderer runs once a frame into nothing ({@link #warm}), so its animation goes through the transition
  *       unseen, on its own clock;</li>
  *   <li>the far renderer draws the far model as if the body were not there yet ({@link DragonLook#holds}).</li>
  * </ul>
  *
  * <p>Then vanilla draws it, already flying. The hold is decided in the looks' frame ({@link #frame}) and forgotten
- * at the frame's end ({@link #endFrame}), so with no far view running nothing is held. A body no far mover names,
- * and one a copy may not be drawn of ({@link DragonLook#copies}: its renderer does more than draw), are never
- * held. Nothing is saved and nothing reaches the server: uninstalled, a body is drawn from its first frame, as
- * before. Render thread.
+ * at the frame's end ({@link #endFrame}), so with no far view running nothing is held; and a body vanilla has drawn
+ * once is never held after. Never held: a body no far mover names, one a copy may not be drawn of
+ * ({@link DragonLook#copies}: its renderer does more than draw), and one with riders (Ice and Fire draws them in
+ * the dragon's render and hides their own). Nothing is saved and nothing reaches the server: uninstalled, a body
+ * is drawn from its first frame, as before. Render thread.
  */
 final class DragonArrivals {
     /** How long a body is held, in its own ticks from its first warm render: the transition's 2 ticks at 0.4. */
     static final double HOLD_TICKS = 5.0;
-    /** And at most this long in wall time, for a game that pauses or freezes its ticks. */
+    /** And at most this long in wall time from its arrival, for a game that pauses or freezes its ticks. */
     static final long HOLD_NANOS = 1_000_000_000L;
+
     private static final class Arrival {
         final DragonBaseEntity body;
         final long joined;
@@ -58,7 +60,8 @@ final class DragonArrivals {
         }
     }
 
-    private final List<Arrival> arrivals = new ArrayList<>();
+    /** New bodies not drawn by vanilla yet, each until its hold ends. */
+    private final Map<Entity, Arrival> arrivals = new IdentityHashMap<>();
     private final Set<Entity> held = Collections.newSetFromMap(new IdentityHashMap<>());
     /** A warm render is running: its own GeckoLib event goes through. */
     private boolean warming;
@@ -71,9 +74,9 @@ final class DragonArrivals {
         if (!(e instanceof DragonBaseEntity d) || !e.level().isClientSide() || d.getId() < 0)
             return;
         long now = System.nanoTime();
-        // Without a far view nothing calls frame: the list keeps only the last second's arrivals all the same
-        arrivals.removeIf(a -> a.body.isRemoved() || now - a.joined > HOLD_NANOS);
-        arrivals.add(new Arrival(d, now));
+        // Without a far view nothing calls frame: the map keeps only the last second's arrivals all the same
+        arrivals.values().removeIf(a -> a.body.isRemoved() || now - a.joined > HOLD_NANOS);
+        arrivals.put(d, new Arrival(d, now));
     }
 
     /**
@@ -85,7 +88,7 @@ final class DragonArrivals {
         if (arrivals.isEmpty())
             return;
         long now = System.nanoTime();
-        for (Iterator<Arrival> it = arrivals.iterator(); it.hasNext(); ) {
+        for (Iterator<Arrival> it = arrivals.values().iterator(); it.hasNext(); ) {
             Arrival a = it.next();
             DragonBaseEntity d = a.body;
             if (d.isRemoved() || d.level() != level || now - a.joined > HOLD_NANOS) {
@@ -98,10 +101,9 @@ final class DragonArrivals {
                 it.remove();
                 continue;
             }
-            if (!named(d.getId()) || !mayCopy.test(d))
-                continue;
-            if (!warm(d, partial)) {
-                it.remove(); // vanilla draws it from now on, as without the hold
+            // Vanilla draws it from now on: so it is never held after it was seen
+            if (!named(d.getId()) || !mayCopy.test(d) || d.isVehicle() || !warm(d, partial)) {
+                it.remove();
                 continue;
             }
             if (Double.isNaN(a.first)) {
@@ -148,9 +150,18 @@ final class DragonArrivals {
         return held.contains(body);
     }
 
-    /** Whether vanilla's render of {@code body} is cancelled now (GeoRenderEvent.Entity.Pre). */
+    /**
+     * GeoRenderEvent.Entity.Pre, for any GeckoLib entity: whether its render is cancelled now. A new body's render
+     * that goes through (outside a hold, or a copy in DH's pass) means it was seen, so it is never held after.
+     */
     boolean cancels(Entity body) {
-        return !warming && held.contains(body);
+        if (warming)
+            return false;
+        if (held.contains(body))
+            return true;
+        if (!arrivals.isEmpty())
+            arrivals.remove(body);
+        return false;
     }
 
     /** The frame is over (RenderFrameEvent.Post): nothing is held until the next frame's {@link #frame}. */
@@ -158,10 +169,10 @@ final class DragonArrivals {
         held.clear();
     }
 
-    /** The client left its level for {@code keep}: the bodies of every other level go. */
+    /** The client left its level for {@code keep} (null: left the world): the bodies of every other level go. */
     void clear(ClientLevel keep) {
         held.clear();
-        arrivals.removeIf(a -> a.body.level() != keep);
+        arrivals.values().removeIf(a -> keep == null || a.body.level() != keep);
     }
 
     /** What it did since the last call, for the bench's log. */
