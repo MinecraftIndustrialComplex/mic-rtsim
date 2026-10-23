@@ -139,6 +139,27 @@ impl Link {
         );
     }
 
+    /// For TALK's tests: applies an input at the world's time, as an observation would.
+    #[cfg(test)]
+    pub(in crate::engine) fn input_for_test(&mut self, input: rtsim_world::inputs::Input) {
+        let at = self.world.now().0;
+        self.input(input, at);
+    }
+
+    /// For TALK's tests: marks a village as a test's scripted one.
+    #[cfg(test)]
+    pub(in crate::engine) fn script_for_test(&mut self, key: u64) {
+        self.scripted.insert(key);
+    }
+
+    /// For TALK's tests: whether the input log holds a TALKED.
+    #[cfg(test)]
+    pub(in crate::engine) fn logged_talked_for_test(&self) -> bool {
+        self.log
+            .iter()
+            .any(|l| matches!(l.input, rtsim_world::inputs::Input::Talked { .. }))
+    }
+
     /// A fresh link whose world keeps at most `cap` reports, for TALK's tests of a full table:
     /// call it before anything joins.
     #[cfg(test)]
