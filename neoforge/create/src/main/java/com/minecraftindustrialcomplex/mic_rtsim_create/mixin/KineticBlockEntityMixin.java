@@ -84,18 +84,29 @@ public abstract class KineticBlockEntityMixin implements KineticSyncPending, Kin
 
     @Override
     public void mic_rtsim$join() {
+        mic_rtsim$joinListing();
+    }
+
+    /**
+     * {@link #mic_rtsim$join}; whether it listed this block entity (or will once a sync ends): it was not a
+     * member of its network before. False off the server, where nothing is listed.
+     */
+    @Unique
+    private boolean mic_rtsim$joinListing() {
         KineticBlockEntity self = (KineticBlockEntity) (Object) this;
         if (mic_rtsim$initialized || !(self.getLevel() instanceof ServerLevel))
-            return;
+            return false;
         mic_rtsim$initialized = true;
         if (network == null)
-            return;
+            return false;
         // KineticBlockEntity.initialize, less SmartBlockEntity's (its behaviours start at the first tick)
         KineticNetwork net = self.getOrCreateNetwork();
-        // a network a sync is running on has members, so was initialized: initFromTE never runs inside one
+        // a network with members was initialized from its first one
         if (!net.initialized)
             net.initFromTE(capacity, stress, networkSize);
+        boolean member = net.members.containsKey(self);
         net.addSilently(self, lastCapacityProvided, lastStressApplied);
+        return !member;
     }
 
     @Inject(method = "initialize", at = @At("HEAD"))
@@ -141,12 +152,11 @@ public abstract class KineticBlockEntityMixin implements KineticSyncPending, Kin
     @Inject(method = "clearKineticInformation", at = @At("HEAD"))
     private void mic_rtsim$joinBeforeClear(CallbackInfo ci) {
         // a setBlock to a state not kinetically equivalent (another axis, as /setblock gives it) clears it,
-        // and nothing reads the network back: its share leaves the unloaded share, and it leaves the network
-        if (!mic_rtsim$initialized && network != null) {
-            mic_rtsim$join();
-            if (network != null)
-                ((KineticUnlist) ((KineticBlockEntity) (Object) this).getOrCreateNetwork()).mic_rtsim$unlist((KineticBlockEntity) (Object) this);
-        }
+        // and nothing reads the network back: its share leaves the unloaded share, and it leaves the network.
+        // Only a join that listed it unlists it: one already a member (listed by a generator's update) stays,
+        // as in Create, and off the server nothing joins
+        if (!mic_rtsim$initialized && network != null && mic_rtsim$joinListing() && network != null)
+            ((KineticUnlist) ((KineticBlockEntity) (Object) this).getOrCreateNetwork()).mic_rtsim$unlist((KineticBlockEntity) (Object) this);
     }
 
     @Override

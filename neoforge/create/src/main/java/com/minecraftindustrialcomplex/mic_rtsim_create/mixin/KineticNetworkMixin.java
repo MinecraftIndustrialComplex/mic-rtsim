@@ -231,7 +231,7 @@ public abstract class KineticNetworkMixin implements KineticUnlist {
         members.remove(be);
         if (mic_rtsim$byPos != null)
             mic_rtsim$byPos.remove(be.getBlockPos().asLong(), be);
-        mic_rtsim$dirtyTicking();
+        mic_rtsim$changed();
     }
 
     /** Runs {@code change} now, or once the sync iterating {@code members} ends. */
@@ -310,8 +310,12 @@ public abstract class KineticNetworkMixin implements KineticUnlist {
     @WrapMethod(method = "sync")
     private void mic_rtsim$syncThenLeave(Operation<Void> original) {
         mic_rtsim$syncing++;
+        Throwable thrown = null;
         try {
             original.call();
+        } catch (Throwable e) {
+            thrown = e;
+            throw e;
         } finally {
             if (--mic_rtsim$syncing == 0 && mic_rtsim$pending != null && !mic_rtsim$pending.isEmpty()) {
                 List<Runnable> changes = mic_rtsim$pending;
@@ -319,17 +323,37 @@ public abstract class KineticNetworkMixin implements KineticUnlist {
                 // a change's updateFromNetwork can sync again, and drain its own changes inside this loop
                 boolean outer = !mic_rtsim$draining;
                 mic_rtsim$draining = true;
+                // every change runs: one that throws must not leave the others' shares counted twice
+                RuntimeException failed = null;
                 try {
-                    for (Runnable change : changes)
-                        change.run();
+                    for (Runnable change : changes) {
+                        try {
+                            change.run();
+                        } catch (RuntimeException e) {
+                            if (failed == null)
+                                failed = e;
+                            else
+                                failed.addSuppressed(e);
+                        }
+                    }
                 } finally {
                     if (outer)
                         mic_rtsim$draining = false;
                 }
-                // usually inside a tick's recount, which clears networkDirty after it: recount now, once
+                // usually inside a tick's recount, which clears networkDirty after it: recount now, once;
+                // after a sync that threw, at a tick instead (the recount would sync again)
                 if (outer && mic_rtsim$recount) {
                     mic_rtsim$recount = false;
-                    ((KineticNetwork) (Object) this).updateNetwork();
+                    if (thrown == null)
+                        ((KineticNetwork) (Object) this).updateNetwork();
+                    else
+                        mic_rtsim$dirtyTicking();
+                }
+                if (failed != null) {
+                    if (thrown != null)
+                        thrown.addSuppressed(failed);
+                    else
+                        throw failed;
                 }
             }
         }
