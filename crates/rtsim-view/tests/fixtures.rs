@@ -4,7 +4,7 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit MERGEHEAD
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit e60b767
 //!   (Mowzie M2 merged with main 4bc03a6: the phase 1 world's catalogue has 10 goods,
 //!   `gold_nugget` last; the booked train legs are pages of their own, table 0x4904, ILEG, and the
 //!   industry globals page starts with IGB1 (docs/stress-worlds-results.md 10.10); the conflict's
@@ -25,7 +25,7 @@
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, a fresh one, from the same run of
-//!   MERGEHEAD (the same formats; delete `run-gametest/world` before a create run that follows a
+//!   e60b767 (the same formats; delete `run-gametest/world` before a create run that follows a
 //!   stress-generator run, whose clock is ahead of the game). Every module's pages, mostly empty:
 //!   herds, districts with their glass pages and stations draw.
 //!
