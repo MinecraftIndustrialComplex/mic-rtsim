@@ -31,29 +31,37 @@ use serde::Serialize;
 
 const HOUR: u64 = TICKS_PER_DAY / 24;
 
-/// §7's runs: number, what it shows, and the slice that builds it ("M2" for the parts built).
-const RUNS: [(u32, &str, &str); 13] = [
+/// §7's runs: number, what it shows, what is built of it so far, and the slices that build the
+/// rest.
+const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
-        "M2 (the ladder on kills); the meter M7, ambushes M8, the kill and the body M6",
+        "M2, the ladder on kills",
+        "the meter M7, ambushes M8, the kill and the body M6",
     ),
-    (2, "cut service and stopped service", "M7"),
-    (3, "reroute", "M7"),
-    (4, "two dens on one line", "M7"),
+    (2, "cut service and stopped service", "", "M7"),
+    (3, "reroute", "", "M7"),
+    (4, "two dens on one line", "", "M7"),
     (
         5,
         "the tribe: envoy, raids, invasion, plunder, the grove in and out",
-        "M2 (the ladder and the priced demand); the rest M9",
+        "M2, the ladder and the priced demand",
+        "the rest M9",
     ),
-    (6, "renewal of dens and groves", "M6 (den), M9 (grove)"),
-    (7, "kills and which feud steps down", "M6"),
-    (8, "save and restore mid-lurk and mid-reconcile", "M8, M4"),
-    (9, "a trunk of 14 lines", "M7"),
-    (10, "the camp reconciler", "M4"),
-    (11, "an Invasion with its chief", "M10, M11"),
-    (12, "the heir farmed for 60 years", "M9"),
-    (13, "the march record", "M10"),
+    (6, "renewal of dens and groves", "", "M6 (den), M9 (grove)"),
+    (7, "kills and which feud steps down", "", "M6"),
+    (
+        8,
+        "save and restore mid-lurk and mid-reconcile",
+        "",
+        "M8, M4",
+    ),
+    (9, "a trunk of 14 lines", "", "M7"),
+    (10, "the camp reconciler", "", "M4"),
+    (11, "an Invasion with its chief", "", "M10, M11"),
+    (12, "the heir farmed for 60 years", "", "M9"),
+    (13, "the march record", "", "M10"),
 ];
 
 struct Opts {
@@ -109,8 +117,12 @@ fn bad(why: &str) -> ExitCode {
 }
 
 fn list() {
-    for (n, what, slice) in RUNS {
-        println!("{n:>2}  {what}\n    built by: {slice}");
+    for (n, what, built, rest) in RUNS {
+        if built.is_empty() {
+            println!("{n:>2}  {what}\n    built by: {rest}");
+        } else {
+            println!("{n:>2}  {what}\n    built: {built}; still to build: {rest}");
+        }
     }
 }
 
@@ -126,7 +138,7 @@ struct RunOut {
     run: u32,
     /// The whole run is built: no slice is left to build.
     built: bool,
-    /// The slice that builds what is not built yet.
+    /// The slices that build what is not built yet.
     slice: &'static str,
     checks: Vec<Check>,
     /// The feud's rungs in order, with the day each began.
@@ -144,7 +156,7 @@ struct Results {
 fn main(o: Opts) -> i32 {
     let mut runs = Vec::new();
     for n in &o.runs {
-        let (_, _, slice) = RUNS[*n as usize - 1];
+        let (_, _, _, slice) = RUNS[*n as usize - 1];
         let out = match n {
             1 => den_ladder(o.seed, slice),
             5 => grove_ladder(o.seed, slice),
@@ -184,10 +196,10 @@ fn main(o: Opts) -> i32 {
 
 fn print_report(r: &Results, quiet: bool) {
     for run in &r.runs {
-        let (_, what, _) = RUNS[run.run as usize - 1];
+        let (_, what, _, _) = RUNS[run.run as usize - 1];
         println!("\nrun {}: {what}", run.run);
         if !run.built && run.checks.is_empty() {
-            println!("  not built yet (slice {})", run.slice);
+            println!("  not built yet: {}", run.slice);
             continue;
         }
         if !quiet {
@@ -209,7 +221,7 @@ fn print_report(r: &Results, quiet: bool) {
                 c.detail
             );
         }
-        println!("  still to build: slice {}", run.slice);
+        println!("  still to build: {}", run.slice);
     }
 }
 
