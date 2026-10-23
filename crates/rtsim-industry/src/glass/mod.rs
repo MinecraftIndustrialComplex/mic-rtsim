@@ -34,7 +34,7 @@ pub mod store;
 mod tests;
 pub mod units;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_kernel::clock::Tick;
 use serde::Serialize;
@@ -242,6 +242,8 @@ impl Glass {
                                 // when the engine knows the district: the new compile's first
                                 // solve reads its stores.
                                 if let Some(old) = dg.compiled.as_mut() {
+                                    // Nor does the district's veto go with it (choice SC66).
+                                    comp.veto = old.district_failing();
                                     if view.is_some() {
                                         let solves = old.solves;
                                         comp.carry_from(old, at, tun);
@@ -307,6 +309,7 @@ impl Glass {
         let out = self.sweep_inner(at, district, view, live, goods, tun);
         if let Some(dg) = self.districts.get_mut(&district) {
             dg.stopped.clear();
+            dg.away = false;
         }
         self.recount(district, tun);
         self.enforce_caps(at, district, tun);
@@ -334,18 +337,33 @@ impl Glass {
         }
         let c = dg.compiled.as_ref()?;
         let nu = c.unit_state.len();
+        let (ticking, stopped) = (&dg.ticking, &dg.stopped);
+        // The first sweep after the district went away runs no unit: each warms up afresh from it
+        // (choice SC59).
+        let units_run = |runs: &dyn Fn(i32, i32) -> bool| -> Vec<bool> {
+            if dg.away {
+                return vec![false; nu];
+            }
+            (0..nu).map(|u| c.units.runs(u as u16, runs)).collect()
+        };
         let (district_live, unit_live) = match live {
-            Liveness::All => (true, vec![true; nu]),
+            // Every chunk ran through the sweep, but one may have stopped since the last sweep
+            // that sampled, during a sweep that was dropped (choice SC67): its units did not run
+            // throughout. Live has no dimension; the district's chunks lie in one.
+            Liveness::All if stopped.is_empty() && !dg.away => (true, vec![true; nu]),
+            Liveness::All => {
+                let xz: BTreeSet<(i32, i32)> = stopped.iter().map(|c| (c.x, c.z)).collect();
+                (true, units_run(&|x, z| !xz.contains(&(x, z))))
+            }
+            // A unit runs only in chunks Java reported ticking (choice SC58): Java reports no
+            // chunk that never ticked, so an empty set says nothing ran, whatever G2-17 reads for
+            // the district's window.
             Liveness::Partial { loaded, dim } => {
-                let (ticking, stopped) = (&dg.ticking, &dg.stopped);
                 let runs = |x: i32, z: i32| {
                     let cp = ChunkPos { dim: *dim, x, z };
-                    loaded.contains(&cp)
-                        && (ticking.is_empty() || ticking.contains(&cp))
-                        && !stopped.contains(&cp)
+                    loaded.contains(&cp) && ticking.contains(&cp) && !stopped.contains(&cp)
                 };
-                let ul: Vec<bool> = (0..nu).map(|u| c.units.runs(u as u16, &runs)).collect();
-                (false, ul)
+                (false, units_run(&runs))
             }
         };
         if !district_live {
@@ -441,7 +459,9 @@ impl Glass {
             .get(&district)
             .and_then(|dg| dg.compiled.as_ref())
             .is_some_and(|c| {
-                c.graph.end.revision == revision && c.units.unit_of_inv(inv).is_some()
+                c.units.active()
+                    && c.graph.end.revision == revision
+                    && c.units.unit_of_inv(inv).is_some()
             });
         if !wanted {
             return;
@@ -489,7 +509,8 @@ impl Glass {
     }
 
     /// The district went away (unloaded): no unit window spans the stretch it did not run, whether
-    /// or not Java sent each chunk's unload (choice SC59).
+    /// or not Java sent each chunk's unload, and the first sweep back runs no unit, so each warms
+    /// up afresh from it (choice SC59).
     pub fn away(&mut self, at: Tick, district: DistrictId, tun: &GlassTunables) {
         let wanted = self
             .districts
@@ -499,13 +520,12 @@ impl Glass {
         if !wanted {
             return;
         }
-        if let Some(c) = self
-            .districts
-            .get_mut(&district)
-            .and_then(|dg| dg.compiled.as_mut())
-        {
-            for u in 0..c.unit_state.len() as u16 {
-                c.discard_unit(u, at, tun);
+        if let Some(dg) = self.districts.get_mut(&district) {
+            dg.away = true;
+            if let Some(c) = dg.compiled.as_mut() {
+                for u in 0..c.unit_state.len() as u16 {
+                    c.discard_unit(u, at, tun);
+                }
             }
         }
         self.recount(district, tun);
@@ -603,6 +623,8 @@ impl Glass {
             dg.stopped.clear();
             dg.numbers_reset = dg.compiled.is_some();
         }
+        // The windows' rows went with them.
+        self.recount_rows();
     }
 
     /// The district is gone.
