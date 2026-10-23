@@ -93,7 +93,7 @@ Facts (vanilla 1.21.1 and NeoForge 21.1, read from the sources; the audit is in 
   (villager, wandering trader, ribbit, Umvuthana): the client cancels too, so it neither swings twice
   nor sends the off hand's packet. Talkers decided on the server only (a pillager that is a conflict
   body) send the off hand's packet, which the server cancels.
-- **Not a talker, or not now:** the event goes on untouched. A talker that is asleep, mid-trade with
+- **Not a talker, or not now:** the event goes on untouched; so it does for a fake player (a Create deployer, any machine) and a frozen or stunned player (§3). A talker that is asleep, mid-trade with
   another player, a baby, or in a fight still answers (§5.4); a dead or removed one does not.
 - `BridgeEvents.onEntityInteract` (the phase 1 repricing before a trade) runs at normal priority and
   never sees a talk: no trade opens, so nothing needs repricing.
@@ -113,7 +113,7 @@ when crouching. Talk at HIGHEST, empty main hand only, resolves all of them:
 | vanilla WanderingTrader | crouching still opens trades (any hand) | trade screen | talk cancels both hands |
 | Ribbits 4.1.6 | crouch + amethyst shard sets a ribbit's home; otherwise no crouch check, so a merchant ribbit opens its trades | trade screen | empty main hand only: the shard keeps working, the trade does not open |
 | Mowzie's Mobs 1.8.2 | Umvuthana and Umvuthi open their trade to a masked player, with no crouch check; the Sculptor opens its screen to anyone | trade screen | talkers cancel first. The Sculptor is no talker (one quest NPC, not a people), so it keeps its screen |
-| Mowzie's Mobs 1.8.2, L_Ender's Cataclysm 3.33, Sable Player Ragdoll 0.7.5 | cancel any interaction while the player is frozen, stunned or ragdolled | none | they cancel at their own priority; a frozen player cannot talk, which is right. Talk checks `isCanceled()` and stays quiet |
+| Mowzie's Mobs 1.8.2, L_Ender's Cataclysm 3.33, Sable Player Ragdoll 0.7.5 | cancel any interaction while the player is frozen, stunned or ragdolled | none | they cancel at NORMAL, after talk's HIGHEST, so talk checks for itself: a player with Mowzie's `frozen` or Cataclysm's `stun` effect does not talk and the click goes on to them untouched. Sable's ragdoll has no public state to read; a ragdolled player who manages a click may hear a line, which is harmless |
 | Create 6.0.10 | `StockTickerInteractionHandler` (EntityInteractSpecific, client too): a seated mob beside a Stock Ticker opens the shop; Create cancels on the client, so no packet reaches the server | a seated shopkeeper never talks | accepted: a shopkeeper is Create's. TK8 |
 | Create 6.0.10 | `ScheduleItemEntityInteraction`: a conductor on a scheduled train | none in practice | conductors are not talkers |
 | Ice and Fire CE 2.1-beta.1 | tamed dragons and other pets: crouch + empty hand opens the inventory (owner only) | none | pets are not talkers; Ice and Fire has no villager-like people |
@@ -139,7 +139,7 @@ live in that mod's plugin (D4).
 
 | People | Entity types | Plugin | Voice | Holder (news, mood) | Attitude | Credit (§7) |
 |---|---|---|---|---|---|---|
-| Villagers | `minecraft:villager` (adults by profession; babies) | core | `villager.<profession>`, `child` | the adopted village it is a resident of (`Residents.villageOf`); none outside one | friendly; wary when vanilla reputation for the player is below -25 | vanilla gossip |
+| Villagers | `minecraft:villager` (adults by profession; babies) | core | `villager.<profession>`, `child` | the adopted village it is a resident of (`Residents.villageOf`); none outside one | friendly; wary when vanilla reputation for the player is at or below -25 | vanilla gossip |
 | Caravan merchants | `minecraft:wandering_trader` (C8a: while trade is on, every one is a caravan's puppet) | core | `trader` | the caravan's own board (HolderKind Caravan); a stray non-puppet trader has none | friendly; wary after the player robbed a caravan | none (TK6) |
 | Ribbits | `ribbits:ribbit` (gardener, fisherman, merchant, sorcerer, nitwit; nitwit musicians in a band) | `mic_rtsim_ribbits` | `ribbit.<profession>` | its ribbit village; a merchant caravan's or band's board when it is a puppet | by the village's sentiment: wary at or below -25 (the sorcerers' threshold), warm at or above 25 | the village's sentiment |
 | Conflict bands: bandits, raiders, goblins | the conflict bodies, whatever stands in for them (`BodyKinds.standIn`: pillager, vindicator, evoker and others in M3) | core (M3's ConflictBridge) | `bandit`, `raider`, `goblin`, by the party's culture; beasts (ravagers, wolves) are not talkers | the camp's board (its Haven node) | hostile in a raid or when the camp feuds with the player; wary otherwise | none (TK6) |
