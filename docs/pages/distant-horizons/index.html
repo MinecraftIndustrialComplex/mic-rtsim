@@ -156,6 +156,7 @@ table.nums td.num, table.nums th.num { text-align: right; padding-right: 14px; }
 }
 .decision .alt { color: var(--muted); }
 .decision .who { font-size: 15px; color: var(--muted); font-style: italic; }
+.done-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
 .open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
 
 /* decisions */
@@ -188,7 +189,8 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
   <a href="#built">Built</a>
   <a href="#bench">Measured</a>
-  <a href="#foryou">For you</a>
+  <a href="#foryou">Approved</a>
+  <a href="#gallery">Gallery</a>
   <a href="#items">The six</a>
   <a href="#walk">Walkthrough</a>
   <a href="#chunky">Far terrain</a>
@@ -201,13 +203,13 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Trains and dragons now move in Distant Horizons, on rtsim's own feed at 24 to 32 times less bandwidth than Create's</h1>
-  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. Two things wait for you, neither blocking (<a href="#foryou">below</a>). Windmills, war and airships are still estimates.</p>
+  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on two worlds we generated ourselves are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>, and what they showed at hand-overs is being fixed (<a href="#gallery">below</a>). Windmills, war and airships are still estimates.</p>
   <p class="lead" data-ss-id="lead">Distant Horizons, which the pack now ships at 3.3.3, lets a mod draw coloured boxes at any distance and move them every frame. The one hard limit is that boxes cannot rotate, so anything that turns (sails, wings, a ship changing course) is a flipbook of a few poses that swap. Trains and dragons are built; windmills, war and airships come next.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-bw"><div class="n">1.3 to 1.7 <small>KB/s</small></div><div class="t">for 50 trains on rtsim's feed, against 41.3 KB/s on Create's own sync</div></div>
     <div class="tile" data-ss-id="kpi-frame"><div class="n">2.7 <small>ms</small></div><div class="t">of a 12.5 ms frame at the heaviest load: 64 dragons and 50 trains on HIGH</div></div>
     <div class="tile" data-ss-id="kpi-doable"><div class="n">2 <small>of 6</small></div><div class="t">things you asked for are built: trains and dragons</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">2</div><div class="t">for you, neither blocking: the wire formats, and the jar in the pack</div></div>
+    <div class="tile" data-ss-id="kpi-decide"><div class="n">0</div><div class="t">wait for you: the formats are approved and the jar ships with mic-rtsim</div></div>
   </div>
   <div class="box limits" data-ss-id="limits">
     <h3>Three limits to know up front</h3>
@@ -221,7 +223,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <section id="built" data-ss-id="built" data-ss-section>
   <h2 data-ss-id="built-h">Built on 22 October: trains, the feed and dragons</h2>
-  <p data-ss-id="built-p">Phase 1 drew trains from Create's own map sync, client only. Phase 2 replaced that with rtsim's own feed from the server and added dragons. Both are on mic-rtsim main; the new client jar, <code>mic_rtsim_dh</code>, is not in the pack yet.</p>
+  <p data-ss-id="built-p">Phase 1 drew trains from Create's own map sync, client only. Phase 2 replaced that with rtsim's own feed from the server and added dragons. Both are on mic-rtsim main. The new client jar, <code>mic_rtsim_dh</code>, goes into the pack with mic-rtsim's own pack commit, as you approved.</p>
   <ul class="wants" data-ss-id="built-list">
     <li data-ss-id="built-feed"><b>rtsim's own feed</b>Two optional network messages: <code>mic_rtsim:far_sub</code>, the client's subscription (its DH radius, detail setting and object budget), and <code>mic_rtsim:far</code>, the server's answer. Once a second the server sends each player only what changed: a new object, a new flight leg, a move of an eighth of a block, a new entity. A still train or a roosting dragon costs nothing after its first second. A client without the jar joins as before.</li>
     <li data-ss-id="built-trains"><b>Trains from the server</b>The server reads Create's trains once a second for every player, as Create's own map sync reads them, and sends each player only the nearest within his DH radius. While the feed answers, the client asks Create for nothing. On a server without the feed, phase 1's Create sync still works.</li>
@@ -302,31 +304,43 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="foryou" data-ss-id="foryou" data-ss-section>
-  <h2 data-ss-id="foryou-h">Two things for you, neither blocking</h2>
-  <p data-ss-id="foryou-p">The work is on main already; each of these can be changed before a release. The recommended option is first.</p>
+  <h2 data-ss-id="foryou-h">Approved: "Approve, ship with rtsim"</h2>
+  <p data-ss-id="foryou-p">Your answer of 22 October to the two things phase 2 asked, recorded in DECISIONS.md as DH-2 phase 2 and DH-2 pack (027b4c0c). Both took the recommended direction, and the jar ships with mic-rtsim rather than after a separate check.</p>
 
   <div class="decision" id="dh-wire" data-ss-id="dh-wire">
-    <h3>The far view's wire formats <span class="open-tag">For you</span></h3>
+    <h3>The far view's wire formats <span class="done-tag">Approved</span></h3>
     <p>Public interfaces, so yours: the two optional payloads <code>mic_rtsim:far_sub</code> and <code>mic_rtsim:far</code> with their versioned format; the engine record FAR_LEG, 0x8C00, 80 bytes; the far view's id ranges, 0x00D0 to 0x00DF, 0x0C00 to 0x0CFF and 0x8C00 to 0x8CFF, checked free against every branch; and carriage ids in their own 'T' namespace.</p>
-    <ul>
-      <li><strong>(a) Keep them as built (recommended).</strong> The subscription carries its own version, so a later client and an older server ignore each other quietly, and a client without the jar still joins.</li>
-      <li><strong>(b) Change them before a release:</strong> say what.</li>
-    </ul>
+    <p class="rec">Your answer: approve. They stay as built.</p>
+    <p>The subscription carries its own version, so a later client and an older server ignore each other quietly, and a client without the jar still joins.</p>
   </div>
 
   <div class="decision" id="dh-pack" data-ss-id="dh-pack">
-    <h3>Putting <code>mic_rtsim_dh</code> in the pack <span class="open-tag">For you</span></h3>
+    <h3>Putting <code>mic_rtsim_dh</code> in the pack <span class="done-tag">Approved</span></h3>
     <p>The renderer is client only; a client without it costs the server nothing.</p>
-    <ul>
-      <li><strong>(a) After one check on a dedicated server with two remote clients (recommended).</strong> Every run so far was single player, so several players watching and real Ice and Fire dragons in a client are untested.</li>
-      <li><strong>(b) Now,</strong> as it stands.</li>
-      <li><strong>(c) Later,</strong> with windmills and war.</li>
-    </ul>
+    <p class="rec">Your answer: ship with rtsim.</p>
+    <p>It goes into the pack in the same commit that adds mic-rtsim, the commit the oil audit's F8 change also waits for. Every run so far was single player, so several players watching and real Ice and Fire dragons in a client are still untested until then.</p>
   </div>
 
   <div class="box" data-ss-id="dh-placeholders">
     <h3>Set by eye, to confirm when you see them</h3>
     <p>Each is a placeholder you may change at any time: the hold of 2 sweeps before an object goes; a hunt circling at 0.5 blocks a tick, spiralling onto its circle over 40 ticks; the budgets of 8, 24 or 64 dragons and 48, 128 or 320 objects; and the dragon colours, stage lengths of 3, 6, 10, 14 and 20 blocks, a wingspan of 1.4 lengths and a wingbeat of 4 frames of 5 ticks.</p>
+  </div>
+</section>
+
+<section id="gallery" data-ss-id="gallery" data-ss-section>
+  <h2 data-ss-id="gallery-h">Pictures and video: the far view gallery</h2>
+  <p data-ss-id="gallery-p">You asked: <span class="why">"can you get me some videos / images of worlds with this mod"</span>. <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery"><strong>The far view gallery</strong></a> has 12 stills and 6 clips, on two worlds we generated ourselves: a hill view with trains crossing, dragons circling, a dragon flying in to become a real body, and a train arriving at a station to become a real Create train. Private page.</p>
+  <div class="box" data-ss-id="gallery-fix">
+    <h3>Seen in the footage, being fixed</h3>
+    <p>Each happens at a hand-over between the two renderers: Distant Horizons' boxes far away, and the game's own dragons and trains up close.</p>
+    <ul>
+      <li>The box and the real body both show for up to about 0.85 s.</li>
+      <li>A real dragon is about twice its box's size, spawns facing another way, and sits about 3 blocks higher.</li>
+      <li>A train vanishes for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hides the near box there.</li>
+      <li>The box trails the real train by about half a second.</li>
+      <li>The train's box is bigger than the real carriage.</li>
+    </ul>
+    <p>What already looks right: boxes keep to the right lane, with steady colour and no flicker. An agent is fixing all five now.</p>
   </div>
 </section>
 
@@ -397,7 +411,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
         <p class="verdicts"><span class="v sim">Doable with sim work</span></p>
         <p><span class="lbl">What you would see</span>A column two abreast in its culture's colours, creeping along the road from its camp. An Umvuthana Invasion carries its chief, in sun-mask gold, above the rear of the column. You can make it out within about a kilometre, about two Minecraft days of warning at march pace. At night it is as dark as the land; no torches are invented.</p>
         <p><span class="lbl">How</span>The engine already plans each march as a route with a time at every waypoint, so the positions exist. It needs one message per march. This covers every faction's war band, not only the Mowzie groves.</p>
-        <p><span class="lbl">Up close</span>The real band stands where the column was. You decided the grove's band walks visibly toward the player, the Umvuthi included (MZ-15). The Mowzie plan now gives the band real bodies along the route, with the Umvuthi aloft at the rear (MZ-16's second round, provisional).</p>
+        <p><span class="lbl">Up close</span>The real band stands where the column was. You decided the grove's band walks visibly toward the player, the Umvuthi included (MZ-15). The Mowzie plan now gives the band real bodies along the route, with the Umvuthi aloft at the rear (your MZ-16, "Aloft").</p>
       </div>
     </div>
 
@@ -491,7 +505,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td>Settings</td><td data-label="Reused">DH's render distance and generic-rendering switch</td><td data-label="We write">A detail setting</td></tr>
     </tbody>
   </table>
-  <p data-ss-id="ledger-note">Nothing adds an entity, block or item. The only new jar is <code>mic_rtsim_dh</code>, on clients only, and it is not in the pack yet; clients without it still join and cost nothing. The far terrain is never written to: stamping damage or a docked ship into it would outlast the real thing.</p>
+  <p data-ss-id="ledger-note">Nothing adds an entity, block or item. The only new jar is <code>mic_rtsim_dh</code>, on clients only, and it ships in the pack with mic-rtsim; clients without it still join and cost nothing. The far terrain is never written to: stamping damage or a docked ship into it would outlast the real thing.</p>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
@@ -544,7 +558,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li>DH's source at tags 3.3.0 to 3.3.2 (<code>AbstractModInitializer.java</code>) and its 3.3.3 fix ("Only disable DH world gen when Chunky world gen is active"); DH's API versions on Modrinth and its Javadoc.</li>
     <li>The sim's own code: dragon flight legs in <code>rtsim-ecology</code>, war parties, routes and raids in <code>rtsim-conflict</code>, raid damage in <code>rtsim-industry</code>.</li>
     <li>Prior art: LOD Entity Rendering, SeeU, Separate Sable Render Distance, Valkyrien Skies issue 1300, and DH's API example.</li>
-    <li>Your answers: <code>DECISIONS.md</code> DH-1 to DH-5 (1476624). Your rules: I18; <code>PLAN.md</code> §4.10; MZ-15 and MZ-16 for the Mowzie band.</li>
+    <li>Your answers: <code>DECISIONS.md</code> DH-1 to DH-5 (1476624), and for phase 2, "Approve, ship with rtsim" of 22 October, recorded as DH-2 phase 2 and DH-2 pack (027b4c0c). Your rules: I18; <code>PLAN.md</code> §4.10; MZ-15 and MZ-16 for the Mowzie band.</li>
     <li>What was built and measured: <code>docs/choices-dh-trains.md</code> (phase 1, DHT1 to DHT24, measured), <code>docs/choices-dh-feed.md</code> (phase 2, DHT25 to DHT39, bench round 3 and "For Ben"), and <code>docs/boundary.md</code> §12 for the wire formats, on mic-rtsim main at ca5b3eb.</li>
   </ul>
 </details>
@@ -552,7 +566,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </main>
 
 <footer data-ss-react="off">
-  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb). <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb), your approval and the gallery. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
 </footer>
 </body>
 </html>
