@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! S8b-4 (EQUILIBRIUM.md §2.4.6a rule 7; docs/choices-ports.md PC20 to PC25, PC80 to PC89): a
+//! S8b-4 (EQUILIBRIUM.md §2.4.6a rule 7; docs/choices-ports.md PC20 to PC25, PC80 to PC99): a
 //! blockaded trade port closes and reopens.
 //!
 //! The rules are judged on the blockade coast: [`synth::coastal_with`]'s coast with three pirates
