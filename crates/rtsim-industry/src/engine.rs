@@ -1201,6 +1201,13 @@ impl Engine {
             {
                 self.out.push(Cmd::ProbeSet(p));
             }
+            // A unit of a partly loaded district that failed or was cut anew while the rest
+            // replays: the replay starts again over the units that may (SECTIONS.md §3.5).
+            if self.glass.districts.get(&e.district).is_some_and(
+                |g| matches!((&g.replay, &g.compiled), (Some(r), Some(c)) if !r.same_units(c)),
+            ) {
+                self.mark(e.district);
+            }
         }
         if !e.live || e.creative || e.overstressed {
             if e.creative || e.overstressed {
@@ -1376,13 +1383,13 @@ impl Engine {
         };
         if let Some(span) = &dist.sim {
             let same_kind = span.glass == (mode == GlassMode::Glass);
+            // A glass replay goes on while its nodes run where they did and its judging units
+            // are the ones that may replay now (SECTIONS.md §3.5).
             let same_live = !span.glass
-                || self
-                    .glass
-                    .districts
-                    .get(&d)
-                    .and_then(|g| g.replay.as_ref())
-                    .is_some_and(|r| r.live() == self.glass_live(d).as_slice());
+                || self.glass.districts.get(&d).is_some_and(|g| {
+                    matches!((&g.replay, &g.compiled), (Some(r), Some(c))
+                        if r.live() == self.glass_live(d).as_slice() && r.same_units(c))
+                });
             if span.invs == want && same_kind && same_live {
                 return;
             }
@@ -1652,9 +1659,11 @@ impl Engine {
     // ---- the glass replay (GLASSBOX.md §4, G2) ----------------------------------------------
 
     /// How district `d` replays while away. A compiled district replays on its graph once a
-    /// window of the compile passed (G-B4), and freezes before that; what the glass replay does
+    /// window of the compile passed (G-B4), and freezes before that; with judging units, once one
+    /// unit may replay (SECTIONS.md §3.5: the others are gated off). What the glass replay does
     /// not model yet (deposits, cross-district links, PowerGrid coupling, damage) keeps the black
-    /// box (choice G2-16), as does a compile whose glass replay fell back (§4.5).
+    /// box (choice G2-16), as does a compile whose glass replay fell back with no unit left to
+    /// replay (§4.5).
     fn glass_mode(&self, d: DistrictId) -> GlassMode {
         let Some(dg) = self.glass.districts.get(&d) else {
             return GlassMode::Black;
@@ -1674,7 +1683,7 @@ impl Engine {
         {
             return GlassMode::Black;
         }
-        if comp.eligible() {
+        if comp.replayable() {
             GlassMode::Glass
         } else {
             GlassMode::Freeze
