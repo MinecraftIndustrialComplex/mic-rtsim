@@ -14,9 +14,10 @@
 //! **A unit's bounds** ([`bounds`], choice SC56): L and the class are its own store edges' (the solve's
 //! class of the component past each edge, which never crosses a store); U is the district's less
 //! what every other store takes at least, `U(u) = U(d) - (L(d) - L(u))`, never below `L(u)`;
-//! infinite when the district's is, or when the unit is unbounded itself. An exact unit is judged
-//! on L alone, so the district's infinite U makes it bounded only when the district's own L was
-//! exact (`why::U_INFINITE`): another unit's black box does not loosen it. Its variance is its own
+//! infinite when the district's is, or when the unit's own edges for the good are unbounded (past a
+//! black box or a port, by the solve's class). An exact unit is judged on L alone, so the
+//! district's infinite U makes it bounded only when the district's own L was exact
+//! (`why::U_INFINITE`): another unit's black box does not loosen it. Its variance is its own
 //! stochastic sources' and its own machines' rolls, netted by the share of what they made that
 //! reaches its stores; its batch is the largest on its own store edges.
 //!
