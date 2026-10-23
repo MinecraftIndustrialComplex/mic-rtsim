@@ -1788,7 +1788,7 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 | 33 | u8 | variant: the colour, 0 to 3 within the species |
 | 34 | u8 | stage, 1 to 5, at the record's time |
 | 35 | u8 | reserved |
-| 36 | i32 | y |
+| 36 | i32 | y: the dragon's feet, as its entity's y (the far feed's LEG draws its middle, §12.2) |
 | 40, 44, 48, 52 | i32 | x0, z0, x1, z1 |
 | 56, 64 | i64 | t0, t1, game time |
 | 72 | u32 | radius: a hunt's circle in blocks (at least 24, PLACEHOLDER); 0 otherwise |
@@ -1847,18 +1847,27 @@ GONE   5: handle
   engine's next leg lands, and comes back on its own handle.
 - **Positions** are relative to the header's origin (the subscriber's block): legs in whole blocks,
   samples in eighths of a block with the trailing point relative to the leading one. Times are relative
-  to the header's game time.
+  to the header's game time. A position is the object's middle, as a body source samples it: a LEG's y
+  is FAR_LEG's (the feet) plus the species' centre for the stage, which its plugin registers
+  (`FarLegs.Style`; DHT42).
 - **Only what changed** (`far/FarView.java`): an INTRO when an object is new or its looks changed, a LEG
-  when the leg changed, a SAMPLE when it moved by an eighth of a block, a REAL when its entity id changed.
-  RESET tells the client to forget every object first. The server sends it on every subscription (a
-  client subscribes again when its wants change or a message did not decode) and on a new dimension,
+  when the leg changed, a SAMPLE when it moved by an eighth of a block, and the same SAMPLE once more the
+  first sweep it did not (it stopped: the client stops running it on, DHT44), a REAL when its entity id
+  changed. RESET tells the client to forget every object first. The server sends it on every subscription
+  (a client subscribes again when its wants change or a message did not decode) and on a new dimension,
   and then everything the filter chose.
+- **A body joining a level** (`FarFeed.embodied`, through `RtsimApi.farEntityJoining`): as a dragon's body
+  or a carriage's entity joins a server level, each subscriber holding that object gets a message of its
+  own at once (flags 0, one REAL), ahead of the entity's spawn packet, so the client hides its far object
+  the frame the entity arrives rather than at the next sweep (DHT40). The sweep's item then carries the
+  same id and sends nothing more.
 - **On the client** (`client/FarFeedReceiver.java`): legs become far registry movers on the far clock,
   timed through the client's game time; a hunt circles at 0.5 blocks a tick (PLACEHOLDER), spiralling
   onto its circle over 40 ticks from where the dragon was drawn and turning the way it was flying. A
-  mover moves from where it was drawn to each new sample over the next second, so the view runs a second
-  behind the server. A message that does not decode drops every object, and the client subscribes again,
-  so the server's RESET brings them back.
+  sampled mover is run on (DHT44): from where it is drawn, it heads for where its last two samples say
+  it will be when the next one comes, and 10 ticks on past that (PLACEHOLDER) should the next be late,
+  then waits; one that stopped or brakes to a stop stops there. A message that does not decode drops
+  every object, and the client subscribes again, so the server's RESET brings them back.
 
 ### 12.3 Sources and the filter
 
@@ -1879,4 +1888,5 @@ for each level a subscriber is in, and none when nobody is subscribed.
   at this game time, dragons first and then nearest first, up to its budget.
 - **The entity id** lets a client hide the proxy while it has the real entity near it; a carriage
   between the server's simulation distance and the client's render distance has no entity, and the
-  client draws it there itself (DHT33).
+  client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
+  the sweep.
