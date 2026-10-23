@@ -51,5 +51,6 @@
   "loot_share_milli": 150,
   "rout_share": 0.5,
   "chief_lifespan_days": 1000000,
+  "source": "boss",
   "loot_destroyed": true
 }

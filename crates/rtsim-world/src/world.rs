@@ -614,7 +614,9 @@ impl World {
         let i = self.nodes.len();
         // Genesis stock is ledgered in the line books, as at build.
         self.add_node(sid, &d, m, costs, local);
-        if !matches!(d.kind, NodeKind::PlayerBase { .. }) {
+        // A settlement joining is news; a player base or a lair (a den with no market to speak
+        // of, MZB-59) is not.
+        if !matches!(d.kind, NodeKind::PlayerBase { .. } | NodeKind::Lair) {
             let (place, id) = (self.node_at(i, at), self.node_id(i));
             self.tape.event(
                 rtsim_archive::kinds::SETTLE_JOINED,

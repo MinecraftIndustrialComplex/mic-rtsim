@@ -382,6 +382,11 @@ pub struct Culture {
     pub bare: Vec<u8>,
 }
 
+/// The longest `repeat_days` a culture may set: ten years.
+pub const MAX_REPEAT_DAYS: f64 = 3650.0;
+/// The most units of the tribute good a culture may ask per coin when its market has no price.
+pub const MAX_TRIBUTE_PER_COIN: f64 = 1000.0;
+
 pub fn days_to_ticks(d: f64) -> u64 {
     (d.max(0.0) * TICKS_PER_DAY as f64).ceil() as u64
 }
@@ -428,6 +433,10 @@ impl Culture {
                     .iter()
                     .position(|x| &x.name == u)
                     .ok_or(format!("{n}: party {name} names unknown unit {u}"))?;
+                if *c == 0 {
+                    // A make-up of no warriors would wait for no pool (MZB-64).
+                    return Err(format!("{n}: party {name} has no {u}"));
+                }
                 parties[kind.index()].push((i as u8, *c));
             }
         }
@@ -449,11 +458,20 @@ impl Culture {
                 None => i as u8,
             });
         }
-        if def.repeat_days.is_some_and(|d| d.is_nan() || d <= 0.0) {
-            return Err(format!("{n}: repeat_days must be positive"));
+        // Finite and bounded, so tick sums and the tribute stay far from overflow (MZB-51).
+        if def
+            .repeat_days
+            .is_some_and(|d| !(d.is_finite() && d > 0.0 && d <= MAX_REPEAT_DAYS))
+        {
+            return Err(format!(
+                "{n}: repeat_days must be above 0 and at most {MAX_REPEAT_DAYS}"
+            ));
         }
-        if def.tribute_per_coin_fallback.is_nan() || def.tribute_per_coin_fallback <= 0.0 {
-            return Err(format!("{n}: tribute_per_coin_fallback must be positive"));
+        let f = def.tribute_per_coin_fallback;
+        if !(f.is_finite() && f > 0.0 && f <= MAX_TRIBUTE_PER_COIN) {
+            return Err(format!(
+                "{n}: tribute_per_coin_fallback must be above 0 and at most {MAX_TRIBUTE_PER_COIN}"
+            ));
         }
         if !def.haven && !def.loot_destroyed {
             // A lair has no storehouse: loot carried home could never land (MZB-56).
@@ -667,7 +685,8 @@ mod tests {
         assert!(c.of_structure("mowziesmobs:frostmaw_spawn").is_some());
 
         let um = c.get(c.index_of("umvuthana").unwrap());
-        assert_eq!(um.def.source, CampSource::Bandit);
+        // Both Mowzie cultures are bosses to the industry engine (ledger 9, MZB-61).
+        assert_eq!(um.def.source, CampSource::Boss);
         assert!(um.def.haven && um.def.loot_destroyed);
         assert!(um.def.repeat_days.is_none());
         assert_eq!(um.def.tribute_good.as_deref(), Some("gold_nugget"));
@@ -739,11 +758,20 @@ mod tests {
     #[test]
     fn the_new_fields_are_checked() {
         let mut def = goblin_def();
-        def.repeat_days = Some(0.0);
-        assert!(Culture::resolve(def.clone()).is_err());
+        // Days that would overflow a tick sum, or are not days at all, are refused.
+        for bad in [0.0, -1.0, 1e300, f64::INFINITY, f64::NAN, MAX_REPEAT_DAYS + 1.0] {
+            def.repeat_days = Some(bad);
+            assert!(Culture::resolve(def.clone()).is_err(), "repeat_days {bad}");
+        }
+        def.repeat_days = Some(MAX_REPEAT_DAYS);
+        assert!(Culture::resolve(def.clone()).is_ok());
         def.repeat_days = Some(2.0);
-        def.tribute_per_coin_fallback = 0.0;
-        assert!(Culture::resolve(def.clone()).is_err());
+        for bad in [0.0, -1.0, 1e300, f64::INFINITY, f64::NAN, MAX_TRIBUTE_PER_COIN + 1.0] {
+            def.tribute_per_coin_fallback = bad;
+            assert!(Culture::resolve(def.clone()).is_err(), "fallback {bad}");
+        }
+        def.tribute_per_coin_fallback = MAX_TRIBUTE_PER_COIN;
+        assert!(Culture::resolve(def.clone()).is_ok());
         def.tribute_per_coin_fallback = 9.0;
         def.units[0].without_crystal = Some("nobody".into());
         assert!(Culture::resolve(def.clone()).is_err());
