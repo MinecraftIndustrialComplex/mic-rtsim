@@ -28,7 +28,9 @@ pub struct FactionFacts {
     pub pos: Pos,
     pub chief: ActorId,
     pub heir: ActorId,
-    /// Chiefs so far, counting the heir: a new faction has 2, and each succession adds one.
+    /// Chiefs so far, counting the heir: a new faction has 2, and each succession adds two (the
+    /// count keys the next chief's and heir's seeds). Successions are lazy (a feud wake or a plunder
+    /// runs one), so after a chief's death of age it trails until the next.
     pub chiefs: u32,
     pub chief_out: bool,
     pub cowed_until: Tick,
@@ -53,7 +55,11 @@ pub struct FactionFacts {
 /// feud against `player` when there is one. `None` for a key the conflict does not know.
 pub fn faction_facts(c: &Conflict, faction: u64, player: Option<ActorId>) -> Option<FactionFacts> {
     let f = c.faction_of_key(faction)?;
-    let x = &c.factions[f as usize];
+    // The faction's page is loaded here through the table's fallible read, so that a page store that
+    // fails answers "unknown" instead of panicking: every read below finds the page resident, and a
+    // `&Conflict` cannot evict it. (`factions[f]`, `feud` and `pool_at` read through the panicking
+    // `get`.)
+    let x = &c.factions.rows.try_get(u64::from(f)).ok()??.x;
     let culture = c.cultures.get(x.culture);
     let mut step = Step::None;
     let mut grievance = 0.0;
