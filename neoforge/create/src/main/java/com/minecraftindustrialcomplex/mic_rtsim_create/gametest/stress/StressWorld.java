@@ -834,6 +834,18 @@ final class StressWorld {
         sc.put("unload_reload", 90);
         sc.put("info_max", 12);
         sc.put("rescan", true);
+        // Phases end by game ticks (the server runs at 7 to 8 TPS here, SG43). A glass verdict needs 6,000 quiet
+        // ticks after a district's last recompile and a deferred adopt recompiles late, so the unload waits until
+        // 8,000 ticks after the adopts, past every district's verdict (SG82).
+        Map<String, Object> ticks = new LinkedHashMap<>();
+        ticks.put("settle", 1200);
+        ticks.put("busy", 6600);
+        ticks.put("unload", 1800);
+        ticks.put("unloaded", 600);
+        ticks.put("reload", 900);
+        ticks.put("reloaded", 600);
+        sc.put("ticks", ticks);
+        sc.put("unload_after_adopts", 8000);
         return sc;
     }
 }
