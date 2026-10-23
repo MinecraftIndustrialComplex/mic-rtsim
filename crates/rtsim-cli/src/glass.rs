@@ -207,6 +207,8 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         "passed_window": c.passed.as_ref().map(|w| window(iv, w)),
         "sections": sections(&c.sections),
         "sections_cap": dg.sections_cap,
+        "away": dg.away,
+        "veto": c.district_failing().iter().map(|g| iv.good_name(*g)).collect::<Vec<_>>(),
         "extra_rows": c.extra_rows(),
         "unit_rows": c.rows_len(),
         "units": units(iv, c),
@@ -390,6 +392,14 @@ fn print_text(v: &Value) {
                     c["sections_cap"].to_string()
                 }
             );
+            let veto = c["veto"].as_array().cloned().unwrap_or_default();
+            if !veto.is_empty() {
+                let names: Vec<&str> = veto.iter().filter_map(|g| g.as_str()).collect();
+                println!(
+                    "    the district's last window failed on {}: no unit touching them replays",
+                    names.join(", ")
+                );
+            }
         }
         for (i, u) in us.iter().enumerate() {
             let open = &u["window"];
