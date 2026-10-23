@@ -449,10 +449,10 @@ impl Culture {
                 None => i as u8,
             });
         }
-        if def.repeat_days.is_some_and(|d| !(d > 0.0)) {
+        if def.repeat_days.is_some_and(|d| d.is_nan() || d <= 0.0) {
             return Err(format!("{n}: repeat_days must be positive"));
         }
-        if !(def.tribute_per_coin_fallback > 0.0) {
+        if def.tribute_per_coin_fallback.is_nan() || def.tribute_per_coin_fallback <= 0.0 {
             return Err(format!("{n}: tribute_per_coin_fallback must be positive"));
         }
         if !def.haven && !def.loot_destroyed {
