@@ -660,35 +660,80 @@ broken, and refounding at found sites.
      hazard change, which is already an event).
    - **Blockade begun.** A port's dock is under blockade when every lane of it is at least a quarter
      as hot as one full-crew pirate of its medium hunting it without pause (sea 6 x 20 = 120‰, so
-     30‰; sky 25‰). This is news, not yet a closure.
+     30‰; sky 25‰). This is news, not yet a closure. An open port stops being blockaded when no
+     lane of it is above an eighth (PC82).
    - **Closed.** When every lane of the dock is at least half that hot (sea 60‰, sky 50‰), about a
      month of being hunted half the time, the dock closes:
-     - the lanes touching it carry nothing new (the world edge's capacity drops to 0; consignments
-       already sailing land);
-     - every service that calls there lays up. A ship out of every player's view leaves the
-       timetable at once. A ship in view, or with a player aboard, keeps sailing its timetable,
-       with empty holds, until its body is out of every player's view, and lays up then, so no ship
-       vanishes in front of anyone and no player is ever dropped in the sea or the sky;
-     - a lane left with no active service carries nothing either.
+     - the lanes touching it carry nothing new (the world edge is closed, `Edge::closed`, S8b-4a;
+       its capacity is untouched; consignments already sailing land);
+     - every merchant service that calls there lays up; the navy keeps sailing. A ship out of every
+       player's view leaves the timetable at once. A ship in view, or with a player aboard, keeps
+       sailing its timetable until its body is out of every player's view, and lays up then, so no
+       ship vanishes in front of anyone and no player is ever dropped in the sea or the sky. The
+       voyage under way at the closure keeps its cargo, which lands; later voyages sail with empty
+       holds (PC81). A ship holding promoted cargo lays up once the cargo lands;
+     - a lane whose merchant services are all laid up is closed as well, even while a patrol sails
+       it (PC94);
+     - no pirate begins a hunt on a closed lane, and one sailing out to it turns home (PC91), so a
+       closed port's village is not raided from its lanes;
+     - a laid-up ship gives up its booked voyages and its share of the lane's flow until it
+       relaunches, however long a watched home dock puts that off; each slot keeps its last two
+       such idle spells, so a voyage's window holds from its departure for at least the minimum
+       closure less one period (PC92).
+     - Only the ports' states, the tick each laid-up service laid up and each slot's idle spell
+       (for the flow, PC92) are stored: which services are laid up and which lanes are closed
+       follow from them, whatever order ports closed and reopened in (PC80, PC93).
    - **Reopened.** A closed dock reopens when no lane of it is hotter than a quarter of the full
      share, and not before 30 days after it closed. Its services' ships come back at their slots'
-     next home-dock stays (the existing relaunch path, so no ship appears in view), and the lanes'
-     capacities return.
+     next home-dock stays, never while a player watches the home dock: a watched dock puts the
+     relaunch off to the slot's next stay there (PC90). The lanes open again. Goods offered from
+     the next boundary take the lane's lag before they land (PC87). A reopened port does not close
+     again for 192 days (two game years, `blockade_min_open_days`, PC99); it may still be
+     blockaded.
    - **Why it cannot flap.** The band between a quarter and a half, the month-long average and the
-     30-day minimum closure keep a port from closing and reopening faster than about once a season.
+     30-day minimum closure keep a port from closing and reopening faster than about once a season,
+     and the minimum open spell after a reopening (PC99) keeps one hunted port from spending most
+     of its time closed; the band between an eighth and a quarter does the same for the blockade.
      A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
      how a blockade lifts by itself.
+   - **Switched off.** With the ships module off (C25), the ships are frozen and catch up when it
+     is switched on again (U10): the world's lanes stay as the ships left them, closed ones too,
+     and no check runs. Switched on again, the ships run the time they missed, checks included,
+     and the rule applies from there, late. A port closed when the module is switched off stays
+     closed for good if it is never switched back on (PC101).
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
+   - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
+     PC80 to PC101; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
+     `crates/rtsim-ships/tests/blockade.rs`), with its news: Blockade, PortClosed and PortReopened,
+     one report per change (rule 8, PC100, `a_port_change_is_news`). Measured over 1,000
+     years on `synth::sea_havens`, seeds 1 to 30, nobody watching, with navy assaults and port
+     raids (surplus-only since PC72) at their defaults: per sea per decade 0.21 blockades and 0.79
+     closures; closed spells of 38.9 days on average and 48 at the longest, never more than 11
+     days past the last day a lane was above a quarter; 0.16% of port-days closed, and 18.0% for
+     the most closed port (44.0% with a 48-day open spell, PC99). The three most closed ports
+     (seeds 10, 3 and 15) close again at the first check the open spell allows: a player there
+     sees each closure last 36 to 43 days on average, then 192 days open. 28 of 589 ports ever
+     closed, in 15 of 30 seas; 84.00 hunts a sea-year against 86.60 with closures off; havens
+     open 0.954 of the time (0.950 off); hunts in every century; never every sea port of a sea
+     closed at once, and no navy ship laid up. Every sky port of a sea was closed at once on 1,950
+     sea-days, in 3 seas: seed 21's two sky ports on 1,830, seed 10's four on 90 and seed 12's two
+     on 30 (the navy patrols only the sea). `synth::coastal`, whose navy patrols the lanes, never
+     closes a port, but its blockades' news parts its runs from those with closures off (22.16
+     hunts a sea-year against 22.43, havens open 0.979 against 0.982; seed 12's two runs are equal
+     with the port news not recorded).
 8. **News travels in the world, never in chat (CL-9).**
    - New report kinds 16 to 20 (`rtsim-knowledge`, reserved for ports and ships): PortRaided (16), Blockade
      begun (17), PortClosed (18), PortReopened (19) and HavenFell (20). `who` is the haven (the navy's
-     port for HavenFell), `whom` the port (the haven for HavenFell), `place` the port (the haven).
+     port for HavenFell), `whom` the port (the haven for HavenFell), `place` the port's dock (the
+     haven's). For a port's blockade, closure and reopening the haven is the one whose pirates hold
+     the most heat on the port's lanes, or the port's own village when no lane of it was ever
+     claimed (PC100). Severity 1, except 2 for PortClosed and HavenFell.
      They change no feeling (CONFLICT-LIFE §2.17): sentiment 0, no vanilla gossip mapping.
    - Players hear them by talking to villagers, Ribbits and clans (the talk build's lines for
      kinds 16 to 23).
-   - Each is witnessed by the port (or haven) and the places in sight, and carried by messengers,
-     bands and caravans like any other report.
+   - Each is witnessed by the port (the navy's port for HavenFell) and the places in sight, and
+     carried by messengers, bands and caravans like any other report (`Ships::port_report`).
    - A refound or a starved haven has no report of its own: the robberies that start or stop are the
      news.
 
@@ -701,8 +746,9 @@ broken, and refounding at found sites.
 - A sea never has every site shut for longer than the refound base plus one retry (96 days),
   unless looks in that spell found no prey (PC37): a sea the navies clear for a season fills
   again. Every sea with prey hunts in every century.
-- A port closes for at least 30 days and only after about a month of blockade; it reopens only
-  below a quarter of the closing heat.
+- While the ships run, a port closes for at least 30 days and only after about a month of being
+  hunted half the time; it reopens only when no lane of it is above a quarter of the full share
+  (half the closing heat), and once reopened it stays open at least 192 days.
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.
@@ -722,10 +768,10 @@ With P8's bodies, the same events gain ships and crews.
    Create trains, stations and docks are untouched. With no trade left to rob the pirates drift off,
    and a month or more later the port reopens (PortReopened, 19): ships come back at their home
    docks, out of sight, and prices settle.
-4. **The navy burns the haven.** He hears it as gossip, the Assault carried from the navy's port and
-   from the villages in sight of the haven. The lane's hazard drops to 0 within the hunt's length,
+4. **The navy burns the haven.** He hears it as gossip, the HavenFell report (20) carried from the
+   navy's port and from the villages in sight of the haven. The lane's hazard drops to 0 within the hunt's length,
    and imports get cheaper. With bodies, no pirate crew spawns at the haven any more, while its
-   structure stays exactly as it was (UR-1). Villagers tell it as HavenFell (20).
+   structure stays exactly as it was (UR-1).
 5. **Or the haven starves.** If he escorts every lane (players' escorts, T28) or a navy patrols them,
    the pirates rest in port and, a month after their last hunt, lay their ships up and drift away.
    Nobody reports it; the robberies simply stop.
@@ -745,7 +791,7 @@ With P8's bodies, the same events gain ships and crews.
 | Shut down and refound | S0's `RenewalRule` and `Pressure`, the camps' delay (§2.4.5), S8's refit event | a `Dormant` state and one refound event per shut haven |
 | Navy assault | the patrol walk (which lanes a navy covers), T35's belief and values, the square law | one event per navy every 24 days |
 | Port raids | T25's coast raid roll, the conflict engine's plunder (`World::stock_to_held`, carry, loot share), `land_held` at home | the village as a third target |
-| Blockade and closure | the lane hazard (T20), `relaunch_time` and the lost-ship path (T27), lane capacity from the timetable (`attach_lane`), embodiment state (a ship in view) | the lanes' heat, the dock's closed state, a world call that sets a lane's capacity |
+| Blockade and closure | the lane hazard (T20), `relaunch_time` and the lost-ship path (T27), lane capacity from the timetable (`attach_lane`), embodiment state (a ship in view) | the lanes' heat, the dock's closed state, a world call that closes and opens a lane (`Edge::closed`), a relaunch out of view |
 | News | `rtsim-knowledge` reports and witnesses, carried as today; the talk build's lines | report kinds 16 to 20 |
 | Census | S1's `KindCensus` (`broken` column) | nothing |
 
@@ -759,9 +805,9 @@ With P8's bodies, the same events gain ships and crews.
 - The toll is arithmetic at an event that already exists (reaching the lane).
 - Nothing scans the world: only docks with a hot lane are checked.
 
-**Built.** S8b-1, rules 1, 2, 4 and 5 (PC1 to PC6, PC11 to PC19), on branch `ports/lifecycle`: `ShipTunables::{lifecycle, starve_days, refound}`; in `rtsim-ships`' engine the toll, `fed_until` and the starving pool's closed form, laying up, shutting and refounding; the haven rows' new fields saved in `RTS2` with no migration; `check()` holds that a shut haven has no active ship, that each pool is within its cap, that each shut haven has exactly one live look, and that a laid-up slot lies only in a haven that is starving or shut (or broken, since S8b-2); a late or replayed FIGHT or DEMATERIALIZED report for a ship no longer active changes nothing. Tests (`tests/lifecycle.rs`): `a_hunt_pays_its_toll`, `a_starving_haven_shuts_and_refounds`, `a_laid_up_slot_wakes_when_its_haven_is_fed_again` (PC11), `a_late_report_for_a_laid_up_ship_changes_nothing`, `a_restart_in_each_lifecycle_state_changes_nothing` (a laid-up slot, a shut haven, a haven after a failed look: restored and never-saved runs end on the same `state_hash`), `no_refound_in_view`, `unattended_havens_rise_and_fall` (`check()` at every 24-day census) and its thousand-year run on `synth::sea_havens` seeds 1 to 30. Measured over 1,000 years (30 seas, 30,000 sea-years) with the lifecycle on, after the wake of laid-up slots was fixed: havens shut in 4 of 30 seas (seed 2: 64 shuts, 63 refounds; seed 9: 14 and 13; seed 25: 1 and 1; seed 21: 1 and none, its site having no lane worth hunting); 0.980 of the sites open on average (0.976 weighted by sites; lowest sea 0.785; at least 3 open at every census) and 0.980 of the slots manned; per sea-year 0.0027 shuts, 0.0026 refounds (80 and 77 in all), 0.0027 slots laid up and 88.5 hunts; every sea hunts in every century; tolls of 14 to 69 men a year a sea (39.4 on average); 4.53% fewer hunts (88.53 against 92.72 a sea-year) than with the lifecycle off (up to 24.9% in one sea, seed 27, where nothing shut, so from the toll). With it off nothing shuts. With it on, S8's kill-all brings every slot back in 52.8 days [52.5, 52.8] (off: 52.5 [47.0, 52.8]) and `pirates_survive_unattended_1000_years` keeps every slot manned every century. S8b-2 replaced this run's bar that no sea ever has every site shut at once (PC37). Rules 6, 7 and 8 are not built.
+**Built.** S8b-1, rules 1, 2, 4 and 5 (PC1 to PC6, PC11 to PC19), on branch `ports/lifecycle`: `ShipTunables::{lifecycle, starve_days, refound}`; in `rtsim-ships`' engine the toll, `fed_until` and the starving pool's closed form, laying up, shutting and refounding; the haven rows' new fields saved in `RTS2` with no migration; `check()` holds that a shut haven has no active ship, that each pool is within its cap, that each shut haven has exactly one live look, and that a laid-up slot lies only in a haven that is starving or shut (or broken, since S8b-2); a late or replayed FIGHT or DEMATERIALIZED report for a ship no longer active changes nothing. Tests (`tests/lifecycle.rs`): `a_hunt_pays_its_toll`, `a_starving_haven_shuts_and_refounds`, `a_laid_up_slot_wakes_when_its_haven_is_fed_again` (PC11), `a_late_report_for_a_laid_up_ship_changes_nothing`, `a_restart_in_each_lifecycle_state_changes_nothing` (a laid-up slot, a shut haven, a haven after a failed look: restored and never-saved runs end on the same `state_hash`), `no_refound_in_view`, `unattended_havens_rise_and_fall` (`check()` at every 24-day census) and its thousand-year run on `synth::sea_havens` seeds 1 to 30. Measured over 1,000 years (30 seas, 30,000 sea-years) with the lifecycle on, after the wake of laid-up slots was fixed: havens shut in 4 of 30 seas (seed 2: 64 shuts, 63 refounds; seed 9: 14 and 13; seed 25: 1 and 1; seed 21: 1 and none, its site having no lane worth hunting); 0.980 of the sites open on average (0.976 weighted by sites; lowest sea 0.785; at least 3 open at every census) and 0.980 of the slots manned; per sea-year 0.0027 shuts, 0.0026 refounds (80 and 77 in all), 0.0027 slots laid up and 88.5 hunts; every sea hunts in every century; tolls of 14 to 69 men a year a sea (39.4 on average); 4.53% fewer hunts (88.53 against 92.72 a sea-year) than with the lifecycle off (up to 24.9% in one sea, seed 27, where nothing shut, so from the toll). With it off nothing shuts. With it on, S8's kill-all brings every slot back in 52.8 days [52.5, 52.8] (off: 52.5 [47.0, 52.8]) and `pirates_survive_unattended_1000_years` keeps every slot manned every century. S8b-2 replaced this run's bar that no sea ever has every site shut at once (PC37). Rules 3 (S8b-2), 6 (S8b-3), 7 (S8b-4) and 8 (the news, with S8b-3 and S8b-4) were built after it.
 
-**Built.** S8b-2, rule 3 (PC30 to PC39), on branch `ports/navy`: `ShipTunables::{assault_every_days, assault_cause_days}` (24 and 192, PC38's sweep); in `rtsim-ships`' engine one look per navy (`Ev::Assault { navy, epoch }`, the wheel's tag 13), stamped with `Navy::epoch` so a load books a missing look and voids one the tunables no longer run (PC39); the targets (a hunt begun on one of the navy's patrolled lanes within 30 days, `Haven::navy_hunts`, PC35), defence and pick; the cause clock `holds_navy_lane_since`, which starts at a haven's first patrolled hunt since it opened and again after 30 days with none (PC31, PC35); the break (`broken_at`; the pool to 0; the ships in port lost with no pressure; the ships at sea laid up on the tick they come home, one reaching its lane turning home unhunted and unraided, port raids included; no refit and no crews owed; the shut marked broken; PC33, PC36); and `NavyCounts`, `HavenCounts::{broken_shuts, relaunched}`, all saved in `RTS2` with no migration. `check()` holds exactly one live look of the navy's epoch per navy while looks run and none when they do not, no live refit for a broken haven's ships, and a shut's `broken` flag against `broken_at`. HavenFell (20) is a stub until rule 8's report kinds land. Tests (`tests/lifecycle.rs`): `a_navy_breaks_a_weak_haven`, `a_navy_leaves_a_strong_haven_alone`, `no_assault_in_view`, `no_assault_while_a_haven_ship_is_embodied`, `a_ship_home_in_view_rests_until_the_player_leaves`, `a_broken_havens_pirate_turns_back_at_its_lane`, `a_loss_at_sea_after_a_break_books_no_refit`, `a_restart_while_broken_continues_exactly`, `a_restart_matches_the_navy_looks_to_the_tunables`, `the_cause_clock_runs_on_patrolled_hunts_only` and `a_haven_back_on_the_patrol_waits_out_its_cause_again` (both against a clock rebuilt from the log), `coast_havens_cycle_with_assaults` (breaks on every seed, 0.83 manned at the least), the sweep `assault_cause_sweep`, and the unattended runs in three arms (on; on with no cause wait; off). S8's and S1's tests run at the defaults, assaults included, except `pirates_survive_unattended_thirty_years` (PC38). Measured on the coast over 30 years (seeds 1, 7 and 30): 6 to 9 breaks (2.0 to 3.0 a decade), 247 to 337 days from opening to break on average, each shut 48.0 days, manned 0.850 to 0.900; with no cause wait, 38 to 40 breaks, 22.7 to 26.3 days, manned 0.34 to 0.37. Measured over 1,000 years on `synth::sea_havens` seeds 1 to 30, S8b-3's port raids included as first built (PC72's surplus-only raids moved these; see Built (S8b-3)): navies broke havens in 16 seas (2,297 breaks in 180,000 looks; 2,869 shuts, 572 of them starved); 0.885 of the sites open on average (lowest 0.335, seed 30, two of whose three havens starved early and stayed shut for almost the whole run; at least 1 open at every census) and 0.893 of the slots manned; 74.2 hunts a year a sea against 92.7 with the lifecycle off (20.0% fewer; 57.4% in seed 30); every sea hunts in every century; tolls of 8.4 to 67.0 men a year a sea; no sea ever had every site shut at once, so PC37's bar holds with room. The port raids move these, not the navy: with port raids and no navy looks the seas are open 0.914 (lowest 0.335, seed 30) at 76.2 hunts a year, and with the navy and no port raids (`port_raid_carry` 0) every figure is the one before the merge (0.958 open, lowest 0.785, 5,358 breaks, 86.3 hunts a year). With no cause wait: 0.719 open (lowest 0.335), every site shut 0.0076 of the sea-time in 6 seas (longest 48.0 days), 62.0 hunts a year.
+**Built.** S8b-2, rule 3 (PC30 to PC39), on branch `ports/navy`: `ShipTunables::{assault_every_days, assault_cause_days}` (24 and 192, PC38's sweep); in `rtsim-ships`' engine one look per navy (`Ev::Assault { navy, epoch }`, the wheel's tag 13), stamped with `Navy::epoch` so a load books a missing look and voids one the tunables no longer run (PC39); the targets (a hunt begun on one of the navy's patrolled lanes within 30 days, `Haven::navy_hunts`, PC35), defence and pick; the cause clock `holds_navy_lane_since`, which starts at a haven's first patrolled hunt since it opened and again after 30 days with none (PC31, PC35); the break (`broken_at`; the pool to 0; the ships in port lost with no pressure; the ships at sea laid up on the tick they come home, one reaching its lane turning home unhunted and unraided, port raids included; no refit and no crews owed; the shut marked broken; PC33, PC36); and `NavyCounts`, `HavenCounts::{broken_shuts, relaunched}`, all saved in `RTS2` with no migration. `check()` holds exactly one live look of the navy's epoch per navy while looks run and none when they do not, no live refit for a broken haven's ships, and a shut's `broken` flag against `broken_at`. HavenFell (20) is recorded since rule 8's report kinds landed (`Ships::port_report`, PC10). Tests (`tests/lifecycle.rs`): `a_navy_breaks_a_weak_haven`, `a_navy_leaves_a_strong_haven_alone`, `no_assault_in_view`, `no_assault_while_a_haven_ship_is_embodied`, `a_ship_home_in_view_rests_until_the_player_leaves`, `a_broken_havens_pirate_turns_back_at_its_lane`, `a_loss_at_sea_after_a_break_books_no_refit`, `a_restart_while_broken_continues_exactly`, `a_restart_matches_the_navy_looks_to_the_tunables`, `the_cause_clock_runs_on_patrolled_hunts_only` and `a_haven_back_on_the_patrol_waits_out_its_cause_again` (both against a clock rebuilt from the log), `coast_havens_cycle_with_assaults` (breaks on every seed, 0.83 manned at the least), the sweep `assault_cause_sweep`, and the unattended runs in three arms (on; on with no cause wait; off). S8's and S1's tests run at the defaults, assaults included, except `pirates_survive_unattended_thirty_years` (PC38). Measured on the coast over 30 years (seeds 1, 7 and 30): 6 to 9 breaks (2.0 to 3.0 a decade), 247 to 337 days from opening to break on average, each shut 48.0 days, manned 0.850 to 0.900; with no cause wait, 38 to 40 breaks, 22.7 to 26.3 days, manned 0.34 to 0.37. Measured over 1,000 years on `synth::sea_havens` seeds 1 to 30, S8b-3's port raids included as first built (PC72's surplus-only raids moved these; see Built (S8b-3)): navies broke havens in 16 seas (2,297 breaks in 180,000 looks; 2,869 shuts, 572 of them starved); 0.885 of the sites open on average (lowest 0.335, seed 30, two of whose three havens starved early and stayed shut for almost the whole run; at least 1 open at every census) and 0.893 of the slots manned; 74.2 hunts a year a sea against 92.7 with the lifecycle off (20.0% fewer; 57.4% in seed 30); every sea hunts in every century; tolls of 8.4 to 67.0 men a year a sea; no sea ever had every site shut at once, so PC37's bar holds with room. The port raids move these, not the navy: with port raids and no navy looks the seas are open 0.914 (lowest 0.335, seed 30) at 76.2 hunts a year, and with the navy and no port raids (`port_raid_carry` 0) every figure is the one before the merge (0.958 open, lowest 0.785, 5,358 breaks, 86.3 hunts a year). With no cause wait: 0.719 open (lowest 0.335), every site shut 0.0076 of the sea-time in 6 seas (longest 48.0 days), 62.0 hunts a year.
 
 **Built (S8b-3).** Rule 6 (PC40 to PC49, PC70 to PC78), on branch `ports/raids` (PC72 to PC78 on `ports/starve`): `ShipTunables::{port_raid_carry, port_village_defence_per_pop}`; `Ships::port_raid` takes the third target of a hunt's coast raid; `ShipLedger::looted_from_ports`; `ShipStats::{port_raids, items_from_ports, port_raid_lost_milli}`; the toll's booking factored into `book_loss`. Tests (`tests/port_raids.rs`): `a_port_raid_conserves_goods` (exact ledger identity, the villages' `lump_out` and the havens' `lump_in`), `a_watched_port_is_never_raided`, `a_strong_village_is_not_raided` (mutation checked), `a_raid_hits_the_nearer_end`, `port_raids_off_changes_nothing`, `a_port_raid_takes_only_the_surplus`, `port_raids_leave_the_villages_solvent` (PC73's cheap cut, paired against carry 0), and the ignored `port_raids_measured`. A raid takes 600‰ of each line's surplus over its target only (PC72): as first built it took 600‰ of each whole stock, which the quiet economy never refilled, so over 1,000 years raided villages went broke and the havens that hunted their lanes starved (sites open 0.885 against 0.958 with no port raids, lowest sea 0.335, starved shuts 572 against 80; PC73, PC74). Goods lines sit at their targets and only the treasuries carry a surplus, so under PC72 **the loot is all coins**; with the havens' coin sink, port raids are mainly a coin sink on the villages' spare money, and no village goes broke. A raid fights only when the crew could carry at least one whole item (PC78; before it, 213 of 1,670 raids took less). With PC72 and PC78, merged with origin/main, the 1,000-year run has 0.950 open against 0.959 with carry 0, lowest sea 0.676 (seed 20, open throughout with carry 0) against 0.785 (seed 2), and 86.6 hunts a sea-year against 86.3, both under 92.7 with the lifecycle off; starved shuts (152 against 80) are noisy, nearly all one sea's (PC75). Measured on seeds 1 to 30 over 10 model years, carry 10 against 0, with PC72 and PC78: on `synth::sea_havens` 4.76 port raids a year a sea, 8.8 items a raid, 0.021 of a village's stock a raid on average (largest 0.047), 0.81 men lost a raid, hunts 88.7 a year against 90.7 and the havens' manned share 0.963 against 0.960 (as first built and before the navy: 15.5 raids, 52.1 items, 0.253 of the stock, largest 0.600); on `synth::coastal` no raid at the defaults (its ports hold 30 to 72, against a sea crew's limit of 16), and with its ports set to 12 people 1.39 a year, 21.3 items, 0.012 of the stock, hunts 26.8 a year against 36.0 (PC76); every item taken is a coin. With carry 0 the world hash and the engine counters equal origin/main's on both worlds (seeds 1 to 12). Two hold tests now make their ports rich, since a port at its targets gives too little to fill a hold (PC77). Each raid fought and survived is news: a PortRaided (16) report, recorded since 18356257 (`a_port_raid_is_news`).
 
@@ -1288,7 +1334,7 @@ GameTest lock.
 | S6 | Villages and Ribbits (EQ-1): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn | `kill_all_villagers` (settlers in 32 days, 90% within 600), `village_pop_follows_census_down`, `kill_all_ribbits` (90% within 300), `sim_quiet_stays_quiet_with_settlers`; GameTests `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage` | S1 (EQ-1 a, decided) |
 | S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds` | S0 |
 | S8 | Ships: hires and cap, refit pressure, EV lanes. **Built 2026-10-22** (`crates/rtsim-ships/src/engine.rs`, docs/overnight-choices-ships.md T32 to T39) | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band; the engine holds the floor and sits at 1.00, T37) (`crates/rtsim-ships/tests/equilibrium.rs`) | S0 |
-| S8b | Havens and ports that rise and fall (§2.4.6a): the toll, starving, navy assaults, shut down and refound, port raids. Being built on branch `ports/lifecycle` (`docs/choices-ports.md`) | `unattended_havens_rise_and_fall` (many worlds: havens neither all die nor fill every site; pirates still hunt), `a_starving_haven_shuts_and_refounds`, `a_navy_breaks_a_weak_haven`, `a_port_raid_conserves_goods` | S8 |
+| S8b | Havens and ports that rise and fall (§2.4.6a): the toll, starving, navy assaults, shut down and refound, port raids, ports closed by blockade. **Built 2026-10-22 and 23**: S8b-1 (rules 1, 2, 4 and 5), S8b-2 (rule 3), S8b-3 (rule 6) and rule 8's PortRaided and HavenFell (PC10, PC45) on main; S8b-4 (rule 7) and its news, Blockade, PortClosed and PortReopened (PC100), on branch `ports/close` (`docs/choices-ports.md`) | `unattended_havens_rise_and_fall` (many worlds: havens neither all die nor fill every site; pirates still hunt), `a_starving_haven_shuts_and_refounds`, `a_navy_breaks_a_weak_haven`, `a_port_raid_conserves_goods`, `a_port_raid_is_news`, `a_blockaded_port_closes_and_reopens`, `a_port_change_is_news`, `blockade_min_open_sweep` | S8 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
 | S10 | Oil nests on the shared rule (with OG-9e's build). **Built 2026-10-22** (`crates/rtsim-ecology/src/nest.rs`, docs/choices-oilgate.md OGC70 onward) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` (`crates/rtsim-ecology/tests/nests.rs`) | S0, OG-9e |
 | S11 | The long-horizon suite | `long_horizon_stability_with_kills` (every module, 60 game years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind above in one place, `who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal events per day flat; nightly; its length is the engine's speed, about 45 minutes if the host runs 100 game days a second) | all |
