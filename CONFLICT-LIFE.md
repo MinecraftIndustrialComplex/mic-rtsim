@@ -1,8 +1,10 @@
 # Conflict life: how factions decide to fight
 
-**Status:** design for Ben's review, 2026-10-21; revised 2026-10-22 after an adversarial review and
-MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Nothing is
-built and no engine code changes here. Ben approves this design before code. Branch
+**Status:** design approved by Ben (he has answered every question so far, CL-1 to CL-9, including
+"Add alliances" and "All faction news in-world"), built only in part: alliances are designed and
+measured in the model, not built in the game. CL-10, how a player hears gossip, is being answered as a
+new TALK design. Design first drafted 2026-10-21; revised 2026-10-22 after an adversarial review and
+MOWZIE.md's MZ-15, and again the same day for Ben's alliances (CL-5 (b), section 2.16). Branch
 `plan/conflict-life`, worktree `mods/mic-rtsim-conflictlife`; the alliances on branch
 `plan/umvuthi-alliances`, worktree `mods/mic-rtsim-conflict2`.
 
@@ -337,7 +339,7 @@ that was at least a quarter of it.
 | Act | Toward | In the game | Carried by |
 |---|---|---|---|
 | Wait | | nothing | |
-| Warn | a player, the railway (at most once in 16 days each), a camp the council is angry with | a goblin howl, a Frostmaw roar, the gong, a raider war band shown at the edge, a bandit's written warning. These are sounds and sights in the world; none carries a line of text | today's FACTION_NOTICE (0x8801, a sound cue only) and MOWZIE.md's NOTICE_SHOWN (§4.12) |
+| Warn | a player, the railway (at most once in 16 days each), a camp the council is angry with | a goblin howl, a Frostmaw roar, the gong, a raider war band shown at the edge, a bandit lookout on the road who speaks the warning when a player talks to him (TALK.md §5.4; it was a written warning, TK12). These are sounds and sights in the world; none pushes a line of text | today's FACTION_NOTICE (0x8801, a sound cue only) and MOWZIE.md's NOTICE_SHOWN (§4.12) |
 | Scout | anyone but a caravan | scouts at the base, or a raptor look; scouts seen by a defence stronger than them lose half as they run; toward the railway, a watch on the line (about 21 a year at 12 legs in seed 1003) that misses the guards half the time | today's Scouts party; toward the railway kept abstract, no party |
 | Demand | a player | an envoy with guards asking the culture's tribute good (goblin emerald, Umvuthana gold) | today's Envoy party, ENVOY_MATERIALIZE (0x8802) and `Demand`; MOWZIE.md §4.5 |
 | Band | a village, a camp, a player | a small party (today's plunder party) | today's Plunder party kind |
@@ -509,7 +511,8 @@ the other party u64: an actor, or a chief's name index):
 - **Alliances (2.16)** add the ally's actor to ENVOY_MATERIALIZE, 8 bytes (128 + 8m), and the
   partner's agent and a joint flag to BAND_MARCH (72 bytes plus its counts and waypoints).
 - **News (2.17)** is told through rtsim-knowledge's reports and gossip, inside the engine; none of it
-  crosses the boundary as a notice. How a player hears it is CL-10.
+  crosses the boundary as a notice. A player hears it by talking to the people who carry it (CL-10,
+  answered by Ben's TALK design, TALK.md).
 No backward compatibility is needed before a release. A truce, a skirmish between camps, a border
 clash and a caravan ambush are unwatched in nearly every case and need nothing from Java: a skirmish
 or a caravan ambush a player meets is a band party on its march, as a plunder is today.
@@ -994,11 +997,11 @@ they are never written into vanilla villager gossip (`vanilla_mapping` gives the
 rumour of a feud between two camps is not a villager's grudge. News about a player does not make a
 village like or dislike him either; his deeds still do, as today.
 
-**How a player hears it** is CL-10, open. Nothing in rtsim shows a player the text of a report today:
-a report that reaches a village moves vanilla gossip (reputation, golems), and prices reach him as
-merchant offers. The recommendation in section 8 is a trade a carrier offers: for one emerald a
-caravan merchant hands over a vanilla written book of the news its board holds. No chat line, entity,
-block or item of our own (D3). Whatever the choice, the carrier is a body that already exists.
+**How a player hears it** (CL-10, answered 2026-10-22 by Ben's own design, TALK.md): he crouches and
+right-clicks a villager, a ribbit, a caravan merchant or a clan's member, and it says one line, in
+chat, to him alone: fluff, how it feels, or what it has seen, the last from the reports its board
+holds (TALK.md §5.3). Chat is used only because the player asked; nothing is pushed. The carrier is
+a body that already exists, and a player who talks to no one hears nothing (D3).
 
 **What this removes.** FACTION_NOTICE's reason and text, CL-D55's two notices (a pact against a player
 and the pacts between camps), `a_pact_is_news_nearby`'s player filter ("every player both camps
@@ -1597,7 +1600,7 @@ two numbers, the floor and the stock one pair each).
 | Rust: the `mind` block in `culture.rs` | about 120 |
 | JSON: five cultures' `mind` blocks | about 125 |
 | Rust tests (section 6) | about 1,000 |
-| Java: the reason line on ENVOY_MATERIALIZE in the `ConflictBridge`; the way a player hears news (CL-10) | about 120, the news path not counted |
+| Java: the reason line on ENVOY_MATERIALIZE in the `ConflictBridge`; the way a player hears news (CL-10: TALK.md, built there) | about 120, the news path not counted |
 | Java GameTests | about 300 |
 | Rust: alliances (2.16: the pact fields and the open-pact list, offer and answer, the call, the joint resolve at a camp, a village and a base, the joint fight's books, strain, betrayal, deterrence, the guard, joint demands, the `SYS_ALLY` stream) | about 600 |
 | Rust: the joint march (the longer muster, the partner-aware wait, the joint arrival, a two-party `start_fight`, the shared quota in bodies) and BAND_MARCH's partner | about 250 |
@@ -1812,8 +1815,8 @@ alliances" for CL-5; then CL-6 to CL-9 the same day, below):
 | CL-8 | **Can a player swear with a camp?** | (a) **Not in this build (Recommended):** pacts are between camps; a player deals with a camp by tribute, truce and feud, as now. (b) Yes: a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call a player can answer, a place to show it, and rules for his refusals and his betrayals. | It is a new mechanic players use, with its own interface. |
 | CL-9 | **Should players see pacts between camps?** | (a) **A notice to the players both camps reach (Recommended):** when they swear, when they march together and when one betrays the other (2.16, "Envoys and notices"); in the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance (4.5). (b) Nothing, as designed so far: a player learns of a pact only when it is sworn against him or its parties reach him. | It decides whether the valley's politics is news a player reads or history he never sees. |
 
-**Open** (raised by the news-in-world build; recommended option first):
+**Answered** (raised by the news-in-world build):
 
-| Id | Question | Options | Why it is yours |
-|---|---|---|---|
-| CL-10 | **How does a player hear the news a traveller carries?** | (a) **A trade for a written book (Recommended):** a caravan merchant, and later a village trader, offers the news its board holds as a vanilla written book for one emerald, through the MERCHANT_OFFERS path that already prices its wares; the text is written from the report codes when the book is made. No chat, no entity, block or item of our own. A player who trades with no one hears nothing. (b) A lectern in a village holds a written book of what the village has learned, refreshed as news arrives; the player reads it where it stands. It needs a village with a lectern, and a lectern to be placed where there is none. (c) A line spoken by a caravan merchant or villager when the player speaks to it. It is a line of chat in all but name, against Ben's rule, and vanilla's villager click already opens a trade. | It is the one place the player reads conflict at all, and the first text rtsim would show for news. |
+| Id | Question | Answer |
+|---|---|---|
+| CL-10 | **How does a player hear the news a traveller carries?** | **By talking** (Ben, 2026-10-22), none of the three options as offered: "Shift + Click to speak to a viller, have them output fluff lines, lines based on how they are feeling, and lines based on what they might have seen. Players should be able to do the same withi ribbits, and other clans as well. Talking with a villager should mildly increase a players 'relationship' with them". Closest to (c), with the trade screen left alone (a crouching click opens none) and the line coming only when the player asks. The design is TALK.md; the envoy speaks its demand the same way ("Speaks to you in chat", CL-1). The options offered were (a) a written book for one emerald from a caravan merchant, (b) a lectern's book in a village, (c) a spoken line. |

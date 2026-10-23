@@ -14,6 +14,9 @@
   --accent: #8f620f;
   --old: #8a8a93;
   --new: #2a78d6;
+  --done-bg: #e2f0e8;
+  --done-ink: #1d5a3b;
+  --done-line: #93c4aa;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 * { box-sizing: border-box; }
@@ -201,12 +204,16 @@ summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
 details[open] summary::before { content: "\25BE"; }
 details ul { font-size: 15.5px; color: var(--muted); }
 footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+.state { display: inline-block; font-size: 14px; font-weight: 600; color: var(--done-ink); background: var(--done-bg); border: 1px solid var(--done-line); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 3px; }
+.state.plan { color: var(--muted); background: var(--card); border-color: var(--line); }
+.box .meta { font-size: 15px; color: var(--muted); margin: 0 0 10px; }
 </style>
 </head>
 <body>
 
 <nav class="top" data-ss-react="off">
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#build">Built</a>
   <a href="#back">What comes back</a>
   <a href="#farming">Farming</a>
   <a href="#animals">Animals</a>
@@ -223,7 +230,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Kill every Frostmaw, dragon or villager and new ones come, slower each time you farm them, and the world settles: you answered all 6 decisions</h1>
-  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. You answered its six decisions on 21 October: four as recommended, a faster Frostmaw (EQ-4) and none of the three ways factions fight (EQ-5). Nothing is built.</p>
+  <p class="dek" data-ss-id="dek">The population equilibrium and renewal plan, EQUILIBRIUM.md on mic-rtsim main (3590249). One review went through it; its fixes are in and the model was rerun with them. You answered its six decisions on 21 October: four as recommended, a faster Frostmaw (EQ-4) and none of the three ways factions fight (EQ-5). Since 22 October 6 of its 12 slices are built, among them the census, herds, dragons and ships, and the ports that rise and fall are being built with your PORTS-1 and PORTS-2 (<a href="#build">the build</a>).</p>
   <p class="lead" data-ss-id="lead">You asked for two things: a world that settles into a balance between tribes and animals, and a way for the Frostmaw (your Yetis), dragons and villages a player wipes out to come back. One rule does both. Every place a kind lives (a lair, a den, a grove, a village, a herd's range) remembers how hard players have hit it lately, and the next arrival waits longer for each recent kill. Left alone, it forgets within a few game years. Herds stop booming and crashing, dragons stop eating herds out, factions stop throwing raids at walls they cannot beat, and a server left alone for ten real years keeps every kind at a steady share.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-herds"><div class="n">0</div><div class="t">herd ranges die out in 60 game years, whatever the player does (today 4 to 15 per world, for good)</div></div>
@@ -233,6 +240,54 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <div class="tile" data-ss-id="kpi-decide"><div class="n">6</div><div class="t">decisions answered, four as recommended</div></div>
   </div>
 </header>
+
+<section id="build" data-ss-id="built" data-ss-section>
+  <h2 data-ss-id="built-h">The build: 6 of 12 slices are built, and the ports are being built</h2>
+  <p data-ss-id="built-p">EQUILIBRIUM.md section 4 on mic-rtsim main (bac9ff80). Each slice lands with its tests, and the later ones measure themselves with S1's census.</p>
+  <div class="scroll" data-ss-id="built-wrap">
+  <table class="stack" data-ss-id="built-table">
+    <thead><tr><th>Slice</th><th>What</th><th>Where it stands</th></tr></thead>
+    <tbody>
+      <tr><td data-label="Slice">S0</td><td data-label="What">The shared rule in <code>rtsim-kernel</code>: pressure from kills that halves each half-life, and a capped wait</td><td data-label="Where it stands"><strong>Built</strong>, with its three tests</td></tr>
+      <tr><td data-label="Slice">S1</td><td data-label="What">The census: one line per kind every N days, in the sim and in the host soak</td><td data-label="Where it stands"><strong>Built</strong> (a4cd627)</td></tr>
+      <tr><td data-label="Slice">S2</td><td data-label="What">Herds: a density term, a refuge from predators, spring dispersal, new ranges at the frontier</td><td data-label="Where it stands"><strong>Built</strong> (2d5b07b); both wipes come back inside the model's bands on 30 seeds</td></tr>
+      <tr><td data-label="Slice">S3</td><td data-label="What">The site ledger and kill credit in every bridge</td><td data-label="Where it stands">Not built; it comes with the Mowzie build's last slice</td></tr>
+      <tr><td data-label="Slice">S4</td><td data-label="What">Dragons: lair pressure, fed share, starving dragons that leave, arrivals only where a dragon can feed</td><td data-label="Where it stands"><strong>Built</strong> (bac9ff80), but for one GameTest that waits on S3 (<a href="#s4">below</a>)</td></tr>
+      <tr><td data-label="Slice">S5</td><td data-label="What">Dragon bodies at home (EQ-2 a): vanilla while roosting, a puppet while away</td><td data-label="Where it stands">Not built</td></tr>
+      <tr><td data-label="Slice">S6</td><td data-label="What">Villages and Ribbits (EQ-1 a): settlers, growth while unloaded, Ribbit houses refilled first</td><td data-label="Where it stands">Not built</td></tr>
+      <tr><td data-label="Slice">S7</td><td data-label="What">Conflict: pressure on recruits, break and refound; when parties go out is the lifelike design</td><td data-label="Where it stands">Not built</td></tr>
+      <tr><td data-label="Slice">S8</td><td data-label="What">Ships: hires and a cap, refit pressure, lanes</td><td data-label="Where it stands"><strong>Built</strong> (T32 to T39, the last e442612): both pirates on all 30 seeds still sail near day 1,000</td></tr>
+      <tr><td data-label="Slice">S8b</td><td data-label="What">Ports and havens that rise and fall, an extension of S8</td><td data-label="Where it stands">Part built: S8b-1 (966d7a93); the rest is being built, with your PORTS-1 and PORTS-2 (<a href="#ports">below</a>)</td></tr>
+      <tr><td data-label="Slice">S9</td><td data-label="What">The Mowzie factions on the shared rule</td><td data-label="Where it stands">Part of the Mowzie build, under way</td></tr>
+      <tr><td data-label="Slice">S10</td><td data-label="What">Oil nests on the shared rule</td><td data-label="Where it stands"><strong>Built</strong>, with the oil gate's fixes</td></tr>
+      <tr><td data-label="Slice">S11</td><td data-label="What">The long-horizon suite, and a 262,980-day soak that checks every kind, the state size and the event rate stay flat</td><td data-label="Where it stands">Not built; it comes last</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="box" id="s4" data-ss-id="built-s4">
+    <h3>S4: dragons come back to empty lairs, slower where you hunt them <span class="state">Built</span></h3>
+    <p class="meta">bac9ff80, choices EQC22 to EQC33 in <code>docs/overnight-choices-equilibrium.md</code>.</p>
+    <ul>
+      <li><strong>The wait:</strong> a lair that loses its dragon waits <code>min(192, 20 x 2<sup>P</sup>)</code> days for a new one, where P rises with each dragon players kill there. A lair nobody hunts waits 20 days; the most is 192.</li>
+      <li><strong>Starving:</strong> a dragon whose fed share has stayed below 0.35 for 30 days leaves, for an empty lair nearby or off the map.</li>
+      <li><strong>Arrivals:</strong> a newcomer comes only if the region around the lair can feed it, from a village or from herds.</li>
+      <li><strong>On 30 seeds:</strong> lairs are held 83% of the time with a roaming player, against the model's 89%. After every dragon is killed, half are back in 48 days, as the model predicts.</li>
+      <li><strong>Not yet:</strong> one GameTest waits on S3, the site ledger and kill credit, which is not built. S3 comes with the Mowzie build's last slice.</li>
+    </ul>
+  </div>
+
+  <div class="box" id="ports" data-ss-id="built-ports">
+    <h3>S8b: ports and havens that rise and fall <span class="state plan">Being built</span></h3>
+    <p class="meta">An extension of S8: EQUILIBRIUM.md section 2.4.6a and section 5.1, choices in <code>docs/choices-ports.md</code>.</p>
+    <p>The first part, S8b-1, landed on main this evening (966d7a93): an unwatched hunt pays a toll, a haven with no prey starves and lays its ships up, and a shut haven is founded again at its own site, out of view and with prey to hunt. The rest is being built with your two answers.</p>
+    <p>Asked whether havens nobody visits should lose crew, you asked back whether ports should be raided, shut down and form anew. Your two answers:</p>
+    <ul>
+      <li><strong>PORTS-1, "Navies too".</strong> A navy can break a pirate haven while nobody watches, but only when it believes it will win, and the result is certain, not rolled. A broken haven is founded again at its site after up to 384 days. This is an exception to "only players break a faction", for havens only.</li>
+      <li><strong>PORTS-2, "Close under blockade".</strong> A trade port whose every lane has been at a haven's full danger for 30 days lays up its ships until the blockade lifts. Pirates also raid port villages for their market stock.</li>
+    </ul>
+  </div>
+</section>
 
 <section id="back" data-ss-id="back" data-ss-section>
   <h2 data-ss-id="back-h">Every kind comes back, from a source you could see</h2>
@@ -525,7 +580,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
   <p data-ss-id="cost-p">Each renewal is one entry on the engine's timing wheel. Herds use the yearly decision they already have, which reads four neighbours for dispersal. A village's growth while unloaded is one formula read at its next load. Nothing grows with time: site rows are bounded by the explored world, an extinct herd's row is reused, and the ledger keeps at most one missing UUID per member.</p>
   <h3 data-ss-id="build-h">The build, in 12 slices</h3>
-  <p data-ss-id="build-p">Each slice lands with its tests. First the shared rule in <code>rtsim-kernel</code>, then a census command that counts every kind (the yardstick for the rest), then herds, the site ledger and kill credit, dragons, conflict and ships, which wait on nothing of yours. Four slices wait on a decision: dragon bodies on EQ-2, villages and Ribbits on EQ-1, conflict on EQ-5, and the Mowzie factions on their own plan. Last, a soak that runs 262,980 game days in the host and checks every kind, the state size and the event rate stay flat.</p>
+  <p data-ss-id="build-p">Each slice lands with its tests. First the shared rule in <code>rtsim-kernel</code>, then a census command that counts every kind (the yardstick for the rest), then herds, the site ledger and kill credit, dragons, conflict and ships. Your answers settled the four that waited on a decision: dragon bodies (EQ-2), villages and Ribbits (EQ-1), conflict (EQ-5, now the lifelike design), and the Mowzie factions, which follow their own plan. Last, a soak that runs 262,980 game days in the host and checks every kind, the state size and the event rate stay flat. Where each slice stands is <a href="#build">near the top</a>.</p>
 </section>
 
 <section id="checked" data-ss-id="checked" data-ss-section>
@@ -677,7 +732,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </main>
 
 <footer data-ss-react="off">
-  Built from EQUILIBRIUM.md on mic-rtsim main (3590249), 21 October 2026. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+  Built from EQUILIBRIUM.md on mic-rtsim main (3590249), 21 October 2026; updated 22 October for the slices built (bac9ff80) and the ports' first part (966d7a93). <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
 </footer>
 
 <script>

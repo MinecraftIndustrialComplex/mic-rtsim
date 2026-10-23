@@ -81,6 +81,19 @@ resident. Per rtsim arm, `sw-result.json` holds:
 
 The jar set must be built from a tree that has `/rtsim perf reset`.
 
+Since 10.9 (choices SG43 to SG46):
+
+- a scene's `"ticks"` key ends phases by game ticks instead of seconds (syn200 runs at 7 to 8 TPS, so
+  a timed busy window can miss the periodic pass at game tick 12,000);
+- each window's `per_tick_ms` holds the `swticks` numbers: "ring", the server's tick time (what MSPT
+  averages; it ends before `ServerTickEvent.Post`, so it leaves out most of rtsim's work) and "gap",
+  the whole tick. Compare arms by gap, or by gap minus ring against the off arm;
+- `save_rtsim` holds the page store's files before and after the final save and `/micperf zones`;
+  the autosaves' segments are copied to `<run>/segs`, since compaction deletes them;
+- `rtsim_reports.final` is `/rtsim district perf` at the end of the reloaded window.
+
+A laptop suspend shows as one tick with a gap of minutes on both arms: drop it before averaging.
+
 Then read what the engine learned from the rtsim arm's saved world:
 
 ```
