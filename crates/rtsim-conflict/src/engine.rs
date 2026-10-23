@@ -34,7 +34,9 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
-use rtsim_knowledge::{ActorId, ActorKind, Place, Report, ReportKind, Temperament, Trait};
+use rtsim_knowledge::{
+    ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
+};
 use rtsim_settle::{NodeKind, Pos};
 use rtsim_space::topology::{SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, PRICE_ONE};
@@ -3187,6 +3189,17 @@ impl Conflict {
         (stolen_items, blocks)
     }
 
+    /// What party `p`'s living members carry between them, thousandths.
+    fn carry_milli(&self, p: Handle<Party>) -> Amount {
+        let x = &self.parties[p];
+        let c = self.culture(x.faction);
+        x.units
+            .iter()
+            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
+            .sum::<i64>()
+            * MILLI
+    }
+
     /// Takes `n` units away from the stacks whose class matches, in stack order.
     fn lose_units(
         &mut self,
@@ -3216,11 +3229,40 @@ impl Conflict {
 
     /// A raid on a village's or a rival haven's market: Lanchester's linear law against the
     /// residents' defence, floored by real fights seen (never better for the defender than
-    /// observed); the survivors carry off up to their carry and a share of each good, into the
-    /// band's hold (`World::stock_to_held`), conservation exact.
+    /// observed); the survivors carry off up to their carry and the culture's share of each line's
+    /// surplus over its target, coins included, into the band's hold (`World::stock_to_held`),
+    /// conservation exact. A band that could not carry off one whole item if nobody fell does not
+    /// fight at all (CL-D58, as the ports' PC72 and PC78).
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
+        // Something to take, before any blood is spilled: a raid takes from each line's surplus
+        // over its target only. Below its target a line needs imports or a mint to refill, and a
+        // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
+        let m = w.market(i);
+        let caps: Vec<(GoodId, Amount)> = w
+            .goods
+            .ids()
+            .map(|g| {
+                let surplus = (m.stock(g) - m.line(g).target).max(0);
+                (g, surplus * c.def.loot_share_milli / 1000)
+            })
+            .filter(|e| e.1 > 0)
+            .collect();
+        let reach: Amount = caps.iter().map(|e| e.1).sum();
+        if self.carry_milli(p).min(reach) < MILLI {
+            self.note(
+                at,
+                Some(f),
+                "plunder",
+                format!(
+                    "finds nothing worth taking at node {}: {} items spare within reach",
+                    w.nodes[i].key,
+                    reach / MILLI
+                ),
+            );
+            return 0;
+        }
         let s = self.strength(p);
         let node = &w.nodes[i];
         let per = match node.kind {
@@ -3239,20 +3281,9 @@ impl Conflict {
         let lost = alive - ((f64::from(alive) * survived).round() as u32).min(alive);
         self.lose_units(p, |_| true, lost);
         self.stats.raids_village += 1;
-        let carry: i64 = self.parties[p]
-            .units
-            .iter()
-            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
-            .sum::<i64>()
-            * MILLI;
-        let m = w.market(i);
-        let caps: Vec<(GoodId, Amount)> = w
-            .goods
-            .ids()
-            .map(|g| (g, m.stock(g) * c.def.loot_share_milli / 1000))
-            .filter(|e| e.1 > 0)
-            .collect();
-        let shares = apportion(carry.min(caps.iter().map(|e| e.1).sum()), &caps);
+        // The survivors carry off what they can of the caps read before the fight (the fight takes
+        // no time, so the market has not moved).
+        let shares = apportion(self.carry_milli(p).min(reach), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
         let got = w.stock_to_held(i, &want, at);
         let mut items = 0;
@@ -3262,7 +3293,8 @@ impl Conflict {
             items += a / MILLI;
         }
         self.stats.items_from_villages += items.max(0) as u64;
-        // The village remembers who robbed it.
+        // The village remembers who robbed it, at the kind's base delta (severity on the knowledge
+        // layer's unit, as every module records its robberies: MZB-36).
         let fa = self.factions[f as usize].actor;
         let va = w.nodes[i].actor;
         let pos = w.nodes[i].pos;
@@ -3270,7 +3302,7 @@ impl Conflict {
             who: fa,
             whom: va,
             kind: ReportKind::Robbery,
-            severity: 2,
+            severity: SEVERITY_UNIT,
             flags: 0,
             at,
             place: Place::new(pos.frame, pos.x, 64, pos.z),
@@ -3703,7 +3735,7 @@ impl Conflict {
         if reason == boundary::RECALL_ROUTED {
             self.stats.routs += 1;
             if let Some(player) = self.parties[p].breaker {
-                self.rescue_news(w, f, player, at);
+                self.rescue_news(w, p, player, at);
             }
         }
         if reason == boundary::RECALL_BORED {
@@ -3747,40 +3779,56 @@ impl Conflict {
         self.go_home(w, p, reason, at);
     }
 
-    /// Villages that hate the faction hear that a player broke its band (C24: rescues count).
-    fn rescue_news(&mut self, w: &mut World, f: u32, player: ActorId, at: Tick) {
+    /// Villages that hate the faction hear that a player broke its band (C24: rescues count). A
+    /// rout is one report (K2-25, CL-D60): every village in range whose culture the faction hates
+    /// witnesses it, and the others hear it only as news. Knowledge dedups per report, so a report
+    /// per witness made each village count the rout once per witness. The report names whom the
+    /// band was after (the node it marched on, else the feud's actor unless that is the breaker,
+    /// else no one) and the place it broke.
+    fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
+        let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let camp = self.factions[f as usize].pos;
         let r = f64::from(self.tun.rescue_news_blocks);
-        let mut heard = 0;
         // The villages in news range: the node index's cells around the camp, in node order.
         self.nodes.refresh(w);
         let topo = self.topo.clone();
         let near = self.nodes.within(w, topo.of(camp.frame), camp, r);
-        for i in near {
-            let n = &w.nodes[i];
-            let NodeKind::Village(cu) = n.kind else {
-                continue;
+        let witnesses: Vec<ActorId> = near
+            .into_iter()
+            .filter_map(|i| {
+                let n = &w.nodes[i];
+                let NodeKind::Village(cu) = n.kind else {
+                    return None;
+                };
+                (c.hates(cu.name())
+                    && n.pos.frame == camp.frame
+                    && tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) <= r)
+                    .then_some(n.actor)
+            })
+            .collect();
+        let mut heard = 0;
+        if !witnesses.is_empty() {
+            let x = &self.parties[p];
+            let whom = match x.target {
+                Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
+                _ => x.feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
             };
-            let hates_us = c.hates(cu.name());
-            if !hates_us
-                || n.pos.frame != camp.frame
-                || tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) > r
-            {
-                continue;
-            }
-            let (va, pos) = (n.actor, n.pos);
+            let frame = x.frame;
+            let (bx, bz) = self.party_pos(p, at);
             let rep = w.knowledge.record(Report {
                 who: player,
-                whom: va,
+                whom,
                 kind: ReportKind::Rescue,
-                severity: 2,
+                severity: SEVERITY_UNIT,
                 flags: 0,
                 at,
-                place: Place::new(pos.frame, pos.x, 64, pos.z),
+                place: Place::new(frame, bx, 64, bz),
             });
-            if w.knowledge.witness(va, rep, at) {
-                heard += 1;
+            for va in witnesses {
+                if w.knowledge.witness(va, rep, at) {
+                    heard += 1;
+                }
             }
         }
         self.note(
@@ -4574,7 +4622,7 @@ impl Conflict {
                 who: k,
                 whom: chief,
                 kind: ReportKind::Killing,
-                severity: 4,
+                severity: SEVERITY_UNIT,
                 flags: 0,
                 at,
                 place: Place::new(pos.frame, pos.x, 64, pos.z),
@@ -4631,6 +4679,12 @@ impl Conflict {
     }
 
     // ---- reads ------------------------------------------------------------------------------
+
+    /// The grievance at which faction `f`'s feuds climb to rung `s`, bent by its chief's
+    /// temperament (K2-8: up to 40 percent either way).
+    pub fn rung_threshold(&self, f: u32, s: Step) -> f64 {
+        self.theta(f, s)
+    }
 
     /// A feud as it stands at the engine's time (a projection).
     pub fn feud_view(&self, faction: u64, actor: ActorId) -> Option<FeudView> {
