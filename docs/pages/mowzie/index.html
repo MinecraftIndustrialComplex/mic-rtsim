@@ -192,6 +192,9 @@ svg.dg text.n { font-size: 12px; font-weight: 650; fill: var(--muted); }
 .decision ul { font-size: 16.5px; }
 
 .decision .who { font-size: 15px; color: var(--muted); font-style: italic; }
+.state { display: inline-block; font-size: 13.5px; font-weight: 600; color: var(--muted); background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 0 9px; white-space: nowrap; }
+.state.now { color: var(--accent); border-color: var(--accent); background: #fff; }
+.done-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
 .open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
 .opts { list-style: none; padding: 0; margin: 4px 0 12px; }
 .opts li { padding: 6px 0; border-top: 1px solid var(--line); margin: 0; max-width: none; }
@@ -225,21 +228,21 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#cost">Cost</a>
   <a href="#checked">Reviews</a>
   <a href="#decided">Decided</a>
-  <a href="#waiting">Waiting for you</a>
+  <a href="#build">The build</a>
   <a href="#decide">Answered</a>
 </nav>
 
 <main>
 
 <header data-ss-id="page-header">
-  <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that marches on you in plain sight: after thirteen adversarial reviews, the plan is ready to build</h1>
-  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (a740349). Nothing is built yet. Thirteen adversarial reviews read it against the decompiled Mowzie's Mobs 1.8.2, Create 6.0.10, vanilla and engine sources. After the seventh, the author rewrote the camp-body sync as one reconciler, and the thirteenth confirmed the twelfth's fixes with one sentence to add, now in. You answered nine of its decisions on 21 October, among them MZ-15: whoever a grove sends walks toward you where you can see it, the Umvuthi riding a horse at the rear of its column. Four things wait for you.</p>
-  <p class="lead" data-ss-id="lead">Two Mowzie's bosses become rtsim factions. A Frostmaw in the snow comes to hate a railway through its range: the more trains, the angrier it gets, until it waits beside your track, robs passing trains and freezes riders off their seats. An Umvuthana grove in the savanna becomes a tribe that sends an envoy for gold, then raptor hunters, then a war band that walks across the savanna to you, its Umvuthi riding at the rear. Both come back after you kill them, an uninstall leaves the dens and groves as Mowzie's made them unless a band is out on the road, and a faction with nothing happening costs nothing.</p>
+  <h1 data-ss-id="headline">A Frostmaw that hunts your trains and a tribe that marches on you in plain sight, its chief borne aloft by its sun: the build has started</h1>
+  <p class="dek" data-ss-id="dek">The Mowzie's Mobs faction plan, MOWZIE.md on mic-rtsim main (ce52e0dc). Fourteen adversarial reviews read it against the decompiled Mowzie's Mobs 1.8.2, Create 6.0.10, vanilla and engine sources. You answered nine of its decisions on 21 October, among them MZ-15: whoever a grove sends walks toward you where you can see it. On 22 October you rejected the horse for the Umvuthi, and every other animal with it. The plan now has the Umvuthi float seated above the rear of its column, borne by its sun; the fourteenth review checked that and its fixes are in (3961070). Later that day you chose aloft for <a href="#mz16">MZ-16</a> and answered "All three" for the other three items, each as recommended (c15b2566), so nothing waits for you. <a href="#build">The build</a> has started on the plan's 12 slices (b11a3cab): M1, M2 and M3 are being built now, and each is reviewed before it lands.</p>
+  <p class="lead" data-ss-id="lead">Two Mowzie's bosses become rtsim factions. A Frostmaw in the snow comes to hate a railway through its range: the more trains, the angrier it gets, until it waits beside your track, robs passing trains and freezes riders off their seats. An Umvuthana grove in the savanna becomes a tribe that sends an envoy for gold, then raptor hunters, then a war band that walks across the savanna to you, its Umvuthi borne aloft at the rear. Both come back after you kill them, an uninstall leaves the dens and groves as Mowzie's made them unless a band is out on the road, and a faction with nothing happening costs nothing.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-factions"><div class="n">2</div><div class="t">factions: Frostmaw dens in the snow, Umvuthana groves in the savanna</div></div>
     <div class="tile" data-ss-id="kpi-calm"><div class="n">9 <small>days</small></div><div class="t">from cutting a busy line to 4 legs a day until the raids stop</div></div>
     <div class="tile" data-ss-id="kpi-heir"><div class="n">12 <small>days</small></div><div class="t">until a new Frostmaw moves into a den you emptied: your 6-day base, doubled by pressure (EQ-4); an Umvuthi heir runs on the same clock (MZ-14)</div></div>
-    <div class="tile" data-ss-id="kpi-decide"><div class="n">4</div><div class="t">wait for you: the mount, capture by stack, one new record and the uninstall exposure</div></div>
+    <div class="tile" data-ss-id="kpi-build"><div class="n">12 <small>slices</small></div><div class="t">in the build, M1 to M3 being built now; nothing waits for you</div></div>
   </div>
 </header>
 
@@ -363,7 +366,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><span class="d">0.8 days later</span><span>An envoy and two guards walk into his ranch, past his iron golem, and ask for 136 gold nuggets (about 15 ingots) within 3 days.</span></li>
     <li><span class="d">Pay</span><span>He right-clicks the envoy with the gold: 70% of the grudge goes and the tribe cannot climb for 6 days. His nuggets turn up in the grove's chests.</span></li>
     <li><span class="d">Refuse</span><span>Raptor-masked hunters come for his cattle and the villages' herds; at 70, a war band of 3 warriors and a raptor pack walks across the savanna to his ranch. If he is home, he sees it come; while he is away, a fence all the way round stops it.</span></li>
-    <li><span class="d">Invasion</span><span>Past 140 the whole tribe marches, the Umvuthi riding a horse at the rear of its column (MZ-15). 32 blocks from his fence it climbs down and summons more warriors around it.</span></li>
+    <li><span class="d">Invasion</span><span>Past 140 the whole tribe marches, the Umvuthi floating seated above the rear of its column (MZ-15, MZ-16). 32 blocks from his fence it sinks to the ground and summons more warriors around it.</span></li>
     <li><span class="d">Peace</span><span>He wears an Umvuthana mask and the tribe leaves him alone, as Mowzie's does today. Trading with the grove while masked softens the grudge.</span></li>
     <li><span class="d">End it</span><span>He kills the Umvuthi at its fire pit or out on its Invasion, shooting its cranes first: their Sunblock makes it untouchable. Every masked warrior within 30 blocks falls with it, the bands run home, the tribe is cowed for about 6 days, and he takes the Sol Visage. Its heir takes up the mask 12 days later (MZ-14).</span></li>
   </ol>
@@ -374,31 +377,33 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <h2 data-ss-id="march-h">Whoever a grove sends walks toward you, and with Distant Horizons you see it coming (MZ-15)</h2>
   <p data-ss-id="march-ben">Your answer: "I feel like it should be the grove / whoever they send 'walking' towards the player instead of it just not working. (I.E. Possibly being able to see them coming via DH.)" So every war party, the Frostmaw on its raid and the tribe's bands, is one march from its camp to its target and back, with a position at every tick. Where you are, it is bodies; beyond, the engine carries it. There is no hidden war seat and no staying home.</p>
 
-  <div class="box" data-ss-id="march-horse">
-    <p><strong>Why the Umvuthi rides a horse.</strong> It cannot walk: the jar gives it no movement goal, zeroes its own sideways motion every tick and has no walk animation. A mob does steer the mob it rides, so it rides a tamed, unsaddled vanilla horse at the rear of its column. 32 blocks from its target it climbs down and fights; it mounts again once the band turns for home and nothing has been its target for 200 ticks. In water the plugin makes the horse swim, and a riding chief cannot drown. How it looks in the saddle is unverified until GameTest 31's screenshot. The mount is MZ-16, <a href="#waiting">waiting for you</a>.</p>
+  <div class="box" data-ss-id="march-aloft">
+    <p><strong>Why the Umvuthi floats.</strong> You rejected the horse: "Given the current models for umuthi (sunbirds), them riding horses / most other animals doesn't make too much sense." It cannot walk either: the jar gives it no movement goal, zeroes its own sideways motion every tick, and has no walk, flight or leap animation and no wings. It is a seated figure whose legs hang whenever nothing is by its feet, as they do on its throne.</p>
+    <p>So the plan lifts it. Its own body floats seated about 2 blocks over the road at the rear of its column, legs hanging, its head-sun lit and a trail of small flames under it, so it reads as borne by its sun. It rises over trees, walls and roofs and floats 2 blocks over a river, never in it. It sinks to fight a player it can see, fights any other mob from the air, and rises to go on once the band turns for home. No new entity and no client mod. Whether it reads as carried and not slid, and whether the trail stays, is GameTest 31's screenshots. This is MZ-16's second round, <a href="#mz16">waiting for you</a>.</p>
   </div>
 
   <figure class="march-fig" data-ss-id="march-fig">
-    <svg class="dg" viewBox="0 0 360 470" role="img" aria-label="A war band marching toward you; distances from you to scale. Its head has crossed the entity-ticking edge, 160 to 176 blocks from you at simulation distance 10, and walks on as bodies, too far off to be drawn yet. The rest of the column and the Umvuthi on its horse at the rear are still beyond the edge, where the far view draws them as boxes. The Umvuthi is drawn from 132 blocks, warriors from 72."><rect x="40" y="4" width="32" height="18" rx="3" fill="#f7f7f8" stroke="#1a1a1f" stroke-width="1.4"/><text x="86" y="18" class="b">the grove, 900 blocks off</text><line x1="56" y1="22" x2="56" y2="30" stroke="#8a8a93" stroke-width="2"/><path d="M46,34 L66,30 M46,39 L66,35" stroke="#8a8a93" stroke-width="1.4" fill="none"/><line x1="56" y1="42" x2="56" y2="444" stroke="#c9c9d1" stroke-width="2"/><rect x="16" y="100" width="328" height="32" fill="#8f620f" fill-opacity="0.12"/><line x1="16" y1="132" x2="344" y2="132" stroke="#8f620f" stroke-width="1.2"/><text x="86" y="114" class="b">ticking edge, 160 to 176 blocks</text><text x="86" y="129" class="m">(128 to 144 at simulation distance 8)</text><line x1="16" y1="188" x2="344" y2="188" stroke="#8a8a93" stroke-width="1" stroke-dasharray="4 4"/><text x="86" y="182" class="m">the Umvuthi is drawn from 132 blocks</text><line x1="16" y1="308" x2="344" y2="308" stroke="#8a8a93" stroke-width="1" stroke-dasharray="4 4"/><text x="86" y="302" class="m">warriors are drawn from 72 blocks</text><rect x="49" y="47" width="14" height="18" fill="#ffffff" stroke="#8f620f" stroke-width="2"/><text x="86" y="61">the Umvuthi on its horse, last</text><rect x="49" y="69" width="14" height="10" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><rect x="46" y="85" width="7" height="6" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><rect x="59" y="85" width="7" height="6" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><text x="86" y="85" class="m">the rest: boxes in the far view</text><circle cx="49.5" cy="140" r="3.6" fill="#1a1a1f"/><circle cx="62.5" cy="140" r="3.6" fill="#1a1a1f"/><circle cx="49.5" cy="150" r="3.6" fill="#1a1a1f"/><circle cx="62.5" cy="150" r="3.6" fill="#1a1a1f"/><text x="86" y="150.0">the head, walking in as bodies</text><path d="M50,242 L56,254 L62,242 Z" fill="#52514a"/><text x="86" y="253" class="m">marching toward you</text><rect x="49" y="445" width="14" height="14" fill="#1a1a1f"/><text x="86" y="457" class="b">you</text></svg>
-    <figcaption class="cap">Distances from you to scale, at the default simulation distance of 10; the column is drawn shorter than it is. The column fills in a stack at a time as each stack comes wholly inside the ticking edge. No warrior, raptor or horse is drawn that far out: they walk into sight. The Umvuthi rides last, so it comes in last and farthest; at a simulation distance of 8 it can be seen to appear 128 to 132 blocks off, never nearer while chunks keep up.</figcaption>
+    <svg class="dg" viewBox="0 0 360 470" role="img" aria-label="A war band marching toward you; distances from you to scale. Its head has crossed the entity-ticking edge, 160 to 176 blocks from you at simulation distance 10, and walks on as bodies, too far off to be drawn yet. The rest of the column and the Umvuthi aloft at the rear are still beyond the edge, where the far view draws them as boxes. The Umvuthi is drawn from 132 blocks, warriors from 72."><rect x="40" y="4" width="32" height="18" rx="3" fill="#f7f7f8" stroke="#1a1a1f" stroke-width="1.4"/><text x="86" y="18" class="b">the grove, 900 blocks off</text><line x1="56" y1="22" x2="56" y2="30" stroke="#8a8a93" stroke-width="2"/><path d="M46,34 L66,30 M46,39 L66,35" stroke="#8a8a93" stroke-width="1.4" fill="none"/><line x1="56" y1="42" x2="56" y2="444" stroke="#c9c9d1" stroke-width="2"/><rect x="16" y="100" width="328" height="32" fill="#8f620f" fill-opacity="0.12"/><line x1="16" y1="132" x2="344" y2="132" stroke="#8f620f" stroke-width="1.2"/><text x="86" y="114" class="b">ticking edge, 160 to 176 blocks</text><text x="86" y="129" class="m">(128 to 144 at simulation distance 8)</text><line x1="16" y1="188" x2="344" y2="188" stroke="#8a8a93" stroke-width="1" stroke-dasharray="4 4"/><text x="86" y="182" class="m">the Umvuthi is drawn from 132 blocks</text><line x1="16" y1="308" x2="344" y2="308" stroke="#8a8a93" stroke-width="1" stroke-dasharray="4 4"/><text x="86" y="302" class="m">warriors are drawn from 72 blocks</text><rect x="49" y="47" width="14" height="18" fill="#ffffff" stroke="#8f620f" stroke-width="2"/><text x="86" y="61">the Umvuthi aloft, last</text><rect x="49" y="69" width="14" height="10" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><rect x="46" y="85" width="7" height="6" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><rect x="59" y="85" width="7" height="6" fill="#ffffff" stroke="#52514a" stroke-width="1.2"/><text x="86" y="85" class="m">the rest: boxes in the far view</text><circle cx="49.5" cy="140" r="3.6" fill="#1a1a1f"/><circle cx="62.5" cy="140" r="3.6" fill="#1a1a1f"/><circle cx="49.5" cy="150" r="3.6" fill="#1a1a1f"/><circle cx="62.5" cy="150" r="3.6" fill="#1a1a1f"/><text x="86" y="150.0">the head, walking in as bodies</text><path d="M50,242 L56,254 L62,242 Z" fill="#52514a"/><text x="86" y="253" class="m">marching toward you</text><rect x="49" y="445" width="14" height="14" fill="#1a1a1f"/><text x="86" y="457" class="b">you</text></svg>
+    <figcaption class="cap">Distances from you to scale, at the default simulation distance of 10; the column is drawn shorter than it is. The column fills in a stack at a time as each stack comes wholly inside the ticking edge. No warrior or raptor is drawn that far out: they walk into sight. The Umvuthi floats last, so it comes in last and farthest; at a simulation distance of 8 it can be seen to appear 128 to 132 blocks off, never nearer while chunks keep up.</figcaption>
   </figure>
 
   <h3 data-ss-id="ines-h">Ines and the column, the plan's walkthrough G</h3>
   <ol class="tl" data-ss-id="ines-tl">
     <li><span class="d">The insult</span><span>Ines has a hilltop fort 900 blocks from a grove of 8 and has been mining its hills. Its grievance passes 140, and the tribe musters its Invasion: 6 warriors and 2 raptor packs, with the Umvuthi to lead it.</span></li>
-    <li><span class="d">Setting out</span><span>From a ridge 120 blocks off she watches six warriors walk out of the grove in their own bodies and the raptor packs fall in beside them. A tamed horse trots in to the throne, the Umvuthi mounts and rides out at the rear. The grove stands empty.</span></li>
+    <li><span class="d">Setting out</span><span>From a ridge 120 blocks off she watches six warriors walk out of the grove in their own bodies and the raptor packs fall in beside them. The Umvuthi lifts from its throne, rises past the backrest and floats out over the grove after them to the rear of the column, its legs hanging and its head-sun alight. The grove stands empty.</span></li>
     <li><span class="d">On the road</span><span>She rides home ahead of them. Behind her, out of her sight, the bodies go and the engine carries the march. From her tower <a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons">Distant Horizons</a> shows a short line on the savanna with a gold box at its rear, coming on at a walk: at the placeholder pace, nearly two Minecraft days of warning. She builds a wall and sets her golems on it.</span></li>
-    <li><span class="d">The second day</span><span>The column reaches her ticking edge a stack at a time, where the far view drew it, and the boxes give way to bodies walking into sight: warriors two abreast, raptors beside them, the Umvuthi on its horse last, its boss bar showing once it sees her within 128 blocks.</span></li>
-    <li><span class="d">At the wall</span><span>32 blocks out the Umvuthi climbs down and summons. The warriors are stopped at her wall, and her golems break them.</span></li>
-    <li><span class="d">Home</span><span>The survivors walk home, the Umvuthi back on its horse, and the far view draws them all the way. Had she followed, she would have seen them walk into the grove and become its own again, the Umvuthi climbing down onto its throne.</span></li>
+    <li><span class="d">The second day</span><span>The column reaches her ticking edge a stack at a time, where the far view drew it, and the boxes give way to bodies walking into sight: warriors two abreast, raptors beside them, the Umvuthi aloft last, its boss bar showing once it sees her within 128 blocks.</span></li>
+    <li><span class="d">At the wall</span><span>32 blocks out the Umvuthi sinks to the ground and summons. The warriors are stopped at her wall, and her golems break them.</span></li>
+    <li><span class="d">Home</span><span>The survivors walk home. The Umvuthi rises after them once the band has turned for home and no player has been its target for 200 ticks, her golems' blows notwithstanding, and the far view draws them all the way. Had she followed, she would have seen them walk into the grove and become its own again, the Umvuthi settling onto its throne.</span></li>
   </ol>
 
   <h3 data-ss-id="march-more-h">What else the march settles</h3>
   <ul data-ss-id="march-more">
     <li><strong>Kill it on the road</strong> (the plan's walkthrough F) and you get the Sol Visage, every warrior within 30 blocks falls with it, the band routs, and the heir takes up the mask 12 days later.</li>
     <li><strong>The walk home has bodies too,</strong> and a band that reaches you in bodies keeps them, instead of being spawned again on today's arc 112 blocks out.</li>
-    <li><strong>A visit to the camp never ends a march.</strong> If the grove loads while its band is out, the bodies the band left behind are taken and the band marches on, so a raid is never cut short and the column never vanishes from the road or the far view. The cost is the uninstall exposure that <a href="#waiting">waits for you</a>.</li>
-    <li><strong>The far view follows your Distant Horizons answers:</strong> sim state goes only to clients that opt in (DH-1), and they see only what eyes would see, a column of figures and a rider, never counts, faction or names (DH-2). DH-5 retired the hidden seat. The plan exposes the march; drawing it is the <a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons">Distant Horizons page's</a> war-bands item.</li>
+    <li><strong>A visit to the camp never ends a march.</strong> If the grove loads while its band is out, the bodies the band left behind are taken and the band marches on, so a raid is never cut short and the column never vanishes from the road or the far view. The cost is the uninstall exposure, which you accepted (<a href="#ur1x">UR-1</a>).</li>
+    <li><strong>The far view follows your Distant Horizons answers:</strong> sim state goes only to clients that opt in (DH-1), and they see only what eyes would see, a column of figures with its chief above the rear, never counts, faction or names (DH-2). DH-5 retired the hidden seat. The plan exposes the march; drawing it is the <a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons">Distant Horizons page's</a> war-bands item.</li>
+    <li><strong>Two camps can come together.</strong> Since your CL-5 answer, a grove and a goblin camp that both hate you can, rarely, swear against you. The envoy names both, and the masked band and the goblins march from their two camps, arrive together and never fight each other. A joint attack shares one quota of 16 bodies. The <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#alliances">faction conflict page</a> has the design.</li>
   </ul>
 </section>
 
@@ -582,7 +587,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     </div>
   </div>
   <div class="box" data-ss-id="ur-exposure">
-    <p><strong>Removed mid-march, which <a href="#waiting">waits for you</a>.</strong> The band on the road vanishes and its raid is cut short. A grove whose Umvuthi is out with its band and whose throne body has gone (it rode out in view, or the grove loaded while it was away), or whose chief died away with no heir seated yet, is left without a chief for good: Mowzie's places an Umvuthi only when it first builds a grove. Payments the engine holds that are not yet written into a body are lost.</p>
+    <p><strong>Removed mid-march, which you accepted (<a href="#ur1x">UR-1</a>).</strong> The band on the road vanishes and its raid is cut short. A grove whose Umvuthi is out with its band and whose throne body has gone (it floated out in view, or the grove loaded while it was away), or whose chief died away with no heir seated yet, is left without a chief for good: Mowzie's places an Umvuthi only when it first builds a grove. Payments the engine holds that are not yet written into a body are lost.</p>
   </div>
   <p data-ss-id="ur-reinstall">Reinstalled on day 30, both factions rebuild from their censuses (crystal held, 7 warriors) with no grudges. No module's uninstall has been tested with puppets out yet; GameTest 4 covers this plan's.</p>
 </section>
@@ -597,7 +602,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
   <p data-ss-id="cost-rest">With nothing happening, only the sampler's walk runs, once a second. A camp chunk loading costs one structure check; the envoy guard costs one lookup per damage event, usually against an empty set.</p>
 
-    <h3 data-ss-id="ledger-h">What gets built, about 9,400 lines</h3>
+    <h3 data-ss-id="ledger-h">What gets built, about 9,300 lines</h3>
   <div class="bars" data-ss-id="ledger-bars">
     <div class="bar"><span class="lbl">GameTests and test kit <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 1950 / 1950)"></span><span class="v">1,950</span></span></div>
     <div class="bar"><span class="lbl">The Mowzie plugin <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 1600 / 1950)"></span><span class="v">1,500 to 1,700</span></span></div>
@@ -605,7 +610,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <div class="bar"><span class="lbl">12 smaller engine changes <small>Rust and JSON</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 1030 / 1950)"></span><span class="v">1,030</span></span></div>
     <div class="bar"><span class="lbl"><code>sim mowzie</code> runs <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 750 / 1950)"></span><span class="v">750</span></span></div>
     <div class="bar"><span class="lbl">The camp reconciler <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 600 / 1950)"></span><span class="v">600</span></span></div>
-    <div class="bar"><span class="lbl">The ride and the march <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 500 / 1950)"></span><span class="v">500</span></span></div>
+    <div class="bar"><span class="lbl">The Umvuthi aloft and the march <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 330 / 1950)"></span><span class="v">330</span></span></div>
     <div class="bar"><span class="lbl">New engine reports and trade memory <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 360 / 1950)"></span><span class="v">360</span></span></div>
     <div class="bar"><span class="lbl">The march in the engine <small>Rust</small></span><span class="track"><span class="fill rs" style="width:calc((100% - 120px) * 310 / 1950)"></span><span class="v">310</span></span></div>
     <div class="bar"><span class="lbl">Train sampler <small>Java, Create plugin</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 300 / 1950)"></span><span class="v">300</span></span></div>
@@ -614,28 +619,32 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <div class="bar"><span class="lbl">Entity chunks in the journal barrier <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 150 / 1950)"></span><span class="v">150</span></span></div>
     <div class="bar"><span class="lbl">Two core hooks <small>Java</small></span><span class="track"><span class="fill" style="width:calc((100% - 120px) * 50 / 1950)"></span><span class="v">50</span></span></div>
   </div>
-  <p class="cap" data-ss-id="ledger-cap">Estimates by analogy with code that exists, not measured; the bars add up to about 9,400. 17 new boundary record kinds, among them BAND_MARCH, which gives the far view a march, the reconciler's order and answer (CAMP_RECONCILE and CAMP_BODIES), and CHIEF_PAID, which waits for you. Their ids are taken when the code lands. No new blocks, items or entities.</p>
+  <p class="cap" data-ss-id="ledger-cap">Estimates by analogy with code that exists, not measured; the bars add up to about 9,300; aloft costs about 170 lines less than the horse did. 17 new boundary record kinds, among them BAND_MARCH, which gives the far view a march, the reconciler's order and answer (CAMP_RECONCILE and CAMP_BODIES), and CHIEF_PAID, which waits for you. Their ids are taken when the code lands. No new blocks, items or entities.</p>
   <p data-ss-id="reuse"><strong>Reused, not rebuilt:</strong> Mowzie's own bosses, dens, groves, sounds, swipe, ice ball and freezing; Create's train simulation, train owner and carriage storage; rtsim's conflict engine (grievance, the ladder, envoys, raids, routs and heirs); the industry's train attack and defence survey; vanilla saving; the Ice and Fire plugin's way of finding camps; and the rail test fixture.</p>
 </section>
 
 <section id="checked" data-ss-id="checked" data-ss-section>
-  <h2 data-ss-id="checked-h">Thirteen adversarial reviews, each against the jars, and what they caught</h2>
-  <p data-ss-id="checked-intro">Each review read the plan against the decompiled Mowzie's Mobs 1.8.2 and Create 6.0.10 jars, vanilla 1.21.1 and the engine source, and the author fixed what it found before the next. The first three found the big design faults: trains pass through bosses, straight lines miss curves, uninstall emptied dens. Four more found gaps in how a camp keeps its bodies in step with the sim, until the seventh led to a rewrite. Reviews eight to thirteen read the plan reworked for your MZ-3 and MZ-15 answers. Nothing in the plan was run in a game: "verified" means read in code or data.</p>
+  <h2 data-ss-id="checked-h">Fourteen adversarial reviews, each against the jars, and what they caught</h2>
+  <p data-ss-id="checked-intro">Each review read the plan against the decompiled Mowzie's Mobs 1.8.2 and Create 6.0.10 jars, vanilla 1.21.1 and the engine source, and the author fixed what it found before the next. The first three found the big design faults: trains pass through bosses, straight lines miss curves, uninstall emptied dens. Four more found gaps in how a camp keeps its bodies in step with the sim, until the seventh led to a rewrite. Reviews eight to thirteen read the plan reworked for your MZ-3 and MZ-15 answers, and the fourteenth read the aloft Umvuthi. Nothing in the plan was run in a game: "verified" means read in code or data.</p>
 
   <div class="box" data-ss-id="reconciler">
     <p><strong>The reconciler, the seventh review's result.</strong> The seventh review found three ways the old sync could book a living member dead or make a free body. Rather than patch again, the author rewrote it as one mechanism (3a21d54). Each camp keeps a ledger with one slot per member and five states: home with a body, home and owed one, away with its body left behind, away with it gone, dead with it left. Six invariants hold across them. A census runs each time the whole camp is loaded with its entities in; the engine compares it with the ledger and sends one order, CAMP_RECONCILE; the game answers with what it did, CAMP_BODIES, and the engine books the answer, not the order. Orders are void at a restart and worked out again at the next census, and a crash table covers each step.</p>
   </div>
 
-  <h3 data-ss-id="catches-h">What reviews eight to thirteen caught</h3>
+  <h3 data-ss-id="catches-h">What reviews eight to fourteen caught</h3>
   <ul class="catches" data-ss-id="catches">
-    <li data-ss-id="catch-seat"><p class="rv">Eighth review</p><h3>The hidden war seat</h3><p>It read the first rework for MZ-3, which had the riding Umvuthi wait out of sight at a war seat. Its fixes went into the rework for your MZ-15 answer, which replaced the seat with the march.</p></li>
-    <li data-ss-id="catch-river"><p class="rv">Ninth review</p><h3>Rivers would drown the chief</h3><p>A horse ridden by a mob sinks in deep water and throws its rider, and the Umvuthi, which cannot walk, would sit on the river bed and drown. Now the plugin makes the horse swim, as a mob's own float goal does, and a riding chief cannot drown. A river-crossing GameTest checks it.</p></li>
+    <li data-ss-id="catch-seat"><p class="rv">Eighth review</p><h3>The hidden war seat</h3><p>It read the first rework for MZ-3, which had the Umvuthi wait out of sight at a war seat. Its fixes went into the rework for your MZ-15 answer, which replaced the seat with the march.</p></li>
+    <li data-ss-id="catch-river"><p class="rv">Ninth review</p><h3>Rivers would drown the chief</h3><p>A horse ridden by a mob sinks in deep water and throws its rider, and the Umvuthi, which cannot walk, would have sat on the river bed and drowned. The horse is gone now: aloft, the Umvuthi floats 2 blocks over a river and never enters it, and the river-crossing GameTest checks that instead.</p></li>
     <li data-ss-id="catch-seam"><p class="rv">Ninth review</p><h3>The walk home broke on the wrapped world</h3><p>On Deep Time's wrapped world, a band that crossed the world's seam on the way out would have set off home a whole lap the wrong way. The route home now starts from the band's unfolded position, and a sim run crosses a seam.</p></li>
-    <li data-ss-id="catch-shoulder"><p class="rv">Ninth and tenth reviews</p><h3>The Umvuthi looked over its shoulder</h3><p>The jar fixes a body's facing at its first tick on each client, so after a dismount the chief would face the way it faced when it first appeared. The first fix needed a mixin on every client, which would have made mic-rtsim a client mod. The tenth review found the ride itself draws right, and the fix is now server only: at each dismount away from home the plugin swaps in a fresh body with its facing set before its first tick. Nothing has to go on clients.</p></li>
+    <li data-ss-id="catch-shoulder"><p class="rv">Ninth and tenth reviews</p><h3>The Umvuthi looked over its shoulder</h3><p>The jar fixes a body's facing at its first tick on each client, so after each turn of its route the chief would face the way it faced when it first appeared. The first fix needed a mixin on every client, which would have made mic-rtsim a client mod. The fix is now server only. Aloft, the plugin turns it by a re-pair: when its way is more than 55 degrees off, at most once in 200 ticks, the clients tracking it get a fresh copy of the same body, facing the new way. Nothing goes on clients and nothing changes on the server.</p></li>
     <li data-ss-id="catch-mine"><p class="rv">Eleventh review</p><h3>A player at a mine would have shielded the base</h3><p>Standing at a mine 170 blocks from home, you would have counted as watching your base while it lay outside the area where bodies move. No wave went in, no loss was booked, and the band went home: every raid stopped. Now a band that arrives with nobody within 160 blocks of its target fights it out as an unwatched raid, then walks home in its bodies.</p></li>
     <li data-ss-id="catch-twice"><p class="rv">Twelfth review</p><h3>Raid dead were counted twice</h3><p>A band that fought its raid out unseen while it still had bodies lost its dead a second time when it was called home: 6 warriors with 3 killed came home as none. Each loss now counts once, so 3 come home, and the 170-block test checks it.</p></li>
-    <li data-ss-id="catch-take"><p class="rv">Twelfth review</p><h3>A taken chief was a blame-free decapitation</h3><p>Picking up the riding Umvuthi with Carry On, which a creative player can, ended the chief with nobody to blame: the tribe was cowed, the feud stepped down, and the heir's chronicle said its chief died of old age. A take by a known player now counts as that player's act against the tribe. With the pack's Carry On settings no survival player can pick up a band member.</p></li>
-    <li data-ss-id="catch-swap"><p class="rv">Thirteenth review</p><h3>One last sentence</h3><p>It confirmed the twelfth's fixes and found one gap: removing a band puts its rider off the horse, which would have swapped in a fresh Umvuthi just as the old one went. The swap now skips a body that is being removed, dead or dying (3ce73d7). With that in, the plan is ready to build.</p></li>
+    <li data-ss-id="catch-take"><p class="rv">Twelfth review</p><h3>A taken chief was a blame-free decapitation</h3><p>Picking up the marching Umvuthi with Carry On, which a creative player can, ended the chief with nobody to blame: the tribe was cowed, the feud stepped down, and the heir's chronicle said its chief died of old age. A take by a known player now counts as that player's act against the tribe. With the pack's Carry On settings no survival player can pick up a band member.</p></li>
+    <li data-ss-id="catch-swap"><p class="rv">Thirteenth review</p><h3>One last sentence</h3><p>It confirmed the twelfth's fixes and found one gap: removing a band puts its rider off the horse, which would have swapped in a fresh Umvuthi just as the old one went. The swap then skipped a body being removed, dead or dying (3ce73d7). The horse has since gone, and that swap with it.</p></li>
+    <li data-ss-id="catch-creeper"><p class="rv">Fourteenth review, on the aloft Umvuthi (06bf604)</p><h3>A creeper would launch the chief</h3><p>Aloft, nothing cancelled an upward push: a creeper exploding below would lift it about 30 blocks, and wind charges, shells and Create's fans would too. Now the plugin zeroes its motion and resets its fall distance every tick, and moves its restriction with it, so its summons keep to it. A GameTest sets off a creeper, a wind charge and a fan under it.</p></li>
+    <li data-ss-id="catch-repair"><p class="rv">Fourteenth review</p><h3>The turn could crash the server</h3><p>The first re-pair removed and re-added the body's tracker, which could throw "Entity is already tracked!" or leak a tracker. Now it sends the clients tracking the body one fresh pairing bundle and leaves the server's tracker and the boss bar alone.</p></li>
+    <li data-ss-id="catch-settle"><p class="rv">Fourteenth review</p><h3>It would have stopped for every mob</h3><p>Settling for any target would have set it down at every village and every night's mobs while its band walked on. Now it settles on the road only for a player it can see, fights a golem or a zombie from the air as it floats on, and rises once the band turns for home and no player has targeted it for 200 ticks.</p></li>
+    <li data-ss-id="catch-small"><p class="rv">Fourteenth review</p><h3>Fourteen smaller fixes</h3><p>Among them: the stuck rule uses the plugin's own sight line, because vanilla's stops at 128 blocks; dying bodies are skipped; the flame trail reaches 512 blocks, since the body is drawn to 132; portals cannot take a band's bodies; the legs' brief twitch on a fresh client body is recorded for test 31; a player within reach can strike it aloft and a masked player can trade with it; and the sun-steps option now states the real hit rule, with a particle version added. With these in, the plan is ready to build once you answer MZ-16.</p></li>
   </ul>
 
   <details data-ss-id="checked-old" data-ss-react="off">
@@ -689,11 +698,11 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
       <tr><td>One rail meter per den and player, with a daily resync</td><td data-label="Why">A meter per line hid a trunk of light routes.</td></tr>
       <tr><td>The camp reconciler: one ledger per camp, a census each time the camp is loaded with its entities in, one order and its answer, orders void at a restart</td><td data-label="Why">Each review found a new gap in the piecemeal rules; one mechanism with invariants and a crash table replaces them.</td></tr>
       <tr><td>Only war parties take home bodies; envoys and scouts are fresh bodies. A census takes the bodies a party left behind, whoever is near, and never ends a march</td><td data-label="Why">A march that a visit to its camp could cut short would vanish from the road and the far view, and no member is in two places.</td></tr>
-      <tr><td>The ride: a horse at the rear of the column, down 32 blocks from the target, up again once the fight is over; the horse swims</td><td data-label="Why">The Umvuthi cannot walk, and a glide would read as a bug. The mount itself is MZ-16, waiting for you.</td></tr>
+      <tr><td>Aloft: down to fight within 32 blocks of the target, or for a player it sees on the road; up again once the band turns for home and no player has targeted it for 200 ticks; 2 blocks over water, never in it</td><td data-label="Why">The Umvuthi cannot walk, and a glide on the grass would read as a bug. Aloft itself is MZ-16, waiting for you; these are its placeholder numbers.</td></tr>
       <tr><td>One march record, BAND_MARCH, per change of a party's march; the far view and the bodies read one position</td><td data-label="Why">A box in the far view becomes bodies where it stands.</td></tr>
       <tr><td>The walk home has bodies, and a band that reaches you in bodies keeps them</td><td data-label="Why">A march that vanished on its way home, or was spawned again at the fight, would break the picture you asked for.</td></tr>
       <tr><td>Rule U: no Umvuthi body is taken or removed while a player is within 160 blocks of it or it is fighting a player</td><td data-label="Why">A boss must never vanish mid-fight or in front of you.</td></tr>
-      <tr><td>After a dismount away from home, a fresh body is swapped in with the right facing, server only</td><td data-label="Why">The alternative was a mixin on every client, which would make mic-rtsim a client mod.</td></tr>
+      <tr><td>Its facing turns by a re-pair: a fresh copy of the same body sent to the clients tracking it, server only</td><td data-label="Why">The jar fixes a body's facing on each client at its first tick. The alternative was a mixin on every client, which would make mic-rtsim a client mod.</td></tr>
       <tr><td>A kill at the camp steps down only the killer's feud; a take by a known player is that player's act</td><td data-label="Why">A stranger's kill should not clear your grudge, and a take should not be blame-free.</td></tr>
       <tr><td>The envoy party is protected while a demand is open</td><td data-label="Why">Golems and turrets would start wars you never chose.</td></tr>
       <tr><td>A robbed Frostmaw is kept, from the moment of the steal</td><td data-label="Why">Otherwise steal and leave farms a crystal at each refill.</td></tr>
@@ -706,65 +715,79 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </div>
 </section>
 
-<section id="waiting" data-ss-id="waiting" data-ss-section>
-  <h2 data-ss-id="waiting-h">4 things wait for you</h2>
-  <p class="answer-how" data-ss-id="waiting-how">Answer like "MZ-16 a, MZ-17 a, CHIEF_PAID a, UR-1 a", or "all as recommended". The recommended option is first in each. The coordinator took (a) on MZ-16 and MZ-17 while you slept, so the plan is written that way; it changes if you choose otherwise.</p>
-
-  <div class="decision" data-ss-id="mz16">
-    <h3>MZ-16: what the Umvuthi rides <span class="open-tag">Waiting for you</span></h3>
-    <ul class="opts">
-      <li><span class="k">(a)</span> <strong>A vanilla horse, tamed and unsaddled (recommended; provisional).</strong> The savanna's own animal, and it reads as a chief riding to war.</li>
-      <li><span class="k">(b)</span> A vanilla donkey or mule: humbler, the same mechanics.</li>
-      <li><span class="k">(c)</span> No mount: it moves along the route only while nobody watches and holds still when watched. That is the war seat again.</li>
-    </ul>
-    <p class="who">Why it is yours: it is what you see coming. How it sits on any mount is unverified until GameTest 31's screenshot.</p>
+<section id="build" data-ss-id="build" data-ss-section>
+  <h2 data-ss-id="build-h">The build has started: 12 slices, M1 to M3 first</h2>
+  <p data-ss-id="build-intro">MOWZIE.md section 9 (b11a3cab) sets the order. Each slice lands on main by itself with its own tests and leaves main working, and every Java slice runs its GameTests against the real engine. An Opus adversarial review checks M1 to M5 and M10 before each lands. Choices made while building are kept in docs/choices-mowzie-build.md (f1b769ca), which also gives each slice its own range of record ids.</p>
+  <div class="scroll" data-ss-id="build-wrap">
+  <table class="stack" data-ss-id="build-table">
+    <thead><tr><th>Slice</th><th>What it builds</th><th>Needs</th><th>Now</th></tr></thead>
+    <tbody>
+      <tr><td><strong>M1 Records</strong></td><td data-label="What it builds">The 17 new record kinds the game and the engine send each other, among them <a href="#chiefpaid">CHIEF_PAID</a>; a settled demand's new outcome; Peaceful (no war party leaves); a roar or gong kept until you are there to hear it; an envoy's demand withdrawn when its party is wiped out</td><td data-label="Needs">Nothing</td><td data-label="Now"><span class="state now">Being built</span></td></tr>
+      <tr><td><strong>M2 Cultures</strong></td><td data-label="What it builds">The Frostmaw and Umvuthana cultures and their rungs, the den as a world node, loot from a destroyed camp, and the gold nugget as a good with tribute priced by value. Nothing finds these cultures yet, so the game is unchanged</td><td data-label="Needs">M1</td><td data-label="Now"><span class="state now">Being built</span></td></tr>
+      <tr><td><strong>M3 ConflictBridge</strong></td><td data-label="What it builds">The conflict module's Java half in core (MZ-1): territories, envoys and payment, the envoy guard, the raid director, steering, recall and casualties, played first by vanilla bodies for today's cultures. Each stack of a band is its own group (<a href="#mz17">MZ-17</a>); until M10 a stack appears where its band does, not in a column</td><td data-label="Needs">M1</td><td data-label="Now"><span class="state now">Being built</span></td></tr>
+      <tr><td><strong>M4 Camp reconciler, engine</strong></td><td data-label="What it builds">The engine's side of each camp's bodies: their slots, the census, who is out and who died, and a cap per camp</td><td data-label="Needs">M2</td><td data-label="Now"><span class="state">Next</span></td></tr>
+      <tr><td><strong>M5 Camp reconciler, Java</strong></td><td data-label="What it builds">The Mowzie's Mobs plugin: finding dens and groves, counting them, and taking and placing their bodies for both kinds</td><td data-label="Needs">M3 and M4</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M6 Frostmaw</strong></td><td data-label="What it builds">A Frostmaw killed at its den, its heir's arrival, the crystal steal and the held spawn</td><td data-label="Needs">M5</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M7 Rail</strong></td><td data-label="What it builds">The rail meter and the train sampler</td><td data-label="Needs">M6</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M8 Lying in wait</strong></td><td data-label="What it builds">The ambush spot, trains passing and robbed, the swipe and the roar</td><td data-label="Needs">M7</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M9 Umvuthana</strong></td><td data-label="What it builds">The chief leads; hunted animals; tribute at the grove's price; the trade memory; the envoy party, the raptors, the heir and Rule U</td><td data-label="Needs">M5</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M10 March</strong></td><td data-label="What it builds">The march: the column on the road, the walk home and the walk-in from the edge of what the server ticks</td><td data-label="Needs">M9</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M11 Aloft</strong></td><td data-label="What it builds">The Umvuthi aloft over its column (<a href="#mz16">MZ-16</a>)</td><td data-label="Needs">M10</td><td data-label="Now"><span class="state">Later</span></td></tr>
+      <tr><td><strong>M12 Renewal</strong></td><td data-label="What it builds">EQUILIBRIUM's slice S9: dens and groves come back on the shared renewal rule. If EQUILIBRIUM's S3 is not on main by then, its pieces land first</td><td data-label="Needs">M11 and EQUILIBRIUM S3</td><td data-label="Now"><span class="state">Later</span></td></tr>
+    </tbody>
+  </table>
   </div>
-
-  <div class="decision" data-ss-id="mz17">
-    <h3>MZ-17: how a band comes into the world at the ticking edge <span class="open-tag">Waiting for you</span></h3>
-    <ul class="opts">
-      <li><span class="k">(a)</span> <strong>Stack by stack (recommended; provisional).</strong> Each stack of a band (a row of warriors, a raptor pack, the chief and its horse) is its own group, held back until it is wholly inside the edge, so a column fills in as it walks toward you and empties the same way as it walks off. Under 200 lines in the bridge, no core or record change.</li>
-      <li><span class="k">(b)</span> Keep C25 whole: the band is one group, in only once all of it is inside, out all at once. No cost, but a column's head comes in up to the column's length inside the edge, within 128 blocks at a simulation distance of 8, and a band along the edge comes and goes whole.</li>
-      <li><span class="k">(c)</span> Member by member, in the bridge: about the same cost, and a raptor pack or a row splits at the edge.</li>
-    </ul>
-    <p class="who">Why it is yours: (a) amends C25, your rule that a band and its master capture and despawn as one unit.</p>
-  </div>
-
-  <div class="decision" data-ss-id="chiefpaid">
-    <h3>CHIEF_PAID: a new record for the Umvuthi's trade memory <span class="open-tag">Waiting for you</span></h3>
-    <ul class="opts">
-      <li><span class="k">(a)</span> <strong>A record of its own, CHIEF_PAID, 0x0814 (recommended).</strong> Sent from the game to the engine on a player's first payment to an Umvuthi body, with that body's slot and generation, and journaled. The engine books it as tribute and remembers the payer for the living chief until an heir succeeds.</li>
-      <li><span class="k">(b)</span> A flag in TRIBUTE_PAID, as an earlier draft had: its layout has no room for the body's generation, so a payment to a dead chief's body would pass to the heir.</li>
-      <li><span class="k">(c)</span> No trade memory in the engine: riding bodies are never saved, so a payment to the Umvuthi on the march would be forgotten and you would be asked again at its throne.</li>
-    </ul>
-    <p class="who">Why it is yours: it is a new data format. With it the plan adds 17 new record kinds in all; their ids are provisional until the code lands.</p>
-  </div>
-
-  <div class="decision" data-ss-id="ur1x">
-    <h3>UR-1 exposure: what an uninstall mid-march loses <span class="open-tag">Waiting for you</span></h3>
-    <ul class="opts">
-      <li><span class="k">(a)</span> <strong>Accept it (recommended),</strong> as the cost of a march that a visit to the grove cannot cut short. Removed while a band is out, its bodies on the road vanish and its raid is cut short. A grove whose Umvuthi is out with it and whose throne body has gone (it rode out in view, or the grove loaded while it was away), or whose chief died away with no heir seated yet (12 days at least), is left without a chief for good, because Mowzie's places an Umvuthi only when it first builds a grove. Payments the engine holds that are not yet written into a body are lost.</li>
-      <li><span class="k">(b)</span> Write the throne body back at shutdown. The plan rejects it: the game would place a body the engine never ordered (against I6), and a crash would skip it.</li>
-      <li><span class="k">(c)</span> Let a camp's census end a march again, as before MZ-15: less is out at any time, but a visit to the grove cuts a raid short and the column vanishes from the road and the far view.</li>
-    </ul>
-    <p class="who">Why it is yours: UR-1 is your rule that rtsim can be removed at any time.</p>
-  </div>
+  <ul data-ss-id="build-notes">
+    <li><strong>No council is built here.</strong> Mowzie's factions run on today's rungs; the faction conflict plan's council comes later.</li>
+    <li><strong>Two pieces of the faction conflict plan are built here:</strong> the march record, with its joint-attack fields left empty until alliances land, and the walk-in from the edge.</li>
+    <li><strong>No chat notices.</strong> Since your answer "All faction news in-world", no slice builds a text notice. The roar and the gong stay as sounds; who swore against you and why reaches you in the world, as the <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#news">faction conflict page</a> shows.</li>
+  </ul>
 </section>
 
 <section id="decide" data-ss-id="decide" data-ss-section>
-  <h2 data-ss-id="decide-h">You answered nine on 21 October</h2>
-  <p data-ss-id="decide-intro">Seven as recommended. MZ-3 went the other way, and MZ-15, your own amendment to it, put the band on the road in plain sight. The plan is reworked for both and has passed its reviews.</p>
+  <h2 data-ss-id="decide-h">Every decision is answered: nine on 21 October, the rest on 22 October</h2>
+  <p data-ss-id="decide-intro">Seven as recommended. MZ-3 went the other way, and MZ-15, your own amendment to it, put the band on the road in plain sight. The plan is reworked for both and has passed its reviews. On 22 October you rejected the horse, then chose aloft and answered "All three" for the last three items.</p>
+
+  <div class="decision" id="mz16" data-ss-id="mz16">
+    <h3>MZ-16, second round: aloft <span class="done-tag">Answered</span></h3>
+    <p class="rec">Your answer: "Aloft".</p>
+    <p class="why">The Umvuthi's own body floats seated about 2 blocks over the road at the rear of its column, legs hanging, head-sun lit, a trail of small flames under it. It rises over trees and walls, floats over rivers, sinks to fight a player it can see and rises to go on. A player who reaches it can strike it, and a masked player can trade with it. No new entity and no client mod. It is slice M11; whether it reads as carried and whether the flame trail stays is GameTest 31's screenshots.</p>
+  </div>
+
+  <div class="decision" id="mz17" data-ss-id="mz17">
+    <h3>MZ-17: a band comes in stack by stack <span class="done-tag">Answered</span></h3>
+    <p class="rec">Your answer, "All three", with CHIEF_PAID and UR-1: (a) as recommended.</p>
+    <p class="why">Each stack of a band (a row of warriors, a raptor pack, the chief) is its own group, held back until it is wholly inside the edge, so a column fills in as it walks toward you and empties the same way as it walks off. It amends C25, your rule that a band and its master capture and despawn as one unit. Built from M3.</p>
+  </div>
+
+  <div class="decision" id="chiefpaid" data-ss-id="chiefpaid">
+    <h3>CHIEF_PAID: the Umvuthi's trade memory gets a record of its own <span class="done-tag">Answered</span></h3>
+    <p class="rec">Your answer, "All three": (a) as recommended.</p>
+    <p class="why">Sent from the game to the engine on a player's first payment to an Umvuthi body, with that body's slot and generation, and journaled. The engine books it as tribute and remembers the payer for the living chief until an heir succeeds. The record is part of M1; its id is fixed when M1 lands.</p>
+  </div>
+
+  <div class="decision" id="ur1x" data-ss-id="ur1x">
+    <h3>UR-1 exposure: what an uninstall mid-march loses <span class="done-tag">Answered</span></h3>
+    <p class="rec">Your answer, "All three": (a) accept it, as recommended.</p>
+    <p class="why">The cost of a march that a visit to the grove cannot cut short. Removed while a band is out, its bodies on the road vanish and its raid is cut short. A grove whose Umvuthi is out with it and whose throne body has gone, or whose chief died away with no heir seated yet, is left without a chief for good, because Mowzie's places an Umvuthi only when it first builds a grove. Payments the engine holds that are not yet written into a body are lost.</p>
+  </div>
+
+  <div class="decision" data-ss-id="mz16a">
+    <h3>MZ-16, first round: no animal mount</h3>
+    <p class="rec">Your answer: "Given the current models for umuthi (sunbirds), them riding horses / most other animals doesn't make too much sense."</p>
+    <p class="why">The horse, the donkey and mule and any other animal are out. In the second round you chose <a href="#mz16">aloft</a>.</p>
+  </div>
 
   <div class="decision" data-ss-id="mz15">
     <h3>MZ-15: whoever the grove sends walks toward you</h3>
     <p class="rec">Your answer: "I feel like it should be the grove / whoever they send 'walking' towards the player instead of it just not working. (I.E. Possibly being able to see them coming via DH.)"</p>
-    <p class="why">Every war party marches from its camp to its target and back with a position at every tick, the Umvuthi riding a horse at the rear. <a href="#march">The march</a> above shows what you see.</p>
+    <p class="why">Every war party marches from its camp to its target and back with a position at every tick, the Umvuthi aloft at the rear. <a href="#march">The march</a> above shows what you see.</p>
   </div>
 
   <div class="decision" data-ss-id="mz3">
     <h3>MZ-3: which bosses leave home</h3>
     <p class="rec">Your answer: (b) the Umvuthi also leads the Invasion in person.</p>
-    <p class="why">Not the recommendation, which kept the Umvuthi at its grove. Leading raids needed a riding form for the Umvuthi and its memory of who paid it moved into the engine (which is why CHIEF_PAID waits for you). MZ-15 amends it: the chief rides with its band in plain sight.</p>
+    <p class="why">Not the recommendation, which kept the Umvuthi at its grove. Leading raids needed a way for the Umvuthi, which cannot walk, to travel, and its memory of who paid it moved into the engine (hence the <a href="#chiefpaid">CHIEF_PAID</a> record). MZ-15 amends it: the chief goes with its band in plain sight.</p>
   </div>
 
   <div class="decision" data-ss-id="mz14">
@@ -813,9 +836,10 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
-    <li>Your answers of 21 October: MZ-1, MZ-3 (b), MZ-4, MZ-5, MZ-6, MZ-11, MZ-13, MZ-14 and MZ-15, sent by the coordinator; EQ-4 (b) and EQ-6 from DECISIONS.md. MZ-16 and MZ-17 provisional (a), taken by the coordinator on 22 October.</li>
-    <li>MOWZIE.md on mic-rtsim main at a740349 (the reconciler at 3a21d54, MZ-15 merged at c0d6563, review fixes at aba4ed6, 5a4b643, 29fd715 and 6054294, the last sentence at 3ce73d7), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, the reconciler and UR-1, renewal, strength, the march), walkthroughs A to G, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
-    <li>The thirteen adversarial review notes: the first on the original plan, the second at be38b77, the third on main at 24213d4, the fourth on cb9f3b9, the fifth on 710950e, the sixth on 05542c6, the seventh on e4b7a3a, the eighth on the first MZ-3 rework, and the ninth to thirteenth on the MZ-15 plan and each round of fixes. They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, Carry On, vanilla 1.21.1 and the rtsim engine.</li>
+    <li>Your answers of 21 October: MZ-1, MZ-3 (b), MZ-4, MZ-5, MZ-6, MZ-11, MZ-13, MZ-14 and MZ-15, sent by the coordinator; EQ-4 (b) and EQ-6 from DECISIONS.md. Your MZ-16 answer of 22 October, rejecting the horse, and your answers later that day: "Aloft" for MZ-16's second round and "All three" for MZ-17, CHIEF_PAID and the UR-1 exposure, recorded at c15b2566.</li>
+    <li>MOWZIE.md section 9, the build order (b11a3cab), its news revision (ce52e0dc) and docs/choices-mowzie-build.md (f1b769ca).</li>
+    <li>MOWZIE.md on mic-rtsim main at 9e3f67e (the reconciler at 3a21d54, MZ-15 merged at c0d6563, review fixes at aba4ed6, 5a4b643, 29fd715 and 6054294, the last sentence at 3ce73d7, the aloft Umvuthi at 06bf604 and its review fixes at 3961070, the alliance follow-ons at d31bd55 and 9e3f67e), sections 0 to 8: the player's view, reuse table and ledger, the design (rail meter, ambush, tribe, the reconciler and UR-1, renewal, strength, the march), walkthroughs A to G, cost model, tests and decisions. Nothing in it was run in a game; "verified" there means read in code or data.</li>
+    <li>The thirteen adversarial review notes: the first on the original plan, the second at be38b77, the third on main at 24213d4, the fourth on cb9f3b9, the fifth on 710950e, the sixth on 05542c6, the seventh on e4b7a3a, the eighth on the first MZ-3 rework, the ninth to thirteenth on the MZ-15 plan and each round of fixes, and the fourteenth, an Opus review, on the aloft Umvuthi at 06bf604 (two blocking faults and fourteen smaller ones). They read decompiled Mowzie's Mobs 1.8.2 (sha512 matched to the pack), Create 6.0.10, TaCZ 1.1.8-hotfix-r6, Create Big Cannons, Create Radars, Carry On, vanilla 1.21.1 and the rtsim engine.</li>
     <li>The meter curve: recomputed here from the plan's section 4.3 (a meter with a 2-day time constant, a tolerance of 2 legs a day, a 10% push band with a 1-leg floor and a daily resync, a 6-day grievance half-life), median of 8 runs with passes jittered by up to 40% of the headway.</li>
     <li>The population equilibrium design: EQUILIBRIUM.md on mic-rtsim main (3590249), sections 1, 2.4.7 and 2.6; its model and results are in research/equilibrium-2026-10-21/.</li>
   </ul>
@@ -823,7 +847,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 </main>
 
-<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026, updated 22 October 2026 for the reviewed plan. Private page.</footer>
+<footer data-ss-react="off">Built for Ben from the mic-rtsim repos on 21 October 2026, updated 22 October 2026 for the aloft Umvuthi, your last answers and the start of the build. Private page.</footer>
 
 <script>
 (function () {
