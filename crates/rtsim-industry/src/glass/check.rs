@@ -182,10 +182,10 @@ pub struct UnitState {
     /// Its open window's pairs at its counted stores, by (mover, store) position, with each one's
     /// `since` at the window's first sample: a pair whose `since` moved starts the window again.
     /// By position, so a recompile that names the same pairs keeps the window (§4.2).
-    count_since: Vec<(BlockPos, BlockPos, i64)>,
+    pub count_since: Vec<PairSince>,
     /// Its counted stores' summed residue per good at its open window's first sample, sorted:
     /// what each later sample's residue is measured from.
-    rbase: Vec<(Good, i64)>,
+    pub rbase: Vec<(Good, i64)>,
 }
 
 /// Which chunks ran through a sweep, for the units' liveness (SECTIONS.md §3.4).
@@ -431,6 +431,9 @@ pub struct DistrictGlass {
     /// and the inventory revision they number: what its compiles' units join (choice SC75).
     pub joins: Option<(u32, Vec<Vec<u32>>)>,
 }
+
+/// A counted pair's mover and store positions, and the game time its counters started at (§4.2).
+pub type PairSince = (BlockPos, BlockPos, i64);
 
 /// What a sweep sees of the district.
 pub struct View<'a> {
@@ -1316,7 +1319,7 @@ impl Compiled {
 
     /// Per unit: its pairs' `since` by position in this sweep's count sample, sorted, or None when
     /// the sample lacks one of them (§4.2); empty for a unit with no counted store.
-    fn count_cover(&self, sweep: u32) -> Vec<Option<Vec<(BlockPos, BlockPos, i64)>>> {
+    fn count_cover(&self, sweep: u32) -> Vec<Option<Vec<PairSince>>> {
         let take = self.counts.as_ref().filter(|t| t.sweep == sweep);
         self.units
             .pairs_of
@@ -1630,7 +1633,7 @@ impl Compiled {
         at: Tick,
         view: &View<'_>,
         take: &[bool],
-        cover: &[Option<Vec<(BlockPos, BlockPos, i64)>>],
+        cover: &[Option<Vec<PairSince>>],
     ) {
         if !take.iter().any(|&x| x) || view.revision != self.graph.end.revision {
             return;
@@ -1735,7 +1738,7 @@ impl Compiled {
         &mut self,
         view: &View<'_>,
         take: &[bool],
-        cover: &[Option<Vec<(BlockPos, BlockPos, i64)>>],
+        cover: &[Option<Vec<PairSince>>],
         y: &mut BTreeMap<(u16, Good), i64>,
     ) {
         let units = &self.units;
@@ -2132,12 +2135,14 @@ impl Compiled {
         let cover = self.count_cover(view.sweep);
         let covered = |u: usize| cover.get(u).is_some_and(|c| c.is_some());
         for u in 0..nu {
-            if !ran(u) || !covered(u) {
-                self.discard_unit(u as u16, at, tun);
-            } else if self.unit_state[u].win.is_some()
-                && cover[u].as_deref() != Some(self.unit_state[u].count_since.as_slice())
-            {
-                self.restart_unit(u as u16);
+            match cover.get(u) {
+                Some(Some(since)) if ran(u) => {
+                    let st = &self.unit_state[u];
+                    if st.win.is_some() && *since != st.count_since {
+                        self.restart_unit(u as u16);
+                    }
+                }
+                _ => self.discard_unit(u as u16, at, tun),
             }
         }
         let take: Vec<bool> = (0..nu)
