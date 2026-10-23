@@ -40,12 +40,13 @@ pub struct VanillaGossip {
     pub first_hand: bool,
 }
 
-/// Which gossip a report kind writes, and how much at the base severity, first-hand.
+/// Which gossip a report kind writes, and how much at the base severity, first-hand. `None` writes
+/// no vanilla gossip at all: the TALK news kinds (TALK.md §9.4) are news, not a grudge.
 /// PLACEHOLDER: P18 lists "which `GossipType` and amount each report kind writes" as a value to
 /// set at the design gate. The amounts reuse the vanilla amounts P18 cites (a villager hurt adds 25
 /// minor negative, killed 25 major negative, a trade 2 trading).
-pub fn vanilla_mapping(kind: ReportKind) -> (GossipType, i32) {
-    match kind {
+pub fn vanilla_mapping(kind: ReportKind) -> Option<(GossipType, i32)> {
+    Some(match kind {
         ReportKind::Assault | ReportKind::ResidentAssault => (GossipType::MinorNegative, 25),
         ReportKind::Killing | ReportKind::ResidentKilling => (GossipType::MajorNegative, 25),
         // PLACEHOLDER: taking cargo or a llama counts as a killing would (major negative).
@@ -56,10 +57,22 @@ pub fn vanilla_mapping(kind: ReportKind) -> (GossipType, i32) {
         // PLACEHOLDER: only dragons witness encroachment, so no village writes it; minor negative
         // keeps the mapping total (choices-oilgate.md OGC3).
         ReportKind::Encroachment => (GossipType::MinorNegative, 25),
-    }
+        // News only (TALK.md §9.4): villagers say it, vanilla's gossip never hears of it.
+        ReportKind::Feud
+        | ReportKind::PactSworn
+        | ReportKind::PactBroken
+        | ReportKind::Raid
+        | ReportKind::Fell
+        | ReportKind::PortRaided
+        | ReportKind::Blockade
+        | ReportKind::PortClosed
+        | ReportKind::PortReopened
+        | ReportKind::HavenFell => return None,
+    })
 }
 
-/// Whether vanilla already records this kind when its own villagers witness it.
+/// Whether vanilla already records this kind when its own villagers witness it. False for the TALK
+/// news kinds, which have no vanilla gossip at all.
 pub fn vanilla_sees_first_hand(kind: ReportKind) -> bool {
     matches!(
         kind,

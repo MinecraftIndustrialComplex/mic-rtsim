@@ -12,9 +12,10 @@ import java.util.Set;
 /**
  * One subscriber's far view as the server last sent it, and the records that bring the client up to date
  * with what the filter chose this second (docs/boundary.md §12.2). An object new to the view gets a handle and
- * an INTRO; a leg is sent when it changes, a sample when it moved by an eighth of a block, the entity id when
- * it changes; an object that left the view is held for {@link #GRACE_SWEEPS} sweeps, then GONE and its handle
- * is free again. Plain Java.
+ * an INTRO; a leg is sent when it changes, a sample when it moved by an eighth of a block (and once more, the
+ * same, the first second it did not: the client runs a moving sample on until it hears it stopped), the entity
+ * id when it changes; an object that left the view is held for {@link #GRACE_SWEEPS} sweeps, then GONE and its
+ * handle is free again. Plain Java.
  */
 public final class FarView {
     /**
@@ -31,6 +32,8 @@ public final class FarView {
         FarWire.Rec where;
         int entity;
         int missed;
+        /** The last record sent was a sample that moved: the next one that does not is sent once, to stop it. */
+        boolean moving;
 
         Sent(int handle) {
             this.handle = handle;
@@ -95,7 +98,12 @@ public final class FarView {
             }
             if (fresh || !where.equals(s.where)) {
                 out.add(where);
+                s.moving = !fresh && where instanceof FarWire.Sample;
                 s.where = where;
+            } else if (s.moving) {
+                // Still: the same sample again, so the client stops running it on (docs/choices-dh-feed.md DHT44)
+                out.add(where);
+                s.moving = false;
             }
             if (i.entity() != s.entity) {
                 out.add(new FarWire.Real(s.handle, i.entity()));
@@ -103,5 +111,19 @@ public final class FarView {
             }
         }
         return out;
+    }
+
+    /**
+     * The record that tells the client object {@code id} is now entity {@code entity}, at once rather than at
+     * the next sweep (a body that just joined the level: sent before its spawn packet, the client never draws
+     * both); null when this view does not hold the object or already says so. The next sweep's item carries
+     * the same id, so it sends nothing more.
+     */
+    public FarWire.Real real(long id, int entity) {
+        Sent s = sent.get(id);
+        if (s == null || s.entity == entity)
+            return null;
+        s.entity = entity;
+        return new FarWire.Real(s.handle, entity);
     }
 }
