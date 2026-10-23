@@ -642,15 +642,18 @@ broken, and refounding at found sites.
      conflict engine's village defence; A is the pirate's strength after the hunt's toll). The square
      law decides the losses, and the pool makes them good, as in rule 1. A pirate in view never
      raids a port.
-   - **The loot.** Survivors carry off 10 items a man, at most 600‰ of what each line holds over
-     its target, and no more than fits the hold (a full hold ends the hunt). This is the conflict
-     engine's plunder shape: `World::stock_to_held`, apportioned over every good the village
-     stocks, coins included (a treasury is what a raider wants), within the same carry and the same
-     600‰ share, but of the surplus only (PC72): the surplus is what the market drains out anyway,
-     while a line taken below its target needs imports or a mint to refill, and the quiet economy
-     sends neither, so whole-stock raids left villages broke and their havens starved (PC73). The
-     loot is landed at the haven's market when the ship comes home (C24). A pirate declines the
-     raid, losing nothing, when there is nothing to take (no surplus, or a full hold).
+   - **The loot.** Survivors carry off 10 items a man, at most 600‰ of what each line holds over its
+     target, and no more than fits the hold (a full hold ends the hunt). This is the conflict
+     engine's plunder shape: `World::stock_to_held`, apportioned over every good the village stocks,
+     coins included (a treasury is what a raider wants), within the same carry and the same 600‰
+     share, but of the surplus only (PC72): a line taken below its target needs imports or a mint to
+     refill, and the quiet economy sends neither, so whole-stock raids left villages broke and their
+     havens starved (PC73). Goods lines sit at their targets, since exports drain their surplus,
+     while coins are never exported, so only the treasury has a surplus and **the loot is all
+     coins**. Looted coins over twice a haven's treasury target sink there: port raids are mainly a
+     coin sink on the villages' spare money, and no village goes broke. The loot is landed at the
+     haven's market when the ship comes home (C24). A pirate declines the raid, losing nothing, when
+     there is not one whole item to take (no surplus, or a full hold; PC70, PC78).
 7. **A blockaded port closes and reopens** (PORTS-2 (b), Ben 2026-10-22: "Close under blockade").
    - **The gauge.** Each lane keeps its *heat*: the hazard share it has carried, averaged over the
      last month (an exponential average with a 30-day time constant, updated in closed form at each
