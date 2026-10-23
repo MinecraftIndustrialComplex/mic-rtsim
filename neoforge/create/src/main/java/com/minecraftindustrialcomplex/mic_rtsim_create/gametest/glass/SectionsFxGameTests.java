@@ -44,7 +44,8 @@ public final class SectionsFxGameTests {
     static final List<Fx> ALL = List.of(
             new Fx("belt_into_press", false, BeltIntoPressFactory::new, BeltIntoPressFactory.Check::new),
             new Fx("half_loaded", true, HalfLoadedFactory::new, HalfLoadedFactory.Check::new),
-            new Fx("hopper_vault", false, HopperAtASharedVaultFactory::new, HopperAtASharedVaultFactory.Check::new));
+            new Fx("hopper_vault", false, HopperAtASharedVaultFactory::new, HopperAtASharedVaultFactory.Check::new),
+            new Fx("frozen_neighbour", false, FrozenNeighbourFactory::new, FrozenNeighbourFactory.Check::new));
 
     /** The fixtures {@code MIC_SEC1FX_ONLY} names (comma separated), or none when it is unset: all. */
     private static Set<String> only() {

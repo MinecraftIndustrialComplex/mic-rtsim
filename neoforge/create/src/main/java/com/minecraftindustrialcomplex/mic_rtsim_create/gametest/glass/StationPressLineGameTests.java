@@ -251,10 +251,10 @@ public final class StationPressLineGameTests {
             BlockPos vault = run.far.absolutePos(StationPressLineFactory.VAULT), press = run.far.absolutePos(StationPressLineFactory.PRESS);
             BlockPos belt = run.far.absolutePos(StationPressLineFactory.BELT_START);
             GlassReport.Unit line = SectionsFx.unitAt(fr, press), vaultUnit = SectionsFx.unitAt(fr, vault);
-            GlassReport.Unit bystander = SectionsFx.unitAt(fr, run.far.absolutePos(SectionsFx.BYSTANDER_SAW));
+            GlassReport.Unit bystander = SectionsFx.unitAt(fr, run.far.absolutePos(SectionsFx.BYSTANDER_FEED));
             String d = SectionsFx.describe(fr);
             info(run, "far units", d);
-            check(run, "two units: the press line's (vault and belt in it) and the bystander's", fr.units().size() == 2 && line != null
+            check(run, "the press line's unit (vault and belt in it) and the bystander's, apart", fr.units().size() >= 2 && line != null
                     && line == vaultUnit && line == SectionsFx.unitAt(fr, belt) && bystander != null && bystander != line, d);
             check(run, "both units learned before the far site leaves", SectionsFx.learned(line) && SectionsFx.learned(bystander), d);
         }

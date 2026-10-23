@@ -31,6 +31,11 @@ final class SectionsFx {
     /** The bystander's offset along z, and its saw, in the fixture's own coordinates (SawShaftsFactory's (8,3,8)). */
     static final int BYSTANDER_DZ = 12;
     static final BlockPos BYSTANDER_SAW = new BlockPos(8, 3, 8 + BYSTANDER_DZ);
+    /**
+     * The saw line's input chest. The saw shafts have two output chests, which the compile cuts into two sections (two
+     * units) whose boxes both hold the saw; only the first holds this chest, so it names that line's main unit.
+     */
+    static final BlockPos BYSTANDER_FEED = new BlockPos(8, 5, 8 + BYSTANDER_DZ);
 
     /** A factory's helper moved by {@code by} (in the base helper's frame): its blocks land {@code by} away. */
     static final class Shifted extends GameTestHelper {
