@@ -725,3 +725,99 @@ fn a_deferred_record_spends_its_op_id() {
     let back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     assert!(back.op_applied(op), "and saved");
 }
+
+/// A rail line under every band's road: each segment a band walks out crosses a train halfway.
+#[derive(Default)]
+struct Rails {
+    raided: u32,
+}
+
+impl rtsim_ecology::infra::Infrastructure for Rails {
+    fn districts_near(
+        &mut self,
+        _: u16,
+        _: i64,
+        _: i64,
+        _: i64,
+    ) -> Vec<rtsim_ecology::infra::DistrictSite> {
+        Vec::new()
+    }
+    fn raid(
+        &mut self,
+        _: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_ecology::infra::RaidOutcome> {
+        None
+    }
+    fn good_name(&self, _: rtsim_industry::ids::Good) -> Option<String> {
+        None
+    }
+    fn trains_crossed(
+        &mut self,
+        _: u16,
+        _: &[(i32, i32)],
+        from: Tick,
+        to: Tick,
+    ) -> Vec<rtsim_ecology::infra::TrainSighting> {
+        vec![rtsim_ecology::infra::TrainSighting {
+            train: rtsim_industry::ids::TrainId(7),
+            from: from + to.since(from) / 2,
+            to,
+        }]
+    }
+    fn raid_train(
+        &mut self,
+        _: &rtsim_industry::threat::Threat,
+    ) -> Option<rtsim_industry::ids::GoodVec> {
+        self.raided += 1;
+        None
+    }
+}
+
+/// A raid ordered to the refinery, run on `rails` until it is out on its road with an ambush
+/// booked; `peaceful` then turns the world Peaceful. Returns the trains raided by day 3.
+fn raid_over_rails(seed: u64, peaceful: bool) -> (u32, Run) {
+    let mut r = Run::new(seed, quiet_goblins());
+    r.c.tun.ambush_milli = 1_000;
+    let mut rails = Rails::default();
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let mut t = Tick(20);
+    while r.c.parties[band].phase != rtsim_conflict::engine::Phase::Out {
+        t += 100;
+        assert!(t < day(3.0), "never left");
+        r.c.run_until(&mut r.w, &mut rails, t);
+    }
+    assert!(
+        r.c.pending_by_kind().get("ambush").copied().unwrap_or(0) > 0,
+        "an ambush booked on its road"
+    );
+    if peaceful {
+        let at = r.c.now() + 1;
+        let o = difficulty(boundary::DIFFICULTY_PEACEFUL);
+        r.c.ingest(&mut r.w, &mut rails, &o, at);
+    }
+    r.c.run_until(&mut r.w, &mut rails, day(3.0));
+    (rails.raided, r)
+}
+
+/// MZB-15 (review): an ambush booked on a raid's road never falls once the world is Peaceful:
+/// the raid turns back and its booking is stale. Without Peaceful the same raid falls on the
+/// train (the control). The rtsim-jni rig has no train under a band's road (MZB-34).
+#[test]
+fn an_ambush_booked_before_peaceful_never_falls() {
+    let (raided, _) = raid_over_rails(43, false);
+    assert!(raided >= 1, "the control: the train is raided");
+    let (raided, r) = raid_over_rails(43, true);
+    assert_eq!(raided, 0, "no ambush on Peaceful");
+    assert!(r.c.peaceful);
+}

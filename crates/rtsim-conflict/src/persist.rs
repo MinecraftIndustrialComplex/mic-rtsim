@@ -61,7 +61,7 @@ use crate::tunables::ConflictTunables;
 const MAGIC: u32 = u32::from_le_bytes(*b"RTC4");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
-/// ends with the Peaceful flag.
+/// ends with the Peaceful flag, its start and the last notice's serial.
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
 const META_VERSION: u16 = 3;
 
