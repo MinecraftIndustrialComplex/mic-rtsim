@@ -3189,6 +3189,17 @@ impl Conflict {
         (stolen_items, blocks)
     }
 
+    /// What party `p`'s living members carry between them, thousandths.
+    fn carry_milli(&self, p: Handle<Party>) -> Amount {
+        let x = &self.parties[p];
+        let c = self.culture(x.faction);
+        x.units
+            .iter()
+            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
+            .sum::<i64>()
+            * MILLI
+    }
+
     /// Takes `n` units away from the stacks whose class matches, in stack order.
     fn lose_units(
         &mut self,
@@ -3218,11 +3229,40 @@ impl Conflict {
 
     /// A raid on a village's or a rival haven's market: Lanchester's linear law against the
     /// residents' defence, floored by real fights seen (never better for the defender than
-    /// observed); the survivors carry off up to their carry and a share of each good, into the
-    /// band's hold (`World::stock_to_held`), conservation exact.
+    /// observed); the survivors carry off up to their carry and the culture's share of each line's
+    /// surplus over its target, coins included, into the band's hold (`World::stock_to_held`),
+    /// conservation exact. A band that could not carry off one whole item if nobody fell does not
+    /// fight at all (CL-D58, as the ports' PC72 and PC78).
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
+        // Something to take, before any blood is spilled: a raid takes from each line's surplus
+        // over its target only. Below its target a line needs imports or a mint to refill, and a
+        // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
+        let m = w.market(i);
+        let caps: Vec<(GoodId, Amount)> = w
+            .goods
+            .ids()
+            .map(|g| {
+                let surplus = (m.stock(g) - m.line(g).target).max(0);
+                (g, surplus * c.def.loot_share_milli / 1000)
+            })
+            .filter(|e| e.1 > 0)
+            .collect();
+        let reach: Amount = caps.iter().map(|e| e.1).sum();
+        if self.carry_milli(p).min(reach) < MILLI {
+            self.note(
+                at,
+                Some(f),
+                "plunder",
+                format!(
+                    "finds nothing worth taking at node {}: {} items spare within reach",
+                    w.nodes[i].key,
+                    reach / MILLI
+                ),
+            );
+            return 0;
+        }
         let s = self.strength(p);
         let node = &w.nodes[i];
         let per = match node.kind {
@@ -3241,20 +3281,9 @@ impl Conflict {
         let lost = alive - ((f64::from(alive) * survived).round() as u32).min(alive);
         self.lose_units(p, |_| true, lost);
         self.stats.raids_village += 1;
-        let carry: i64 = self.parties[p]
-            .units
-            .iter()
-            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
-            .sum::<i64>()
-            * MILLI;
-        let m = w.market(i);
-        let caps: Vec<(GoodId, Amount)> = w
-            .goods
-            .ids()
-            .map(|g| (g, m.stock(g) * c.def.loot_share_milli / 1000))
-            .filter(|e| e.1 > 0)
-            .collect();
-        let shares = apportion(carry.min(caps.iter().map(|e| e.1).sum()), &caps);
+        // The survivors carry off what they can of the caps read before the fight (the fight takes
+        // no time, so the market has not moved).
+        let shares = apportion(self.carry_milli(p).min(reach), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
         let got = w.stock_to_held(i, &want, at);
         let mut items = 0;
@@ -4634,6 +4663,12 @@ impl Conflict {
     }
 
     // ---- reads ------------------------------------------------------------------------------
+
+    /// The grievance at which faction `f`'s feuds climb to rung `s`, bent by its chief's
+    /// temperament (K2-8: up to 40 percent either way).
+    pub fn rung_threshold(&self, f: u32, s: Step) -> f64 {
+        self.theta(f, s)
+    }
 
     /// A feud as it stands at the engine's time (a projection).
     pub fn feud_view(&self, faction: u64, actor: ActorId) -> Option<FeudView> {
