@@ -56,10 +56,10 @@ under its own heading.
 - **MZB-109** (the war chief is an extra body): a band with the chief flag embodies the chief as one more
   body of its first stack's kind, at the rear of that stack, named; CHIEF_KILLED is sent for it (with a
   Java op id) and no BAND_CASUALTIES.
-- **MZB-110** (refusing an envoy): the demand's player refuses by using the envoy with an empty main hand
-  while sneaking (ENVOY_ANSWER 2, once a party). Using it with the demanded item pays what is held, up to
-  what is owed (TRIBUTE_PAID with a Java op id); anything else does nothing, so a player cannot refuse by
-  accident.
+- **MZB-110** (refusing an envoy): the demand's player refuses by using the envoy with an empty main hand,
+  standing (ENVOY_ANSWER 2, once a party); crouching with an empty hand is TALK's gesture (MZB-122). Using
+  it with the demanded item pays what is held, up to what is owed (TRIBUTE_PAID with a Java op id), crouching
+  or not; anything else does nothing.
 - **MZB-111** (a machine is no killer): a member killed by a NeoForge FakePlayer is kind 3 (other) with no
   killer, as MZB-105 makes a machine's signals the settlers'.
 - **MZB-112** (M1's records wait for M1): DIFFICULTY and NOTICE_SHOWN are written against M1's layouts but
@@ -87,6 +87,34 @@ under its own heading.
   the faction's territory or within 256 blocks of the notice's place, tested every 20 ticks.
 - **MZB-119** (pinning bodies in the far stack test): the stack test turns off its bodies' AI so no stroll
   crosses a chunk edge, and lays a stone floor under them, since a mob without AI does not fall.
+- **MZB-120** (the conflict talker, registered as bodies appear): one core talker (`ConflictTalker`) is
+  registered as a built-in (asked after any plugin's talker for the type), not always talking, for each
+  entity type the first time the bridge resolves a body kind to it. Stand-ins and plugin bodies are only
+  known then, and the client never cancels a click on those types: the server decides per entity. It
+  talks only for a live member of a party the bridge holds; beasts (an `Animal`, a ravager) never talk
+  (TALK.md §4). Holder: the faction (3, the party's faction id). No small talk, no credit (TK6).
+- **MZB-121** (the envoy's one line): voices follow TALK.md §4 (`envoy.<culture>`, parent `envoy`; a band
+  member `<culture>`, culture read from `mic_rtsim:conflict/<culture>/<unit>`), not the lead's suggested
+  `conflict.<culture>.envoy`, whose parent under TALK's drop-the-last-part rule would be
+  `conflict.<culture>`, not `conflict.envoy`. Topics follow TALK.md §5.5, split by form: while open,
+  `envoy.demand.tribute_or_stop`, `.tribute` or `.stop`, with the reason as its first argument (the most
+  specific level's `envoy.reason.<signal>` line 0, else `envoy.reason`), then what is owed, the good, the
+  signal word and the deadline; once settled, `envoy.settled.<outcome>` (paid, cut, expired, refused,
+  withdrawn, other). Each has one line at the `envoy` level only, so it is the same line every time (TK31
+  would mix a culture level's lines with the parent's). It speaks only to the player the demand is to
+  (anyone for the settlers'); the speaker is "<Culture> Envoy".
+- **MZB-122** (talk and refusal split the empty hand): TALK's crouch-click and MZB-110's former refusal
+  (sneaking, empty hand) were one gesture, and the bridge's HIGHEST handler is registered before TALK's, so
+  it would have swallowed the talk. Crouching now talks (the bridge leaves it); a plain click refuses.
+- **MZB-123** (the deadline in words): by the last of dawn, noon, dusk or midnight (day time 0, 6,000,
+  12,000, 18,000) at or before the deadline, never after it: "by dusk tomorrow", "by noon, 3 days from
+  now", "at once" once that mark is past. Deadlines are game time, the marks the level's day time.
+- **MZB-124** (band members warn or insult): a member of a raid (purpose 3 and up, the hostile flag, or
+  attacking) or of a routed band insults (`hostile.insult`); any other (scouts, an envoy's guards) warns,
+  with the reason when the faction has one for that player (`hostile.warn.<signal>`: an open demand of its
+  envoy to them, else a notice kept for them), else `hostile.warn`. Hostile to that player in a raid or
+  with a reason, else wary. Lines for goblin, raider and bandit; the reasoned warnings and a fallback for a
+  plugin's culture under `any`.
 
 ## M4 Camp reconciler, engine
 

@@ -16,9 +16,12 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.RateLimit;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
@@ -486,12 +489,14 @@ public final class ConflictGameTests {
      * While the demand is open nothing targets the party and it targets nothing: an iron golem's
      * target and a guard's are refused, and a golem's blow, an arrow with no owner (the stand-in for a
      * Create Big Cannons shell) and a skeleton's arrow do no damage. The player it came to pays part of
-     * the tribute by right-clicking the envoy (TRIBUTE_PAID with a Java op id; the name counts down) and
-     * refuses by sneaking with an empty hand (ENVOY_ANSWER 2, once; MZB-110). A player's arrow hurts a
+     * the tribute by right-clicking the envoy (TRIBUTE_PAID with a Java op id; the name counts down).
+     * Crouching with an empty hand talks (TALK): the envoy says its reason, what is still owed and the
+     * deadline, and a guard warns with the reason (MZB-121, MZB-124); neither is a refusal. A plain click
+     * with an empty hand refuses (ENVOY_ANSWER 2, once; MZB-110, MZB-122). A player's arrow hurts a
      * guard and is an insult (ENVOY_ANSWER 3, once): the guard is lifted. Another envoy party killed by
      * {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES with no killer. DEMAND_SETTLED takes the
-     * name away. A recall keeps the bodies while a player sees them, until its timeout. (DEMAND_SETTLED 5
-     * for the killed party is the engine's, M1.)
+     * name away, and the envoy then says the settlement. A recall keeps the bodies while a player sees
+     * them, until its timeout. (DEMAND_SETTLED 5 for the killed party is the engine's, M1.)
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1500, batch = "conflict_envoy", skyAccess = true)
     public static void anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment(GameTestHelper helper) {
@@ -501,7 +506,7 @@ public final class ConflictGameTests {
         Vec3 c = RtsimTests.centre(helper);
         long a = ConflictKit.newAgent(), b = ConflictKit.newAgent();
         long faction = ConflictKit.newFaction();
-        ServerPlayer player = FakePlayers.add(level, c.add(3, 0, 0), "conflict_envoy_target");
+        FakePlayers.Hearer player = FakePlayers.hearing(level, c.add(3, 0, 0), "conflict_envoy_target");
         int demand = ConflictRecords.Envoy.DEMAND_TRIBUTE | ConflictRecords.Envoy.DEMAND_STOP;
         long deadline = level.getGameTime() + 24_000;
         ConflictKit.envoy(a, 1, faction, dim, c.x - 1.5, c.y, c.z, player.getUUID(), demand, ConflictRecords.SIGNAL_MINING,
@@ -510,7 +515,7 @@ public final class ConflictGameTests {
                 "minecraft:emerald", 1, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
         Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1];
         IronGolem[] golem = new IronGolem[1];
-        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0};
+        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, talkedAt = {0};
         float[] health = {0};
 
         helper.startSequence()
@@ -582,11 +587,36 @@ public final class ConflictGameTests {
                     player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
                     check("3 paid, 2 owed", bridge().party(a).demand().remaining() == 2 && player.getMainHandItem().isEmpty());
                     check("the name counts down: " + name(envoy[0]), name(envoy[0]).startsWith("2 "));
-                    // Refusal: sneaking with an empty hand, twice.
+                    // TALK: crouching with an empty hand, one line to this player in this tick; no refusal.
+                    long answered = bridge().answers;
+                    int heard = player.heard.size();
                     player.setShiftKeyDown(true);
                     player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    check("the envoy spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
+                    TranslatableContents line = spoken(player.heard.get(heard));
+                    record(test, "envoy line", line.getKey() + " " + player.heard.get(heard).getString());
+                    check("its demand: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute_or_stop.0"));
+                    Object[] args = line.getArgs();
+                    check("the reason: " + args[0], args[0] instanceof Component r && r.getContents() instanceof TranslatableContents rt
+                            && rt.getKey().equals("mic_rtsim.talk.envoy.envoy.reason.mining.0"));
+                    check("2 still owed: " + args[1], args[1] instanceof Integer n && n == 2);
+                    check("emeralds: " + args[2], args[2] instanceof Component it && it.getString().equals(Items.EMERALD.getDescription().getString()));
+                    check("the deadline: " + args[4], args[4] instanceof Component dl && dl.getContents() instanceof TranslatableContents dt
+                            && dt.getKey().startsWith("mic_rtsim.talk.deadline.") && !dt.getKey().equals("mic_rtsim.talk.deadline.now"));
+                    check("not a refusal", bridge().answers == answered);
+                    talkedAt[0] = level.getGameTime();
+                    // A guard warns, with the camp's reason.
+                    player.interactOn(guard[0], InteractionHand.MAIN_HAND);
                     player.setShiftKeyDown(false);
+                    check("the guard spoke once: " + talkKeys(player), player.heard.size() == heard + 2);
+                    TranslatableContents warn = spoken(player.heard.get(heard + 1));
+                    record(test, "guard line", warn.getKey() + " " + player.heard.get(heard + 1).getString());
+                    check("a warning with the reason: " + warn.getKey(), warn.getKey().startsWith("mic_rtsim.talk.")
+                            && warn.getKey().contains(".hostile.warn.mining."));
+                    // Refusal: a plain click with an empty hand, twice.
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    check("refused once, no line", bridge().answers == answered + 1 && player.heard.size() == heard + 2);
                 })
                 .thenWaitUntil(() -> check("TRIBUTE_PAID", ConflictKit.tributes(a).size() == 1))
                 .thenExecute(() -> {
@@ -628,9 +658,17 @@ public final class ConflictGameTests {
                     ConflictKit.settled(faction, a, player.getUUID(), ConflictRecords.SETTLED_PAID, 0);
                 })
                 .thenWaitUntil(() -> check("A's demand settled", party(a).demand() == null))
+                .thenWaitUntil(() -> check("the envoy may talk again", level.getGameTime() - talkedAt[0] >= RateLimit.PAIR))
                 .thenExecute(() -> {
                     check("its name is gone", envoy[0].getCustomName() == null && !envoy[0].isCustomNameVisible());
                     check("the outcome", bridge().lastSettled == ConflictRecords.SETTLED_PAID);
+                    int heard = player.heard.size();
+                    player.setShiftKeyDown(true);
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    player.setShiftKeyDown(false);
+                    check("the envoy spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
+                    TranslatableContents line = spoken(player.heard.get(heard));
+                    check("the settlement: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.settled.paid.0"));
                     recalledAt[0] = level.getGameTime();
                     ConflictKit.recall(a, 1, ConflictRecords.RECALL_SETTLED, 60, c.x - 100, c.z);
                 })
@@ -651,6 +689,23 @@ public final class ConflictGameTests {
                     FakePlayers.remove(player);
                 })
                 .thenSucceed();
+    }
+
+    /** The line inside a talk message ({@code mic_rtsim.talk.say}: speaker, line). */
+    private static TranslatableContents spoken(Component say) {
+        check("a talk message: " + say, say.getContents() instanceof TranslatableContents t && t.getKey().equals("mic_rtsim.talk.say")
+                && t.getArgs().length == 2 && t.getArgs()[1] instanceof Component);
+        Component line = (Component) ((TranslatableContents) say.getContents()).getArgs()[1];
+        check("a line of ours: " + line, line.getContents() instanceof TranslatableContents);
+        return (TranslatableContents) line.getContents();
+    }
+
+    private static String talkKeys(FakePlayers.Hearer p) {
+        StringBuilder sb = new StringBuilder("[");
+        for (Component c : p.heard)
+            sb.append(c.getContents() instanceof TranslatableContents t && t.getArgs().length == 2 && t.getArgs()[1] instanceof Component l
+                    && l.getContents() instanceof TranslatableContents lt ? lt.getKey() : c.getString()).append("; ");
+        return sb.append("]").toString();
     }
 
     // ---- test 18 and ledger 19: fights ----------------------------------------------------------
@@ -916,7 +971,7 @@ public final class ConflictGameTests {
      * (FACTION_NOTICE, its sound played to the player, who stands inside). The phase 1 world's clock, which
      * the conflict runs on, is moved on 1,200 ticks at a time (P1_ADVANCE) with the player reporting where
      * it stands before each: the envoy comes into view (ENVOY_MATERIALIZE) asking emeralds or the killing
-     * stopped, is placed and refused (ENVOY_ANSWER 2: sneaking, an empty hand); the demand is settled as
+     * stopped, is placed and refused (ENVOY_ANSWER 2: a plain click with an empty hand); the demand is settled as
      * refused (DEMAND_SETTLED 4), and the ladder climbs on to a raid that musters and is seen setting out
      * (BAND_MATERIALIZE, purpose 3, the war chief with it), whose stacks are placed. A stack still pending
      * has its chunks forced too (the engine picks where a party comes into view). Skipped on the stub,
@@ -1073,9 +1128,8 @@ public final class ConflictGameTests {
                     long answered = bridge().answers;
                     ServerPlayer pl = player[0];
                     check("an empty hand", pl.getMainHandItem().isEmpty());
-                    pl.setShiftKeyDown(true);
-                    pl.interactOn(emissary, InteractionHand.MAIN_HAND);
                     pl.setShiftKeyDown(false);
+                    pl.interactOn(emissary, InteractionHand.MAIN_HAND);
                     check("refused", bridge().answers == answered + 1);
                 })
                 .thenWaitUntil(() -> {
