@@ -656,6 +656,12 @@ pub struct Ships {
     /// (PC93). Kept, not derived: which ports are closed says whether a service is laid up, but
     /// not since when once the earliest of its closed ports reopens.
     pub(crate) laid_up: BTreeMap<u32, Tick>,
+    /// Per merchant slot laid up by a closure: the spell it sails nothing, `[from, to)`, from its
+    /// lay-up to its relaunch (`to` is [`LAID_UP`] until one is booked, then the booked tick, put
+    /// off with it). Kept after the relaunch, so a flow window computed later still skips the
+    /// departures its timetable had in the spell (PC92); the slot's next lay-up replaces it, so
+    /// the map never holds more than the merchant slots.
+    pub(crate) idle: BTreeMap<ShipId, (Tick, Tick)>,
     /// Per dock: the lanes with it at an end, in lane order (an index, rebuilt on load).
     pub(crate) dock_lanes: Vec<Vec<u32>>,
     /// Per lane: the (service, hop) pairs that sail it.
@@ -792,6 +798,7 @@ impl Ships {
             threats: PagedRows::new(THREAT_TABLE, THREAT_ROWS_PER_PAGE),
             ports: BTreeMap::new(),
             laid_up: BTreeMap::new(),
+            idle: BTreeMap::new(),
             dock_lanes: Vec::new(),
             lane_hops: Vec::new(),
             service_ships: Vec::new(),
@@ -2565,14 +2572,16 @@ impl Ships {
                 let Some(ox) = self.ships.get(o) else {
                     continue;
                 };
-                // A slot laid up by a closure sails nothing from its lay-up on (PC92).
-                let before = match ox.status {
-                    Status::Lost { since, back } if back == LAID_UP => {
-                        (t.depart - 1).min(since.0 as i64 - 1)
-                    }
-                    _ => t.depart - 1,
-                };
-                if let Some((_, d)) = sv.departure_at_or_before(ox.offset, j as usize, before) {
+                let mut dep = sv.departure_at_or_before(ox.offset, j as usize, t.depart - 1);
+                // A slot laid up by a closure sails nothing from its lay-up to its relaunch, nor
+                // while that is put off (PC92).
+                if let (Some((_, d)), Some(&(from, to))) = (dep, self.idle.get(&o))
+                    && i128::from(d) >= i128::from(from.0)
+                    && i128::from(d) < i128::from(to.0)
+                {
+                    dep = sv.departure_at_or_before(ox.offset, j as usize, from.0 as i64 - 1);
+                }
+                if let Some((_, d)) = dep {
                     prev = Some(prev.map_or(d, |p: i64| p.max(d)));
                 }
             }

@@ -519,8 +519,14 @@ impl Ships {
     /// A merchant slot laid up in port (PC15's `LAID_UP`): no relaunch is due until its service
     /// sails again. Its crew stays with it; nothing is held, so nothing is lost. Its epoch moves
     /// on, so a late report about its last body changes nothing (PC95), and its booked voyages
-    /// are given up now rather than at their ends (PC92).
+    /// are given up now rather than at their ends (PC92). Its idle spell begins now, or goes on
+    /// if it was waiting to relaunch: it has sailed nothing since that spell began.
     pub(crate) fn lay_up_merchant(&mut self, s: ShipId, at: Tick) {
+        let from = match (self.ships[s].status, self.idle.get(&s)) {
+            (Status::Lost { back, .. }, Some(&(from, to))) if to == back => from,
+            _ => at,
+        };
+        self.idle.insert(s, (from, LAID_UP));
         let x = &mut self.ships[s];
         x.status = Status::Lost {
             since: at,
@@ -561,6 +567,14 @@ impl Ships {
             *b = back;
         }
         x.epoch = x.epoch.wrapping_add(1);
+        self.wait_to_relaunch(s, back);
+    }
+
+    /// Books slot `s`'s relaunch at `back`, its idle spell lasting until then (PC92).
+    fn wait_to_relaunch(&mut self, s: ShipId, back: Tick) {
+        if let Some((_, to)) = self.idle.get_mut(&s) {
+            *to = back;
+        }
         self.schedule(back, Ev::Relaunch { ship: s });
     }
 
@@ -583,7 +597,7 @@ impl Ships {
                 *b = back;
             }
             self.stats.relaunches_put_off += 1;
-            self.schedule(back, Ev::Relaunch { ship: s });
+            self.wait_to_relaunch(s, back);
             self.note(
                 at,
                 "relaunch_put_off",
@@ -654,11 +668,13 @@ impl Ships {
     pub(crate) fn check_ports(&self, w: &World) -> Result<(), String> {
         let now = self.now();
         if !self.blockades_on() {
-            if !self.ports.is_empty() || !self.laid_up.is_empty() {
+            if !self.ports.is_empty() || !self.laid_up.is_empty() || !self.idle.is_empty() {
                 return Err(format!(
-                    "closures are off but {} ports have a state and {} services are laid up",
+                    "closures are off but {} ports have a state, {} services are laid up and {} \
+                     slots have an idle spell",
                     self.ports.len(),
-                    self.laid_up.len()
+                    self.laid_up.len(),
+                    self.idle.len()
                 ));
             }
             for (l, t) in self.lane_threats() {
@@ -816,6 +832,32 @@ impl Ships {
                     "merchant {id:?} sails for a laid-up service, out of view with nothing promoted"
                 ));
             }
+            // Its idle spell (PC92): open while it is laid up, ending at its booked relaunch while
+            // it waits for one, and over before it sails or is lost again.
+            let bad = match (x.status, self.idle.get(&id)) {
+                (Status::Lost { back, .. }, None) => back == LAID_UP,
+                (Status::Lost { since, back }, Some(&(from, to))) => {
+                    from > since
+                        || (back == LAID_UP) != (to == LAID_UP)
+                        || (to != back && to > since)
+                }
+                (Status::Active, Some(&(from, to))) => from > to || to > now,
+                (Status::Active, None) => false,
+            };
+            if bad {
+                return Err(format!(
+                    "merchant {id:?} is {:?} but its idle spell is {:?}",
+                    x.status,
+                    self.idle.get(&id)
+                ));
+            }
+        }
+        if let Some(id) = self.idle.keys().find(|&&id| {
+            self.ships
+                .get(id)
+                .is_none_or(|x| !matches!(x.role, Role::Merchant))
+        }) {
+            return Err(format!("{id:?} has an idle spell but is no merchant"));
         }
         Ok(())
     }
@@ -976,6 +1018,162 @@ mod tests {
             c.ships.ports
         );
         assert!(c.ships.laid_up.is_empty());
+    }
+
+    /// Every timetable departure in `(lo, hi]` on lane `lane`'s direction `dir`, by any ship of
+    /// any service sailing it: (ship, voyage, tick).
+    fn departures(s: &Ships, lane: u32, dir: u8, lo: i64, hi: i64) -> Vec<(ShipId, u64, i64)> {
+        let mut out = Vec::new();
+        for &(v, j) in &s.lane_hops[lane as usize] {
+            let sv = &s.services[v as usize];
+            if u8::from(!sv.legs[j as usize].hop.forward) != dir {
+                continue;
+            }
+            for o in s.service_ships[v as usize].ids() {
+                let offset = s.ships[o].offset;
+                let mut t = hi;
+                while let Some((voyage, d)) = sv.departure_at_or_before(offset, j as usize, t) {
+                    if d <= lo {
+                        break;
+                    }
+                    out.push((o, voyage, d));
+                    t = d - 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// PC92 and PC90: a slot waiting to relaunch sails nothing, however long a player at its
+    /// home dock puts the relaunch off (the S8b-4 re-review: from the reopening on, a waiting
+    /// slot's timetable departures counted again, so the next real voyage on its lane carried
+    /// a shorter window). Quiet coast, seed 1: port `a` of a two-port service closes on day 10
+    /// and reopens once its minimum is up, while a player stands at the service's home dock
+    /// from the closure to six days past the reopening's latest check, so every relaunch is put
+    /// off until he leaves. On each lane direction a laid-up service sails, the windows of the
+    /// flow the real departures carry (every departure but a slot's within its idle spell, from
+    /// its lay-up to its relaunch) follow on one from the next with no gap and no overlap, and
+    /// each is the same at the end as on the day it departed.
+    #[test]
+    fn a_slot_waiting_to_relaunch_sails_nothing() {
+        let mut c = quiet_coast(1);
+        let (v, a, _) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let ids: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+        for &id in &ids {
+            let laid = Status::Lost {
+                since: t1,
+                back: LAID_UP,
+            };
+            assert_eq!(c.ships.ships[id].status, laid, "{id:?}");
+        }
+        let dirs: BTreeSet<(u32, u8)> = c
+            .ships
+            .laid_up
+            .keys()
+            .flat_map(|&s| c.ships.services[s as usize].legs.iter())
+            .map(|g| (g.hop.lane, u8::from(!g.hop.forward)))
+            .collect();
+        let home = &c.ships.docks[c.ships.services[v as usize].legs[0].from_dock as usize];
+        let pos = rtsim_settle::Pos::new(home.frame, home.x, home.z);
+        let reopen_by = t1 + c.ships.min_closed_ticks() + 2 * c.ships.check_ticks();
+        let leave = reopen_by + 6 * TICKS_PER_DAY;
+        c.ships.player_stays(&mut c.world, (7, 7), pos, t1, leave);
+        // Each departure's window on the day it departs.
+        let mut first: BTreeMap<(ShipId, u64), (u64, u64)> = BTreeMap::new();
+        let mut day = |c: &mut synth::Coastal| {
+            let t = c.ships.now();
+            run(c, t + TICKS_PER_DAY);
+            c.ships.take_commands();
+            for &(l, d) in &dirs {
+                let now = c.ships.now().0 as i64;
+                for (o, voyage, _) in departures(&c.ships, l, d, t.0 as i64, now) {
+                    let (_, _, lo, hi) = c.ships.window(&c.world, o, voyage).expect("a window");
+                    first.insert((o, voyage), (lo, hi));
+                }
+            }
+        };
+        while c.ships.now() < leave {
+            day(&mut c);
+        }
+        let reopened = c.ships.port(a).and_then(|p| p.reopened);
+        assert!(reopened.is_some_and(|r| r <= reopen_by), "{reopened:?}");
+        let put_off = c.ships.stats.relaunches_put_off;
+        assert!(put_off >= 2 * ids.len() as u64, "{put_off} put off");
+        assert!(ids.iter().all(|&id| !c.ships.ships[id].is_active()));
+        let until = leave + 20 * TICKS_PER_DAY;
+        while c.ships.now() < until && !ids.iter().all(|&id| c.ships.ships[id].is_active()) {
+            day(&mut c);
+        }
+        assert!(ids.iter().all(|&id| c.ships.ships[id].is_active()));
+        let period = c
+            .ships
+            .services
+            .iter()
+            .map(|sv| sv.period)
+            .max()
+            .unwrap_or(0);
+        let end = c.ships.now() + period + TICKS_PER_DAY;
+        while c.ships.now() < end {
+            day(&mut c);
+        }
+        for &id in &ids {
+            let spell = c.ships.idle.get(&id).copied();
+            assert!(
+                spell.is_some_and(|(from, to)| from == t1 && to >= leave),
+                "{id:?}: idle spell {spell:?}"
+            );
+        }
+        let idle = |o: ShipId, d: i64| {
+            c.ships.idle.get(&o).is_some_and(|&(from, to)| {
+                i128::from(d) >= i128::from(from.0) && i128::from(d) < i128::from(to.0)
+            })
+        };
+        let (mut real, mut phantom) = (0, 0);
+        for &(l, dir) in &dirs {
+            let lo = t1.0 as i64 - period as i64;
+            let mut deps = departures(&c.ships, l, dir, lo, c.ships.now().0 as i64);
+            deps.sort_by_key(|&(o, voyage, d)| (d, o, voyage));
+            phantom += deps.iter().filter(|&&(o, _, d)| idle(o, d)).count();
+            deps.retain(|&(o, _, d)| !idle(o, d));
+            real += deps.len();
+            let mut last: Option<(i64, u64)> = None;
+            for &(o, voyage, d) in &deps {
+                let (_, _, lo, hi) = c.ships.window(&c.world, o, voyage).expect("a window");
+                if let Some(&w) = first.get(&(o, voyage)) {
+                    assert_eq!(
+                        w,
+                        (lo, hi),
+                        "lane {l}/{dir}: {o:?} voyage {voyage}'s window moved"
+                    );
+                }
+                match last {
+                    Some((t, prev_hi)) if t == d => {
+                        assert_eq!(hi, prev_hi, "lane {l}/{dir}: departures at {d} differ")
+                    }
+                    Some((_, prev_hi)) => assert_eq!(
+                        lo,
+                        prev_hi + 1,
+                        "lane {l}/{dir}: {o:?} voyage {voyage} departing {d} leaves a gap or overlap"
+                    ),
+                    None => {}
+                }
+                last = Some((d, hi));
+            }
+        }
+        assert!(
+            real > 0 && phantom > 0,
+            "{real} real, {phantom} idle departures"
+        );
+        eprintln!(
+            "{} slots, {put_off} relaunches put off; {real} real and {phantom} idle departures on \
+             {} lane directions",
+            ids.len(),
+            dirs.len()
+        );
+        c.ships.check(&c.world).expect("checks");
     }
 
     /// PC94 and PC85: the navy keeps sailing and keeps no lane open. On the quiet coast, seeds 1

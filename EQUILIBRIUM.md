@@ -671,10 +671,11 @@ broken, and refounding at found sites.
        it (PC94);
      - no pirate begins a hunt on a closed lane, and one sailing out to it turns home (PC91), so a
        closed port's village is not raided from its lanes;
-     - a laid-up ship gives up its booked voyages and its share of the lane's flow (PC92).
-     - Only the ports' states and the tick each laid-up service laid up are stored: which services
-       are laid up and which lanes are closed follow from them, whatever order ports closed and
-       reopened in (PC80, PC93).
+     - a laid-up ship gives up its booked voyages and its share of the lane's flow until it
+       relaunches, however long a watched home dock puts that off (PC92).
+     - Only the ports' states, the tick each laid-up service laid up and each slot's idle spell
+       (for the flow, PC92) are stored: which services are laid up and which lanes are closed
+       follow from them, whatever order ports closed and reopened in (PC80, PC93).
    - **Reopened.** A closed dock reopens when no lane of it is hotter than a quarter of the full
      share, and not before 30 days after it closed. Its services' ships come back at their slots'
      next home-dock stays, never while a player watches the home dock: a watched dock puts the
