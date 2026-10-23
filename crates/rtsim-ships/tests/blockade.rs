@@ -1441,6 +1441,9 @@ struct Sea {
     all_closed_navy: [u64; 2],
     /// The largest share of the days one port spent closed.
     worst_port: f64,
+    /// That port's cycle: its closed spells, their mean length in days, and the days it stayed
+    /// open from a reopening to its next closure, mean and fewest (to a day's sampling).
+    worst_cycle: (usize, f64, f64, f64),
     hunts: u64,
     decade_hunts: Vec<u64>,
     /// The mean share of haven sites open.
@@ -1519,6 +1522,10 @@ fn unattended_with(
     }
     let mut port_days = vec![0u64; ports.len()];
     let mut spell: Vec<Option<(Tick, Tick)>> = vec![None; ports.len()];
+    // Per port: its closed spells' lengths, and its open days from a reopening to the next
+    // closure; the day each last reopened.
+    let mut cycles: Vec<(Vec<f64>, Vec<f64>)> = vec![(Vec::new(), Vec::new()); ports.len()];
+    let mut reopened_on: Vec<Option<f64>> = vec![None; ports.len()];
     let mut ever = vec![false; ports.len()];
     let mut hunts0 = 0;
     let end = Tick::from_days(years * YEAR);
@@ -1556,6 +1563,18 @@ fn unattended_with(
             let closed = ships.port(*d).and_then(|p| p.closed);
             let m = ships.docks[*d as usize].medium;
             medium_open[kinds[i]] |= closed.is_none();
+            if let Some((s0, _)) = spell[i]
+                && closed != Some(s0)
+            {
+                cycles[i].0.push(day(t) - day(s0));
+                reopened_on[i] = Some(day(t));
+            }
+            if let Some(since) = closed
+                && spell[i].is_none_or(|(s0, _)| s0 != since)
+                && let Some(r) = reopened_on[i]
+            {
+                cycles[i].1.push((day(since) - r).max(0.0));
+            }
             match (closed, spell[i]) {
                 (Some(since), sp) => {
                     let (s0, mut hot) = match sp {
@@ -1606,7 +1625,20 @@ fn unattended_with(
     for (i, sp) in spell.iter().enumerate() {
         if let Some((s0, hot)) = *sp {
             ended(&mut sea, s0, hot, t, ports[i].0);
+            cycles[i].0.push(day(t) - day(s0));
         }
+    }
+    if let Some(i) = (0..ports.len()).max_by_key(|&i| port_days[i]) {
+        let (c, o) = &cycles[i];
+        let mean = |v: &[f64]| {
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f64>() / v.len() as f64
+            }
+        };
+        let fewest = o.iter().copied().reduce(f64::min).unwrap_or(0.0);
+        sea.worst_cycle = (c.len(), mean(c), mean(o), fewest);
     }
     sea.open /= (years * YEAR) as f64;
     sea.ever_closed = ever.iter().filter(|&&e| e).count();
@@ -1631,7 +1663,8 @@ fn report_seas(runs: &[Sea]) {
              {:.3}), longest {longest:.0} days (at most {over:.0} past its hot lanes), ports \
              ever closed {}, days every port closed: sea {} of {} ports (navy sailing {}), sky \
              {} of {} ports (navy sailing {}), hunts/yr {:.1}, fewest hunts in a decade {}, \
-             havens open {:.3}",
+             havens open {:.3}; most closed port: {} spells, closed {:.1} days then open {:.1} \
+             (fewest {:.0})",
             s.world,
             s.seed,
             s.on,
@@ -1655,6 +1688,25 @@ fn report_seas(runs: &[Sea]) {
             s.hunts as f64 / s.years as f64,
             s.decade_hunts.iter().min().copied().unwrap_or(0),
             s.open,
+            s.worst_cycle.0,
+            s.worst_cycle.1,
+            s.worst_cycle.2,
+            s.worst_cycle.3,
+        );
+    }
+}
+
+/// The four seas with the most closed ports, each with its seed, its sky ports, its most closed
+/// port's share and that port's cycle (closed days, then open days until it closes again).
+fn worst_cycles(label: &str, on: &[Sea]) {
+    let mut by: Vec<&Sea> = on.iter().filter(|s| s.worst_port > 0.0).collect();
+    by.sort_by(|a, b| b.worst_port.total_cmp(&a.worst_port));
+    for s in by.iter().take(4) {
+        let (n, closed, open, fewest) = s.worst_cycle;
+        eprintln!(
+            "WORST {label} seed {}: most closed port {:.3}, {n} spells, closed {closed:.1} days \
+             then open {open:.1} (fewest {fewest:.0}); sky ports {}, every one closed {} days",
+            s.seed, s.worst_port, s.media_ports[1], s.all_closed[1],
         );
     }
 }
@@ -1782,6 +1834,7 @@ fn seas(threads: usize, seeds: std::ops::RangeInclusive<u64>, years: u64) {
             .cloned()
             .collect();
         summary_seas(w, &on, &off);
+        worst_cycles(w, &on);
         check_seas(&on, &off);
     }
 }
@@ -1859,6 +1912,7 @@ fn blockade_min_open_sweep() {
     for m in values {
         let on: Vec<Sea> = all.iter().filter(|s| s.min_open == m).cloned().collect();
         let worst = summary_min_open(m, &on);
+        worst_cycles(&format!("min-open {m}"), &on);
         if pick.is_none() && worst <= 0.25 {
             pick = Some(m);
         }
