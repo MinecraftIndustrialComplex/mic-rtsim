@@ -96,6 +96,10 @@ fn share(before: i64) -> i64 {
 #[test]
 fn a_raid_pays_at_once_and_then_every_season_in_whole_coins() {
     let (mut w, mut d) = start(7, &[spec(ASHPEAK)]);
+    // Ashby pays, so Ashpeak's pair leaves its livestock alone and lives on the roads; in this
+    // world with no herds they catch about a third of their need, and by the third season they
+    // would starve out of the lair (EQUILIBRIUM.md §2.4.1). The payments are this test's subject.
+    d.tun.starve_leave = 0.0;
     let (i, l, g) = (node(&w, ASHBY), lair(&d, ASHPEAK), emerald(&w));
     let t0 = Tick(TICKS_PER_DAY + 123);
     let hoard0 = d

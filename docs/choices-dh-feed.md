@@ -6,7 +6,7 @@ clients) and DH-2 (show what your eyes would see). Phase 1's choices are DHT1 to
 `docs/choices-dh-trains.md`; these continue from DHT25. Each can be undone. What is measured and what is not is
 at the end, under "Measured". The wire formats are in `docs/boundary.md` §12.
 
-mic_rtsim_dh is still not in the pack.
+mic_rtsim_dh is still not in the pack; it ships with rtsim's pack commit (Ben, 2026-10-22).
 
 ## Records and payloads
 
@@ -192,13 +192,15 @@ those 10, before the JIT has compiled most of the path:
 
 ## For Ben
 
-Nothing here blocks the merge; each is reversible before a release.
+Nothing here blocks the merge; each is reversible before a release. Ben approved the formats below and
+the pack plan on 2026-10-22 ("Approve, ship with rtsim"); the PLACEHOLDERs are still to confirm.
 
-- **New wire formats and payloads (public interfaces):** the optional payloads `mic_rtsim:far_sub` and
+- **New wire formats and payloads (public interfaces). APPROVED (Ben, 2026-10-22):** the optional payloads `mic_rtsim:far_sub` and
   `mic_rtsim:far` with their versioned format (boundary.md §12), the engine record FAR_LEG 0x8C00 (80 bytes),
   the far view's id ranges (DHT26) and the carriage id namespace (DHT34). A client without mic_rtsim_dh still
   joins.
-- **mic_rtsim_dh is still not in the pack.** Adding it is yours to decide.
+- **mic_rtsim_dh is still not in the pack. DECIDED (Ben, 2026-10-22):** it ships in the pack with
+  rtsim's pack commit, not before (DECISIONS.md, DH-2 phase 2).
 - **PLACEHOLDERs to confirm:** the hold of 2 sweeps before GONE (DHT29), the hunt circle's 0.5 blocks a tick
   and 40-tick spiral (DHT32), the tier budgets of 8, 24 or 64 dragons and 48, 128 or 320 objects (DHT30,
   DHT36), and the dragon colours, stage lengths, wingspan and wingbeat (DHT37), all set by eye.

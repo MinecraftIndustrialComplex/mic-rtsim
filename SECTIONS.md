@@ -1,7 +1,7 @@
 # Sections: factories cut at links and stores
 
-**Status:** design of 2026-10-22, for Ben's review. Nothing here is built. The questions in §12 come
-first; every other choice is listed in §13 and can be undone.
+**Status:** design approved by Ben on 2026-10-22 (all six questions in §12 answered, each the
+recommended option); not built. Every other choice is listed in §13 and can be undone.
 
 **Decided, and binding here:**
 - **SEC-1** (Ben, 2026-10-21, "Cut at links and stores"): districts stop merging across chain conveyors
@@ -979,7 +979,10 @@ Ana builds a brass works next to her rail line.
 
 ## 12. Questions for Ben
 
-1. **Kinetic networks inside a district.** One shaft network often runs every machine in a building.
+All six answered by Ben on 2026-10-22, each the recommended option (DECISIONS.md, SEC-1 Q1 to Q6).
+The options below stay as the record of what was offered.
+
+1. **Kinetic networks inside a district.** **Answered (Ben, 2026-10-22): (a), as recommended: a shared input that sections cut through.** One shaft network often runs every machine in a building.
    - **(a) Recommended. A shared input.** Sections cut through a network; each takes its speed from
      it, and goes stale when the network's stress passes the least capacity its window ran at. Cost: a
      network is one solve unit, so the sections on it replay in one part; a failure freezes only the
@@ -989,7 +992,7 @@ Ana builds a brass works next to her rail line.
      A building run from one network is then one section, and sections gain little there, measured on
      the reference base, see the local notes.
    - (c) Split only fixed-speed networks (water wheels, motors); a boiler network joins its sections.
-2. **Rotation across a district cut.** A chain conveyor carries rotation as well as packages.
+2. **Rotation across a district cut.** **Answered (Ben, 2026-10-22): (a), as recommended: districts stay apart on a shared network and replay together; past `industry.clusterDistrictsMax` they are not coupled.** A chain conveyor carries rotation as well as packages.
    - **(a) Recommended. Districts stay apart on a shared network:** each district reports its own part,
      the network's state is decided over all parts, and the districts on the network replay together.
      Cost: new glass-to-glass coupling across districts (§10.3), and a cluster's catch-up costs its
@@ -1001,7 +1004,7 @@ Ana builds a brass works next to her rail line.
      base, see the local notes.
    - (c) No coupling: a district without the boiler takes the network at one fixed level, as today. It
      keeps running when the boiler stops, making more than Create would.
-3. **How flows into a store shared by two sections are counted.**
+3. **How flows into a store shared by two sections are counted.** **Answered (Ben, 2026-10-22): (a), as recommended: counted at Create's movers.**
    - **(a) Recommended. At Create's movers:** mixins where funnels, chutes, arms, basins, frogports,
      packagers and pipes move real goods; the mover's position names its section. Vanilla hoppers and
      other mods' movers at a shared store are not counted, and their sections are judged together (a
@@ -1012,7 +1015,7 @@ Ana builds a brass works next to her rail line.
      (§4.2).
    - (c) No counting: the sections at a shared store are always judged together, and only stores with
      a single section on each side split cleanly.
-4. **What holds packages between districts.**
+4. **What holds packages between districts.** **Answered (Ben, 2026-10-22): (a), as recommended: a package store owned by no district.**
    - **(a) Recommended. A package store owned by no district** (GA-2's shared store, built here
      first): its own saved data (an id, its frogports, pools per destination, paged), Create's routing
      and room, a census while it is all loaded, and a pool the districts on it share in one replay
@@ -1021,7 +1024,7 @@ Ana builds a brass works next to her rail line.
    - (b) No store: a `CHAIN_OUT` is booked as the importer's import after the travel time, routed at
      export. No new shared object, but packages for a full or away importer have nowhere to wait, so
      the exporter's replay stops at once, and a partly loaded chain gets no frontier.
-5. **Packages on a chain while exactly one end is loaded.** G-B6 says flow across a loaded and unloaded
+5. **Packages on a chain while exactly one end is loaded.** **Answered (Ben, 2026-10-22): (a), as recommended: modelled both ways, the G2-11 way.** G-B6 says flow across a loaded and unloaded
    edge is modelled. Create itself forgets the route to a frogport whose chunk does not tick within 100
    ticks, after which packages for it circle near the exporter (§2.5).
    - **(a) Recommended. Modelled, the G2-11 way:** a mixin keeps the far frogport's route, packages
@@ -1040,7 +1043,7 @@ Ana builds a brass works next to her rail line.
    - (d) Rust takes the packages off the chain as the far replay draws them: unbounded flow, but Rust
      then holds the only copy of a player's items until the far side loads, an exception to UR-1 only
      you can grant.
-6. **Packagers at a district cut.** SEC-1's list of countable links names packagers.
+6. **Packagers at a district cut.** **Answered (Ben, 2026-10-22): (a), as recommended: cut at the chain, not the packager.** SEC-1's list of countable links names packagers.
    - **(a) Recommended. Cut at the chain, not the packager:** a packager joins the store it serves,
      and its packages are counted at the frogport or postbox they go through.
    - (b) A packager touching a block entity across a chunk border does not join: its chunk and its
