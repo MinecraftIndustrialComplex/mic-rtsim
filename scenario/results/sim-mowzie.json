@@ -1,0 +1,799 @@
+{
+  "seed": 7,
+  "runs": [
+    {
+      "run": 1,
+      "built": false,
+      "slice": "the meter M7, ambushes M8, the kill and the body M6",
+      "checks": [
+        {
+          "name": "the den is a lair",
+          "ok": true,
+          "detail": "node 11: Lair"
+        },
+        {
+          "name": "Notice straight to Raid, Invasion, back to Raid and Notice, then nothing",
+          "ok": true,
+          "detail": "[Notice, Raid, Invasion, Raid, Notice, None]; the grievance held near 76.6 (Raid's threshold 51.1) until day 15.0, then near 153.2 (Invasion's 102.1) until day 55.0"
+        },
+        {
+          "name": "a band comes again 4 days after the last one is home",
+          "ok": true,
+          "detail": "7 repeat(s); days between the last return and coming again: [\"4.00\", \"4.00\", \"4.00 (invasion)\", \"4.00 (invasion)\", \"4.00 (invasion)\", \"4.00 (invasion)\", \"4.00 (invasion)\"]"
+        },
+        {
+          "name": "the Invasion, the top of its ladder, comes again",
+          "ok": true,
+          "detail": "5 invasion repeat(s)"
+        },
+        {
+          "name": "never two Frostmaws about, never a demand",
+          "ok": true,
+          "detail": "at most 1 band(s) at once, 0 demand(s)"
+        },
+        {
+          "name": "the feud wakes a handful of times, never once a tick",
+          "ok": true,
+          "detail": "16 feud wakes over 195 days"
+        },
+        {
+          "name": "books balance",
+          "ok": true,
+          "detail": "Ok(())"
+        },
+        {
+          "name": "a save loads to the same state",
+          "ok": true,
+          "detail": "state hash 88daebd7ace3c6e4"
+        }
+      ],
+      "rungs": [
+        [
+          0.042083333333333334,
+          "notice"
+        ],
+        [
+          9.042083333333334,
+          "raid"
+        ],
+        [
+          25.292083333333334,
+          "invasion"
+        ],
+        [
+          61.91708333333333,
+          "raid"
+        ],
+        [
+          67.91708333333334,
+          "notice"
+        ],
+        [
+          84.75041666666667,
+          "none"
+        ]
+      ],
+      "stats": {
+        "events": 95,
+        "feud_wakes": 16,
+        "stale": 52,
+        "signals": 55,
+        "emissions": 0,
+        "escalations": [
+          0,
+          1,
+          0,
+          0,
+          1,
+          1,
+          0
+        ],
+        "calmed": 3,
+        "demands": 0,
+        "tributes": 0,
+        "cuts": 0,
+        "expired": 0,
+        "gifts": 0,
+        "parties": [
+          0,
+          0,
+          3,
+          6,
+          0,
+          0
+        ],
+        "raids_district": 0,
+        "raids_village": 0,
+        "raids_watched": 0,
+        "raids_skipped": 0,
+        "ambushes": 0,
+        "casualties": 0,
+        "routs": 0,
+        "bored": 0,
+        "chiefs_killed": 0,
+        "successions": 0,
+        "seen": 0,
+        "materialized": 0,
+        "waves": 0,
+        "recalls": 0,
+        "items_from_districts": 0,
+        "items_from_villages": 0,
+        "blocks_destroyed": 0,
+        "feuds_forgotten": 1,
+        "reattributed": 0,
+        "withdrawn": 0,
+        "peace_held": 0,
+        "notices_shown": 0,
+        "repeats": 7
+      },
+      "log": [
+        {
+          "tick": 0,
+          "day": 0.0,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "faction",
+          "what": "a frostmaw camp at (900, 1000), territory 200 blocks"
+        },
+        {
+          "tick": 10,
+          "day": 0.0004166666666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "notice",
+          "what": "grievance against player b0b at 8.4 (killing first): the tribe takes notice"
+        },
+        {
+          "tick": 216010,
+          "day": 9.000416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "raid of 1 warriors for (880, 900), leaving day 10.00"
+        },
+        {
+          "tick": 216010,
+          "day": 9.000416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "grievance against player b0b at 52.5 (killing first): a war band musters"
+        },
+        {
+          "tick": 245110,
+          "day": 10.212916666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 250210,
+          "day": 10.425416666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "raid home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 346210,
+          "day": 14.425416666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "raid of 1 warriors for (880, 900), leaving day 15.43"
+        },
+        {
+          "tick": 346210,
+          "day": 14.425416666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 60.0 (killing first): the war band comes again"
+        },
+        {
+          "tick": 375310,
+          "day": 15.637916666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 380410,
+          "day": 15.850416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "raid home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 476410,
+          "day": 19.850416666666668,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "raid of 1 warriors for (880, 900), leaving day 20.85"
+        },
+        {
+          "tick": 476410,
+          "day": 19.850416666666668,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 93.0 (killing first): the war band comes again"
+        },
+        {
+          "tick": 505510,
+          "day": 21.062916666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 510610,
+          "day": 21.27541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "raid home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 606610,
+          "day": 25.27541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 26.28"
+        },
+        {
+          "tick": 606610,
+          "day": 25.27541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "invasion",
+          "what": "grievance against player b0b at 123.9 (killing first): an invasion musters"
+        },
+        {
+          "tick": 635710,
+          "day": 26.487916666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 640810,
+          "day": 26.700416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 736810,
+          "day": 30.700416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 31.70"
+        },
+        {
+          "tick": 736810,
+          "day": 30.700416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 128.2 (killing first): the invasion comes again"
+        },
+        {
+          "tick": 765910,
+          "day": 31.912916666666668,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 771010,
+          "day": 32.125416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 867010,
+          "day": 36.125416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 37.13"
+        },
+        {
+          "tick": 867010,
+          "day": 36.125416666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 144.0 (killing first): the invasion comes again"
+        },
+        {
+          "tick": 896110,
+          "day": 37.337916666666665,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 901210,
+          "day": 37.55041666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 997210,
+          "day": 41.55041666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 42.55"
+        },
+        {
+          "tick": 997210,
+          "day": 41.55041666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 140.0 (killing first): the invasion comes again"
+        },
+        {
+          "tick": 1026310,
+          "day": 42.76291666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 1031410,
+          "day": 42.97541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 1127410,
+          "day": 46.97541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 47.98"
+        },
+        {
+          "tick": 1127410,
+          "day": 46.97541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 134.9 (killing first): the invasion comes again"
+        },
+        {
+          "tick": 1156510,
+          "day": 48.187916666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 1161610,
+          "day": 48.400416666666665,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 1257610,
+          "day": 52.400416666666665,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 1 warriors for (880, 900), leaving day 53.40"
+        },
+        {
+          "tick": 1257610,
+          "day": 52.400416666666665,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "repeat",
+          "what": "grievance against player b0b still at 145.2 (killing first): the invasion comes again"
+        },
+        {
+          "tick": 1286710,
+          "day": 53.61291666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 1291810,
+          "day": 53.82541666666667,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 1485162,
+          "day": 61.88175,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "calm",
+          "what": "grievance against player b0b falls to 61.3: back to raid"
+        },
+        {
+          "tick": 1629162,
+          "day": 67.88175,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "calm",
+          "what": "grievance against player b0b falls to 30.6: back to notice"
+        },
+        {
+          "tick": 2033422,
+          "day": 84.72591666666666,
+          "faction": "frostmaw camp 3232825345",
+          "kind": "calm",
+          "what": "grievance against player b0b falls to 4.4: back to none"
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "built": false,
+      "slice": "M7",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 3,
+      "built": false,
+      "slice": "M7",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 4,
+      "built": false,
+      "slice": "M7",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 5,
+      "built": false,
+      "slice": "the rest M9",
+      "checks": [
+        {
+          "name": "Notice, Envoy, Scouts, Raid, Invasion, and never Siege",
+          "ok": true,
+          "detail": "[Notice, Envoy, Scouts, Raid, Invasion]"
+        },
+        {
+          "name": "the demand is gold nuggets at 9 an emerald's worth (no market price)",
+          "ok": true,
+          "detail": "pay 208 gold_nugget by day 3.50 (grievance 31.5, aggression bend 1464; at Envoy's base threshold 30 and a middling chief it is 135)"
+        },
+        {
+          "name": "the grove never repeats a rung",
+          "ok": true,
+          "detail": "0 repeat(s)"
+        },
+        {
+          "name": "books balance",
+          "ok": true,
+          "detail": "Ok(())"
+        },
+        {
+          "name": "a save loads to the same state",
+          "ok": true,
+          "detail": "state hash 29e8bdcac5241e51"
+        },
+        {
+          "name": "a demand at 4 nuggets a coin, paid in full, settles it",
+          "ok": true,
+          "detail": "asked 72 gold_nugget (ceil of base x 4 is 72); paying 71 first settled nothing, the rest settled it: true, back to Notice: true, the plugin told it was paid: true"
+        },
+        {
+          "name": "a demand at 9 nuggets a coin, refused at the envoy, climbs to Scouts",
+          "ok": true,
+          "detail": "asked 248 gold_nugget (ceil of base x 9 is 248); then Some((Scouts, true)), the plugin told it was refused: true"
+        }
+      ],
+      "rungs": [
+        [
+          0.042083333333333334,
+          "notice"
+        ],
+        [
+          0.5004166666666666,
+          "envoy"
+        ],
+        [
+          3.5004166666666667,
+          "scouts"
+        ],
+        [
+          5.250416666666666,
+          "raid"
+        ],
+        [
+          10.45875,
+          "invasion"
+        ]
+      ],
+      "stats": {
+        "events": 87,
+        "feud_wakes": 5,
+        "stale": 64,
+        "signals": 80,
+        "emissions": 0,
+        "escalations": [
+          0,
+          1,
+          1,
+          1,
+          1,
+          1,
+          0
+        ],
+        "calmed": 0,
+        "demands": 1,
+        "tributes": 0,
+        "cuts": 0,
+        "expired": 1,
+        "gifts": 0,
+        "parties": [
+          1,
+          1,
+          1,
+          1,
+          0,
+          1
+        ],
+        "raids_district": 0,
+        "raids_village": 0,
+        "raids_watched": 0,
+        "raids_skipped": 0,
+        "ambushes": 0,
+        "casualties": 0,
+        "routs": 0,
+        "bored": 1,
+        "chiefs_killed": 0,
+        "successions": 0,
+        "seen": 0,
+        "materialized": 0,
+        "waves": 0,
+        "recalls": 0,
+        "items_from_districts": 0,
+        "items_from_villages": 0,
+        "blocks_destroyed": 0,
+        "feuds_forgotten": 0,
+        "reattributed": 0,
+        "withdrawn": 0,
+        "peace_held": 0,
+        "notices_shown": 0,
+        "repeats": 0
+      },
+      "log": [
+        {
+          "tick": 0,
+          "day": 0.0,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "faction",
+          "what": "a umvuthana camp at (900, 1000), territory 200 blocks"
+        },
+        {
+          "tick": 10,
+          "day": 0.0004166666666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "notice",
+          "what": "grievance against player b0b at 33.4 (killing first): the tribe takes notice"
+        },
+        {
+          "tick": 12010,
+          "day": 0.5004166666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "muster",
+          "what": "envoy of 3 members for (880, 900), leaving day 0.50"
+        },
+        {
+          "tick": 12010,
+          "day": 0.5004166666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "demand",
+          "what": "an envoy sets out for player b0b: stop the killing or pay 208 gold_nugget by day 3.5"
+        },
+        {
+          "tick": 12010,
+          "day": 0.5004166666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "envoy",
+          "what": "grievance against player b0b at 31.5 (killing first): an envoy with a demand"
+        },
+        {
+          "tick": 17110,
+          "day": 0.7129166666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "envoy",
+          "what": "the envoy waits at (880, 900)"
+        },
+        {
+          "tick": 84010,
+          "day": 3.5004166666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "refused",
+          "what": "the demand on player b0b goes unmet (grievance 107.0)"
+        },
+        {
+          "tick": 84010,
+          "day": 3.5004166666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "muster",
+          "what": "scouts of 1 members for (880, 900), leaving day 3.50"
+        },
+        {
+          "tick": 84010,
+          "day": 3.5004166666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "scouts",
+          "what": "grievance against player b0b at 107.0 (killing first): scouts go out"
+        },
+        {
+          "tick": 85954,
+          "day": 3.5814166666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "home",
+          "what": "envoy home with 3 left and 0 items for the haven"
+        },
+        {
+          "tick": 89110,
+          "day": 3.7129166666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "scouts",
+          "what": "scouts watch (880, 900) from the edge"
+        },
+        {
+          "tick": 106210,
+          "day": 4.425416666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "home",
+          "what": "scouts home with 1 left and 0 items for the haven"
+        },
+        {
+          "tick": 125110,
+          "day": 5.212916666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "muster",
+          "what": "raid of 4 warriors for (880, 900), leaving day 6.21"
+        },
+        {
+          "tick": 125110,
+          "day": 5.212916666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "raid",
+          "what": "grievance against player b0b at 149.5 (killing first): a war band musters"
+        },
+        {
+          "tick": 154210,
+          "day": 6.425416666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 159310,
+          "day": 6.6379166666666665,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "home",
+          "what": "raid home with 4 left and 0 items for the haven"
+        },
+        {
+          "tick": 250210,
+          "day": 10.425416666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "muster",
+          "what": "invasion of 8 warriors for (880, 900), leaving day 11.43"
+        },
+        {
+          "tick": 250210,
+          "day": 10.425416666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "invasion",
+          "what": "grievance against player b0b at 209.8 (killing first): an invasion musters"
+        },
+        {
+          "tick": 279310,
+          "day": 11.637916666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "raid",
+          "what": "finds nothing to raid"
+        },
+        {
+          "tick": 284410,
+          "day": 11.850416666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "home",
+          "what": "invasion home with 8 left and 0 items for the haven"
+        },
+        {
+          "tick": 458980,
+          "day": 19.124166666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "muster",
+          "what": "plunder of 1 warriors for (600, 650), leaving day 20.12"
+        },
+        {
+          "tick": 506029,
+          "day": 21.084541666666667,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "plunder",
+          "what": "finds nothing worth taking at node 4: 1 items spare within reach"
+        },
+        {
+          "tick": 529078,
+          "day": 22.044916666666666,
+          "faction": "umvuthana camp 3232825345",
+          "kind": "home",
+          "what": "plunder home with 1 left and 0 items for the haven"
+        }
+      ]
+    },
+    {
+      "run": 6,
+      "built": false,
+      "slice": "M6 (den), M9 (grove)",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 7,
+      "built": false,
+      "slice": "M6",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 8,
+      "built": false,
+      "slice": "M8, M4",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 9,
+      "built": false,
+      "slice": "M7",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 10,
+      "built": false,
+      "slice": "M4",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 11,
+      "built": false,
+      "slice": "M10, M11",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 12,
+      "built": false,
+      "slice": "M9",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    },
+    {
+      "run": 13,
+      "built": false,
+      "slice": "M10",
+      "checks": [],
+      "rungs": [],
+      "stats": null,
+      "log": []
+    }
+  ]
+}

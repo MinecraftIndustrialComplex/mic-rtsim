@@ -21,6 +21,8 @@ use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_settle::Pos;
+use rtsim_trade::tunables::Ratio;
+use rtsim_trade::{GoodId, Price};
 use rtsim_world::synth::SynthGoods;
 use rtsim_world::{World, WorldConfig};
 
@@ -82,6 +84,19 @@ pub fn define_names(c: &mut Conflict, w: &World) {
     c.define(4, 3, "minecraft:pillager_outpost");
     c.define(boundary::DICT_POLLUTION, 1, "destroy:smog");
     c.define(boundary::DICT_POLLUTION, 2, "destroy:radioactivity");
+}
+
+/// Sets good `g`'s price at node `i`'s market to `price` (millionths of a coin), flat whatever its
+/// stock: a market that prices a good no recipe makes there, as the gold nuggets of the
+/// Umvuthana's tribute (MOWZIE.md ledger 12). A storehouse only; a base keeps no curves.
+pub fn set_price(w: &mut World, i: usize, g: GoodId, price: Price, at: Tick) {
+    w.run_until(at);
+    let region = w.nodes[i].region;
+    w.markets.apply(region, at, |m, _| {
+        let c = &mut m.goods[g.index()].curve;
+        c.anchor = price;
+        c.r = Ratio::new(0, 1);
+    });
 }
 
 /// The refinery: a vault, a distiller and a smelter at the Thornwood's edge, half-walled (6 gaps
@@ -237,6 +252,9 @@ pub struct FakeConflict {
     pub play_notices: bool,
     /// The world's difficulty, sent as DIFFICULTY at each [`FakeConflict::session_start`].
     pub difficulty: u32,
+    /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
+    /// counts, at the recall, first stacks first (0: none; MZB-131).
+    pub walk_off_deaths: u32,
 }
 
 const SYS_FAKE: SystemId = SystemId::named("conflict.fake_plugin");
@@ -258,6 +276,7 @@ impl FakeConflict {
             leave_ticks: 300,
             play_notices: true,
             difficulty: boundary::DIFFICULTY_NORMAL,
+            walk_off_deaths: 0,
         }
     }
 
@@ -491,13 +510,24 @@ impl FakeConflict {
                 if let Some(b) = self.bodies.remove(&r.agent)
                     && b.epoch == r.epoch
                 {
+                    // Some die on the way out: the first stacks lose them first.
+                    let mut dead = self.walk_off_deaths;
+                    let survivors = b
+                        .members
+                        .iter()
+                        .map(|(&k, &v)| {
+                            let lost = v.min(dead);
+                            dead -= lost;
+                            (k, v - lost)
+                        })
+                        .collect();
                     self.push(
                         at + self.leave_ticks,
                         Obs::Dematerialized(boundary::BandDematerialized {
                             agent: r.agent,
                             epoch: r.epoch,
                             reason: 1,
-                            survivors: b.members.iter().map(|(&k, &v)| (k, v)).collect(),
+                            survivors,
                         }),
                     );
                 }

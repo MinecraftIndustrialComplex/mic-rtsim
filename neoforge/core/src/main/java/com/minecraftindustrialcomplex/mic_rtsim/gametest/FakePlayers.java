@@ -25,7 +25,12 @@ public final class FakePlayers {
     private FakePlayers() {}
 
     public static ServerPlayer add(ServerLevel level, Vec3 at, String name) {
-        GameProfile profile = new GameProfile(UUID.randomUUID(), name);
+        return add(level, at, name, UUID.randomUUID());
+    }
+
+    /** A player with a given id: the same player logging in again is a new entity with the old id. */
+    public static ServerPlayer add(ServerLevel level, Vec3 at, String name, UUID id) {
+        GameProfile profile = new GameProfile(id, name);
         CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
         ServerPlayer p = new ServerPlayer(level.getServer(), level, profile, cookie.clientInformation());
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
