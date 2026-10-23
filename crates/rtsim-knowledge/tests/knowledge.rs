@@ -322,6 +322,77 @@ fn same_seed_same_state() {
     assert_ne!(run(11), run(12));
 }
 
+/// The TALK news kinds (TALK.md §9.4) are news and never a grudge: learning one, first-hand or as
+/// hearsay, writes no sentiment toward `who` (even a player) and no vanilla gossip, and a village
+/// keeps it on its board for the lifetime the table gives it.
+#[test]
+fn news_kinds_write_no_sentiment_and_no_vanilla_gossip() {
+    let news = [
+        ReportKind::Feud,
+        ReportKind::PactSworn,
+        ReportKind::PactBroken,
+        ReportKind::Raid,
+        ReportKind::Fell,
+        ReportKind::PortRaided,
+        ReportKind::Blockade,
+        ReportKind::PortClosed,
+        ReportKind::PortReopened,
+        ReportKind::HavenFell,
+    ];
+    let t = Tunables::default();
+    let day = TICKS_PER_DAY;
+    let lives = [10, 30, 30, 20, 30, 6, 6, 6, 6, 6];
+    let mut w = world(7);
+    // Every one is a player-involved report (the player is `who`), the case that would write the
+    // most: a sentiment toward the player and a vanilla gossip entry.
+    let mut ids = Vec::new();
+    for (i, kind) in news.into_iter().enumerate() {
+        assert_eq!(t.delta[kind.index()], 0, "{kind:?} has a sentiment delta");
+        assert_eq!(t.delta(kind, 255, false), 0);
+        assert_eq!(t.lifetime(kind), lives[i] * day, "{kind:?}");
+        assert!(!kind.is_positive());
+        assert!(!rtsim_knowledge::gossip::vanilla_sees_first_hand(kind));
+        assert_eq!(
+            rtsim_knowledge::gossip::vanilla_mapping(kind),
+            None,
+            "{kind:?}"
+        );
+        let id = w.k.record(Report {
+            kind,
+            severity: 255,
+            ..robbery(&w, w.oakford, 10 + i as u64)
+        });
+        assert!(w.k.witness(w.oakford, id, Tick(100)), "{kind:?} first-hand");
+        ids.push(id);
+    }
+    assert_eq!(w.k.sentiment(w.oakford, w.player, Tick(100)), 0);
+    assert!(
+        w.k.sentiments(w.oakford).unwrap().is_empty(),
+        "no sentiment entry at all"
+    );
+    assert!(w.k.take_vanilla_gossip().is_empty(), "first-hand");
+    // Hearsay in a vanilla village and a ribbit village: still nothing.
+    let mut road = BoardCursor::default();
+    let packet = w.k.packet_since(w.oakford, &mut road);
+    assert_eq!(packet.len(), news.len());
+    assert_eq!(w.k.deliver(w.brindle, &packet, Tick(200)), news.len());
+    assert_eq!(w.k.deliver(w.mirewater, &packet, Tick(200)), news.len());
+    for h in [w.brindle, w.mirewater] {
+        assert_eq!(w.k.sentiment(h, w.player, Tick(200)), 0);
+        assert!(w.k.sentiments(h).unwrap().is_empty());
+    }
+    assert!(w.k.take_vanilla_gossip().is_empty(), "hearsay");
+    // The news is on the board and survives to its lifetime, then expires like any report.
+    for id in &ids {
+        assert!(w.k.knows(w.oakford, *id));
+    }
+    // A control: an old kind on the same village still writes both.
+    let rob = w.k.record(robbery(&w, w.oakford, 300));
+    w.k.witness(w.oakford, rob, Tick(300));
+    assert!(w.k.sentiment(w.oakford, w.player, Tick(300)) < 0);
+    assert_eq!(w.k.take_vanilla_gossip().len(), 1);
+}
+
 /// The event archive (VIEWER.md §10.1): every report is archived as it is made, at its own place,
 /// who did it to whom, under a registered knowledge kind; nothing while the tape is off.
 #[test]
