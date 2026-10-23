@@ -17,9 +17,11 @@ package com.minecraftindustrialcomplex.mic_rtsim.far;
  * @param leg      a flown leg, or null
  * @param entity   the real entity's network id, or -1 when it has no body in the level
  * @param priority which source wins when two give the same id (higher wins): a body beats the engine's leg
+ * @param shape    what it looks like ({@link FarShape}: a carriage's blocks), or null for a box
+ * @param age      its age in days (a dragon's, for its size between stages), or -1 when the source does not say
  */
 public record FarItem(long id, FarKind kind, int style, int variant, int size, int rgb, FarState state,
-        double[] seg, Leg leg, int entity, int priority) {
+        double[] seg, Leg leg, int entity, int priority, FarShape shape, int age) {
 
     public FarItem {
         if ((seg == null) == (leg == null))
@@ -28,6 +30,17 @@ public record FarItem(long id, FarKind kind, int style, int variant, int size, i
             throw new IllegalArgumentException("a segment is 6 values, got " + seg.length);
         if (state == null || state == FarState.GONE)
             throw new IllegalArgumentException("an item's state must be set and not GONE");
+    }
+
+    /** An item with no shape and no age. */
+    public FarItem(long id, FarKind kind, int style, int variant, int size, int rgb, FarState state, double[] seg, Leg leg,
+            int entity, int priority) {
+        this(id, kind, style, variant, size, rgb, state, seg, leg, entity, priority, null, -1);
+    }
+
+    /** The shape's hash on the wire: 0 for none. */
+    public long shapeHash() {
+        return shape == null ? 0L : shape.hash();
     }
 
     /**
@@ -60,12 +73,12 @@ public record FarItem(long id, FarKind kind, int style, int variant, int size, i
         if (seg != null) {
             double[] l = iso.point(seg[0], seg[2]), t = iso.point(seg[3], seg[5]);
             return new FarItem(id, kind, style, variant, size, rgb, state,
-                    new double[]{l[0], seg[1], l[1], t[0], seg[4], t[1]}, null, entity, priority);
+                    new double[]{l[0], seg[1], l[1], t[0], seg[4], t[1]}, null, entity, priority, shape, age);
         }
         // Leg ends are block coordinates: move the block centres and take the block back
         double[] a = iso.point(leg.x0 + 0.5, leg.z0 + 0.5), b = iso.point(leg.x1 + 0.5, leg.z1 + 0.5);
         Leg m = new Leg(leg.y, (int) Math.floor(a[0]), (int) Math.floor(a[1]), (int) Math.floor(b[0]),
                 (int) Math.floor(b[1]), leg.t0, leg.t1, leg.radius);
-        return new FarItem(id, kind, style, variant, size, rgb, state, null, m, entity, priority);
+        return new FarItem(id, kind, style, variant, size, rgb, state, null, m, entity, priority, shape, age);
     }
 }

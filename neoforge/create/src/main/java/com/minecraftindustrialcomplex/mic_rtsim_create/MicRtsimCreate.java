@@ -40,7 +40,12 @@ public final class MicRtsimCreate {
         // Last, and only if no one cancelled the join: a REAL for a carriage that never joins would hide it
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, false,
                 net.neoforged.neoforge.event.entity.EntityJoinLevelEvent.class, TrainFeedSource::joining);
-        if (FarTrainBench.ENABLED)
+        // A stopped server's carriages are not kept (single player starts another server in the same JVM)
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(
+                (net.neoforged.neoforge.event.server.ServerStoppedEvent e) -> CarriageShapes.clear());
+        if (FarTrainBench.ENABLED) {
             FarTrainBench.register();
+            com.minecraftindustrialcomplex.mic_rtsim_create.bench.BenchCarriages.register();
+        }
     }
 }
