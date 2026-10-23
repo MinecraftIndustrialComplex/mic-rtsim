@@ -61,6 +61,8 @@ public final class DragonLook implements FarLook {
     private static final int T0 = 200_000;
     /** Open sky, no block light: the lightmap darkens them at night as it does DH's terrain. */
     static final int SKY_LIGHT = 15 << 20;
+    /** Where the renders that only move the animation on draw to. */
+    private static final MultiBufferSource NULL_SOURCE = rt -> NullVertexConsumer.INSTANCE;
     /** A pose set nobody drew for this long is freed, a live stand-in sooner (PLACEHOLDERS). */
     static final long KEEP_NANOS = 60_000_000_000L, LIVE_KEEP_NANOS = 5_000_000_000L;
     /**
@@ -117,6 +119,8 @@ public final class DragonLook implements FarLook {
         int species = -1;
         boolean flying;
         long used;
+        /** The tick its flight loop last started at: one {@link #loopStart} gives. */
+        long loop;
     }
 
     private final Map<Integer, Poses> sets = new HashMap<>();
@@ -205,15 +209,25 @@ public final class DragonLook implements FarLook {
         if (live) {
             StandIn st = standIns.computeIfAbsent(m.key(), k -> new StandIn());
             EntityRenderer<DragonBaseEntity> r;
-            if (st.entity == null || st.species != species || st.flying != flying) {
-                // A fresh stand-in (its animation starts over), started as the bakes start theirs
+            long loop = loopStart(time);
+            if (st.entity == null || st.species != species || st.flying != flying || loop < st.loop) {
+                // A fresh stand-in (its animation starts over: a new look, or time run back), started as the
+                // bakes start theirs
                 st.entity = newStandIn(levelOf, species);
                 st.species = species;
                 st.flying = flying;
                 r = renderer(st.entity);
-                startOnBakeClock(st.entity, r, m.variant(), age, flying, yawDeg, time);
-            } else
+                st.loop = startOnBakeClock(st.entity, r, m.variant(), age, flying, yawDeg, time);
+            } else {
                 r = renderer(st.entity);
+                if (loop > st.loop) {
+                    // GeckoLib starts a loop at the first render past the last one's end and drops what it ran
+                    // over: a render at the end itself keeps the stand-in on the bakes' clock, after gaps too
+                    pose(st.entity, m.variant(), age, flying, yawDeg, loop);
+                    r.render(st.entity, yawDeg, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
+                    st.loop = loop;
+                }
+            }
             st.used = this.clock;
             DragonBaseEntity d = st.entity;
             pose(d, m.variant(), age, flying, yawDeg, time);
@@ -332,18 +346,27 @@ public final class DragonLook implements FarLook {
     }
 
     /**
-     * Gives a fresh stand-in the renders a bake gives its probe before frame 0 (the warm-ups and frame 0 itself),
-     * at times a whole number of loops before or at {@code time}, so its animation starts as the bake's did:
-     * Ice and Fire's controllers (GeckoLib's) start their loop at the render that ends their transition.
+     * The last tick at or before {@code time} that a probe's flight loop starts at, a whole number of loops on:
+     * Ice and Fire's controllers (GeckoLib's) start their loop at the render that ends their transition, which in a
+     * bake is the last warm-up, {@code T0 - LOOP / FRAMES}.
      */
-    private static void startOnBakeClock(DragonBaseEntity d, EntityRenderer<DragonBaseEntity> r, int variant, int age,
+    static long loopStart(double time) {
+        long now = (long) Math.floor(time), first = T0 - (long) (LOOP / FRAMES);
+        return now - Math.floorMod(now - first, (long) LOOP);
+    }
+
+    /**
+     * Gives a fresh stand-in the warm-ups a bake gives its probe, ending at {@link #loopStart}{@code (time)}, so
+     * its animation starts as the bake's did; returns that tick.
+     */
+    private static long startOnBakeClock(DragonBaseEntity d, EntityRenderer<DragonBaseEntity> r, int variant, int age,
             boolean flying, float yaw, double time) {
-        long now = (long) Math.floor(time);
-        long start = now - Math.floorMod(now - T0, (long) LOOP) - (long) (WARM * (LOOP / FRAMES));
-        for (int s = 0; s <= WARM; s++) {
-            pose(d, variant, age, flying, yaw, start + s * (LOOP / FRAMES));
-            r.render(d, yaw, 0f, new PoseStack(), rt -> NullVertexConsumer.INSTANCE, SKY_LIGHT);
+        long loop = loopStart(time);
+        for (int s = 0; s < WARM; s++) {
+            pose(d, variant, age, flying, yaw, loop + (s + 1 - WARM) * (LOOP / FRAMES));
+            r.render(d, yaw, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
         }
+        return loop;
     }
 
     /** One render of a bake: a warm-up, a frame of the flight loop, a warm-up at rest, or the rest pose. */
@@ -355,14 +378,14 @@ public final class DragonLook implements FarLook {
         int s = p.step, age = ageFor(p.stage);
         if (s < WARM) {
             pose(d, p.variant, age, true, 0f, T0 + (s - WARM) * (LOOP / FRAMES));
-            r.render(d, 0f, 0f, new PoseStack(), rt -> NullVertexConsumer.INSTANCE, SKY_LIGHT);
+            r.render(d, 0f, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
         } else if (s < WARM + FRAMES) {
             int f = s - WARM;
             pose(d, p.variant, age, true, 0f, T0 + f * (LOOP / FRAMES));
             p.frames[f] = capture(d, r, p);
         } else if (s < WARM + FRAMES + REST_WARM) {
             pose(d, p.variant, age, false, 0f, T0 + LOOP + (s - WARM - FRAMES) * 10.0);
-            r.render(d, 0f, 0f, new PoseStack(), rt -> NullVertexConsumer.INSTANCE, SKY_LIGHT);
+            r.render(d, 0f, 0f, new PoseStack(), NULL_SOURCE, SKY_LIGHT);
         } else {
             pose(d, p.variant, age, false, 0f, T0 + LOOP + REST_WARM * 10.0 + 10.0);
             p.rest = capture(d, r, p);
@@ -390,9 +413,15 @@ public final class DragonLook implements FarLook {
                 int n = md.drawState().vertexCount();
                 bounds(md, rt, n, p);
                 VertexBuffer vb = new VertexBuffer(VertexBuffer.Usage.STATIC);
-                vb.bind();
-                vb.upload(md);
-                VertexBuffer.unbind();
+                try {
+                    vb.bind();
+                    vb.upload(md);
+                } catch (RuntimeException | LinkageError x) {
+                    vb.close();
+                    throw x;
+                } finally {
+                    VertexBuffer.unbind();
+                }
                 parts.add(new FarModel.Part(rt, vb, n));
                 p.vertices += n;
                 p.bytes += (long) n * rt.format().getVertexSize();
