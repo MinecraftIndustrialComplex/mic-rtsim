@@ -53,7 +53,7 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate, PlayerView,
     Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats,
     ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
@@ -701,6 +701,10 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(haven);
             w.u32(epoch);
         }
+        Ev::Assault { navy } => {
+            w.u8(13);
+            w.u32(navy);
+        }
     }
 }
 
@@ -763,6 +767,7 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             haven: r.u32()?,
             epoch: r.u32()?,
         },
+        13 => Ev::Assault { navy: r.u32()? },
         t => return bad(format!("event tag {t}")),
     })
 }
@@ -1048,9 +1053,16 @@ impl Ships {
                     w.bool(sh.broken);
                 }
             }
+            match h.broken_at {
+                None => w.u8(0),
+                Some(t) => {
+                    w.u8(1);
+                    w.u64(t.0);
+                }
+            }
             w.u32(h.epoch);
             let c = h.counts;
-            for v in [c.toll_milli, c.laid_up, c.shuts, c.refounds] {
+            for v in [c.toll_milli, c.laid_up, c.shuts, c.refounds, c.broken_shuts] {
                 w.var_u64(v);
             }
             put_usize(w, h.ships.len());
@@ -1066,6 +1078,8 @@ impl Ships {
             w.var_u64(u64::from(n.service));
             put_usize(w, n.ships.len());
             n.ships.iter().for_each(|s| w.u64(s.to_bits()));
+            w.var_u64(n.counts.looked);
+            w.var_u64(n.counts.assaults);
         }
         self.wheel.encode_with(w, |e, w| put_ev(w, e));
         put_usize(w, self.players.len());
@@ -1161,12 +1175,18 @@ impl Ships {
                 }),
                 t => return bad(format!("haven shut tag {t}")),
             };
+            let broken_at = match r.u8()? {
+                0 => None,
+                1 => Some(Tick(r.u64()?)),
+                t => return bad(format!("haven broken tag {t}")),
+            };
             let epoch = r.u32()?;
             let counts = HavenCounts {
                 toll_milli: r.var_u64()?,
                 laid_up: r.var_u64()?,
                 shuts: r.var_u64()?,
                 refounds: r.var_u64()?,
+                broken_shuts: r.var_u64()?,
             };
             let n = r.len_prefix(8)?;
             let hs = (0..n)
@@ -1188,6 +1208,7 @@ impl Ships {
                 lanes: hl,
                 fed_until,
                 shut,
+                broken_at,
                 epoch,
                 counts,
             });
@@ -1202,12 +1223,17 @@ impl Ships {
             let ns = (0..n)
                 .map(|_| handle(r))
                 .collect::<codec::Result<Vec<_>>>()?;
+            let counts = NavyCounts {
+                looked: r.var_u64()?,
+                assaults: r.var_u64()?,
+            };
             navies.push(Navy {
                 node,
                 dock,
                 medium,
                 service,
                 ships: ns,
+                counts,
             });
         }
         let wheel: TimingWheel<Ev> = TimingWheel::decode_with(r, get_ev)?;

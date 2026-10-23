@@ -147,9 +147,9 @@ pub struct ShipTunables {
     pub hunt_crew_value: f64,
 
     // ---- Havens that rise and fall (EQUILIBRIUM.md §2.4.6a, slice S8b) ----
-    /// Rules 1 to 5 of §2.4.6a (the toll, starving, laying up, shutting, refounding) are on. Off,
-    /// the havens behave exactly as S8 left them, so a measurement can pair each seed with the S8
-    /// behaviour. TUNABLE: on.
+    /// Rules 1 to 5 of §2.4.6a (the toll, starving, laying up, shutting, refounding) and the navy
+    /// assaults of rule 3 are on. Off, the havens behave exactly as S8 left them, so a measurement
+    /// can pair each seed with the S8 behaviour. TUNABLE: on.
     pub lifecycle: bool,
     /// A haven is fed while one of its pirates began a hunt within this many days (§2.4.6a rule 2,
     /// PC2); starving, it hires nobody and its pool deserts at the hire rate. TUNABLE 30 (six
@@ -160,6 +160,9 @@ pub struct ShipTunables {
     /// dock or no lane worth hunting looks again `base` days later. TUNABLE: base 48, cap 384,
     /// half-life 96.
     pub refound: RenewalRule,
+    /// A navy's home port looks for a haven to assault every this many days (§2.4.6a rule 3,
+    /// PC7); 0 never. TUNABLE 24, S1's census grid.
+    pub assault_every_days: u32,
     /// Navies: ships per patrol. PLACEHOLDER 2.
     pub navy_ships: u32,
     /// Lanes a patrol covers: those within this many lane hops of its base. PLACEHOLDER 2.
@@ -262,6 +265,7 @@ impl Default for ShipTunables {
                 cap_days: 384.0,
                 half_life_days: 96.0,
             },
+            assault_every_days: 24,
             navy_ships: 2,
             patrol_hops: 2,
         }
