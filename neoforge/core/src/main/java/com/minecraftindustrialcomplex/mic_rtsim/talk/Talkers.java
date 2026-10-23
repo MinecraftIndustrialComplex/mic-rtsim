@@ -21,14 +21,31 @@ public final class Talkers {
     private Talkers() {}
 
     private static volatile Map<ResourceLocation, List<Talker>> byType = Map.of();
+    /** The core's own talkers: always asked after every plugin's (TALK.md §4). */
+    private static volatile Map<ResourceLocation, List<Talker>> builtin = Map.of();
     private static volatile Set<ResourceLocation> always = Set.of();
 
+    /** A plugin's talker: asked before the core's built-ins, in registration order. */
     public static synchronized void register(ResourceLocation typeId, Talker talker, boolean alwaysTalks) {
-        Map<ResourceLocation, List<Talker>> next = new java.util.HashMap<>(byType);
+        byType = added(byType, typeId, talker);
+        markAlways(typeId, alwaysTalks);
+    }
+
+    /** One of the core's own talkers: always asked after the plugins'. */
+    public static synchronized void registerBuiltin(ResourceLocation typeId, Talker talker, boolean alwaysTalks) {
+        builtin = added(builtin, typeId, talker);
+        markAlways(typeId, alwaysTalks);
+    }
+
+    private static Map<ResourceLocation, List<Talker>> added(Map<ResourceLocation, List<Talker>> from, ResourceLocation typeId, Talker talker) {
+        Map<ResourceLocation, List<Talker>> next = new java.util.HashMap<>(from);
         List<Talker> list = new ArrayList<>(next.getOrDefault(typeId, List.of()));
         list.add(talker);
         next.put(typeId, List.copyOf(list));
-        byType = Map.copyOf(next);
+        return Map.copyOf(next);
+    }
+
+    private static void markAlways(ResourceLocation typeId, boolean alwaysTalks) {
         if (alwaysTalks) {
             Set<ResourceLocation> a = new HashSet<>(always);
             a.add(typeId);
@@ -36,14 +53,26 @@ public final class Talkers {
         }
     }
 
-    /** The first talker of this entity's type whose {@code talks} says yes for this player, or null. */
+    /**
+     * The first talker of this entity's type whose {@code talks} says yes for this player, plugins before
+     * the core's own, or null. A talker that throws is skipped (logged once).
+     */
     public static Talker find(Entity entity, ServerPlayer player) {
-        List<Talker> list = byType.get(BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()));
+        ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
+        Talker t = first(byType.get(id), entity, player);
+        return t != null ? t : first(builtin.get(id), entity, player);
+    }
+
+    private static Talker first(List<Talker> list, Entity entity, ServerPlayer player) {
         if (list == null)
             return null;
         for (Talker t : list)
-            if (t.talks(entity, player))
-                return t;
+            try {
+                if (t.talks(entity, player))
+                    return t;
+            } catch (Throwable e) {
+                Talk.failed(t, "talks", e);
+            }
         return null;
     }
 
@@ -54,6 +83,7 @@ public final class Talkers {
     }
 
     public static boolean has(EntityType<?> type) {
-        return byType.containsKey(BuiltInRegistries.ENTITY_TYPE.getKey(type));
+        ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(type);
+        return byType.containsKey(id) || builtin.containsKey(id);
     }
 }

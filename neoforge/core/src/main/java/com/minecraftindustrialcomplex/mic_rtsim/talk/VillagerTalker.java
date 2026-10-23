@@ -63,7 +63,7 @@ public final class VillagerTalker implements Talker {
 
     @Override
     public Attitude attitude(Entity entity, ServerPlayer player) {
-        return ((Villager) entity).getPlayerReputation(player) < -25 ? Attitude.WARY : Attitude.FRIENDLY;
+        return ((Villager) entity).getPlayerReputation(player) <= -25 ? Attitude.WARY : Attitude.FRIENDLY;
     }
 
     @Override

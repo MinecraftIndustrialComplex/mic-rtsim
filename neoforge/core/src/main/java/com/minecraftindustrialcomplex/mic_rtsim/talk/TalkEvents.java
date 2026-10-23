@@ -1,6 +1,5 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
-import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.Talker;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
@@ -26,23 +25,46 @@ public final class TalkEvents {
 
     /** The talkers the core brings itself (vanilla's villager and wandering trader). */
     public static void registerBuiltins() {
-        RtsimApi.registerTalker(ResourceLocation.withDefaultNamespace("villager"), new VillagerTalker(), true);
-        RtsimApi.registerTalker(ResourceLocation.withDefaultNamespace("wandering_trader"), new TraderTalker(), true);
+        Talkers.registerBuiltin(ResourceLocation.withDefaultNamespace("villager"), new VillagerTalker(), true);
+        Talkers.registerBuiltin(ResourceLocation.withDefaultNamespace("wandering_trader"), new TraderTalker(), true);
     }
 
     public static void register() {
         registerBuiltins();
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.EntityInteract.class, TalkEvents::onInteract);
+        bus.addListener(net.neoforged.neoforge.event.tick.ServerTickEvent.Post.class, e -> Talk.tickLooks());
         bus.addListener(PlayerEvent.PlayerLoggedOutEvent.class, e -> Talk.forget(e.getEntity().getUUID()));
         bus.addListener(ServerStartedEvent.class, e -> Talk.clear());
         bus.addListener(ServerStoppedEvent.class, e -> Talk.clear());
+    }
+
+    /** Mowzie's Mobs' freeze and Cataclysm's stun cancel interactions at NORMAL priority: a held player does not talk. */
+    private static final String[] HELD = {"mowziesmobs:frozen", "cataclysm:stun"};
+    private static volatile java.util.List<net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect>> heldEffects;
+
+    private static boolean held(Player player) {
+        java.util.List<net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect>> effects = heldEffects;
+        if (effects == null) {
+            java.util.List<net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect>> found = new java.util.ArrayList<>();
+            for (String id : HELD) {
+                ResourceLocation rl = ResourceLocation.parse(id);
+                net.minecraft.core.registries.BuiltInRegistries.MOB_EFFECT.getHolder(rl).ifPresent(found::add);
+            }
+            heldEffects = effects = java.util.List.copyOf(found);
+        }
+        for (net.minecraft.core.Holder<net.minecraft.world.effect.MobEffect> e : effects)
+            if (player.hasEffect(e))
+                return true;
+        return false;
     }
 
     private static void onInteract(PlayerInteractEvent.EntityInteract event) {
         Player player = event.getEntity();
         Entity target = event.getTarget();
         if (!player.isSecondaryUseActive() || !player.getMainHandItem().isEmpty() || !target.isAlive() || target.isRemoved())
+            return;
+        if (held(player))
             return;
         boolean main = event.getHand() == InteractionHand.MAIN_HAND;
         if (event.getLevel().isClientSide()) {
@@ -53,7 +75,8 @@ public final class TalkEvents {
             }
             return;
         }
-        if (!(player instanceof ServerPlayer sp))
+        // Machines (a Create deployer is a fake player) never talk.
+        if (!(player instanceof ServerPlayer sp) || sp.isFakePlayer())
             return;
         Talker talker = Talkers.find(target, sp);
         if (talker == null)
@@ -64,6 +87,10 @@ public final class TalkEvents {
             return;
         }
         event.setCancellationResult(InteractionResult.SUCCESS);
-        Talk.speak(talker, target, sp);
+        try {
+            Talk.speak(talker, target, sp);
+        } catch (Throwable e) {
+            Talk.failed(talker, "speak", e);
+        }
     }
 }

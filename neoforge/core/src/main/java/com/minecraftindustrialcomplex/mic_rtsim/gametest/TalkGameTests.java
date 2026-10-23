@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.PlayerListAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Lines;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Names;
@@ -8,6 +9,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.talk.Talk;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkDays;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestInfo;
+import net.minecraft.gametest.framework.GameTestListener;
+import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
@@ -49,8 +53,36 @@ public final class TalkGameTests {
         Villager v = helper.spawn(EntityType.VILLAGER, new Vec3(x, 2, z));
         v.setVillagerData(v.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));
         v.setPersistenceRequired();
+        // Some xp, or vanilla's ResetProfession strips the job on the first brain tick.
+        v.setVillagerXp(1);
         check("the farmer has trades", !v.getOffers().isEmpty());
         return v;
+    }
+
+    /** Takes the hearing players out of the level when the test ends, however it ends. */
+    private static void cleanup(GameTestHelper helper, FakePlayers.Hearer... players) {
+        helper.testInfo.addListener(new GameTestListener() {
+            private void remove() {
+                for (FakePlayers.Hearer p : players)
+                    FakePlayers.remove(p);
+            }
+
+            @Override
+            public void testStructureLoaded(GameTestInfo info) {}
+
+            @Override
+            public void testPassed(GameTestInfo info, GameTestRunner runner) {
+                remove();
+            }
+
+            @Override
+            public void testFailed(GameTestInfo info, GameTestRunner runner) {
+                remove();
+            }
+
+            @Override
+            public void testAddedForRerun(GameTestInfo oldTest, GameTestInfo newTest, GameTestRunner runner) {}
+        });
     }
 
     private static InteractionResult[] click(net.minecraft.server.level.ServerPlayer player, net.minecraft.world.entity.Entity target, boolean crouch) {
@@ -75,12 +107,24 @@ public final class TalkGameTests {
         ServerLevel level = helper.getLevel();
         FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(7.5, 2, 5.5)), "talk_ben");
         FakePlayers.Hearer alex = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(3.5, 2, 5.5)), "talk_alex");
+        cleanup(helper, ben, alex);
         Villager[] v = new Villager[1];
         helper.startSequence()
                 .thenExecute(() -> v[0] = farmer(helper, 5.5, 5.5))
                 .thenIdle(SETTLE)
                 .thenExecute(() -> {
-                    InteractionResult[] r = click(ben, v[0], true);
+                    // Both players are on the server's player list for the click only, so a line sent to
+                    // everyone (a broadcast) would reach Alex too. Add, click, remove: one synchronous block.
+                    java.util.List<net.minecraft.server.level.ServerPlayer> all = ((PlayerListAccessor) level.getServer().getPlayerList()).mic_rtsim$players();
+                    InteractionResult[] r;
+                    all.add(ben);
+                    all.add(alex);
+                    try {
+                        r = click(ben, v[0], true);
+                    } finally {
+                        all.remove(ben);
+                        all.remove(alex);
+                    }
                     check("the main hand swings once: " + r[0], r[0] == InteractionResult.SUCCESS);
                     check("the off hand is consumed silently: " + r[1], r[1] == InteractionResult.CONSUME);
                     check("Ben received exactly one message: " + ben.heard.size(), ben.heard.size() == 1);
@@ -96,10 +140,6 @@ public final class TalkGameTests {
                     record("talk", "line", line.getKey() + " = " + line.getFallback());
                     record("talk", "speaker", ((Component) say.getArgs()[0]).getString());
                 })
-                .thenExecute(() -> {
-                    FakePlayers.remove(ben);
-                    FakePlayers.remove(alex);
-                })
                 .thenSucceed();
     }
 
@@ -108,6 +148,7 @@ public final class TalkGameTests {
     public static void talkOpensNoTradeScreen(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(5.5, 2, 7.5)), "talk_tradeless");
+        cleanup(helper, ben);
         Villager[] v = new Villager[1];
         WanderingTrader[] t = new WanderingTrader[1];
         helper.startSequence()
@@ -134,14 +175,18 @@ public final class TalkGameTests {
                     check("a trader line: " + line.getKey(), line.getKey().startsWith("mic_rtsim.talk.trader.")
                             || line.getKey().startsWith("mic_rtsim.talk.any."));
 
-                    // The control: not crouching, the trader opens its trades as vanilla does.
+                    // The controls: not crouching, the villager and the trader open their trades as vanilla does.
+                    click(ben, v[0], false);
+                    check("without crouching the villager opens its trades: " + ben.containerMenu,
+                            ben.containerMenu instanceof MerchantMenu);
+                    ben.closeContainer();
+                    check("closed again", ben.containerMenu == ben.inventoryMenu);
                     click(ben, t[0], false);
                     check("without crouching the trader opens its trades: " + ben.containerMenu,
                             ben.containerMenu instanceof MerchantMenu);
                     ben.closeContainer();
                     check("closed again", ben.containerMenu == ben.inventoryMenu);
                     check("closing the trade screen puts nothing on the action bar", ben.overlay.isEmpty());
-                    FakePlayers.remove(ben);
                 })
                 .thenSucceed();
     }
@@ -151,6 +196,7 @@ public final class TalkGameTests {
     public static void talkGossipCappedPerDay(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(7.5, 2, 5.5)), "talk_daily");
+        cleanup(helper, ben);
         Villager[] v = new Villager[1];
         helper.startSequence()
                 .thenExecute(() -> v[0] = farmer(helper, 5.5, 5.5))
@@ -164,6 +210,8 @@ public final class TalkGameTests {
                 .thenIdle(WINDOW)
                 .thenExecute(() -> {
                     int before = ben.heard.size();
+                    // Today as of this very click, so a day boundary between the clicks cannot credit again.
+                    v[0].setData(RtsimAttachments.TALK_DAYS, TalkDays.EMPTY.with(ben.getUUID(), level.getGameTime() / Talk.DAY));
                     click(ben, v[0], true);
                     check("the second talk is heard: " + ben.heard.size(), ben.heard.size() == before + 1);
                     check("but adds nothing the same day: " + minorPositive(v[0], ben.getUUID()), minorPositive(v[0], ben.getUUID()) == 3);
@@ -176,7 +224,6 @@ public final class TalkGameTests {
                     click(ben, v[0], true);
                     check("the next day's talk adds 3 again: " + minorPositive(v[0], ben.getUUID()), minorPositive(v[0], ben.getUUID()) == 6);
                     record("talk", "gossip after three talks over two days", minorPositive(v[0], ben.getUUID()));
-                    FakePlayers.remove(ben);
                 })
                 .thenSucceed();
     }
@@ -186,6 +233,7 @@ public final class TalkGameTests {
     public static void talkNeedsAnEmptyHand(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
         FakePlayers.Hearer ben = FakePlayers.hearing(level, helper.absoluteVec(new Vec3(5.5, 2, 7.5)), "talk_stick");
+        cleanup(helper, ben);
         Villager[] v = new Villager[1];
         WanderingTrader[] t = new WanderingTrader[1];
         helper.startSequence()
@@ -208,7 +256,6 @@ public final class TalkGameTests {
                     ben.closeContainer();
                     check("closing it puts nothing on the action bar: " + ben.overlay.size(), ben.overlay.isEmpty());
                     ben.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
-                    FakePlayers.remove(ben);
                 })
                 .thenSucceed();
     }
@@ -222,9 +269,15 @@ public final class TalkGameTests {
                     Lines.Found rain = Lines.find("villager.farmer", "fluff.rain");
                     check("farmer + fluff.rain falls back to the villager's rain lines: " + rain,
                             rain != null && rain.prefix().equals("mic_rtsim.talk.villager.fluff.rain") && rain.count() >= 1);
-                    Lines.Found own = Lines.find("villager.farmer", "fluff");
-                    check("farmer + fluff has the farmer's own lines: " + own,
-                            own != null && own.prefix().equals("mic_rtsim.talk.villager.farmer.fluff"));
+                    java.util.List<Lines.Found> levels = Lines.levels("villager.farmer", "fluff");
+                    check("a farmer draws from both her own fluff and the villagers': " + levels,
+                            levels.size() == 2 && levels.get(0).prefix().equals("mic_rtsim.talk.villager.farmer.fluff")
+                                    && levels.get(1).prefix().equals("mic_rtsim.talk.villager.fluff"));
+                    java.util.List<Lines.Found> home = Lines.levels("villager.cartographer", "fluff.home");
+                    check("a cartographer draws from both home lines: " + home, home.size() == 2);
+                    java.util.List<Lines.Found> asleepChain = Lines.levels("villager.farmer", "state.asleep");
+                    check("a sleeping farmer has the villagers' lines and not any's: " + asleepChain,
+                            asleepChain.size() == 1 && asleepChain.get(0).prefix().equals("mic_rtsim.talk.villager.state.asleep"));
                     int fluff = Lines.count("mic_rtsim.talk.villager.fluff");
                     check("at least ten villager fluff lines: " + fluff, fluff >= 10);
                     Lines.Found asleep = Lines.find("child", "state.asleep");
