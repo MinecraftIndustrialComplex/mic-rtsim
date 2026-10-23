@@ -60,6 +60,7 @@ use crate::orders::{
     GossipCmd, ItemOrder, MarketCmd, MarketGood, MemberOrder, OfferCmd, OffersCmd, Order,
     PlaceHouseCmd, SentimentCmd, SpawnResidentCmd,
 };
+use crate::talk_wire::{TALKED, Talked, talked as talked_at};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 pub(super) use cmds::P1Cmd;
@@ -1211,13 +1212,15 @@ fn work_catalog(st: &State, rec: &Rec<'_>) -> Option<Vec<WorkDef>> {
 /// The journaled kinds this module applies (the core's are seen after the core in
 /// [`after_core`]).
 pub(super) fn claims(rec: &Rec<'_>) -> bool {
-    (obs::VILLAGE_ADOPTED..=obs::HOUSE_PLACED).contains(&rec.kind)
+    (obs::VILLAGE_ADOPTED..=obs::HOUSE_PLACED).contains(&rec.kind) || rec.kind == TALKED
 }
 
-/// Op ids the kernel's `Replay` applies once: a trade's and a robbery's transfer.
+/// Op ids the kernel's `Replay` applies once: a trade's and a robbery's transfer, and a talk's
+/// credit (a record of any other size has none: it is refused when applied).
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let b = rec.bytes;
     match rec.kind {
+        TALKED if rec.size() == talked_at::SIZE => wire::u64_at(b, talked_at::OP_ID),
         obs::TRADE if rec.size() >= obs::trade::SIZE => wire::u64_at(b, obs::trade::OP_ID),
         obs::CARGO_CHANGED if rec.size() >= obs::cargo_changed::ITEMS => {
             wire::u64_at(b, obs::cargo_changed::OP_ID)
@@ -1253,6 +1256,7 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
         obs::HURT if rec.size() >= obs::hurt::SIZE => hurt(st, rec, at),
         obs::RESCUE if rec.size() >= obs::rescue::SIZE => rescue(st, rec, at),
+        TALKED => talked(st, rec, at),
         obs::CARGO_CHANGED if rec.size() >= obs::cargo_changed::ITEMS => cargo(st, rec, at),
         obs::BASE if rec.size() >= obs::base::SIZE => {
             let key = wire::u64_at(b, obs::base::BASE);
@@ -1477,6 +1481,49 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
     if !l.input(input, at).refused {
         l.stats[stat::REPORTS] += 1;
     }
+    take_world_commands(st);
+}
+
+/// A TALKED `Replay` admitted (docs/boundary.md §13.7): the village credits the player's talk with
+/// one of its ribbits. A record that does not decode, names a village the world does not know (or
+/// a base), or is by nobody is refused and counted, never applied. A scripted village is skipped
+/// like every other kind's (its sentiment is the test's own).
+fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
+    let t = match Talked::decode(rec.bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            return super::talk::refuse_talked(st, &format!("a TALKED does not decode ({e})"));
+        }
+    };
+    let l = &st.phase1;
+    if l.scripted.contains(&t.village) {
+        return;
+    }
+    let is_village = l
+        .nodes
+        .get(&t.village)
+        .and_then(|&i| l.world.nodes.get(i))
+        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)));
+    if !is_village {
+        return super::talk::refuse_talked(
+            st,
+            &format!(
+                "a TALKED names village {} the world does not know",
+                t.village
+            ),
+        );
+    }
+    let out = st.phase1.input(
+        Input::Talked {
+            key: t.village,
+            player: t.player,
+        },
+        at,
+    );
+    if out.refused {
+        return super::talk::refuse_talked(st, "a TALKED the world refused");
+    }
+    st.talk.stats.talked += 1;
     take_world_commands(st);
 }
 

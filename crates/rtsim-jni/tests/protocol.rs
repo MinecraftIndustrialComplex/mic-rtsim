@@ -1274,6 +1274,183 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- TALK (docs/boundary.md §13) -------------------------------------------------------------------
+
+mod talk {
+    use super::*;
+    use rtsim_jni::talk_wire::{Talked, talked};
+
+    const RIBBIT_VILLAGE: u64 = 0x0001_0000_0000_00B1;
+
+    /// A session with one ribbit village adopted.
+    fn session(dir: &std::path::PathBuf, save: WorldSave) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let fresh = save.journal.is_empty() && save.next_obs <= 1;
+        let mut j = Java::open(e.clone(), save);
+        j.module_mask = 0b1111; // knowledge, settlements, trade, travel
+        if fresh {
+            j.adopt(RIBBIT_VILLAGE, "ribbits:village", "ribbit", 12, 0, 0);
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (e, j)
+    }
+
+    /// The value the village's latest SENTIMENT command lists for the player, if it lists them.
+    fn pushed_feeling(j: &Java) -> Option<i32> {
+        use cmd::sentiment as k;
+        let rec = j
+            .p1_of(cmd::SENTIMENT)
+            .into_iter()
+            .rfind(|b| wire::u64_at(b, k::HOLDER) == RIBBIT_VILLAGE)?;
+        (0..wire::u32_at(&rec, wire::R_AUX) as usize)
+            .map(|i| k::ENTRIES + i * k::ENTRY)
+            .find(|&e| (wire::u64_at(&rec, e), wire::u64_at(&rec, e + 8)) == PLAYER)
+            .map(|e| wire::i32_at(&rec, e + 16))
+    }
+
+    fn wait_durable(e: &Engine) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            assert!(Instant::now() < deadline, "the pages never became durable");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// A talk credits its village once: a TALKED reported twice under one op id (a double report)
+    /// is applied once, one the pages include is skipped on replay, one they lack is applied once on
+    /// replay, and the sentiment Java's ribbits read (the SENTIMENT command) and the answer to a
+    /// TALK_ASK both say so.
+    #[test]
+    fn a_talk_credits_its_village_once_live_and_across_a_crash() {
+        let dir = tmpdir("talked");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        assert_eq!(p1_stat(&e, 0), 1, "the ribbit village joined");
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(0));
+        assert_eq!(pushed_feeling(&j), None);
+
+        // Live: one talk, reported twice under the same op id.
+        let op1 = wire::JAVA_OP_BIT | 0x7a1;
+        j.talked(RIBBIT_VILLAGE, PLAYER, op1);
+        j.talked(RIBBIT_VILLAGE, PLAYER, op1);
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 1, "the same op id applied once");
+        assert_eq!(e.talk_stats().talked_refused, 0);
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
+        assert_eq!(
+            pushed_feeling(&j),
+            Some(3),
+            "the village's feeling went to Java for its ribbits to read"
+        );
+
+        // Pages that include the first talk.
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        wait_durable(&e);
+
+        // After that save: a talk with another ribbit (a new op id), reported twice.
+        let op2 = wire::JAVA_OP_BIT | 0x7a2;
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 2);
+        assert_eq!(j.talk_sentiment(3, RIBBIT_VILLAGE, PLAYER), Some(6));
+        let saved = j.world_save();
+        let held = saved
+            .journal
+            .iter()
+            .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == talk_kind())
+            .count();
+        assert!(
+            held >= 2,
+            "the journal still holds the talks the pages lack ({held})"
+        );
+        let _ = j.crash();
+
+        // After the crash the journal replays: the first talk is in the pages (skipped by
+        // sequence), the second is applied once and its repeat is a duplicate op.
+        let (e, mut j) = session(&dir, saved);
+        assert_eq!(
+            e.talk_stats().talked,
+            1,
+            "only the talk the pages lack was applied again, once"
+        );
+        assert_eq!(
+            j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER),
+            Some(6),
+            "+3 from the pages and +3 from the replay, not more"
+        );
+
+        // And the same op id once more, from a Java that does not know it was applied.
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.idle();
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(6));
+        assert_eq!(e.talk_stats().talked, 1);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    fn talk_kind() -> u16 {
+        rtsim_jni::talk_wire::TALKED
+    }
+
+    /// A TALKED the engine cannot use is refused and counted, never a protocol error, and the
+    /// ones after it still apply.
+    #[test]
+    fn a_malformed_talked_is_refused_and_counted_and_the_next_one_still_applies() {
+        let dir = tmpdir("talked-bad");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        let good = Talked {
+            obs_seq: 0,
+            game_time: 0,
+            op_id: wire::JAVA_OP_BIT | 0x7b1,
+            village: RIBBIT_VILLAGE,
+            player: PLAYER,
+            body: 0,
+        };
+        // Truncated by one 8-byte word, and one word too long.
+        let mut short = good.encode();
+        short.truncate(talked::SIZE - 8);
+        wire::put_u16(&mut short, wire::R_SIZE, (talked::SIZE - 8) as u16);
+        j.journal_raw(&short);
+        let mut long = good.encode();
+        long.extend_from_slice(&[0; 8]);
+        wire::put_u16(&mut long, wire::R_SIZE, (talked::SIZE + 8) as u16);
+        j.journal_raw(&long);
+        // A village nobody adopted, and nobody as the player.
+        // (Each with an op id of its own: a record with an op id seen before is a duplicate, which
+        // is skipped before it can be refused.)
+        j.journal_raw(
+            &Talked {
+                village: 0xDEAD,
+                op_id: good.op_id + 1,
+                ..good
+            }
+            .encode(),
+        );
+        let mut nil = Talked {
+            op_id: good.op_id + 2,
+            ..good
+        }
+        .encode();
+        wire::put_u64(&mut nil, talked::PLAYER_MOST, 0);
+        wire::put_u64(&mut nil, talked::PLAYER_LEAST, 0);
+        j.journal_raw(&nil);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let st = e.talk_stats();
+        assert_eq!((st.talked, st.talked_refused), (0, 4));
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(0));
+        assert_eq!(pushed_feeling(&j), None);
+
+        j.journal_raw(&good.encode());
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 1);
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
+
 // ---- dragons (docs/boundary.md §6) ----------------------------------------------------------------
 
 mod dragons {
