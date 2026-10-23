@@ -24,9 +24,12 @@ public final class ConflictRecords {
     public static final int TRIBUTE_PAID = 0x0809;
     public static final int GIFT_GIVEN = 0x080A;
     public static final int BAND_LOOTED = 0x080B;
-    /** M1 (feat/mowzie-m1): the world's difficulty, latest-wins and sticky, sent as a preamble. */
+    /**
+     * M1: the world's difficulty, journaled at session start and on each change. PROVISIONAL: M1's review
+     * moves it from 0x0093 (latest-wins) to a journaled 0x08xx id, set here when M1 lands.
+     */
     public static final int DIFFICULTY = 0x0093;
-    /** M1: a kept FACTION_NOTICE was played (aux = its step). */
+    /** M1: a kept FACTION_NOTICE was played (aux = its notice serial, {@link Notice#SERIAL}). */
     public static final int NOTICE_SHOWN = 0x0811;
 
     public static final int TERRITORY = 0x8800;
@@ -91,12 +94,15 @@ public final class ConflictRecords {
         public static final int CENSUS_CHIEF = 1, CENSUS_CRYSTAL = 2;
     }
 
-    /** DIFFICULTY (M1, latest-wins, aux 0): Minecraft's difficulty id, u32. */
+    /** DIFFICULTY (M1, journaled, aux 0): Minecraft's difficulty id, u32. PROVISIONAL offsets until M1 lands. */
     public static final class DifficultyRecord {
-        public static final int DIFFICULTY = 8, SIZE = 16;
+        public static final int DIFFICULTY = 24, SIZE = 32;
     }
 
-    /** NOTICE_SHOWN (M1, journaled, aux = the notice's step): the faction and the notice's player ((0,0): the settlers). */
+    /**
+     * NOTICE_SHOWN (M1, journaled, aux = the notice's serial): the faction and the notice's player ((0,0): the
+     * settlers).
+     */
     public static final class NoticeShown {
         public static final int FACTION = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIZE = 48;
     }
@@ -186,10 +192,13 @@ public final class ConflictRecords {
         public static final int FLAG_REMOVED = 1;
     }
 
-    /** FACTION_NOTICE (aux = rung). */
+    /**
+     * FACTION_NOTICE (aux = rung). SERIAL (M1 after review, PROVISIONAL offset until M1 lands): the feud's u32
+     * notice serial, which NOTICE_SHOWN echoes; read only while M1's records are on.
+     */
     public static final class Notice {
         public static final int FACTION = 16, PLAYER_MOST = 24, PLAYER_LEAST = 32, DIM = 40, SIGNAL = 44, X = 48, Z = 52,
-                GRIEVANCE = 56, SIZE = 64;
+                GRIEVANCE = 56, SERIAL = 60, SIZE = 64;
     }
 
     /** ENVOY_MATERIALIZE (aux = m), then m × (u32 body, u32 count). */
