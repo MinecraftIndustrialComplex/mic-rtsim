@@ -5,6 +5,8 @@ pub mod archive;
 pub mod census;
 pub mod conflict;
 pub mod dragons;
+#[cfg(test)]
+pub mod equilibrium;
 pub mod herds;
 pub mod industry;
 pub mod memory;

@@ -10,6 +10,9 @@
 //!   oil reported under two nest cells with a well drilling beside each (a nest wakes and renews
 //!   only while drilled), and the herd valley's six herds hunted by the dragons, all through the
 //!   fake Ice and Fire and herd plugins. Kinds `dragon.lair`, `oil.nest`, `herd.range`.
+//! - `ranges`: the same dragon world over a grid of herd ranges, 8 x 7 regions of the valley, one
+//!   herd each founded as the world model founds one (`rtsim_ecology::herds::synth::ranges`), so a
+//!   range has neighbours (EQUILIBRIUM.md §2.4.2's dispersal). No oil. Kinds as `ecology`.
 //! - `ships`: the synthetic coast's pirate haven (`rtsim_ships::synth::coastal`) through the fake
 //!   ships plugin. Kind `ship.haven`.
 //! - `conflict`: the goblin camp of the conflict's synthetic world. Kind `conflict.camp`.
@@ -42,16 +45,18 @@ pub const OIL_CHUNKS: [(i32, i32); 4] = [(100, 100), (101, 100), (100, 101), (-1
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Ecology,
+    Ranges,
     Ships,
     Conflict,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::Ecology, Kind::Ships, Kind::Conflict];
+    pub const ALL: [Kind; 4] = [Kind::Ecology, Kind::Ranges, Kind::Ships, Kind::Conflict];
 
     pub fn name(self) -> &'static str {
         match self {
             Kind::Ecology => "ecology",
+            Kind::Ranges => "ranges",
             Kind::Ships => "ships",
             Kind::Conflict => "conflict",
         }
@@ -118,6 +123,9 @@ impl Scenario {
     pub fn new(kind: Kind, seed: u64) -> Self {
         match kind {
             Kind::Ecology => Scenario::Ecology(Box::new(Ecology::new(seed))),
+            Kind::Ranges => {
+                Scenario::Ecology(Box::new(Ecology::ranges(seed, Ecology::herd_tunables())))
+            }
             Kind::Ships => {
                 let tun = rtsim_ships::ShipTunables::default();
                 let fake = rtsim_ships::synth::FakeShips::new(f64::from(tun.view_radius));
@@ -184,8 +192,43 @@ impl Scenario {
     }
 }
 
+/// The ranges scenario's grid: regions x -3 to 4 and z -3 to 3 (56 ranges), under the lairs.
+pub const RANGES_X: std::ops::RangeInclusive<i32> = -3..=4;
+pub const RANGES_Z: std::ops::RangeInclusive<i32> = -3..=3;
+
 impl Ecology {
+    /// The herds' tunables the scenarios use (the default calendar).
+    pub fn herd_tunables() -> HerdTunables {
+        HerdTunables {
+            calendar: Calendar::default(),
+            ..HerdTunables::default()
+        }
+    }
+
+    /// The ecology scenario: the herd valley's six herds, oil under two nests.
     pub fn new(seed: u64) -> Self {
+        let h = rtsim_ecology::herds::synth::valley(seed, Self::herd_tunables(), Tick::ZERO);
+        Self::with_herds(seed, h, true)
+    }
+
+    /// The ranges scenario: [`RANGES_X`] x [`RANGES_Z`] herd ranges, no oil.
+    pub fn ranges(seed: u64, htun: HerdTunables) -> Self {
+        Self::ranges_in(seed, htun, RANGES_X, RANGES_Z)
+    }
+
+    /// The ranges scenario's world over the herd ranges of regions `rx` x `rz`.
+    pub fn ranges_in(
+        seed: u64,
+        htun: HerdTunables,
+        rx: std::ops::RangeInclusive<i32>,
+        rz: std::ops::RangeInclusive<i32>,
+    ) -> Self {
+        let h = rtsim_ecology::herds::synth::ranges(seed, htun, Tick::ZERO, rx, rz);
+        Self::with_herds(seed, h, false)
+    }
+
+    /// The phase 1 dragon world over the herds `h`, with oil under two nests if `oil`.
+    pub fn with_herds(seed: u64, h: Herds, oil: bool) -> Self {
         use rtsim_ecology::boundary::{self, Obs, OilChunkRec, OilChunks};
         use rtsim_ecology::synth;
         let (mut w, _) = synth::world(seed);
@@ -195,11 +238,6 @@ impl Ecology {
         };
         let mut d = Dragons::new(seed, tun, Tick::ZERO);
         synth::populate(&mut w, &mut d, &synth::lairs(), Tick::ZERO);
-        let htun = HerdTunables {
-            calendar: Calendar::default(),
-            ..HerdTunables::default()
-        };
-        let h = rtsim_ecology::herds::synth::valley(seed, htun, Tick::ZERO);
         let mut e = Ecology {
             w,
             d,
@@ -221,7 +259,7 @@ impl Ecology {
                     .collect(),
             ),
         };
-        let oil = Obs::OilChunks(OilChunks {
+        let oil_obs = Obs::OilChunks(OilChunks {
             dimension: 0,
             source: boundary::OIL_SOURCE_CDG,
             chunks: OIL_CHUNKS
@@ -234,7 +272,11 @@ impl Ecology {
                 })
                 .collect(),
         });
-        e.d.ingest(&mut e.w, &mut e.wells, &oil, Tick::ZERO);
+        if oil {
+            e.d.ingest(&mut e.w, &mut e.wells, &oil_obs, Tick::ZERO);
+        } else {
+            e.wells.0.clear();
+        }
         e.pump(Tick::ZERO);
         e
     }
@@ -341,7 +383,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 
 fn bad(why: &str) -> ExitCode {
     eprintln!(
-        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ships,conflict] [--days N] \
+        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict] [--days N] \
          [--every N] [--seed S]"
     );
     ExitCode::from(64)
@@ -469,8 +511,7 @@ mod tests {
 
     /// With nobody watching nothing presses: every kind keeps its sites, no site breaks, every
     /// pressure is 0, and from the first year on each kind's members stay between a quarter of
-    /// its capacity and twice its start (herds grow past their founding count until slice S2's
-    /// density term).
+    /// its capacity and twice its start.
     #[test]
     fn census_is_flat_with_no_player() {
         for k in Kind::ALL {

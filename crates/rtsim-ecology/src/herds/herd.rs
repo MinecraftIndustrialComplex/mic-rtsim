@@ -208,12 +208,18 @@ pub struct HerdLedger {
     pub taken: u64,
     /// Killed by something other than a player (a mob, a fall, another mod).
     pub lost: u64,
+    /// Came from a neighbouring range in spring dispersal (EQUILIBRIUM.md §2.4.2): each one is
+    /// some other herd's `left`, so the world's sums of the two are equal.
+    pub arrived: u64,
+    /// Left for a neighbouring range in spring dispersal.
+    pub left: u64,
 }
 
 impl HerdLedger {
-    /// Founded + born, less everything committed out.
+    /// Founded + born + arrived, less everything committed out.
     pub fn expected_at_anchors(&self) -> i128 {
-        i128::from(self.founded) + i128::from(self.born)
+        i128::from(self.founded) + i128::from(self.born) + i128::from(self.arrived)
+            - i128::from(self.left)
             - i128::from(self.died)
             - i128::from(self.starved)
             - i128::from(self.killed)
@@ -231,15 +237,31 @@ impl HerdLedger {
         self.eaten += o.eaten;
         self.taken += o.taken;
         self.lost += o.lost;
+        self.arrived += o.arrived;
+        self.left += o.left;
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Herd {
     pub name: String,
+    /// The range's species: an empty range takes the species of the first animals to arrive.
     pub species: HerdSpecies,
     pub seed: u64,
     pub frame: u16,
+    /// The range's K (EQUILIBRIUM.md §2.4.2): its carrying capacity, the count it was first
+    /// founded with. Births are density-dependent toward it; the refuge, dispersal and frontier
+    /// founding are shares of it.
+    pub k: u64,
+    /// The range: the region (frame, region x, region z) of [`Herd::home`]. One herd row per
+    /// range, alive or empty, for good (an extinct herd's row is reused).
+    pub range: (u16, i32, i32),
+    /// Where the range was founded (canonical): a cell a herd could stand on. Newcomers to an
+    /// empty range arrive near it.
+    pub home: (i32, i32),
+    /// Since when the range is empty (its last animal died or left), or `None` while it holds a
+    /// herd. An empty range's `next_decide` is its frontier founding.
+    pub vacant: Option<Tick>,
     /// Year-classes in order of birth (and so of member index).
     pub classes: Vec<Class>,
     /// The next member index a birth takes (monotonic, PLAN.md §4.4).
@@ -257,8 +279,8 @@ pub struct Herd {
     pub bred_year: i64,
     /// The tick of the last decision (grazing is charged from it).
     pub decided: Tick,
-    /// When the next decision is booked (`Tick(u64::MAX)`: none, the herd is extinct). A
-    /// decision event at any other time is stale.
+    /// When the next decision is booked (for an empty range: its frontier founding). A decision
+    /// event at any other time is stale.
     pub next_decide: Tick,
     pub seen: BTreeMap<u64, Seen>,
     /// Members a player has seen that died or left the sim: never sampled again.

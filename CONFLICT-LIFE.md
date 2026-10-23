@@ -8,8 +8,12 @@ built and no engine code changes here. Ben approves this design before code. Bra
 
 **Ben's answers (2026-10-22).** CL-1 to CL-4 take (a), as recommended. CL-5 takes (b): "Add
 alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed, and
-section 2.16 is the alliance design. Section 8 has the answers, and CL-6 and CL-7, the questions the
-alliances raise.
+section 2.16 is the alliance design. The questions the alliances raised are answered too: CL-6 and
+CL-7 take (a) ("Rare, bases fair game"), CL-8 takes (a) ("Not in this build"), and CL-9 became a rule
+for all conflict: "All faction news in-world". There is no chat notice for conflict at all. An envoy
+still says why in person, and every other piece of news (a feud, a pact sworn or broken, a raid, a
+death) travels as gossip with traders, caravans and villagers (section 2.17, CL-D56 and CL-D57). One
+question is open: how a player hears that gossip (CL-10). Section 8 has the answers.
 
 **What the revision changed.** The engine's abstract fights are deterministic: the stronger side wins
 (`village_outcome`, `engine.rs:4350-4377`; `threat.rs`, `rtsim-industry 403-427`). The first draft's
@@ -84,13 +88,14 @@ Calendar: a game day is 24,000 ticks; a game year is 96 days, four seasons of 24
   the chief who took the tribute; breaking it is costly to him and less to his heir. A camp that has
   been paid for years does not lightly kill the goose.
 - **Every fight has a reason, and the reason is kept.** The engine keeps the motive that drove each
-  party and the memory behind it, so an envoy can say what it is owed and why, and a notice can say
-  who is angry and for what.
+  party and the memory behind it, so an envoy can say in person what it is owed and why, and the news
+  of a feud can say who is angry and for what, told in the world (2.17).
 - **Camps that share an enemy can swear against it** (CL-5 (b), 2.16). Two camps that would each do
   better or be safer side by side swear a pact against one foe: a camp, a village or a player. A
   sworn camp calls its ally instead of marching alone, and the ally comes or refuses; the two
   contingents fight together, by the engine's law and certain. Pacts lapse, break on refusals, and are
-  betrayed mostly by hungry chiefs who never swore them. A pact against a player is told to him.
+  betrayed mostly by hungry chiefs who never swore them. A pact is news, carried as gossip by traders,
+  caravans and villagers; there is no chat notice of it (2.17).
   Between camps the engine's law is linear, so two parties together kill no more than the two apart,
   and pacts are rare: in the valley left alone, one about every seven years and a joint fight about
   every 28, and the fights on players do not change (4.5). As designed a player almost never meets
@@ -332,7 +337,7 @@ that was at least a quarter of it.
 | Act | Toward | In the game | Carried by |
 |---|---|---|---|
 | Wait | | nothing | |
-| Warn | a player, the railway (at most once in 16 days each), a camp the council is angry with | a goblin howl, a Frostmaw roar, the gong, a raider war band shown at the edge, a bandit's written warning | today's FACTION_NOTICE (0x8801) and MOWZIE.md's NOTICE_SHOWN (§4.12) |
+| Warn | a player, the railway (at most once in 16 days each), a camp the council is angry with | a goblin howl, a Frostmaw roar, the gong, a raider war band shown at the edge, a bandit's written warning. These are sounds and sights in the world; none carries a line of text | today's FACTION_NOTICE (0x8801, a sound cue only) and MOWZIE.md's NOTICE_SHOWN (§4.12) |
 | Scout | anyone but a caravan | scouts at the base, or a raptor look; scouts seen by a defence stronger than them lose half as they run; toward the railway, a watch on the line (about 21 a year at 12 legs in seed 1003) that misses the guards half the time | today's Scouts party; toward the railway kept abstract, no party |
 | Demand | a player | an envoy with guards asking the culture's tribute good (goblin emerald, Umvuthana gold) | today's Envoy party, ENVOY_MATERIALIZE (0x8802) and `Demand`; MOWZIE.md §4.5 |
 | Band | a village, a camp, a player | a small party (today's plunder party) | today's Plunder party kind |
@@ -341,7 +346,7 @@ that was at least a quarter of it.
 | Skirmish | a rival camp | a band falls on the rival's hunters in the field: it meets the share of the camp out hunting (at least 15%, all of a camp of 4 or fewer) and takes a quarter of a band's carry | a band party whose target is the rival's territory edge |
 | Ambush | a train, a caravan | the Frostmaw's lurk by the track (MOWZIE.md §4.4); a goblin, bandit or raider band lying in wait by a track or a caravan road | a train: MOWZIE.md §4.4's lurk and AMBUSH_SPOT, given to every culture with an ambush weight, and `attack_train`; a caravan: new (2.15) |
 | Truce | a rival camp | nothing seen; the two camps stop fighting for Exp(192) days, sworn by both chiefs | new feud fields (2.11) |
-| Pact | a camp, against a foe both quarrel with (2.16) | nothing seen between camps; against a player, a notice naming both camps | new feud fields (2.16) |
+| Pact | a camp, against a foe both quarrel with (2.16) | nothing seen between camps; against a player, no notice: he hears of it as news (2.17) | new feud fields (2.16); a news report (2.17) |
 | Call | a sworn ally, against the foe | a joint party: two columns from two camps, arriving together | two of today's parties, each with its BAND_MARCH, naming each other (2.16) |
 | Hunt | a village (Umvuthana only, when hungry) | raptor packs take a district's animals | MZ-8's owed hunts |
 
@@ -439,7 +444,7 @@ Every escalation has a brake that comes from the state, not a cap:
 
 The changes are mostly in `rtsim-conflict`, but not only: `rtsim-world` answers a query for caravans
 passing a camp's reach and takes the robbery's loss of cargo into the economy, and the Java plugin
-shows the reason lines (below). The parties, the raid director and the reconciler see the same party
+has the envoy say its reason in person (below); news goes through rtsim-knowledge (2.17). The parties, the raid director and the reconciler see the same party
 kinds they see today.
 
 **Feuds toward camps and villages.** Today a feud is a faction's grievance against an actor (a player
@@ -491,16 +496,20 @@ uses one numpy generator for the whole world; the property tests check the engin
 
 **What the Java side needs.** Nothing new to carry the acts: envoy, scouts, raid, invasion, plunder,
 the lurk and notice are today's records or MOWZIE.md's planned ones, carried by the `ConflictBridge`
-(ledger 16, MZ-1 (a)). This design adds no record kind and no record id (2.12). Two records gain the
-reason, 16 bytes each (reason u8, motive u8, memory kind u8, flags u8, count u16, day u16, the other
-party u64: an actor, or a chief's name index):
-- **An envoy speaks its reason.** ENVOY_MATERIALIZE (0x8802, `boundary.rs:36`) grows from 104 + 8m
-  to 120 + 8m bytes; the plugin shows one line of chat to the player it addresses when it arrives:
-  "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." (CL-1).
-- **A notice carries its reason.** FACTION_NOTICE (0x8801, `boundary.rs:35`) grows from 64 to 80
-  bytes, shown with the howl, roar or gong.
-- **Alliances (2.16)** add the ally's actor to both, 8 bytes each (128 + 8m and 88), and the partner's
-  agent and a joint flag to BAND_MARCH (72 bytes plus its counts and waypoints).
+(ledger 16, MZ-1 (a)). This design adds no record kind and no record id on the boundary (2.12). One
+record gains the reason, 16 bytes (reason u8, motive u8, memory kind u8, flags u8, count u16, day u16,
+the other party u64: an actor, or a chief's name index):
+- **An envoy speaks its reason, in person.** ENVOY_MATERIALIZE (0x8802, `boundary.rs:36`) grows from
+  104 + 8m to 120 + 8m bytes; the envoy says one line to the player it addresses when they meet:
+  "You killed Vorr, our chief, in the spring of year 3. Pay 106 emeralds." (CL-1, which Ben kept). It
+  is the envoy's own speech, shown with the envoy, never a system notice.
+- **A notice is a cue, not a line.** FACTION_NOTICE (0x8801, `boundary.rs:35`) stays 64 bytes and
+  carries no reason and no text: the howl, roar or gong, and nothing in chat (Ben, "All faction news
+  in-world"). Why a faction is angry reaches a player as news (2.17), or from its envoy.
+- **Alliances (2.16)** add the ally's actor to ENVOY_MATERIALIZE, 8 bytes (128 + 8m), and the
+  partner's agent and a joint flag to BAND_MARCH (72 bytes plus its counts and waypoints).
+- **News (2.17)** is told through rtsim-knowledge's reports and gossip, inside the engine; none of it
+  crosses the boundary as a notice. How a player hears it is CL-10.
 No backward compatibility is needed before a release. A truce, a skirmish between camps, a border
 clash and a caravan ambush are unwatched in nearly every case and need nothing from Java: a skirmish
 or a caravan ambush a player meets is a band party on its march, as a plunder is today.
@@ -513,7 +522,7 @@ crystal held) and BAND_MARCH (0x880B, MZ-15). Build order:
    events, drives, beliefs, the choice, the price, truces, succession, defender losses, story codes.
    It drives today's party kinds and raid director. Tests 1 to 11, 15, 16 and 18 to 20 run here.
 2. Persistence of the new fields, and the paged sweep (test 17).
-3. The reason fields on ENVOY_MATERIALIZE and FACTION_NOTICE, and their GameTests.
+3. The reason field on ENVOY_MATERIALIZE and its GameTest, and the news kinds (2.17) with their tests.
 4. With MOWZIE.md's lurk, AMBUSH_SPOT, RAIL_PASS, TRAIN_ROBBED and the sampler: the lurk for every
    culture with an ambush weight (test 12).
 5. With CHIEF_STATE: a stolen crystal as a Theft report (test 14).
@@ -537,7 +546,7 @@ MOWZIE.md's MZ-15 gives every party a visible march (§4.16). This design takes 
   adds no record id. Its acts are today's party kinds, so each rides BAND_MARCH like any party: a
   skirmish's route ends at the rival's territory edge, a caravan ambush's on the road, a lurk's at its
   AMBUSH_SPOT. A joint party is two parties, each with its own BAND_MARCH naming the other (2.16). The
-  ids it touches, FACTION_NOTICE 0x8801 and ENVOY_MATERIALIZE 0x8802, gain fields, and none clashes with
+  id it touches, ENVOY_MATERIALIZE 0x8802, gains fields, and none clashes with
   MOWZIE.md's planned 0x080C, 0x0811, 0x0091, 0x8807, 0x8809 or 0x880B.
 - **The 128-block rule**, worded once in EQUILIBRIUM.md §2.2 and used here as written:
 
@@ -608,7 +617,7 @@ and halves over 96 days; betrayal 10 beyond the oath; the guard up to 8 and dete
 
 ### 2.14 The story
 
-Each party, envoy and notice carries its top motives and the memory behind them, as codes. Text is
+Each party and envoy, and each piece of news about them, carries its top motives and the memory behind them, as codes. Text is
 written when a player, a page or a log reads it (from the model's runs):
 
 - "Y8 d22 the Grey Outpost: invasion on player Ben by 23 (Dorn, chief). Why: honour: we lost 23 at
@@ -626,12 +635,13 @@ written when a player, a page or a log reads it (from the model's runs):
 |---|---|---|
 | Grievance, signals, rail meter | `grievance.rs`, culture signals, MOWZIE.md §4.3 | none |
 | Parties, marches, waves, abstract fights | today's party kinds, raid director, `village_outcome` and `threat.rs`; BAND_MARCH and MZ-15's march | a skirmish target (a camp's territory edge); defender losses; a leading chief's fall |
-| Envoy and tribute | today's Envoy, ENVOY_MATERIALIZE, `Demand`, tribute goods; MOWZIE.md §4.5 | the price (2.8); the reason fields |
+| Envoy and tribute | today's Envoy, ENVOY_MATERIALIZE, `Demand`, tribute goods; MOWZIE.md §4.5 | the price (2.8); the reason field |
 | Train ambushes | MOWZIE.md §4.4 lurk, AMBUSH_SPOT, `attack_train`, TRAIN_ROBBED, the track sampler (MZ-12); today's incidental ambush of a marching war party (`SYS_AMBUSH`) stays | the lurk opened to every culture with an ambush weight |
 | Caravan ambushes | rtsim-world's caravans (`caravans.rs`, `caravan_place`) | a query for caravans passing a camp's reach through the conflict engine's world interface, and the robbery's loss of cargo reported to the economy |
 | Chiefs, heirs, temperament | `Notable`, `Temperament::from_seed`, `succeed`, C24 grudges | an elder seed, standing, gamma tenure |
 | Memories | `MemorySlot`'s 8-byte shape, report kinds (Killing, Robbery, Theft for a stolen crystal) | conflict memory kinds (lost at, drove us off, refused, killed envoy, raided us, border, paid, guards gone) |
-| Notices | FACTION_NOTICE, NOTICE_SHOWN (MOWZIE.md §4.12) | the reason fields |
+| Notices (sound cues) | FACTION_NOTICE, NOTICE_SHOWN (MOWZIE.md §4.12) | none: no reason, no text (2.17) |
+| News | rtsim-knowledge's reports, noticeboards and gossip packets, carried by travellers and messengers (PR6) | report kinds for a feud, a pact sworn, a pact broken, a raid and a chief's or champion's death (2.17) |
 | Renewal and pressure | EQUILIBRIUM.md §2.4.5 and §2.4.7 (as designed there; `rtsim-kernel::renewal` is EQ-6 (a)'s design, not built) | none |
 | Camp bodies, UR-1 | MOWZIE.md §4.9 reconciler, MZ-15's census | none |
 | Decision | none fits | the council: drives, beliefs, Thompson draw, logit choice, truces, clashes |
@@ -797,7 +807,7 @@ spoke it: a war leader who speaks for his chief and takes the seat later is an h
 **Deterrence.** Falling on a camp costs more for each of its sworn allies that can reach the attacker,
 whoever the pact is against: up to 4 each, by that ally's strength against the attacker's own
 defence, as the attacker believes it. Camps know their neighbours' pacts: envoys walk between camps,
-and a pact is no secret among them (a player is told only of a pact against him). This is a choice,
+and a pact is no secret among them (a player hears of one only as news, 2.17). This is a choice,
 not a measurement of what camps could learn. The list of a camp's pacts is on its faction row, so a
 sitting that weighs a fight on a camp reads that row (a page load when it is not resident; counted in
 5.2), not its feuds. A camp that swears is safer for it, which is half of why camps swear (the guard).
@@ -809,24 +819,23 @@ the same truce, sworn by its own chief, and remembers the payment. Only the call
 party, one line. A player who refuses may meet the joint party, called as any is, and the ally may still
 refuse.
 
-**Envoys and notices** (CL-1 (a), CL-D55).
-- **The envoy names the ally:** "You killed Vorr, our chief, in the spring of year 3. Ashpit and
-  Mudhollow ask 140 emeralds." ENVOY_MATERIALIZE's reason gains the ally's actor, 8 bytes (128 + 8m).
-- **A pact against a player is told.** When two camps swear against him, the caller's notice plays for
-  him (the howl, the gong, the war band shown) with one line: "Ashpit and Mudhollow have sworn against
-  you." FACTION_NOTICE's reason gains the ally, 8 bytes (88), and the notice is kept until shown
-  (NOTICE_SHOWN, MOWZIE.md §4.12).
+**Envoys and news** (CL-1 (a), CL-9, CL-D55, CL-D56).
+- **The envoy names the ally, in person:** "You killed Vorr, our chief, in the spring of year 3. Ashpit
+  and Mudhollow ask 140 emeralds." ENVOY_MATERIALIZE's reason gains the ally's actor, 8 bytes
+  (128 + 8m).
+- **A pact is news, never a notice.** When two camps swear, march together or one falls on the other,
+  nothing is sent to a player's chat, whoever the pact is against (Ben, 2026-10-22: "All faction news
+  in-world"). The caller's howl, gong or war band shown is the only cue, and it carries no line.
+  Instead the pact becomes a report (2.17): "Ashpit and Mudhollow have sworn against you", "Ashpit and
+  Mudhollow have sworn against the Grey Outpost", "Mudhollow broke its oath and fell on Ashpit". It
+  spreads as gossip, at the speed of trade, to the traders, caravans and villagers a player meets. In
+  the valley left alone they come about 0.15, 0.04 and 0.03 times a year; a player far from any
+  trade route hears of none.
 - **A joint party's reason names both camps:** "beside the Grey Outpost, sworn against player Ben".
-- **Pacts between camps are told to players near them** (CL-9 (a), open). A player both camps reach
-  is told, by a notice line with no sound, when they swear ("Ashpit and Mudhollow have sworn against
-  the Grey Outpost"), when they march together ("Ashpit and Mudhollow march on the Grey Outpost") and
-  when one falls on the other ("Mudhollow broke its oath and fell on Ashpit"). These are three notice
-  kinds on FACTION_NOTICE as it stands (88 bytes with the ally); no row grows. In the valley left alone
-  they would come about 0.15, 0.04 and 0.03 times a year. Under CL-9 (b) a pact against a camp or a
-  village is not told: no one sees it, and a player learns of it from its parties.
+  The reason is the story's (2.14) and the news's, not a line shown on arrival.
 
 **What the player sees.**
-- An envoy naming two camps, often first, and the notice of the pact.
+- An envoy naming two camps, often first, and the news of the pact from the next trader.
 - Two columns of two cultures marching on him from two camps and arriving together: a goblin band and
   a pillager war band side by side, not fighting each other (below; the goblins in bodies once P8
   picks their mod).
@@ -888,7 +897,8 @@ camp's answers shift the others' alliance draws, though never their council draw
 - **BAND_MARCH (0x880B):** each contingent is its own party with its own record: one faction, one
   culture, its own route and phase. It gains the partner's agent (8 bytes) and a joint flag: 72 bytes
   plus 8 per body kind and 16 per waypoint.
-- **ENVOY_MATERIALIZE (0x8802)** and **FACTION_NOTICE (0x8801)** gain the ally's actor, 8 bytes each.
+- **ENVOY_MATERIALIZE (0x8802)** gains the ally's actor, 8 bytes. FACTION_NOTICE (0x8801) gains
+  nothing: it is a sound cue and stays 64 bytes.
 
 **The march** (MZ-15, CL-D51). Each contingent marches its own route from its own camp. The engine
 ends the nearer contingent's muster later, so both arrive at the target on one tick. The mustering
@@ -948,6 +958,52 @@ never names or counts), converging on one target. Nothing new is drawn.
 **The Mowzie cultures.** The Frostmaw never swears. The grove may swear, against a player both it and a
 goblin camp hate, and its raid can be called; its invasion goes only on the Umvuthi's own pride, with
 the Umvuthi aloft at the rear of its own column (MOWZIE.md §4.16). No ally counts on it.
+
+### 2.17 News in the world (CL-9, "All faction news in-world")
+
+Ben's rule (2026-10-22): conflict sends no chat or action-bar notice, to anyone, for anything. A
+feud, a pact, a raid and a death are told the way everything else in the valley is told: as news that
+travellers carry. Two things stay as they are, because both are in the world: the cues (the howl, the
+roar, the gong, a war band shown at the edge, which are sounds and sights and carry no text), and the
+envoy, who says why in person (CL-1).
+
+**What is news.** Each is a report in rtsim-knowledge (`ReportKind`, appended after `Encroachment`, the
+way that kind was added), made by the conflict engine when the thing happens, with the day, the place
+and the two actors:
+- **A feud opens or climbs:** a camp's anger at a player, a camp or a village reaches a demand or a
+  war band. `who` is the camp, `whom` the target; the severity byte holds the rung.
+- **A pact is sworn, and a pact is broken or betrayed:** `who` the camp that swore or broke, `whom` its
+  ally; the foe is a second row of the same kind (flag bit 1, "against") that travels in the same
+  packet. A betrayal names the camp that fell on its ally.
+- **A raid, an invasion or a skirmish fell on a target:** `who` the camp, `whom` the target, the
+  severity byte the outcome (held, beaten, plundered), joint or not by a flag.
+- **A chief or a champion fell:** `who` the camp, `whom` the notable (the killer's actor when it was
+  a killing, the camp itself when it was old age or a fever).
+
+The reasons are the engine's motive and memory codes (2.14), so the text is written when it is read,
+from them and from names.
+
+**How it travels.** As every report does (PR6, rtsim-knowledge's packets): the holders that saw it
+first-hand (the camp's own board; the target's village or base, if it was a raid) learn it at once,
+and everyone else only from a packet a traveller carried, so news spreads at the speed of trade and a
+village nobody trades with learns nothing. Messengers walk each road four times a day as flows;
+caravans and bands carry gossip on their circuits. News has a lifetime by kind, like any report
+(PLACEHOLDER: a feud 10 days, a pact 30 and a betrayal 30, a raid 20, a death 30), and the same
+eviction when a board is full. News kinds change no holder's feeling: their sentiment delta is 0, and
+they are never written into vanilla villager gossip (`vanilla_mapping` gives them nothing), because a
+rumour of a feud between two camps is not a villager's grudge. News about a player does not make a
+village like or dislike him either; his deeds still do, as today.
+
+**How a player hears it** is CL-10, open. Nothing in rtsim shows a player the text of a report today:
+a report that reaches a village moves vanilla gossip (reputation, golems), and prices reach him as
+merchant offers. The recommendation in section 8 is a trade a carrier offers: for one emerald a
+caravan merchant hands over a vanilla written book of the news its board holds. No chat line, entity,
+block or item of our own (D3). Whatever the choice, the carrier is a body that already exists.
+
+**What this removes.** FACTION_NOTICE's reason and text, CL-D55's two notices (a pact against a player
+and the pacts between camps), `a_pact_is_news_nearby`'s player filter ("every player both camps
+reach"), and every plan of a line of chat. A player who is near both camps and trades with no one
+hears nothing, which is the point.
 
 ---
 
@@ -1188,7 +1244,8 @@ At the fortress (3.1), joint parties are rarer still: 3 in 16 worlds of 50 years
 - Seed 1014, Y11 d9: Mudhollow invades with 26 beside the Grey Outpost's 23, "newly sworn against
   player Ben; empty stores", and finds him home: all 49 die.
 
-What Ben sees in seed 1002: the notice that the Grey Outpost and Mudhollow have sworn against him.
+What Ben sees in seed 1002: a trader, some days after it, with the news that the Grey Outpost and
+Mudhollow have sworn against him.
 While he is away, two columns arrive together. He comes home to a base robbed of 297, and 53 days
 later of 94 more. Over the 64 fortress worlds a joint party came at him about once in 140 years and
 won about once in 250 (CL-6).
@@ -1540,7 +1597,7 @@ two numbers, the floor and the stock one pair each).
 | Rust: the `mind` block in `culture.rs` | about 120 |
 | JSON: five cultures' `mind` blocks | about 125 |
 | Rust tests (section 6) | about 1,000 |
-| Java: reason lines on ENVOY_MATERIALIZE and FACTION_NOTICE in the `ConflictBridge` | about 120 |
+| Java: the reason line on ENVOY_MATERIALIZE in the `ConflictBridge`; the way a player hears news (CL-10) | about 120, the news path not counted |
 | Java GameTests | about 300 |
 | Rust: alliances (2.16: the pact fields and the open-pact list, offer and answer, the call, the joint resolve at a camp, a village and a base, the joint fight's books, strain, betrayal, deterrence, the guard, joint demands, the `SYS_ALLY` stream) | about 600 |
 | Rust: the joint march (the longer muster, the partner-aware wait, the joint arrival, a two-party `start_fight`, the shared quota in bodies) and BAND_MARCH's partner | about 250 |
@@ -1627,16 +1684,18 @@ seeds unless said. The model's value for each is in brackets.
     alone keeps its fights a year within 5% [7.4 and 7.3], no endless war and no camp dying out [none
     in either], and the fortress at most 0.3 fights a year [0.12]; on Peaceful no call is made and no
     joint party leaves.
-26. `a_pact_is_news_nearby` (CL-9 (a)): when two camps swear, march together, or one falls on the
-    other, every player both camps reach gets one notice of that kind naming both, and no other player
-    gets one.
+26. `a_pact_is_news_in_the_world` (CL-9): when two camps swear, march together, or one falls on the
+    other, the engine records one report of that kind naming both, and no command is written for a
+    player's chat; the report reaches a village or a caravan only along a road a traveller walks, and
+    a holder no traveller reaches never learns it.
 
 GameTests, only where Java is involved:
 
-1. `anEnvoySpeaksItsReason`: an ENVOY_MATERIALIZE with a reason shows its line to the player it
-   addresses, once, on arrival.
-2. `aNoticeCarriesItsReason`: a FACTION_NOTICE with a reason plays its sound and shows its line, and a
-   notice for a player who is away waits for him (NOTICE_SHOWN).
+1. `anEnvoySpeaksItsReason`: an ENVOY_MATERIALIZE with a reason has the envoy say its line to the
+   player it addresses, once, when they meet.
+2. `aNoticeIsOnlyACue`: a FACTION_NOTICE plays its sound and sends no chat or action-bar message, and a
+   notice for a player who is away waits for him (NOTICE_SHOWN). Faction news in the world reaches a
+   player by gossip alone, and no conflict code sends a system message (CL-9).
 3. `aGoblinBandAmbushesATrain`: a goblin band waits at an AMBUSH_SPOT and robs a passing synthetic
    train through `attack_train`; with guards on, the band is beaten and destroyed.
 4. `aWatchedSkirmishIsABand`: a skirmish between two camps, and a caravan ambush, that a player meets
@@ -1690,7 +1749,7 @@ GameTests, only where Java is involved:
 | CL-D31 | No starvation: a camp out of stores is hungry, nothing more | renewal is EQUILIBRIUM.md's (Ben's scope); hunger only drives the council |
 | CL-D32 | The Umvuthi's heir waits the later of its cowed time and `min(192, 6 x 2^P)` days, and a warrior takes up the mask (the grove's count falls by one); warriors refill one at a time | MZ-14 (a) and EQUILIBRIUM.md §2.4.7 |
 | CL-D33 | The 128-block rule as EQUILIBRIUM.md §2.2 words it under MZ-15: a war party on the march is not an arrival; a bodiless party at a watched target walks in from the ticking edge | MZ-15 wins where it and this design disagree; the column appears stack by stack at the entity-ticking edge, 128 to 144 blocks off along an axis at a simulation distance of 8 and 160 to 176 at 10, having walked from a kilometre in the far view; only the Umvuthi, at the rear, can be seen to appear, 128 to 132 blocks off at 8 |
-| CL-D34 | BAND_MARCH (0x880B) is the march record; no new record id; the reasons are fields on FACTION_NOTICE (0x8801) and ENVOY_MATERIALIZE (0x8802) | one march record for every party; no id to clash |
+| CL-D34 | BAND_MARCH (0x880B) is the march record; no new record id; the reason is a field on ENVOY_MATERIALIZE (0x8802) (FACTION_NOTICE (0x8801) carries none since CL-D56) | one march record for every party; no id to clash |
 | CL-D35 | The spawn quota does not shrink a band: members past it walk in from the ticking edge as it frees | the band the far view drew is the band that fights; `start_fight`'s waves already work this way |
 | CL-D36 | A defeat sets a floor under the guess (halving over 4 x pride_half), and a player's base blurs at a quarter of a camp's rate | without them a fortress was tested again as soon as the belief blurred |
 | CL-D37 | Survivors walk home 1 to 3 days, a winning chief with them; the camp lacks them until then | MZ-15's march home has bodies; a camp whose band is out is weaker |
@@ -1711,22 +1770,28 @@ GameTests, only where Java is involved:
 | CL-D52 | Ally weight by culture: Frostmaw 0, raider 0.8, bandit 1.2, the others 1.0; no ally counts on the grove's invasion | a council of one swears with no one; the Umvuthi's pride is its own (2.10) |
 | CL-D53 | Peaceful: pacts may be sworn; no call is made and no joint party leaves | MOWZIE.md §4.12 |
 | CL-D54 | Alliances draw from their own stream (`SYS_ALLY` in the engine, `arng` in the model); with them off the world is the one before them, draw for draw | a clean same-seed control for every comparison (4.5) |
-| CL-D55 | A pact against a player is told by a notice naming both camps; a joint envoy and a joint party name the ally; pacts between camps are told to the players both camps reach while CL-9 is open (its (a)) | CL-1 (a): a faction tells the player why; without the notices a player almost never sees an alliance (4.5) |
+| CL-D55 | **Revised by CL-D56.** A joint envoy and a joint party name the ally. (Was also: a pact against a player is told by a notice naming both camps, and pacts between camps are told to the players both camps reach. Both are news now, with no chat line.) | CL-1 (a): a faction tells the player why, in person |
+| CL-D56 | **No chat notice for conflict**: FACTION_NOTICE is a sound cue only (64 bytes, no reason, no text); a feud, a pact sworn or broken, a raid and a chief's or champion's death are news reports carried as gossip by traders, caravans and villagers (2.17); the envoy still says why in person | Ben, 2026-10-22: "All faction news in-world"; CL-9 widened to all conflict |
+| CL-D57 | Only camps swear pacts; a player never swears with a camp in this build (CL-8 (a)). A pact against a player is allowed, rare, and his bases are fair game (CL-6 (a), CL-7 (a)) | Ben, 2026-10-22: "Not in this build"; "Rare, bases fair game (Recommended)" |
 
 ---
 
 ## 8. Ben's answers and questions
 
-**Answered** (Ben, 2026-10-22, in one line for all five: CL-1 to CL-4 as recommended, "Add alliances"
-for CL-5):
+**Answered** (Ben, 2026-10-22, in one line for the first five: CL-1 to CL-4 as recommended, "Add
+alliances" for CL-5; then CL-6 to CL-9 the same day, below):
 
 | Id | Question | Ben's answer |
 |---|---|---|
-| CL-1 | **Should a faction tell the player why?** | (a), as recommended (Ben, 2026-10-22): an envoy says one line when it arrives, and a notice says who is angry and for what |
+| CL-1 | **Should a faction tell the player why?** | (a), as recommended (Ben, 2026-10-22): an envoy says one line in person when it arrives. **Revised the same day by CL-9:** the second half, a notice that says who is angry and for what, is news in the world instead (2.17); there is no chat notice |
 | CL-2 | **Can a camp blame the wrong player?** | (a), as recommended (Ben, 2026-10-22): blame spill 3 times in 10 (CL-D18) |
 | CL-3 | **How often does a Frostmaw rob a busy line?** | (a), as recommended (Ben, 2026-10-22): a lurk about 0.35 a year at 4 legs a day, 1.9 at 12, 5.2 at 24 (CL-D16) |
 | CL-4 | **How often is a strong base tested?** | (a), as recommended (Ben, 2026-10-22): about one fight in eight years at a fortress, every one lost by the attackers |
 | CL-5 | **Alliances between camps?** | **(b)**, not the recommendation (Ben, 2026-10-22): "Add alliances". Camps that share an enemy can ally and send joint war parties; CL-D19 is reversed |
+| CL-6 | **May two sworn camps beat a strong base while its owner is away?** | **(a) Yes, rarely**, as recommended (Ben, 2026-10-22, "Rare, bases fair game (Recommended)", for CL-6 and CL-7 together): bases are fair game and a pact against a player is allowed (CL-D57) |
+| CL-7 | **How common should alliances be?** | **(a) As designed**, rare, as recommended (the same answer): one pact about every seven years in the valley, a joint fight about every 28 |
+| CL-8 | **Can a player swear with a camp?** | **(a) Not in this build**, as recommended (Ben, 2026-10-22, "Not in this build"): only camps swear pacts. Player pacts may come later as their own design |
+| CL-9 | **Should players see pacts between camps?** | **Neither option: wider.** Ben, 2026-10-22: "Shouldn't be in chat notifs, but they should be able to learn about this stuff by travelling traders, etc.", and then "All faction news in-world". There are no chat notices for conflict at all; an envoy still says why in person (CL-1); traders, caravans and villagers pass on news of feuds, pacts, raids and deaths as gossip, carried by the existing news-by-messengers system (2.17, CL-D56) |
 
 **The questions as they were asked** (recommended option first):
 
@@ -1738,7 +1803,7 @@ for CL-5):
 | CL-4 | **How often is a strong base tested?** | (a) **Now and then (Recommended):** about one fight in eight years at a fortress, every one lost by the attackers, each with a reason (a new neighbour's first test, a feud after a chief fell at his walls, word he is away). (b) Never unless he provokes. (c) About one a season. | It decides whether walls end the game's danger. |
 | CL-5 | **Alliances between camps?** | (a) **Not in this build (Recommended):** camps fight, truce and feud pairwise. (b) Camps that share an enemy can ally and send joint war parties. | Alliances are a new mechanic with Java-visible joint parties. |
 
-**The questions the alliances raise** (recommended option first; open):
+**The questions the alliances raise** (answered above; as they were asked, recommended option first):
 
 | Id | Question | Options | Why it is yours |
 |---|---|---|---|
@@ -1746,3 +1811,9 @@ for CL-5):
 | CL-7 | **How common should alliances be?** | (a) **As designed (Recommended):** rare. In the valley one pact about every seven years and a joint fight about every 28 (about 880 server hours), and a player almost never meets one: a joint party came at the fortress about once in 4,450 server hours, at the hunter about once in 9,300, and never at Bea, the farmer or the railway (4.5). Nothing a player feels changes. The weights are TUNABLE, like every number here, and can be warmed later without a format change. (b) Warm (4.5): pacts run twice as long (`pact_days` 384), sending costs 1 instead of 3, kin count 6 instead of 4, and a hated culture costs 6 instead of 10 to swear across. A hunter who provokes two camps meets them sworn together: 16% more fights on him and 41% more loot taken, joint parties at him 13 times as often (about once in 720 server hours) and joint envoys about twenty times as often; the fortress and Bea barely move. (c) One knob, the hate weight at 6, nothing else: pacts against the hunter 30 in 3,200 world-years instead of 4, joint parties at him four times as often (about once in 2,200 server hours), 4% more fights and 15% more loot taken (neither significant); the fortress and Bea barely move. No other single knob moves the hunter (4.5). | It decides whether an alliance is a rare story or a standing answer to a player who provokes. CL-6 (b) would bar pacts against players and take most of (b)'s and (c)'s effect on players with it, so CL-6 and CL-7 are best asked together. |
 | CL-8 | **Can a player swear with a camp?** | (a) **Not in this build (Recommended):** pacts are between camps; a player deals with a camp by tribute, truce and feud, as now. (b) Yes: a player swears with a camp against a shared foe, is called to its fights and may refuse, with the strain and the shame a camp would take. It needs a call a player can answer, a place to show it, and rules for his refusals and his betrayals. | It is a new mechanic players use, with its own interface. |
 | CL-9 | **Should players see pacts between camps?** | (a) **A notice to the players both camps reach (Recommended):** when they swear, when they march together and when one betrays the other (2.16, "Envoys and notices"); in the valley about 0.15, 0.04 and 0.03 times a year. Without it a player almost never sees an alliance (4.5). (b) Nothing, as designed so far: a player learns of a pact only when it is sworn against him or its parties reach him. | It decides whether the valley's politics is news a player reads or history he never sees. |
+
+**Open** (raised by the news-in-world build; recommended option first):
+
+| Id | Question | Options | Why it is yours |
+|---|---|---|---|
+| CL-10 | **How does a player hear the news a traveller carries?** | (a) **A trade for a written book (Recommended):** a caravan merchant, and later a village trader, offers the news its board holds as a vanilla written book for one emerald, through the MERCHANT_OFFERS path that already prices its wares; the text is written from the report codes when the book is made. No chat, no entity, block or item of our own. A player who trades with no one hears nothing. (b) A lectern in a village holds a written book of what the village has learned, refreshed as news arrives; the player reads it where it stands. It needs a village with a lectern, and a lectern to be placed where there is none. (c) A line spoken by a caravan merchant or villager when the player speaks to it. It is a line of chat in all but name, against Ben's rule, and vanilla's villager click already opens a trade. | It is the one place the player reads conflict at all, and the first text rtsim would show for news. |

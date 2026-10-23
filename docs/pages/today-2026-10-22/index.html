@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Today's landings, 2026-10-22</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --done-bg: #e2f0e8;
+  --done-ink: #1d5a3b;
+  --done-line: #93c4aa;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 8px; max-width: 30em; }
+h3 { font-size: 19px; margin: 22px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.meta { font-size: 15px; color: var(--muted); margin: 0 0 14px; }
+.state { display: inline-block; font-size: 14px; font-weight: 600; color: var(--done-ink); background: var(--done-bg); border: 1px solid var(--done-line); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 3px; }
+.state.plan { color: var(--muted); background: var(--card); border-color: var(--line); }
+.answered { list-style: none; padding: 0; margin: 10px 0; }
+.answered li { padding: 8px 0; border-top: 1px solid var(--line); margin: 0; max-width: 46em; }
+.answered li:first-child { border-top: 0; }
+.open-tag { display: inline-block; font-size: 14px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 7px; margin-left: 6px; vertical-align: 2px; }
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; margin: 10px 0 6px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td.num, th.num { text-align: right; }
+td.num { white-space: nowrap; }
+@media (max-width: 600px) {
+  table.nums { font-size: 14px; }
+  table.nums th, table.nums td { padding: 8px 8px 8px 0; }
+  table.nums th { white-space: normal; }
+}
+.rules { list-style: none; padding: 0; margin: 12px 0 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px 18px; }
+.rules li { margin: 0; max-width: none; border-top: 1px solid var(--line); padding-top: 8px; font-size: 16.5px; }
+.rules b { display: block; font-size: 17px; }
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 18px 18px 8px; margin: 14px 0; }
+.decision h3 { margin-top: 0; }
+.decision p, .decision li { max-width: none; }
+.opts { list-style: none; padding: 0; margin: 4px 0 12px; font-size: 16.5px; }
+.opts li { padding: 6px 0; border-top: 1px solid var(--line); margin: 0; }
+.opts li:first-child { border-top: 0; }
+.opts .k { font-weight: 700; margin-right: 4px; }
+.decision .who { font-size: 15px; color: var(--muted); font-style: italic; }
+.elsewhere { list-style: none; padding: 0; margin: 10px 0; }
+.elsewhere li { padding: 8px 0; border-top: 1px solid var(--line); margin: 0; max-width: 46em; }
+.elsewhere li:first-child { border-top: 0; }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#f6">Worm nests</a>
+  <a href="#stories">Stories</a>
+  <a href="#ds12">Adopt</a>
+  <a href="#climate">Climate</a>
+  <a href="#s8">Ships</a>
+  <a href="#g2-9">Glass and saves</a>
+  <a href="#sec1">SEC-1</a>
+  <a href="#history">History</a>
+  <a href="#progress">In progress</a>
+</nav>
+<main>
+<header data-ss-id="header">
+  <h1 data-ss-id="headline">Landed on 22 October: Death Worm nests, pirates that keep sailing, and an adopt that no longer grows with the world</h1>
+  <p class="dek" data-ss-id="dek">One card for each thing that landed today, with its commit on mic-rtsim main (mic-climate's on its own repo). Three of them asked you something, and you answered all three this evening, with SEC-1's six questions and those on the pages below. The far view, alliances and news, and the Mowzie build have pages of their own, linked below.</p>
+  <p class="lead" data-ss-id="lead">The oil's Death Worm nests are in and on by default. Two sim stories that had been failing unseen pass again. Adopting a district now costs the same on any world. mic_climate's first-tick stall is fixed and released in 0.2.1. Pirates now sail for the whole thousand-day run. Each district's glass state is its own page, and since this evening a save writes only the pages that changed, so a quiet world's save is about 17 KB at any size.</p>
+  <div class="tiles" data-ss-id="tiles">
+    <div class="tile" data-ss-id="kpi-landed"><div class="n">7</div><div class="t">changes landed, plus a history scan</div></div>
+    <div class="tile" data-ss-id="kpi-ask"><div class="n">0</div><div class="t">wait on you from today: all answered, SEC-1's six with them; one new question on the conflict page</div></div>
+    <div class="tile" data-ss-id="kpi-prog"><div class="n">4</div><div class="t">in progress: the Mowzie build, news in place of chat, ports, the far view gallery</div></div>
+  </div>
+</header>
+
+<section id="elsewhere" data-ss-id="elsewhere" data-ss-section>
+  <h2 data-ss-id="elsewhere-h">Also today, on their own pages</h2>
+  <ul class="elsewhere" data-ss-id="elsewhere-list">
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-distant-horizons"><strong>Trains and dragons in Distant Horizons</strong></a>: phases 1 and 2 built and measured (ca5b3eb). You approved them, "Approve, ship with rtsim"; pictures and video are being captured for a gallery.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-conflict-life"><strong>Alliances and news</strong></a>: factions that swear pacts, call each other to fights and sometimes betray them (ce52e0dc). You answered its four questions and made all faction news in-world: no chat notices for conflict. That raised one new question there, CL-10: how you hear the news.</li>
+    <li><a href="https://spacesheep.dev/@benmac/rtsim-mowzie"><strong>The Umvuthi aloft, and the Mowzie build</strong></a>: you chose aloft and answered "All three" for the rest. The build has started: M1 to M3 of 12 slices are being built, each reviewed before it lands.</li>
+  </ul>
+</section>
+
+<section id="f6" data-ss-id="f6" data-ss-section>
+  <h2 data-ss-id="f6-h">Oil F6: the Death Worm nest <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="f6-meta">74c99c1, choices OGC70 to OGC103 in <code>docs/choices-oilgate.md</code>, built to your OG-9 answer (e).</p>
+  <p data-ss-id="f6-p">Drilling oil now wakes a Death Worm nest under the field, and the nest keeps sending worms while the drilling goes on. Nests are on by default (<code>placeNests</code>, flag 4 of the oil config).</p>
+  <ul class="rules" data-ss-id="f6-rules">
+    <li data-ss-id="f6-where"><b>Where</b>One nest for each 8 by 8 chunk cell with oil: a 9 by 9 chamber 20 to 60 blocks under the first oil chunk, carved only into natural ground (8 tries to find some).</li>
+    <li data-ss-id="f6-heart"><b>The heart</b>A vanilla spawner set to the Ice and Fire Death Worm that never spawns by itself (player range 0). The engine alone renews the worms.</li>
+    <li data-ss-id="f6-wake"><b>Waking</b>A nest sleeps until a pumpjack's deposit sample, from the district's latest sweep, lies within 128 blocks of it.</li>
+    <li data-ss-id="f6-renew"><b>Worms</b>The first awake day hatches 2. After a worm is lost, one comes back after 12 drilling days, doubled for each step of pressure players have put on the nest, to at most 96. Kills add pressure, and it halves every 96 nest days. The nest's stage follows the drainage in thirds, and sets the worms' size; a bottomless well keeps it at stage 1.</li>
+    <li data-ss-id="f6-break"><b>Breaking the heart</b>Renewal stops and the pressure rises by one; the worms already there stay and still raid. The heart reforms after 96 drilling days, doubled for each step of pressure, to at most 384. A nest nobody drills never reforms.</li>
+    <li data-ss-id="f6-raid"><b>Raids</b>A chance of 250 in 1,000 each drilling day, as a new fifth threat class, Burrowing, that walls, turrets and guards do not stop. Each worm breaks one machine or store block, underground ones first, and carries nothing off.</li>
+    <li data-ss-id="f6-armour"><b>Armour</b>A worm never breaks a block that stands on obsidian, crying obsidian or reinforced deepslate within 4 blocks below (the <code>#mic_rtsim:armoured_floor</code> tag), and never the pumpjack's own hole.</li>
+    <li data-ss-id="f6-watched"><b>With a player there</b>The worms glide through the ground, stop under armour or surface, fight the nearest player within 48 blocks for 1,200 ticks, then glide home. These worms break no blocks.</li>
+  </ul>
+  <p class="cap" data-ss-id="f6-tests">Saves move to RTD6 and RTN6, with no migration. The nest GameTests pass on the stub and on the native engine. OGC103 also fixed the dragon steering test, which now sets morning; the Ice and Fire GameTests pass 28 of 28.</p>
+</section>
+
+<section id="stories" data-ss-id="stories" data-ss-section>
+  <h2 data-ss-id="stories-h">Sim stories: two that had been failing pass again <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="stories-meta">891ca15 (T27a and R27a), with ac36fbc.</p>
+  <ul data-ss-id="stories-list">
+    <li><strong>A pirate with no crew is lost, and its haven rebuilds one (T27a).</strong> Before, a crewless pirate kept hunting with nobody aboard: 287 fruitless hunts in 200 days, 5,887 by day 3,000.</li>
+    <li><strong>The dragons story follows its dragon again (R27a).</strong> The story's checks waited for beats at fixed times; they now look for the beats wherever they fall, so it follows Cinderjaw through the run. Four of its checks had been failing unseen since 20 October. It passes on 28 of seeds 1 to 30: on seed 6 the dragon never leaves out of boredom, and on seed 23 the valley is already 88% village by autumn.</li>
+  </ul>
+</section>
+
+<section id="ds12" data-ss-id="ds12" data-ss-section>
+  <h2 data-ss-id="ds12-h">Adopting a district no longer grows with the world (DS-12) <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="ds12-meta">313f1c0, from 598d978 and 6170350.</p>
+  <p data-ss-id="ds12-p"><code>/rtsim district adopt</code> used to run a detection over every district, so one adopt held the tick longer the more districts a world had. It now detects only around its own chunks (<code>Districts.adoptAround</code>), with the same budget as a ticked pass, so it costs one neighbourhood's detection on any world. The adopt GameTests check three situations against a full detection. Merge, split and exclude still run a full detection.</p>
+</section>
+
+<section id="climate" data-ss-id="climate" data-ss-section>
+  <h2 data-ss-id="climate-h">mic_climate: the first-tick stall is fixed and released <span class="state">Released</span></h2>
+  <p class="meta" data-ss-id="climate-meta">mic-climate master 6d875a4, the fix in 16988a6; released as 0.2.1; the pack repins it in its master commit 016d8fc.</p>
+  <p data-ss-id="climate-p">The first temperature query in a region nobody had loaded stalled the server tick for 1.2 to 3.6 seconds. Project Atmosphere 0.9.1.2 built a new <code>RandomState</code> for every forecast square, and C2ME compiled its density functions again each time. mic_climate now shares one <code>RandomState</code> for each server (<code>BiomeSamplerMixin</code>). Samples taken on the server thread went from 190 to 0. The GameTests pass 37 of 37 with Project Atmosphere and without it, and 1,875 sampled points are identical before and after. What remains is the one build at start-up.</p>
+  <p data-ss-id="climate-pin"><a href="https://github.com/MinecraftIndustrialComplex/mic-climate/releases/tag/0.2.1">mic_climate 0.2.1</a> is released, and the pack's master repins it (016d8fc). The GameTests passed 37 of 37 again, with Project Atmosphere and without it.</p>
+</section>
+
+<section id="s8" data-ss-id="s8" data-ss-section>
+  <h2 data-ss-id="s8-h">EQUILIBRIUM S8: pirates keep sailing <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="s8-meta">e442612, choices T36 to T39.</p>
+  <p data-ss-id="s8-p"><code>sim ships --days 1000</code> now keeps both pirates on all 30 seeds, still sailing on day 996.7 or later, with 271 to 356 hunts a seed. Before, no seed had a pirate left after day 77.6. A fight report that arrives late can no longer strand a pirate (T39). <a href="https://spacesheep.dev/@benmac/rtsim-equilibrium">The equilibrium page</a> has the plan this is part of.</p>
+  <div class="box" data-ss-id="s8-ports">
+    <h3>Ports: in design <span class="state plan">In design</span></h3>
+    <p>Asked whether havens nobody visits should lose crew, you asked back: "Huh, shouldn't ports be able to get raided, shut down, have new ones form, etc?" An agent is now designing and building a port lifecycle: ports and havens that are raided and shut down, and new havens and ports that form. Nothing waits on you yet; its questions will come to you when it has them.</p>
+  </div>
+</section>
+
+<section id="g2-9" data-ss-id="g2-9" data-ss-section>
+  <h2 data-ss-id="g2-h">G2-9: each district's glass state is its own page, and saves write only what changed <span class="state">Landed</span></h2>
+  <p class="meta" data-ss-id="g2-meta">G2-9 in 0bc2f02 (choices G2-80 to G2-85, docs at 903190a); the saves in b5cd4d2 (choices ID1 to ID9 in <code>docs/choices-industry-dirty-pages.md</code>).</p>
+  <p data-ss-id="g2-p">The glass works' state is now saved a district at a time, as a page of its own (table 0x4903, magic <code>IGL1</code>). A district loaded back replays exactly as before, and the compile numbers survive a restart (G2-81). No migration; the GameTest worlds were deleted.</p>
+  <p data-ss-id="g2-cost">That made saves bigger (G2-83): every industry page was written whole at every save, and a glass page is about twelve times a district page. So the coordinator took G2-83's option (a) while you were away, it landed this evening, and you confirmed it: a save now writes only the pages that changed since the last one, plus the small globals page. A quiet district costs nothing to save.</p>
+  <table class="nums" data-ss-id="g2-table">
+    <thead><tr><th scope="col">Quiet districts</th><th scope="col" class="num">Written a save, before G2-9</th><th scope="col" class="num">With G2-9</th><th scope="col" class="num">With changed-page saves</th></tr></thead>
+    <tbody>
+      <tr><td>100</td><td class="num"></td><td class="num">427 KB</td><td class="num">17.5 KB</td></tr>
+      <tr><td>1,000</td><td class="num">334 KB</td><td class="num">4.11 MB</td><td class="num">17.5 KB</td></tr>
+      <tr><td>10,000</td><td class="num">3.34 MB</td><td class="num">41.0 MB</td><td class="num">17.5 KB</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="g2-cap">Quiet districts replaying 10-node factories, beside 10 busy export lines whose 30 pages change every day; those and the globals page are the 17.5 KB. The save's time on the step thread at 10,000 went from 396 to 527 ms to 97 to 161 microseconds, flat in the district count. The heap and the CPU for each sim day did not change measurably (a loaded laptop). Blank: not measured.</p>
+  <p data-ss-id="g2-confirmed"><strong>Confirmed:</strong> your answer was (a), keep saving only the pages that changed.</p>
+  <ul data-ss-id="g2-notes">
+    <li><strong>A restart writes every page once:</strong> the first save after it is as big as before; from the second on, only changed pages.</li>
+    <li><strong>A missed change cannot slip by quietly:</strong> a check mode hashes every page at each save and fails if one changed without being marked. It ran through the industry tests, the G2-9 restore tests and the benches, and found none.</li>
+    <li><strong>The page format did not change,</strong> so no save was wiped.</li>
+  </ul>
+  <p class="cap" data-ss-id="g2-globals">One more thing to know, not to decide: the globals page is still written whole at every save. It is 105 to 128 bytes today, but it grows with the districts that are surveyed or due, so a large server with many of them would write it every time. Splitting it into pages is the next step if it ever shows in a save's size.</p>
+</section>
+
+<section id="sec1" data-ss-id="sec1" data-ss-section>
+  <h2 data-ss-id="sec1-h">SEC-1: factories split into sections at their links and stores <span class="state plan">Approved, not built</span></h2>
+  <p class="meta" data-ss-id="sec1-meta">SECTIONS.md on mic-rtsim main; your answers recorded there and in DECISIONS.md (9e1457ff).</p>
+  <p data-ss-id="sec1-p">The design for your "Cut at links and stores" came back today, and you answered its six questions, each with the recommended option. Districts stop joining merely because their chunks touch: only a physical link joins them. Inside a district the factory is cut at its stores into sections, each a working line between stores. A section learns, replays and goes stale on its own, and the district stays the unit of loading. An edit stales only the sections around it, and a replay that fails freezes only the sections it names while the rest go on.</p>
+  <h3 data-ss-id="sec1-answers-h">Your six answers</h3>
+  <ol data-ss-id="sec1-answers">
+    <li><strong>Shaft networks</strong> are a shared input that sections cut through, so one network running a whole building does not make the building one section.</li>
+    <li><strong>Rotation across districts:</strong> districts on one shaft network stay apart but replay together. Past 16 districts on one network they are not coupled, and each learns its rates on its own.</li>
+    <li><strong>A store shared by sections:</strong> what goes in and out is counted at Create's movers (funnels, chutes, arms, basins, frogports, packagers and pipes). Hoppers and other mods' movers there are not counted, and their sections are judged together.</li>
+    <li><strong>Packages between districts</strong> sit in a package store owned by no district, with its own saved data.</li>
+    <li><strong>A chain with one end loaded:</strong> packages are modelled both ways, the G2-11 way. They wait on the last loaded conveyor and the far district's replay draws them; a reset leaves at worst a duplicate, never a loss.</li>
+    <li><strong>Packagers are not cuts:</strong> the cut is at the chain, and a packager's packages are counted at the frogport or postbox they pass through.</li>
+  </ol>
+  <p data-ss-id="sec1-next">Nothing is built yet. The first of seven slices stops the compile, Create's chain conveyors and Create's network recount from loading chunks, which today can pull a district nobody is near into a partial load. Saves get new formats with a loud reset and no migration, as for everything before release.</p>
+</section>
+
+<section id="history" data-ss-id="history" data-ss-section>
+  <h2 data-ss-id="history-h">The history scan before AD-1</h2>
+  <p data-ss-id="history-p">The scan found no secrets. Before mic-rtsim can go public, its history would need a rewrite to take out the deploy rehearsal doc, the live server's name and facts from the base. mic-native is clean.</p>
+  <p data-ss-id="history-when">Nothing to do now: it is your call at the Create addon's release, and the hub lists it under "At release, not now".</p>
+</section>
+
+<section id="progress" data-ss-id="progress" data-ss-section>
+  <h2 data-ss-id="progress-h">In progress</h2>
+  <ul data-ss-id="progress-list">
+    <li><strong>The Mowzie build:</strong> M1 records, M2 cultures and M3 the conflict bridge are being built, each reviewed before it lands (MOWZIE.md section 9, b11a3cab). <a href="https://spacesheep.dev/@benmac/rtsim-mowzie#build">The slices</a>.</li>
+    <li><strong>No chat notices for conflict:</strong> an agent is removing the chat notices the game sends today and routing them to news. <a href="https://spacesheep.dev/@benmac/rtsim-conflict-life#news">How news travels</a>.</li>
+    <li><strong>Ports:</strong> the port lifecycle is in design (<a href="#s8">above</a>); its questions will come to you.</li>
+    <li><strong>The far view gallery:</strong> trains and dragons in Distant Horizons are being recorded on worlds we generated ourselves, for a separate private page.</li>
+    <li><strong>EQUILIBRIUM:</strong> S1, the census of who is alive, is built (a4cd627), and now S2, herds that settle and come back, is built too (2d5b07b2). The 30-seed checks sit inside the model's bands.</li>
+  </ul>
+</section>
+</main>
+<footer data-ss-react="off">Built for Ben from mic-rtsim main and mic-climate master, 22 October 2026, updated in the evening for your answers. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+</body>
+</html>
