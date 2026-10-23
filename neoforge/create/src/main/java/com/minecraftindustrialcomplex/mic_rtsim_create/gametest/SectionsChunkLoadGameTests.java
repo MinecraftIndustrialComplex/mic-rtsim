@@ -22,6 +22,8 @@ import com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock;
 import com.simibubi.create.content.logistics.box.PackageItem;
 import com.simibubi.create.content.logistics.packagePort.PackagePortTarget;
 import com.simibubi.create.content.logistics.packagePort.frogport.FrogportBlockEntity;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.GameTest;
@@ -47,6 +49,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
@@ -327,12 +330,20 @@ public final class SectionsChunkLoadGameTests {
 
     /** Unforces A and B, waits until both have unloaded, and gives A its radius-1 ticket: B is away. */
     private static GameTestSequence away(GameTestSequence s, ServerLevel level, Adj f) {
+        return away(s, level, f, "", () -> true);
+    }
+
+    /**
+     * As {@link #away(GameTestSequence, ServerLevel, Adj)}, and waits for {@code also} with A and B before A's
+     * ticket: a chunk pending unload within reach of the ticket (level 44) comes back instead.
+     */
+    private static GameTestSequence away(GameTestSequence s, ServerLevel level, Adj f, String alsoName, BooleanSupplier also) {
         return s.thenExecute(() -> {
                     level.setChunkForced(f.ax, f.az, false);
                     level.setChunkForced(f.bx, f.az, false);
                 })
-                .thenWaitUntil(io(() -> check("A and B unload: A " + loadedChunks(f.da()) + ", B " + loadedChunks(f.db()),
-                        unloaded(level, f.ax, f.az, f.da()) && unloaded(level, f.bx, f.az, f.db()))))
+                .thenWaitUntil(io(() -> check("A and B unload: A " + loadedChunks(f.da()) + ", B " + loadedChunks(f.db()) + alsoName,
+                        unloaded(level, f.ax, f.az, f.da()) && unloaded(level, f.bx, f.az, f.db()) && also.getAsBoolean())))
                 .thenExecute(() -> level.getChunkSource().addRegionTicket(SEC1, f.a(), 1, f.a()))
                 .thenWaitUntil(io(() -> check("A loads and ticks", Loaded.ticks(level, f.ca) && conveyor(level, f.ca) != null)))
                 .thenExecute(() -> check("B stays away (level 34)", level.getChunkSource().getChunkNow(f.bx, f.az) == null && loadedChunks(f.db()) == 0));
@@ -1130,63 +1141,169 @@ public final class SectionsChunkLoadGameTests {
 
     /**
      * A chunk that loads anew FULL and does not tick is re-synced at the load (PATCHES.md rows 56 and 58;
-     * SECTIONS.md §2.8, choice SC73). With B away, the motor in A is reversed to -64 RPM: CA follows and CB
-     * keeps 64 in its saved state. A FULL-only ticket loads B: B is FULL and does not tick, so nothing there
-     * attaches, and row 56's re-sync at the first attach never runs. Row 58 re-syncs B at its FULL report:
-     * CB takes CA's -64 RPM before it has attached, and joins CA's network once (one member per position),
-     * as its first tick would have joined it (without the change a compile read CB's stale 64 RPM until B
-     * ticked). Forced, B ticks: CB's first attach finds nothing stale, nothing breaks, and millstone B turns.
+     * SECTIONS.md §2.8, choice SC73). The chain goes on from CB to CC in C, the chunk past B, with a cog and a
+     * millstone on CC. With B and C away, the motor in A is reversed to -64 RPM: CA follows, and CB and CC keep
+     * 64 in their saved state. B's and C's block entities are taken out of the network and their share put in
+     * its unloaded share, as a restart with them away leaves it. A FULL-only ticket loads C: C is FULL, does
+     * not tick, and nothing there joins (CC's source, CB, is not loaded). A FULL-only ticket loads B: nothing
+     * there attaches, so row 56's re-sync at the first attach never runs; row 58 re-syncs B at its FULL report.
+     * CB, and CC past it, take CA's -64 RPM before either has attached, and every block entity of B and C
+     * joins CA's network once: the unloaded share drops by exactly their share (without the join where Create
+     * lists them again, C's block entities, which the re-sync reaches from B, stayed in the unloaded share as
+     * well as in the members). Forced, B and C tick: the first attaches find nothing stale, nothing breaks,
+     * and both millstones turn.
      */
-    @GameTest(template = YARD, batch = "sec1_8", timeoutTicks = 12000)
+    @GameTest(template = YARD, batch = "sec1_8", timeoutTicks = 16000)
     public static void aChunkLoadedFullComesBackInStep(GameTestHelper helper) {
         fastConfig();
         ServerLevel level = helper.getLevel();
         Adj f = Adj.at(helper, 5100, true);
-        ChunkPos b = new ChunkPos(f.bx, f.az);
+        int cx = f.bx + 1;
+        ChunkPos b = new ChunkPos(f.bx, f.az), c = new ChunkPos(cx, f.az);
+        // C's conveyor north of the line CB to CA, so its chain passes clear of the frogport on CB's loop
+        BlockPos cc = new BlockPos(cx * 16 + 3, Y, f.az * 16), millC = cc.above().south();
+        List<BlockPos> parts = List.of(f.cb, f.cb.above(), f.millB, cc, cc.above(), millC);
         String t = "aChunkLoadedFullComesBackInStep";
-        KineticBlockEntity[] cb = {null};
+        KineticBlockEntity[] old = {null}, fresh = new KineticBlockEntity[parts.size()];
+        float[] share = {0, 0, 0};
         int[] mark = {0};
         Supplier<Float> motorSpeed = () -> kinetic(level, f.motor).getGeneratedSpeed();
-        GameTestSequence s = away(build(helper, f, 64), level, f)
+        Supplier<KineticNetwork> net = () -> kinetic(level, f.ca).getOrCreateNetwork();
+        GameTestSequence built = build(helper, f, 64)
+                .thenExecute(() -> {
+                    level.setChunkForced(cx, f.az, true);
+                    GlassCorpusKit.set(helper, cc, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
+                    GlassCorpusKit.cog(helper, cc.above(), Direction.Axis.Y);
+                    GlassCorpusKit.set(helper, millC, AllBlocks.MILLSTONE.getDefaultState());
+                    join(level, f.cb, cc);
+                })
+                .thenWaitUntil(() -> check("the chain turns millstone C: " + speedOf(level, millC),
+                        Math.abs(speedOf(level, millC)) == 64 && speedOf(level, cc) == speedOf(level, f.cb)))
+                .thenExecute(() -> {
+                    old[0] = kinetic(level, cc);
+                    level.setChunkForced(cx, f.az, false);
+                });
+        GameTestSequence s = away(built, level, f, ", and C",
+                        () -> old[0].isRemoved() && level.getChunkSource().getChunkNow(cx, f.az) == null)
                 .thenExecute(() -> ((CreativeMotorBlockEntity) Loaded.blockEntity(level, f.motor)).generatedSpeed.setValue(-64))
                 .thenIdle(60)
                 .thenExecute(() -> {
-                    record(t, "B away, motor -64: CA", speedOf(level, f.ca));
+                    record(t, "B and C away, motor -64: CA", speedOf(level, f.ca));
                     check("CA follows the motor: " + speedOf(level, f.ca), speedOf(level, f.ca) == motorSpeed.get() && motorSpeed.get() == -64);
-                    check("B is still away", level.getChunkSource().getChunkNow(f.bx, f.az) == null);
+                    check("B and C are still away", level.getChunkSource().getChunkNow(f.bx, f.az) == null && level.getChunkSource().getChunkNow(cx, f.az) == null);
+                    KineticNetwork n = net.get();
+                    System.arraycopy(forgetAway(n, f.bx, cx, f.az), 0, share, 0, 3);
+                    record(t, "as after a restart: B's and C's share (capacity, stress, members)", share[0] + ", " + share[1] + ", " + share[2]);
+                    check("B and C hold six members with stress: " + share[2] + ", " + share[1], share[2] == 6 && share[1] > 0 && share[0] == 0);
+                    unloadedShare(n, new float[] {100f, 50f + share[1], 3f + share[2]});
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, c, 0, c);
+                })
+                .thenWaitUntil(io(() -> check("C loads FULL", Loaded.at(level, cc) && kinetic(level, cc) != null && kinetic(level, cc) != old[0])))
+                .thenExecute(() -> {
+                    KineticNetwork n = net.get();
+                    old[0] = kinetic(level, cc);
+                    check("C does not tick", !Loaded.ticks(level, cc));
+                    check("CC keeps its saved speed: " + old[0].getSpeed() + ", CA " + speedOf(level, f.ca),
+                            Math.abs(old[0].getSpeed()) == 64 && old[0].getSpeed() != speedOf(level, f.ca));
+                    for (BlockPos p : parts.subList(3, 6))
+                        check("nothing of C joined: " + p, kinetic(level, p) != null && !n.members.containsKey(kinetic(level, p)));
+                    float[] u = unloadedShare(n, new float[] {100f, 50f + share[1], 3f + share[2]});
+                    check("the unloaded share is unchanged: " + u[0] + ", " + u[1] + ", " + u[2],
+                            u[0] == 100f && u[1] == 50f + share[1] && u[2] == 3f + share[2]);
                     mark[0] = StaleKinetics.resyncs();
                     level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
                 })
-                .thenWaitUntil(io(() -> check("B loads FULL and CB is re-synced: re-syncs " + (StaleKinetics.resyncs() - mark[0]),
-                        Loaded.at(level, f.cb) && StaleKinetics.resyncs() > mark[0])))
+                .thenWaitUntil(io(() -> {
+                    KineticBlockEntity cb = kinetic(level, f.cb), ca = kinetic(level, f.ca);
+                    check("B loads FULL and CB takes CA's speed and network: CB " + (cb == null ? "none" : cb.getSpeed() + " on " + cb.network),
+                            Loaded.at(level, f.cb) && cb != null && cb.getSpeed() == -64 && ca.network != null && ca.network.equals(cb.network));
+                }))
                 .thenExecute(() -> {
                     KineticBlockEntity ca = kinetic(level, f.ca);
-                    cb[0] = kinetic(level, f.cb);
-                    KineticNetwork n = ca.getOrCreateNetwork();
-                    record(t, "B loaded FULL: CA, CB, re-syncs, members, distinct positions", ca.getSpeed() + ", " + cb[0].getSpeed() + ", "
-                            + (StaleKinetics.resyncs() - mark[0]) + ", " + n.members.size() + ", " + positions(n));
-                    check("B does not tick", !Loaded.ticks(level, f.cb));
-                    check("CB has not attached", cb[0].updateSpeed);
-                    check("CB has CA's speed: CB " + cb[0].getSpeed() + ", CA " + ca.getSpeed(), cb[0].getSpeed() == ca.getSpeed() && ca.getSpeed() == -64);
-                    check("one network: " + ca.network + ", " + cb[0].network, ca.network != null && ca.network.equals(cb[0].network));
-                    check("CB joined CA's network", n.members.containsKey(cb[0]));
+                    KineticNetwork n = net.get();
+                    for (int i = 0; i < parts.size(); i++)
+                        fresh[i] = kinetic(level, parts.get(i));
+                    float[] u = unloadedShare(n, new float[] {100f, 50f, 3f});
+                    record(t, "B loaded FULL: CA, CB, CC, re-syncs, members, distinct positions", ca.getSpeed() + ", " + fresh[0].getSpeed() + ", "
+                            + fresh[3].getSpeed() + ", " + (StaleKinetics.resyncs() - mark[0]) + ", " + n.members.size() + ", " + positions(n));
+                    record(t, "the unloaded share after the joins (set 100, 50 + share, 3 + share)", u[0] + ", " + u[1] + ", " + u[2]);
+                    check("B and C do not tick", !Loaded.ticks(level, f.cb) && !Loaded.ticks(level, cc));
+                    check("CB was re-synced", StaleKinetics.resyncs() > mark[0]);
+                    check("CB and CC have not attached", fresh[0].updateSpeed && fresh[3].updateSpeed);
+                    check("CC is the block entity C loaded", fresh[3] == old[0]);
+                    check("CC has CA's speed: CC " + fresh[3].getSpeed() + ", CA " + ca.getSpeed(), fresh[3].getSpeed() == ca.getSpeed());
+                    for (int i = 0; i < parts.size(); i++)
+                        check("joined CA's network: " + parts.get(i), fresh[i] != null && n.members.containsKey(fresh[i]));
+                    check("each counted out of the unloaded share once: " + u[0] + ", " + u[1] + ", " + u[2],
+                            u[0] == 100f && Math.abs(u[1] - 50f) < 1e-3f && u[2] == 3f);
                     check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
                     mark[0] = StaleKinetics.resyncs();
                     level.setChunkForced(f.bx, f.az, true);
+                    level.setChunkForced(cx, f.az, true);
                 })
-                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, f.cb))))
+                .thenWaitUntil(io(() -> check("B and C tick", Loaded.ticks(level, f.cb) && Loaded.ticks(level, cc))))
                 .thenIdle(40)
                 .thenExecute(() -> {
-                    KineticBlockEntity ca = kinetic(level, f.ca), now = kinetic(level, f.cb);
-                    KineticNetwork n = ca.getOrCreateNetwork();
-                    record(t, "B forced: CB, millstone B, re-syncs at the attach", speedOf(level, f.cb) + ", " + speedOf(level, f.millB) + ", "
-                            + (StaleKinetics.resyncs() - mark[0]));
-                    check("CB is not broken and attached: " + level.getBlockState(f.cb), now == cb[0] && !now.isRemoved() && !now.updateSpeed);
-                    check("the first attach found nothing stale: " + (StaleKinetics.resyncs() - mark[0]), StaleKinetics.resyncs() == mark[0]);
-                    check("CB turns with CA: CB " + now.getSpeed() + ", CA " + ca.getSpeed(), now.getSpeed() == ca.getSpeed());
-                    check("millstone B turns at 64 RPM: " + speedOf(level, f.millB), Math.abs(speedOf(level, f.millB)) == 64);
+                    KineticBlockEntity ca = kinetic(level, f.ca);
+                    KineticNetwork n = net.get();
+                    record(t, "B and C forced: CB, CC, millstones B and C, re-syncs at the attach", speedOf(level, f.cb) + ", " + speedOf(level, cc) + ", "
+                            + speedOf(level, f.millB) + ", " + speedOf(level, millC) + ", " + (StaleKinetics.resyncs() - mark[0]));
+                    for (int i = 0; i < parts.size(); i++)
+                        check("the same block entity, not broken: " + parts.get(i) + " " + level.getBlockState(parts.get(i)),
+                                kinetic(level, parts.get(i)) == fresh[i] && !fresh[i].isRemoved());
+                    check("CB and CC attached", !fresh[0].updateSpeed && !fresh[3].updateSpeed);
+                    check("the first attaches found nothing stale: " + (StaleKinetics.resyncs() - mark[0]), StaleKinetics.resyncs() == mark[0]);
+                    check("CB and CC turn with CA: " + fresh[0].getSpeed() + ", " + fresh[3].getSpeed() + ", CA " + ca.getSpeed(),
+                            fresh[0].getSpeed() == ca.getSpeed() && fresh[3].getSpeed() == ca.getSpeed());
+                    check("millstones B and C turn at 64 RPM: " + speedOf(level, f.millB) + ", " + speedOf(level, millC),
+                            Math.abs(speedOf(level, f.millB)) == 64 && Math.abs(speedOf(level, millC)) == 64);
+                    float[] u = unloadedShare(n, new float[] {100f, 50f, 3f});
+                    check("the first ticks leave the unloaded share: " + u[0] + ", " + u[1] + ", " + u[2],
+                            u[0] == 100f && Math.abs(u[1] - 50f) < 1e-3f && u[2] == 3f);
                     check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
+                    level.getChunkSource().removeRegionTicket(FULL_ONLY, c, 0, c);
+                    level.setChunkForced(cx, f.az, false);
                 });
         restore(s, level, f).thenSucceed();
+    }
+
+    /**
+     * Takes the block entities of chunks {@code minCx} to {@code maxCx} in row {@code cz} out of a network,
+     * with the mixin's record of who joined there (PATCHES.md row 57), as a restart with those chunks away
+     * leaves it (the network lists only what loaded, and their share is in its unloaded share); their share:
+     * capacity, stress and members, as Create's {@code addSilently} counts it out.
+     */
+    private static float[] forgetAway(KineticNetwork n, int minCx, int maxCx, int cz) {
+        float[] share = {0, 0, 0};
+        List<KineticBlockEntity> away = new ArrayList<>();
+        for (KineticBlockEntity m : n.members.keySet()) {
+            int x = m.getBlockPos().getX() >> 4;
+            if (x >= minCx && x <= maxCx && m.getBlockPos().getZ() >> 4 == cz)
+                away.add(m);
+        }
+        for (KineticBlockEntity m : away) {
+            if (n.sources.containsKey(m))
+                share[0] += field(m, KineticBlockEntity.class, "lastCapacityProvided") * Math.abs(m.getGeneratedSpeed());
+            share[1] += field(m, KineticBlockEntity.class, "lastStressApplied") * Math.abs(m.getTheoreticalSpeed());
+            share[2]++;
+            n.sources.remove(m);
+            n.members.remove(m);
+        }
+        try {
+            var byPos = KineticNetwork.class.getDeclaredField("mic_rtsim$byPos");
+            var joined = KineticNetwork.class.getDeclaredField("mic_rtsim$joined");
+            byPos.setAccessible(true);
+            joined.setAccessible(true);
+            for (KineticBlockEntity m : away) {
+                long k = m.getBlockPos().asLong();
+                if (byPos.get(n) instanceof Long2ObjectOpenHashMap<?> map)
+                    map.remove(k);
+                if (joined.get(n) instanceof LongOpenHashSet set)
+                    set.remove(k);
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new net.minecraft.gametest.framework.GameTestAssertException("no per-position record: " + e);
+        }
+        return share;
     }
 }

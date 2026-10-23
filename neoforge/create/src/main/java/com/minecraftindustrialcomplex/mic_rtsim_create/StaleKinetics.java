@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.mixin.RotationPropagatorI
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.IRotate;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import com.simibubi.create.content.kinetics.simpleRelays.SimpleKineticBlockEntity;
 import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
@@ -119,17 +120,13 @@ public final class StaleKinetics {
      * ticked has not), gets a network update held back while the chunk was not loaded, and is re-synced when
      * its source, in another chunk, no longer gives it its speed or network; then every block entity in
      * another chunk that takes its speed from one here is checked the same way (the source's chunk was the
-     * one away). Before its first re-sync, every block entity of the re-synced part's chunk joins its network
-     * as its first tick would ({@link KineticJoin}), as {@code KineticBlockEntityMixin}'s re-sync waits for it
-     * to: the re-sync lists the part again through Create's {@code add}, which would leave one that has not
-     * joined counted in the network's unloaded share too. A chunk whose block entities are in step costs one
-     * pass over them.
+     * one away). A block entity the re-sync lists again before its first tick joins its network first
+     * ({@link KineticJoin}, in {@code KineticBlockEntityMixin}). A chunk whose block entities are in step
+     * costs one pass over them, and a look past the chunk's border from its border rows and from a block
+     * entity with propagation of its own (a chain conveyor's connections).
      */
     public static void chunkFull(ServerLevel level, int cx, int cz) {
         List<KineticBlockEntity> ks = kinetics(level.getChunkSource().getChunkNow(cx, cz));
-        if (ks.isEmpty())
-            return;
-        boolean joined = false;
         for (KineticBlockEntity k : ks) {
             if (k.isRemoved())
                 continue;
@@ -141,12 +138,8 @@ public final class StaleKinetics {
                     ((KineticNetworkInvoker) net).mic_rtsim$updateFromNetwork(k);
             }
             KineticBlockEntity s = staleSource(k);
-            if (s != null) {
-                if (!joined)
-                    join(ks);
-                joined = true;
+            if (s != null)
                 resync(k, s);
-            }
         }
         for (KineticBlockEntity k : ks) {
             if (k.isRemoved() || k.getTheoreticalSpeed() == 0)
@@ -154,29 +147,43 @@ public final class StaleKinetics {
             for (BlockPos n : linksOut(k))
                 if (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && k.getBlockPos().equals(o.source)) {
                     KineticBlockEntity s = staleSource(o);
-                    if (s != null) {
-                        join(kinetics(Loaded.chunk(level, n)));
+                    if (s != null)
                         resync(o, s);
-                    }
                 }
         }
     }
 
     /** The kinetic block entities of a chunk (none when it is null). */
     private static List<KineticBlockEntity> kinetics(LevelChunk c) {
-        List<KineticBlockEntity> ks = new ArrayList<>();
-        if (c != null)
-            for (BlockEntity be : c.getBlockEntities().values())
-                if (be instanceof KineticBlockEntity k)
-                    ks.add(k);
-        return ks;
+        if (c == null)
+            return List.of();
+        List<KineticBlockEntity> ks = null;
+        for (BlockEntity be : c.getBlockEntities().values())
+            if (be instanceof KineticBlockEntity k) {
+                if (ks == null)
+                    ks = new ArrayList<>();
+                ks.add(k);
+            }
+        return ks == null ? List.of() : ks;
     }
 
-    private static void join(List<KineticBlockEntity> ks) {
-        for (KineticBlockEntity k : ks)
-            if (!k.isRemoved())
-                ((KineticJoin) k).mic_rtsim$join();
-    }
+    /**
+     * Whether a kinetic block entity class adds propagation of its own beyond one block
+     * ({@code addPropagationLocations} overridden: Create's chain conveyor, any addon's). Create's
+     * {@code KineticBlockEntity} (a small cog's diagonals) and {@code SimpleKineticBlockEntity} (a large
+     * cog's) add only diagonals one block away, which leave the chunk only from its border rows.
+     */
+    private static final ClassValue<Boolean> OWN_PROPAGATION = new ClassValue<>() {
+        @Override
+        protected Boolean computeValue(Class<?> c) {
+            try {
+                Class<?> d = c.getMethod("addPropagationLocations", IRotate.class, BlockState.class, List.class).getDeclaringClass();
+                return d != KineticBlockEntity.class && d != SimpleKineticBlockEntity.class;
+            } catch (NoSuchMethodException e) {
+                return true;
+            }
+        }
+    };
 
     /**
      * Where {@code k} propagates into another chunk: a face across its chunk's border, and its own additions
@@ -185,8 +192,11 @@ public final class StaleKinetics {
      */
     private static List<BlockPos> linksOut(KineticBlockEntity k) {
         BlockPos p = k.getBlockPos();
-        List<BlockPos> out = new ArrayList<>();
         int lx = p.getX() & 15, lz = p.getZ() & 15;
+        boolean border = lx == 0 || lx == 15 || lz == 0 || lz == 15;
+        if (!border && !OWN_PROPAGATION.get(k.getClass()))
+            return List.of();
+        List<BlockPos> out = new ArrayList<>();
         if (lx == 0)
             out.add(p.west());
         if (lx == 15)
