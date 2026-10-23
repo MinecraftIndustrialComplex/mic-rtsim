@@ -48,7 +48,8 @@ import java.util.Objects;
  * {@code setNetwork} to another network, at {@code remove}, at a server-side {@code read} (a {@code /data}
  * merge, which reads the network back) and at {@code clearKineticInformation} elsewhere (a {@code setBlock}
  * to a state not kinetically equivalent, outside Create's {@code switchToBlockState}: it forgets the
- * network without taking the block entity out, so it leaves again at once, {@link KineticUnlist}); a
+ * network without taking the block entity out, so one the join listed leaves again at once,
+ * {@link KineticUnlist}, and one already a member stays, as in Create); a
  * generator also at {@code updateGeneratedRotation} ({@code GeneratingKineticBlockEntityMixin}), and a
  * powered shaft before its engine changes it ({@code PoweredShaftBlockEntityMixin}). A
  * re-sync's frontier reaches such block entities in every FULL chunk around, and Create's {@code add} would
@@ -155,7 +156,7 @@ public abstract class KineticBlockEntityMixin implements KineticSyncPending, Kin
         // and nothing reads the network back: its share leaves the unloaded share, and it leaves the network.
         // Only a join that listed it unlists it: one already a member (listed by a generator's update) stays,
         // as in Create, and off the server nothing joins
-        if (!mic_rtsim$initialized && network != null && mic_rtsim$joinListing() && network != null)
+        if (!mic_rtsim$initialized && network != null && mic_rtsim$joinListing())
             ((KineticUnlist) ((KineticBlockEntity) (Object) this).getOrCreateNetwork()).mic_rtsim$unlist((KineticBlockEntity) (Object) this);
     }
 
