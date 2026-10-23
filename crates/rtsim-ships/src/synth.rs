@@ -14,6 +14,9 @@
 //! lets them go when they leave every player's view, and plays fights: pirates beside a merchant
 //! fight it, and the stronger crew wins, the winner's crew losing a member.
 //!
+//! **The sea of havens** ([`sea_havens`]): ports, havens and navies scattered over an open sea by
+//! the seed, for the havens' lifecycle (EQUILIBRIUM.md §2.4.6a).
+//!
 //! **The scripted player** ([`Script`]) of `rtsim-cli sim ships` and the paged tests: it watches a
 //! sea lane, follows the hunted lane, sends an escort, logs off before a raid, loots a hold and
 //! sinks a pirate.
@@ -22,6 +25,7 @@ use std::collections::BTreeMap;
 
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_trade::Amount;
 use rtsim_trade::MILLI;
@@ -366,6 +370,167 @@ pub fn ocean_grid(side: usize, seed: u64, tun: ShipTunables) -> (World, Ships, A
     ships.add_haven(&mut w, n - 1, 1, (mid, 63, mid), 1, Tick::ZERO);
     ships.build(&mut w, &mask, Tick::ZERO);
     (w, ships, mask)
+}
+
+/// What [`sea_havens`] built.
+pub struct SeaHavens {
+    pub world: World,
+    pub ships: Ships,
+    pub mask: AllWater,
+    /// The havens in founding order: the first sits off a navy's base, as does the second when
+    /// there are two navies.
+    pub havens: Vec<u32>,
+    /// The navies (a base whose patrol found no lane is left out).
+    pub navies: Vec<u32>,
+    /// The ports' positions: port `i` is world node `i` (the havens' nodes follow them), and the
+    /// navies are based at the first.
+    pub ports: Vec<(i32, i32)>,
+}
+
+const SYS_SEA_HAVENS: SystemId = SystemId::named("synth.sea_havens");
+
+/// The open sea's half side, blocks: [`sea_havens`] places everything in `[-6000, 6000]²`.
+pub const SEA_HALF: i32 = 6_000;
+
+/// A sea of several havens for the lifecycle (EQUILIBRIUM.md §2.4.6a, slice S8b), laid out by the
+/// seed: 12 to 20 port villages scattered over a 12,000-block open sea ([`AllWater`]) at least
+/// 1,400 blocks apart, every third with a sky dock as well; 1 or 2 navies based at the first
+/// ports; and 3 to 5 havens, the first (and the second, with two navies) 700 blocks off a navy's
+/// base, the rest at least 1,000 blocks from any port and 2,500 from another haven, and 3,000
+/// from a navy's base when they can be. A haven keeps a sea pirate, and one in three a sky pirate
+/// too. The same seed builds the same world. Scaffolding, as [`ocean_grid`]; every number is a
+/// PLACEHOLDER chosen to give some havens patrolled reaches and others free ones.
+pub fn sea_havens(seed: u64, tun: ShipTunables) -> SeaHavens {
+    let mut rng = StreamKey::new(seed, SYS_SEA_HAVENS, 0).slot(0);
+    let mut pick = |n: u64| rng.below(n);
+    let ports_n = 12 + pick(9) as usize;
+    let havens_n = 3 + pick(3) as usize;
+    let navies_n = 1 + pick(2) as usize;
+    let span = 2 * SEA_HALF as u64 + 1;
+    let far = |a: (i32, i32), b: (i32, i32), d: i64| {
+        let (dx, dz) = (i64::from(a.0 - b.0), i64::from(a.1 - b.1));
+        dx * dx + dz * dz >= d * d
+    };
+    // Ports: rejection sampled, the spacing relaxed if the sea fills up.
+    let mut ports: Vec<(i32, i32)> = Vec::new();
+    let mut spacing = 1_400;
+    let mut tries = 0;
+    while ports.len() < ports_n {
+        let p = (pick(span) as i32 - SEA_HALF, pick(span) as i32 - SEA_HALF);
+        tries += 1;
+        if tries % 2_000 == 0 {
+            spacing = spacing * 9 / 10;
+        }
+        if ports.iter().all(|&q| far(p, q, spacing)) {
+            ports.push(p);
+        }
+    }
+    let bases: Vec<(i32, i32)> = ports[..navies_n].to_vec();
+    let mut havens: Vec<(i32, i32)> = Vec::new();
+    for i in 0..havens_n {
+        let mut tries = 0u32;
+        let p = loop {
+            tries += 1;
+            if i < navies_n {
+                // Off a navy's base, 700 blocks out at a seeded bearing (and not on a port).
+                let a = pick(3_600) as f64 / 3_600.0 * std::f64::consts::TAU;
+                let b = bases[i];
+                let p = (
+                    (f64::from(b.0) + 700.0 * a.cos()).round() as i32,
+                    (f64::from(b.1) + 700.0 * a.sin()).round() as i32,
+                );
+                let p = (
+                    p.0.clamp(-SEA_HALF, SEA_HALF),
+                    p.1.clamp(-SEA_HALF, SEA_HALF),
+                );
+                if ports.iter().all(|&q| far(p, q, 400)) || tries > 200 {
+                    break p;
+                }
+                continue;
+            }
+            let p = (pick(span) as i32 - SEA_HALF, pick(span) as i32 - SEA_HALF);
+            let strict = tries < 2_000;
+            let ok = ports.iter().all(|&q| far(p, q, 1_000))
+                && havens
+                    .iter()
+                    .all(|&q| far(p, q, if strict { 2_500 } else { 1_200 }))
+                && (!strict || bases.iter().all(|&q| far(p, q, 3_000)));
+            if ok || tries > 20_000 {
+                break p;
+            }
+        };
+        havens.push(p);
+    }
+    let (goods, ids) = ws::goods();
+    let book = ws::recipes(&ids);
+    let all = [
+        ws::FARMLAND,
+        ws::CATTLE,
+        ws::IRON_ORE,
+        ws::SHEEP,
+        ws::EMERALD_ORE,
+        ws::SWAMP,
+    ];
+    let mut data = Vec::new();
+    for (i, &(x, z)) in ports.iter().enumerate() {
+        let r = all[pick(all.len() as u64) as usize];
+        let r2 = all[(i * 7 + 3) % all.len()];
+        data.push(NodeData {
+            key: 2_000 + i as u64,
+            kind: NodeKind::Village(Culture::Human),
+            pos: Pos::new(0, x, z),
+            pop: 12,
+            resources: [(r, 40 * MILLI), (r2, 4 * MILLI)].into_iter().collect(),
+        });
+    }
+    for (i, &(x, z)) in havens.iter().enumerate() {
+        data.push(NodeData {
+            key: 8_000 + i as u64,
+            kind: NodeKind::Haven(Culture::Human),
+            pos: Pos::new(0, x, z),
+            pop: 4,
+            resources: BTreeMap::new(),
+        });
+    }
+    let media: Vec<u32> = (0..havens_n)
+        .map(|_| if pick(3) == 0 { 3 } else { 1 })
+        .collect();
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mask = AllWater(32);
+    let mut ships = Ships::new(seed, tun, Tick::ZERO);
+    for (i, &(x, z)) in ports.iter().enumerate() {
+        ships.add_port(&mut w, i, Medium::Sea, (x, 63, z), 4, &mask, Tick::ZERO);
+        if i % 3 == 2 {
+            ships.add_port(
+                &mut w,
+                i,
+                Medium::Sky,
+                (x + 30, 120, z),
+                4,
+                &mask,
+                Tick::ZERO,
+            );
+        }
+    }
+    let mut hs = Vec::new();
+    for (i, &(x, z)) in havens.iter().enumerate() {
+        let node = ports_n + i;
+        if let Some(h) = ships.add_haven(&mut w, node, media[i], (x, 63, z), 1, Tick::ZERO) {
+            hs.push(h);
+        }
+    }
+    ships.build(&mut w, &mask, Tick::ZERO);
+    let navies = (0..navies_n)
+        .filter_map(|i| ships.add_navy(&mut w, i, Medium::Sea, Tick::ZERO))
+        .collect();
+    SeaHavens {
+        world: w,
+        ships,
+        mask,
+        havens: hs,
+        navies,
+        ports,
+    }
 }
 
 // ---- the fake plugin ----------------------------------------------------------------------------
