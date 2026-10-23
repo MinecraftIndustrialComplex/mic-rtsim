@@ -3667,7 +3667,9 @@ impl Ships {
             return;
         };
         let dock = self.docks[d as usize].clone();
-        if self.point_in_view(w, dock.frame, dock.xz(), at) {
+        // A raid in the switch-on's catch-up is judged against the areas live at the world's
+        // present, where its stock leaves (PC103).
+        if self.point_in_view(w, dock.frame, dock.xz(), world_at(w, at)) {
             return;
         }
         let node = dock.node;
@@ -4979,6 +4981,29 @@ impl Ships {
     /// a new ship with its own crew (the band brings them; none come from the pool). Otherwise
     /// the site looks again after `refound.base_days`.
     fn try_refound(&mut self, w: &mut World, h: u32, at: Tick) {
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): the site looks at the world's
+            // present instead, against the areas live then.
+            let now = w.now();
+            let hv = &mut self.havens[h as usize];
+            hv.epoch = hv.epoch.wrapping_add(1);
+            if let Some(sh) = hv.shut.as_mut() {
+                sh.back = now;
+            }
+            let epoch = hv.epoch;
+            self.schedule(now, Ev::Refound { haven: h, epoch });
+            self.note(
+                at,
+                "refound",
+                None,
+                format!(
+                    "haven {h}'s site fell due while the ships were switched off; it looks on day \
+                     {:.2}",
+                    day_of(now)
+                ),
+            );
+            return;
+        }
         let in_view = self.dock_in_view(w, h, at);
         if in_view || !self.has_prey(w, h) {
             let base = f64::from(self.tun.refound.base_days) * TICKS_PER_DAY as f64;
@@ -5055,6 +5080,23 @@ impl Ships {
                 .is_none_or(|n| n.epoch != epoch)
         {
             self.stats.stale += 1;
+            return;
+        }
+        if missed(w, at) {
+            // Due while the ships were switched off (PC103): the navy looks at the world's
+            // present instead, against the areas live then, and on from there.
+            let now = w.now();
+            self.schedule(now, Ev::Assault { navy: nv, epoch });
+            self.note(
+                at,
+                "assault",
+                None,
+                format!(
+                    "navy {nv}'s look fell due while the ships were switched off; it looks on day \
+                     {:.2}",
+                    day_of(now)
+                ),
+            );
             return;
         }
         self.schedule(at + every, Ev::Assault { navy: nv, epoch });
