@@ -3254,7 +3254,7 @@ impl Ships {
     /// to PC49): pirate `s` raids the port village at the hunted lane's nearer end, if nobody
     /// watches it, the pirate believes it wins (`p = A² / (A² + D²)` against the village's
     /// `pop x port_village_defence_per_pop` makes the hunt's own value positive) and there is
-    /// something to take (stock to reach and room in the hold; PC50). The square law decides the
+    /// something to take (stock to reach and room in the hold; PC70). The square law decides the
     /// losses, booked as the toll's (PC12); the survivors carry off `port_raid_carry` items a
     /// man (coins as any good, PC43), clipped to the hold's room and to `loot_share_milli` of each
     /// stock, apportioned over the goods, through `World::stock_to_held`, into the pirate's hold:
@@ -3286,7 +3286,7 @@ impl Ships {
         if self.belief_value(self.win_belief(a, def)) <= 0.0 {
             return;
         }
-        // Something to take, before any blood is spilled (PC50): stock to reach, room to carry.
+        // Something to take, before any blood is spilled (PC70): stock to reach, room to carry.
         let room = (i64::from(self.tun.pirate_hold_slots) * 1000
             - Self::hold_slot_milli(w, &self.ships[s].cargo))
         .max(0);
@@ -3333,7 +3333,7 @@ impl Ships {
                 split((i128::from(carry.min(reach)) * i128::from(room) / i128::from(vol)) as i64);
         }
         // Exactly the room, by the hold's own measure (`hold_slot_milli`, a floor per good of
-        // the merged cargo): each good may add only as many whole slots as are left (PC51).
+        // the merged cargo): each good may add only as many whole slots as are left (PC71).
         let mut left = room;
         for (g, a) in want.iter_mut() {
             let stack = i64::from(w.goods.get(*g).stack.max(1));
