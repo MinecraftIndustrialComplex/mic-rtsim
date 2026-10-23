@@ -6,7 +6,7 @@ his rejection of the horse: the Umvuthi travels aloft, MZ-16's second round (§4
 day for a third review against the jar and vanilla's sources. Touched again on 2026-10-22 for alliances
 (CONFLICT-LIFE.md §2.16, Ben's CL-5 (b)): §0, §4.5, §4.11, §4.12 and §4.16's BAND_MARCH. Ben answered
 the last open questions the same day (MZ-16's second round, MZ-17, CHIEF_PAID and the UR-1 exposure of
-marches, §8), so nothing is left open.
+marches, §8), so nothing is left open. §9 is the build order.
 
 **Decided, and binding here:**
 - **Ben's request:** "go ahead and plan out some support for Mowzie's mobs, creating factions for the
@@ -2700,3 +2700,37 @@ before and after, and a sampler bench at 200 trains on the laptop.
 
 **Questions:** none open. Ben answered the last of them, MZ-16's second round and MZ-17, on 2026-10-22
 (above).
+
+## 9. Build order
+
+Each slice lands on main by itself with its own tests and leaves main working. Ledger numbers are §2's,
+GameTests are §7's by number, and "run N" is `rtsim-cli sim mowzie`'s run N. Every Java slice runs its
+GameTests against the real engine. A slice that changes a page format regenerates rtsim-view's fixtures
+from fresh GameTest worlds and adds no migration. Record ids are taken when a slice lands, after
+`git log --all -S` finds no other branch using them. Choices made while building are recorded in
+`docs/choices-mowzie-build.md`. An Opus adversarial review checks M1 to M5 and M10 before each lands.
+
+Three things are left out of this order on purpose:
+- **No council.** Mowzie runs on today's ladder (ledgers 2 and 3), so CONFLICT-LIFE.md's council is
+  not built here.
+- **Two CONFLICT-LIFE pieces are built here, as this plan names them:**
+  - BAND_MARCH (ledger 23). Its joint flag and partner agent are written as zero until alliances
+    land.
+  - The walk-in from the ticking edge (CL-D35, ledger 25).
+- **No pact notices.** Pact news stays out of chat (CL-9, Ben, 2026-10-22), and §4.12's told pact is
+  revised with CONFLICT-LIFE.md.
+
+| Slice | What it builds | Ledger | Tests | Needs |
+|---|---|---|---|---|
+| M1 Records | The 17 record kinds and DEMAND_SETTLED's outcome 5, in `boundary.rs` and `docs/boundary.md` §9, decoded in rtsim-jni. A kind whose engine half comes later is counted and dropped until then. DIFFICULTY (no war party leaves on Peaceful), NOTICE_SHOWN (a notice kept until shown, resent at session start), a wiped envoy's withdrawn demand | 14 (in part) | Codec round trips for every kind; rtsim-jni fake-Java tests for Peaceful, the kept notice and outcome 5 | |
+| M2 Cultures | `frostmaw.json` and `umvuthana.json`, empty rungs, repeat, `NodeKind::Lair`, threat source and class, destroyed loot, the `gold_nugget` good and tribute by value. No plugin finds these cultures yet, so today's game is unchanged | 2, 3, 9, 10, 12, 13, 15 | Culture and ladder unit tests; the `sim mowzie` scaffold | M1 |
+| M3 ConflictBridge | The conflict module's Java half in core, played by vanilla bodies for today's cultures. It covers territories and their hash, territory signals, envoy and payment, the envoy guard, the raid director, steer, recall, casualties and notices. Each stack is its own group: until M10, a stack is placed at BAND_MATERIALIZE's position, not in a column. Also the Peaceful flag, the strength hook, the `threat/ignored` tag and Carry On takes of puppets | 16 (not the camp plumbing), 19, 20, 25 (not the column) | Core GameTests with the real engine: a goblin raid materialized per stack, steered, recalled and killed; 14 with stand-ins; 18; 19 | M1 |
+| M4 Camp reconciler, engine | Slots, epochs, the per-camp cap, waiting for whole bodies, CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES and CAMP_DEATH | 6, 7 | Run 10 (Java emulated); run 8's reconcile in flight; the faction bench before and after | M2 |
+| M5 Camp reconciler, Java | The plugin `neoforge/mowziesmobs`: adapters, camp finding, the census, and the reconcile lines for both kinds. In core: the `camp_member` attachment and its index, markers, footprint levels, and entity chunks in the barrier | 16 (camp plumbing), 18 (in part), 22 | 1, 3, 4, 5, 21, and 22 except its march and aloft cases | M3, M4 |
+| M6 Frostmaw | A chief killed at the camp, the den's arrival on `rtsim-kernel::renewal`, CHIEF_STATE, the steal mixin, restriction and the held spawn | 5, 6 (den), 14 (CHIEF_STATE) | 2, 6, 7, 15 (Frostmaw); runs 6 (den) and 7 | M5 |
+| M7 Rail | The rail meter, `set_emission_for`, a district-free focus, and the train sampler | 1, 17 | 10, 11; runs 1 (no ambushes), 2, 3, 4 and 9 | M6 |
+| M8 Lying in wait | AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar | 8 | 8, 9; run 1's ambushes, run 8 | M7 |
+| M9 Umvuthana | The chief leads; hunted animals; tribute at the grove's price; CHIEF_PAID, TRADED and HAVEN_CHEST; trade memory; the envoy party, raptors, the heir and Rule U | 4, 11, 12, 14 (the rest), 18 (the rest but travel) | 12, 13, 14, 15 (Umvuthi), 16, 17, 20, 25, 27, 30; runs 5, 6 (grove) and 12 | M5 |
+| M10 March | BAND_MARCH, the walk home, re-binding, `lose_units` keeping `spawned`; the column, the pending stacks and the walk-in | 23, 25 (the column) | 28, 32, 33, 34, 22's march cases; run 11 without aloft, run 13 | M9 |
+| M11 Aloft | The Umvuthi aloft and CHIEF_BODY | 24 | 23, 24, 26, 29, 31, 35, 36, 22's aloft cases; run 11 | M10 |
+| M12 S9 | EQUILIBRIUM.md's S9 on the shared renewal rule. If S3 (site ledger, kill credit) is not on main by then, its pieces land first as their own slice, following EQUILIBRIUM.md §4 | | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, and S9's five GameTests; the sampler bench at 200 trains | M11, S3 |
