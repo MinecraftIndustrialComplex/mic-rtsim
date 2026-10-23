@@ -36,7 +36,9 @@ public final class MicRtsimCreate {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(ContraptionAnchors::left);
         // The far feed's trains (docs/boundary.md §12.3): read on the server, sent to subscribers only
         com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerFarSource(new TrainFeedSource());
-        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(TrainFeedSource::joining);
+        // Last, and only if no one cancelled the join: a REAL for a carriage that never joins would hide it
+        net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST, false,
+                net.neoforged.neoforge.event.entity.EntityJoinLevelEvent.class, TrainFeedSource::joining);
         if (FarTrainBench.ENABLED)
             FarTrainBench.register();
     }
