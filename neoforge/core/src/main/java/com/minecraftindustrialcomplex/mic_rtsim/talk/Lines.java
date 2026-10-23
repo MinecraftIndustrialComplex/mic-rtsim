@@ -7,7 +7,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Where the lines are (TALK.md §8, TK15). A line is the lang key {@code mic_rtsim.talk.<voice>.<topic>.<n>};
  * the variants of a (voice, topic) are counted from {@code n = 0} while the server's own language table
- * has the key, and a voice falls back through its parents (drop the last dotted part), then {@code any}.
+ * has the key. A voice combines its levels, the voice and then its parents (drop the last dotted part), and
+ * falls back to {@code any} only when none of them has lines (TK31).
  * Memoized; the cache is cleared when a server starts and stops.
  */
 public final class Lines {
@@ -22,28 +23,42 @@ public final class Lines {
         }
     }
 
-    private static final Found NONE = new Found("", 0);
-    private static final ConcurrentHashMap<String, Found> CACHE = new ConcurrentHashMap<>();
+    private static final java.util.List<Found> NONE = java.util.List.of();
+    private static final ConcurrentHashMap<String, java.util.List<Found>> CACHE = new ConcurrentHashMap<>();
 
-    /** The first prefix in the voice's chain with lines for this topic, or null when there is none. */
-    public static Found find(String voice, String topic) {
-        Found f = CACHE.computeIfAbsent(voice + "|" + topic, k -> resolve(voice, topic));
-        return f == NONE ? null : f;
+    /**
+     * Every level of the voice's chain that has lines for this topic, most specific first (TK31): a
+     * farmer's {@code villager.farmer.fluff} and then {@code villager.fluff}. {@code any} is used only
+     * when no more specific level has lines. Empty when there is none.
+     */
+    public static java.util.List<Found> levels(String voice, String topic) {
+        return CACHE.computeIfAbsent(voice + "|" + topic, k -> resolve(voice, topic));
     }
 
-    private static Found resolve(String voice, String topic) {
+    /** The most specific level with lines, or null. */
+    public static Found find(String voice, String topic) {
+        java.util.List<Found> l = levels(voice, topic);
+        return l.isEmpty() ? null : l.get(0);
+    }
+
+    private static java.util.List<Found> resolve(String voice, String topic) {
+        java.util.List<Found> out = new java.util.ArrayList<>();
         String v = voice;
         while (true) {
             Found f = probe(v, topic);
             if (f != null)
-                return f;
+                out.add(f);
             int dot = v.lastIndexOf('.');
             if (dot < 0)
                 break;
             v = v.substring(0, dot);
         }
-        Found any = probe("any", topic);
-        return any == null ? NONE : any;
+        if (out.isEmpty()) {
+            Found any = probe("any", topic);
+            if (any != null)
+                out.add(any);
+        }
+        return out.isEmpty() ? NONE : java.util.List.copyOf(out);
     }
 
     private static Found probe(String voice, String topic) {

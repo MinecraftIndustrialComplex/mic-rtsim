@@ -57,6 +57,15 @@ public interface Talker {
         return State.NONE;
     }
 
+    /**
+     * Whether it makes small talk. When false the core adds no fluff and no mood (and no state lines),
+     * only the talker's own candidates; with none, the click is still cancelled and nothing is said.
+     * For hostile band members and envoys.
+     */
+    default boolean chats(Entity entity, ServerPlayer player) {
+        return attitude(entity, player) != Attitude.HOSTILE;
+    }
+
     /** Adds its own candidates (mood from its own data) to the core's fluff and mood. */
     default void candidates(TalkContext ctx, TalkCandidates out) {}
 
@@ -68,11 +77,11 @@ public interface Talker {
     /** Applies the credit; called at most once a game day per player and entity, after the line. */
     default void credit(Entity entity, ServerPlayer player) {}
 
-    /** After the line. Default: a Mob looks at the player and plays its ambient sound. */
+    /** After the line. Default: a Mob looks at the player for 40 ticks and plays its ambient sound. */
     default void react(Entity entity, ServerPlayer player) {
         if (entity instanceof Mob mob) {
             if (!mob.isSleeping())
-                mob.getLookControl().setLookAt(player);
+                com.minecraftindustrialcomplex.mic_rtsim.talk.Talk.lookAt(mob, player, 40);
             mob.playAmbientSound();
         }
     }

@@ -186,6 +186,8 @@ public final class RtsimApi {
 
     /** {@link #registerTalker(net.minecraft.resources.ResourceLocation, Talker, boolean)} by the type itself. */
     public static void registerTalker(net.minecraft.world.entity.EntityType<?> type, Talker talker, boolean alwaysTalks) {
-        registerTalker(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(type), talker, alwaysTalks);
+        registerTalker(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getResourceKey(type)
+                .orElseThrow(() -> new IllegalArgumentException("an unregistered entity type has no id: use the ResourceLocation overload of registerTalker"))
+                .location(), talker, alwaysTalks);
     }
 }

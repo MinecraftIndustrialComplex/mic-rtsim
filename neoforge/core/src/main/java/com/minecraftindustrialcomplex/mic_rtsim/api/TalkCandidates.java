@@ -31,8 +31,8 @@ public final class TalkCandidates {
         list.add(new Candidate(topic, weight, out));
     }
 
-    /** What was added, in order. */
+    /** What was added, in order (a read-only view). */
     public List<Candidate> list() {
-        return list;
+        return java.util.Collections.unmodifiableList(list);
     }
 }
