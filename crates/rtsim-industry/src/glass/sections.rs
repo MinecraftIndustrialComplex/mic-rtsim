@@ -21,8 +21,10 @@
 //! another line fills reads a level, it moves nothing there.
 //!
 //! **Judging groups** (§4.3). Sections at a shared store whose moves are not counted are judged on one
-//! row. Slice S2 counts no mover, so every shared store joins its sections' group; S3's counts split
-//! them ([`Sections::compute_with`]).
+//! row. A shared store is **counted** (slice S3, §4.2) when it is an item store and every goods edge
+//! at it runs to a mover Java counts at ([`COUNTED_MODELS`]): its sections join no group there, each
+//! judged on what its own movers put in and took out. Past `glass.countedStoresMax` per district, the
+//! lowest positions first, the rest are not ([`Sections::compute_counted`], choice SC78).
 //!
 //! **Fingerprints** (§3.3). FNV-1a 64 over the section's records with positions in place of Java's
 //! indices, each record encoded alone and the encodings sorted, so the same factory gives the same
@@ -40,6 +42,21 @@ use crate::ids::BlockPos;
 
 /// No section: idle nodes, shared stores and stores no section touches.
 pub const NONE: u16 = u16::MAX;
+
+/// The models whose moves at a store Java counts (SECTIONS.md §4.2): chutes and smart chutes
+/// (their transfers), funnels (`InvManipulationBehaviour`), arms (`ArmInteractionPoint`), a
+/// basin's outputs, a frogport's push and pull and a packager's extraction and unpacking. Hoppers,
+/// belts, tunnels, depots, pumps and pipes are not counted.
+pub const COUNTED_MODELS: [u32; 8] = [
+    model::CHUTE,
+    model::FUNNEL_ANDESITE,
+    model::FUNNEL_BRASS,
+    model::ARM,
+    model::SMART_CHUTE,
+    model::PACKAGER,
+    model::FROGPORT,
+    model::BASIN,
+];
 
 /// One section of a compile.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +100,30 @@ pub struct Sections {
     pub group_of: Vec<u16>,
     /// Merges `glass.sectionsMax` made.
     pub merged: u32,
+    /// The shared stores whose moves are counted at their movers (§4.2), ascending.
+    pub counted: Vec<u32>,
+}
+
+/// Can moves at store `h` be counted at its movers (§4.2): an item store with an inventory, with
+/// at least one goods edge, each to a node of [`COUNTED_MODELS`] (`edges`: those at `h`).
+fn countable(g: &Graph, h: u32, edges: &[u32]) -> bool {
+    let n = g.node(h);
+    if n.kind != NodeKind::Store || n.model != model::STORE_ITEMS || n.inventory.is_none() {
+        return false;
+    }
+    let mut any = false;
+    for &e in edges {
+        let ed = g.edge(e);
+        if !carries_goods(ed.kind) {
+            continue;
+        }
+        let far = if ed.from == h { ed.to } else { ed.from };
+        if far == h || !COUNTED_MODELS.contains(&g.node(far).model) {
+            return false;
+        }
+        any = true;
+    }
+    any
 }
 
 /// The void sink: goods leave the world at no place of their own.
@@ -233,6 +274,48 @@ impl Sections {
     /// The sections of `g`; `counted(store)` says a shared store's moves are counted per section
     /// (S3), so it joins no judging group.
     pub fn compute_with(g: &Graph, max: usize, counted: impl Fn(u32) -> bool) -> Sections {
+        Sections::compute_picking(g, max, |_, shared| {
+            shared.iter().copied().filter(|&h| counted(h)).collect()
+        })
+    }
+
+    /// The sections of `g` with the shared stores its movers can be counted at counted (§4.2), at
+    /// most `counted_max` of them (`glass.countedStoresMax`), the lowest positions first: what a
+    /// compile is cut into.
+    pub fn compute_counted(g: &Graph, max: usize, counted_max: usize) -> Sections {
+        Sections::compute_picking(g, max, |ctx, shared| {
+            let mut c: Vec<(BlockPos, u32)> = shared
+                .iter()
+                .filter(|&&h| countable(g, h, &ctx.edges_at[h as usize]))
+                .map(|&h| (g.node(h).pos, h))
+                .collect();
+            c.sort_unstable();
+            c.truncate(counted_max);
+            c.into_iter().map(|(_, h)| h).collect()
+        })
+    }
+
+    /// The sections of `g` cut into at most `max` sections, below `base_max` (`glass.sectionsMax`;
+    /// a row cap's cut, choice SC57): counted are the stores [`Sections::compute_counted`] counts at
+    /// `base_max` that this cut still shares, so a row cap never counts a store the full cut did not
+    /// (choice SC78).
+    pub fn cut_counted(g: &Graph, max: usize, base_max: usize, counted_max: usize) -> Sections {
+        let base = Sections::compute_counted(g, base_max, counted_max);
+        let clamp = |m: usize| m.clamp(1, usize::from(NONE) - 1);
+        if clamp(max) >= clamp(base_max) {
+            return base;
+        }
+        Sections::cut_with(g, max, &base.counted)
+    }
+
+    /// The sections of `g` cut into at most `max`, counted the shared stores of `base` (ascending).
+    pub fn cut_with(g: &Graph, max: usize, base: &[u32]) -> Sections {
+        Sections::compute_with(g, max, |h| base.binary_search(&h).is_ok())
+    }
+
+    /// The sections of `g`; `pick(ctx, shared)` names the shared stores (ascending) that are
+    /// counted.
+    fn compute_picking(g: &Graph, max: usize, pick: impl Fn(&Ctx, &[u32]) -> Vec<u32>) -> Sections {
         let n = g.nodes.len();
         // `section_of` is a u16 with NONE kept apart.
         let max = max.clamp(1, usize::from(NONE) - 1);
@@ -459,18 +542,24 @@ impl Sections {
             }
         }
         let mut shared = Vec::new();
-        let mut gu = Uf::new(list.len());
         for (h, ss) in touching {
             if ss.len() == 1 {
                 section_of[h as usize] = ss[0];
                 continue;
             }
-            if !counted(h) {
+            shared.push((h, ss));
+        }
+        let ids: Vec<u32> = shared.iter().map(|(h, _)| *h).collect();
+        let mut counted = pick(&ctx, &ids);
+        counted.sort_unstable();
+        counted.dedup();
+        let mut gu = Uf::new(list.len());
+        for (h, ss) in &shared {
+            if counted.binary_search(h).is_err() {
                 for w in ss.windows(2) {
                     gu.join(u32::from(w[0]), u32::from(w[1]));
                 }
             }
-            shared.push((h, ss));
         }
         let group_of = (0..list.len() as u32).map(|s| gu.find(s) as u16).collect();
         Sections {
@@ -479,6 +568,7 @@ impl Sections {
             shared,
             group_of,
             merged,
+            counted,
         }
     }
 
@@ -510,6 +600,17 @@ impl Sections {
     /// The fingerprints, in section order (what the page keeps, §5).
     pub fn fingerprints(&self) -> Vec<u64> {
         self.list.iter().map(|s| s.fingerprint).collect()
+    }
+
+    /// What a page keeps to check that its restore cuts as it did (§5): the fingerprints, then,
+    /// with counted stores, a hash of their node indices (the page saves the graph they index).
+    pub fn cut_keys(&self) -> Vec<u64> {
+        let mut k = self.fingerprints();
+        if !self.counted.is_empty() {
+            let b: Vec<u8> = self.counted.iter().flat_map(|h| h.to_le_bytes()).collect();
+            k.push(rtsim_kernel::rng::fnv1a64(&b));
+        }
+        k
     }
 }
 

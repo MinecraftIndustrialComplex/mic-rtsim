@@ -69,6 +69,9 @@ pub struct GlassStats {
     /// Glass replays started, and those that fell back to the black box (§4.5).
     pub replays: u64,
     pub fallbacks: u64,
+    /// IND_COUNT_SAMPLEs read for a compile held, and IND_COUNT_SETs sent (SECTIONS.md §4.2).
+    pub count_samples: u64,
+    pub count_sets_sent: u64,
 }
 
 /// The glass box's state across districts.
@@ -88,7 +91,17 @@ pub struct Glass {
     /// sweep or restore, and their sum, for the row caps. Not saved: recounted on restore.
     extra: BTreeMap<DistrictId, usize>,
     extra_total: usize,
+    /// Per district: the count set Java holds, as (compile, pairs) of the last IND_COUNT_SET sent
+    /// with pairs (SECTIONS.md §4.2); none for a district Java counts nothing in. Not saved: a
+    /// restore is a new session, and Java counts nothing until told.
+    count_held: BTreeMap<DistrictId, (u32, Vec<(u32, u32)>)>,
+    /// Districts whose units may have changed since their count set was checked.
+    count_dirty: BTreeSet<DistrictId>,
 }
+
+/// The compile of a held entry Java's count set is not known for (a resend END): the next check
+/// sends the set, even an empty one.
+const COUNT_UNKNOWN: u32 = u32::MAX;
 
 /// An empty view, for a compile whose district the engine does not know yet.
 fn empty_view<'a>(
@@ -97,6 +110,7 @@ fn empty_view<'a>(
 ) -> View<'a> {
     View {
         revision: u32::MAX,
+        sweep: 0,
         inventories: inv,
         ports,
     }
@@ -220,6 +234,8 @@ impl Glass {
                             rp.renumber(c.end.compile);
                         }
                         self.stats.compiles_kept += 1;
+                        // Java's count set went with the session: the next check sends it anew.
+                        self.count_dirty.insert(d);
                         return;
                     }
                 }
@@ -265,7 +281,11 @@ impl Glass {
                             Err(_) => self.stats.compiles_invalid += 1,
                         }
                     }
-                    EndOutcome::ResendIgnored => self.stats.resends_ignored += 1,
+                    EndOutcome::ResendIgnored => {
+                        // Java may no longer hold the count set it was sent: send it again.
+                        self.stats.resends_ignored += 1;
+                        self.count_held.insert(d, (COUNT_UNKNOWN, Vec::new()));
+                    }
                     EndOutcome::Dropped => self.stats.compiles_dropped += 1,
                     EndOutcome::Stale => self.stats.compiles_stale += 1,
                     EndOutcome::NotCompilable => {
@@ -284,6 +304,16 @@ impl Glass {
                 {
                     c.probe_sample(p.sweep, p.node, &p.goods);
                     self.stats.probe_samples += 1;
+                }
+            }
+            GlassObs::CountSample(s) => {
+                // Of another compile (one Java sent before the set it counts for now): its node
+                // numbers name other blocks, and the units it covers are not covered.
+                if let Some(c) = dg.compiled.as_mut().filter(|_| !dg.numbers_reset)
+                    && c.graph.end.compile == s.compile
+                {
+                    c.count_sample(s.sweep, &s.counts);
+                    self.stats.count_samples += 1;
                 }
             }
             GlassObs::ChunkTicking(t) => {
@@ -465,7 +495,8 @@ impl Glass {
             .is_some_and(|c| {
                 c.units.active()
                     && c.graph.end.revision == revision
-                    && c.units.unit_of_inv(inv).is_some()
+                    && (c.units.unit_of_inv(inv).is_some()
+                        || c.units.counted_store_of_inv(inv).is_some())
             });
         if !wanted {
             return;
@@ -681,6 +712,8 @@ impl Glass {
             .get(&district)
             .and_then(|dg| dg.compiled.as_ref())
             .map_or(0, |c| c.extra_rows());
+        // Every change to a district's units comes through here.
+        self.count_dirty.insert(district);
         let was = if now == 0 {
             self.extra.remove(&district).unwrap_or(0)
         } else {
@@ -743,7 +776,7 @@ impl Glass {
         if have <= 1 {
             return false;
         }
-        let n = c.sections_for_rows(limit, have);
+        let n = c.sections_for_rows(limit, have, tun);
         c.recut(n, at, tun);
         // Not a discard (`report::discard` is Java's report layout): the units it keeps keep
         // their windows, and the CLI shows the cap.
@@ -770,14 +803,65 @@ impl Glass {
         }
         // The windows' rows went with them.
         self.recount_rows();
+        // A new session's Java counts nothing until its compiles' sets come.
+        self.count_held.clear();
     }
 
     /// The district is gone.
     pub fn remove(&mut self, district: DistrictId) {
         self.districts.remove(&district);
+        self.count_held.remove(&district);
+        self.count_dirty.remove(&district);
         if let Some(n) = self.extra.remove(&district) {
             self.extra_total -= n;
         }
+    }
+
+    /// The IND_COUNT_SETs to send (SECTIONS.md §4.2): for each district whose units changed, the
+    /// pairs (mover, store) at its counted stores between units, when they differ from the set
+    /// Java holds or name another compile; an empty set when Java holds one and the district has
+    /// none now (no compile, one unit, a compile of the last session's numbers).
+    pub fn take_count_sets(&mut self) -> Vec<records::CountSet> {
+        let mut out = Vec::new();
+        for d in std::mem::take(&mut self.count_dirty) {
+            let want = self
+                .districts
+                .get(&d)
+                .filter(|dg| !dg.numbers_reset)
+                .and_then(|dg| dg.compiled.as_ref())
+                .filter(|c| c.units.active() && !c.units.pairs.is_empty())
+                .map(|c| (c.graph.end.compile, &c.units.pairs));
+            let held = self.count_held.get(&d);
+            match (want, held) {
+                (None, None) => continue,
+                (Some((compile, pairs)), Some((h, hp))) if *h == compile && hp == pairs => continue,
+                _ => {}
+            }
+            let set = match want {
+                Some((compile, pairs)) => records::CountSet {
+                    district: d,
+                    compile,
+                    pairs: pairs.clone(),
+                },
+                None => records::CountSet {
+                    district: d,
+                    compile: self
+                        .districts
+                        .get(&d)
+                        .and_then(|dg| dg.compiled.as_ref())
+                        .map_or(0, |c| c.graph.end.compile),
+                    pairs: Vec::new(),
+                },
+            };
+            if set.pairs.is_empty() {
+                self.count_held.remove(&d);
+            } else {
+                self.count_held.insert(d, (set.compile, set.pairs.clone()));
+            }
+            self.stats.count_sets_sent += 1;
+            out.push(set);
+        }
+        out
     }
 
     /// The district's glass report (`report.rs`), or None if it has no complete compile.

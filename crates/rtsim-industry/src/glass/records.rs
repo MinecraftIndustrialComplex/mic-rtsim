@@ -466,6 +466,35 @@ pub struct ProbeSample {
     pub goods: GoodVec,
 }
 
+/// IND_COUNT_SAMPLE (0x004F): what Java counted at the count set's pairs in a sweep (SECTIONS.md
+/// §4.2, slice S3), each pair's counters read with its store's stock. Not counted in the sweep's
+/// records, as a probe sample is not: a unit missing a pair's entries skips that sweep's sample.
+/// A large sample comes in several records of one sweep.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSample {
+    pub district: DistrictId,
+    pub sweep: u32,
+    pub compile: u32,
+    pub counts: Vec<Count>,
+}
+
+/// One (mover, store, good) counter of an IND_COUNT_SAMPLE (Count40): the goods the mover put
+/// into the store and took from it since `since`, cumulative. A pair that counted nothing yet
+/// comes with no good, for its `since`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Count {
+    /// The mover's node in the sample's compile.
+    pub mover: u32,
+    /// The store's node.
+    pub store: u32,
+    pub good: Option<Good>,
+    /// The game time the pair's counters started at: they restart when Java forgets the pair (a
+    /// count set without it, a restart).
+    pub since: i64,
+    pub moved_in: i64,
+    pub moved_out: i64,
+}
+
 /// IND_CHUNK_TICKING (0x040B, journaled): a chunk of a district started or stopped block-ticking
 /// (§6.1, I7). Ticking is not the same as loaded: a loaded chunk outside the simulation distance
 /// does not tick.
@@ -485,6 +514,7 @@ pub enum GlassObs {
     Domain(GraphDomain),
     End(GraphEnd),
     ProbeSample(ProbeSample),
+    CountSample(CountSample),
     ChunkTicking(ChunkTicking),
 }
 
@@ -501,6 +531,7 @@ impl GlassObs {
             GlassObs::Domain(d) => d.head.district,
             GlassObs::End(e) => e.district,
             GlassObs::ProbeSample(p) => p.district,
+            GlassObs::CountSample(c) => c.district,
             GlassObs::ChunkTicking(c) => c.district,
         }
     }
@@ -513,4 +544,16 @@ pub struct ProbeSet {
     pub district: DistrictId,
     pub compile: u32,
     pub nodes: Vec<u32>,
+}
+
+/// IND_COUNT_SET (0x8408): the (mover, store) node pairs whose moves Java counts for a district's
+/// compile (SECTIONS.md §4.2, slice S3): every edge between a counted shared store and its mover.
+/// Sent at every accepted compile END, a resend's too, and empty when nothing is counted; Java
+/// keeps it until the next one for that district, and applies it only to its current compile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CountSet {
+    pub district: DistrictId,
+    pub compile: u32,
+    /// (mover node, store node), ascending.
+    pub pairs: Vec<(u32, u32)>,
 }

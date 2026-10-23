@@ -3,10 +3,15 @@
 //! SEC-1 slice S2b).
 //!
 //! A unit is a judging group (§4.3): the sections at a shared store whose moves are not counted are
-//! judged on one row, with that store interior. Slice S2 counts no mover, so every shared store joins
-//! its sections and each unit's stores are its own: `Y(u,g)` is their summed stock less the ports into
-//! them, and `P(u,g)` the solve's predictions on them (`Solution.per_store`), as the district's are
-//! over every read store.
+//! judged on one row, with that store interior. A unit's own stores give `Y(u,g)` their summed stock
+//! less the ports into them, and `P(u,g)` the solve's predictions on them (`Solution.per_store`), as
+//! the district's are over every read store.
+//!
+//! **Counted stores** (§4.1, §4.2, slice S3): a shared store whose moves Java counts at its movers
+//! (`Sections::counted`) and whose sections fall in two units or more is no unit's. Each unit at it
+//! is judged on what its own movers put in and took out there (IND_COUNT_SAMPLE), and on the
+//! store's edges to its movers in the solve ([`bounds`]). The pairs Java counts are every goods edge
+//! between such a store and its mover ([`Units::pairs`], IND_COUNT_SET).
 //!
 //! **A station's ports** (§4.4, choice SC75): the inventories one station's interfaces reach
 //! (IND_STATION_PORTS) take its train cargo, which cannot be split between them, so the units
@@ -16,7 +21,8 @@
 //! "today's verdict for districts with one section"), so a district of one line holds no extra rows.
 //!
 //! **A unit's bounds** ([`bounds`], choice SC56): L and the class are its own store edges' (the solve's
-//! class of the component past each edge, which never crosses a store); U is the district's less
+//! class of the component past each edge, which never crosses a store; at a counted store, the edges
+//! to its own movers); U is the district's less
 //! what every other store takes at least, `U(u) = U(d) - (L(d) - L(u))`, never below `L(u)`;
 //! infinite when the district's is, or when the unit's own edges for the good are unbounded (past a
 //! black box or a port, by the solve's class). An exact unit is judged on L alone, so the
@@ -60,6 +66,19 @@ pub struct Units {
     pub chunks: Vec<Option<Vec<(i32, i32)>>>,
     /// Per unit: what a recompile matches it by, its sections' fingerprints ascending.
     pub keys: Vec<Vec<u64>>,
+    /// The counted stores between units (§4.2), ascending: a counted store whose sections all
+    /// fall in one unit (joined at another store, or by a station's ports) is that unit's.
+    pub counted: Vec<u32>,
+    /// Every (mover, store) pair Java counts: a goods edge between a store of [`Units::counted`]
+    /// and another node, by its far node, ascending, each once.
+    pub pairs: Vec<(u32, u32)>,
+    /// Per unit: the stores of [`Units::counted`] one of its nodes has a pair at, ascending.
+    pub counted_of: Vec<Vec<u32>>,
+    /// Per unit: every pair at those stores, its own and the other units', ascending: what its
+    /// window needs counted in a sweep (the others' make the stores' residue).
+    pub pairs_of: Vec<Vec<(u32, u32)>>,
+    /// Each counted store's inventory, and the store.
+    pub counted_inv: VecMap<u32, u32>,
 }
 
 impl Units {
@@ -185,6 +204,48 @@ impl Units {
                 k
             })
             .collect();
+        // Counted stores whose sections are two units' or more (the others are a unit's own).
+        let counted: Vec<u32> = s
+            .counted
+            .iter()
+            .copied()
+            .filter(|h| store_units.get(h).is_some_and(|u| u.is_none()))
+            .collect();
+        let mut pairs = Vec::new();
+        let mut counted_of = vec![Vec::new(); nu];
+        let mut counted_inv = VecMap::new();
+        for &h in &counted {
+            let far = g.out_g.of(h).iter().map(|&e| g.edge(e).to);
+            let near = g.in_g.of(h).iter().map(|&e| g.edge(e).from);
+            for m in far.chain(near).filter(|&m| m != h) {
+                pairs.push((m, h));
+                let u = of_node[m as usize];
+                if u != NONE {
+                    counted_of[u as usize].push(h);
+                }
+            }
+            if let Some(i) = g.node(h).inventory
+                && counted_inv.get(&i).is_none()
+            {
+                counted_inv.insert(i, h);
+            }
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        for c in counted_of.iter_mut() {
+            c.sort_unstable();
+            c.dedup();
+        }
+        let pairs_of = counted_of
+            .iter()
+            .map(|hs| {
+                pairs
+                    .iter()
+                    .copied()
+                    .filter(|(_, h)| hs.binary_search(h).is_ok())
+                    .collect()
+            })
+            .collect();
         Units {
             of_section,
             of_node,
@@ -194,7 +255,17 @@ impl Units {
             unbounded,
             chunks,
             keys,
+            counted,
+            pairs,
+            counted_of,
+            pairs_of,
+            counted_inv,
         }
+    }
+
+    /// The counted store whose inventory is `i`, if any (§4.2).
+    pub fn counted_store_of_inv(&self, i: u32) -> Option<u32> {
+        self.counted_inv.get(&i).copied()
     }
 
     pub fn len(&self) -> usize {
@@ -346,7 +417,12 @@ pub fn bounds(g: &Graph, units: &Units, sol: &Solution) -> Vec<UnitBound> {
         } else {
             (ed.from, ed.to)
         };
-        let u = units.of_node[store as usize];
+        // At a counted store between units, the edge is its mover's unit's: what that unit's
+        // movers put in and take out there is its own (§4.1).
+        let mut u = units.of_node[store as usize];
+        if u == NONE && units.counted.binary_search(&store).is_ok() {
+            u = units.of_node[far as usize];
+        }
         if u == NONE {
             continue;
         }
