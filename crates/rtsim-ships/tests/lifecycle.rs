@@ -11,6 +11,7 @@
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::renewal::Pressure;
+use rtsim_ships::boundary::{self, Obs};
 use rtsim_ships::engine::{PState, Ship, ShipId};
 use rtsim_ships::synth::{self, Coastal, FakeShips, SeaHavens};
 use rtsim_ships::{ShipTunables, Ships, fight};
@@ -159,16 +160,17 @@ fn a_hunt_pays_its_toll() {
             idle_by(&mut c, &mut fake, t, step);
         }
         let mut paid = 0;
+        let mut began = None::<Tick>;
         for (i, &p) in slots.iter().enumerate() {
-            if !matches!(
-                c.ships
-                    .ship(p)
-                    .and_then(|x| x.pirate.as_ref())
-                    .map(|x| x.state),
-                Some(PState::Hunting { .. })
-            ) {
+            let Some(PState::Hunting { since, .. }) = c
+                .ships
+                .ship(p)
+                .and_then(|x| x.pirate.as_ref())
+                .map(|x| x.state)
+            else {
                 continue;
-            }
+            };
+            began = began.max(Some(since));
             let toll = due[i].expect("it was outbound first");
             let x = c.ships.ship(p).unwrap();
             let lane = lane_of(&c.ships, p).unwrap();
@@ -183,7 +185,11 @@ fn a_hunt_pays_its_toll() {
         let hv = &c.ships.havens[h as usize];
         assert_eq!(hv.counts.toll_milli, u64::from(paid), "seed {seed}");
         assert_eq!(hv.pool_milli, pool0 - paid, "seed {seed}");
-        assert!(hv.fed_until >= t, "a hunt start feeds the haven");
+        assert_eq!(
+            Some(hv.fed_until),
+            began.map(|b| b + Tick::from_days(30).0),
+            "seed {seed}: a hunt start feeds the haven for exactly 30 days"
+        );
         c.ships.check(&c.world).expect("check");
 
         // The pool is empty: the crew pays, in whole men rounded up.
@@ -453,6 +459,246 @@ fn a_starving_haven_shuts_and_refounds() {
     });
 }
 
+/// S8b `a_laid_up_slot_wakes_when_its_haven_is_fed_again` (§2.4.6a rule 2, PC11): a starving
+/// haven lays one ship up while its other ship is still afloat; when the escorts leave, that
+/// other ship hunts, which feeds the haven, and the laid-up slot (its refit never due) looks for
+/// its refit again and sails. Escorted from day 0 so nothing hunts before the haven starves.
+#[test]
+fn a_laid_up_slot_wakes_when_its_haven_is_fed_again() {
+    let tun = ShipTunables::default();
+    let step = TICKS_PER_DAY / 96;
+    let results = per_seed(&seeds(), |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let h = c.haven;
+        escort_all(&mut c, 2.5, Tick::ZERO);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let slots = c.ships.havens[h as usize].ships.clone();
+        let mut t = Tick::from_days(29);
+        idle_by(&mut c, &mut fake, t, step);
+        // Step until exactly one slot is laid up and another is still afloat.
+        let laid = loop {
+            t += step;
+            if t > Tick::from_days(40) || c.ships.havens[h as usize].shut.is_some() {
+                break None;
+            }
+            idle_by(&mut c, &mut fake, t, step);
+            let up: Vec<ShipId> = slots
+                .iter()
+                .copied()
+                .filter(|&p| c.ships.ship(p).is_some_and(Ship::is_laid_up))
+                .collect();
+            if up.len() == 1 && manned(&c.ships, h).0 >= 1 {
+                break Some(up[0]);
+            }
+        };
+        let p = laid?;
+        c.ships.check(&c.world).expect("check while one is laid up");
+        // The escorts leave before the other ship decides: it hunts and feeds the haven.
+        escort_all(&mut c, 0.0, t);
+        let hunts = c.ships.stats.hunts;
+        idle_by(&mut c, &mut fake, t + 60 * TICKS_PER_DAY, step);
+        c.ships.check(&c.world).expect("check");
+        let hv = &c.ships.havens[h as usize];
+        let fed_again = c.ships.stats.hunts > hunts && hv.shut.is_none() && hv.counts.refounds == 0;
+        Some((
+            seed,
+            fed_again,
+            c.ships.ship(p).is_some_and(Ship::is_laid_up),
+        ))
+    });
+    let fed: Vec<_> = results.iter().flatten().filter(|r| r.1).collect();
+    let stuck: Vec<_> = fed.iter().filter(|r| r.2).map(|r| r.0).collect();
+    eprintln!(
+        "fed again beside a laid-up slot: {}; still laid up: {stuck:?}",
+        fed.len()
+    );
+    assert!(
+        !fed.is_empty(),
+        "no seed had a slot laid up beside an active ship"
+    );
+    assert!(
+        stuck.is_empty(),
+        "PC11: laid-up slots never woke, seeds {stuck:?}"
+    );
+}
+
+/// A late or replayed plugin report for a ship that is no longer active changes nothing
+/// (§2.4.6a, PC3): a FIGHT or DEMATERIALIZED record for a laid-up slot must not put men aboard
+/// a ship whose crew went ashore, and `check()` still holds.
+#[test]
+fn a_late_report_for_a_laid_up_ship_changes_nothing() {
+    let tun = ShipTunables::default();
+    let step = TICKS_PER_DAY / 96;
+    per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let h = c.haven;
+        escort_all(&mut c, 2.5, Tick::ZERO);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let slots = c.ships.havens[h as usize].ships.clone();
+        let mut t = Tick::from_days(29);
+        idle_by(&mut c, &mut fake, t, step);
+        let p = loop {
+            t += step;
+            assert!(t < Tick::from_days(40), "seed {seed}: nothing laid up");
+            idle_by(&mut c, &mut fake, t, step);
+            if let Some(&p) = slots
+                .iter()
+                .find(|&&p| c.ships.ship(p).is_some_and(Ship::is_laid_up))
+            {
+                break p;
+            }
+        };
+        let merchant = c
+            .ships
+            .ships
+            .iter()
+            .find(|(_, x)| matches!(x.role, rtsim_ships::Role::Merchant))
+            .map(|(id, _)| id)
+            .expect("a merchant");
+        let (before, hash) = (c.ships.ship(p).cloned().unwrap(), c.ships.state_hash());
+        let observed = c.ships.stats.fights_observed;
+        let fight = Obs::Fight(boundary::Fight {
+            attacker: Ship::agent(p),
+            defender: Ship::agent(merchant),
+            outcome: 1,
+            attacker_crew: (6, 5),
+            defender_crew: (4, 3),
+            attacker_hull_milli: 700,
+            defender_hull_milli: 900,
+        });
+        let demat = Obs::Dematerialized(boundary::Dematerialized {
+            agent: Ship::agent(p),
+            epoch: before.epoch,
+            reason: 1,
+            dimension: 0,
+            hull_milli: 600,
+            crew: 6,
+            pos: (0.0, 64.0, 0.0),
+        });
+        for o in [&fight, &demat] {
+            c.ships.ingest(&mut c.world, o, &c.mask, t);
+        }
+        let x = c.ships.ship(p).unwrap();
+        assert!(x.is_laid_up(), "seed {seed}");
+        assert_eq!(
+            (x.crew, x.hull_milli),
+            (before.crew, before.hull_milli),
+            "seed {seed}"
+        );
+        assert_eq!(c.ships.stats.fights_observed, observed);
+        assert_eq!(c.ships.state_hash(), hash, "seed {seed}: the state moved");
+        c.ships.check(&c.world).expect("check");
+    });
+}
+
+/// The world and ships read back from their saves, as a restarted engine would, in a `Coastal`.
+fn restarted(c: &Coastal, seed: u64, tun: &ShipTunables) -> Coastal {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    Coastal {
+        world: rtsim_world::World::load(synth::world_config(seed), goods, book, &c.world.save())
+            .expect("world loads"),
+        ships: Ships::load(tun.clone(), &c.ships.save()).expect("ships load"),
+        mask: synth::coast(),
+        haven: c.haven,
+        navy: c.navy,
+    }
+}
+
+/// S8b persistence (§2.4.6a; the haven rows' `fed_until`, `shut`, `epoch` and `counts` and a
+/// slot's laid-up status): a restart in the middle of each lifecycle state, then both runs
+/// carried on. Three states: a slot laid up beside an active ship; a shut haven with its look
+/// pending; the same after one look found no prey. After the restart the escorts leave in both,
+/// the runs go on for 120 days, and the saved-and-restored run ends in the very state of the
+/// run that was never saved.
+#[test]
+fn a_restart_in_each_lifecycle_state_changes_nothing() {
+    let tun = ShipTunables::default();
+    let step = TICKS_PER_DAY / 96;
+    let seeds: Vec<u64> = (1..=8).collect();
+    let hits = per_seed(&seeds, |seed| {
+        let mut states = 0;
+        for state in 0..3 {
+            let mut a = synth::coastal(seed, tun.clone());
+            let h = a.haven;
+            escort_all(&mut a, 2.5, Tick::ZERO);
+            let mut fa = FakeShips::new(f64::from(tun.view_radius));
+            let slots = a.ships.havens[h as usize].ships.clone();
+            let mut t = Tick::from_days(29);
+            idle_by(&mut a, &mut fa, t, step);
+            let reached = loop {
+                t += step;
+                if t > Tick::from_days(40) {
+                    break false;
+                }
+                idle_by(&mut a, &mut fa, t, step);
+                let hv = &a.ships.havens[h as usize];
+                let up = slots
+                    .iter()
+                    .filter(|&&p| a.ships.ship(p).is_some_and(Ship::is_laid_up))
+                    .count();
+                if match state {
+                    0 => up == 1 && manned(&a.ships, h).0 >= 1,
+                    _ => hv.shut.is_some(),
+                } {
+                    break true;
+                }
+            };
+            if !reached {
+                continue;
+            }
+            if state == 2 {
+                // One look finds no prey (the escorts are still on) and the next is booked.
+                let back = a.ships.havens[h as usize].shut.unwrap().back;
+                idle_by(&mut a, &mut fa, back + TICKS_PER_DAY, step);
+                assert!(a.ships.havens[h as usize].shut.is_some(), "seed {seed}");
+            }
+            let mut b = restarted(&a, seed, &tun);
+            assert_eq!(b.ships.havens, a.ships.havens, "seed {seed} state {state}");
+            assert_eq!(b.ships.state_hash(), a.ships.state_hash());
+            assert_eq!(b.world.state_hash(), a.world.state_hash());
+            assert_eq!(b.ships.pending_by_kind(), a.ships.pending_by_kind());
+            let mut fb = FakeShips::new(f64::from(tun.view_radius));
+            fb.bodies = fa.bodies.clone();
+            fb.seq = fa.seq;
+            let now = a.ships.now();
+            escort_all(&mut a, 0.0, now);
+            escort_all(&mut b, 0.0, now);
+            let end = now + 120 * TICKS_PER_DAY;
+            idle_by(&mut a, &mut fa, end, step);
+            idle_by(&mut b, &mut fb, end, step);
+            assert_eq!(
+                b.ships.state_hash(),
+                a.ships.state_hash(),
+                "seed {seed} state {state}: the restored run went its own way"
+            );
+            assert_eq!(b.world.state_hash(), a.world.state_hash());
+            assert_eq!(b.ships.havens, a.ships.havens);
+            // The run went through the state's way out, so the comparison covered it.
+            let hv = &a.ships.havens[h as usize];
+            let up = slots
+                .iter()
+                .filter(|&&p| a.ships.ship(p).is_some_and(Ship::is_laid_up))
+                .count();
+            if state == 0 {
+                assert_eq!(up, 0, "seed {seed}: the laid-up slot woke");
+            } else {
+                assert!(hv.counts.refounds >= 1, "seed {seed} state {state}");
+            }
+            a.ships.check(&a.world).expect("check");
+            b.ships.check(&b.world).expect("check restored");
+            states += 1 << state;
+        }
+        states
+    });
+    for state in 0..3 {
+        assert!(
+            hits.iter().any(|h| h & (1 << state) != 0),
+            "no seed reached state {state}"
+        );
+    }
+}
+
 /// S8b `no_refound_in_view` (§2.4.6a rule 5, PC5): nothing appears within a player's view. A shut
 /// haven's look while a player stands 100 blocks off its dock does not refound the site, though
 /// it has prey again: it looks again 48 days later and nothing is taped. Once the player leaves,
@@ -519,6 +765,8 @@ struct Life {
     manned: f64,
     /// The fewest sites open at a census.
     min_open: usize,
+    /// The longest a site stood shut at a census, in days (a spell still running counts).
+    longest_shut: f64,
     /// Hunts in each window (a century, or a decade in the everyday cut).
     window_hunts: Vec<u64>,
     shuts: u64,
@@ -578,17 +826,40 @@ fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
             .filter(|&&h| ships.havens[h as usize].shut.is_none())
             .count();
         let up: usize = havens.iter().map(|&h| manned(&ships, h).0).sum();
-        assert!(open <= life.sites && up <= slots, "seed {seed}");
+        // A shut haven is manned by nobody, and its look is never overdue (every look due by now
+        // has run) nor further off than the renewal rule's cap: a look is booked at shut or
+        // refound-failed time, the first at most `cap_days` on, a retry `base_days` on. Whether a
+        // look finds prey is the world's; the longest shut spell is reported, not bounded.
+        let cap = Tick::from_days(u64::from(tun.refound.cap_days as u32)).0;
+        for &h in &havens {
+            let hv = &ships.havens[h as usize];
+            if let Some(sh) = hv.shut {
+                assert_eq!(manned(&ships, h).0, 0, "seed {seed}: shut but manned");
+                assert!(sh.back > t, "seed {seed}: haven {h}'s look is overdue");
+                assert!(
+                    sh.back <= t + cap,
+                    "seed {seed}: haven {h}'s look is {:.0} days off",
+                    day(sh.back) - day(t)
+                );
+                life.longest_shut = life.longest_shut.max(day(t) - day(sh.since));
+            }
+        }
+        assert!(up <= slots, "seed {seed}");
+        assert!(
+            life.lifecycle || open == life.sites,
+            "seed {seed}: shut with the lifecycle off"
+        );
         life.open += open as f64 / life.sites as f64;
         life.manned += up as f64 / slots as f64;
         life.min_open = life.min_open.min(open);
         samples += 1;
+        // The conservation and the indexes, every census (24 days).
+        ships
+            .check(&world)
+            .unwrap_or_else(|e| panic!("seed {seed} lifecycle {lifecycle} day {}: {e}", day(t)));
         if t.0.is_multiple_of(years * YEAR * TICKS_PER_DAY) {
             life.window_hunts.push(ships.stats.hunts - hunts0);
             hunts0 = ships.stats.hunts;
-            ships.check(&world).unwrap_or_else(|e| {
-                panic!("seed {seed} lifecycle {lifecycle} day {}: {e}", day(t))
-            });
         }
     }
     life.open /= samples as f64;
@@ -608,7 +879,7 @@ fn report(runs: &[Life]) {
         eprintln!(
             "seed {:>2} lifecycle {:<5} sites {} slots {} navies {}: open {:.3} (min {}), manned \
              {:.3}, shuts {}, refounds {}, laid up {}, sinkings {}, hunts/yr {:.1}, toll {:.1} \
-             men ({:.2}/yr), fewest hunts in a window {}",
+             men ({:.2}/yr), fewest hunts in a window {}, longest shut {:.0} days",
             l.seed,
             l.lifecycle,
             l.sites,
@@ -625,8 +896,59 @@ fn report(runs: &[Life]) {
             l.toll_men,
             l.toll_men / l.years as f64,
             l.window_hunts.iter().min().copied().unwrap_or(0),
+            l.longest_shut,
         );
     }
+}
+
+/// The seas together, the lifecycle on against off: shares open, the events a year, and the
+/// hunts the lifecycle costs.
+fn summary(on: &[Life], off: &[Life]) {
+    let years: f64 = on.iter().map(|l| l.years as f64).sum();
+    let sum = |v: &[Life], f: &dyn Fn(&Life) -> f64| v.iter().map(f).sum::<f64>();
+    let seas = on.len() as f64;
+    let open_mean = sum(on, &|l| l.open) / seas;
+    let open_weighted = sum(on, &|l| l.open * l.sites as f64) / sum(on, &|l| l.sites as f64);
+    let open_lowest = on.iter().map(|l| l.open).fold(1.0, f64::min);
+    let manned_mean = sum(on, &|l| l.manned) / seas;
+    let (shuts, refounds, laid_up) = (
+        sum(on, &|l| l.shuts as f64),
+        sum(on, &|l| l.refounds as f64),
+        sum(on, &|l| l.laid_up as f64),
+    );
+    let shutting = on.iter().filter(|l| l.shuts > 0).count();
+    let (hunts_on, hunts_off) = (sum(on, &|l| l.hunts as f64), sum(off, &|l| l.hunts as f64));
+    let worst = on
+        .iter()
+        .filter_map(|l| {
+            let o = off.iter().find(|o| o.seed == l.seed)?;
+            Some((l.seed, 1.0 - l.hunts as f64 / o.hunts as f64, l.shuts))
+        })
+        .fold((0, f64::MIN, 0), |a, b| if b.1 > a.1 { b } else { a });
+    eprintln!(
+        "ALL {} seas, {} years each, lifecycle on: sites open {open_mean:.3} (site-weighted \
+         {open_weighted:.3}, lowest sea {open_lowest:.3}, fewest at a census {}), slots manned \
+         {manned_mean:.3}; seas where a haven shut {shutting}; per sea-year: shuts {:.4}, \
+         refounds {:.4}, laid up {:.4}, hunts {:.2}, toll {:.3} men; longest shut spell {:.0} days",
+        on.len(),
+        on.first().map_or(0, |l| l.years),
+        on.iter().map(|l| l.min_open).min().unwrap_or(0),
+        shuts / years,
+        refounds / years,
+        laid_up / years,
+        hunts_on / years,
+        sum(on, &|l| l.toll_men) / years,
+        on.iter().map(|l| l.longest_shut).fold(0.0, f64::max),
+    );
+    eprintln!(
+        "ALL lifecycle off: hunts {:.2} per sea-year; lifecycle on has {:.2}% fewer (largest drop \
+         {:.1}% in seed {}, which shut {} times)",
+        hunts_off / years,
+        100.0 * (1.0 - hunts_on / hunts_off),
+        100.0 * worst.1,
+        worst.0,
+        worst.2,
+    );
 }
 
 /// The lifecycle's bars on many worlds (EQUILIBRIUM.md S8b): no world ever has every site shut
@@ -673,6 +995,7 @@ fn unattended_havens_rise_and_fall() {
     let (on, off) = lives(6, &[1, 2, 3], 3, 10);
     report(&on);
     report(&off);
+    summary(&on, &off);
     check_lives(&on, &off);
 }
 
@@ -685,5 +1008,6 @@ fn unattended_havens_rise_and_fall_1000_years() {
     let (on, off) = lives(12, &seeds(), 10, 100);
     report(&on);
     report(&off);
+    summary(&on, &off);
     check_lives(&on, &off);
 }

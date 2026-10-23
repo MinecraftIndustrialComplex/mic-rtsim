@@ -808,7 +808,9 @@ impl Dragons {
             return;
         }
         self.end_visit(d);
-        match self.vacant_lair(d, at) {
+        // It takes a lair as any newcomer does (EQUILIBRIUM.md §2.4.1): only an empty one whose
+        // wait has ended and whose ground would feed it.
+        match self.vacant_lair(w, d, at) {
             Some(l) => {
                 let name = self.lairs[l as usize].name.clone();
                 self.note(
@@ -1433,7 +1435,72 @@ impl Dragons {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rtsim_kernel::renewal::Pressure;
     use rtsim_space::topology::all_flat;
+
+    /// EQUILIBRIUM.md §2.4.1 (S4): a visitor that settles takes a lair as any newcomer does, so
+    /// only an empty lair whose wait has ended. A farmed lair in reach stays empty to the end of
+    /// its wait, and the oil gate's stream cannot refill it early.
+    #[test]
+    fn visitor_claims_only_a_due_lair() {
+        let (mut w, _) = crate::synth::world(5);
+        let mut d = Dragons::new(5, crate::tunables::DragonTunables::default(), Tick::ZERO);
+        let day = |n: u64| Tick(n * TICKS_PER_DAY);
+        let mut roost = |d: &mut Dragons, key: u64, x: i32| {
+            d.add_lair(
+                &mut w,
+                key,
+                &format!("Roost {key}"),
+                Species::Fire,
+                LairKind::Roost,
+                Pos::new(0, x, 5_000),
+                100,
+                Tick::ZERO,
+            )
+        };
+        let near = roost(&mut d, 1, 10_500);
+        let far = roost(&mut d, 2, 13_000);
+        let coin = crate::prey::Item::World(crate::synth::goods().1.gold);
+        let visitor = |d: &mut Dragons, w: &mut World, at: Tick| {
+            let v = d.add_dragon(
+                w,
+                NewDragon {
+                    name: "visitor".into(),
+                    species: Species::Fire,
+                    gender: Gender::Male,
+                    variant: 0,
+                    age_ticks: 40 * TICKS_PER_DAY,
+                    lair: None,
+                    fullness: 100,
+                    health: None,
+                    seed: None,
+                    at: Some((Pos::new(0, 10_000, 5_000), 120)),
+                },
+                at,
+            );
+            let x = d.dragons.get_mut(v).expect("live");
+            x.visitor = Some(99);
+            x.carried.insert(coin, coin.unit());
+            d.visitor_done(w, v, at);
+            match d.dragons[v].state {
+                State::Flying(Purpose::Claim(l)) => Some(l),
+                _ => None,
+            }
+        };
+        // Both lairs empty since day 0: neither's 20-day wait has ended on day 10.
+        assert_eq!(visitor(&mut d, &mut w, day(10)), None, "nothing is due");
+        // The near one is farmed: P 2 when it emptied on day 25, so 80 days.
+        d.lairs[near as usize].pressure = Pressure::from_parts(2.0, 25);
+        d.start_wait(near, day(25));
+        assert_eq!(d.lairs[near as usize].due, day(105));
+        // On day 30 only the far one is due: the visitor flies past the near one to it.
+        assert_eq!(visitor(&mut d, &mut w, day(30)), Some(far));
+        // The next finds the far one taken and the near one still waiting.
+        assert_eq!(visitor(&mut d, &mut w, day(31)), None);
+        assert!(d.vacant.contains(&near));
+        // After its wait the near one takes a visitor.
+        assert_eq!(visitor(&mut d, &mut w, day(105)), Some(near));
+    }
 
     #[test]
     fn fields_join_through_neighbours() {
