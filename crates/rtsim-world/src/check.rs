@@ -154,8 +154,10 @@ impl World {
     /// A closed lane offers no new goods (choice PC22): once `close_lane` has returned, every
     /// closed edge's goods and raid pipelines run at rate 0 in both directions, whatever the
     /// news says, so what is on the road is all that is left to arrive. Cheap: one pass over the
-    /// edges. Not part of the per-event check, because between the two ends' events of a closure
-    /// the far end still sends.
+    /// edges. Only the goods and raid pipelines are checked: payment pipelines (`pay`) are not,
+    /// because they settle goods already shipped and keep running on a closed lane, in coins and,
+    /// with `barter_in_flows`, in items (PC57, PC61). Not part of the per-event check, because
+    /// between the two ends' events of a closure the far end still sends.
     pub fn check_lanes(&self) -> Result<(), String> {
         for (i, e) in self.edges.iter().enumerate() {
             if !e.closed {
