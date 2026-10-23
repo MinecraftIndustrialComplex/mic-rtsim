@@ -4967,6 +4967,15 @@ mod replay_path {
             g.districts[&d].compiled.as_ref().expect("a compile")
         }
 
+        /// IND_CHUNK_TICKING for chunk (`x`, 0) of district `d`.
+        pub(super) fn ticking(d: DistrictId, x: i32, on: bool) -> GlassObs {
+            GlassObs::ChunkTicking(crate::glass::records::ChunkTicking {
+                district: d,
+                chunk: ChunkPos { dim: 0, x, z: 0 },
+                ticking: on,
+            })
+        }
+
         /// Two lines with goods of their own: each is judged on its own window, so the slow one
         /// fails its window and the other passes and may replay, while the district's window (the
         /// checksum over both) fails on the slow line's goods alone.
@@ -5092,12 +5101,14 @@ mod replay_path {
         /// A sweep that was not live: the district's window is discarded (`NOT_LIVE`), and the
         /// unit whose chunks all ran samples and passes; the other never opens. A chunk that
         /// stopped between two sweeps discards its unit's window though it runs again (§3.4).
+        /// A unit runs only in chunks Java reported ticking (choice SC58).
         #[test]
         fn a_unit_whose_chunks_ran_learns_through_partial_sweeps() {
             let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
             let tun = GlassTunables::default();
             let mut g = Glass::default();
             ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true)], &tun);
             let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
             let loaded: BTreeSet<ChunkPos> = [ChunkPos { dim: 0, x: 0, z: 0 }].into();
             let ports = GoodVec::new();
@@ -5386,6 +5397,7 @@ mod replay_path {
                     applied_epoch: 0,
                 },
             ));
+            s.push(at(0, Obs::Glass(ticking(D, 0, true))));
             for k in 1..=32u32 {
                 let t = u64::from(k) * 100;
                 let m = (t / 10) as i64;
@@ -5432,6 +5444,364 @@ mod replay_path {
             let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
             assert_eq!(rc.unit_state, c.unit_state);
             assert_eq!(r.glass.extra_rows(), e.glass.extra_rows());
+        }
+
+        /// Line A's inventories when it made `m`, with `copper` it does not model in its output.
+        fn line_a(m: i64, copper: i64) -> [(u32, Inventory); 2] {
+            let mut out = vec![(SHEET, m)];
+            if copper > 0 {
+                out.push((COPPER, copper));
+            }
+            [
+                (0, inventory(0, &[(BRASS, 100_000 - m)])),
+                (1, inventory(1, &out)),
+            ]
+        }
+
+        /// The goods the district's last concluded window failed on.
+        fn failing(c: &Compiled) -> Vec<Good> {
+            c.district_failing()
+        }
+
+        /// A same-revision recompile keeps the district's veto (choice SC66): line B makes half its
+        /// rate, so the district fails on brass and sheets and line A, which passed, may not replay; the
+        /// recompile of the same factory has no district window yet, and A stays vetoed (the page
+        /// keeps the veto) until the new compile's first district window passes.
+        #[test]
+        fn a_recompile_keeps_the_districts_veto_until_its_own_window() {
+            let (b, p0, _) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            // B at half its rate until the recompile, at its rate after.
+            let bm = |t: u64| {
+                if t <= 3250 {
+                    (t / 20) as i64
+                } else {
+                    (3250 / 20 + (t - 3250) / 10) as i64
+                }
+            };
+            let inv = |t: u64| invs(BRASS, SHEET, (t / 10) as i64, bm(t));
+            for k in 0..=32u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            let ua = unit_of(c, p0);
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert_eq!(failing(c), vec![BRASS, SHEET]);
+            assert!(!c.unit_may_replay(ua));
+            ingest_seen(&mut g, 3250, &b.records(2), &inv(3250), &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert!(c.last.is_none(), "the new compile has no district window");
+            assert_eq!(c.veto, vec![BRASS, SHEET]);
+            let ua = unit_of(c, p0);
+            assert_eq!(verdict_of(&c.unit_state[ua as usize]), verdict::PASS);
+            assert!(!c.unit_may_replay(ua), "the recompile keeps the veto");
+            let page = district_page(&g.districts[&D]);
+            let PageRead::Kept(back) = read_district_page(&page, 64).expect("decodes") else {
+                panic!("kept");
+            };
+            assert_eq!(
+                back.compiled.as_ref().expect("compile").veto,
+                vec![BRASS, SHEET]
+            );
+            let mut t = 3300;
+            while comp(&g, D).last.is_none() && t <= 12_000 {
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+                t += 100;
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.last.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+            assert!(c.veto.is_empty(), "the new window lifts it");
+            assert!(c.unit_may_replay(ua));
+        }
+
+        /// The veto reads every good the unit touches (§3.4): copper A does not model starts
+        /// arriving in its output store after A's last window concluded. A's open window holds a
+        /// copper row and the district's window, out of phase with A's after a partial sweep,
+        /// fails on copper: A may not replay, though its last window never saw copper.
+        #[test]
+        fn the_veto_reads_the_goods_a_unit_touches_now() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true)], &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| {
+                let m = (t / 10) as i64;
+                let copper = if t >= 5300 {
+                    ((t - 5300) / 5) as i64
+                } else {
+                    0
+                };
+                let mut v = VecMap::new();
+                for (i, x) in line_a(m, copper) {
+                    v.insert(i, x);
+                }
+                v.insert(2, inventory(2, &[(ORE, 100_000 - m)]));
+                v.insert(3, inventory(3, &[(CRUSHED, m)]));
+                v
+            };
+            // Only A's chunk runs through the sweep at 3300: the district's window and B's go.
+            let loaded: BTreeSet<ChunkPos> = [ChunkPos { dim: 0, x: 0, z: 0 }].into();
+            let partial = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            let mut gaps = 0;
+            for k in 0..=71u64 {
+                let t = k * 100;
+                let live = if t == 3300 { &partial } else { &Liveness::All };
+                glass_sweep(&mut g, D, t, &inv(t), &ports, live, &tun);
+                let c = comp(&g, D);
+                let ua = unit_of(c, p0);
+                let st = &c.unit_state[ua as usize];
+                let own_passed = verdict_of(st) == verdict::PASS
+                    && st
+                        .last
+                        .as_ref()
+                        .is_some_and(|r| r.goods.iter().all(|x| x.good != COPPER));
+                let open_copper = c
+                    .unit_partial(ua)
+                    .is_some_and(|r| r.goods.iter().any(|x| x.good == COPPER));
+                if own_passed && open_copper && failing(c).contains(&COPPER) {
+                    gaps += 1;
+                    assert!(!c.unit_may_replay(ua), "t {t}: vetoed on copper");
+                }
+            }
+            assert!(gaps > 0, "the case arose");
+        }
+
+        /// A chunk that stopped during a sweep that was dropped (choice SC67): the live sweep
+        /// after ends the window of the unit lying in it, and the other unit's goes on.
+        #[test]
+        fn a_stop_during_a_dropped_sweep_ends_its_units_window() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+            for k in 0..=15u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let (ua, ub) = (unit_of(comp(&g, D), p0), unit_of(comp(&g, D), p1));
+            let a = comp(&g, D).unit_window(ua).expect("A's window is open");
+            assert!(comp(&g, D).unit_window(ub).is_some());
+            g.chunk_stopped(D, ChunkPos { dim: 0, x: 2, z: 0 });
+            g.discard(Tick(1600), D, discard::DROPPED, &tun);
+            glass_sweep(&mut g, D, 1700, &inv(1700), &ports, &Liveness::All, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.unit_window(ub), None);
+            assert_eq!(
+                c.unit_state[ub as usize].ready_at,
+                Tick(1700 + tun.warmup_ticks)
+            );
+            assert_eq!(c.unit_window(ua).map(|w| w.0), Some(a.0));
+            assert!(
+                c.window().is_some(),
+                "the district's window keeps today's rule"
+            );
+        }
+
+        /// The first sweep after the district went away runs no unit (choice SC59): each warms up
+        /// afresh from it, not from the unload.
+        #[test]
+        fn a_district_back_from_away_warms_its_units_up_afresh() {
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+            for k in 0..=20u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            g.away(Tick(2050), D, &tun);
+            assert!(g.districts[&D].away);
+            for t in [9000, 9100] {
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+                let c = comp(&g, D);
+                for v in [p0, p1] {
+                    let u = unit_of(c, v);
+                    assert_eq!(c.unit_window(u), None, "t {t}");
+                    assert_eq!(
+                        c.unit_state[u as usize].ready_at,
+                        Tick(9000 + tun.warmup_ticks)
+                    );
+                }
+            }
+            assert!(!g.districts[&D].away);
+            let page = district_page(&g.districts[&D]);
+            assert!(matches!(
+                read_district_page(&page, 64),
+                Ok(PageRead::Kept(_))
+            ));
+        }
+
+        /// A district none of whose chunks Java reports ticking runs no unit on a partial sweep
+        /// (choice SC58): G2-17 reads the empty set as "every loaded chunk ticks" for the
+        /// district's window, but Java reports no chunk that never ticked. A unit that passed
+        /// keeps its pass across a stretch in which nothing ran.
+        #[test]
+        fn chunks_not_reported_ticking_run_no_unit() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            ingest_all(&mut g, 0, &[ticking(D, 0, true), ticking(D, 2, true)], &tun);
+            let ports = GoodVec::new();
+            let inv = |t: u64| {
+                let m = (t.min(3300) / 10) as i64;
+                invs(ORE, CRUSHED, m, m)
+            };
+            for k in 0..=33u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &Liveness::All, &tun);
+            }
+            let ua = unit_of(comp(&g, D), p0);
+            let before = comp(&g, D).unit_state[ua as usize].last.clone();
+            assert_eq!(before.as_ref().map(|r| r.verdict), Some(verdict::PASS));
+            ingest_all(
+                &mut g,
+                3350,
+                &[ticking(D, 0, false), ticking(D, 2, false)],
+                &tun,
+            );
+            let loaded: BTreeSet<ChunkPos> = [0, 2]
+                .into_iter()
+                .map(|x| ChunkPos { dim: 0, x, z: 0 })
+                .collect();
+            let partial = Liveness::Partial {
+                loaded: &loaded,
+                dim: 0,
+            };
+            for k in 34..=70u64 {
+                let t = k * 100;
+                glass_sweep(&mut g, D, t, &inv(t), &ports, &partial, &tun);
+            }
+            let c = comp(&g, D);
+            assert_eq!(c.unit_state[ua as usize].last, before);
+            assert_eq!(c.unit_window(ua), None);
+            assert!(c.unit_may_replay(ua));
+        }
+
+        /// The district's derate lands in the unit whose own window failed (choice SC61): B makes
+        /// half its rate, so B's press is derated by B's own η, and A, which matched, keeps
+        /// passing.
+        #[test]
+        fn the_districts_derate_lands_in_the_unit_that_failed() {
+            let (b, p0, p1) = two_lines(BRASS, SHEET, 10);
+            let tun = GlassTunables::default();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+            drive2(
+                &mut c,
+                0,
+                5200,
+                (BRASS, SHEET),
+                |t| (t / 10) as i64,
+                |t| (t / 20) as i64,
+                &tun,
+            );
+            let derated: Vec<(u32, Q)> = c
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    GlassEvent::Derated { node, eta, .. } => Some((*node, *eta)),
+                    _ => None,
+                })
+                .collect();
+            assert!(!derated.is_empty());
+            assert!(derated.iter().all(|&(v, _)| v == p1), "{derated:?}");
+            let d = c.regime.derate[&p1].to_f64();
+            assert!((d - 0.5).abs() < 0.02, "B's own η: {d}");
+            assert_eq!(
+                verdict_of(&c.unit_state[unit_of(&c, p0) as usize]),
+                verdict::PASS
+            );
+        }
+
+        /// A window with nothing judged proves nothing (choice SC66): a unit whose last window
+        /// passed with no good of verdict PASS may not replay.
+        #[test]
+        fn a_unit_that_judged_nothing_may_not_replay() {
+            let (mut c, p0, _, _) = both_passed((ORE, CRUSHED));
+            let ua = unit_of(&c, p0);
+            assert!(c.unit_may_replay(ua));
+            let last = c.unit_state[ua as usize].last.as_mut().expect("passed");
+            for x in last.goods.iter_mut() {
+                x.verdict = verdict::NONE;
+            }
+            assert!(!c.unit_may_replay(ua));
+        }
+
+        /// A model demoted here leaves the rows of the units holding it unbounded (G-B14), as a
+        /// black box does: nothing in them is judged, and they may not replay.
+        #[test]
+        fn a_demoted_model_leaves_its_units_unjudged() {
+            let (b, p0, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let demoted: BTreeSet<u32> = [model::PRESS].into();
+            let mut c = Compiled::new(b.graph(), Tick(0), &tun, &demoted);
+            drive2(
+                &mut c,
+                0,
+                3200,
+                (ORE, CRUSHED),
+                |t| (t / 10) as i64,
+                |t| (t / 10) as i64,
+                &tun,
+            );
+            let ua = unit_of(&c, p0);
+            let last = c.unit_state[ua as usize].last.as_ref().expect("judged");
+            assert!(
+                last.goods
+                    .iter()
+                    .all(|x| x.class == crate::glass::report::class::UNBOUNDED
+                        && x.verdict == verdict::NONE),
+                "{:?}",
+                last.goods
+            );
+            assert!(!c.unit_may_replay(ua));
+        }
+
+        /// The extra rows are recounted at a session start (the windows' rows went), and ports
+        /// are kept only while the units are active.
+        #[test]
+        fn a_session_start_recounts_the_rows_and_one_unit_keeps_no_ports() {
+            let (b, _, _) = two_lines(ORE, CRUSHED, 10);
+            let tun = GlassTunables::default();
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=25u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let before = g.extra_rows();
+            g.session_start(Tick(2550), &tun);
+            let after = g.extra_rows();
+            g.recount_rows();
+            assert_eq!(after, g.extra_rows(), "recounted ({before} before)");
+            // One line: one unit, the district's window is its own.
+            let mut one = B::default();
+            let (i, o) = (one.store(0), one.store(1));
+            let r = one.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let p = one.machine(model::PRESS, r, 1, 10);
+            one.edge(i, p);
+            one.edge(p, o);
+            let d2 = DistrictId(D.0 + 1);
+            ingest_all(&mut g, 0, &records_for(&one, 1, d2), &tun);
+            assert!(!comp(&g, d2).units.active());
+            g.port(d2, 1, 1, &GoodVec::from_pairs([(SHEET, 3)]));
+            assert!(comp(&g, d2).ports_at.is_empty());
         }
 
         // ---- the replay by unit (SECTIONS.md §3.5, slice S2c) ------------------------------------
@@ -5521,17 +5891,37 @@ mod replay_path {
             for &(v, verdict) in verdicts {
                 let u = c.units.of_node[v as usize] as usize;
                 let st = &mut c.unit_state[u];
+                // One good judged with the window's verdict: a pass on nothing proves nothing
+                // (choice SC66).
+                let good = crate::glass::check::GoodResult {
+                    good: Good(0),
+                    class: crate::glass::report::class::EXACT,
+                    why: (0, 0),
+                    in_l: 0.0,
+                    in_u: 0.0,
+                    out_l: 0.0,
+                    out_u: 0.0,
+                    predicted: 0.0,
+                    lo: 0.0,
+                    hi: 0.0,
+                    measured: 0.0,
+                    sigma: 0.0,
+                    q: 1.0,
+                    verdict,
+                    samples: 3,
+                };
                 st.last = Some(WindowResult {
                     start: Tick(0),
                     ticks: 1,
                     verdict,
-                    goods: Vec::new(),
+                    goods: vec![good],
                     stores: Vec::new(),
                 });
                 st.passed = (verdict == verdict::PASS).then_some((Tick(0), 1));
                 st.edited = false;
             }
             c.last = None;
+            c.veto.clear();
         }
 
         fn replay(e: &Engine) -> &Replay {
