@@ -376,7 +376,10 @@ advert. Slice S1 removes them, before anything splits:
   neighbour's (it already does this to a shaft across a chunk border whose source changed meanwhile);
   the stale re-sync gives the part its source's speed instead (SC37, row 56). A chunk that dropped below
   FULL and stayed in memory comes back with no load and no attach; it is re-synced at its promotion
-  instead (SC45, row 58), with any network update held back while it was away (row 54).
+  instead (SC45, row 58), with any network update held back while it was away (row 54). A chunk that
+  loads FULL and does not tick (level 33) attaches nothing either: it is noted at its load and re-synced
+  at its first FULL report, the chunk's block entities first joining their networks as their first tick
+  would (SC73).
 - **The ring around a ticking chunk** (found in the GameTests). A chunk that block-ticks (level 32 or
   less) keeps its eight neighbours FULL (33) and the ring past them at 34: in memory, not FULL, so
   `getChunkNow` answers null, `Level.isLoaded` false, and its block entities do not exist (a chunk read
@@ -831,6 +834,7 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 | `anAwayDistrictOnAChainStaysAway`, `anAwayDistrictOnASharedNetworkStaysAway` | a loaded factory and an away one on one chain, then on one shaft network, with packages moving and the boiler's level changing | 200 ticks with no `IND_CHUNK_LOADED` for the away district (§2.8) |
 | `aNetworkRecountKeepsAnUnloadedSource` | a network whose source's chunk is unloaded, then a recount (a member added); loaded and unloaded again, then another recount | no chunk load; the capacity equals Create's with that chunk loaded (the contract test of §2.8); one listed object per position after the second visit |
 | `aDemotedChunkComesBackInStep` (built in S1) | an away chunk held in memory below FULL while its source's speed changes, then FULL again | no load; the part takes its source's speed and the network update held back (§2.8, SC45) |
+| `aChunkLoadedFullComesBackInStep` (built in S1) | an away chunk unloaded while its source reverses, then loaded FULL and not ticking | the part takes its source's speed at the load and joins its network once, and nothing breaks when the chunk ticks (§2.8, SC73) |
 | `twoFactoriesSideBySideStayTwo` | two press lines in neighbouring chunks, nothing between them | two districts (today one) |
 | `aVaultAcrossABorderJoinsItsChunks` | a packager in one chunk under an item vault whose controller is in the next | one district (J3) |
 | `diagonalCogsAcrossABorderJoin` | a large cog meshing diagonally with a small cog across a border | one district (J4) |
@@ -1138,6 +1142,7 @@ The options below stay as the record of what was offered.
 | SC53 | A glass page of format `IGL1`, or whose sections are not those its compile cuts into now, is read as absent: the district is restored with no glass state (as `rtsim-view`'s inspect restores one alone), its key is marked so the next save deletes the page, the host logs it, and the district learns again. A page that does not decode still fails the whole restore | §5's per-district drop: every other district's glass state is kept |
 | SC54 | Until S2c the sections are in no `Report` and not in the bridge's `to_f64s`; `rtsim-cli glass` shows them (count, merges by the cap, judging groups, shared stores, each section's nodes, stores, box and fingerprint, and each node's section with `--graph`), cut with the default `glass.sectionsMax` | the bridge's report header is fixed, and Java needs the sections only once they replay |
 | SC55 | Residual groups: the residual positions sorted and joined by their faces and by any plugin's `links` (not only Ender Transmission's) when both ends are residual, numbered by their lowest position; a group's node sits at its lowest corner with params `dx, dy, dz` (its extent) and the FNV-1a hash of its sorted positions, made when a plugin's edge first reaches it; the compile is a black box one when any group node was made | SC14's groups; the hook is the district detection's own, so a mod's wires join here as they join there; the hash tells two groups of one box apart |
+| SC73 | A chunk loaded anew (`ChunkEvent.Load` on the server thread) is noted as a demoted one is and re-synced at its first FULL report (SC45); `StaleKinetics.chunkFull` takes every kinetic block entity, attached or not, and before its first re-sync joins the chunk's block entities to their networks as their first tick would (`KineticJoin`: `initFromTE` if not yet, then `addSilently`) | in a FULL chunk that does not tick (level 33, around every ticking chunk) nothing attaches, so row 56's re-sync never ran there and a compile read the stale speeds; the re-sync's `add` would leave a part that had not joined counted in the unloaded share too |
 
 ---
 
