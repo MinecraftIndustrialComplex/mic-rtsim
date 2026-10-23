@@ -546,6 +546,32 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().nestDay(ticks), "NEST_DAY");
     }
 
+    /** An actor a test report names: a TALK ref's class ({@code TalkRecords.C_*}) and its two ids (docs/boundary.md §13.2). */
+    public record TalkActor(int cls, long a, long b) {
+        public static final TalkActor NONE = new TalkActor(0, 0, 0);
+
+        /** A player by UUID. */
+        public static TalkActor player(java.util.UUID id) {
+            return new TalkActor(1, id.getMostSignificantBits(), id.getLeastSignificantBits());
+        }
+
+        /** A village by Java's id. */
+        public static TalkActor village(long id) {
+            return new TalkActor(2, id, 0);
+        }
+    }
+
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): puts one report on {@code village}'s noticeboard
+     * (TK40): kind (an rtsim-knowledge {@code ReportKind} id), severity, the report's flags, who and whom, the
+     * place (x, z, in the village's frame) and how many ticks ago it happened. The engine refuses it (logged,
+     * nothing changes) when the village is not adopted, an actor does not resolve, or the report would already
+     * be expired. At the next step.
+     */
+    public void talkReport(long village, int kind, int severity, int flags, TalkActor who, TalkActor whom, int x, int z, long ago) {
+        order(new NativeCodec.Orders().talkReport(village, kind, severity, flags, who, whom, x, z, ago), "TALK_REPORT");
+    }
+
     @Override
     public synchronized String javaDictName(int id) {
         drain();
