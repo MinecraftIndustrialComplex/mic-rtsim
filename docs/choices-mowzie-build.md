@@ -741,6 +741,17 @@ under its own heading.
   CHIEF_KILLED: one succession, no chief fell, no rout, the flag gone, the heir lives. It fails
   without the new call (chiefs_killed 1). Replay is unaffected: the order of the journal decides, as
   it did.
+- **MZB-147** (what Java does for a chief body killed after the succession; re-review P3-4):
+  checked `ConflictBridge.journalLoss`, which sends CHIEF_KILLED (with an op id) for any slot marked
+  `chief`, so for the old chief's body after the lazy succession (MZB-139, MZB-146). Nothing visible
+  comes of it on the Java side: the body dies and drops its loot as any mob does (the drops carry the
+  record for Carry On, a journaling matter), `chiefsKilled` is a statistic, and
+  `ConflictNews.post(CHIEF_KILLED, ...)` is a no-op counter until the in-world news lands. The rout
+  and the heir are the engine's answer to the record, and the engine now drops it, so the band
+  carries on and the new chief lives, as MZB-139 says. The record is harmless and nothing in Java
+  changes. A trap for the news slice: it must not post "the chief was killed" from `journalLoss`
+  alone, since the engine may have dropped the record; post it from what the engine did (the
+  heir's succession by a killing, `succeed(..., killed: true)`), or accept a stale line.
 
 ## M4 Camp reconciler, engine
 

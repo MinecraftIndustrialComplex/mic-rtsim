@@ -1548,7 +1548,10 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
   the heir taking over at home, so the band carries on without a chief body, a chief body already in
-  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139).
+  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139,
+  MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
+  side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
+  MZB-147).
   Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
