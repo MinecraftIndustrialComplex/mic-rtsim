@@ -624,7 +624,12 @@ under its own heading.
   nothing will report them, their members count as alive as before. No rtsim-jni change was needed.
   Not state, not a page format change. Fork (limit): records for an epoch newer than the page save
   (a band that was recalled or seen again after it) cannot be matched and are dropped, as they
-  always were; the walk-off and the fight of the epoch the pages hold are the ones counted. Tests:
+  always were; the walk-off and the fight of the epoch the pages hold are the ones counted. A
+  replayed casualty never routs the band and never brings its boredom forward: `session_start`
+  turns a Fighting band into Waiting before the replay, and both branches of `casualties` need
+  Fighting, so the replay counts the dead and their signals but not the rout the session itself
+  may have had (the band is then handled as a waiting one, which is what the restart made of its
+  fight; re-review P3-5). Tests:
   the reviewer's replayed-despawn case (alive 12 drops to 10 after the restart), the entries dropped
   at `resend_notices` (a later despawn is stale), a band embodied at the crash with a casualty and
   a despawn replayed (counted once), the multi-epoch `recalled` round trip through `save` and
