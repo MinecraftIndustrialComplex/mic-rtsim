@@ -1274,6 +1274,183 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- TALK (docs/boundary.md §13) -------------------------------------------------------------------
+
+mod talk {
+    use super::*;
+    use rtsim_jni::talk_wire::{Talked, talked};
+
+    const RIBBIT_VILLAGE: u64 = 0x0001_0000_0000_00B1;
+
+    /// A session with one ribbit village adopted.
+    fn session(dir: &std::path::PathBuf, save: WorldSave) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let fresh = save.journal.is_empty() && save.next_obs <= 1;
+        let mut j = Java::open(e.clone(), save);
+        j.module_mask = 0b1111; // knowledge, settlements, trade, travel
+        if fresh {
+            j.adopt(RIBBIT_VILLAGE, "ribbits:village", "ribbit", 12, 0, 0);
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (e, j)
+    }
+
+    /// The value the village's latest SENTIMENT command lists for the player, if it lists them.
+    fn pushed_feeling(j: &Java) -> Option<i32> {
+        use cmd::sentiment as k;
+        let rec = j
+            .p1_of(cmd::SENTIMENT)
+            .into_iter()
+            .rfind(|b| wire::u64_at(b, k::HOLDER) == RIBBIT_VILLAGE)?;
+        (0..wire::u32_at(&rec, wire::R_AUX) as usize)
+            .map(|i| k::ENTRIES + i * k::ENTRY)
+            .find(|&e| (wire::u64_at(&rec, e), wire::u64_at(&rec, e + 8)) == PLAYER)
+            .map(|e| wire::i32_at(&rec, e + 16))
+    }
+
+    fn wait_durable(e: &Engine) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while e.durable_obs_seq() < e.stats_array()[4] {
+            assert!(Instant::now() < deadline, "the pages never became durable");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// A talk credits its village once: a TALKED reported twice under one op id (a double report)
+    /// is applied once, one the pages include is skipped on replay, one they lack is applied once on
+    /// replay, and the sentiment Java's ribbits read (the SENTIMENT command) and the answer to a
+    /// TALK_ASK both say so.
+    #[test]
+    fn a_talk_credits_its_village_once_live_and_across_a_crash() {
+        let dir = tmpdir("talked");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        assert_eq!(p1_stat(&e, 0), 1, "the ribbit village joined");
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(0));
+        assert_eq!(pushed_feeling(&j), None);
+
+        // Live: one talk, reported twice under the same op id.
+        let op1 = wire::JAVA_OP_BIT | 0x7a1;
+        j.talked(RIBBIT_VILLAGE, PLAYER, op1);
+        j.talked(RIBBIT_VILLAGE, PLAYER, op1);
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 1, "the same op id applied once");
+        assert_eq!(e.talk_stats().talked_refused, 0);
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
+        assert_eq!(
+            pushed_feeling(&j),
+            Some(3),
+            "the village's feeling went to Java for its ribbits to read"
+        );
+
+        // Pages that include the first talk.
+        e.order(vec![Order::SaveAtNextStep]).unwrap();
+        j.idle();
+        wait_durable(&e);
+
+        // After that save: a talk with another ribbit (a new op id), reported twice.
+        let op2 = wire::JAVA_OP_BIT | 0x7a2;
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 2);
+        assert_eq!(j.talk_sentiment(3, RIBBIT_VILLAGE, PLAYER), Some(6));
+        let saved = j.world_save();
+        let held = saved
+            .journal
+            .iter()
+            .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == talk_kind())
+            .count();
+        assert!(
+            held >= 2,
+            "the journal still holds the talks the pages lack ({held})"
+        );
+        let _ = j.crash();
+
+        // After the crash the journal replays: the first talk is in the pages (skipped by
+        // sequence), the second is applied once and its repeat is a duplicate op.
+        let (e, mut j) = session(&dir, saved);
+        assert_eq!(
+            e.talk_stats().talked,
+            1,
+            "only the talk the pages lack was applied again, once"
+        );
+        assert_eq!(
+            j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER),
+            Some(6),
+            "+3 from the pages and +3 from the replay, not more"
+        );
+
+        // And the same op id once more, from a Java that does not know it was applied.
+        j.talked(RIBBIT_VILLAGE, PLAYER, op2);
+        j.idle();
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(6));
+        assert_eq!(e.talk_stats().talked, 1);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    fn talk_kind() -> u16 {
+        rtsim_jni::talk_wire::TALKED
+    }
+
+    /// A TALKED the engine cannot use is refused and counted, never a protocol error, and the
+    /// ones after it still apply.
+    #[test]
+    fn a_malformed_talked_is_refused_and_counted_and_the_next_one_still_applies() {
+        let dir = tmpdir("talked-bad");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        let good = Talked {
+            obs_seq: 0,
+            game_time: 0,
+            op_id: wire::JAVA_OP_BIT | 0x7b1,
+            village: RIBBIT_VILLAGE,
+            player: PLAYER,
+            body: 0,
+        };
+        // Truncated by one 8-byte word, and one word too long.
+        let mut short = good.encode();
+        short.truncate(talked::SIZE - 8);
+        wire::put_u16(&mut short, wire::R_SIZE, (talked::SIZE - 8) as u16);
+        j.journal_raw(&short);
+        let mut long = good.encode();
+        long.extend_from_slice(&[0; 8]);
+        wire::put_u16(&mut long, wire::R_SIZE, (talked::SIZE + 8) as u16);
+        j.journal_raw(&long);
+        // A village nobody adopted, and nobody as the player.
+        // (Each with an op id of its own: a record with an op id seen before is a duplicate, which
+        // is skipped before it can be refused.)
+        j.journal_raw(
+            &Talked {
+                village: 0xDEAD,
+                op_id: good.op_id + 1,
+                ..good
+            }
+            .encode(),
+        );
+        let mut nil = Talked {
+            op_id: good.op_id + 2,
+            ..good
+        }
+        .encode();
+        wire::put_u64(&mut nil, talked::PLAYER_MOST, 0);
+        wire::put_u64(&mut nil, talked::PLAYER_LEAST, 0);
+        j.journal_raw(&nil);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let st = e.talk_stats();
+        assert_eq!((st.talked, st.talked_refused), (0, 4));
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(0));
+        assert_eq!(pushed_feeling(&j), None);
+
+        j.journal_raw(&good.encode());
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 1);
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
+
 // ---- dragons (docs/boundary.md §6) ----------------------------------------------------------------
 
 mod dragons {
@@ -2422,6 +2599,227 @@ mod ships {
             Some(at_switch),
             "running again, the page moves on"
         );
+    }
+
+    /// A trade port's state through the native engine: whether the ships hold it closed, and
+    /// whether the world holds each of its lanes closed.
+    fn port_shut(e: &Engine, d: u32) -> (bool, Vec<bool>) {
+        e.with_ships(|s, w| {
+            let lanes = s
+                .dock_lanes(d)
+                .iter()
+                .map(|&l| w.lane_closed(s.lanes[l as usize].edge))
+                .collect();
+            (s.port_closed(d), lanes)
+        })
+    }
+
+    /// PC101 (C25, U10): switching the ships off lifts every port closure, so no lane of the
+    /// world stays closed by a module that is not running. A closed port (closed by hand, as its
+    /// check would close it) opens with its lanes at the switch-off, and closes again once the
+    /// ships are back on. A session that starts with the ships off lifts the closure its pages
+    /// hold and writes them once; switched on in the next session they read back clean, the port
+    /// open.
+    #[test]
+    fn switching_the_ships_off_lifts_their_port_closures() {
+        let dir = tmpdir("ships-lift");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        let d = e
+            .with_ships(|s, w| (0..s.docks.len() as u32).find(|&d| s.is_trade_port(w, d)))
+            .expect("a trade port");
+        let n = e.with_ships(|s, _| s.dock_lanes(d).len());
+        assert!(n > 0, "the port has lanes");
+        let (shut, open) = ((true, vec![true; n]), (false, vec![false; n]));
+        assert_eq!(port_shut(&e, d), open);
+        assert!(e.with_ships_mut(|s, w| s.close_port(w, d)));
+        assert_eq!(port_shut(&e, d), shut);
+        j.idle();
+        assert_eq!(port_shut(&e, d), shut, "closed while the ships run");
+
+        // Switched off: the port and its lanes open.
+        j.modules(0b1111);
+        j.idle();
+        assert_eq!(port_shut(&e, d), open, "lifted at the switch-off");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert_eq!(e.with_ships(|s, _| s.stats.reopenings), 1);
+
+        // On again: it can close again; then the session ends with it closed.
+        j.modules(MODULES);
+        j.idle();
+        assert_eq!(port_shut(&e, d), open);
+        assert!(e.with_ships_mut(|s, w| s.close_port(w, d)));
+        j.idle();
+        assert_eq!(port_shut(&e, d), shut, "closed again");
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let closed_page = page(&dir).expect("a ships page");
+
+        // A session off from its start: the closure the pages hold is lifted, and written.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = 0b1111;
+        j.idle();
+        assert_eq!(port_shut(&e, d), open, "lifted at the session's start");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert_eq!(
+            e.with_ships(|s, _| (s.stats.closures, s.stats.reopenings)),
+            (2, 2)
+        );
+        save(&e, &mut j);
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_ne!(page(&dir), Some(closed_page), "the lift is written");
+
+        // On in the next session: the pages read back clean, the port open in the ships and in
+        // the world.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.idle();
+        assert_eq!(e.ships_restore_check(), (None, false));
+        assert_eq!(port_shut(&e, d), open, "open after the restore");
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// PC103 (C25, U10): a long switch-off, then the switch-on's catch-up, through the native
+    /// engine. Thirty days on (a haven on the coast, so the pirates hunt), thirty days off, then
+    /// on again: the ships replay what they missed up to the world's present at the switch-on,
+    /// and decide no port in that time. After a day on, no port check has been decided since the
+    /// switch-off (each missed one comes again a check interval after the switch-on), no port
+    /// holds a closure, blockade or open spell dated before the switch-on and every booked check
+    /// is after it; the ships check and the protocol holds.
+    #[test]
+    fn switch_on_catch_up_after_a_long_off() {
+        let dir = tmpdir("ships-catchup");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        coast(&mut j);
+        let days = |j: &mut Java, n: u64| {
+            for _ in 0..n * 20 {
+                j.game_time += 1199;
+                j.tick();
+            }
+            j.idle();
+        };
+        days(&mut j, 30);
+        let (before, _, _, _) = e.ship_stats();
+        j.modules(0b1111);
+        j.idle();
+        let off = e.with_ships(|s, _| s.now());
+        days(&mut j, 30);
+        let on = e.with_ships(|_, w| w.now());
+        assert!(
+            on.0 >= off.0 + 29 * rtsim_kernel::clock::TICKS_PER_DAY,
+            "the world ran on alone"
+        );
+        assert_eq!(e.with_ships(|s, _| s.now()), off, "the ships stood still");
+        j.modules(MODULES);
+        j.idle();
+        days(&mut j, 1);
+        let (after, _, _, _) = e.ship_stats();
+        assert!(after.events > before.events, "nothing replayed");
+        assert_eq!(
+            after.port_checks, before.port_checks,
+            "a port check decided in the missed time"
+        );
+        let (now, ports) = e.with_ships(|s, _| (s.now(), s.ports.clone()));
+        assert!(now >= on, "the ships caught up: {now:?} < {on:?}");
+        for (d, p) in &ports {
+            for t in [p.closed, p.blockaded, p.reopened].into_iter().flatten() {
+                assert!(t >= on, "dock {d}: dated in the missed time: {p:?}");
+            }
+            assert!(p.check.is_some_and(|t| t >= on), "dock {d}: {p:?}");
+        }
+        e.with_ships(|s, w| s.check(w)).expect("the ships check");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        eprintln!(
+            "off at {off:?}, on at {on:?}, now {now:?}; events {} -> {}, port checks {} -> {}, \
+             {} ports with a state",
+            before.events,
+            after.events,
+            before.port_checks,
+            after.port_checks,
+            ports.len()
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// U7, PC103: a phase 1 input from a latest-state record runs the modules to its time first,
+    /// so the world never runs ahead of the ships in normal running and nothing there is taken for
+    /// missed while the ships were off. A hand-over that spans several ticks (the engine's last
+    /// step not yet published, so Java waited to submit) carries a census that changes a village's
+    /// golems: the port check due inside it is decided at its time, as in the same hand-over
+    /// without the census, and the next is booked a check interval after it.
+    #[test]
+    fn a_census_in_a_long_hand_over_leaves_the_ships_their_port_check() {
+        let mut arms = Vec::new();
+        for with_census in [false, true] {
+            let dir = tmpdir(if with_census {
+                "ships-census-on"
+            } else {
+                "ships-census-off"
+            });
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), WorldSave::fresh());
+            j.module_mask = MODULES;
+            coast(&mut j);
+            // A quarter of a day a hand-over until a port has a check booked well ahead.
+            let next_check = |e: &Engine| {
+                e.with_ships(|s, _| {
+                    let now = s.now();
+                    s.ports
+                        .iter()
+                        .filter_map(|(d, p)| p.check.map(|t| (t, *d)))
+                        .filter(|(t, _)| t.0 > now.0 + 10)
+                        .min()
+                })
+            };
+            let mut due = None;
+            for _ in 0..4 * 60 {
+                j.game_time += rtsim_kernel::clock::TICKS_PER_DAY as i64 / 4;
+                j.flush();
+                due = next_check(&e);
+                if due.is_some() {
+                    break;
+                }
+            }
+            let (t, d) = due.expect("a port check is booked");
+            // The world's tick for a game time (the test offset, 0 here).
+            let offset = e.with_ships(|_, w| w.now().0) as i64 - (j.game_time - 1);
+            // Hand-overs to two ticks before the check, then one of three ticks across it.
+            j.game_time = t.0 as i64 - offset - 2;
+            j.flush();
+            let before = e.ship_stats().0.port_checks;
+            j.game_time = t.0 as i64 - offset + 1;
+            if with_census {
+                j.census(VILLAGES[0].0, 0, 1);
+            }
+            j.flush();
+            let (checks, check, now) = e.with_ships(|s, w| {
+                (
+                    s.stats.port_checks,
+                    s.ports.get(&d).and_then(|p| p.check),
+                    (s.now(), w.now()),
+                )
+            });
+            assert_eq!(now.0, now.1, "census {with_census}: one clock");
+            assert!(
+                checks > before,
+                "census {with_census}: the check due at {t:?} was not decided ({check:?})"
+            );
+            e.with_ships(|s, w| s.check(w)).expect("the ships check");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            arms.push((t, d, checks - before, check));
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+        assert_eq!(arms[0], arms[1], "a census changes no port check");
     }
 
     /// One interest area per player across the modules (U2): with a dragon at rest by the lane

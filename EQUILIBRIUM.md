@@ -696,15 +696,24 @@ broken, and refounding at found sites.
      of its time closed; the band between an eighth and a quarter does the same for the blockade.
      A closed port's lanes carry nothing, so pirates stop hunting them and the heat falls; that is
      how a blockade lifts by itself.
-   - **Switched off.** With the ships module off (C25), the ships are frozen and catch up when it
-     is switched on again (U10): the world's lanes stay as the ships left them, closed ones too,
-     and no check runs. Switched on again, the ships run the time they missed, checks included,
-     and the rule applies from there, late. A port closed when the module is switched off stays
-     closed for good if it is never switched back on (PC101).
+   - **Switched off.** Switching the ships module off (C25) lifts every closure at once (PC101):
+     each closed port and its lanes open in the world, every blockade and minimum open spell is
+     cleared and every lane's heat drops to 0, with no news (the switch is not an event of the
+     world). A session that starts with the module off does the same to the closures its saved
+     state holds. The ships are then frozen (U10), and a module that is not running holds no lane
+     of the world closed. Switched on again, every port starts open and the heat builds again from
+     the lanes as usual. The ships run the time they missed in one go, their changes reaching the
+     world at its present, and nothing in that time is decided at a tick the world has passed
+     (PC103): a port check that fell due meanwhile comes again a check interval after the
+     switch-on, so no port is blockaded, closed or reopened, and no news is dated, in the time
+     the ships missed; a laid-up slot whose relaunch fell due waits for its first stay at its home
+     dock after the switch-on; a shut haven's refound and a navy's look are put off to the
+     switch-on; and a port raid in the catch-up is judged against the players there at the
+     switch-on. None of them happens while a player watches (PC90, PC102, PC103).
    - Nothing touches blocks: no dock, Create station, contraption or player-built ship is changed
      (UR-1). Uninstalling rtsim leaves every structure as it stands.
    - **Built (S8b-4)**, 2026-10-23 on branch `ports/close` (docs/choices-ports.md PC50 to PC61 and
-     PC80 to PC101; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
+     PC80 to PC103; `crates/rtsim-ships/src/engine/blockade.rs`, tests in
      `crates/rtsim-ships/tests/blockade.rs`), with its news: Blockade, PortClosed and PortReopened,
      one report per change (rule 8, PC100, `a_port_change_is_news`). Measured over 1,000
      years on `synth::sea_havens`, seeds 1 to 30, nobody watching, with navy assaults and port
@@ -748,7 +757,8 @@ broken, and refounding at found sites.
   again. Every sea with prey hunts in every century.
 - While the ships run, a port closes for at least 30 days and only after about a month of being
   hunted half the time; it reopens only when no lane of it is above a quarter of the full share
-  (half the closing heat), and once reopened it stays open at least 192 days.
+  (half the closing heat), and once reopened it stays open at least 192 days. Switching the ships
+  off lifts every closure at once, whatever its age, and clears the open spell (PC101).
 - Nothing is placed or removed within view of a player.
 
 **What the player sees.** Today no ships plugin exists, so the player sees the economy and the news.

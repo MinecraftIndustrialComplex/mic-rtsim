@@ -2,16 +2,22 @@
 //! The engine halves of MOWZIE.md's slice M1 (§9): the world's difficulty (no war party leaves on
 //! Peaceful, §4.12), a feud's notice kept until the plugin plays it (NOTICE_SHOWN, resent at each
 //! session start, across a restart), and an envoy party wiped out with no player among its
-//! killers withdrawing its demand (DEMAND_SETTLED outcome 5, ledger 14).
+//! killers withdrawing its demand (DEMAND_SETTLED outcome 5, ledger 14). And the reports the
+//! conflict records on the knowledge layer's severity unit (MZB-36).
+
+use std::collections::BTreeMap;
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, Signal, Target};
+use rtsim_conflict::engine::{Conflict, Party, Phase, Signal, Target};
 use rtsim_conflict::synth::{self, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures, Step};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
-use rtsim_knowledge::ActorId;
+use rtsim_kernel::handle::Handle;
+use rtsim_knowledge::{ActorId, ReportKind, SEVERITY_UNIT};
+use rtsim_settle::NodeKind;
+use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
 fn day(d: f64) -> Tick {
@@ -820,4 +826,216 @@ fn an_ambush_booked_before_peaceful_never_falls() {
     let (raided, r) = raid_over_rails(43, true);
     assert_eq!(raided, 0, "no ambush on Peaceful");
     assert!(r.c.peaceful);
+}
+
+// ---- severity units (MZB-36) ----------------------------------------------------------------
+
+/// MZB-36: a camp's robbery of a village counts at the kind's base delta, as every module's
+/// robberies do (severity on `SEVERITY_UNIT`): the village thinks about 50 points worse of the
+/// camp, not 1.
+#[test]
+fn a_robbery_counts_at_the_base_delta() {
+    let mut r = Run::new(6, quiet_goblins());
+    let ashby = r.w.node_of_key(4).expect("Ashby");
+    let (va, fa) = (r.w.nodes[ashby].actor, r.c.factions[r.f as usize].actor);
+    // Ashby's lines stand at their targets on day 0, and a raid takes only the surplus (CL-D58):
+    // 20 items over each, so there is something to take.
+    let m = r.w.market(ashby);
+    let rich: BTreeMap<GoodId, i64> =
+        r.w.goods
+            .ids()
+            .map(|g| (g, m.line(g).target + 20 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+    r.w.stock_from_players(ashby, &rich, Tick(10));
+    r.c.order_party(
+        &mut r.w,
+        synth::CAMP,
+        PartyKind::Plunder,
+        Target::Node(ashby),
+        None,
+        Tick(10),
+    )
+    .expect("plunderers");
+    let mut t = Tick(10);
+    while r.c.ledger.from_villages.is_empty() {
+        t = r.c.next_due().unwrap_or(t + TICKS_PER_DAY);
+        assert!(t < day(10.0), "never raided");
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, t);
+    }
+    let base = i32::from(
+        r.w.knowledge
+            .tunables()
+            .delta(ReportKind::Robbery, SEVERITY_UNIT, false),
+    );
+    assert_eq!(base, -50);
+    let felt = i32::from(r.w.knowledge.sentiment(va, fa, t));
+    assert!(
+        felt <= base + 5,
+        "Ashby feels {felt} toward the camp that robbed it (base delta {base})"
+    );
+}
+
+/// A raid with its war chief, fighting the player (as the plugin's watched fight would have it),
+/// a day after the player killed 20 of the camp's members.
+fn chief_in_a_fight(seed: u64) -> (Run, Handle<Party>) {
+    let mut r = Run::new(seed, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    assert!(r.c.parties[band].chief);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, Tick::from_days(1) + 100);
+    r.c.parties[band].phase = Phase::Fighting;
+    (r, band)
+}
+
+/// The villages that hate goblins (human and bandit) within the rescue news range of the camp.
+fn haters_in_range(r: &Run) -> Vec<ActorId> {
+    let camp = synth::CAMP_POS;
+    let range = f64::from(r.c.tun.rescue_news_blocks);
+    r.w.nodes
+        .iter()
+        .filter(|n| match n.kind {
+            NodeKind::Village(cu) => ["human", "bandit"].contains(&cu.name()),
+            _ => false,
+        })
+        .filter(|n| {
+            let (dx, dz) = (f64::from(n.pos.x - camp.x), f64::from(n.pos.z - camp.z));
+            n.pos.frame == camp.frame && (dx * dx + dz * dz).sqrt() <= range - 1.0
+        })
+        .map(|n| n.actor)
+        .collect()
+}
+
+/// MZB-36: the heir who saw the player kill the war chief feels it at the killing's base delta
+/// (-125), so the grudge it takes over is about 60 grievance (`heir_grudge_factor` 0.5 a point),
+/// not 2.5. And the villages that hate the camp hear of the rescue at the rescue's +25.
+#[test]
+fn a_chief_killed_counts_at_the_base_delta() {
+    let (mut r, band) = chief_in_a_fight(9);
+    let at = Tick::from_days(1) + 100;
+    let heir = r.c.factions[r.f as usize].heir;
+    let killing = |r: &Run| {
+        r.c.feud_view(synth::CAMP, r.p)
+            .unwrap()
+            .by_kind
+            .get("killing")
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let before = killing(&r);
+    // The villages that hate goblins within the news range, and what they feel before.
+    let haters: Vec<(ActorId, i8)> = haters_in_range(&r)
+        .into_iter()
+        .map(|a| (a, r.w.knowledge.sentiment(a, r.p, at)))
+        .collect();
+    assert!(
+        !haters.is_empty(),
+        "a village that hates goblins is in range"
+    );
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(
+        r.c.factions[r.f as usize].chief, heir,
+        "the heir takes over"
+    );
+    let felt = i32::from(r.w.knowledge.sentiment(heir, r.p, at));
+    assert!(
+        felt <= -100,
+        "the heir feels {felt} toward the chief's killer"
+    );
+    let grudge = killing(&r) - before;
+    assert!(
+        grudge >= 0.5 * 100.0 - 1.0,
+        "the heir's grudge adds {grudge:.1} killing grievance ({before:.1} before)"
+    );
+    for (va, was) in haters {
+        let now = r.w.knowledge.sentiment(va, r.p, at);
+        assert!(
+            i32::from(now) >= i32::from(was) + 20,
+            "a village that hates goblins thinks better of the rescuer: {was} to {now}"
+        );
+    }
+    assert_eq!(r.c.stats.routs, 1);
+}
+
+/// CL-D60 (K2-25: the villages witness "a rescue report"): one rout is one rescue report, however
+/// many hating villages are in range. Each of them witnesses it first-hand at the full +25; a
+/// village that does not hate goblins does not know it yet (it hears it later, as news). A report
+/// per witness made every village count one rout once per hating village.
+#[test]
+fn a_rout_is_one_rescue_report_that_every_hater_in_range_witnesses() {
+    let (mut r, band) = chief_in_a_fight(9);
+    let at = Tick::from_days(1) + 100;
+    let rescues = |r: &Run| -> Vec<rtsim_knowledge::ReportId> {
+        r.w.knowledge
+            .reports()
+            .iter()
+            .map(|(id, _)| id)
+            .filter(|id| {
+                r.w.knowledge
+                    .report(*id)
+                    .is_some_and(|x| x.kind == ReportKind::Rescue)
+            })
+            .collect()
+    };
+    assert!(rescues(&r).is_empty(), "no rescue before the rout");
+    let haters = haters_in_range(&r);
+    assert!(
+        haters.len() >= 2,
+        "several hating villages in range ({})",
+        haters.len()
+    );
+    let others: Vec<ActorId> =
+        r.w.nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Village(_)) && !haters.contains(&n.actor))
+            .map(|n| n.actor)
+            .collect();
+    assert!(!others.is_empty(), "a village that does not hate goblins");
+    let was: Vec<i8> = haters
+        .iter()
+        .map(|a| r.w.knowledge.sentiment(*a, r.p, at))
+        .collect();
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    let reps = rescues(&r);
+    assert_eq!(
+        reps.len(),
+        1,
+        "one rout, one rescue report ({} recorded)",
+        reps.len()
+    );
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!(rep.who, r.p, "the rescuer");
+    assert_eq!(
+        rep.whom,
+        ActorId::NULL,
+        "the band was after the rescuer himself, so it names no one rescued"
+    );
+    for (a, was) in haters.iter().zip(was) {
+        assert!(
+            r.w.knowledge.knows(*a, reps[0]),
+            "a hating village in range witnesses it"
+        );
+        let now = r.w.knowledge.sentiment(*a, r.p, at);
+        assert!(
+            i32::from(now) >= i32::from(was) + 20,
+            "first-hand, not hearsay: {was} to {now}"
+        );
+    }
+    for a in others {
+        assert!(
+            !r.w.knowledge.knows(a, reps[0]),
+            "a village that does not hate goblins only hears it later"
+        );
+    }
 }

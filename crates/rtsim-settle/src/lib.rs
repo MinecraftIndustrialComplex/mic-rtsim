@@ -55,14 +55,17 @@ pub enum NodeKind {
     /// A predator haven (C24): where raiders take what they steal, so stolen goods stay in the
     /// world's totals. Its culture decides what money its market keeps.
     Haven(Culture),
+    /// A camp that trades nothing (a Frostmaw's den, MOWZIE.md ledger 13): a world node with no
+    /// storehouse and no currency, so its market keeps no stock and no prices, as a player base's.
+    Lair,
 }
 
 impl NodeKind {
-    /// The culture whose currency the node's market keeps; `None` for player bases.
+    /// The culture whose currency the node's market keeps; `None` for player bases and lairs.
     pub const fn culture(self) -> Option<Culture> {
         match self {
             NodeKind::Village(c) | NodeKind::Haven(c) => Some(c),
-            NodeKind::PlayerBase { .. } => None,
+            NodeKind::PlayerBase { .. } | NodeKind::Lair => None,
         }
     }
 

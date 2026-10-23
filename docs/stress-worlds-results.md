@@ -1327,3 +1327,26 @@ Three things in 10.9's pairs came from the bench, not from the engine.
 | SG81 | The scene's `rescan` polls `rtsim district perf` until the detection is idle and counted one more, and keeps the engine's own work, ticks, phases and longest tick with the wall time, the game ticks and the `swticks` numbers of the span (`sw-result.json` `rescan`) | DS-16: the command returns when it has recorded the edit, so its wall time says nothing; the span's per-tick numbers are the detection's cost to the server |
 | SG82 | The scene key `unload_after_adopts` (game ticks, 8,000 in the generated scene) holds the unload until every arm has run that many ticks since its adopts, then takes a `verdicts` report; the generated scene also carries the `ticks` section of the 10.9 scene | 6,000 quiet ticks plus the recompile after the last late declaration; every arm waits by ticks so the pair stays level, and the off arm, which has no adopts, takes the same point |
 | SG83 | No full syn200 pair is run for these fixes | the brief: the pair is the main session's; a short smoke run only when `free -g` allows |
+
+#### The globals page (finding 3)
+
+The booked train legs were most of the globals page (about 45 to 50 bytes raw a departure, held a game
+day: 91, 383, 636 KB raw), which every save rewrote whole. They are now a table of their own
+(`persist::LEG_TABLE` 0x4904, ID10 in docs/choices-industry-dirty-pages.md), so a save writes only the
+leg pages a booking, a loot or an expiry changed. A format change with no migration, as before release.
+
+| # | Choice | Why |
+|---|---|---|
+| SG70 | Legs are paged by id, 256 to a page (`LEGS_PER_PAGE`), the page of a leg being its id divided by 256; each leg is stored with its dimension and the regions its line crosses | finding 3 (a), the recommended option, paged "by cell or by train" in the brief. Paging by id instead: legs are booked in id order and expire oldest first, so the pages that change are the newest (being filled) and the oldest (thinned by the daily expiry), and the rest are left alone. A cell or a train would put a leg in several pages, and a booking would write all of them |
+| SG71 | The cell lookup (`by_cell`) and the train lookup (`by_train`) are not saved: a restore rebuilds them from the legs in id order, through the insert a booking uses. The next leg id stays in the globals page | the lookups are a function of the legs, so one copy cannot disagree with the other (a unit test asserts a restored index equals the booked one, a seam line included). The counter outlives the legs it numbered, so a restore after an expiry does not reuse an id (tested) |
+| SG72 | A restore refuses a leg page that holds an id of another page, ids out of order, an id at or past the counter, or another magic (`ILEG`); a page with no leg is deleted, never written | a save writes and deletes a page at its own key only, as for a district page (ID8); an id past the counter would be reused by the next booking |
+| SG73 | The viewer's loader (`rtsim-view` `IndustryView::load`) reads the leg pages with the globals; the district inspector still restores from the globals, district and cluster pages alone, which restores the legs as none | the map draws the legs, and a district card does not need them |
+| SG74 | A booked leg lasts at most 30 days (`LEG_MAX_TICKS`) and never ends before it began: `book_on` clamps its ETA, and a restore refuses a leg outside that span | the review of the paging: a stalled train's ETA is distance over a near-zero speed (years), a booking indexes one entry per cell for every day of its span, and a corrupt page with an ETA of `u64::MAX` would have run a restore out of memory instead of returning an error (which starts industry afresh, W23). 30 days is far above any real leg; the clamp changes only the stalled train's window |
+| SG75 | The globals page starts with a magic, `IGB1`, as the district, glass and leg pages do | the page had none: a page of an older layout decoded three fields out of step and failed only where the types happened to clash, so "a save from before fails to decode" held by luck |
+
+Measured by `tests/leg_pages.rs` (`a_leg_page_is_under_a_hundred_bytes_a_leg`): a page of 256 legs of
+four carriages carrying two goods each, over a line of a few regions, is 15,466 bytes raw, 60 a leg
+(the cells included). 10.9 counted 45 to 50 bytes a departure for the whole globals page, so a page of
+256 legs is about 12 to 15 KB. At the 10.9 arms' 636 KB raw of legs, a save that books a few trains
+writes the page being filled, where it wrote the 636 KB. The quiet save (no booking) writes the globals
+page without the legs. Not measured on syn200: the full pair is not run (the brief).

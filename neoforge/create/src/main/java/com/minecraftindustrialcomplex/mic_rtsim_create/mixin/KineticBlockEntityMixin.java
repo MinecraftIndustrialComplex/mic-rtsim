@@ -2,9 +2,12 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.mixin;
 
 import com.minecraftindustrialcomplex.mic_rtsim_create.KineticJoin;
 import com.minecraftindustrialcomplex.mic_rtsim_create.KineticSyncPending;
+import com.minecraftindustrialcomplex.mic_rtsim_create.KineticUnlist;
 import com.minecraftindustrialcomplex.mic_rtsim_create.StaleKinetics;
 import com.simibubi.create.content.kinetics.KineticNetwork;
 import com.simibubi.create.content.kinetics.base.KineticBlockEntity;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
@@ -42,7 +45,11 @@ import java.util.Objects;
  * <p>A block entity that has not joined its network (its chunk is FULL and has not ticked) joins it as its
  * first tick would ({@link KineticJoin}, PATCHES.md row 58) wherever Create lists it again or takes it out
  * first: at {@code removeSource} and {@code setSpeed} (before the speed the join reads changes), at a
- * {@code setNetwork} to another network, at {@code remove} and at {@code clearKineticInformation}; a
+ * {@code setNetwork} to another network, at {@code remove}, at a server-side {@code read} (a {@code /data}
+ * merge, which reads the network back) and at {@code clearKineticInformation} elsewhere (a {@code setBlock}
+ * to a state not kinetically equivalent, outside Create's {@code switchToBlockState}: it forgets the
+ * network without taking the block entity out, so one the join listed leaves again at once,
+ * {@link KineticUnlist}, and one already a member stays, as in Create); a
  * generator also at {@code updateGeneratedRotation} ({@code GeneratingKineticBlockEntityMixin}), and a
  * powered shaft before its engine changes it ({@code PoweredShaftBlockEntityMixin}). A
  * re-sync's frontier reaches such block entities in every FULL chunk around, and Create's {@code add} would
@@ -78,17 +85,29 @@ public abstract class KineticBlockEntityMixin implements KineticSyncPending, Kin
 
     @Override
     public void mic_rtsim$join() {
+        mic_rtsim$joinListing();
+    }
+
+    /**
+     * {@link #mic_rtsim$join}; whether it listed this block entity (or will once a sync ends): it was not a
+     * member of its network before. False off the server, where nothing is listed.
+     */
+    @Unique
+    private boolean mic_rtsim$joinListing() {
         KineticBlockEntity self = (KineticBlockEntity) (Object) this;
         if (mic_rtsim$initialized || !(self.getLevel() instanceof ServerLevel))
-            return;
+            return false;
         mic_rtsim$initialized = true;
         if (network == null)
-            return;
+            return false;
         // KineticBlockEntity.initialize, less SmartBlockEntity's (its behaviours start at the first tick)
         KineticNetwork net = self.getOrCreateNetwork();
+        // a network with members was initialized from its first one
         if (!net.initialized)
             net.initFromTE(capacity, stress, networkSize);
+        boolean member = net.members.containsKey(self);
         net.addSilently(self, lastCapacityProvided, lastStressApplied);
+        return !member;
     }
 
     @Inject(method = "initialize", at = @At("HEAD"))
@@ -124,10 +143,21 @@ public abstract class KineticBlockEntityMixin implements KineticSyncPending, Kin
             mic_rtsim$join();
     }
 
+    @Inject(method = "read", at = @At("HEAD"))
+    private void mic_rtsim$joinBeforeRead(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket, CallbackInfo ci) {
+        // a read on a live block entity clears it, then reads its network back: it stays listed there
+        if (!clientPacket && !mic_rtsim$initialized && network != null)
+            mic_rtsim$join();
+    }
+
     @Inject(method = "clearKineticInformation", at = @At("HEAD"))
     private void mic_rtsim$joinBeforeClear(CallbackInfo ci) {
-        if (!mic_rtsim$initialized && network != null)
-            mic_rtsim$join();
+        // a setBlock to a state not kinetically equivalent (another axis, as /setblock gives it) clears it,
+        // and nothing reads the network back: its share leaves the unloaded share, and it leaves the network.
+        // Only a join that listed it unlists it: one already a member (listed by a generator's update) stays,
+        // as in Create, and off the server nothing joins
+        if (!mic_rtsim$initialized && network != null && mic_rtsim$joinListing())
+            ((KineticUnlist) ((KineticBlockEntity) (Object) this).getOrCreateNetwork()).mic_rtsim$unlist((KineticBlockEntity) (Object) this);
     }
 
     @Override
