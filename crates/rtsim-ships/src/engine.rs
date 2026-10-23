@@ -3347,16 +3347,20 @@ impl Ships {
                 items,
             )
             .text(|| format!("raids port village {key} from lane {lane}: {items} items"));
-        self.note(
-            at,
-            "port raid",
-            Some(s),
-            format!(
-                "raids port village {key} from lane {lane} (defence {def:.1} against {a:.1}): \
-                 {items} items for the haven, {:.2} men lost",
-                f64::from(lost) / 1000.0
-            ),
-        );
+        if self.log_enabled {
+            let stock: Amount = w.goods.ids().map(|g| m.stock(g)).sum();
+            self.note(
+                at,
+                "port raid",
+                Some(s),
+                format!(
+                    "raids port village {key} from lane {lane}: {items} of {} items there; \
+                     {:.2} men lost (defence {def:.1} against {a:.1})",
+                    stock / MILLI,
+                    f64::from(lost) / 1000.0
+                ),
+            );
+        }
         self.check_hold(w, s, at);
     }
 
