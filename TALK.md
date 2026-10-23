@@ -483,10 +483,12 @@ dragon (ref class 7). A closed port's villagers grumble about empty markets and 
 (`mood.port_closed`): its ships in view keep running with empty holds until out of sight, then lay
 up (the ports agent).
 
-**Who records them.** Slice 2 adds the kinds, their lines and the engine side. The conflict engine
-records 10 to 14 at its own sites (a rung climbed, a pact, a raid's outcome, a chief's death), as the
-CONFLICT-LIFE build lands them; until then today's Robbery by a camp and Killing of a chief already
-tell raids and deaths. The ports agent records 16 to 20.
+**Who records them** (main, 2026-10-22: no CONFLICT-LIFE builder is running). Slice 2 adds the
+kinds, their lines and the engine side, and also records them at the conflict engine's sites that
+exist today (TK26): Feud where FACTION_NOTICE fires today (a feud reaching a rung), Raid at a raid's
+and a skirmish's resolution, Fell at a chief's or champion's death. PactSworn and PactBroken (11, 12)
+stay unrecorded until alliances are built in the game (they are designed and measured in the model
+only). The ports agent records 16 to 20.
 
 ---
 

@@ -30,3 +30,4 @@ questions are TQ-1 to TQ-3 in TALK.md §13; each is built on its recommended ans
 | TK23 | The envoy says the same line each time until its demand is settled, then a settled line | it is one line (CL-1), the demand's own words |
 | TK24 | M3's `ConflictNews.post` hook is not needed by TALK | news is reports on the engine's boards; Java reads them through TALK_FACTS when asked |
 | TK25 | The ribbit credit and the villager cap share one saved attachment, `mic_rtsim:talk_days` (player to the last day credited, at most 16 players) | the `mic_rtsim:gossip_ops` precedent; NeoForge drops it when rtsim is removed (UR-1) |
+| TK26 | Slice 2 records Feud (10) where FACTION_NOTICE fires today, Raid (13) at a raid's and a skirmish's resolution and Fell (14) at a chief's or champion's death; PactSworn and PactBroken (11, 12) stay unrecorded until alliances are built | no CONFLICT-LIFE builder is running (main, 2026-10-22); alliances exist only in the model |
