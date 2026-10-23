@@ -356,12 +356,13 @@ pub struct SaveTicket {
     districts: Vec<DistrictId>,
     glass: Vec<DistrictId>,
     clusters: Vec<(u64, RegionId<Cluster>)>,
+    legs: Vec<u64>,
 }
 
 impl SaveTicket {
     /// Pages the save wrote or deleted, the globals page not counted.
     pub fn len(&self) -> usize {
-        self.districts.len() + self.glass.len() + self.clusters.len()
+        self.districts.len() + self.glass.len() + self.clusters.len() + self.legs.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -4201,8 +4202,8 @@ mod persist_impls {
 
     use super::*;
     use crate::persist::{
-        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, Persist, from_bytes,
-        persist_struct, to_bytes,
+        CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist,
+        from_bytes, persist_struct, to_bytes,
     };
 
     persist_struct!(LineEdge {
@@ -4284,7 +4285,7 @@ mod persist_impls {
         e.lines.put(w);
         e.last_departure.put(w);
         e.arrivals.put(w);
-        e.legs.put(w);
+        e.legs.next_id().put(w);
         e.legs_swept.put(w);
         e.sinks_of.put(w);
         e.conditions.put(w);
@@ -4328,6 +4329,10 @@ mod persist_impls {
         PageKey::new(GLASS_TABLE, key48(id.0, "district"))
     }
 
+    fn leg_key(page: u64) -> PageKey {
+        PageKey::new(LEG_TABLE, key48(page, "leg page"))
+    }
+
     fn cluster_page(region: &rtsim_kernel::lazy::Region<Cluster>) -> (PageKey, Vec<u8>) {
         let mut w = Writer::new();
         region.cell().model().put(&mut w);
@@ -4346,7 +4351,10 @@ mod persist_impls {
         /// is the whole state, for a fresh store, tests and state hashes.
         pub fn snapshot(&self) -> Vec<(PageKey, Vec<u8>)> {
             let mut out = Vec::with_capacity(
-                1 + self.districts.len() + self.clusters.len() + self.glass.districts.len(),
+                1 + self.districts.len()
+                    + self.clusters.len()
+                    + self.glass.districts.len()
+                    + self.legs.len() / 128,
             );
             out.push(globals_page(self));
             for (id, d) in self.districts.iter() {
@@ -4357,6 +4365,9 @@ mod persist_impls {
             }
             for (id, dg) in self.glass.districts.iter() {
                 out.push((glass_key(*id), crate::glass::page::district_page(dg)));
+            }
+            for (page, bytes) in self.legs.pages() {
+                out.push((leg_key(page), bytes));
             }
             out
         }
@@ -4390,6 +4401,13 @@ mod persist_impls {
                     None => delete.push(glass_key(id)),
                 }
                 ticket.glass.push(id);
+            }
+            for page in self.legs.take_changed() {
+                match self.legs.page_bytes(page) {
+                    Some(b) => put.push((leg_key(page), b)),
+                    None => delete.push(leg_key(page)),
+                }
+                ticket.legs.push(page);
             }
             if self.page_check.is_some() {
                 self.check_pages(&put, &delete);
@@ -4429,6 +4447,9 @@ mod persist_impls {
             for (key, h) in t.clusters {
                 self.clusters.mark(key, h);
             }
+            for page in t.legs {
+                self.legs.mark(page);
+            }
         }
 
         /// Pages changed since the last save, waiting for the next one (the globals page not
@@ -4437,6 +4458,7 @@ mod persist_impls {
             self.districts.changed().len()
                 + self.clusters.changed().len()
                 + self.glass.districts.changed().len()
+                + self.legs.changed().len()
         }
 
         /// What the page check found, if it is on (ID5).
@@ -4506,6 +4528,7 @@ mod persist_impls {
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
             let mut glass = BTreeMap::new();
+            let mut leg_pages = Vec::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
             let mut hashes = page_check_on().then(BTreeMap::new);
@@ -4513,7 +4536,7 @@ mod persist_impls {
                 if let Some(h) = hashes.as_mut()
                     && matches!(
                         k.table(),
-                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE
+                        GLOBAL_TABLE | DISTRICT_TABLE | CLUSTER_TABLE | GLASS_TABLE | LEG_TABLE
                     )
                 {
                     h.insert(k, page_hash(&bytes));
@@ -4545,6 +4568,7 @@ mod persist_impls {
                         let dg = crate::glass::page::read_district_page(&bytes)?;
                         glass.insert(DistrictId(k.id()), dg);
                     }
+                    LEG_TABLE => leg_pages.push((k.id(), bytes)),
                     _ => {}
                 }
             }
@@ -4558,7 +4582,7 @@ mod persist_impls {
             e.lines = Persist::get(&mut r)?;
             e.last_departure = Persist::get(&mut r)?;
             e.arrivals = Persist::get(&mut r)?;
-            e.legs = Persist::get(&mut r)?;
+            let legs_next = u64::get(&mut r)?;
             e.legs_swept = Persist::get(&mut r)?;
             e.sinks_of = Persist::get(&mut r)?;
             e.conditions = Persist::get(&mut r)?;
@@ -4579,6 +4603,7 @@ mod persist_impls {
             e.glass.records = Persist::get(&mut r)?;
             e.glass.stats = Persist::get(&mut r)?;
             r.finish()?;
+            e.legs = LegIndex::from_pages(legs_next, leg_pages)?;
             e.glass.districts = Tracked::restored(glass);
             e.districts = Tracked::restored(districts);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
