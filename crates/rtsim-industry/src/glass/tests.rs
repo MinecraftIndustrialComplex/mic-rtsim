@@ -5995,6 +5995,140 @@ mod replay_path {
             e.check_books().expect("books");
         }
 
+        /// The district's last pass as if it learned `rate` per tick of `good` in inventory `inv`
+        /// that the model does not predict: an unbounded good, so a residual (G-B13).
+        fn passed_with_residual(e: &mut Engine, inv: u32, good: Good, rate: f64) {
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            let g = crate::glass::check::GoodResult {
+                good,
+                class: class::UNBOUNDED,
+                why: (0, 0),
+                in_l: 0.0,
+                in_u: 0.0,
+                out_l: 0.0,
+                out_u: 0.0,
+                predicted: 0.0,
+                lo: 0.0,
+                hi: 0.0,
+                measured: rate,
+                sigma: 0.0,
+                q: 1.0,
+                verdict: verdict::PASS,
+                samples: 3,
+            };
+            c.passed = Some(WindowResult {
+                start: Tick(0),
+                ticks: 2000,
+                verdict: verdict::PASS,
+                goods: vec![g],
+                stores: vec![(inv, good, rate, 0.0)],
+            });
+            c.edited = false;
+        }
+
+        /// The residual learned from the district's last pass books only into the stores of units
+        /// that replay (choice SC68): a gated unit's stores are pools only replaying neighbours
+        /// touch, so a learned source there would make goods from nothing and a learned drain
+        /// would lose them. The same residual into a store of the unit that replays is booked.
+        #[test]
+        fn a_gated_units_stores_take_no_residual() {
+            for (inv, good, rate, gated) in [
+                (3, CRUSHED, 0.05, true),
+                (2, ORE, -0.05, true),
+                (1, SHEET, 0.05, false),
+            ] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+                passed_with_residual(&mut e, inv, good, rate);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(201));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert!(rp.gated()[p1 as usize] && !rp.gated()[p0 as usize]);
+                assert_eq!(rp.learned_sources(), u32::from(!gated && rate > 0.0));
+                e.advance_to(Tick(3200));
+                let st = e.sim_stock(D).expect("replaying");
+                let d = back(&mut e, 3200, &[0, 40]);
+                e.check_books().expect("books");
+                assert_eq!(
+                    (st.get(ORE), st.get(CRUSHED)),
+                    (1000, 0),
+                    "B's stores keep what they hold: {st:?} {d:?}"
+                );
+                let sheets = st.get(SHEET);
+                if gated {
+                    assert!((298..=300).contains(&sheets), "{st:?}");
+                } else {
+                    assert!(sheets > 400, "the residual books into A's store: {st:?}");
+                }
+            }
+        }
+
+        /// A recompile that keeps every unit (Java recompiles after each edit) starts the replay
+        /// again on the new compile: a replay of the old one stops at its next step, so with no
+        /// new start a bound or a timer would never be acted on and the part would stall while it
+        /// still reported GLASS. B's line here: a consumer burns its crushed ore into coal, and a
+        /// threshold switch on the crushed ore stops B's press at 100 and restarts it at 20.
+        #[test]
+        fn a_recompile_that_keeps_the_units_restarts_the_replay() {
+            let mut got = Vec::new();
+            for recompile in [false, true] {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let coal = b.store(4);
+                let burn = b.recipe(&[(CRUSHED, 1)], &[(COAL, 1)]);
+                let m = b.machine(model::PRESS, burn, 1, 20);
+                b.edge(3, m);
+                b.edge(m, coal);
+                let ctl = b.node(NodeKind::Controller, model::THRESHOLD_SWITCH, 0, Vec::new());
+                b.nodes[ctl as usize].params = [100, 20, 0, 80];
+                b.edge_k(EdgeKind::Observe, 3, ctl, &[]);
+                let ce = b.edge_k(EdgeKind::Control, ctl, p1, &[]);
+                b.edges[ce as usize].param = CONTROL_STOP_WHEN_ON;
+                for (v, x) in [(m, 43), (coal, 44), (ctl, 45)] {
+                    b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+                }
+                let mut invs = lines(1000, (ORE, 100_000));
+                invs.push(inv_at(44, &[]));
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                judge(
+                    &mut e,
+                    &[(p0, verdict::PASS), (p1, verdict::PASS), (m, verdict::PASS)],
+                );
+                let loaded = Obs::ChunkLoaded {
+                    district: D,
+                    chunk: chunk(0),
+                    applied_epoch: 0,
+                };
+                feed(&mut e, &at(200, loaded));
+                feed(&mut e, &load_state(200, LoadState::Partial));
+                e.advance_to(Tick(500));
+                if recompile {
+                    for r in b.records(2) {
+                        feed(&mut e, &at(500, Obs::Glass(r)));
+                    }
+                    let c = comp(&e.glass, D);
+                    assert!(c.graph.end.compile == 2 && c.replayable());
+                }
+                e.advance_to(Tick(20_200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                assert_eq!(replay(&e).compile(), if recompile { 2 } else { 1 });
+                let st = e.sim_stock(D).expect("replaying");
+                got.push((recompile, st.get(CRUSHED), st.get(COAL)));
+            }
+            for &(recompile, crushed, coal) in &got {
+                assert!(
+                    coal > 900 && crushed <= 100,
+                    "recompile {recompile}: the line runs under its switch: {got:?}"
+                );
+            }
+        }
+
         /// No unit may replay: the district freezes while away (staleness did it, I5), with no
         /// replay and no black box. One unit that may is enough for the glass (§3.5).
         #[test]

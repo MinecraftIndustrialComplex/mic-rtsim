@@ -510,7 +510,7 @@ impl Replay {
         let replays = comp.units_replaying();
         let on: Vec<bool> = replays.iter().zip(frozen).map(|(&r, &f)| r && !f).collect();
         whole.gated = gate_of(comp, &whole.sim, &whole.unit_of, &on);
-        whole.residual(comp, tun);
+        whole.residual(comp, tun, &on);
         let mut parts = Vec::new();
         // A part runs apart only where nothing couples it to another: no cut (the live side's
         // supply is one pool) and no residual (learned from the whole).
@@ -621,14 +621,18 @@ impl Replay {
         })
     }
 
-    /// Sets every part's gates from the units replaying now; returns the parts whose own nodes'
-    /// gates changed (another part's nodes never run in a part's process).
-    fn set_gates(&mut self, comp: &Compiled) -> Vec<usize> {
+    /// Sets every part's gates and residual from the units replaying now; returns the parts whose
+    /// own nodes' gates or whose residual changed (another part's nodes never run in a part's
+    /// process).
+    fn set_gates(&mut self, comp: &Compiled, tun: &GlassTunables) -> Vec<usize> {
+        let on = self.on();
         let p = &self.parts[0];
-        let gate = gate_of(comp, &p.sim, &p.unit_of, &self.on());
+        let gate = gate_of(comp, &p.sim, &p.unit_of, &on);
         let mut changed = Vec::new();
         for (i, p) in self.parts.iter_mut().enumerate() {
-            if (0..gate.len()).any(|v| p.mine[v] && p.gated[v] != gate[v]) {
+            let before = std::mem::take(&mut p.residual);
+            p.residual(comp, tun, &on);
+            if p.residual != before || (0..gate.len()).any(|v| p.mine[v] && p.gated[v] != gate[v]) {
                 changed.push(i);
             }
             p.gated.clone_from(&gate);
@@ -657,7 +661,7 @@ impl Replay {
             if !self.freeze_for(i, f, comp) {
                 return Err(f);
             }
-            pending.extend(self.set_gates(comp));
+            pending.extend(self.set_gates(comp, tun));
             pending.insert(i);
             let mut failed = None;
             while let Some(j) = pending.pop_first() {
@@ -696,9 +700,14 @@ impl Replay {
         &self.parts[0].gated
     }
 
-    /// Does the replay gate its units as `comp` would start one now: the same units, the same
-    /// ones allowed? A unit that went stale, failed, or was cut anew needs a new start.
+    /// Does the replay gate its units as `comp` would start one now: the same compile, the same
+    /// units, the same ones allowed? A unit that went stale, failed, or was cut anew needs a new
+    /// start, and so does a new compile that kept every unit: a replay of the old one stops at its
+    /// next step (`glass_step`), so going on with it would stall its bounds and timers.
     pub fn same_units(&self, comp: &Compiled) -> bool {
+        if self.compile() != comp.graph.end.compile {
+            return false;
+        }
         let p = &self.parts[0];
         let unit_of: &[u16] = if comp.unit_state.is_empty() {
             &[]
@@ -1566,13 +1575,24 @@ impl Part {
     }
 
     /// The residual node from the passing window (G-B13, §5.1): per good, what the model misses,
-    /// shaded by the checksum's z, split over the covered stores by their own slopes.
-    fn residual(&mut self, comp: &Compiled, tun: &GlassTunables) {
+    /// shaded by the checksum's z, split over the covered stores by their own slopes. A store of a
+    /// unit that is not on (`on`, per unit) takes no share: its unit does not run, and its stores
+    /// are pools only replaying neighbours touch (SECTIONS.md §3.5, choice SC68). Shares are
+    /// weighed over every store, so a gated unit's share is dropped, not given to the others.
+    fn residual(&mut self, comp: &Compiled, tun: &GlassTunables, on: &[bool]) {
         self.residual.clear();
         self.learned_sources = 0;
         let Some(win) = comp.passed.as_ref() else {
             return;
         };
+        let unit_inv = &self.unit_inv;
+        let gated_store = |inv: u32| {
+            unit_inv
+                .get(&inv)
+                .is_some_and(|&u| !on.get(u as usize).copied().unwrap_or(false))
+        };
+        let mut residual: BTreeMap<PoolKey, i64> = BTreeMap::new();
+        let mut learned = 0;
         let d = self.d;
         let z = tun.checksum_z;
         for gr in &win.goods {
@@ -1624,21 +1644,25 @@ impl Part {
             if cands.is_empty() || total <= 0.0 {
                 continue;
             }
+            let mut booked = false;
             for (i, w) in cands {
+                if gated_store(i) {
+                    continue;
+                }
                 let x = r * w / total;
                 // Floor: a rise rounds down, a fall away from zero (never above).
                 let f = (x * FIXED_ONE as f64).floor() as i64;
                 if f != 0 {
-                    *self
-                        .residual
-                        .entry(PoolKey::Store(d, i, gr.good))
-                        .or_default() += f;
+                    *residual.entry(PoolKey::Store(d, i, gr.good)).or_default() += f;
+                    booked = true;
                 }
             }
-            if r > 0.0 && s > 0.0 {
-                self.learned_sources += 1;
+            if booked && r > 0.0 && s > 0.0 {
+                learned += 1;
             }
         }
+        self.residual = residual;
+        self.learned_sources = learned;
     }
 
     /// The residual runs while the factory is as the window saw it: every store it drains holds
