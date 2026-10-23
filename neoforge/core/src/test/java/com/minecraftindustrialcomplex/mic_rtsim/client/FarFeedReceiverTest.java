@@ -478,4 +478,34 @@ class FarFeedReceiverTest {
         double dx = (s[0] + s[3]) / 2.0 - 100.5, dz = (s[2] + s[5]) / 2.0 - 0.5;
         assertEquals(30.0, Math.sqrt(dx * dx + dz * dz), 1e-6, "on the circle once joined");
     }
+
+    @Test
+    void aMoverCarriesItsShapeAndKeepsItsBodysAgeOnItsLeg() {
+        long g0 = 5_000;
+        int fly = FarState.FLY.wire;
+        send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566, 0L, 60),
+                FarWire.Sample.of(0, fly, new double[]{103.5, 100, 0.5, 102.5, 100, 0.5}));
+        assertEquals(60, mover().age());
+        assertEquals(0L, mover().shape());
+        // Handed back to the engine's leg, which does not know the age: the body's stays
+        send(0, g0 + 20, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 3, 0x445566, 0L, -1),
+                new FarWire.Leg(0, fly, 100, 120, 0, 400, 0, g0 + 20, g0 + 300, 0));
+        assertEquals(60, mover().age());
+        // The leg grows a stage: the body's age is outgrown
+        send(0, g0 + 30, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 4, 0x445566, 0L, -1));
+        assertEquals(-1, mover().age());
+        assertEquals(4, mover().size());
+        // Gone, then the same id again: a fresh object, which knows only what its new INTRO says
+        send(0, g0 + 32, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 4, 0x445566, 0L, 80));
+        assertEquals(80, mover().age());
+        send(0, g0 + 34, new FarWire.Gone(0));
+        send(0, g0 + 36, new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 2, 1, 4, 0x445566, 0L, -1),
+                new FarWire.Leg(0, fly, 100, 120, 0, 400, 0, g0 + 36, g0 + 300, 0));
+        assertEquals(-1, mover().age());
+        // Another object on the handle starts from what its own INTRO says
+        send(0, g0 + 40, new FarWire.Intro(0, ID + 1, FarKind.CARRIAGE.wire, 0, 0, 0, 0x3A3B3F, 0x1234_5678_9ABC_DEF0L, -1),
+                FarWire.Sample.of(0, FarState.MOVING.wire, new double[]{10, 64, 0, 4, 64, 0}));
+        assertEquals(-1, mover().age());
+        assertEquals(0x1234_5678_9ABC_DEF0L, mover().shape());
+    }
 }
