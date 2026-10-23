@@ -123,10 +123,11 @@ public final class ConflictGameTests {
      * rejected; each stack is pending and is tested only when its place moves into other chunks or a
      * chunk it waits on changes (counted: idle ticks test nothing). Each stack straddles a chunk edge,
      * and is placed the tick its last chunk ticks entities, not before; the other stack, whose chunks did
-     * not change, is not tested. A member moved out of the ticking area takes its stack back to pending,
-     * and it comes again at once while its place ticks; a stack whose chunk stops ticking goes back to
-     * pending, and the other stays. A recall reports every living member, placed or pending, as a
-     * survivor.
+     * not change, is not tested. A member moved out of the ticking area while its place still ticks is
+     * moved back, the same body, and its stack stays placed (MZB-125); a stack whose chunk stops ticking
+     * goes back to pending, and the other stays; once its chunk ticks again it comes back, but not before
+     * {@link ConflictBridge#REQUEUE_COOLDOWN} ticks. A recall reports every living member, placed or
+     * pending, as a survivor. Chunks an earlier failed run left forced in the far area are released first.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "conflict_stacks")
     public static void aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange(GameTestHelper helper) {
@@ -146,20 +147,24 @@ public final class ConflictGameTests {
         band.targetX = bx + 1000;
         band.targetZ = bz + 16;
         band.speed = 0f;
+        int released = ConflictKit.releaseFarChunks(level);
         List<Long> forced = new ArrayList<>();
         Runnable unforce = () -> {
             for (long c : forced)
                 ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
             forced.clear();
         };
+        ConflictKit.onEnd(helper, unforce);
         java.util.function.BiConsumer<Integer, Integer> force = (cx, cz) -> {
             if (ConflictKit.force(level, cx, cz, true))
                 forced.add(chunk(cx, cz));
         };
         int[] tests = new int[2], moves = new int[2];
         long[] arrive = {0};
-        long[] requeued = {0};
+        long[] requeued = {0}, strays = {0}, pendingAt = {0};
         ConflictBridge.Stack[] st = new ConflictBridge.Stack[2];
+        Mob[] out = new Mob[1];
+        record(test, "released", released + " chunks an earlier run left forced");
 
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.materialize(band, List.of(
@@ -251,20 +256,20 @@ public final class ConflictGameTests {
                     check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
                     record(test, "placed", "stack 0 when chunk (" + (k - 1) + ", " + z0 + ") ticked, stack 1 when ("
                             + (k - 1) + ", " + (z0 + 1) + ") did; tests " + st[0].tests() + ", " + st[1].tests());
-                    // A member walks out (moved into chunk k - 2, loaded but not ticking entities).
+                    // A member strays (moved into chunk k - 2, loaded but not ticking entities) while its place ticks.
                     requeued[0] = bridge().requeued;
-                    Mob out = st[0].bodies().get(0);
-                    out.moveTo(bx - 19.5, out.getY(), out.getZ());
+                    strays[0] = bridge().strays;
+                    out[0] = st[0].bodies().get(0);
+                    out[0].moveTo(bx - 19.5, out[0].getY(), out[0].getZ());
                 })
-                .thenWaitUntil(() -> {
-                    check("stack 0 placed again", st[0].placings() == 2 && st[0].state() == ConflictBridge.StackState.PLACED
-                            && st[0].bodies().size() == 4);
-                    pin(st[0]);
-                })
+                .thenWaitUntil(() -> check("the stray moved back", bridge().strays > strays[0]))
                 .thenExecute(() -> {
-                    check("requeued once", bridge().requeued == requeued[0] + 1);
-                    for (Mob m : st[0].bodies())
-                        check("all of it in the ticking chunks", m.getX() > bx - 16);
+                    record(test, "stray", "moved back to (" + out[0].getX() + ", " + out[0].getZ() + ")");
+                    check("once (" + (bridge().strays - strays[0]) + ")", bridge().strays == strays[0] + 1);
+                    check("into the ticking chunks", out[0].getX() > bx - 16 && !out[0].isRemoved());
+                    check("the same body", st[0].bodies().contains(out[0]) && st[0].bodies().size() == 4);
+                    check("stack 0 stayed placed, not requeued", st[0].state() == ConflictBridge.StackState.PLACED
+                            && st[0].placings() == 1 && bridge().requeued == requeued[0]);
                     check("stack 1 stayed in", st[1].state() == ConflictBridge.StackState.PLACED && st[1].placings() == 1);
                     // Its rear chunk stops ticking entities: stack 1 goes back to pending.
                     ConflictKit.force(level, k - 1, z0 + 1, false);
@@ -272,8 +277,24 @@ public final class ConflictGameTests {
                 })
                 .thenWaitUntil(io(() -> check("stack 1 pending again", st[1].state() == ConflictBridge.StackState.PENDING)))
                 .thenExecute(() -> {
+                    pendingAt[0] = level.getGameTime();
+                    check("requeued once", bridge().requeued == requeued[0] + 1);
                     check("its bodies are gone", st[1].bodies().isEmpty());
-                    check("stack 0 stayed in", st[0].state() == ConflictBridge.StackState.PLACED && st[0].placings() == 2);
+                    check("stack 0 stayed in", st[0].state() == ConflictBridge.StackState.PLACED && st[0].placings() == 1);
+                    // The chunk ticks again at once; the stack waits out its cooldown.
+                    force.accept(k - 1, z0 + 1);
+                })
+                .thenWaitUntil(io(() -> check("its chunk ticks again", RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
+                .thenIdle(ConflictBridge.REQUEUE_COOLDOWN / 2)
+                .thenExecute(() -> check("not back within the cooldown", st[1].state() == ConflictBridge.StackState.PENDING
+                        && st[1].placings() == 1))
+                .thenWaitUntil(() -> check("stack 1 placed again", st[1].state() == ConflictBridge.StackState.PLACED))
+                .thenExecute(() -> {
+                    long after = level.getGameTime() - pendingAt[0];
+                    pin(st[1]);
+                    record(test, "requeued", "stack 1 back " + after + " ticks after it went (cooldown " + ConflictBridge.REQUEUE_COOLDOWN + ")");
+                    check("after the cooldown (" + after + ")", after >= ConflictBridge.REQUEUE_COOLDOWN - 1);
+                    check("placed twice, all of it", st[1].placings() == 2 && st[1].bodies().size() == 4);
                     ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, bx - 200, bz + 16);
                 })
                 .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
@@ -332,6 +353,10 @@ public final class ConflictGameTests {
         band.flags = ConflictRecords.Materialize.FLAG_HOSTILE | ConflictRecords.Materialize.FLAG_CHIEF;
         ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 3, true), new ConflictKit.StackSpec(ARCHER, 3, false)));
         ServerPlayer[] player = new ServerPlayer[1];
+        ConflictKit.onEnd(helper, () -> {
+            if (player[0] != null)
+                FakePlayers.remove(player[0]);
+        });
         ConflictBridge.Stack[] st = new ConflictBridge.Stack[2];
         Mob[] strayed = new Mob[1];
         long[] arrive = {0};
@@ -482,46 +507,105 @@ public final class ConflictGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A chief-flagged stack with no units left (the engine's band lost them, its war chief still walks) is
+     * the chief alone: a stack of one body, placed and counted in BAND_MATERIALIZED, where the chief once
+     * got no body at all. The stack after it keeps its own index and members, and a recall reports them
+     * as survivors, never the chief.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_chief", skyAccess = true)
+    public static void aChiefWhoseStackHasNoUnitsLeftStillComes(GameTestHelper helper) {
+        String test = "aChiefWhoseStackHasNoUnitsLeftStillComes";
+        Vec3 c = RtsimTests.centre(helper);
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), RtsimTests.dimension(helper));
+        band.arcX = c.x + 0.5;
+        band.arcZ = c.z;
+        band.targetX = c.x + 100;
+        band.targetY = c.y;
+        band.targetZ = c.z;
+        band.speed = 0f;
+        band.flags = ConflictRecords.Materialize.FLAG_HOSTILE | ConflictRecords.Materialize.FLAG_CHIEF;
+        ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(ARCHER, 2, false), new ConflictKit.StackSpec(WARRIOR, 0, true)));
+        helper.startSequence()
+                .thenWaitUntil(() -> check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    ConflictBridge.Party p = party(agent);
+                    ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
+                    record(test, "materialized", m.aux() + " bodies in " + p.stacks().size() + " stacks");
+                    check("two stacks (" + p.stacks().size() + ")", p.stacks().size() == 2);
+                    ConflictBridge.Stack archers = p.stacks().get(0), chief = p.stacks().get(1);
+                    check("the archers first, two of them", archers.slots().size() == 2 && !archers.slots().get(0).chief
+                            && archers.state() == ConflictBridge.StackState.PLACED && archers.bodies().size() == 2);
+                    check("then the chief alone", chief.slots().size() == 1 && chief.slots().get(0).chief);
+                    check("placed, with a body", chief.state() == ConflictBridge.StackState.PLACED && chief.bodies().size() == 1
+                            && chief.bodies().get(0).getType() == EntityType.VINDICATOR && RtsimApi.isPuppet(chief.bodies().get(0)));
+                    check("every body counted, the chief too (" + m.aux() + ")", m.aux() == 3);
+                    check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+                    ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 1, c.x - 100, c.z);
+                })
+                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty()))
+                .thenExecute(() -> {
+                    Map<String, Integer> s = ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, agent).get(0));
+                    record(test, "recalled", "survivors " + s);
+                    check("the archers, never the chief: " + s, s.equals(Map.of(ARCHER, 2)));
+                    check("the party is gone", bridge().party(agent) == null);
+                })
+                .thenSucceed();
+    }
+
     // ---- test 14: the envoy ----------------------------------------------------------------------
 
     /**
-     * Test 14 (MOWZIE.md §8, §4.5): an envoy party is one group, its envoy named with its demand (MZB-101).
-     * While the demand is open nothing targets the party and it targets nothing: an iron golem's
-     * target and a guard's are refused, and a golem's blow, an arrow with no owner (the stand-in for a
-     * Create Big Cannons shell) and a skeleton's arrow do no damage. The player it came to pays part of
-     * the tribute by right-clicking the envoy (TRIBUTE_PAID with a Java op id; the name counts down).
-     * Crouching with an empty hand talks (TALK): the envoy says its reason, what is still owed and the
-     * deadline, and a guard warns with the reason (MZB-121, MZB-124); neither is a refusal. A plain click
-     * with an empty hand refuses (ENVOY_ANSWER 2, once; MZB-110, MZB-122). A player's arrow hurts a
-     * guard and is an insult (ENVOY_ANSWER 3, once): the guard is lifted. Another envoy party killed by
-     * {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES with no killer. DEMAND_SETTLED takes the
-     * name away, and the envoy then says the settlement. A recall keeps the bodies while a player sees
-     * them, until its timeout. (DEMAND_SETTLED 5 for the killed party is the engine's, M1.)
+     * Test 14 (MOWZIE.md §8, §4.5): an envoy party is one group, its envoy named "<Culture> Envoy" and no
+     * more (MZB-101: its demand is said only to the player who clicks). While the demand is open nothing
+     * targets the party and it targets nothing: an iron golem's target and a guard's are refused, and a
+     * golem's blow, an arrow with no owner (the stand-in for a Create Big Cannons shell) and a skeleton's
+     * arrow do no damage. No click refuses (MZB-110, MZB-122). A click holding something else is an
+     * ordinary click. The player it came to pays by clicking with the good in either hand (TRIBUTE_PAID with
+     * a Java op id each): from the off hand when the main hand is empty, and through vanilla's off-hand
+     * click when the main hand holds something else; the envoy says what is still owed, and the off-hand
+     * click after an answered main-hand click does nothing. A plain click with empty hands shows the
+     * demand (the same line as talk, to that player only); crouching with an empty hand talks (TALK): the
+     * reason, what is still owed and the deadline; a guard warns with the reason (MZB-121, MZB-124). A
+     * settlers' envoy only shows its demand: it takes nothing from a player. Past its deadline an envoy
+     * takes nothing and says so. A player's arrow hurts a guard and is an insult (ENVOY_ANSWER 3, once):
+     * the guard is lifted, and the struck envoy takes nothing and says so. ENVOY_ANSWER 2 is never sent.
+     * Another envoy party killed by {@code /kill} sends no ENVOY_ANSWER, only BAND_CASUALTIES with no
+     * killer. DEMAND_SETTLED takes the name away, and the envoy then takes nothing and says the
+     * settlement. A recall keeps the bodies while a player sees them, until its timeout. (DEMAND_SETTLED 5
+     * for the killed party is the engine's, M1.)
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1500, batch = "conflict_envoy", skyAccess = true)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "conflict_envoy", skyAccess = true)
     public static void anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment(GameTestHelper helper) {
         String test = "anEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment";
         ServerLevel level = helper.getLevel();
         String dim = RtsimTests.dimension(helper);
         Vec3 c = RtsimTests.centre(helper);
-        long a = ConflictKit.newAgent(), b = ConflictKit.newAgent();
+        long a = ConflictKit.newAgent(), b = ConflictKit.newAgent(), late = ConflictKit.newAgent();
         long faction = ConflictKit.newFaction();
         FakePlayers.Hearer player = FakePlayers.hearing(level, c.add(3, 0, 0), "conflict_envoy_target");
+        ConflictKit.onEnd(helper, () -> FakePlayers.remove(player));
         int demand = ConflictRecords.Envoy.DEMAND_TRIBUTE | ConflictRecords.Envoy.DEMAND_STOP;
-        long deadline = level.getGameTime() + 24_000;
+        long deadline = level.getGameTime() + 24_000, lateDeadline = level.getGameTime() + 200;
         ConflictKit.envoy(a, 1, faction, dim, c.x - 1.5, c.y, c.z, player.getUUID(), demand, ConflictRecords.SIGNAL_MINING,
-                "minecraft:emerald", 5, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1), new ConflictKit.MemberSpec(WARRIOR, 2)));
+                "minecraft:emerald", 6, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1), new ConflictKit.MemberSpec(WARRIOR, 2)));
         ConflictKit.envoy(b, 1, faction, dim, c.x + 1.0, c.y, c.z - 3.5, null, ConflictRecords.Envoy.DEMAND_TRIBUTE, 0,
                 "minecraft:emerald", 1, deadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
-        Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1];
+        // Party "late": the player's, with a deadline that passes during the test.
+        ConflictKit.envoy(late, 1, faction, dim, c.x - 2.5, c.y, c.z - 3.5, player.getUUID(), ConflictRecords.Envoy.DEMAND_TRIBUTE,
+                ConflictRecords.SIGNAL_MINING, "minecraft:emerald", 2, lateDeadline, List.of(new ConflictKit.MemberSpec(EMISSARY, 1)));
+        Mob[] envoy = new Mob[1], guard = new Mob[1], envoyB = new Mob[1], envoyLate = new Mob[1];
         IronGolem[] golem = new IronGolem[1];
-        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, talkedAt = {0};
+        long[] blockedHits = {0}, blockedTargets = {0}, recalledAt = {0}, saidA = {0};
         float[] health = {0};
+        java.util.function.BooleanSupplier aMayTalk = () -> level.getGameTime() - saidA[0] >= RateLimit.PAIR;
 
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     check("party A placed", party(a).stacks().size() == 1 && party(a).stacks().get(0).bodies().size() == 3);
                     check("party B placed", party(b).stacks().size() == 1 && party(b).stacks().get(0).bodies().size() == 1);
+                    check("the late party placed", party(late).stacks().size() == 1 && party(late).stacks().get(0).bodies().size() == 1);
                     // Journaled at the placing; it reaches received() at the next hand-over.
                     check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, a).isEmpty());
                 })
@@ -535,12 +619,14 @@ public final class ConflictGameTests {
                             guard[0] = sl.entity();
                     }
                     envoyB[0] = party(b).stacks().get(0).bodies().get(0);
+                    envoyLate[0] = party(late).stacks().get(0).bodies().get(0);
                     check("the envoy is a pillager, its guards vindicators", envoy[0].getType() == EntityType.PILLAGER
                             && guard[0].getType() == EntityType.VINDICATOR);
                     String n = name(envoy[0]);
                     record(test, "envoy name", n + " / " + name(envoyB[0]));
-                    check("the envoy says its demand: " + n, n != null && n.startsWith("5 ") && n.contains("mining") && envoy[0].isCustomNameVisible());
-                    check("party B's: " + name(envoyB[0]), name(envoyB[0]) != null && name(envoyB[0]).startsWith("1 ") && !name(envoyB[0]).contains("stop"));
+                    check("the envoy is named by its culture, no demand: " + n, envoyNamed(envoy[0]) && "Goblin Envoy".equals(n)
+                            && envoy[0].isCustomNameVisible());
+                    check("party B's too: " + name(envoyB[0]), envoyNamed(envoyB[0]) && "Goblin Envoy".equals(name(envoyB[0])));
                     check("only the envoy is named", guard[0].getCustomName() == null);
                     check("both guarded", party(a).guarded() && party(b).guarded());
                     for (Mob m : party(a).stacks().get(0).bodies())
@@ -579,33 +665,26 @@ public final class ConflictGameTests {
                     check("the golem never got a guarded target", golem[0].getTarget() == null);
                     record(test, "guard", (bridge().blockedHits - blockedHits[0]) + " hits and " + (bridge().blockedTargets - blockedTargets[0])
                             + " targets refused");
-                    // Part of the tribute: 3 of 5 emeralds. A stack of something else pays nothing.
-                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIRT, 4));
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    check("dirt pays nothing", bridge().party(a).demand().remaining() == 5);
-                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 3));
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    check("3 paid, 2 owed", bridge().party(a).demand().remaining() == 2 && player.getMainHandItem().isEmpty());
-                    check("the name counts down: " + name(envoy[0]), name(envoy[0]).startsWith("2 "));
-                    // TALK: crouching with an empty hand, one line to this player in this tick; no refusal.
                     long answered = bridge().answers;
                     int heard = player.heard.size();
-                    player.setShiftKeyDown(true);
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    // Something else in hand: an ordinary click; nothing taken, nothing said.
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIRT, 4));
+                    click(player, envoy[0]);
+                    check("dirt pays nothing, says nothing", party(a).demand().remaining() == 6 && player.getMainHandItem().getCount() == 4
+                            && player.heard.size() == heard);
+                    // Part of the tribute: 3 of 6 emeralds in the main hand. The envoy says what is still owed.
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 3));
+                    click(player, envoy[0]);
+                    check("3 paid, 3 owed", party(a).demand().remaining() == 3 && player.getMainHandItem().isEmpty());
                     check("the envoy spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
-                    TranslatableContents line = spoken(player.heard.get(heard));
-                    record(test, "envoy line", line.getKey() + " " + player.heard.get(heard).getString());
-                    check("its demand: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute_or_stop.0"));
-                    Object[] args = line.getArgs();
-                    check("the reason: " + args[0], args[0] instanceof Component r && r.getContents() instanceof TranslatableContents rt
-                            && rt.getKey().equals("mic_rtsim.talk.envoy.envoy.reason.mining.0"));
-                    check("2 still owed: " + args[1], args[1] instanceof Integer n && n == 2);
-                    check("emeralds: " + args[2], args[2] instanceof Component it && it.getString().equals(Items.EMERALD.getDescription().getString()));
-                    check("the deadline: " + args[4], args[4] instanceof Component dl && dl.getContents() instanceof TranslatableContents dt
-                            && dt.getKey().startsWith("mic_rtsim.talk.deadline.") && !dt.getKey().equals("mic_rtsim.talk.deadline.now"));
-                    check("not a refusal", bridge().answers == answered);
-                    talkedAt[0] = level.getGameTime();
-                    // A guard warns, with the camp's reason.
+                    TranslatableContents owed = spoken(player.heard.get(heard));
+                    record(test, "after paying", owed.getKey() + " " + player.heard.get(heard).getString());
+                    check("what is still owed: " + owed.getKey(), owed.getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute_or_stop.0")
+                            && owed.getArgs()[1] instanceof Integer o && o == 3);
+                    check("the name stays: " + name(envoy[0]), "Goblin Envoy".equals(name(envoy[0])));
+                    saidA[0] = level.getGameTime();
+                    // A guard warns, with the camp's reason (TALK: crouching with an empty hand).
+                    player.setShiftKeyDown(true);
                     player.interactOn(guard[0], InteractionHand.MAIN_HAND);
                     player.setShiftKeyDown(false);
                     check("the guard spoke once: " + talkKeys(player), player.heard.size() == heard + 2);
@@ -613,22 +692,84 @@ public final class ConflictGameTests {
                     record(test, "guard line", warn.getKey() + " " + player.heard.get(heard + 1).getString());
                     check("a warning with the reason: " + warn.getKey(), warn.getKey().startsWith("mic_rtsim.talk.")
                             && warn.getKey().contains(".hostile.warn.mining."));
-                    // Refusal: a plain click with an empty hand, twice.
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    check("refused once, no line", bridge().answers == answered + 1 && player.heard.size() == heard + 2);
+                    check("no answer", bridge().answers == answered);
                 })
-                .thenWaitUntil(() -> check("TRIBUTE_PAID", ConflictKit.tributes(a).size() == 1))
+                .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
                 .thenExecute(() -> {
-                    ScriptedEngine.Received t = ConflictKit.tributes(a).get(0);
-                    check("one item", t.aux() == 1);
-                    check("3 emeralds", t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_ITEM) == RtsimTests.session().itemId(Items.EMERALD)
-                            && t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_COUNT) == 3);
-                    check("from the player", player.getUUID().equals(ConflictKit.uuidAt(t, ConflictRecords.TributePaid.PLAYER_MOST)));
-                    check("to the faction", t.view().getLong(ConflictRecords.TributePaid.FACTION) == faction);
-                    check("with a Java op id", (t.view().getLong(ConflictRecords.TributePaid.OP_ID) & Obs.JAVA_OP_BIT) != 0);
-                    check("one refusal (" + ConflictKit.answers(a, ConflictRecords.ANSWER_REFUSED) + ")", ConflictKit.answers(a, ConflictRecords.ANSWER_REFUSED) == 1);
-                    check("still guarded: a refusal is no blow", party(a).guarded());
+                    // A plain click with empty hands shows the demand; a second click in the same tick is
+                    // TALK's rate limit's. Neither refuses.
+                    long answered = bridge().answers, shown = bridge().demandsShown;
+                    int heard = player.heard.size();
+                    click(player, envoy[0]);
+                    click(player, envoy[0]);
+                    check("the demand, shown once: " + talkKeys(player), player.heard.size() == heard + 1 && bridge().demandsShown == shown + 1);
+                    TranslatableContents line = spoken(player.heard.get(heard));
+                    check("the demand: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute_or_stop.0"));
+                    check("no click refuses", bridge().answers == answered);
+                    saidA[0] = level.getGameTime();
+                })
+                .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
+                .thenExecute(() -> {
+                    // TALK: crouching with an empty hand says the same line, through TALK's own path.
+                    long answered = bridge().answers, shown = bridge().demandsShown;
+                    int heard = player.heard.size();
+                    player.setShiftKeyDown(true);
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    player.setShiftKeyDown(false);
+                    check("the envoy spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
+                    check("through TALK, not the bridge", bridge().demandsShown == shown);
+                    TranslatableContents line = spoken(player.heard.get(heard));
+                    record(test, "envoy line", line.getKey() + " " + player.heard.get(heard).getString());
+                    check("its demand: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute_or_stop.0"));
+                    Object[] args = line.getArgs();
+                    check("the reason: " + args[0], args[0] instanceof Component r && r.getContents() instanceof TranslatableContents rt
+                            && rt.getKey().equals("mic_rtsim.talk.envoy.envoy.reason.mining.0"));
+                    check("3 still owed: " + args[1], args[1] instanceof Integer n && n == 3);
+                    check("emeralds: " + args[2], args[2] instanceof Component it && it.getString().equals(Items.EMERALD.getDescription().getString()));
+                    check("the deadline: " + args[4], args[4] instanceof Component dl && dl.getContents() instanceof TranslatableContents dt
+                            && dt.getKey().startsWith("mic_rtsim.talk.deadline.") && !dt.getKey().equals("mic_rtsim.talk.deadline.now"));
+                    check("not a refusal", bridge().answers == answered);
+                    saidA[0] = level.getGameTime();
+                })
+                .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
+                .thenExecute(() -> {
+                    int heard = player.heard.size();
+                    // The good in the off hand pays when the main hand is empty.
+                    player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.EMERALD, 1));
+                    click(player, envoy[0]);
+                    check("1 paid from the off hand, 2 owed", party(a).demand().remaining() == 2 && player.getOffhandItem().isEmpty());
+                    check("and the envoy says so: " + talkKeys(player), player.heard.size() == heard + 1
+                            && spoken(player.heard.get(heard)).getArgs()[1] instanceof Integer o && o == 2);
+                    // Something else in the main hand: vanilla's off-hand click pays.
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.DIRT, 1));
+                    player.setItemInHand(InteractionHand.OFF_HAND, new ItemStack(Items.EMERALD, 1));
+                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
+                    check("the main-hand click took nothing", party(a).demand().remaining() == 2);
+                    player.interactOn(envoy[0], InteractionHand.OFF_HAND);
+                    check("the off-hand click paid 1, 1 owed", party(a).demand().remaining() == 1 && player.getOffhandItem().isEmpty()
+                            && player.getMainHandItem().is(Items.DIRT));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                    saidA[0] = level.getGameTime();
+                    // A settlers' envoy only shows its demand: it takes nothing from a player.
+                    int heardB = player.heard.size();
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 2));
+                    click(player, envoyB[0]);
+                    check("B took nothing", party(b).demand().remaining() == 1 && player.getMainHandItem().getCount() == 2);
+                    check("B showed its demand: " + talkKeys(player), player.heard.size() == heardB + 1
+                            && spoken(player.heard.get(heardB)).getKey().equals("mic_rtsim.talk.envoy.envoy.demand.tribute.0"));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                })
+                .thenWaitUntil(() -> check("the late party's deadline passed", level.getGameTime() >= lateDeadline))
+                .thenExecute(() -> {
+                    long refused = bridge().paymentsRefused;
+                    int heard = player.heard.size();
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 2));
+                    click(player, envoyLate[0]);
+                    check("past its deadline it took nothing", party(late).demand().remaining() == 2 && player.getMainHandItem().getCount() == 2
+                            && bridge().paymentsRefused == refused + 1);
+                    check("and said so: " + talkKeys(player), player.heard.size() == heard + 1
+                            && spoken(player.heard.get(heard)).getKey().equals("mic_rtsim.talk.envoy.envoy.settled.expired.0"));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
                     // A player's arrow: it hurts, and it is an insult.
                     golem[0].discard();
                     player.setGameMode(GameType.CREATIVE);
@@ -642,35 +783,65 @@ public final class ConflictGameTests {
                         check("their target goals are back", !m.targetSelector.getAvailableGoals().isEmpty());
                     envoy[0].hurt(level.damageSources().playerAttack(player), 1f);
                     check("party B still guarded", party(b).guarded());
+                })
+                .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
+                .thenExecute(() -> {
+                    long refused = bridge().paymentsRefused;
+                    int heard = player.heard.size();
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 1));
+                    click(player, envoy[0]);
+                    check("struck, the envoy took nothing", party(a).demand().remaining() == 1 && player.getMainHandItem().getCount() == 1
+                            && bridge().paymentsRefused == refused + 1);
+                    check("and said so: " + talkKeys(player), player.heard.size() == heard + 1
+                            && spoken(player.heard.get(heard)).getKey().equals("mic_rtsim.talk.envoy.envoy.settled.struck.0"));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
+                    saidA[0] = level.getGameTime();
                     // Party B killed by /kill: no answer, a casualty with no killer.
                     envoyB[0].kill();
                 })
                 .thenWaitUntil(() -> check("B's casualty", about(ConflictRecords.BAND_CASUALTIES, b).size() == 1))
+                .thenWaitUntil(() -> check("TRIBUTE_PAID three times", ConflictKit.tributes(a).size() == 3))
                 .thenExecute(() -> {
                     check("one insult (" + ConflictKit.answers(a, ConflictRecords.ANSWER_ATTACKED) + ")", ConflictKit.answers(a, ConflictRecords.ANSWER_ATTACKED) == 1);
                     ScriptedEngine.Received insult = first(about(ConflictRecords.ENVOY_ANSWER, a), ConflictRecords.ANSWER_ATTACKED);
                     check("by the player", player.getUUID().equals(ConflictKit.uuidAt(insult, ConflictRecords.EnvoyAnswer.PLAYER_MOST)));
+                    for (long x : new long[]{a, b, late})
+                        check("ENVOY_ANSWER 2 is never sent", ConflictKit.answers(x, ConflictRecords.ANSWER_REFUSED) == 0);
                     ScriptedEngine.Received cb = about(ConflictRecords.BAND_CASUALTIES, b).get(0);
                     check("/kill: no killer", cb.aux() == ConflictRecords.BY_NONE && ConflictKit.uuidAt(cb, ConflictRecords.Casualties.KILLER_MOST) == null);
                     check("the emissary", cb.view().getInt(ConflictRecords.Casualties.BODY) == ConflictKit.bodyId(EMISSARY));
                     check("and no ENVOY_ANSWER from B", about(ConflictRecords.ENVOY_ANSWER, b).isEmpty());
+                    List<ScriptedEngine.Received> ts = ConflictKit.tributes(a);
+                    int[] counts = {3, 1, 1};
+                    for (int i = 0; i < 3; i++) {
+                        ScriptedEngine.Received t = ts.get(i);
+                        check("one item", t.aux() == 1);
+                        check(counts[i] + " emeralds", t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_ITEM) == RtsimTests.session().itemId(Items.EMERALD)
+                                && t.view().getInt(ConflictRecords.TributePaid.ITEMS + ConflictRecords.I_COUNT) == counts[i]);
+                        check("from the player", player.getUUID().equals(ConflictKit.uuidAt(t, ConflictRecords.TributePaid.PLAYER_MOST)));
+                        check("to the faction", t.view().getLong(ConflictRecords.TributePaid.FACTION) == faction);
+                        check("with a Java op id", (t.view().getLong(ConflictRecords.TributePaid.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    }
+                    check("none to B or the late party", ConflictKit.tributes(b).isEmpty() && ConflictKit.tributes(late).isEmpty());
                     ConflictKit.recall(b, 1, ConflictRecords.RECALL_ROUTED, 0, c.x, c.z);
                     ConflictKit.settled(faction, a, player.getUUID(), ConflictRecords.SETTLED_PAID, 0);
                 })
                 .thenWaitUntil(() -> check("A's demand settled", party(a).demand() == null))
-                .thenWaitUntil(() -> check("the envoy may talk again", level.getGameTime() - talkedAt[0] >= RateLimit.PAIR))
+                .thenWaitUntil(() -> check("the envoy may talk again", aMayTalk.getAsBoolean()))
                 .thenExecute(() -> {
                     check("its name is gone", envoy[0].getCustomName() == null && !envoy[0].isCustomNameVisible());
                     check("the outcome", bridge().lastSettled == ConflictRecords.SETTLED_PAID);
                     int heard = player.heard.size();
-                    player.setShiftKeyDown(true);
-                    player.interactOn(envoy[0], InteractionHand.MAIN_HAND);
-                    player.setShiftKeyDown(false);
+                    player.setItemInHand(InteractionHand.MAIN_HAND, new ItemStack(Items.EMERALD, 1));
+                    click(player, envoy[0]);
+                    check("settled, the envoy took nothing", player.getMainHandItem().getCount() == 1);
                     check("the envoy spoke once: " + talkKeys(player), player.heard.size() == heard + 1);
                     TranslatableContents line = spoken(player.heard.get(heard));
                     check("the settlement: " + line.getKey(), line.getKey().equals("mic_rtsim.talk.envoy.envoy.settled.paid.0"));
+                    player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
                     recalledAt[0] = level.getGameTime();
                     ConflictKit.recall(a, 1, ConflictRecords.RECALL_SETTLED, 60, c.x - 100, c.z);
+                    ConflictKit.recall(late, 1, ConflictRecords.RECALL_SETTLED, 1, c.x - 100, c.z);
                 })
                 .thenWaitUntil(() -> check("B ended", !about(ConflictRecords.BAND_DEMATERIALIZED, b).isEmpty()))
                 .thenExecute(() -> check("B had no one left", ConflictKit.survivors(about(ConflictRecords.BAND_DEMATERIALIZED, b).get(0)).isEmpty()))
@@ -678,6 +849,7 @@ public final class ConflictGameTests {
                 .thenIdle(20)
                 .thenExecute(() -> check("a player sees A: the bodies stay", bridge().bodies(a).size() == 3))
                 .thenWaitUntil(() -> check("A ended at its timeout", !about(ConflictRecords.BAND_DEMATERIALIZED, a).isEmpty()))
+                .thenWaitUntil(() -> check("the late party ended", !about(ConflictRecords.BAND_DEMATERIALIZED, late).isEmpty()))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = about(ConflictRecords.BAND_DEMATERIALIZED, a).get(0);
                     long after = RtsimTests.gameTimeOf(d) - recalledAt[0];
@@ -689,6 +861,18 @@ public final class ConflictGameTests {
                     FakePlayers.remove(player);
                 })
                 .thenSucceed();
+    }
+
+    /** A player's click as vanilla sends it: the main hand, then the off hand. */
+    private static void click(ServerPlayer player, Entity e) {
+        player.interactOn(e, InteractionHand.MAIN_HAND);
+        player.interactOn(e, InteractionHand.OFF_HAND);
+    }
+
+    /** Named "<Culture> Envoy" (the speaker's key), not its demand. */
+    private static boolean envoyNamed(Mob m) {
+        return m.getCustomName() != null && m.getCustomName().getContents() instanceof TranslatableContents t
+                && t.getKey().equals("mic_rtsim.talk.speaker.envoy");
     }
 
     /** The line inside a talk message ({@code mic_rtsim.talk.say}: speaker, line). */
@@ -737,7 +921,10 @@ public final class ConflictGameTests {
         String test = "aNaturalFoliaathIsNotCountedAsPressure";
         IndustryTestKit.fastConfig();
         IndustryTestKit.forgetAll(helper);
+        // Reset at the start too: a run that failed before its end left the gap set for every later test.
+        ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, null);
         ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, 20);
+        ConflictKit.onEnd(helper, () -> ThreatConfig.setForTest(ThreatConfig.FIGHT_GAP, null));
         registerStrengthPlugin();
         ServerLevel level = helper.getLevel();
         BlockPos chest = IndustryTestKit.inChunk(helper, 2, 2);
@@ -795,8 +982,8 @@ public final class ConflictGameTests {
      * FACTION_NOTICE is a sound only (Ben, 2026-10-22: nothing in chat, the action bar or a title),
      * kept until its player is in range: a notice to a player away from the territory waits; the player
      * leaves and comes back inside it, and it plays once (NOTICE_SHOWN with its step once M1's records
-     * are on). A notice to the settlers plays to any player in range. The territory command adds and
-     * removes the faction's circle. Test 19 without the M1 half.
+     * are on). A notice to the settlers plays to every player in range (MZB-118), here two. The territory
+     * command adds and removes the faction's circle. Test 19 without the M1 half.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_notice", skyAccess = true)
     public static void aNoticeWaitsForThePlayersNextEntry(GameTestHelper helper) {
@@ -808,7 +995,13 @@ public final class ConflictGameTests {
         int tx = (int) Math.floor(c.x), tz = (int) Math.floor(c.z);
         // The player stands 600 blocks off: outside the territory (radius 100) and NOTICE_RANGE.
         ServerPlayer player = FakePlayers.add(level, c.add(600, 0, 0), "conflict_notice_target");
-        long[] played = {0}, posted = {0};
+        ServerPlayer[] second = new ServerPlayer[1];
+        ConflictKit.onEnd(helper, () -> {
+            FakePlayers.remove(player);
+            if (second[0] != null)
+                FakePlayers.remove(second[0]);
+        });
+        long[] played = {0}, posted = {0}, hearers = {0};
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.territory(faction, dim, (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING), tx, tz, 100))
                 .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction) != null))
@@ -841,13 +1034,18 @@ public final class ConflictGameTests {
                         check("NOTICE_SHOWN with the step", shown.size() == 1 && shown.get(0).aux() == 3
                                 && player.getUUID().equals(ConflictKit.uuidAt(shown.get(0), ConflictRecords.NoticeShown.PLAYER_MOST)));
                     }
-                    // To the settlers: any player in range.
+                    // To the settlers: every player in range, here two.
+                    second[0] = FakePlayers.add(level, c.add(30, 0, 5), "conflict_notice_second");
+                    hearers[0] = bridge().noticeHearers;
                     ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1);
                 })
                 .thenWaitUntil(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0))
                 .thenExecute(() -> {
-                    record(test, "notices", "kept while away, played on entry; the settlers' to the player in range");
+                    long heard = bridge().noticeHearers - hearers[0];
+                    record(test, "notices", "kept while away, played on entry; the settlers' to " + heard + " players in range");
+                    check("the settlers' notice reached both players (" + heard + ")", heard >= 2);
                     FakePlayers.remove(player);
+                    FakePlayers.remove(second[0]);
                     ConflictKit.territoryRemoved(faction, dim);
                 })
                 .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction) == null))
@@ -971,11 +1169,13 @@ public final class ConflictGameTests {
      * (FACTION_NOTICE, its sound played to the player, who stands inside). The phase 1 world's clock, which
      * the conflict runs on, is moved on 1,200 ticks at a time (P1_ADVANCE) with the player reporting where
      * it stands before each: the envoy comes into view (ENVOY_MATERIALIZE) asking emeralds or the killing
-     * stopped, is placed and refused (ENVOY_ANSWER 2: a plain click with an empty hand); the demand is settled as
-     * refused (DEMAND_SETTLED 4), and the ladder climbs on to a raid that musters and is seen setting out
-     * (BAND_MATERIALIZE, purpose 3, the war chief with it), whose stacks are placed. A stack still pending
-     * has its chunks forced too (the engine picks where a party comes into view). Skipped on the stub,
-     * which decides nothing.
+     * stopped, named "Goblin Envoy" and not its demand, is placed and struck by the player (ENVOY_ANSWER 3,
+     * the only refusal there is: no click refuses); the demand is settled as refused (DEMAND_SETTLED 4), and
+     * the ladder climbs on to a raid that musters and is seen setting out (BAND_MATERIALIZE, purpose 3, the
+     * war chief with it), whose stacks are placed. A stack still pending has its chunks forced too (the
+     * engine picks where a party comes into view). Chunks an earlier failed run left forced in the far area
+     * are released first, and this run's are released however it ends. Skipped on the stub, which decides
+     * nothing.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = "conflict_feud")
     public static void aPlayersKillingsClimbTheLadderFromNoticeToARaid(GameTestHelper helper) {
@@ -986,6 +1186,7 @@ public final class ConflictGameTests {
             return;
         }
         ServerLevel level = helper.getLevel();
+        int released = ConflictKit.releaseFarChunks(level);
         int[] base = ConflictKit.farBase();
         int bx = base[0] + 8, bz = base[1] + 8; // the camp; the player 40 blocks east
         int px = bx + 40;
@@ -1044,6 +1245,11 @@ public final class ConflictGameTests {
                 ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
             forced.clear();
         };
+        ConflictKit.onEnd(helper, () -> {
+            unforce.run();
+            if (player[0] != null)
+                FakePlayers.remove(player[0]);
+        });
 
         helper.startSequence()
                 .thenWaitUntil(io(() -> {
@@ -1060,7 +1266,8 @@ public final class ConflictGameTests {
                     faction[0] = bridge().reportCamp(level, "mic_rtsim:conflict/goblin_camp", camp,
                             x -> x.getTags().contains(kinTag), null, false, 0, 0);
                     check("a faction key", faction[0] != 0L);
-                    record(test, "camp", "(" + bx + ", " + bz + "), the player at (" + px + ", " + bz + "), " + boxChunks + " chunks forced");
+                    record(test, "camp", "(" + bx + ", " + bz + "), the player at (" + px + ", " + bz + "), " + boxChunks
+                            + " chunks forced, " + released + " an earlier run left forced released");
                 })
                 .thenWaitUntil(() -> {
                     keep.run();
@@ -1123,21 +1330,25 @@ public final class ConflictGameTests {
                     check("the emissary", emissary != null && emissary.isAlive());
                     String n = name(emissary);
                     record(test, "the envoy's name", n);
-                    check("it says its demand: " + n, n != null && n.contains("killing"));
+                    check("named by its culture, not its demand: " + n, envoyNamed(emissary) && "Goblin Envoy".equals(n));
                     mark[2] = bridge().settledCommands;
                     long answered = bridge().answers;
                     ServerPlayer pl = player[0];
+                    // A plain click shows the demand and refuses nothing; a blow refuses.
                     check("an empty hand", pl.getMainHandItem().isEmpty());
                     pl.setShiftKeyDown(false);
-                    pl.interactOn(emissary, InteractionHand.MAIN_HAND);
-                    check("refused", bridge().answers == answered + 1);
+                    click(pl, emissary);
+                    check("a click is no answer", bridge().answers == answered);
+                    emissary.hurt(level.damageSources().playerAttack(pl), 1f);
+                    check("struck", bridge().answers == answered + 1 && !envoy[0].guarded());
                 })
                 .thenWaitUntil(() -> {
                     keep.run();
-                    check("ENVOY_ANSWER 2 journaled", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 1);
+                    check("ENVOY_ANSWER 3 journaled", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_ATTACKED) == 1);
                     check("DEMAND_SETTLED", bridge().settledCommands > mark[2]);
                 })
                 .thenExecute(() -> {
+                    check("no ENVOY_ANSWER 2", ConflictKit.answers(envoy[0].agent, ConflictRecords.ANSWER_REFUSED) == 0);
                     check("settled as refused (" + bridge().lastSettled + ")", bridge().lastSettled == ConflictRecords.SETTLED_REFUSED);
                     asks[0] = 0;
                     mark[3] = asks[1];

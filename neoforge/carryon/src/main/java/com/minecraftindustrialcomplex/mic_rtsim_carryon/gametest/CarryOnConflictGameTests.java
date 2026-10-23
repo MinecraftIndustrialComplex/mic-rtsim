@@ -40,7 +40,8 @@ public final class CarryOnConflictGameTests {
     /**
      * A player's Carry On pickup of a raider is a casualty at that player's hands (BAND_CASUALTIES kind 1
      * with the player); the war chief picked up is CHIEF_KILLED kind 1 with the player and a Java op id.
-     * Each body stays in the world as an ordinary mob ({@code Entity.save} works, no name). A member
+     * Each body stays in the world as an ordinary mob ({@code Entity.save} works, no name, and no longer
+     * persistence-required, so it despawns as any other would: MZB-102, UR-1). A member
      * discarded by something else is kind 3 with no killer. None of it is a killing signal, though the
      * band stands inside a territory that minds killing, of a camp whose kin is every entity. The recall
      * reports the one left.
@@ -83,12 +84,14 @@ public final class CarryOnConflictGameTests {
                             chief[0] = sl.entity();
                     for (Mob m : List.of(warrior, chief[0])) {
                         check("a puppet: Entity.save refuses it", RtsimApi.isPuppet(m) && !m.save(new CompoundTag()));
+                        check("held persistence-required", m.isPersistenceRequired());
                         EntityPickupEvent event = NeoForge.EVENT_BUS.post(new EntityPickupEvent(player, m));
                         check("nobody cancelled the pickup", !event.isCanceled());
                         check("no longer a puppet", !RtsimApi.isPuppet(m));
                         CompoundTag saved = new CompoundTag();
                         check("Carry On's save of it works now", m.save(saved) && saved.contains("id"));
                         check("still in the world", !m.isRemoved() && m.isAlive());
+                        check("its persistence given back: an ordinary mob despawns", !m.isPersistenceRequired());
                         taken.add(m);
                     }
                     check("not the party's now", ConflictKit.bridge().slotOf(warrior) == null && ConflictKit.bridge().slotOf(chief[0]) == null);
