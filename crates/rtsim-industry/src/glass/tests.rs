@@ -4114,9 +4114,9 @@ mod replay_path {
             c.ticket.len()
         }
 
-        /// The engine the disk holds; the restored engine saves the same pages.
-        fn restored(disk: &Disk) -> Engine {
-            let r = Engine::restore(disk.clone(), Tunables::default()).expect("restore");
+        /// The engine the disk holds, on tunables `tun`; the restored engine saves the same pages.
+        fn restored(disk: &Disk, tun: &Tunables) -> Engine {
+            let r = Engine::restore(disk.clone(), tun.clone()).expect("restore");
             let pages: Disk = r.snapshot().into_iter().collect();
             assert!(
                 pages == *disk,
@@ -4134,6 +4134,16 @@ mod replay_path {
             acts: &[Act],
             cuts: &[usize],
         ) -> (Pages, Vec<Cmd>, Vec<u32>, Vec<usize>) {
+            run_with(&Tunables::default(), start, acts, cuts)
+        }
+
+        /// [`run`] on tunables `tun` (the engine `start` makes runs on them too).
+        fn run_with(
+            tun: &Tunables,
+            start: &dyn Fn() -> Engine,
+            acts: &[Act],
+            cuts: &[usize],
+        ) -> (Pages, Vec<Cmd>, Vec<u32>, Vec<usize>) {
             let mut e = start();
             let mut disk = Disk::new();
             let mut writes = vec![save(&mut e, &mut disk)];
@@ -4141,7 +4151,7 @@ mod replay_path {
             let mut models = Vec::new();
             for (i, a) in acts.iter().enumerate() {
                 if cuts.contains(&i) {
-                    e = restored(&disk);
+                    e = restored(&disk, tun);
                 }
                 match a {
                     To(t) => e.advance_to(Tick(*t)),
@@ -4157,7 +4167,12 @@ mod replay_path {
 
         /// The run whole, and cut before each act in turn and before all of them at once.
         fn exact(start: &dyn Fn() -> Engine, acts: &[Act]) -> Vec<u32> {
-            let whole = run(start, acts, &[]);
+            exact_with(&Tunables::default(), start, acts)
+        }
+
+        /// [`exact`] on tunables `tun`.
+        fn exact_with(tun: &Tunables, start: &dyn Fn() -> Engine, acts: &[Act]) -> Vec<u32> {
+            let whole = run_with(tun, start, acts, &[]);
             assert!(
                 whole.2.contains(&replay_model::GLASS),
                 "a glass replay: {:?}",
@@ -4165,7 +4180,7 @@ mod replay_path {
             );
             let every: Vec<usize> = (0..acts.len()).collect();
             for cuts in every.iter().map(|&i| vec![i]).chain([every.clone()]) {
-                let cut = run(start, acts, &cuts);
+                let cut = run_with(tun, start, acts, &cuts);
                 assert_eq!(cut.2, whole.2, "models, cut at {cuts:?}");
                 assert!(cut.1 == whole.1, "commands, cut at {cuts:?}");
                 assert_eq!(cut.0.len(), whole.0.len(), "pages, cut at {cuts:?}");
@@ -4190,6 +4205,47 @@ mod replay_path {
                 feed(&mut e, t);
             }
             e
+        }
+
+        /// A replay by unit, cut before each step (§9.3): a unit frozen by a fallback and the
+        /// unit replaying on are paged, and the restored replay books what the whole run does.
+        #[test]
+        fn a_restored_replay_by_unit_freezes_as_one_that_never_stopped() {
+            use super::units::{engine_with, judge, lines, two_lines};
+            let mut tun = Tunables::default();
+            tun.glass.breakpoints_per_event_max = 0;
+            let start = {
+                let tun = tun.clone();
+                move || {
+                    let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                    let mut e = engine_with(&b, tun.clone(), &lines(500, (ORE, 2000)));
+                    judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+                    feed(&mut e, &load_state(200, LoadState::Unloaded));
+                    e
+                }
+            };
+            let mut acts = vec![
+                To(201),
+                To(5000),
+                To(5300),
+                To(8000),
+                To(15_000),
+                To(25_000),
+                Feed(load_state(25_000, LoadState::Live)),
+            ];
+            for x in [0, 40] {
+                acts.push(Feed(at(
+                    25_000,
+                    Obs::ChunkLoaded {
+                        district: D,
+                        chunk: BlockPos::new(x, 64, 0).chunk(0),
+                        applied_epoch: 0,
+                    },
+                )));
+            }
+            let models = exact_with(&tun, &start, &acts);
+            assert_eq!(models[3], replay_model::GLASS, "{models:?}");
+            assert_ne!(models[5], replay_model::GLASS, "{models:?}");
         }
 
         fn back(t: u64) -> [Act; 2] {
@@ -4770,6 +4826,7 @@ mod replay_path {
         use crate::glass::check::{Liveness, UnitState};
         use crate::glass::page::GLASS_MAGIC_IGL2;
         use crate::glass::page::{PageRead, district_page, read_district_page};
+        use crate::glass::replay::Replay;
         use crate::glass::report::discard;
         use crate::ids::ChunkPos;
 
@@ -4777,7 +4834,7 @@ mod replay_path {
         /// into sheets (1) at x 0 to 2 (chunk 0), and `b_in` (2) into press B into `b_out` (3) at
         /// x 40 to 42 (chunk 2), each a press per 10 ticks (B's per `b_ticks`). Returns the
         /// builder and the two presses.
-        fn two_lines(b_in: Good, b_out: Good, b_ticks: u32) -> (B, u32, u32) {
+        pub(super) fn two_lines(b_in: Good, b_out: Good, b_ticks: u32) -> (B, u32, u32) {
             let mut b = B::default();
             let (i0, o0, i1, o1) = (b.store(0), b.store(1), b.store(2), b.store(3));
             let r0 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
@@ -5375,6 +5432,490 @@ mod replay_path {
             let rc = r.glass.districts[&D].compiled.as_ref().expect("compile");
             assert_eq!(rc.unit_state, c.unit_state);
             assert_eq!(r.glass.extra_rows(), e.glass.extra_rows());
+        }
+
+        // ---- the replay by unit (SECTIONS.md §3.5, slice S2c) ------------------------------------
+
+        /// An inventory of a test district: its block, a fluid tank or not, and what it holds.
+        pub(super) struct Inv {
+            pos: BlockPos,
+            fluid: bool,
+            contents: Vec<(Good, i64)>,
+        }
+
+        pub(super) fn inv_at(x: i32, contents: &[(Good, i64)]) -> Inv {
+            Inv {
+                pos: BlockPos::new(x, 64, 0),
+                fluid: false,
+                contents: contents.to_vec(),
+            }
+        }
+
+        /// The inventories of [`two_lines`] at their stores' blocks (A's in chunk 0, B's in chunk
+        /// 2): A's brass and B's input as given.
+        pub(super) fn lines(brass: i64, b_in: (Good, i64)) -> Vec<Inv> {
+            vec![
+                inv_at(0, &[(BRASS, brass)]),
+                inv_at(2, &[]),
+                inv_at(40, &[b_in]),
+                inv_at(42, &[]),
+            ]
+        }
+
+        pub(super) fn chunk(x: i32) -> ChunkPos {
+            BlockPos::new(x, 64, 0).chunk(0)
+        }
+
+        /// `b`'s compile in an engine on tunables `tun`: the district live with `invs`, and one
+        /// live sweep at 100 of what they hold.
+        pub(super) fn engine_with(b: &B, tun: Tunables, invs: &[Inv]) -> Engine {
+            let mut s = vec![at(
+                0,
+                Obs::District(DistrictDecl {
+                    district: D,
+                    revision: 1,
+                    dim: 0,
+                    name: 0,
+                    not_learnable: None,
+                    inventory_count: invs.len() as u32,
+                }),
+            )];
+            for (i, x) in invs.iter().enumerate() {
+                let mut d = inventory(i as u32, &[]).decl;
+                d.pos = x.pos;
+                if x.fluid {
+                    d.kind = InvKind(InvKind::FLUIDS);
+                    d.item_slots = 0;
+                    d.fluid_capacity = 1_000_000_000;
+                }
+                s.push(at(0, Obs::Inventory(d)));
+            }
+            s.push(load_state(0, LoadState::Live));
+            for r in b.records(1) {
+                s.push(at(0, Obs::Glass(r)));
+            }
+            let contents: Vec<&[(Good, i64)]> =
+                invs.iter().map(|x| x.contents.as_slice()).collect();
+            sweep(&mut s, 1, 100, &contents);
+            let mut e = Engine::new(0, tun, Tick::ZERO);
+            for (g, info) in goods() {
+                e.define_good(g, info);
+            }
+            e.session_start(Tick(0));
+            for t in &s {
+                feed(&mut e, t);
+            }
+            e
+        }
+
+        /// Sets the last window of each node's unit to `verdict` by hand (passed when it passes),
+        /// with no district window concluded: the replay's own mechanics, without driving windows
+        /// that match every regime.
+        pub(super) fn judge(e: &mut Engine, verdicts: &[(u32, u32)]) {
+            let c = e
+                .glass
+                .districts
+                .get_mut(&D)
+                .and_then(|g| g.compiled.as_mut())
+                .expect("a compile");
+            for &(v, verdict) in verdicts {
+                let u = c.units.of_node[v as usize] as usize;
+                let st = &mut c.unit_state[u];
+                st.last = Some(WindowResult {
+                    start: Tick(0),
+                    ticks: 1,
+                    verdict,
+                    goods: Vec::new(),
+                    stores: Vec::new(),
+                });
+                st.passed = (verdict == verdict::PASS).then_some((Tick(0), 1));
+                st.edited = false;
+            }
+            c.last = None;
+        }
+
+        fn replay(e: &Engine) -> &Replay {
+            e.glass.districts[&D].replay.as_ref().expect("replaying")
+        }
+
+        /// The district back at `t` with the chunks of blocks `xs` loaded: each store's change.
+        fn back(e: &mut Engine, t: u64, xs: &[i32]) -> BTreeMap<(u32, Good), i64> {
+            let mut cmds = feed(e, &load_state(t, LoadState::Live));
+            for &x in xs {
+                cmds.extend(feed(
+                    e,
+                    &at(
+                        t,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: chunk(x),
+                            applied_epoch: 0,
+                        },
+                    ),
+                ));
+            }
+            deltas(&cmds)
+        }
+
+        /// A unit that may not replay is gated off while the other replays (§3.5): its press runs
+        /// nothing, and its stores are pools only the world's own changes touch (a package into
+        /// one stays there). Before S2c the district window's failure froze the whole district.
+        #[test]
+        fn a_unit_that_may_not_replay_is_gated_and_its_stores_keep_what_they_hold() {
+            use crate::obs::{Direction, PackageEvent};
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::FAIL)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let c = comp(&e.glass, D);
+            let (ua, ub) = (unit_of(c, p0) as usize, unit_of(c, p1) as usize);
+            let rp = replay(&e);
+            assert!(rp.units_on()[ua] && !rp.units_on()[ub]);
+            assert!(rp.gated()[p1 as usize] && !rp.gated()[p0 as usize]);
+            assert!(rp.frozen().iter().all(|&f| !f));
+            feed(
+                &mut e,
+                &at(
+                    1000,
+                    Obs::Package(PackageEvent {
+                        district: D,
+                        inventory: 2,
+                        direction: Direction::In,
+                        address: 0,
+                        packages: 1,
+                        op: None,
+                        goods: GoodVec::from_pairs([(ORE, 64)]),
+                    }),
+                ),
+            );
+            e.advance_to(Tick(3200));
+            let st = e.sim_stock(D).expect("replaying");
+            assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+            assert_eq!((st.get(ORE), st.get(CRUSHED)), (1064, 0), "{st:?}");
+            let d = back(&mut e, 3200, &[0, 40]);
+            let made = d.get(&(1, SHEET)).copied().unwrap_or(0);
+            assert!((298..=300).contains(&made), "{d:?}");
+            assert!((-300..=-298).contains(&d.get(&(0, BRASS)).copied().unwrap_or(0)));
+            assert!(
+                d.keys().all(|&(i, _)| i < 2),
+                "B's stores keep what they hold: {d:?}"
+            );
+            e.check_books().expect("books");
+        }
+
+        /// No unit may replay: the district freezes while away (staleness did it, I5), with no
+        /// replay and no black box. One unit that may is enough for the glass (§3.5).
+        #[test]
+        fn a_district_freezes_while_no_unit_may_replay() {
+            for (vb, want) in [
+                (verdict::FAIL, replay_model::NONE),
+                (verdict::PASS, replay_model::GLASS),
+            ] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                judge(&mut e, &[(p0, verdict::FAIL), (p1, vb)]);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3000));
+                assert_eq!(model(&e), want);
+                let r = e.glass.report(D).expect("a compile");
+                assert_eq!(r.replay.eligible, want == replay_model::GLASS);
+                assert_eq!(e.sim_stock(D).is_some(), want == replay_model::GLASS);
+            }
+        }
+
+        /// A fallback freezes the unit it names, at its tick, keeping what it booked, and the rest
+        /// replays on (§3.5). With no breakpoint allowed between outside events, A's brass running
+        /// out falls back: A freezes, once, and B goes on. B's own fallback later leaves no unit
+        /// to replay, and only then does the district leave the glass.
+        #[test]
+        fn a_fallback_freezes_the_unit_it_names_and_the_rest_replays_on() {
+            let mut tun = Tunables::default();
+            tun.glass.breakpoints_per_event_max = 0;
+            let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let mut e = engine_with(&b, tun, &lines(500, (ORE, 2000)));
+            judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+            feed(&mut e, &load_state(200, LoadState::Unloaded));
+            e.advance_to(Tick(201));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let c = comp(&e.glass, D);
+            let (ua, ub) = (unit_of(c, p0) as usize, unit_of(c, p1) as usize);
+            assert_eq!(replay(&e).freezes(), 0);
+            // A's 500 brass runs out about 5,200.
+            e.advance_to(Tick(8000));
+            assert_eq!(model(&e), replay_model::GLASS);
+            let rp = replay(&e);
+            assert_eq!(rp.freezes(), 1);
+            assert_eq!(rp.counts().freezes, 1);
+            assert!(rp.frozen()[ua] && !rp.frozen()[ub]);
+            assert!(rp.gated()[p0 as usize] && !rp.gated()[p1 as usize]);
+            let st = e.sim_stock(D).expect("replaying");
+            assert_eq!(st.get(BRASS), 0, "{st:?}");
+            assert!(
+                (499..=500).contains(&st.get(SHEET)),
+                "A's bookings kept: {st:?}"
+            );
+            assert!((778..=780).contains(&st.get(CRUSHED)), "{st:?}");
+            // B's 2,000 ore runs out about 20,200: no unit is left to replay.
+            e.advance_to(Tick(30_000));
+            assert!(e.glass.districts[&D].fallback.is_some());
+            assert_ne!(model(&e), replay_model::GLASS);
+            let d = back(&mut e, 30_000, &[0, 40]);
+            assert_eq!(d.get(&(0, BRASS)), Some(&-500), "{d:?}");
+            assert!((499..=500).contains(&d[&(1, SHEET)]), "{d:?}");
+            assert_eq!(d.get(&(2, ORE)), Some(&-2000), "{d:?}");
+            assert!((1999..=2000).contains(&d[&(3, CRUSHED)]), "{d:?}");
+            e.check_books().expect("books");
+        }
+
+        /// [`two_lines`] with B's press on a network a boiler drives, the boiler's pump drawing
+        /// from a water tank (inventory 4, at x 80): three units. Returns the builder and A's
+        /// press, B's and the boiler.
+        pub(super) fn boiler_lines() -> (B, [u32; 3]) {
+            let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+            let water = b.store(4);
+            b.nodes[water as usize].model = model::STORE_FLUID;
+            b.nodes[water as usize].flags = node_flags::FLUID;
+            let pump = b.node(
+                NodeKind::Mover,
+                model::PUMP,
+                node_flags::FLUID,
+                vec![RateEntry {
+                    flags: rate_flags::SHARED,
+                    ..entry(None, 40, 1)
+                }],
+            );
+            let boiler = b.node(
+                NodeKind::Boiler,
+                model::BOILER,
+                node_flags::FLUID,
+                Vec::new(),
+            );
+            b.nodes[boiler as usize].params = [16, 1, 0, 0];
+            let h = b.node(NodeKind::Heater, model::BLAZE_BURNER, 0, Vec::new());
+            b.nodes[h as usize].params = [100_000_000, i64::from(heat::KINDLED), 1600, 0];
+            for (v, x) in [(water, 80), (pump, 81), (boiler, 82), (h, 83)] {
+                b.nodes[v as usize].pos = BlockPos::new(x, 64, 0);
+            }
+            b.edge_k(EdgeKind::Pipe, water, pump, &[WATER]);
+            b.edge_k(EdgeKind::Pipe, pump, boiler, &[WATER]);
+            let he = b.edge_k(EdgeKind::Heat, h, boiler, &[]);
+            b.edges[he as usize].param = 4;
+            let r = b.nodes[p1 as usize].rates[0].recipe;
+            b.nodes[p1 as usize].rates = vec![
+                RateEntry {
+                    level: 1,
+                    ..entry(r, 1, 20)
+                },
+                RateEntry {
+                    level: 2,
+                    ..entry(r, 1, 10)
+                },
+            ];
+            b.nodes[p1 as usize].domain = Some(0);
+            let level = |selector: u32, speed: i32, capacity: f64| DomainLevel {
+                selector,
+                speed_num: speed,
+                speed_den: 1,
+                capacity,
+            };
+            b.domains.push(GraphDomain {
+                head: head(0),
+                network: 1,
+                current: 2,
+                driver: Some(boiler),
+                flags: 0,
+                live_stress: 0.0,
+                live_capacity: 0.0,
+                levels: vec![level(0, 0, 0.0), level(2, 16, 1000.0), level(4, 32, 4096.0)],
+                members: vec![Member {
+                    node: Some(p1),
+                    count: 1,
+                    ratio_num: 1,
+                    ratio_den: 1,
+                    impact: 8.0,
+                }],
+            });
+            (b, [p0, p1, boiler])
+        }
+
+        /// A boiler whose unit may not replay stops its network for every unit on it (§3.5): B
+        /// passed its window, yet makes nothing while the boiler is gated; A, on no network, runs.
+        /// With the boiler's unit allowed, B runs at the boiler's level.
+        #[test]
+        fn a_gated_boiler_stops_its_network() {
+            for boiler_may in [false, true] {
+                let (b, [p0, p1, boiler]) = boiler_lines();
+                let mut invs = lines(1000, (ORE, 1000));
+                invs.push(Inv {
+                    pos: BlockPos::new(80, 64, 0),
+                    fluid: true,
+                    contents: vec![(WATER, 100_000_000)],
+                });
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                let c = comp(&e.glass, D);
+                assert_eq!(c.units.len(), 3);
+                let vk = if boiler_may {
+                    verdict::PASS
+                } else {
+                    verdict::FAIL
+                };
+                judge(
+                    &mut e,
+                    &[(p0, verdict::PASS), (p1, verdict::PASS), (boiler, vk)],
+                );
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert_eq!(rp.gated()[p1 as usize], !boiler_may, "B's press");
+                assert_eq!(rp.gated()[boiler as usize], !boiler_may);
+                assert!(!rp.gated()[p0 as usize]);
+                let st = e.sim_stock(D).expect("replaying");
+                assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+                if boiler_may {
+                    assert!((296..=300).contains(&st.get(CRUSHED)), "{st:?}");
+                    assert!(st.get(WATER) < 100_000_000, "{st:?}");
+                } else {
+                    assert_eq!(st.get(CRUSHED), 0, "{st:?}");
+                    assert_eq!(st.get(WATER), 100_000_000, "{st:?}");
+                }
+            }
+        }
+
+        /// The domain check (§3.6): a recompile keeps a unit on a network while the network's
+        /// stress stays at or below the least capacity its passed window ran at, and stales it
+        /// past that. A load added elsewhere on the network changes no fingerprint, so only the
+        /// domain check sees it.
+        #[test]
+        fn the_domain_check_stales_only_past_the_least_capacity_run_at() {
+            use crate::glass::check::DomCap;
+            let tun = GlassTunables::default();
+            let with_load = |others: u32| {
+                let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                b.nodes[p1 as usize].domain = Some(0);
+                let member = |node: Option<u32>, count: u32| Member {
+                    node,
+                    count,
+                    ratio_num: 1,
+                    ratio_den: 1,
+                    impact: 4.0,
+                };
+                b.domains.push(GraphDomain {
+                    head: head(0),
+                    network: 1,
+                    current: 0,
+                    driver: None,
+                    flags: 0,
+                    live_stress: 0.0,
+                    live_capacity: 0.0,
+                    levels: vec![DomainLevel {
+                        selector: 0,
+                        speed_num: 64,
+                        speed_den: 1,
+                        capacity: 1024.0,
+                    }],
+                    members: vec![member(Some(p1), 1), member(None, others)],
+                });
+                (b, p0, p1)
+            };
+            let (b, p0, p1) = with_load(1);
+            let mut g = Glass::default();
+            ingest_all(&mut g, 0, &b.records(1), &tun);
+            let ports = GoodVec::new();
+            for k in 0..=35u64 {
+                let t = k * 100;
+                let inv = invs(ORE, CRUSHED, (t / 10) as i64, (t / 10) as i64);
+                glass_sweep(&mut g, D, t, &inv, &ports, &Liveness::All, &tun);
+            }
+            let c = comp(&g, D);
+            let (ua, ub) = (unit_of(c, p0), unit_of(c, p1));
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert_eq!(
+                c.unit_state[ub as usize].passed_caps,
+                vec![DomCap {
+                    domain: 0,
+                    selector: 0,
+                    capacity: 1024.0
+                }]
+            );
+            assert!(c.unit_state[ua as usize].passed_caps.is_empty());
+            let inv = invs(ORE, CRUSHED, 350, 350);
+            // Two more loads elsewhere on the network: 768 of the 1,024 B ran at. B is kept.
+            let (b2, _, _) = with_load(2);
+            ingest_seen(&mut g, 3550, &b2.records(2), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 2);
+            assert!(c.unit_may_replay(ua) && c.unit_may_replay(ub));
+            assert_eq!(c.unit_state[ub as usize].passed_caps.len(), 1);
+            // Four: 1,280, past it. B goes stale and learns again; A is kept.
+            let (b3, _, _) = with_load(4);
+            ingest_seen(&mut g, 3600, &b3.records(3), &inv, &tun);
+            let c = comp(&g, D);
+            assert_eq!(c.graph.end.compile, 3);
+            let bs = &c.unit_state[ub as usize];
+            assert!(bs.edited && bs.passed_caps.is_empty());
+            assert_eq!(c.unit_window(ub), None);
+            assert!(c.unit_may_replay(ua) && !c.unit_may_replay(ub));
+        }
+
+        /// A partly loaded district (§3.5): the loaded line is live, and the line away replays
+        /// when it may and is gated when it may not. An edit that leaves no unit allowed ends the
+        /// replay (staleness freezes, I5); one that leaves the line away allowed starts it again
+        /// over the same units, and it goes on.
+        #[test]
+        fn a_partial_load_replays_the_units_away_that_may() {
+            for b_may in [true, false] {
+                let (b, p0, p1) = two_lines(ORE, CRUSHED, 10);
+                let mut e = engine_with(&b, Tunables::default(), &lines(1000, (ORE, 1000)));
+                let vb = if b_may { verdict::PASS } else { verdict::FAIL };
+                judge(&mut e, &[(p0, verdict::PASS), (p1, vb)]);
+                feed(
+                    &mut e,
+                    &at(
+                        200,
+                        Obs::ChunkLoaded {
+                            district: D,
+                            chunk: chunk(0),
+                            applied_epoch: 0,
+                        },
+                    ),
+                );
+                feed(&mut e, &load_state(200, LoadState::Partial));
+                e.advance_to(Tick(1200));
+                assert_eq!(model(&e), replay_model::GLASS, "B may: {b_may}");
+                let rp = replay(&e);
+                assert!(!rp.gated()[p0 as usize], "A is live");
+                assert_eq!(rp.gated()[p1 as usize], !b_may);
+                let st = e.sim_stock(D).expect("replaying");
+                assert_eq!(st.get(SHEET), 0, "A's stores are not the replay's: {st:?}");
+                let crushed = if b_may { 100 } else { 0 };
+                assert!((crushed - 2..=crushed).contains(&st.get(CRUSHED)), "{st:?}");
+                // An edit at A's press stales A.
+                feed(
+                    &mut e,
+                    &at(
+                        1200,
+                        Obs::Edit {
+                            district: D,
+                            kind: EditKind::Placed,
+                            player: (1, 2),
+                            pos: BlockPos::new(1, 64, 0),
+                        },
+                    ),
+                );
+                e.advance_to(Tick(2200));
+                if b_may {
+                    assert_eq!(model(&e), replay_model::GLASS);
+                    let st = e.sim_stock(D).expect("replaying");
+                    assert!((195..=200).contains(&st.get(CRUSHED)), "{st:?}");
+                } else {
+                    assert_eq!(model(&e), replay_model::NONE);
+                    assert!(e.sim_stock(D).is_none());
+                }
+                e.check_books().expect("books");
+            }
         }
     }
 }
