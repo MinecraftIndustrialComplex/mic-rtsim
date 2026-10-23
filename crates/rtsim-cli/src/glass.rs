@@ -6,7 +6,8 @@
 //! (§5, slice S2: each section's nodes, stores, box and fingerprint, the stores they share and
 //! their judging groups), and its judging units (slice S2b, with two or more: each unit's sections,
 //! stores and chunks, its open window, its last and passed windows, strikes, edit and whether it may
-//! replay; the extra rows they hold and a row cap's cut, §7.2). `--graph` writes the compile's
+//! replay; the extra rows they hold and a row cap's cut, §7.2; slice S2c: whether each replays or a
+//! fallback froze it, the freezes and the nodes gated off). `--graph` writes the compile's
 //! records for offline checks (§9.4), with
 //! each node's section. A page the engine would drop at its restore (the format before sections,
 //! or sections its compile no longer cuts into, with the default `glass.sectionsMax`) is listed
@@ -211,7 +212,13 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         "veto": c.district_failing().iter().map(|g| iv.good_name(*g)).collect::<Vec<_>>(),
         "extra_rows": c.extra_rows(),
         "unit_rows": c.rows_len(),
-        "units": units(iv, c),
+        "units": units(iv, dg, c),
+        "replay_units": dg.replay.as_ref().filter(|_| c.units.active()).map(|rp| json!({
+            "replaying": rp.units_on().iter().filter(|&&x| x).count(),
+            "frozen": rp.frozen().iter().filter(|&&x| x).count(),
+            "freezes": rp.freezes(),
+            "gated_nodes": rp.gated().iter().filter(|&&x| x).count(),
+        })),
     });
     if graph {
         let mut goods = BTreeSet::new();
@@ -246,9 +253,20 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
 }
 
 /// A compile's judging units (SECTIONS.md §3.4, slice S2b): none listed with fewer than two, as the
-/// district's window is then the one unit's.
-fn units(iv: &IndustryView, c: &Compiled) -> Value {
+/// district's window is then the one unit's. With the glass replay on, whether each replays or a
+/// fallback froze it (§3.5, slice S2c).
+fn units(iv: &IndustryView, dg: &DistrictGlass, c: &Compiled) -> Value {
     let u = &c.units;
+    let on = dg
+        .replay
+        .as_ref()
+        .map(|rp| rp.units_on())
+        .unwrap_or_default();
+    let frozen = dg
+        .replay
+        .as_ref()
+        .map(|rp| rp.frozen().to_vec())
+        .unwrap_or_default();
     (0..c.unit_state.len())
         .map(|i| {
             let st = &c.unit_state[i];
@@ -265,6 +283,8 @@ fn units(iv: &IndustryView, c: &Compiled) -> Value {
                 "strikes": st.strikes,
                 "edited": st.edited,
                 "may_replay": c.unit_may_replay(i as u16),
+                "replaying": on.get(i).copied().unwrap_or(false),
+                "frozen": frozen.get(i).copied().unwrap_or(false),
             })
         })
         .collect::<Vec<_>>()
@@ -392,6 +412,17 @@ fn print_text(v: &Value) {
                     c["sections_cap"].to_string()
                 }
             );
+            let ru = &c["replay_units"];
+            if !ru.is_null() {
+                println!(
+                    "    replay by unit: {} of {} units replay, {} frozen by fallbacks ({} freezes), {} nodes gated off",
+                    ru["replaying"],
+                    us.len(),
+                    ru["frozen"],
+                    ru["freezes"],
+                    ru["gated_nodes"]
+                );
+            }
             let veto = c["veto"].as_array().cloned().unwrap_or_default();
             if !veto.is_empty() {
                 let names: Vec<&str> = veto.iter().filter_map(|g| g.as_str()).collect();
@@ -404,7 +435,7 @@ fn print_text(v: &Value) {
         for (i, u) in us.iter().enumerate() {
             let open = &u["window"];
             println!(
-                "    unit {i}: sections {}, {} stores; window {}; {} windows, last {}, passed {}; {} strikes{}{}",
+                "    unit {i}: sections {}, {} stores; window {}; {} windows, last {}, passed {}; {} strikes{}{}{}",
                 u["sections"],
                 u["stores"].as_array().map_or(0, Vec::len),
                 if open.is_null() {
@@ -430,6 +461,13 @@ fn print_text(v: &Value) {
                 },
                 if u["may_replay"].as_bool() == Some(true) {
                     ", may replay"
+                } else {
+                    ""
+                },
+                if u["frozen"].as_bool() == Some(true) {
+                    ", frozen"
+                } else if u["replaying"].as_bool() == Some(true) {
+                    ", replaying"
                 } else {
                     ""
                 },

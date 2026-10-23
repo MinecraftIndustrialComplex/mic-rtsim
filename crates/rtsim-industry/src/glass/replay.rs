@@ -449,9 +449,9 @@ fn gate_of(comp: &Compiled, sim: &[bool], unit_of: &[u16], on: &[bool]) -> Vec<b
         .filter_map(|v| g.drives[v])
         .collect();
     if !stopped.is_empty() {
-        for v in 0..n {
+        for (v, x) in gate.iter_mut().enumerate() {
             if runs(v) && g.nodes[v].domain.is_some_and(|d| stopped.contains(&d)) {
-                gate[v] = true;
+                *x = true;
             }
         }
     }
@@ -478,7 +478,8 @@ impl Replay {
                     rp.freezes = freezes;
                     return Ok((rp, spec));
                 }
-                Err((i, f, mut rp)) => {
+                Err(e) => {
+                    let (i, f, mut rp) = *e;
                     if !rp.freeze_for(i, f, comp) {
                         return Err(f);
                     }
@@ -499,7 +500,7 @@ impl Replay {
         tun: &GlassTunables,
         at: Tick,
         frozen: &[bool],
-    ) -> Result<(Replay, MemberSpec), (usize, Fallback, Replay)> {
+    ) -> Result<(Replay, MemberSpec), Box<(usize, Fallback, Replay)>> {
         let d = setup.district;
         let (mut whole, levels) = Part::new(comp, setup, goods, tun, at);
         if !comp.unit_state.is_empty() {
@@ -541,7 +542,7 @@ impl Replay {
                     procs.push(proc);
                     bounds.extend(b);
                 }
-                Err(f) => return Err((i, f, rp)),
+                Err(f) => return Err(Box::new((i, f, rp))),
             }
         }
         let spec = MemberSpec {

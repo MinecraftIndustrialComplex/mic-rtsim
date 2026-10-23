@@ -1506,8 +1506,8 @@ impl Compiled {
             times[u] = t;
         }
         // The least capacity each unit's domains ran at in this sample's regime (§3.3).
-        for u in 0..take.len() {
-            if !take[u] || self.unit_state[u].win.is_none() {
+        for (u, &took) in take.iter().enumerate() {
+            if !took || self.unit_state[u].win.is_none() {
                 continue;
             }
             for d in unit_domains(&self.sections, &self.units, u as u16) {
