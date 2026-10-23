@@ -803,6 +803,66 @@ fn a_hunted_lane_is_priced_as_an_expected_loss() {
     );
 }
 
+/// A lane given up by one haven (its share set to 0) passes to another only once nothing raided
+/// for the first is still sailing to it, and the hand-over loses no good: tried at every quantum
+/// after the first haven leaves, the world refuses while a raid is in transit, and its books are
+/// conserved once it accepts. (Found by S8b's `unattended_havens_rise_and_fall_1000_years`:
+/// the hand-over dropped the raid arriving at the next boundary.)
+#[test]
+fn a_lane_passed_to_another_haven_keeps_its_raids_in_transit() {
+    let mut c = coast(5);
+    // Traders keep sending on the hunted lane, so there are raids in transit to drop.
+    c.world.cfg.price_lane_hazard = false;
+    let warm = Tick::from_days(4);
+    c.world.run_until(warm);
+    let lane = (0..c.ships.lanes.len())
+        .max_by_key(|&l| {
+            (
+                allocated(&c.world, c.ships.lanes[l].edge),
+                std::cmp::Reverse(l),
+            )
+        })
+        .expect("a lane");
+    let edge = c.ships.lanes[lane].edge;
+    let first = c.ships.havens[c.haven as usize].node;
+    let ends = [
+        c.world.edges[edge as usize].dirs[0].from,
+        c.world.edges[edge as usize].dirs[1].from,
+    ];
+    let second = (0..c.world.nodes.len())
+        .find(|&i| i != first && !ends.contains(&i))
+        .expect("another node");
+    for dir in 0..2 {
+        assert!(c.world.set_lane_hazard(edge, dir, first, 300, 4, warm));
+    }
+    let left = Tick::from_days(6);
+    c.world.run_until(left);
+    for dir in 0..2 {
+        assert!(c.world.set_lane_hazard(edge, dir, first, 0, 4, left));
+    }
+    let q = c.world.cfg.trade.quantum;
+    let mut passed = [false; 2];
+    let mut refused = 0;
+    let mut b = q.index(left);
+    while !passed.iter().all(|&p| p) {
+        b += 1;
+        assert!(b < q.index(left) + 40, "never passed: {passed:?}");
+        let t = q.at(b) + 1;
+        c.world.run_until(t);
+        for dir in 0..2u8 {
+            if !passed[usize::from(dir)] {
+                passed[usize::from(dir)] = c.world.set_lane_hazard(edge, dir, second, 300, 4, t);
+                refused += u32::from(!passed[usize::from(dir)]);
+                c.world.check_conserved(t).expect("conserved at the hand-over");
+            }
+        }
+    }
+    assert!(refused > 0, "raids were in transit when the first haven left");
+    let end = Tick::from_days(8);
+    c.world.run_until(end);
+    c.world.check_conserved(end).expect("conserved");
+}
+
 /// Overnight choice U18: a merchant that stays embodied across a docking gets its next voyage's
 /// hold (SHIP_CARGO), so the body never keeps goods the flow already landed; its op id comes from
 /// what it is (allocator 0x53; the same when the run is derived again; never another command's).
