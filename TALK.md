@@ -68,7 +68,8 @@ Ben is in Oakford, an adopted plains village. It is raining, mid-morning. Alex s
 ## 2. The gesture
 
 **Crouch (Shift) and right-click a talker with an empty main hand.** The off hand may hold anything
-(a shield, a torch). Nothing opens; the talker says one line, in chat, to that player only.
+(a shield, a torch, food, a pearl): it is not used in that click. Nothing opens; the talker says one
+line, in chat, to that player only.
 
 Facts (vanilla 1.21.1 and NeoForge 21.1, read from the sources; the audit is in §3):
 - **Villager:** `Villager.mobInteract` returns `super.mobInteract` (PASS) when
@@ -92,7 +93,9 @@ Facts (vanilla 1.21.1 and NeoForge 21.1, read from the sources; the audit is in 
 - On the client the same check runs for entity types a plugin registered as always talking
   (villager, wandering trader, ribbit, Umvuthana): the client cancels too, so it neither swings twice
   nor sends the off hand's packet. Talkers decided on the server only (a pillager that is a conflict
-  body) send the off hand's packet, which the server cancels.
+  body) send the off hand's packets: the server cancels the off hand's interact, and also its item
+  use (`RightClickItem`, off hand, from that player in the same tick), so an off-hand pearl, food or
+  bow does not fire with the talk.
 - **Not a talker, or not now:** the event goes on untouched; so it does for a fake player (a Create deployer, any machine) and a frozen or stunned player (§3). A talker that is asleep, mid-trade with
   another player, a baby, or in a fight still answers (§5.4); a dead or removed one does not.
 - `BridgeEvents.onEntityInteract` (the phase 1 repricing before a trade) runs at normal priority and
@@ -113,7 +116,7 @@ when crouching. Talk at HIGHEST, empty main hand only, resolves all of them:
 | vanilla WanderingTrader | crouching still opens trades (any hand) | trade screen | talk cancels both hands |
 | Ribbits 4.1.6 | crouch + amethyst shard sets a ribbit's home; otherwise no crouch check, so a merchant ribbit opens its trades | trade screen | empty main hand only: the shard keeps working, the trade does not open |
 | Mowzie's Mobs 1.8.2 | Umvuthana and Umvuthi open their trade to a masked player, with no crouch check; the Sculptor opens its screen to anyone | trade screen | talkers cancel first. The Sculptor is no talker (one quest NPC, not a people), so it keeps its screen |
-| Mowzie's Mobs 1.8.2, L_Ender's Cataclysm 3.33, Sable Player Ragdoll 0.7.5 | cancel any interaction while the player is frozen, stunned or ragdolled | none | they cancel at NORMAL, after talk's HIGHEST, so talk checks for itself: a player with Mowzie's `frozen` or Cataclysm's `stun` effect does not talk and the click goes on to them untouched. Sable's ragdoll has no public state to read; a ragdolled player who manages a click may hear a line, which is harmless |
+| Mowzie's Mobs 1.8.2, L_Ender's Cataclysm 3.33, Sable Player Ragdoll 0.7.5 | cancel any interaction while the player is frozen, stunned or ragdolled | none | they cancel at NORMAL, after talk's HIGHEST, so talk checks for itself: a player with Mowzie's `frozen` or Cataclysm's `stun` effect does not talk and the click goes on to them untouched. Sable's ragdoll has no public state to read; a ragdolled player who manages a click may hear a line, which is harmless. Mowzie also blocks interaction while a player's ability runs (`AbilityData.interactingPrevented`); talk does not read it, so a player mid-ability may talk, which is harmless too |
 | Create 6.0.10 | `StockTickerInteractionHandler` (EntityInteractSpecific, client too): a seated mob beside a Stock Ticker opens the shop; Create cancels on the client, so no packet reaches the server | a seated shopkeeper never talks | accepted: a shopkeeper is Create's. TK8 |
 | Create 6.0.10 | `ScheduleItemEntityInteraction`: a conductor on a scheduled train | none in practice | conductors are not talkers |
 | Ice and Fire CE 2.1-beta.1 | tamed dragons and other pets: crouch + empty hand opens the inventory (owner only) | none | pets are not talkers; Ice and Fire has no villager-like people |
@@ -341,9 +344,11 @@ lines in its own (`assets/mic_rtsim_ribbits/lang/en_us.json`, `assets/mic_rtsim_
 
 **Keys:** `mic_rtsim.talk.<voice>.<topic>.<n>`, `n` from 0. The server counts each key's variants
 once, at start, from its own language table (NeoForge loads every mod's en_us on a dedicated server
-too), so adding a line is adding a key. A **voice** falls back through its parents until a topic has
-lines: `villager.farmer` to `villager` to `any`; `ribbit.sorcerer` to `ribbit` to `any`;
-`envoy.goblin` to `envoy` to `goblin` to `any`.
+too), so adding a line is adding a key. A **voice** has a chain of levels: `villager.farmer`, then
+`villager`; `ribbit.sorcerer`, then `ribbit`. A topic draws from every level that has lines, the most
+specific at the topic's weight and each parent at 0.6 of the level below, so a farmer's fluff weighs
+1.6 in all; `any` speaks only when no level has lines (TK31). A plugin's voice names its own chain (the
+envoy's, slice 4).
 
 | Topic | When |
 |---|---|
