@@ -5,27 +5,36 @@
 //! built yet prints the slice that builds them. M2 builds the parts of two runs that need only the
 //! cultures as data, on the phase 1 synthetic world with the camp joined at Gloomhollow's place
 //! (`rtsim_conflict::synth::CAMP_POS`):
-//! - **Run 1, the den's ladder:** a Frostmaw den (a lair, MOWZIE.md ledger 13) angered by kills
-//!   in its range, standing in for the rail meter (M7), until its grievance sits between Raid and
-//!   Invasion; then nothing. It goes from Notice straight to Raid (it has no Envoy or Scouts,
-//!   ledger 2), comes again `repeat_days` after each band turns for home (ledger 3), and calms back
-//!   to Notice.
+//! - **Run 1, the den's ladder** (notice, raid, repeat, invasion): a Frostmaw den (a lair, MOWZIE.md
+//!   ledger 13) angered by kills in its range, standing in for the rail meter (M7): first enough
+//!   to sit between Raid and Invasion until Raid's dwell is over, then 1.5 times Invasion's
+//!   threshold for 40 days, then nothing. It goes from Notice straight to Raid (it has no Envoy or
+//!   Scouts, ledger 2), comes again `repeat_days` after each band is home (ledger 3), climbs to
+//!   Invasion, comes again at the top of its ladder, and calms back to Raid and to Notice.
 //! - **Run 5, the grove's ladder:** an Umvuthana grove pushed past Invasion. It goes Notice, Envoy
 //!   (a demand in gold nuggets at the fallback of 9 an emerald, as no market prices gold yet,
-//!   ledger 12), Scouts, Raid and Invasion, and never Siege (it has no siege party).
+//!   ledger 12), Scouts, Raid and Invasion, and never Siege (it has no siege party). Then two
+//!   groves whose haven markets price gold: one demand at 4 nuggets a coin paid in full, one at 9
+//!   refused at the envoy.
 //!
 //! Exit 1 if a check fails, 64 on bad arguments.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use std::collections::BTreeMap;
+
+use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, ConflictStats, LogEntry, Signal};
+use rtsim_conflict::engine::{
+    Conflict, ConflictStats, Demand, LogEntry, Party, Signal, TRIBUTE_PRICE_CAP,
+};
 use rtsim_conflict::{Step, synth};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_knowledge::{ActorId, Temperament, Trait};
 use rtsim_settle::NodeKind;
+use rtsim_trade::{MILLI, PRICE_ONE, Price};
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -37,7 +46,7 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
-        "M2, the ladder on kills",
+        "M2, the ladder on kills: notice, raid, repeat, invasion",
         "the meter M7, ambushes M8, the kill and the body M6",
     ),
     (2, "cut service and stopped service", "", "M7"),
@@ -46,7 +55,7 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         5,
         "the tribe: envoy, raids, invasion, plunder, the grove in and out",
-        "M2, the ladder and the priced demand",
+        "M2, the ladder and the priced demand, paid and refused",
         "the rest M9",
     ),
     (6, "renewal of dens and groves", "", "M6 (den), M9 (grove)"),
@@ -251,9 +260,8 @@ fn theta(c: &Conflict, f: u32, s: Step) -> f64 {
 struct Trace {
     /// Each new rung with the day it was seen.
     rungs: Vec<(f64, Step)>,
-    /// The days its parties turned for home (the feud's `since` once no party is out for it).
-    turns: Vec<f64>,
-    out: bool,
+    /// The most of the faction's bands about at once.
+    most_bands: usize,
 }
 
 /// Kills in the range each day from `from` to `to`, enough that the grievance settles near
@@ -294,14 +302,8 @@ fn feed(
         if tr.rungs.last().map(|r| r.1) != Some(s) {
             tr.rungs.push((t.0 as f64 / TICKS_PER_DAY as f64, s));
         }
-        let out = x.is_some_and(|x| x.party.is_some());
-        if tr.out
-            && !out
-            && let Some(x) = x
-        {
-            tr.turns.push(x.since.0 as f64 / TICKS_PER_DAY as f64);
-        }
-        tr.out = out;
+        let bands = c.parties.iter().filter(|(_, x)| x.faction == f).count();
+        tr.most_bands = tr.most_bands.max(bands);
     }
 }
 
@@ -309,40 +311,52 @@ fn check(out: &mut Vec<Check>, name: &'static str, ok: bool, detail: String) {
     out.push(Check { name, ok, detail });
 }
 
-fn days(c: &Conflict, kind: &str) -> Vec<f64> {
-    c.log
-        .iter()
-        .filter(|e| e.kind == kind)
-        .map(|e| e.day)
-        .collect()
+/// Each repeat: its day, the days since the last band came home before it (MZB-51), and whether
+/// it was an Invasion's.
+fn repeat_gaps(c: &Conflict) -> Vec<(f64, f64, bool)> {
+    let mut home = None;
+    let mut out = Vec::new();
+    for e in &c.log {
+        match e.kind {
+            "home" => home = Some(e.day),
+            "repeat" => out.push((
+                e.day,
+                e.day - home.unwrap_or(f64::NAN),
+                e.what.ends_with("the invasion comes again"),
+            )),
+            _ => {}
+        }
+    }
+    out
 }
 
-/// Run 1's M2 part: the Frostmaw den's ladder on kills.
+/// Run 1's M2 part: the Frostmaw den's ladder on kills, notice, raid, repeat, invasion.
 fn den_ladder(seed: u64, slice: &'static str) -> RunOut {
     let (mut w, mut c, f, p) = setup(seed, "frostmaw");
     let node = c.factions[f as usize].node;
-    let raid = theta(&c, f, Step::Raid);
+    let (raid, inv) = (theta(&c, f, Step::Raid), theta(&c, f, Step::Invasion));
+    let dwell = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .def
+        .dwell_days[Step::Raid.index()];
     let mut tr = Trace::default();
-    feed(
-        &mut c,
-        &mut w,
-        f,
-        p,
-        1.5 * raid,
-        Tick(10),
-        Tick::from_days(60),
-        &mut tr,
-    );
-    feed(
-        &mut c,
-        &mut w,
-        f,
-        p,
-        0.0,
-        Tick::from_days(60),
-        Tick::from_days(160),
-        &mut tr,
-    );
+    // Between Raid and Invasion, a day at a time, until Raid's dwell is over.
+    let mut t = Tick(10);
+    let mut on_raid: Option<Tick> = None;
+    let dwell_ticks = ((dwell + 1.0) * TICKS_PER_DAY as f64) as u64;
+    while on_raid.is_none_or(|d| t < Tick(d.0 + dwell_ticks)) && t < Tick::from_days(60) {
+        let to = Tick(t.0 + TICKS_PER_DAY);
+        feed(&mut c, &mut w, f, p, 1.5 * raid, t, to, &mut tr);
+        t = to;
+        if on_raid.is_none() && tr.rungs.iter().any(|r| r.1 == Step::Raid) {
+            on_raid = Some(t);
+        }
+    }
+    let calm_from = Tick(t.0 + 40 * TICKS_PER_DAY);
+    feed(&mut c, &mut w, f, p, 1.5 * inv, t, calm_from, &mut tr);
+    let end = Tick(calm_from.0 + 140 * TICKS_PER_DAY);
+    feed(&mut c, &mut w, f, p, 0.0, calm_from, end, &mut tr);
     let st = c.stats;
     let mut out = Vec::new();
     check(
@@ -354,43 +368,76 @@ fn den_ladder(seed: u64, slice: &'static str) -> RunOut {
     let order: Vec<Step> = tr.rungs.iter().map(|r| r.1).collect();
     check(
         &mut out,
-        "Notice straight to Raid, back to Notice, then nothing",
-        order.starts_with(&[Step::Notice, Step::Raid, Step::Notice, Step::None])
+        "Notice straight to Raid, Invasion, back to Raid and Notice, then nothing",
+        order
+            == [
+                Step::Notice,
+                Step::Raid,
+                Step::Invasion,
+                Step::Raid,
+                Step::Notice,
+                Step::None,
+            ]
             && st.escalations[Step::Envoy.index()] == 0
             && st.escalations[Step::Scouts.index()] == 0,
         format!(
-            "{order:?}; Raid's threshold {raid:.1}, the grievance held near {:.1}",
-            1.5 * raid
+            "{order:?}; the grievance held near {:.1} (Raid's threshold {raid:.1}) until day \
+             {:.1}, then near {:.1} (Invasion's {inv:.1}) until day {:.1}",
+            1.5 * raid,
+            t.0 as f64 / TICKS_PER_DAY as f64,
+            1.5 * inv,
+            calm_from.0 as f64 / TICKS_PER_DAY as f64
         ),
     );
-    let again = days(&c, "repeat");
-    let turns = &tr.turns;
-    let gaps: Vec<f64> = turns.iter().zip(&again).map(|(h, r)| r - h).collect();
+    let gaps = repeat_gaps(&c);
+    let fed = calm_from.0 as f64 / TICKS_PER_DAY as f64;
+    let invasions = gaps.iter().filter(|g| g.2).count();
     check(
         &mut out,
-        "the band comes again 4 days after it turns for home",
+        "a band comes again 4 days after the last one is home",
         st.repeats >= 3
-            && turns.len() > again.len()
-            && st.parties[PartyKind::Raid.index()] == 1 + st.repeats
-            && gaps.iter().all(|g| (4.0 - 1e-6..4.0 + 1e-3).contains(g)),
+            && st.repeats as usize == gaps.len()
+            && st.parties[PartyKind::Raid.index()] + st.parties[PartyKind::Invasion.index()]
+                == 2 + st.repeats
+            && gaps
+                .iter()
+                .all(|g| g.1 >= 4.0 - 1e-6 && (g.0 >= fed || g.1 <= 4.0 + 1e-3)),
         format!(
-            "{} repeat(s), {} raid(s); days between turning home and coming again: {:?}",
+            "{} repeat(s); days between the last return and coming again: {:?}",
             st.repeats,
-            st.parties[PartyKind::Raid.index()],
-            gaps.iter().map(|g| format!("{g:.2}")).collect::<Vec<_>>()
+            gaps.iter()
+                .map(|g| format!("{:.2}{}", g.1, if g.2 { " (invasion)" } else { "" }))
+                .collect::<Vec<_>>()
         ),
     );
     check(
         &mut out,
-        "never an Invasion below its threshold, never a demand",
-        st.escalations[Step::Invasion.index()] == 0 && st.demands == 0,
-        format!("Invasion's threshold {:.1}", 2.0 * raid),
+        "the Invasion, the top of its ladder, comes again",
+        invasions >= 2
+            && c.cultures
+                .get(c.factions[f as usize].culture)
+                .next_up(Step::Invasion)
+                .is_none(),
+        format!("{invasions} invasion repeat(s)"),
+    );
+    check(
+        &mut out,
+        "never two Frostmaws about, never a demand",
+        tr.most_bands <= 1 && st.demands == 0,
+        format!(
+            "at most {} band(s) at once, {} demand(s)",
+            tr.most_bands, st.demands
+        ),
     );
     check(
         &mut out,
         "the feud wakes a handful of times, never once a tick",
         st.feud_wakes < 2_000,
-        format!("{} feud wakes over 160 days", st.feud_wakes),
+        format!(
+            "{} feud wakes over {:.0} days",
+            st.feud_wakes,
+            end.0 as f64 / TICKS_PER_DAY as f64
+        ),
     );
     books(&mut out, &c, &w);
     RunOut {
@@ -404,7 +451,8 @@ fn den_ladder(seed: u64, slice: &'static str) -> RunOut {
     }
 }
 
-/// Run 5's M2 part: the Umvuthana grove's ladder and its priced demand.
+/// Run 5's M2 part: the Umvuthana grove's ladder, its demand at the fallback price, and two at a
+/// market's price, paid and refused.
 fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
     let (mut w, mut c, f, p) = setup(seed, "umvuthana");
     let inv = theta(&c, f, Step::Invasion);
@@ -477,6 +525,7 @@ fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
         format!("{} repeat(s)", st.repeats),
     );
     books(&mut out, &c, &w);
+    priced_demands(seed, &mut out);
     RunOut {
         run: 5,
         built: false,
@@ -485,6 +534,150 @@ fn grove_ladder(seed: u64, slice: &'static str) -> RunOut {
         rungs: tr.rungs,
         stats: Some(st),
         log: std::mem::take(&mut c.log),
+    }
+}
+
+/// A grove whose haven market prices gold at `price`, angered to `times` Envoy's threshold by one
+/// day's kills, and the demand it makes with what ledger 12 prices it at: `ceil(base × PRICE_ONE /
+/// price)` nuggets, at most `TRIBUTE_PRICE_CAP` times the fallback's 9 a coin (MZB-57).
+type Priced = (World, Conflict, u32, ActorId, Option<(Demand, i64)>);
+
+fn priced_demand(seed: u64, price: Price, times: f64) -> Priced {
+    let (mut w, mut c, f, p) = setup(seed, "umvuthana");
+    let nugget = w.goods.find("gold_nugget").expect("the nugget good");
+    let node = c.factions[f as usize].node;
+    synth::set_price(&mut w, node, nugget, price, Tick(5));
+    c.signal(
+        &mut w,
+        Signal {
+            faction: Some(synth::CAMP),
+            kind: SignalKind::Killing,
+            amount: theta(&c, f, Step::Envoy) * times / 8.0,
+            actor: p,
+            pos: synth::FOREST_POS,
+            district: None,
+        },
+        Tick(10),
+    );
+    let mut t = Tick(10);
+    let mut d = None;
+    while d.is_none() && t < Tick::from_days(5) {
+        t = Tick(t.0 + HOUR);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        d = c.feud(f, p).and_then(|x| x.demand);
+    }
+    let asked = d.and_then(|d| {
+        let x = c.feud(f, p)?;
+        let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
+        let bend = Temperament::from_seed(c.factions[f as usize].chief_seed).bend(
+            Trait::Aggressive,
+            1000,
+            50,
+        );
+        let per_coin = (PRICE_ONE as f64 / price as f64).min(TRIBUTE_PRICE_CAP * 9.0);
+        let g = x.g.total_at(d.made, lambda);
+        let ok = d.good == nugget && x.g.anchor == d.made && w.market(node).price(nugget) == price;
+        ok.then(|| {
+            (
+                d,
+                (0.5 * g * f64::from(bend) / 1000.0 * per_coin).ceil() as i64,
+            )
+        })
+    });
+    (w, c, f, p, asked)
+}
+
+/// Run 5's priced demands: one at 4 nuggets a coin paid in full (part of it first does not
+/// settle it), one at 9 refused at the envoy (the grove climbs to Scouts).
+fn priced_demands(seed: u64, out: &mut Vec<Check>) {
+    let (mut w, mut c, f, p, asked) = priced_demand(seed.wrapping_add(1), PRICE_ONE / 4, 1.2);
+    match asked {
+        Some((d, want)) => {
+            let at = Tick(d.made.0 + HOUR);
+            let _ = c.take_commands();
+            let part = BTreeMap::from([(d.good, (d.tribute - 1) * MILLI)]);
+            let short = !c.pay_tribute(&mut w, synth::CAMP, p, None, &part, at);
+            let rest = BTreeMap::from([(d.good, MILLI)]);
+            let paid = c.pay_tribute(&mut w, synth::CAMP, p, None, &rest, at);
+            let calm = c
+                .feud(f, p)
+                .is_some_and(|x| x.demand.is_none() && x.step == Step::Notice);
+            let told = c
+                .take_commands()
+                .iter()
+                .any(|m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_PAID));
+            let booked = c.ledger.tribute.get(&d.good) == Some(&i128::from(d.tribute * MILLI));
+            check(
+                out,
+                "a demand at 4 nuggets a coin, paid in full, settles it",
+                d.tribute == want
+                    && short
+                    && paid
+                    && calm
+                    && told
+                    && booked
+                    && c.stats.tributes == 1
+                    && c.check(&w).is_ok(),
+                format!(
+                    "asked {} gold_nugget (ceil of base x 4 is {want}); paying {} first settled \
+                     nothing, the rest settled it: {paid}, back to Notice: {calm}, the plugin told \
+                     it was paid: {told}",
+                    d.tribute,
+                    d.tribute - 1
+                ),
+            );
+        }
+        None => check(
+            out,
+            "a demand at 4 nuggets a coin",
+            false,
+            "no demand at the market's price".into(),
+        ),
+    }
+    let (mut w, mut c, f, p, asked) = priced_demand(seed.wrapping_add(2), PRICE_ONE / 9, 2.0);
+    match asked.and_then(|(d, want)| Some((d, want, d.envoy?))) {
+        Some((d, want, envoy)) => {
+            let _ = c.take_commands();
+            let answer = Obs::EnvoyAnswer(boundary::EnvoyAnswer {
+                agent: Party::agent(envoy),
+                epoch: c.parties[envoy].epoch,
+                answer: boundary::ANSWER_REFUSED,
+                player: synth::PLAYER,
+            });
+            c.ingest(
+                &mut w,
+                &mut NoInfrastructure,
+                &answer,
+                Tick(d.made.0 + HOUR),
+            );
+            let step = c.feud(f, p).map(|x| (x.step, x.demand.is_none()));
+            let told = c
+                .take_commands()
+                .iter()
+                .any(|m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_REFUSED));
+            check(
+                out,
+                "a demand at 9 nuggets a coin, refused at the envoy, climbs to Scouts",
+                d.tribute == want
+                    && step == Some((Step::Scouts, true))
+                    && told
+                    && c.stats.expired == 1
+                    && c.stats.tributes == 0
+                    && c.stats.parties[PartyKind::Scouts.index()] == 1
+                    && c.check(&w).is_ok(),
+                format!(
+                    "asked {} gold_nugget (ceil of base x 9 is {want}); then {step:?}, the \
+                     plugin told it was refused: {told}",
+                    d.tribute
+                ),
+            );
+        }
+        None => check(
+            out,
+            "a demand at 9 nuggets a coin carried by an envoy",
+            false,
+            "no demand at the market's price, or no envoy".into(),
+        ),
     }
 }
 
