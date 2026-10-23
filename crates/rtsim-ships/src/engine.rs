@@ -4563,8 +4563,8 @@ impl Ships {
         ashore + in_port
     }
 
-    /// Navy `nv` breaks haven `h` (§2.4.6a rule 3, PC7, PC33): every ship in port is sunk by the navy
-    /// (no player did it, so no pressure, S0), the men ashore are gone (the pool to 0), and the
+    /// Navy `nv` breaks haven `h` (§2.4.6a rule 3, PC7, PC33): every ship in port is sunk by the
+    /// navy (no player did it, so no pressure, S0), the men ashore are gone (the pool to 0), and the
     /// haven refits nothing while broken. Its ships at sea finish their hunts and are laid up as
     /// they come home ([`Self::home`]); with no active ship left it shuts, broken, and its site
     /// refounds after `min(384, 48 x 2^P)` days (rule 5).
