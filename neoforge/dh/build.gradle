@@ -9,6 +9,11 @@ plugins {
 // train source is mic_rtsim_create's, which the dev client below loads beside it.
 evaluationDependsOn(':core')
 evaluationDependsOn(':create')
+// -PfarIceAndFire: the dev client loads mic_rtsim_iceandfire and Ice and Fire too, so the far dragons have their
+// real models (docs/choices-dh-feed.md DHT65); without it they stay boxes
+def farIceAndFire = project.hasProperty('farIceAndFire')
+if (farIceAndFire)
+    evaluationDependsOn(':iceandfire')
 
 version = mod_version
 group   = mod_group_id
@@ -118,6 +123,11 @@ neoForge {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+        if (farIceAndFire) {
+            "mic_rtsim_iceandfire" {
+                sourceSet(project(':iceandfire').sourceSets.main)
+            }
+        }
     }
 }
 
@@ -130,6 +140,8 @@ dependencies {
     runtimeOnly project(':core').micNativeFiles
     runtimeOnly project(':create')
     runtimeOnly dhFiles
+    if (farIceAndFire)
+        runtimeOnly project(':iceandfire')
 
     // Pure-Java unit tests of the staircase cut, the heading rule and the re-cut pacing (no DH, no Minecraft).
     testImplementation(platform("org.junit:junit-bom:${junit_version}"))

@@ -146,6 +146,12 @@ public final class CarriageLook implements FarLook {
         return Status.PENDING;
     }
 
+    /** The midpoint (carriage-local) the mesh of {@code hash} turns about, or null when none is baked ({@link CarriageProbe}). */
+    float[] midOf(long hash) {
+        Mesh mesh = meshes.get(hash);
+        return mesh == null ? null : new float[]{mesh.midX, mesh.midY, mesh.midZ};
+    }
+
     @Override
     public boolean place(FarMover m, double[] seg, double clock, boolean live, FarModel out) {
         Mesh mesh = meshes.get(m.shape());
@@ -330,12 +336,21 @@ public final class CarriageLook implements FarLook {
                     parts.add(new FarModel.Part(LAYERS[i], vb, n));
                 }
             }
+        } catch (RuntimeException | LinkageError e) {
+            for (FarModel.Part part : parts)
+                part.buffer().close();
+            throw e;
         } finally {
             j.abandon();
         }
         uploadNanos += System.nanoTime() - t1;
+        if (parts.isEmpty()) {
+            // Nothing drew (its blocks all drawn by block entities, its bogeys a style with no mesh): a box (DHT63)
+            failed.add(j.hash);
+            wanted.remove(j.hash);
+            return;
+        }
         Direction forward = Direction.from3DDataValue(shape.assembly()).getOpposite();
-        // A carriage with no drawable block is still placed (its bogeys), never a missing mesh asked for again
         meshes.put(j.hash, new Mesh(List.copyOf(parts), midX, midY, midZ, forwardToX(forward),
                 (float) Math.sqrt(maxR2) + 1.5f, now));
         bakes++;

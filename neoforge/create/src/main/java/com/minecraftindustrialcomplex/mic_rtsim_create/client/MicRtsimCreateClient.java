@@ -25,7 +25,9 @@ public final class MicRtsimCreateClient {
         NeoForge.EVENT_BUS.addListener(TrainFarSource::onJoin);
         NeoForge.EVENT_BUS.addListener(TrainFarSource::onLeave);
         NeoForge.EVENT_BUS.addListener(TrainFarSource::onLoggingOut);
-        if (FarTrainBench.ENABLED)
+        if (FarTrainBench.ENABLED) {
             NeoForge.EVENT_BUS.addListener(TrainSyncMeter::onClientTick);
+            NeoForge.EVENT_BUS.addListener(CarriageProbe::onClientTick);
+        }
     }
 }

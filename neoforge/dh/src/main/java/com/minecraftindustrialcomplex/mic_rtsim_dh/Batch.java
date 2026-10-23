@@ -18,7 +18,9 @@ import net.minecraft.client.renderer.RenderType;
  * Render thread.
  */
 final class Batch implements MultiBufferSource {
-    private static final Map<RenderType, RenderType> WRAPPED = new IdentityHashMap<>();
+    /** Past this many render types' buffers, the ones not drawn this frame are freed. */
+    private static final int MAX_TYPES = 16;
+    private final Map<RenderType, RenderType> wrapped = new IdentityHashMap<>();
     private final Map<RenderType, ByteBufferBuilder> memory = new LinkedHashMap<>();
     private final Map<RenderType, BufferBuilder> started = new LinkedHashMap<>();
     private final boolean dh;
@@ -40,48 +42,82 @@ final class Batch implements MultiBufferSource {
         return b;
     }
 
-    /** Draws what was written, opaque types first and the sorted (translucent) ones after. */
+    /**
+     * Draws what was written, opaque types first and the sorted (translucent) ones after. A type whose build or
+     * draw throws loses its buffer (it may hold half a vertex) and the others still draw; the first failure is
+     * thrown after.
+     */
     void endBatch() {
-        try {
-            for (int pass = 0; pass < 2; pass++)
-                for (Map.Entry<RenderType, BufferBuilder> e : started.entrySet()) {
-                    RenderType rt = e.getKey();
-                    if (rt.sortOnUpload() != (pass == 1))
-                        continue;
-                    MeshData md = e.getValue().build();
+        RuntimeException failed = null;
+        for (int pass = 0; pass < 2; pass++)
+            for (Map.Entry<RenderType, BufferBuilder> e : started.entrySet()) {
+                RenderType rt = e.getKey();
+                if (rt.sortOnUpload() != (pass == 1))
+                    continue;
+                MeshData md = null;
+                try {
+                    md = e.getValue().build();
                     if (md == null)
                         continue;
                     vertices += md.drawState().vertexCount();
                     if (rt.sortOnUpload())
                         md.sortQuads(memory.get(rt), RenderSystem.getVertexSorting());
-                    rt.draw(md);
+                    rt.draw(md); // uploads it, which closes it
+                } catch (RuntimeException | LinkageError x) {
+                    drop(rt);
+                    if (failed == null)
+                        failed = x instanceof RuntimeException r ? r : new IllegalStateException(x);
+                } finally {
+                    if (md != null)
+                        md.close(); // a second close does nothing
                 }
-        } finally {
-            started.clear();
-        }
+            }
+        trim();
+        started.clear();
+        if (failed != null)
+            throw failed;
     }
 
-    /** Drops what was written and not drawn (a draw that failed half way). */
+    /** Drops what was written and not drawn (a draw that failed half way): every started type loses its buffer. */
     void discard() {
-        for (BufferBuilder b : started.values()) {
-            MeshData md = b.build();
-            if (md != null)
-                md.close();
-        }
+        for (RenderType rt : started.keySet())
+            drop(rt);
         started.clear();
     }
 
     /** Frees the buffers' memory (the client left its world). */
     void close() {
-        discard();
+        started.clear();
         for (ByteBufferBuilder m : memory.values())
             m.close();
         memory.clear();
+        wrapped.clear();
+    }
+
+    /** Frees {@code rt}'s buffer; the next draw of that type starts a new one. */
+    private void drop(RenderType rt) {
+        ByteBufferBuilder m = memory.remove(rt);
+        if (m != null)
+            m.close();
+    }
+
+    /** Past {@link #MAX_TYPES}, frees the buffers of the types not drawn this frame. */
+    private void trim() {
+        if (memory.size() <= MAX_TYPES)
+            return;
+        memory.entrySet().removeIf(e -> {
+            if (started.containsKey(e.getKey()))
+                return false;
+            e.getValue().close();
+            return true;
+        });
+        if (wrapped.size() > 4 * MAX_TYPES)
+            wrapped.values().removeIf(w -> !memory.containsKey(w));
     }
 
     /** A render type that sets up as {@code rt} does, then puts DH's depth function and framebuffer back. */
-    private static RenderType inDh(RenderType rt) {
-        return WRAPPED.computeIfAbsent(rt, o -> new RenderType(MicRtsimDh.MODID + "_dh_" + o, o.format(), o.mode(),
+    private RenderType inDh(RenderType rt) {
+        return wrapped.computeIfAbsent(rt, o -> new RenderType(MicRtsimDh.MODID + "_dh_" + o, o.format(), o.mode(),
                 o.bufferSize(), false, o.sortOnUpload(), () -> {
                     o.setupRenderState();
                     FarModelRenderer.dhState();

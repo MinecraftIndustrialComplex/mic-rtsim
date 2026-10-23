@@ -2,7 +2,6 @@ package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
 import com.mojang.logging.LogUtils;
 import com.seibel.distanthorizons.api.DhApi;
-import com.minecraftindustrialcomplex.mic_rtsim.client.FarLooks;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiBeforeGenericRenderCleanupEvent;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiBeforeGenericRenderSetupEvent;
 import com.seibel.distanthorizons.api.methods.events.abstractEvents.DhApiLevelLoadEvent;
@@ -75,11 +74,6 @@ public final class MicRtsimDh {
         NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut e) -> {
             FarTrainView.releaseAll();
             FarModelRenderer.releaseAll();
-        });
-        // The looks' cold first draws (Create's bogeys), behind the loading screen; DH draws nothing on a Mac
-        NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingIn e) -> {
-            if (!FarGates.MAC && DhFarConfig.detail() != FarDetail.OFF)
-                FarLooks.prewarmAll();
         });
         if (FarBench.ENABLED)
             FarBench.register();
