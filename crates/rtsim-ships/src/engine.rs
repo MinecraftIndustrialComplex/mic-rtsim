@@ -3420,7 +3420,7 @@ impl Ships {
     /// something to take (stock to reach and room in the hold; PC70). The square law decides the
     /// losses, booked as the toll's (PC12); the survivors carry off `port_raid_carry` items a
     /// man (coins as any good, PC43), clipped to the hold's room and to `loot_share_milli` of each
-    /// stock, apportioned over the goods, through `World::stock_to_held`, into the pirate's hold:
+    /// line's surplus over its target (PC72), apportioned over the goods, through `World::stock_to_held`, into the pirate's hold:
     /// the haven's landing and a sinking's destruction carry them as any held goods.
     /// A broken haven's pirate never raids (§2.4.6a rule 3, PC36): its band is gone.
     /// Public so a test can raid with a hold it has filled (the engine calls it from
@@ -3458,10 +3458,16 @@ impl Ships {
             - Self::hold_slot_milli(w, &self.ships[s].cargo))
         .max(0);
         let m = w.market(node);
+        // A raid takes from each line's surplus over its target only, coins included (PC72): the
+        // stock the market drains out anyway (E8). Below the target a raided line needs imports
+        // or a mint to refill, and the quiet economy sends neither (PC72, PC73).
         let caps: Vec<(GoodId, Amount)> = w
             .goods
             .ids()
-            .map(|g| (g, m.stock(g) * self.tun.loot_share_milli / 1000))
+            .map(|g| {
+                let surplus = (m.stock(g) - m.line(g).target).max(0);
+                (g, surplus * self.tun.loot_share_milli / 1000)
+            })
             .filter(|e| e.1 > 0)
             .collect();
         let weights: Vec<i64> = caps.iter().map(|e| e.1).collect();
@@ -3482,7 +3488,7 @@ impl Ships {
                 return;
             }
         }
-        // The loot: what the survivors carry, to the hold's room, at most a share of each stock.
+        // The loot: what the survivors carry, to the hold's room, at most a share of each surplus.
         let survivors = i64::from(self.ships[s].crew);
         let split = |carry: i64| -> BTreeMap<GoodId, Amount> {
             let shares = apportion(carry.min(reach), &weights);
