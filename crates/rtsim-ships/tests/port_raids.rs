@@ -600,7 +600,7 @@ fn a_hold_never_passes_its_capacity_and_a_sunk_pirate_loses_its_port_loot() {
         let mut op = 0xB0A7_0000 + seed * 1000;
         let villages = village_nodes(&s.world);
         while t < Tick::from_days(150) {
-            if t.get() % (TICKS_PER_DAY * 24) == 0 {
+            if t.get().is_multiple_of(TICKS_PER_DAY * 24) {
                 for &v in &villages {
                     enrich(&mut s.world, v, 128_000, t);
                 }
@@ -880,8 +880,9 @@ fn port_raids_measured() {
 /// already holds goods (taken from a village into its hold by the test, as any held goods) raids
 /// a port made rich (PC72: a raid takes from the surplus over the target only): the merged hold,
 /// by the hold's own floor-per-good measure, never passes its capacity, across many part-full
-/// holds, and the world's check holds. Port raids alone never meet a part full hold (a hunt has
-/// one raid and the hold is emptied at home), so this makes one.
+/// holds. (The world's check is not called: each trial's hold is destroyed outside the ledger.)
+/// Port raids alone never meet a part full hold (a hunt has one raid and the hold is emptied at
+/// home), so this makes one.
 #[test]
 fn a_raid_fills_a_part_full_hold_exactly_to_its_capacity() {
     let tun = ShipTunables {
@@ -1022,10 +1023,14 @@ fn a_port_raid_takes_only_the_surplus() {
                 let (stock, target) = before[k];
                 let after = m.stock(g);
                 if stock <= target {
-                    assert_eq!(after, stock, "seed {seed} trial {trial} good {k}: at its target");
+                    assert_eq!(
+                        after, stock,
+                        "seed {seed} trial {trial} good {k}: at its target"
+                    );
                 } else {
+                    let share = (stock - target) * tun.loot_share_milli / 1000;
                     assert!(
-                        after >= target && after <= stock,
+                        after >= target && after >= stock - share && after <= stock,
                         "seed {seed} trial {trial} good {k}: {stock} to {after}, target {target}"
                     );
                     took_coins += usize::from(s.world.goods.is_currency(g) && after < stock);
@@ -1037,7 +1042,10 @@ fn a_port_raid_takes_only_the_surplus() {
         }
     }
     assert!(raided >= 24, "{raided} raids");
-    assert!(took_coins > 0, "a raid takes coins over the treasury's target");
+    assert!(
+        took_coins > 0,
+        "a raid takes coins over the treasury's target"
+    );
 }
 
 /// The share of haven sites open (sampled every 24 days), the port raids fought and the villages
@@ -1092,5 +1100,8 @@ fn port_raids_leave_the_villages_solvent() {
         assert_eq!(on[k].2, 0, "seed {seed}: a village went broke");
     }
     let gap: f64 = on.iter().zip(off).map(|(a, b)| b.0 - a.0).sum::<f64>() / seeds.len() as f64;
-    assert!(gap <= 0.05, "sites open {gap:.3} under the pair's: {on:?} {off:?}");
+    assert!(
+        gap <= 0.05,
+        "sites open {gap:.3} under the pair's: {on:?} {off:?}"
+    );
 }
