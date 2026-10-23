@@ -794,7 +794,7 @@ fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
     let p = r.raid().unwrap();
     let mut t = r.c.now();
     while r.c.parties[p].phase != Phase::Home {
-        t = t + 200;
+        t += 200;
         r.run(t);
         assert!(t < day(20.0), "the party never walked home");
     }
