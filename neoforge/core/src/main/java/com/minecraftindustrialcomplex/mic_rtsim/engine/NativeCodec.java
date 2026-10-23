@@ -90,6 +90,9 @@ import java.util.UUID;
  *   <li>34 NEST_DAY: u64 ticks. The oil nests' day (their watch period and the unit of their waits,
  *       OILGATE.md §4.6) is this many ticks from now on; 0 restores the default (an engine opened with
  *       {@code FLAG_TEST} only; the nest GameTests).</li>
+ *   <li>40 TALK_REPORT: u64 village, u16 kind, u8 severity, u8 flags, who (u8 class, u64 a, u64 b), whom
+ *       (the same), i32 x, i32 z, u32 ago. One report put on a village's noticeboard (TK40; a TALK ref's
+ *       class and ids, docs/boundary.md §13.2; an engine opened with {@code FLAG_TEST} only).</li>
  * </ul>
  *
  * <p><b>The received log</b>: entries of u64 handover, u64 obsSeq (0 if not journaled), u32 flags
@@ -130,6 +133,8 @@ final class NativeCodec {
     static final int TRIBUTE_START = 32;
     // 33: left free (a gap between peers' order codes).
     static final int NEST_DAY = 34;
+    // 35 to 39: left free (a gap between peers' order codes).
+    static final int TALK_REPORT = 40;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -391,6 +396,27 @@ final class NativeCodec {
             return end();
         }
 
+        Orders talkReport(long village, int kind, int severity, int flags, NativeEngine.TalkActor who,
+                          NativeEngine.TalkActor whom, int x, int z, long ago) {
+            begin(TALK_REPORT);
+            u64(village);
+            u16(kind);
+            u8(severity);
+            u8(flags);
+            actor(who);
+            actor(whom);
+            u32(x);
+            u32(z);
+            u32((int) ago);
+            return end();
+        }
+
+        private void actor(NativeEngine.TalkActor a) {
+            u8(a.cls());
+            u64(a.a());
+            u64(a.b());
+        }
+
         Orders industryCommand(List<NativeEngine.DictEntry> names, byte[] record) {
             begin(INDUSTRY_COMMAND);
             u32(names.size());
@@ -487,6 +513,16 @@ final class NativeCodec {
         private void u32(int v) {
             room(4);
             b.putInt(v);
+        }
+
+        private void u16(int v) {
+            room(2);
+            b.putShort((short) v);
+        }
+
+        private void u8(int v) {
+            room(1);
+            b.put((byte) v);
         }
 
         private void f32(float v) {

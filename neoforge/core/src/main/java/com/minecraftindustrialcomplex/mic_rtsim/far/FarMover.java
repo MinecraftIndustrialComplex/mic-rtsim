@@ -30,10 +30,13 @@ package com.minecraftindustrialcomplex.mic_rtsim.far;
  * @param circle         the circle it flies, or null
  * @param entity         the client's network id of the real entity, or -1: while the client's level has an
  *                       entity of that id, a far view hides the mover (research note §5)
+ * @param shape          what it looks like: a {@link FarShape}'s hash (a carriage's blocks), whose bytes the far
+ *                       feed's client keeps; 0 for none (drawn as a box)
+ * @param age            its age in days (a dragon's, for its size between stages), or -1 for unknown
  */
 public record FarMover(FarKey key, FarKind kind, String dimension, double[] prev, double[] cur,
         double sampleTick, double intervalTicks, int rgb, boolean real, FarState state, int style, int variant,
-        int size, FarCircle circle, int entity) {
+        int size, FarCircle circle, int entity, long shape, int age) {
 
     public FarMover {
         if (prev.length != 6 || cur.length != 6)
@@ -44,11 +47,19 @@ public record FarMover(FarKey key, FarKind kind, String dimension, double[] prev
             throw new IllegalArgumentException("a mover's state must be set and not GONE, got " + state);
     }
 
+    /** A mover with no shape and no age. */
+    public FarMover(FarKey key, FarKind kind, String dimension, double[] prev, double[] cur, double sampleTick,
+            double intervalTicks, int rgb, boolean real, FarState state, int style, int variant, int size,
+            FarCircle circle, int entity) {
+        this(key, kind, dimension, prev, cur, sampleTick, intervalTicks, rgb, real, state, style, variant, size, circle,
+                entity, 0L, -1);
+    }
+
     /** A carriage-like mover, as phase 1's sources make them: moving, one style, no circle, no entity id. */
     public FarMover(FarKey key, FarKind kind, String dimension, double[] prev, double[] cur, double sampleTick,
             double intervalTicks, int rgb, boolean real) {
         this(key, kind, dimension, prev, cur, sampleTick, intervalTicks, rgb, real, FarState.MOVING, 0, 0, 0,
-                null, -1);
+                null, -1, 0L, -1);
     }
 
     /** How far along the move from {@code prev} to {@code cur} the mover is at {@code now}, from 0 to 1. */

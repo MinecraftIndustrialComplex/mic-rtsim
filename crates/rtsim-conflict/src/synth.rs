@@ -21,6 +21,8 @@ use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::rng::{StreamKey, SystemId};
 use rtsim_settle::Pos;
+use rtsim_trade::tunables::Ratio;
+use rtsim_trade::{GoodId, Price};
 use rtsim_world::synth::SynthGoods;
 use rtsim_world::{World, WorldConfig};
 
@@ -82,6 +84,19 @@ pub fn define_names(c: &mut Conflict, w: &World) {
     c.define(4, 3, "minecraft:pillager_outpost");
     c.define(boundary::DICT_POLLUTION, 1, "destroy:smog");
     c.define(boundary::DICT_POLLUTION, 2, "destroy:radioactivity");
+}
+
+/// Sets good `g`'s price at node `i`'s market to `price` (millionths of a coin), flat whatever its
+/// stock: a market that prices a good no recipe makes there, as the gold nuggets of the
+/// Umvuthana's tribute (MOWZIE.md ledger 12). A storehouse only; a base keeps no curves.
+pub fn set_price(w: &mut World, i: usize, g: GoodId, price: Price, at: Tick) {
+    w.run_until(at);
+    let region = w.nodes[i].region;
+    w.markets.apply(region, at, |m, _| {
+        let c = &mut m.goods[g.index()].curve;
+        c.anchor = price;
+        c.r = Ratio::new(0, 1);
+    });
 }
 
 /// The refinery: a vault, a distiller and a smelter at the Thornwood's edge, half-walled (6 gaps

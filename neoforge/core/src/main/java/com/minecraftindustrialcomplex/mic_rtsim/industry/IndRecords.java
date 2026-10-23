@@ -81,6 +81,8 @@ public final class IndRecords {
     public static final int IND_STATION = 0x0413;
     public static final int IND_PACKAGE = 0x0414;
     public static final int IND_STATION_PORTS = 0x0415;
+    /** A train called at a station outside every district: the engine ends its leg there (choice SG50). */
+    public static final int IND_TRAIN_UNWATCHED = 0x0416;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
     public static final int IND_SPAWN_SAMPLE = 0x0430;
@@ -347,6 +349,13 @@ public final class IndRecords {
         public static int size(int n) {
             return (INVENTORIES + 4 * n + 7) & ~7;
         }
+    }
+
+    /** IND_TRAIN_UNWATCHED (choice SG50), aux 0. */
+    public static final class TrainUnwatched {
+        public static final int TRAIN = 24;   // u64
+        public static final int STATION = 32; // u64
+        public static final int SIZE = 40;
     }
 
     /** IND_PACKAGE, aux = n entries. */
