@@ -590,6 +590,51 @@ impl Ships {
         })
     }
 
+    // ---- pirates --------------------------------------------------------------------------------
+
+    /// A pirate that reaches lane `lane` and finds it closed since it sailed (PC91): no hunt
+    /// begins, so no share, no toll and no feeding; it turns for home at once, a fruitless
+    /// sortie. Whether the lane was closed.
+    pub(crate) fn reach_closed_lane(&mut self, w: &mut World, s: ShipId, lane: u32, at: Tick) -> bool {
+        let edge = self.lanes[lane as usize].edge;
+        if edge == u32::MAX || !w.lane_closed(edge) {
+            return false;
+        }
+        self.stats.fruitless += 1;
+        let h = self.haven_of(s).expect("a pirate");
+        let dock = self.havens[h as usize].dock;
+        let from = self.pirate_pos(w, s, at);
+        let path = self.sail_path(s, from, (dock.0, dock.2), at);
+        let arrive = path.t1;
+        let plan = self.bump(s);
+        self.book_pirate_leg(w, s, path);
+        if let Some(p) = self.ships[s].pirate.as_mut() {
+            p.state = PState::Homebound { arrive };
+        }
+        if self.ships[s].embodied {
+            let epoch = self.ships[s].epoch;
+            self.outbox.push(Cmd::Depart(boundary::Depart {
+                agent: Ship::agent(s),
+                epoch,
+                reason: 1,
+                timeout_ticks: 2_400,
+                pos: (
+                    f64::from(dock.0),
+                    f64::from(self.cruise_y_of(s)),
+                    f64::from(dock.2),
+                ),
+            }));
+        }
+        self.schedule(arrive, Ev::Home { ship: s, plan });
+        self.note(
+            at,
+            "leave",
+            Some(s),
+            format!("finds lane {lane} closed and turns for haven {h}"),
+        );
+        true
+    }
+
     // ---- invariants ----------------------------------------------------------------------------
 
     /// Rule 7's invariants: the world's lanes match the rule, a laid-up merchant slot belongs to
@@ -765,5 +810,201 @@ impl Ships {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rtsim_ecology::infra::NoInfrastructure;
+
+    use super::*;
+    use crate::synth;
+
+    /// Closes trade port `d` now as a check would (blockaded and closed at `at`, its next check
+    /// booked) and lays up what the rule says.
+    fn close(c: &mut synth::Coastal, d: u32, at: Tick) {
+        let (w, s) = (&mut c.world, &mut c.ships);
+        assert!(s.is_trade_port(w, d), "dock {d}");
+        let p = s.ports.entry(d).or_default();
+        p.blockaded = p.blockaded.or(Some(at));
+        p.closed = Some(at);
+        s.stats.closures += 1;
+        let when = at + s.check_ticks();
+        s.book_check(d, when);
+        s.resettle(w, d, at);
+        s.check(w).expect("checks after the closure");
+    }
+
+    fn run(c: &mut synth::Coastal, to: Tick) {
+        let mut t = c.ships.now();
+        while t < to {
+            t = (t + TICKS_PER_DAY).min(to);
+            c.ships.run_until(&mut c.world, &mut NoInfrastructure, t);
+            c.ships
+                .check(&c.world)
+                .unwrap_or_else(|e| panic!("day {}: {e}", t.0 / TICKS_PER_DAY));
+        }
+    }
+
+    /// The coast with no pirates (so no heat: the ports' own checks reopen them once their
+    /// minimum is up) and the navy.
+    fn quiet_coast(seed: u64) -> synth::Coastal {
+        synth::coastal_with(seed, ShipTunables::default(), 0, true)
+    }
+
+    /// A merchant service calling at two trade ports, and the two (sea docks, in dock order).
+    fn two_port_service(c: &synth::Coastal) -> (u32, u32, u32) {
+        let s = &c.ships;
+        (0..s.services.len() as u32)
+            .find_map(|v| {
+                let sv = &s.services[v as usize];
+                if sv.kind != ServiceKind::Merchant {
+                    return None;
+                }
+                let docks: BTreeSet<u32> = sv
+                    .legs
+                    .iter()
+                    .flat_map(|g| [g.from_dock, g.to_dock])
+                    .filter(|&d| s.is_trade_port(&c.world, d))
+                    .collect();
+                let mut it = docks.into_iter();
+                Some((v, it.next()?, it.next()?))
+            })
+            .expect("a service with two trade ports")
+    }
+
+    /// PC93, the review's probe: a service laid up by port `a`'s closure (day 10) and then by
+    /// `b`'s too (day 20) stays laid up since day 10 when `a` reopens (day 40, its 30 days up)
+    /// and `b` is still closed. Laid-up since the earliest closure among the ports closed now,
+    /// it moved to day 20, so a voyage that departed between the two closures, laid up when it
+    /// sailed, became a voyage under way with cargo.
+    #[test]
+    fn laid_up_since_holds_when_the_earlier_port_reopens() {
+        let mut c = quiet_coast(1);
+        let (v, a, b) = two_port_service(&c);
+        let (t1, t2) = (Tick::from_days(10), Tick::from_days(20));
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        run(&mut c, t2);
+        close(&mut c, b, t2);
+        assert_eq!(c.ships.laid_up_since(v), Some(t1));
+        let id = c.ships.service_ships[v as usize].ids().next().expect("a ship");
+        let gap = (0..10_000u64)
+            .find(|&n| {
+                c.ships
+                    .voyage_dir(id, n)
+                    .is_some_and(|(_, _, t, _)| t.depart >= t1.0 as i64 && t.depart < t2.0 as i64)
+            })
+            .expect("a voyage between the closures");
+        assert!(c.ships.voyage_laid_up(id, gap));
+        run(&mut c, Tick::from_days(45));
+        assert!(!c.ships.port_closed(a), "a reopened after its minimum");
+        assert!(c.ships.port_closed(b));
+        assert!(c.ships.service_laid_up(v), "b is still closed");
+        assert_eq!(c.ships.laid_up_since(v), Some(t1));
+        assert!(c.ships.voyage_laid_up(id, gap));
+    }
+
+    /// Two closed ports on one service, the PC93 bookkeeping end to end on the quiet coast: `a`
+    /// closes on day 10 and `b` on day 20; `a` reopens at its first check after day 40 and the
+    /// service stays laid up since day 10, its ships in port; `b` reopens at its first after day
+    /// 50 and the service sails: its lay-up is forgotten and its ships are booked to relaunch.
+    /// `a` closing again on day 70 lays it up since day 70. Once both ports are open, cold and
+    /// past their blockade, neither keeps a state (PC96).
+    #[test]
+    fn a_service_calling_at_two_closed_ports() {
+        let mut c = quiet_coast(2);
+        let (v, a, b) = two_port_service(&c);
+        let ids: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+        let (t1, t2) = (Tick::from_days(10), Tick::from_days(20));
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        assert!(ids.iter().all(|&id| c.ships.ships[id].is_laid_up()));
+        run(&mut c, t2);
+        close(&mut c, b, t2);
+        run(&mut c, Tick::from_days(49));
+        assert!(!c.ships.port_closed(a) && c.ships.port_closed(b));
+        assert_eq!(c.ships.laid_up_since(v), Some(t1));
+        assert!(ids.iter().all(|&id| c.ships.ships[id].is_laid_up()));
+        run(&mut c, Tick::from_days(60));
+        assert!(!c.ships.port_closed(a) && !c.ships.port_closed(b));
+        assert_eq!(c.ships.laid_up_since(v), None);
+        assert!(!c.ships.laid_up.contains_key(&v));
+        assert!(
+            ids.iter().all(|&id| !c.ships.ships[id].is_laid_up()),
+            "every slot relaunched or booked to"
+        );
+        let t5 = Tick::from_days(70);
+        run(&mut c, t5);
+        close(&mut c, a, t5);
+        assert_eq!(c.ships.laid_up_since(v), Some(t5));
+        run(&mut c, Tick::from_days(130));
+        assert!(!c.ships.service_laid_up(v));
+        assert!(
+            c.ships.ports.is_empty(),
+            "ports with nothing to check keep a state: {:?}",
+            c.ships.ports
+        );
+        assert!(c.ships.laid_up.is_empty());
+    }
+
+    /// PC94 and PC85: the navy keeps sailing and keeps no lane open. On the quiet coast, seeds 1
+    /// to 3, each trade port on the patrol's walk closes in turn: the patrol's ships stay active
+    /// for 10 days, every lane at the port is closed although the patrol sails it, and so is any
+    /// other lane whose merchant services are all laid up, patrol or not.
+    #[test]
+    fn a_patrol_sails_on_but_keeps_no_lane_open() {
+        let mut beyond = 0;
+        for seed in 1..=3u64 {
+            let base = quiet_coast(seed);
+            let nv = base.navy.expect("a navy");
+            let ps = base.ships.navies[nv as usize].service;
+            let walk: BTreeSet<u32> = base.ships.services[ps as usize]
+                .legs
+                .iter()
+                .flat_map(|g| [g.from_dock, g.to_dock])
+                .filter(|&d| base.ships.is_trade_port(&base.world, d))
+                .collect();
+            assert!(!walk.is_empty(), "seed {seed}: no trade port on the patrol");
+            for d in walk {
+                let mut c = quiet_coast(seed);
+                let at = Tick::from_days(5);
+                run(&mut c, at);
+                close(&mut c, d, at);
+                run(&mut c, Tick::from_days(15));
+                let navy: Vec<ShipId> = c.ships.service_ships[ps as usize].ids().collect();
+                assert!(
+                    navy.iter().all(|&id| c.ships.ships[id].is_active()),
+                    "seed {seed} dock {d}: a navy ship stopped"
+                );
+                let patrolled: BTreeSet<u32> = c.ships.services[ps as usize]
+                    .legs
+                    .iter()
+                    .map(|g| g.hop.lane)
+                    .collect();
+                for &l in &patrolled {
+                    let ln = &c.ships.lanes[l as usize];
+                    let edge = ln.edge;
+                    let merchants: Vec<u32> = c.ships.lane_hops[l as usize]
+                        .iter()
+                        .map(|&(v, _)| v)
+                        .filter(|&v| c.ships.services[v as usize].kind == ServiceKind::Merchant)
+                        .collect();
+                    let all_laid =
+                        !merchants.is_empty() && merchants.iter().all(|&v| c.ships.service_laid_up(v));
+                    let at_port = ln.a == d || ln.b == d;
+                    assert_eq!(
+                        c.world.lane_closed(edge),
+                        at_port || all_laid,
+                        "seed {seed} dock {d}: patrolled lane {l}"
+                    );
+                    if all_laid && !at_port {
+                        beyond += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("patrolled lanes away from the closed port closed by their laid-up merchants: {beyond}");
+        assert!(beyond > 0, "no patrolled lane away from a closed port was judged");
     }
 }

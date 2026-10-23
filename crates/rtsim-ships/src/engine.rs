@@ -3108,6 +3108,10 @@ impl Ships {
         else {
             return;
         };
+        // The lane closed while it sailed: no hunt begins (§2.4.6a rule 7, PC91).
+        if self.reach_closed_lane(w, s, lane, at) {
+            return;
+        }
         let h = self.haven_of(s).expect("a pirate");
         if self.tun.lifecycle {
             // §2.4.6a rule 1: the fight it judged the lane by costs men; a ship it costs the
