@@ -306,13 +306,15 @@ fn hover(full: i64, centre: i64, tun: &ShipTunables) -> (usize, usize, PortState
     (changes, naive_flips, p)
 }
 
-/// The hysteresis, pure and on the coast. Pure ([`hover`]): heats hovering on each threshold
-/// flip a one-threshold rule at most checks but change the port at most once. On the blockade
-/// coast, seeds 1 to 4 for 400 days with the pirates' own comings and goings (their applied
-/// share jumps between 0 and three times full within days): the tape shows only the legal steps
-/// (open, blockaded, closed, reopened, no longer blockaded), each closed spell lasts at least
-/// `blockade_min_closed_days`, no two changes come closer than a check, and the port changes
-/// state far less often than the raw share crosses half.
+/// The hysteresis, pure and on the coast. The pure half is the real test of it ([`hover`]):
+/// heats hovering on each threshold flip a one-threshold rule at most checks but change the port
+/// at most once; and a reopened port whose heat comes straight back cannot close again before
+/// `min_open` has passed (PC99), with 0 closing it at the next check. The coast half (seeds 1 to
+/// 4 for 400 days with the pirates' own comings and goings, their applied share jumping between
+/// 0 and three times full within days) checks the engine plays the rule as written: the tape
+/// shows only the legal steps (open, blockaded, closed, reopened, no longer blockaded), each
+/// closed spell lasts at least `blockade_min_closed_days`, each open spell after a reopening at
+/// least `blockade_min_open_days`, and no two changes come closer than a check.
 #[test]
 fn a_blockade_cannot_flap() {
     let tun = ShipTunables::default();
@@ -339,8 +341,36 @@ fn a_blockade_cannot_flap() {
         );
     }
 
-    let min_closed = days(tun.blockade_min_closed_days);
+    // A reopened port whose heat is back at full the next check: blockaded at once, closed only
+    // once its nerve is back (min_open after the reopening).
     let check = days(tun.blockade_check_days);
+    let min_closed = days(tun.blockade_min_closed_days);
+    for min_open in [0, 10 * TICKS_PER_DAY, 48 * TICKS_PER_DAY] {
+        let mut p = PortState::default();
+        let mut t = Tick::ZERO;
+        p.step(&[full, full], full, min_closed, min_open, t);
+        assert!(p.closed == Some(t));
+        t = Tick(min_closed);
+        p.step(&[0, 0], full, min_closed, min_open, t);
+        assert!(p.closed.is_none() && p.blockaded.is_none(), "{p:?}");
+        let reopened = t;
+        loop {
+            t += check;
+            p.step(&[full, full], full, min_closed, min_open, t);
+            assert!(p.blockaded.is_some(), "{p:?}");
+            if p.closed.is_some() {
+                break;
+            }
+        }
+        assert!(
+            t.0 >= reopened.0 + min_open && t.0 < reopened.0 + min_open.max(check) + check,
+            "min_open {min_open}: closed again {} ticks after the reopening",
+            t.0 - reopened.0
+        );
+        assert!(p.reopened.is_none(), "{p:?}");
+    }
+
+    let min_open = (tun.blockade_min_open_days * TICKS_PER_DAY as f64).round() as u64;
     let mut closures = 0;
     for seed in 1..=4u64 {
         let (mut c, mut fake) = blockade_coast(seed, &tun);
@@ -360,7 +390,7 @@ fn a_blockade_cannot_flap() {
         let ev = port_events(&c.ships, TARGET);
         // Replay the tape: blockaded, and closed since.
         let (mut blockaded, mut closed): (bool, Option<u64>) = (false, None);
-        let mut last_change: Option<u64> = None;
+        let (mut last_change, mut reopened): (Option<u64>, Option<u64>) = (None, None);
         for e in &ev {
             match e.magnitude {
                 1 => {
@@ -369,11 +399,17 @@ fn a_blockade_cannot_flap() {
                 }
                 2 => {
                     assert!(blockaded && closed.is_none(), "seed {seed}: {ev:?}");
+                    assert!(
+                        reopened.is_none_or(|r| e.tick >= r + min_open),
+                        "seed {seed}: closed again {} ticks after reopening",
+                        e.tick - reopened.unwrap_or(0)
+                    );
                     closed = Some(e.tick);
                     closures += 1;
                 }
                 3 => {
                     let since = closed.take().expect("closed before reopening");
+                    reopened = Some(e.tick);
                     assert!(
                         e.tick >= since + min_closed,
                         "seed {seed}: closed {:.1} days",
@@ -558,57 +594,85 @@ fn ride(c: &mut Coastal, fake: &mut FakeShips, s: ShipId, t: Tick) {
         .observe_player(&mut c.world, PLAYER, rtsim_settle::Pos::new(0, x, z), t);
 }
 
+/// Seed `seed`'s blockade coast with a player riding a merchant of dock 3's services (the first
+/// active one holding nothing promoted a day before the closure; he stands on it, observed every
+/// `step` ticks) until `until` (`None`: three days after the closure, the closure's tick found
+/// first). Once the port is closed the ridden ship must stay active and embodied. Returns the
+/// coast, the plugin, the ship and the closure, or `None` when the ship was out of view at the
+/// closure.
+fn ride_through_closure(
+    seed: u64,
+    tun: &ShipTunables,
+    until: impl Fn(&Coastal, Tick) -> bool,
+    step: u64,
+) -> Option<(Coastal, FakeShips, ShipId, Tick)> {
+    let at = closing_tick(seed, tun);
+    let (mut c, mut fake) = blockade_coast(seed, tun);
+    let from = Tick((at.0 - TICKS_PER_DAY) / STEP * STEP);
+    run_until(&mut c, &mut fake, from, |_, _| false);
+    let ships = fleet(&c.ships, &calling(&c.ships, TARGET));
+    let m = ships.iter().copied().find(|&id| {
+        c.ships
+            .ship(id)
+            .is_some_and(|x| x.is_active() && x.promoted.is_none())
+    })?;
+    let agent = rtsim_ships::Ship::agent(m);
+    let mut t = from;
+    let mut in_view_at_closure = false;
+    while t < at || !until(&c, at) {
+        ride(&mut c, &mut fake, m, t);
+        t += step;
+        go(&mut c, &mut fake, t);
+        let x = c.ships.ship(m).expect("a ship");
+        if c.ships.port(TARGET).is_some_and(|p| p.closed == Some(at)) {
+            if !in_view_at_closure {
+                in_view_at_closure = fake.bodies.contains_key(&agent);
+                if !in_view_at_closure {
+                    return None;
+                }
+            }
+            assert!(
+                x.is_active() && x.embodied,
+                "seed {seed}: the ridden ship stopped: {x:?}"
+            );
+        }
+        if t.0.is_multiple_of(TICKS_PER_DAY) {
+            c.ships.check(&c.world).expect("checks");
+        }
+    }
+    in_view_at_closure.then_some((c, fake, m, at))
+}
+
+/// The player steps ashore far away: his interest area goes, and the plugin drops what he saw.
+fn ashore(c: &mut Coastal, fake: &mut FakeShips) {
+    fake.players.clear();
+    let p = c.ships.player(&mut c.world, PLAYER);
+    c.ships.player_left(&mut c.world, p);
+}
+
 /// PC23 with the fake plugin: a ship in view when its port closes keeps its timetable, is never
-/// despawned, and lays up only once it has left view. Seed 1: a player rides a merchant of dock
-/// 3's services (stands on it, step by step) from a day before the closure to three days after;
-/// the other ships of the port's services lay up at the closure, this one sails on, its hold
-/// empty from the first voyage after the closure. The player steps ashore far away: the body
-/// leaves view, the plugin reports it dematerialized, and the ship is laid up at that report.
+/// despawned, and lays up only once it has left view. Seeds 1 to 3: a player rides a merchant of
+/// dock 3's services (stands on it, step by step) from a day before the closure to three days
+/// after; the other ships of the port's services lay up at the closure, this one sails on, its
+/// hold empty from the first voyage after the closure. The player steps ashore far away: the
+/// body leaves view, the plugin reports it dematerialized, and the ship is laid up at that
+/// report.
 #[test]
 fn a_ship_in_view_lays_up_only_after_it_leaves_view() {
     let tun = ShipTunables::default();
     let mut judged = 0;
     for seed in 1..=3u64 {
-        let at = closing_tick(seed, &tun);
-        let (mut c, mut fake) = blockade_coast(seed, &tun);
-        let from = Tick((at.0 - TICKS_PER_DAY) / STEP * STEP);
-        run_until(&mut c, &mut fake, from, |_, _| false);
-        let ships = fleet(&c.ships, &calling(&c.ships, TARGET));
-        let Some(m) = ships.iter().copied().find(|&id| {
-            c.ships
-                .ship(id)
-                .is_some_and(|x| x.is_active() && x.promoted.is_none())
-        }) else {
+        let Some((mut c, mut fake, m, _)) = ride_through_closure(
+            seed,
+            &tun,
+            |c, at| c.ships.now() >= at + 3 * TICKS_PER_DAY,
+            50,
+        ) else {
             continue;
         };
         let agent = rtsim_ships::Ship::agent(m);
-        let mut t = from;
-        let mut in_view_at_closure = false;
-        while t < at + 3 * TICKS_PER_DAY {
-            ride(&mut c, &mut fake, m, t);
-            t += 50;
-            go(&mut c, &mut fake, t);
-            let x = c.ships.ship(m).expect("a ship");
-            if c.ships.port_closed(TARGET) {
-                if !in_view_at_closure {
-                    in_view_at_closure = fake.bodies.contains_key(&agent);
-                    if !in_view_at_closure {
-                        break;
-                    }
-                }
-                assert!(
-                    x.is_active() && x.embodied,
-                    "seed {seed}: the ridden ship stopped: {x:?}"
-                );
-            }
-            if t.0.is_multiple_of(TICKS_PER_DAY) {
-                c.ships.check(&c.world).expect("checks");
-            }
-        }
-        if !in_view_at_closure {
-            continue;
-        }
         assert!(c.ships.waiting_to_lay_up(m));
+        let ships = fleet(&c.ships, &calling(&c.ships, TARGET));
         let others = ships
             .iter()
             .filter(|&&id| id != m && c.ships.ship(id).is_some_and(|x| x.is_laid_up()))
@@ -623,13 +687,10 @@ fn a_ship_in_view_lays_up_only_after_it_leaves_view() {
             None,
             "seed {seed}: a despawn was sent"
         );
-        // Ashore, far away.
         let laid = c.ships.stats.ships_laid_up_by_closure;
-        fake.players.clear();
-        let p = c.ships.player(&mut c.world, PLAYER);
-        c.ships.player_left(&mut c.world, p);
+        ashore(&mut c, &mut fake);
         let before = fake.dematerialized;
-        t += 50;
+        let t = c.ships.now() + 50;
         go(&mut c, &mut fake, t);
         assert!(fake.dematerialized > before);
         assert!(!fake.bodies.contains_key(&agent));
@@ -647,6 +708,164 @@ fn a_ship_in_view_lays_up_only_after_it_leaves_view() {
         judged > 0,
         "no seed had the ridden ship in view at the closure"
     );
+}
+
+/// A ship waiting to lay up (in view, its service laid up) that the player sinks is lost as any
+/// sunk merchant is: its hold goes down, and its slot's respawn falls due a few days later. The
+/// port is still closed then, so the slot lays up in port instead of sailing; the reopening
+/// relaunches it with the rest. Seeds 1 to 3, the engine checked daily throughout.
+#[test]
+fn a_ship_sunk_while_it_waits_to_lay_up_lays_up_at_its_respawn() {
+    let tun = ShipTunables::default();
+    let mut judged = 0;
+    for seed in 1..=3u64 {
+        let Some((mut c, mut fake, m, closed)) = ride_through_closure(
+            seed,
+            &tun,
+            |c, at| c.ships.now() >= at + TICKS_PER_DAY,
+            50,
+        ) else {
+            continue;
+        };
+        assert!(c.ships.waiting_to_lay_up(m));
+        let t = c.ships.now();
+        let sunk = c.ships.stats.sinkings;
+        let o = fake
+            .player_sinks(rtsim_ships::Ship::agent(m), PLAYER)
+            .expect("a body to sink");
+        c.ships.ingest(&mut c.world, &o, &c.mask, t);
+        assert_eq!(c.ships.stats.sinkings, sunk + 1);
+        let x = c.ships.ship(m).expect("a ship");
+        let Status::Lost { back, .. } = x.status else {
+            panic!("seed {seed}: not lost: {x:?}");
+        };
+        assert!(!x.is_laid_up() && x.cargo.is_empty(), "seed {seed}: {x:?}");
+        c.ships.check(&c.world).expect("checks after the sinking");
+        ashore(&mut c, &mut fake);
+        let laid = c.ships.stats.ships_laid_up_by_closure;
+        run_until(&mut c, &mut fake, back + STEP, |_, _| false);
+        assert!(c.ships.port_closed(TARGET), "seed {seed}: reopened before the respawn");
+        let x = c.ships.ship(m).expect("a ship");
+        assert!(
+            matches!(x.status, Status::Lost { since, .. } if since == back) && x.is_laid_up(),
+            "seed {seed}: not laid up at its respawn: {x:?}"
+        );
+        assert_eq!(c.ships.stats.ships_laid_up_by_closure, laid + 1);
+        assert!(run_until(
+            &mut c,
+            &mut fake,
+            closed + 150 * TICKS_PER_DAY,
+            |c, _| !c.ships.port_closed(TARGET)
+        ));
+        let x = c.ships.ship(m).expect("a ship");
+        assert!(!x.is_laid_up(), "seed {seed}: not relaunched: {x:?}");
+        judged += 1;
+    }
+    assert!(judged > 0, "no seed had the ridden ship in view at the closure");
+}
+
+/// A ship still in view when its port reopens simply trades again (PC23, PC81): its service is
+/// no longer laid up, so nothing marks its voyages laid up, no relaunch is booked for it, and
+/// when the player leaves it sails on (it is never laid up, despawned or relaunched). Seeds 1
+/// to 3: the player rides it from a day before the closure until two days after the reopening.
+#[test]
+fn a_ship_in_view_at_the_reopening_sails_on() {
+    let tun = ShipTunables::default();
+    let mut judged = 0;
+    for seed in 1..=3u64 {
+        let Some((mut c, mut fake, m, _)) = ride_through_closure(
+            seed,
+            &tun,
+            |c, _| c.ships.stats.reopenings > 0,
+            100,
+        ) else {
+            continue;
+        };
+        let reopened = c.ships.now();
+        let v = c.ships.ship(m).and_then(|x| x.service).expect("a service");
+        assert!(!c.ships.service_laid_up(v) && c.ships.laid_up_since(v).is_none());
+        assert!(!c.ships.waiting_to_lay_up(m));
+        let x = c.ships.ship(m).expect("a ship");
+        assert!(x.is_active() && x.embodied, "seed {seed}: {x:?}");
+        assert!(
+            !c.ships.pending_by_kind().is_empty()
+                && fleet(&c.ships, &[v])
+                    .iter()
+                    .any(|&id| id != m && c.ships.ship(id).is_some_and(|x| !x.is_active())),
+            "seed {seed}: the other slots lie in port until their relaunch"
+        );
+        let laid = c.ships.stats.ships_laid_up_by_closure;
+        let end = reopened + 2 * TICKS_PER_DAY;
+        let mut t = reopened;
+        while t < end {
+            ride(&mut c, &mut fake, m, t);
+            t += 100;
+            go(&mut c, &mut fake, t);
+        }
+        let x = c.ships.ship(m).expect("a ship");
+        assert!(x.is_active() && x.embodied, "seed {seed}: {x:?}");
+        ashore(&mut c, &mut fake);
+        run_until(&mut c, &mut fake, t + 2 * TICKS_PER_DAY, |_, _| false);
+        let x = c.ships.ship(m).expect("a ship");
+        assert!(x.is_active() && !x.embodied, "seed {seed}: {x:?}");
+        assert_eq!(c.ships.stats.ships_laid_up_by_closure, laid);
+        assert_eq!(
+            fake.commands.get(&rtsim_ships::boundary::SHIP_DESPAWN),
+            None
+        );
+        judged += 1;
+    }
+    assert!(judged > 0, "no seed had the ridden ship in view at the closure");
+}
+
+/// A shuttle built to a port while it is closed ([`Ships::connect`], a port joining late) is
+/// laid up from the start: its services laid up since the joining, their lane shut and closed in
+/// the world, their ships in port; the engine's checks hold. When the port reopens the shuttle
+/// opens with it and its ships relaunch. Seed 1 (the closure found first); the shuttle is the one
+/// `connect` builds from the closed port to its nearest dock.
+#[test]
+fn a_shuttle_to_a_closed_port_starts_laid_up() {
+    let tun = ShipTunables::default();
+    let seed = 1;
+    let at = closing_tick(seed, &tun);
+    let (mut c, mut fake) = blockade_coast(seed, &tun);
+    run_until(&mut c, &mut fake, at + TICKS_PER_DAY, |_, _| false);
+    assert!(c.ships.port_closed(TARGET));
+    let now = c.ships.now();
+    let first = c.ships.services.len() as u32;
+    let l = c
+        .ships
+        .connect(&mut c.world, TARGET, &c.mask, now)
+        .expect("a shuttle");
+    let shuttle: Vec<u32> = (first..c.ships.services.len() as u32).collect();
+    assert!(!shuttle.is_empty());
+    assert!(c.ships.lane_shut(l));
+    assert!(c.world.lane_closed(c.ships.lanes[l as usize].edge));
+    for &v in &shuttle {
+        assert!(c.ships.service_laid_up(v));
+        assert_eq!(c.ships.laid_up_since(v), Some(now), "service {v}");
+    }
+    let ships = fleet(&c.ships, &shuttle);
+    assert!(!ships.is_empty());
+    for &id in &ships {
+        let x = c.ships.ship(id).expect("a ship");
+        assert!(x.is_laid_up(), "{x:?}");
+    }
+    c.ships.check(&c.world).expect("checks after the shuttle");
+    assert!(run_until(
+        &mut c,
+        &mut fake,
+        at + 150 * TICKS_PER_DAY,
+        |c, _| !c.ships.port_closed(TARGET)
+    ));
+    assert!(!c.ships.lane_shut(l));
+    assert!(!c.world.lane_closed(c.ships.lanes[l as usize].edge));
+    let t = c.ships.now() + 6 * TICKS_PER_DAY;
+    run_until(&mut c, &mut fake, t, |_, _| false);
+    for &id in &ships {
+        let x = c.ships.ship(id).expect("a ship");
+        assert!(x.is_active(), "not relaunched: {x:?}");
+    }
 }
 
 /// Persistence (rule 6): a restart in each blockade state, compared by `state_hash` with the run
