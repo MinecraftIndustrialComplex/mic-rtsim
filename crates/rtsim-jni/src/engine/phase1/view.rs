@@ -18,18 +18,19 @@ pub(in crate::engine) struct Extremes {
     pub glutted: Option<(String, u32)>,
 }
 
+/// One end of a market's stock: the stock per target (thousandths) and the good, if any good has a
+/// target.
+type Extreme = Option<(u32, rtsim_trade::GoodId)>;
+
 /// The scarcest and the most glutted of goods with their stock per target (thousandths), in good
 /// order: the first of equals wins. One good with a target is both the shortest and the fullest,
 /// and saying so twice would have the talker mourn and boast of the same thing, so the glutted is
 /// left out then (TK46).
 fn pick_extremes(
     ratios: impl IntoIterator<Item = (rtsim_trade::GoodId, u32)>,
-) -> (
-    Option<(u32, rtsim_trade::GoodId)>,
-    Option<(u32, rtsim_trade::GoodId)>,
-) {
-    let mut scarcest: Option<(u32, rtsim_trade::GoodId)> = None;
-    let mut glutted: Option<(u32, rtsim_trade::GoodId)> = None;
+) -> (Extreme, Extreme) {
+    let mut scarcest: Extreme = None;
+    let mut glutted: Extreme = None;
     for (g, ratio) in ratios {
         if scarcest.is_none_or(|(r, _)| ratio < r) {
             scarcest = Some((ratio, g));
