@@ -376,7 +376,10 @@ advert. Slice S1 removes them, before anything splits:
   neighbour's (it already does this to a shaft across a chunk border whose source changed meanwhile);
   the stale re-sync gives the part its source's speed instead (SC37, row 56). A chunk that dropped below
   FULL and stayed in memory comes back with no load and no attach; it is re-synced at its promotion
-  instead (SC45, row 58), with any network update held back while it was away (row 54).
+  instead (SC45, row 58), with any network update held back while it was away (row 54). A chunk that
+  loads FULL and does not tick (level 33) attaches nothing either: it is noted at its load and re-synced
+  at its first FULL report, the chunk's block entities first joining their networks as their first tick
+  would (SC73).
 - **The ring around a ticking chunk** (found in the GameTests). A chunk that block-ticks (level 32 or
   less) keeps its eight neighbours FULL (33) and the ring past them at 34: in memory, not FULL, so
   `getChunkNow` answers null, `Level.isLoaded` false, and its block entities do not exist (a chunk read
@@ -827,6 +830,7 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 | `anAwayDistrictOnAChainStaysAway`, `anAwayDistrictOnASharedNetworkStaysAway` | a loaded factory and an away one on one chain, then on one shaft network, with packages moving and the boiler's level changing | 200 ticks with no `IND_CHUNK_LOADED` for the away district (§2.8) |
 | `aNetworkRecountKeepsAnUnloadedSource` | a network whose source's chunk is unloaded, then a recount (a member added); loaded and unloaded again, then another recount | no chunk load; the capacity equals Create's with that chunk loaded (the contract test of §2.8); one listed object per position after the second visit |
 | `aDemotedChunkComesBackInStep` (built in S1) | an away chunk held in memory below FULL while its source's speed changes, then FULL again | no load; the part takes its source's speed and the network update held back (§2.8, SC45) |
+| `aChunkLoadedFullComesBackInStep` (built in S1) | an away chunk unloaded while its source reverses, then loaded FULL and not ticking | the part takes its source's speed at the load and joins its network once, and nothing breaks when the chunk ticks (§2.8, SC73) |
 | `twoFactoriesSideBySideStayTwo` | two press lines in neighbouring chunks, nothing between them | two districts (today one) |
 | `aVaultAcrossABorderJoinsItsChunks` | a packager in one chunk under an item vault whose controller is in the next | one district (J3) |
 | `diagonalCogsAcrossABorderJoin` | a large cog meshing diagonally with a small cog across a border | one district (J4) |
@@ -1125,6 +1129,7 @@ The options below stay as the record of what was offered.
 | SC44 | A network is crossing when a listed source or member lies outside the district, or a listed member inside links out of it (a face across the district's border, a chain connection, a large cog's diagonal) to a chunk that is not loaded or to a kinetic block entity of the same network; with its root unlisted its ratios are taken from the lowest loaded listed member that turns | structural: Create's own count of members it has not seen (`unloadedMembers`) is wrong both ways (it is a saved number, decremented with a clamp, and reset by whichever member's save starts the network), and a link into a chunk that is not loaded may reach members that never loaded this session; the root's own speed is not held. `aCompileLoadsNoChunk` takes the away part out of the network, as a restart leaves it |
 | SC45 | A chunk reported below FULL is noted until it unloads; when it is reported FULL or more again it is queued and re-synced (`StaleKinetics.chunkFull`) at the next server tick's start or end, not inside the promotion. Chunks that never left FULL and chunks loaded anew are not queued | the promotion runs inside the chunk system's own task queue, and a propagation there could re-enter it; a promotion by several levels at once reports only its last status. Left open: the chunk is readable and ticks from its promotion, and the report of it runs later, from the main thread's task queue, so for up to one tick its block entities run before the re-sync; a source that changes in that tick, or Create's periodic validation falling in it, meets the stale part, and Create's own rule applies to it. A promotion reported for a chunk that a demotion has taken below FULL since leaves it noted |
 | SC46 | `Loaded.capability` answers null for a Create multiblock (a vault, a tank) with any chunk of its box not loaded, the box taken from its controller (the least corner: `getHeight` along the main axis, `getWidth` across) | a vault's controller builds its handler from every member through `Level.getBlockEntity`, which loads; a tank's does not, so for a tank this is stricter than needed, and a tank across an away chunk reads as away |
+| SC73 | A chunk loaded anew (`ChunkEvent.Load` on the server thread) is noted as a demoted one is and re-synced at its first FULL report (SC45); `StaleKinetics.chunkFull` takes every kinetic block entity, attached or not, and before its first re-sync joins the chunk's block entities to their networks as their first tick would (`KineticJoin`: `initFromTE` if not yet, then `addSilently`) | in a FULL chunk that does not tick (level 33, around every ticking chunk) nothing attaches, so row 56's re-sync never ran there and a compile read the stale speeds; the re-sync's `add` would leave a part that had not joined counted in the unloaded share too |
 
 ---
 

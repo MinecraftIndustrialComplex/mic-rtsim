@@ -1127,4 +1127,66 @@ public final class SectionsChunkLoadGameTests {
                 });
         restore(s, level, f).thenSucceed();
     }
+
+    /**
+     * A chunk that loads anew FULL and does not tick is re-synced at the load (PATCHES.md rows 56 and 58;
+     * SECTIONS.md §2.8, choice SC73). With B away, the motor in A is reversed to -64 RPM: CA follows and CB
+     * keeps 64 in its saved state. A FULL-only ticket loads B: B is FULL and does not tick, so nothing there
+     * attaches, and row 56's re-sync at the first attach never runs. Row 58 re-syncs B at its FULL report:
+     * CB takes CA's -64 RPM before it has attached, and joins CA's network once (one member per position),
+     * as its first tick would have joined it (without the change a compile read CB's stale 64 RPM until B
+     * ticked). Forced, B ticks: CB's first attach finds nothing stale, nothing breaks, and millstone B turns.
+     */
+    @GameTest(template = YARD, batch = "sec1_8", timeoutTicks = 12000)
+    public static void aChunkLoadedFullComesBackInStep(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        Adj f = Adj.at(helper, 5100, true);
+        ChunkPos b = new ChunkPos(f.bx, f.az);
+        String t = "aChunkLoadedFullComesBackInStep";
+        KineticBlockEntity[] cb = {null};
+        int[] mark = {0};
+        Supplier<Float> motorSpeed = () -> kinetic(level, f.motor).getGeneratedSpeed();
+        GameTestSequence s = away(build(helper, f, 64), level, f)
+                .thenExecute(() -> ((CreativeMotorBlockEntity) Loaded.blockEntity(level, f.motor)).generatedSpeed.setValue(-64))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    record(t, "B away, motor -64: CA", speedOf(level, f.ca));
+                    check("CA follows the motor: " + speedOf(level, f.ca), speedOf(level, f.ca) == motorSpeed.get() && motorSpeed.get() == -64);
+                    check("B is still away", level.getChunkSource().getChunkNow(f.bx, f.az) == null);
+                    mark[0] = StaleKinetics.resyncs();
+                    level.getChunkSource().addRegionTicket(FULL_ONLY, b, 0, b);
+                })
+                .thenWaitUntil(io(() -> check("B loads FULL and CB is re-synced: re-syncs " + (StaleKinetics.resyncs() - mark[0]),
+                        Loaded.at(level, f.cb) && StaleKinetics.resyncs() > mark[0])))
+                .thenExecute(() -> {
+                    KineticBlockEntity ca = kinetic(level, f.ca);
+                    cb[0] = kinetic(level, f.cb);
+                    KineticNetwork n = ca.getOrCreateNetwork();
+                    record(t, "B loaded FULL: CA, CB, re-syncs, members, distinct positions", ca.getSpeed() + ", " + cb[0].getSpeed() + ", "
+                            + (StaleKinetics.resyncs() - mark[0]) + ", " + n.members.size() + ", " + positions(n));
+                    check("B does not tick", !Loaded.ticks(level, f.cb));
+                    check("CB has not attached", cb[0].updateSpeed);
+                    check("CB has CA's speed: CB " + cb[0].getSpeed() + ", CA " + ca.getSpeed(), cb[0].getSpeed() == ca.getSpeed() && ca.getSpeed() == -64);
+                    check("one network: " + ca.network + ", " + cb[0].network, ca.network != null && ca.network.equals(cb[0].network));
+                    check("CB joined CA's network", n.members.containsKey(cb[0]));
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
+                    mark[0] = StaleKinetics.resyncs();
+                    level.setChunkForced(f.bx, f.az, true);
+                })
+                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, f.cb))))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    KineticBlockEntity ca = kinetic(level, f.ca), now = kinetic(level, f.cb);
+                    KineticNetwork n = ca.getOrCreateNetwork();
+                    record(t, "B forced: CB, millstone B, re-syncs at the attach", speedOf(level, f.cb) + ", " + speedOf(level, f.millB) + ", "
+                            + (StaleKinetics.resyncs() - mark[0]));
+                    check("CB is not broken and attached: " + level.getBlockState(f.cb), now == cb[0] && !now.isRemoved() && !now.updateSpeed);
+                    check("the first attach found nothing stale: " + (StaleKinetics.resyncs() - mark[0]), StaleKinetics.resyncs() == mark[0]);
+                    check("CB turns with CA: CB " + now.getSpeed() + ", CA " + ca.getSpeed(), now.getSpeed() == ca.getSpeed());
+                    check("millstone B turns at 64 RPM: " + speedOf(level, f.millB), Math.abs(speedOf(level, f.millB)) == 64);
+                    check("one member per position: " + n.members.size() + " members, " + positions(n) + " positions", positions(n) == n.members.size());
+                });
+        restore(s, level, f).thenSucceed();
+    }
 }
