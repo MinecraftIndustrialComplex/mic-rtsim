@@ -495,8 +495,8 @@ news is not a grudge (CONFLICT-LIFE.md §2.17).
 | 10 | Feud | the camp | its target (player, camp, village) | the rung | 10 days | `news.feud` |
 | 11 | PactSworn | the camp that swore | its ally; a second row with flag "against" names the foe | | 30 days | `news.pact_sworn` |
 | 12 | PactBroken | the camp that broke it | its ally; a betrayal is a flag | | 30 days | `news.pact_broken` |
-| 13 | Raid | the camp | the target | the outcome (held, beaten, plundered); joint by a flag | 20 days | `news.raid` |
-| 14 | Fell | the camp | the notable (the killer's actor for a killing, the camp for old age or a fever) | | 30 days | `news.fell` |
+| 13 | Raid | the camp | the target | the outcome: 1 held, 2 beaten, 3 plundered (`report::raid`); joint by a flag (unused) | 20 days | `news.raid` |
+| 14 | Fell | the camp | the fallen chief | 1 died, 2 killed (`report::fell`) | 30 days | `news.fell` |
 | 15 | spare, conflict | | | | | |
 | 16 | PortRaided | the haven | the port village | 1 | as Robbery, 6 days | `news.port_raided` |
 | 17 | Blockade | the haven holding most of the dock's lanes | the port | 1 | 6 days | `news.blockade` |
@@ -514,11 +514,27 @@ dragon (ref class 7). A closed port's villagers grumble about empty markets and 
 up (the ports agent).
 
 **Who records them** (main, 2026-10-22: no CONFLICT-LIFE builder is running). Slice 2 adds the
-kinds, their lines and the engine side, and also records them at the conflict engine's sites that
-exist today (TK26): Feud where FACTION_NOTICE fires today (a feud reaching a rung), Raid at a raid's
-and a skirmish's resolution, Fell at a chief's or champion's death. PactSworn and PactBroken (11, 12)
-stay unrecorded until alliances are built in the game (they are designed and measured in the model
-only). The ports agent records 16 to 20.
+kinds, their lines and the engine side; the conflict engine records 10, 13 and 14 at its own sites
+(TK26), each made by the camp and witnessed first-hand by its chief and heir:
+
+- **Feud** at each rung a feud reaches (FACTION_NOTICE's site and every step after it), the rung its
+  severity. Never against the settlers, whom no line can name.
+- **Raid** when an unwatched raid resolves: plundered when it took anything, else beaten when
+  warriors fell; one that took nothing and lost nobody found nothing to raid and is no news. Also
+  when a watched fight ends: a rout is beaten, a band that leaves bored or done is held (what its
+  mobs carry off comes later, as BAND_LOOTED, and is not counted), and one that leaves because the
+  world turned Peaceful is no raid. Whom is the node the band marched on, a village or a rival
+  camp's haven, which witnesses it too (a haven's camp through its chief and heir), else the player
+  its feud is against; a band after neither records nothing. A fight that ends early (the watching
+  player leaves, the session restarts, the band dies outside the fight) records nothing yet.
+- **Fell** at every succession, a death of age (lazy: when the conflict next wakes) or a killing in
+  a fight (by a player or not), naming the fallen chief. The new chief and heir witness it, so the
+  camp tells its own loss (`fell.by_us`). The dead chief's actor is gone by then, so the lines name
+  it as a dead notable ("someone important"). Who is the camp, so `fell.you` is never told: the
+  killer hears of it through the chief's Killing. No champion exists in the engine yet.
+
+PactSworn and PactBroken (11, 12) stay unrecorded until alliances are built in the game (they are
+designed and measured in the model only). The ports agent records 16 to 20.
 
 ---
 
