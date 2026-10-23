@@ -218,6 +218,15 @@ pub struct StationPorts {
     pub inventories: Vec<u32>,
 }
 
+/// A train called at a station outside every district (IND_TRAIN_UNWATCHED, choice SG50): the
+/// engine ends the train's leg there, so the next district station it reaches is no edge from the
+/// one it left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnwatchedStop {
+    pub train: TrainId,
+    pub station: StationId,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrainDeparture {
     pub train: TrainId,
@@ -501,6 +510,7 @@ pub enum Obs {
     Port(PortTransfer),
     TrainArrived(TrainCall),
     TrainDeparted(TrainDeparture),
+    TrainUnwatched(UnwatchedStop),
     Station(StationDecl),
     Package(PackageEvent),
     StationPorts(StationPorts),

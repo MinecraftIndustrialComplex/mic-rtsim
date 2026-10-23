@@ -115,6 +115,7 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0413 | IND_STATION | 0 | 24 u64 station, 32 u64 district (0 none), 40 u32 dim, 44 i32 x, 48 i32 y, 52 i32 z, 56 u32 name (NAME), 60 u32 reserved | 64 |
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
 | 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
+| 0x0416 | IND_TRAIN_UNWATCHED | 0 | 24 u64 train, 32 u64 station; a watched train called at a station outside every district: the engine ends its leg (choice SG50) | 40 |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -213,6 +214,12 @@ port.
   the station's learned load per call, the median of its recent loaded calls (SG34). On a black-box
   span the replay's change so far is placed in the ports first (SG35).
 - IND_TRAIN_DEPARTED books the leg for line edges and threats (§8.1, §13.3).
+- IND_TRAIN_UNWATCHED ends that leg. A watched train that calls at a station outside every district sends
+  it (once a leg: a second unwatched call before the next departure from a district sends nothing), after
+  the IND_TRAIN_DEPARTED it ends. The engine forgets the train's open leg and learns no edge from it; the
+  next IND_TRAIN_ARRIVED at a district starts nothing until a departure books a new leg. Without it a round
+  trip through an unwatched station booked an edge from a district's station to itself (docs/stress-worlds-results.md
+  10.9). The engine also refuses a leg that ends where it began and counts it (`self_edges_refused`, SG51).
 
 **Results.** IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT report, per entry, what was asked and what
 was applied. A shortfall is not an error: the engine trims what it funded (§4.2).
