@@ -26,9 +26,10 @@
 //! S8b-4 (rule 7, PC80, PC93) adds the port's check (`Ev::DockCheck`, tag 14) and a laid-up
 //! slot's relaunch (`Ev::Relaunch`, tag 15) to the wheel, and one trailing section after the
 //! resident state, written only once a port has a state, a service is laid up or a closure
-//! counter moved (so a run with closures off saves the bytes it did before): the ports' states,
-//! the laid-up services' ticks and the closures' counters. A reader that finds no bytes left
-//! reads it as empty.
+//! counter moved (so a run with closures off saves the bytes it did before, after the magic):
+//! the ports' states, the laid-up services' ticks and the closures' counters. A reader that finds
+//! no bytes left reads it as empty. The new tags and the section change the layout, so the
+//! format is `RTS4` (2026-10-23); an `RTS3` save is refused by name like the older ones.
 //!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
@@ -71,10 +72,11 @@ use crate::network::{Dock, Hop, Lane, NetworkLints};
 use crate::timetable::{Leg, Service, ServiceKind};
 use crate::tunables::ShipTunables;
 
-/// RTS3 since S8b-3's port raids grew the stats and the ledger; RTS2 since the rows moved to paged
-/// tables (RTS1 wrote an `Arena` and lists of ships per service). No reader of an older format is
-/// kept: nothing is released (no backward compatibility before a release).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTS3");
+/// RTS4 since S8b-4's closures added the wheel's tags 14 and 15 and the trailing blockade
+/// section; RTS3 since S8b-3's port raids grew the stats and the ledger; RTS2 since the rows moved
+/// to paged tables (RTS1 wrote an `Arena` and lists of ships per service). No reader of an older
+/// format is kept: nothing is released (no backward compatibility before a release).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTS4");
 
 /// Whether `magic` is this build's format: an older ships format (`RTS` and another digit) is
 /// named, so an old save says which format it is and never reads as a truncated one.
@@ -85,8 +87,9 @@ fn check_magic(magic: u32, what: &str) -> Result<(), String> {
     let b = magic.to_le_bytes();
     if b[..3] == *b"RTS" && b[3].is_ascii_digit() {
         return Err(format!(
-            "{what} of format RTS{}; this build reads RTS3 (no older save opens before a release)",
-            b[3] as char
+            "{what} of format RTS{}; this build reads RTS{} (no older save opens before a release)",
+            b[3] as char,
+            MAGIC.to_le_bytes()[3] as char
         ));
     }
     Err(format!("not {what}"))
