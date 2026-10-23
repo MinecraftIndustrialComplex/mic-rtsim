@@ -182,5 +182,6 @@ final class IndustryEvents {
 
     private static void onRegisterCommands(RegisterCommandsEvent event) {
         IndustryCommands.register(event.getDispatcher());
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassGraphCommand.register(event.getDispatcher());
     }
 }
