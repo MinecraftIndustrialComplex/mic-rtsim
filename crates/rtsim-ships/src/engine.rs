@@ -75,6 +75,9 @@ use crate::timetable::{self, Phase, Service, ServiceKind, VoyageTimes};
 use crate::tunables::ShipTunables;
 use crate::water::{self, WaterMask};
 
+mod blockade;
+pub use blockade::{HEAT_FLOOR_MILLI, PortChange, PortState};
+
 pub const SYS_SHIP: SystemId = SystemId::named("ships.ship");
 const SYS_PIRATE: SystemId = SystemId::named("ships.pirate");
 const SYS_RAID: SystemId = SystemId::named("ships.raid");
@@ -295,6 +298,21 @@ impl NavyCounts {
 /// it until its haven is fed again (PC11) or refounds.
 pub const LAID_UP: Tick = Tick(u64::MAX);
 
+/// A merchant slot's last two idle spells (PC92), `[from, to)` each, the latest first; a slot
+/// laid up only once has [`NO_SPELL`] second. Two are enough. A spell's timetable departures
+/// matter only to the windows of voyages departing before the slot has sailed each of its hops
+/// again, within one period of the spell's end. The third spell, the one that forgets the
+/// first, begins only once the slot has relaunched from the second, and the second began in a
+/// lay-up of the service that started after the first ended and lasted at least the minimum
+/// closure. So the forgotten spell ended at least the minimum closure (30 days) before, and a
+/// voyage's window holds from its departure for at least the minimum closure less one period
+/// (over 27 days on the quiet coast, whose longest period is under 3 days).
+/// [`Ships::lay_up_merchant`] asserts the first half.
+pub(crate) type Spells = [(Tick, Tick); 2];
+
+/// No spell: `[0, 0)` holds no departure.
+pub(crate) const NO_SPELL: (Tick, Tick) = (Tick::ZERO, Tick::ZERO);
+
 /// A navy (M2): a patrol service from a base.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Navy {
@@ -326,9 +344,38 @@ pub struct LaneThreat {
     pub escorts: Vec<(u64, i64)>,
     /// The share last applied, thousandths.
     pub share: i64,
+    /// The lane's heat at `heat_at`, billionths ([`HEAT_PER_MILLI`] to the share's thousandth;
+    /// §2.4.6a rule 7, PC20): an exponential average of `share` with time constant
+    /// `blockade_days`. Between changes of `share` it relaxes toward `share` in closed form
+    /// ([`Ships::heat_at`]); 0 at tick 0 with closures off. Kept this fine because each change
+    /// rounds it: in thousandths, a share changing every few hours held the heat still (PC86).
+    pub heat_nano: i64,
+    /// When `heat_nano` was last brought up to date: the last change of `share`.
+    pub heat_at: Tick,
 }
 
+/// A lane heat's units to the share's thousandth.
+pub const HEAT_PER_MILLI: i64 = 1_000_000;
+
 impl LaneThreat {
+    /// The heat at `t >= heat_at`, billionths: the stored heat relaxed toward `share` over the
+    /// elapsed time, with time constant `tau` ticks, rounded to the nearest unit. With `tau` 0 it
+    /// is the stored heat (closures off keep no heat).
+    pub fn heat_nano_at(&self, t: Tick, tau: f64) -> i64 {
+        let target = self.share * HEAT_PER_MILLI;
+        if tau <= 0.0 || t <= self.heat_at || self.heat_nano == target {
+            return self.heat_nano;
+        }
+        let k = (-((t.0 - self.heat_at.0) as f64) / tau).exp();
+        let h = target as f64 + (self.heat_nano - target) as f64 * k;
+        h.round() as i64
+    }
+
+    /// The heat at `t >= heat_at`, thousandths, rounded to the nearest.
+    pub fn heat(&self, t: Tick, tau: f64) -> i64 {
+        (self.heat_nano_at(t, tau) + HEAT_PER_MILLI / 2).div_euclid(HEAT_PER_MILLI)
+    }
+
     fn defence(&self) -> f64 {
         (self.patrol_milli + self.escorts_milli()) as f64 / 1000.0
     }
@@ -501,6 +548,18 @@ pub(crate) enum Ev {
         navy: u32,
         epoch: u32,
     },
+    /// A trade port's check (§2.4.6a rule 7, PC25): its lanes' heats are weighed, and it is
+    /// blockaded, closed or reopened. `epoch` as the port's: one live check per port.
+    DockCheck {
+        dock: u32,
+        epoch: u32,
+    },
+    /// A merchant slot laid up by a closure is relaunched at its home dock (§2.4.6a rule 7,
+    /// PC87, PC90): unless a player watches that dock then, when it waits for the slot's next
+    /// home-dock stay.
+    Relaunch {
+        ship: ShipId,
+    },
 }
 
 /// Counters for tests, the bench and the CLI.
@@ -537,6 +596,17 @@ pub struct ShipStats {
     pub items_from_ports: u64,
     /// Crew they cost, thousandths of a man (the square law's share, as the toll's).
     pub port_raid_lost_milli: u64,
+    /// Ports that close under blockade (§2.4.6a rule 7): blockades begun, ports closed and
+    /// reopened, merchant ships laid up by a closure (each time one is), and the days ports were
+    /// closed (whole days, credited at each reopening), the ports' checks run, and relaunches
+    /// put off to a later home-dock stay because a player watched the home dock (PC90).
+    pub blockades: u64,
+    pub closures: u64,
+    pub reopenings: u64,
+    pub ships_laid_up_by_closure: u64,
+    pub closed_dock_days: u64,
+    pub port_checks: u64,
+    pub relaunches_put_off: u64,
 }
 
 /// One line of what happened, for the CLI.
@@ -593,6 +663,22 @@ pub struct Ships {
     pub navies: Vec<Navy>,
     /// Lanes' threats, paged rows keyed by lane ([`THREAT_TABLE`]).
     pub threats: PagedRows<LaneThreat>,
+    /// Trade ports' blockade states, by dock (§2.4.6a rule 7): only ports a hunted lane has
+    /// touched have one, so the map grows with the docks pirates hunt near, never with the
+    /// network; empty with closures off.
+    pub ports: BTreeMap<u32, PortState>,
+    /// Laid-up merchant services, by service: since when each has been laid up without a break
+    /// (PC93). Kept, not derived: which ports are closed says whether a service is laid up, but
+    /// not since when once the earliest of its closed ports reopens.
+    pub(crate) laid_up: BTreeMap<u32, Tick>,
+    /// Per merchant slot laid up by a closure: its last two idle spells ([`Spells`]), each the
+    /// time it sails nothing, `[from, to)`, from a lay-up to the relaunch (`to` is [`LAID_UP`]
+    /// until one is booked, then the booked tick, put off with it). Kept after the relaunch, so a
+    /// flow window computed later still skips the departures its timetable had in them (PC92).
+    /// A third lay-up forgets the older: at most one entry per merchant slot ever laid up.
+    pub(crate) idle: BTreeMap<ShipId, Spells>,
+    /// Per dock: the lanes with it at an end, in lane order (an index, rebuilt on load).
+    pub(crate) dock_lanes: Vec<Vec<u32>>,
     /// Per lane: the (service, hop) pairs that sail it.
     pub(crate) lane_hops: Vec<Vec<(u32, u32)>>,
     /// Per service: its ships, by slot (consecutive keys).
@@ -725,6 +811,10 @@ impl Ships {
             havens: Vec::new(),
             navies: Vec::new(),
             threats: PagedRows::new(THREAT_TABLE, THREAT_ROWS_PER_PAGE),
+            ports: BTreeMap::new(),
+            laid_up: BTreeMap::new(),
+            idle: BTreeMap::new(),
+            dock_lanes: Vec::new(),
             lane_hops: Vec::new(),
             service_ships: Vec::new(),
             embodied: BTreeSet::new(),
@@ -1013,6 +1103,7 @@ impl Ships {
             z,
             berths: berths.max(1),
         });
+        self.dock_lanes.resize(self.docks.len(), Vec::new());
         self.dock_of.insert((node, medium), id);
         if self.built {
             self.connect(w, id, mask, at);
@@ -1335,6 +1426,11 @@ impl Ships {
         if ln.medium != medium || ln.edge == u32::MAX {
             return None;
         }
+        // A closed lane carries nothing new to take (§2.4.6a rule 7, PC91), though its flows'
+        // pay may still be draining.
+        if w.lane_closed(ln.edge) {
+            return None;
+        }
         if let Some(t) = self.threat(l)
             && let Some(other) = t.haven
             && other != h
@@ -1491,7 +1587,20 @@ impl Ships {
         });
         self.lane_hops.push(Vec::new());
         self.index_lane(id);
+        self.index_dock_lane(id);
         id
+    }
+
+    /// Adds lane `l` to its end docks' lists.
+    pub(crate) fn index_dock_lane(&mut self, l: u32) {
+        let n = self.docks.len();
+        if self.dock_lanes.len() < n {
+            self.dock_lanes.resize(n, Vec::new());
+        }
+        let ln = &self.lanes[l as usize];
+        for d in [ln.a, ln.b] {
+            self.dock_lanes[d as usize].push(l);
+        }
     }
 
     pub(crate) fn index_lane(&mut self, l: u32) {
@@ -1697,6 +1806,7 @@ impl Ships {
             let Some(c) = c.into_iter().next() else {
                 continue;
             };
+            let ends = [c.a, c.b];
             let l = self.push_lane(c.a, c.b, c.path);
             let lp = Loop {
                 stops: vec![c.a, c.b],
@@ -1721,6 +1831,12 @@ impl Ships {
             }
             for h in 0..self.havens.len() as u32 {
                 self.refresh_haven_lanes(h);
+            }
+            // A shuttle to a closed port is laid up from the start, and its lane closed.
+            for d in ends {
+                if self.port_closed(d) {
+                    self.resettle(w, d, at);
+                }
             }
             return Some(l);
         }
@@ -1782,7 +1898,7 @@ impl Ships {
             .iter()
             .map(|g| g.hop.lane)
             .collect();
-        for l in touched {
+        for &l in &touched {
             self.refresh_patrol(w, l, at);
         }
         self.note(
@@ -1954,7 +2070,16 @@ impl Ships {
             ok &= w.set_lane_hazard(edge, dir, node, share, delay, at);
         }
         if ok {
-            self.threats.get_mut(u64::from(l)).expect("checked").share = share;
+            // The heat follows the applied share (PC20): brought up to now under the old share,
+            // then relaxing toward the new one.
+            let tau = self.heat_tau();
+            let t = self.threats.get_mut(u64::from(l)).expect("checked");
+            if tau > 0.0 {
+                let at = at.max(t.heat_at);
+                t.heat_nano = t.heat_nano_at(at, tau);
+                t.heat_at = at;
+            }
+            t.share = share;
             self.stats.hazard_changes += 1;
             // The haven's take of the lane, at the lane's middle; the lane has no key, so its
             // place is its name.
@@ -1975,6 +2100,10 @@ impl Ships {
                     self.threat(l).expect("checked").defence()
                 ),
             );
+            // A lane hunted again: its trade ports are weighed (PC25).
+            if share > 0 && tau > 0.0 {
+                self.book_port_checks(w, l, at);
+            }
         }
     }
 
@@ -2196,12 +2325,18 @@ impl Ships {
     /// voyage may enter a player's view again (its body is gone). For the native link; the
     /// engine's own runs have no sessions.
     pub fn session_start(&mut self) {
-        for id in std::mem::take(&mut self.embodied) {
+        let was = std::mem::take(&mut self.embodied);
+        for &id in &was {
             if let Some(x) = self.ships.get_mut(id) {
                 x.embodied = false;
             }
         }
         self.seen_by.clear();
+        // A ship kept sailing only because it was in view lays up now (§2.4.6a rule 7, PC23).
+        let now = self.now;
+        for id in was {
+            self.lay_up_if_waiting(id, now);
+        }
     }
 
     /// Marks a ship embodied or abstract, keeping the index of embodied ships.
@@ -2419,6 +2554,8 @@ impl Ships {
             Ev::Refit { ship, plan } => self.refit(w, ship, plan, at),
             Ev::Refound { haven, epoch } => self.haven_look(w, haven, epoch, at),
             Ev::Assault { navy, epoch } => self.assault(w, navy, epoch, at),
+            Ev::DockCheck { dock, epoch } => self.dock_check(w, dock, epoch, at),
+            Ev::Relaunch { ship } => self.relaunch(w, ship, at),
         }
     }
 
@@ -2450,8 +2587,18 @@ impl Ships {
                 let Some(ox) = self.ships.get(o) else {
                     continue;
                 };
-                if let Some((_, d)) = sv.departure_at_or_before(ox.offset, j as usize, t.depart - 1)
-                {
+                let mut dep = sv.departure_at_or_before(ox.offset, j as usize, t.depart - 1);
+                // A slot laid up by a closure sails nothing from its lay-up to its relaunch, nor
+                // while that is put off (PC92): back past its spells, the latest first.
+                for &(from, to) in self.idle.get(&o).into_iter().flatten() {
+                    if let Some((_, d)) = dep
+                        && i128::from(d) >= i128::from(from.0)
+                        && i128::from(d) < i128::from(to.0)
+                    {
+                        dep = sv.departure_at_or_before(ox.offset, j as usize, from.0 as i64 - 1);
+                    }
+                }
+                if let Some((_, d)) = dep {
                     prev = Some(prev.map_or(d, |p: i64| p.max(d)));
                 }
             }
@@ -2473,6 +2620,11 @@ impl Ships {
         };
         if x.promoted.is_some_and(|p| p.voyage == voyage) || !matches!(x.role, Role::Merchant) {
             return x.cargo.clone();
+        }
+        // A laid-up service carries nothing new (PC23, PC81): its ship in view shows empty holds
+        // from the first voyage that departs after the closure.
+        if self.voyage_laid_up(id, voyage) {
+            return BTreeMap::new();
         }
         let Some((edge, dir, lo, hi)) = self.window(w, id, voyage) else {
             return BTreeMap::new();
@@ -2788,6 +2940,11 @@ impl Ships {
         if x.promoted.is_some_and(|p| p.voyage == fix.voyage) {
             return true;
         }
+        // A laid-up service's ship still in view sails with empty holds (PC23): only a voyage
+        // under way when the port closed has consignments to take (PC81).
+        if self.voyage_laid_up(id, fix.voyage) {
+            return false;
+        }
         let Some((edge, dir, lo, hi)) = self.window(w, id, fix.voyage) else {
             return false;
         };
@@ -2906,6 +3063,8 @@ impl Ships {
             }
         }
         self.stats.landings += 1;
+        // Its cargo landed: out of view, a ship whose service is laid up lays up now (PC23).
+        self.lay_up_if_waiting(id, at);
     }
 
     // ---- pirates -------------------------------------------------------------------------------
@@ -3159,6 +3318,10 @@ impl Ships {
                 Some(s),
                 format!("turns back from lane {lane}: a navy broke haven {h}"),
             );
+            return;
+        }
+        // The lane closed while it sailed: no hunt begins (§2.4.6a rule 7, PC91).
+        if self.reach_closed_lane(w, s, lane, at) {
             return;
         }
         if self.tun.lifecycle {
@@ -3619,7 +3782,7 @@ impl Ships {
 
     /// Pirate `s` sails for its haven from where it is: its leg replanned to the dock, homebound,
     /// its homecoming booked, and a body in view told to depart for `reason` (SHIP_DEPART's).
-    fn sail_home(&mut self, w: &mut World, s: ShipId, reason: u32, at: Tick) {
+    pub(crate) fn sail_home(&mut self, w: &mut World, s: ShipId, reason: u32, at: Tick) {
         let h = self.haven_of(s).expect("a pirate");
         let dock = self.havens[h as usize].dock;
         let from = self.pirate_pos(w, s, at);
@@ -4251,6 +4414,11 @@ impl Ships {
             return;
         };
         if !matches!(x.status, Status::Lost { back, .. } if back <= at) {
+            return;
+        }
+        // A merchant due back while its service is laid up stays in port (§2.4.6a rule 7).
+        if matches!(x.role, Role::Merchant) && x.service.is_some_and(|v| self.service_laid_up(v)) {
+            self.lay_up_merchant(s, at);
             return;
         }
         let mt = self.tun.medium(x.medium);
@@ -5154,6 +5322,7 @@ impl Ships {
             Obs::SpawnRejected(r) => {
                 if let Some(s) = self.ship_of(r.agent, r.epoch) {
                     self.set_embodied(s, false);
+                    self.lay_up_if_waiting(s, at);
                 }
             }
             Obs::Dematerialized(d) => {
@@ -5167,7 +5336,10 @@ impl Ships {
                     let x = &mut self.ships[s];
                     x.hull_milli = d.hull_milli.min(1000);
                     x.crew = d.crew;
-                    self.lose_if_crewless(w, s, 0, None, at);
+                    if !self.lose_if_crewless(w, s, 0, None, at) {
+                        // Out of view, a ship whose service is laid up lays up (PC23).
+                        self.lay_up_if_waiting(s, at);
+                    }
                 }
             }
             Obs::Damaged(d) => {
@@ -5474,7 +5646,8 @@ impl Ships {
                 ));
             }
         }
-        self.check_indexes()
+        self.check_indexes()?;
+        self.check_ports(w)
     }
 
     /// The resident indexes agree with the rows: embodied ships, services' key ranges, and the
@@ -5643,6 +5816,8 @@ impl Ships {
                 Ev::Refit { .. } => "refit",
                 Ev::Refound { .. } => "refound",
                 Ev::Assault { .. } => "assault",
+                Ev::DockCheck { .. } => "dock_check",
+                Ev::Relaunch { .. } => "relaunch",
             };
             *m.entry(k).or_insert(0) += 1;
         }
@@ -5666,7 +5841,7 @@ impl Ships {
         self.network_breakdown().iter().map(|p| p.1).sum()
     }
 
-    /// The network's bytes by part: docks (with the index from node to dock), lanes (with their
+    /// The network's bytes by part: docks (with the indexes from node to dock and dock to lanes), lanes (with their
     /// paths, their (service, hop) lists and the lane cells), services (with their legs and ship
     /// ranges). Estimates from capacities and sizes, as `heap_bytes` everywhere.
     pub fn network_breakdown(&self) -> [(&'static str, usize); 3] {
@@ -5674,7 +5849,13 @@ impl Ships {
         // A B-tree entry with its share of a node (eleven slots, two thirds full).
         let btree = |k: usize, v: usize| (k + v) * 3 / 2 + 8;
         let docks = self.docks.capacity() * size_of::<Dock>()
-            + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4);
+            + self.dock_of.len() * btree(size_of::<(usize, Medium)>(), 4)
+            + self.dock_lanes.capacity() * size_of::<Vec<u32>>()
+            + self
+                .dock_lanes
+                .iter()
+                .map(|v| v.capacity() * 4)
+                .sum::<usize>();
         let lanes = self.lanes.capacity() * size_of::<Lane>()
             + self
                 .lanes
@@ -5712,6 +5893,7 @@ impl Ships {
             self.lane_cells.clone(),
             self.dock_of.clone(),
             self.service_ships.clone(),
+            self.dock_lanes.clone(),
         ))
     }
 
@@ -5754,6 +5936,9 @@ impl Ships {
                 .iter()
                 .map(|v| v.capacity() * 16)
                 .sum::<usize>()
+            + self.ports.len() * btree(4, size_of::<PortState>())
+            + self.laid_up.len() * btree(4, size_of::<Tick>())
+            + self.idle.len() * btree(size_of::<ShipId>(), size_of::<Spells>())
     }
 
     /// The timetable of a service from `from`: each ship's next `n` departures (hop, dock node,
