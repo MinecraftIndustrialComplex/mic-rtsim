@@ -4701,8 +4701,33 @@ mod replay_path {
         /// that cuts it the same keeps it.
         #[test]
         fn a_changed_sections_cap_drops_a_page_only_when_it_cuts_otherwise() {
-            let mut e = press();
-            e.advance_to(Tick(6000));
+            // Two presses in a row on a middle store: two sections, which a cap of one merges.
+            let mut b = B::default();
+            let (input, mid, out) = (b.store(0), b.store(1), b.store(2));
+            let r1 = b.recipe(&[(BRASS, 1)], &[(SHEET, 1)]);
+            let r2 = b.recipe(&[(SHEET, 1)], &[(COPPER, 1)]);
+            let p1 = b.machine(model::PRESS, r1, 1, 10);
+            let p2 = b.machine(model::PRESS, r2, 1, 10);
+            b.edge(input, p1);
+            b.edge(p1, mid);
+            b.edge(mid, p2);
+            b.edge(p2, out);
+            b.window = 2000;
+            let mut s = setup_n(&b, 3, 5);
+            for k in 1..=35u32 {
+                let t = u64::from(k) * 100;
+                let m = (t / 10) as i64;
+                sweep(
+                    &mut s,
+                    k,
+                    t,
+                    &[&[(BRASS, 1000 - m)], &[(SHEET, 5)], &[(COPPER, m)]],
+                );
+            }
+            let mut e = engine();
+            for t in &s {
+                feed(&mut e, t);
+            }
             let (_, gb) = glass_pages(&e.snapshot()).pop().expect("a glass page");
             let n = e.glass.districts[&D]
                 .compiled
@@ -4710,13 +4735,13 @@ mod replay_path {
                 .expect("a compile")
                 .sections
                 .len();
+            assert_eq!(n, 2, "a section per press");
             assert!(matches!(read_district_page(&gb, n), Ok(PageRead::Kept(_))));
-            if n > 1 {
-                assert!(matches!(
-                    read_district_page(&gb, n - 1),
-                    Ok(PageRead::Dropped(_))
-                ));
-            }
+            assert!(matches!(read_district_page(&gb, 64), Ok(PageRead::Kept(_))));
+            assert!(matches!(
+                read_district_page(&gb, n - 1),
+                Ok(PageRead::Dropped(_))
+            ));
         }
 
         /// Without its glass page (rtsim-view's inspect restores one district alone), a glass span

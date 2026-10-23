@@ -9,10 +9,11 @@
 //! drops into a virtual sink, or is a residual group that touches a store; *transfer* when it only
 //! moves goods between stores; *idle* when it touches no store (and holds no working node). A
 //! transfer piece folds, round by round, into a section it reaches through one store, downstream
-//! first, then upstream, the lowest position first; transfer pieces that reach none merge across the
-//! stores they share (a storage system). Idle nodes belong to no section. Past `glass.sectionsMax`,
-//! the two smallest sections that share a store merge, else two that share a domain, else the two
-//! smallest, until it holds.
+//! first, then upstream, the working piece with the lowest position first; transfer pieces that
+//! reach none merge across the stores they share (a storage system). Idle nodes belong to no
+//! section. Past `glass.sectionsMax`, the two smallest sections that share a store merge, else two
+//! that share a domain, else the two smallest, until it holds. Every tie goes by position, then by
+//! a hash of the nodes' records, never by Java's indices.
 //!
 //! **Stores.** A store with goods edges to one section is that section's (interior); to several it is
 //! shared and in no section's `section_of`; to none (idle movers only, or nothing) it is in no
@@ -25,7 +26,8 @@
 //!
 //! **Fingerprints** (§3.3). FNV-1a 64 over the section's records with positions in place of Java's
 //! indices, each record encoded alone and the encodings sorted, so the same factory gives the same
-//! fingerprint in any node order. State slots are left out (`state_slots`).
+//! fingerprint in any node order. State slots are left out (`state_slots`). A kinetic level is a
+//! node's own speed there (its ratio times the level's speed), which no choice of Create's root moves.
 //!
 //! Everything here is a function of the compile and `glass.sectionsMax`: it is recomputed at every
 //! accepted compile and on restore, never saved but for the fingerprints the page checks (§5).
@@ -33,7 +35,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::graph::{Graph, carries_goods};
-use super::records::{GraphNode, NodeKind, domain_flags, model};
+use super::records::{DomainLevel, GraphNode, NodeKind, domain_flags, model};
 use crate::ids::BlockPos;
 
 /// No section: idle nodes, shared stores and stores no section touches.
@@ -151,6 +153,63 @@ struct Draft {
     domains: BTreeSet<u32>,
     working: bool,
     low: Option<BlockPos>,
+    /// Its nodes' record hashes summed ([`Ctx::canon`]): the tie after the position.
+    canon: u64,
+}
+
+/// What the cut and the fingerprints read per node, built once per compute.
+struct Ctx {
+    /// Per node: the edges with an end at it, ascending.
+    edges_at: Vec<Vec<u32>>,
+    /// Per node: its ratio on its own domain (its member record's), if it is listed there.
+    ratio_of: Vec<Option<(i32, u32)>>,
+    /// Per recipe: its contents hashed.
+    recipe_hash: Vec<u64>,
+    /// Per node: its record hashed (its build at its position), for ties.
+    hash: Vec<u64>,
+}
+
+impl Ctx {
+    fn new(g: &Graph) -> Ctx {
+        let n = g.nodes.len();
+        let mut edges_at = vec![Vec::new(); n];
+        for (i, e) in g.edges.iter().enumerate() {
+            edges_at[e.from as usize].push(i as u32);
+            if e.to != e.from {
+                edges_at[e.to as usize].push(i as u32);
+            }
+        }
+        let mut ratio_of = vec![None; n];
+        for (di, d) in g.domains.iter().enumerate() {
+            for m in &d.members {
+                if let Some(v) = m.node.filter(|&v| (v as usize) < n)
+                    && g.nodes[v as usize].domain == Some(di as u32)
+                {
+                    ratio_of[v as usize].get_or_insert((m.ratio_num, m.ratio_den));
+                }
+            }
+        }
+        let recipe_hash = (0..g.recipes.len() as u32)
+            .map(|r| recipe_hash(g, r))
+            .collect();
+        let mut c = Ctx {
+            edges_at,
+            ratio_of,
+            recipe_hash,
+            hash: Vec::new(),
+        };
+        c.hash = (0..n as u32)
+            .map(|v| rtsim_kernel::rng::fnv1a64(&node_record(g, &c, v, 0)))
+            .collect();
+        c
+    }
+
+    /// A set of nodes' record hashes summed: the same for the same nodes in any order or numbering.
+    fn canon(&self, nodes: &[u32]) -> u64 {
+        nodes
+            .iter()
+            .fold(0u64, |a, &v| a.wrapping_add(self.hash[v as usize]))
+    }
 }
 
 fn low_of(g: &Graph, nodes: &[u32]) -> Option<BlockPos> {
@@ -175,6 +234,9 @@ impl Sections {
     /// (S3), so it joins no judging group.
     pub fn compute_with(g: &Graph, max: usize, counted: impl Fn(u32) -> bool) -> Sections {
         let n = g.nodes.len();
+        // `section_of` is a u16 with NONE kept apart.
+        let max = max.clamp(1, usize::from(NONE) - 1);
+        let ctx = Ctx::new(g);
         let cut: Vec<bool> = g.nodes.iter().map(is_cut).collect();
         let node_domains = node_domains(g);
         // The cut: every edge between two nodes that are not cuts joins them.
@@ -201,6 +263,7 @@ impl Sections {
                     domains: BTreeSet::new(),
                     working: false,
                     low: None,
+                    canon: 0,
                 });
                 pieces.len() as u32 - 1
             });
@@ -244,6 +307,7 @@ impl Sections {
             // A residual group between stores is an unknown machine, kept apart (§3.2 step 1).
             p.working |= residual[pi] && !p.stores.is_empty();
             p.low = low_of(g, &p.nodes);
+            p.canon = ctx.canon(&p.nodes);
         }
         // The fold: transfer pieces into the section they reach through one store, round by round.
         const UNSET: u32 = u32::MAX;
@@ -273,10 +337,12 @@ impl Sections {
                             if o == UNSET || w == t {
                                 continue;
                             }
-                            let better = best.is_none_or(|b| {
-                                (pos_key(pieces[o as usize].low), o)
-                                    < (pos_key(pieces[b as usize].low), b)
-                            });
+                            // the working piece's own lowest position, then its records
+                            let rank = |x: u32| {
+                                let p = &pieces[x as usize];
+                                (pos_key(p.low), p.canon, x)
+                            };
+                            let better = best.is_none_or(|b| rank(o) < rank(b));
                             if better {
                                 best = Some(o);
                             }
@@ -330,6 +396,7 @@ impl Sections {
                 domains: BTreeSet::new(),
                 working: pieces[o as usize].working,
                 low: None,
+                canon: 0,
             });
             d.nodes.extend_from_slice(&p.nodes);
             d.stores.extend(p.stores.iter().copied());
@@ -341,10 +408,11 @@ impl Sections {
         for d in drafts.iter_mut() {
             d.nodes.sort_unstable();
             d.low = low_of(g, &d.nodes);
+            d.canon = ctx.canon(&d.nodes);
         }
         // The cap (§3.2 step 5).
         let mut merged = 0u32;
-        while drafts.len() > max.max(1) {
+        while drafts.len() > max {
             let (a, b) = pick_merge(&drafts);
             let bd = drafts.remove(b);
             let ad = &mut drafts[a];
@@ -354,6 +422,7 @@ impl Sections {
             ad.domains.extend(bd.domains);
             ad.working |= bd.working;
             ad.low = low_of(g, &ad.nodes);
+            ad.canon = ad.canon.wrapping_add(bd.canon);
             merged += 1;
         }
         let mut list: Vec<Section> = drafts
@@ -363,7 +432,7 @@ impl Sections {
                 let doms: Vec<u32> = d.domains.iter().copied().collect();
                 Section {
                     bbox: bbox_of(g, &d.nodes, &stores),
-                    fingerprint: fingerprint(g, &d.nodes, &stores, &doms),
+                    fingerprint: fingerprint_in(g, &ctx, &d.nodes, &stores, &doms),
                     nodes: d.nodes.clone(),
                     stores,
                     working: d.working,
@@ -444,32 +513,48 @@ impl Sections {
     }
 }
 
-/// The pair to merge next (indices into `drafts`, `a < b`): the two smallest that share a store,
-/// else the two smallest that share a domain, else the two smallest; by summed nodes, then the
-/// lower lowest position, then the other's.
+/// The pair to merge next (indices into `drafts`, `a < b`). Drafts rank by their nodes, then their
+/// lowest position, then their records ([`Ctx::canon`]). In each group of drafts that share a store
+/// the two smallest are its pair, and the group whose pair is smallest together (by summed nodes,
+/// then the lower and the higher position, then the records) gives it; else a group that shares a
+/// domain; else the two smallest of all. Linear in the drafts' stores and domains.
 fn pick_merge(drafts: &[Draft]) -> (usize, usize) {
-    let key = |a: usize, b: usize| {
-        let (pa, pb) = (pos_key(drafts[a].low), pos_key(drafts[b].low));
+    let rank = |i: usize| {
         (
-            drafts[a].nodes.len() + drafts[b].nodes.len(),
-            pa.min(pb),
-            pa.max(pb),
+            drafts[i].nodes.len(),
+            pos_key(drafts[i].low),
+            drafts[i].canon,
+            i,
+        )
+    };
+    let two = |it: &mut dyn Iterator<Item = usize>| -> Option<(usize, usize)> {
+        let (mut a, mut b): (Option<usize>, Option<usize>) = (None, None);
+        for i in it {
+            if a.is_none_or(|x| rank(i) < rank(x)) {
+                b = a;
+                a = Some(i);
+            } else if b.is_none_or(|y| rank(i) < rank(y)) {
+                b = Some(i);
+            }
+        }
+        Some((a?, b?))
+    };
+    let key = |(a, b): (usize, usize)| {
+        let (ra, rb) = (rank(a), rank(b));
+        (
+            ra.0 + rb.0,
+            ra.1.min(rb.1),
+            ra.1.max(rb.1),
+            ra.2.min(rb.2),
+            ra.2.max(rb.2),
             a.min(b),
             a.max(b),
         )
     };
     let best_of = |by: &BTreeMap<u32, Vec<usize>>| {
-        let mut best: Option<(usize, usize)> = None;
-        for ds in by.values() {
-            for (i, &a) in ds.iter().enumerate() {
-                for &b in &ds[i + 1..] {
-                    if best.is_none_or(|(x, y)| key(a, b) < key(x, y)) {
-                        best = Some((a.min(b), a.max(b)));
-                    }
-                }
-            }
-        }
-        best
+        by.values()
+            .filter_map(|ds| two(&mut ds.iter().copied()))
+            .min_by_key(|&p| key(p))
     };
     let mut by_store: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     let mut by_domain: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
@@ -481,12 +566,11 @@ fn pick_merge(drafts: &[Draft]) -> (usize, usize) {
             by_domain.entry(x).or_default().push(i);
         }
     }
-    if let Some(p) = best_of(&by_store).or_else(|| best_of(&by_domain)) {
-        return p;
-    }
-    let mut order: Vec<usize> = (0..drafts.len()).collect();
-    order.sort_by_key(|&i| (drafts[i].nodes.len(), pos_key(drafts[i].low), i));
-    (order[0].min(order[1]), order[0].max(order[1]))
+    let (a, b) = best_of(&by_store)
+        .or_else(|| best_of(&by_domain))
+        .or_else(|| two(&mut (0..drafts.len())))
+        .expect("at least two drafts");
+    (a.min(b), a.max(b))
 }
 
 /// Per node: the domains it is a member of or drives, ascending.
@@ -603,9 +687,23 @@ fn recipe_hash(g: &Graph, r: u32) -> u64 {
     rtsim_kernel::rng::fnv1a64(&e.0)
 }
 
+/// A node's speed at a level: its ratio times the level's speed, in lowest terms.
+fn own_speed(ratio: (i32, u32), l: &DomainLevel) -> (i64, u64) {
+    let n = i64::from(ratio.0) * i64::from(l.speed_num);
+    let d = u64::from(ratio.1) * u64::from(l.speed_den);
+    let (mut a, mut b) = (n.unsigned_abs(), d);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    if a == 0 {
+        return (0, 0);
+    }
+    (n / a as i64, d / a)
+}
+
 /// A node's build (every field but its index, its inventory index and its state slots), its rate
-/// entries' recipes by contents and levels by selector and speed.
-fn node_record(g: &Graph, v: u32, tag: u8) -> Vec<u8> {
+/// entries' recipes by contents and levels by selector and the node's own speed there.
+fn node_record(g: &Graph, ctx: &Ctx, v: u32, tag: u8) -> Vec<u8> {
     let n = g.node(v);
     let mut e = Enc::tag(tag);
     end(&mut e, n);
@@ -630,15 +728,31 @@ fn node_record(g: &Graph, v: u32, tag: u8) -> Vec<u8> {
                 Some(l) => {
                     x.u8(1);
                     x.u32(l.selector);
-                    x.i32(l.speed_num);
-                    x.u32(l.speed_den);
+                    match ctx.ratio_of[v as usize] {
+                        Some(ratio) => {
+                            let (a, b) = own_speed(ratio, l);
+                            x.u8(1);
+                            x.i64(a);
+                            x.u64(b);
+                        }
+                        None => {
+                            x.u8(0);
+                            x.i32(l.speed_num);
+                            x.u32(l.speed_den);
+                        }
+                    }
                 }
                 None => {
                     x.u8(0);
                     x.u32(r.level);
                 }
             }
-            x.u64(r.recipe.map_or(0, |ri| recipe_hash(g, ri)));
+            x.u64(r.recipe.map_or(0, |ri| {
+                ctx.recipe_hash
+                    .get(ri as usize)
+                    .copied()
+                    .unwrap_or_default()
+            }));
             x.u32(r.batch);
             x.u32(r.ticks_num);
             x.u32(r.ticks_den);
@@ -681,18 +795,19 @@ fn edge_record(g: &Graph, i: usize) -> Vec<u8> {
     e.0
 }
 
-/// A domain as the section sees it: its stress setting, its levels' selectors and speeds (not the
-/// network's capacity or its other members, so a machine added elsewhere on it leaves the section
-/// alone), and the section's own members.
+/// A domain as the section sees it: its stress setting, its levels' selectors (not the network's
+/// capacity or its other members, so a machine added elsewhere on it leaves the section alone), and
+/// the section's own members, each with its speed at each level (its ratio times the level's speed:
+/// Create's root, which loaded chunks choose, moves both and not their product).
 fn domain_record(g: &Graph, d: u32, nodes: &[u32]) -> Vec<u8> {
     let dm = &g.domains[d as usize];
     let mut e = Enc::tag(3);
     e.u32(dm.flags & domain_flags::STRESS_DISABLED);
-    e.u32(dm.levels.len() as u32);
-    for l in &dm.levels {
-        e.u32(l.selector);
-        e.i32(l.speed_num);
-        e.u32(l.speed_den);
+    let mut selectors: Vec<u32> = dm.levels.iter().map(|l| l.selector).collect();
+    selectors.sort_unstable();
+    e.u32(selectors.len() as u32);
+    for x in selectors {
+        e.u32(x);
     }
     let mut own: Vec<Vec<u8>> = dm
         .members
@@ -702,9 +817,22 @@ fn domain_record(g: &Graph, d: u32, nodes: &[u32]) -> Vec<u8> {
             let mut x = Enc::tag(0);
             end(&mut x, g.node(m.node.expect("filtered")));
             x.u32(m.count);
-            x.i32(m.ratio_num);
-            x.u32(m.ratio_den);
             x.u64(m.impact.to_bits());
+            let mut speeds: Vec<(u32, i64, u64)> = dm
+                .levels
+                .iter()
+                .map(|l| {
+                    let (a, b) = own_speed((m.ratio_num, m.ratio_den), l);
+                    (l.selector, a, b)
+                })
+                .collect();
+            speeds.sort_unstable();
+            x.u32(speeds.len() as u32);
+            for (sel, a, b) in speeds {
+                x.u32(sel);
+                x.i64(a);
+                x.u64(b);
+            }
             x.0
         })
         .collect();
@@ -719,18 +847,25 @@ fn domain_record(g: &Graph, d: u32, nodes: &[u32]) -> Vec<u8> {
 /// The section's fingerprint: its nodes, the stores it touches, the edges with an end at one of its
 /// nodes, and its view of each domain it touches, each record encoded alone, sorted, then hashed.
 pub fn fingerprint(g: &Graph, nodes: &[u32], stores: &[u32], domains: &[u32]) -> u64 {
+    fingerprint_in(g, &Ctx::new(g), nodes, stores, domains)
+}
+
+fn fingerprint_in(g: &Graph, ctx: &Ctx, nodes: &[u32], stores: &[u32], domains: &[u32]) -> u64 {
     let mut recs: Vec<Vec<u8>> = Vec::new();
     for &v in nodes {
-        recs.push(node_record(g, v, 0));
+        recs.push(node_record(g, ctx, v, 0));
     }
     for &h in stores {
-        recs.push(node_record(g, h, 1));
+        recs.push(node_record(g, ctx, h, 1));
     }
-    for (i, ed) in g.edges.iter().enumerate() {
-        let mine = |v: u32| nodes.binary_search(&v).is_ok();
-        if mine(ed.from) || mine(ed.to) {
-            recs.push(edge_record(g, i));
-        }
+    let mut edges: Vec<u32> = nodes
+        .iter()
+        .flat_map(|&v| ctx.edges_at[v as usize].iter().copied())
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    for i in edges {
+        recs.push(edge_record(g, i as usize));
     }
     for &d in domains {
         recs.push(domain_record(g, d, nodes));
@@ -1226,6 +1361,77 @@ mod tests {
         let u = Sections::compute(&b.graph(), 64);
         assert_ne!(u.list[0].fingerprint, t.list[0].fingerprint);
         assert_eq!(u.list[1].fingerprint, t.list[1].fingerprint);
+    }
+
+    #[test]
+    fn ties_follow_the_records_not_java_order() {
+        // Every node at one position: the fold (f reaches a press and a saw through v, downstream)
+        // and the cap break their ties by the nodes' records, so any node order cuts the same.
+        let mut b = B::new();
+        let s0 = b.store(0);
+        let f = b.mover(0);
+        let v = b.store(0);
+        let m1 = b.machine(0);
+        let m2 = b.node(NodeKind::Machine, model::SAW, 0);
+        let (o1, o2) = (b.store(0), b.store(0));
+        b.link(&[s0, f, v, m1, o1]);
+        b.link(&[v, m2, o2]);
+        for m in [model::MILLSTONE, model::CRUSHER, model::MILLSTONE] {
+            let (a, c) = (b.store(0), b.store(0));
+            let x = b.node(NodeKind::Machine, m, 0);
+            b.link(&[a, x, c]);
+        }
+        for max in [64, 4, 3, 2, 1] {
+            let base = Sections::compute(&b.graph(), max);
+            for seed in 1..30 {
+                let s = Sections::compute(&b.shuffled(seed), max);
+                assert_eq!(
+                    s.fingerprints(),
+                    base.fingerprints(),
+                    "max {max}, seed {seed}"
+                );
+                assert_eq!(s.group_of, base.group_of, "max {max}, seed {seed}");
+                assert_eq!(s.merged, base.merged);
+            }
+        }
+    }
+
+    #[test]
+    fn a_root_change_moves_no_fingerprint_and_a_boilers_heat_is_state() {
+        let mut b = B::new();
+        let water = b.store(0);
+        let pump = b.node(NodeKind::Mover, model::PUMP, 1);
+        let boiler = b.node(NodeKind::Boiler, model::BOILER, 2);
+        b.link(&[water, pump, boiler]);
+        b.nodes[boiler as usize].params = [8, 1, 6, 300];
+        let (pa, pb) = (b.store(20), b.store(23));
+        let press = b.machine(21);
+        let fb = b.mover(22);
+        b.link(&[pa, press, fb, pb]);
+        b.nodes[press as usize].rates.push(RateEntry {
+            level: 0,
+            recipe: None,
+            batch: 1,
+            ticks_num: 20,
+            ticks_den: 1,
+            flags: 0,
+        });
+        let d = domain(&mut b, &[(press, 2)], Some(boiler));
+        let base = Sections::compute(&b.graph(), 64).fingerprints();
+        // Another root: every ratio doubles and the level's speed halves.
+        b.domains[d as usize].members[0].ratio_num = 4;
+        b.domains[d as usize].levels[0].speed_num = 32;
+        assert_eq!(Sections::compute(&b.graph(), 64).fingerprints(), base);
+        // The speed itself is build.
+        b.domains[d as usize].levels[0].speed_num = 64;
+        assert_ne!(Sections::compute(&b.graph(), 64).fingerprints(), base);
+        b.domains[d as usize].levels[0].speed_num = 32;
+        // A boiler's active heat and water supply are state; its tank is build.
+        b.nodes[boiler as usize].params[2] = 18;
+        b.nodes[boiler as usize].params[3] = 1200;
+        assert_eq!(Sections::compute(&b.graph(), 64).fingerprints(), base);
+        b.nodes[boiler as usize].params[0] = 16;
+        assert_ne!(Sections::compute(&b.graph(), 64).fingerprints(), base);
     }
 
     #[test]

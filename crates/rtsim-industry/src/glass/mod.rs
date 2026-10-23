@@ -101,11 +101,13 @@ fn empty_view<'a>(
 /// same records but for the compile number and what is the factory's state at the compile rather
 /// than its build ([`state_slots`]; a domain's level, live stress and live capacity).
 /// A node's `params` that are its state at the compile, not its build: a heater's burn left and
-/// heat level, a controller's output and the level it read. The rest (thresholds, burn per fuel,
-/// a tank's size, a source's moments) are its build.
+/// heat level, a boiler's active heat and water supply (the solve takes its level from its heat
+/// edges and its water inflow, SC52), a controller's output and the level it read. The rest
+/// (thresholds, burn per fuel, a tank's size, a boiler's engines, a source's moments) are its build.
 pub(crate) fn state_slots(kind: records::NodeKind) -> &'static [usize] {
     match kind {
         records::NodeKind::Heater => &[0, 1],
+        records::NodeKind::Boiler => &[2, 3],
         records::NodeKind::Controller => &[2, 3],
         _ => &[],
     }

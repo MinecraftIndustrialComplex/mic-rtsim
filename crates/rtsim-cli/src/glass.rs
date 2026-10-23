@@ -148,7 +148,7 @@ fn sections(s: &Sections) -> Value {
         "groups": s.groups(),
         "shared_stores": s.shared.iter().map(|(n, by)| json!({"store": n, "sections": by})).collect::<Vec<_>>(),
         "list": s.list.iter().map(|x| json!({
-            "nodes": x.nodes.len(),
+            "nodes": x.nodes,
             "stores": x.stores,
             "working": x.working,
             "low": x.low.map(pos),
@@ -217,7 +217,8 @@ fn district(iv: &IndustryView, names: &Names, id: u64, dg: &DistrictGlass, graph
         compile["graph_edges"] = serde_json::to_value(&g.edges).expect("serialize");
         compile["graph_recipes"] = serde_json::to_value(&g.recipes).expect("serialize");
         compile["graph_domains"] = serde_json::to_value(&g.domains).expect("serialize");
-        // each node's section by index, null for none (an idle node, or a store or virtual node)
+        // each node's section by index, null for none (an idle or virtual node, a shared store, or a
+        // store no section touches); an interior store has its section's
         compile["section_of"] = c
             .sections
             .section_of
@@ -317,16 +318,21 @@ fn print_text(v: &Value) {
                 .map_or_else(String::new, |f| format!(" (fell back: {f})")),
         );
         let sc = &c["sections"];
-        let groups = sc["groups"].as_array().map_or(0, Vec::len);
+        // judging groups of more than one section (each other section is judged alone)
+        let groups = sc["groups"].as_array().map_or(0, |g| {
+            g.iter()
+                .filter(|x| x.as_array().is_some_and(|m| m.len() > 1))
+                .count()
+        });
         let shared = sc["shared_stores"].as_array().map_or(0, Vec::len);
         println!(
-            "    {} sections ({} merged by the cap), {groups} judging groups, {shared} shared stores",
+            "    {} sections ({} merged by the cap), {groups} shared judging groups, {shared} shared stores",
             sc["count"], sc["merged"]
         );
         for (i, x) in sc["list"].as_array().into_iter().flatten().enumerate() {
             println!(
                 "    section {i}: {} nodes, {} stores{}, low {}, box {}, fingerprint {}",
-                x["nodes"],
+                x["nodes"].as_array().map_or(0, Vec::len),
                 x["stores"].as_array().map_or(0, Vec::len),
                 if x["working"].as_bool() == Some(true) {
                     ", working"
