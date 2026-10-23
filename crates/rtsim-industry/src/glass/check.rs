@@ -46,7 +46,7 @@ use super::records::{CONTROL_RUN_WHEN_ON, CONTROL_STOP_WHEN_ON, NodeKind, ProbeS
 use super::report::{self, GoodReport, Report};
 use super::sections::Sections;
 use super::solve::{self, Regime, Solution, burn};
-use super::units::{self, UnitBound, Units};
+use super::units::{self, PAIR_IN, PAIR_OUT, UnitBound, Units};
 use crate::district::Inventory;
 use crate::ids::{BlockPos, DistrictId, Good, GoodClass, GoodVec, VecMap};
 use crate::reconcile::GoodLookup;
@@ -1345,16 +1345,19 @@ impl Compiled {
                 ..CountTake::default()
             });
         }
-        let pairs = &self.units.pairs;
+        let units = &self.units;
         let t = self.counts.as_mut().expect("set");
         for c in counts {
-            if pairs.binary_search(&(c.mover, c.store)).is_err() {
+            let Ok(i) = units.pairs.binary_search(&(c.mover, c.store)) else {
                 continue;
-            }
+            };
             t.since.insert((c.mover, c.store), c.since);
+            // Each count once, though Java names it under every pair of movers at one block
+            let dirs = units.pair_dirs[i];
+            let moved_in = if dirs & PAIR_IN != 0 { c.moved_in } else { 0 };
+            let moved_out = if dirs & PAIR_OUT != 0 { c.moved_out } else { 0 };
             if let Some(g) = c.good {
-                t.moved
-                    .insert((c.mover, c.store, g), (c.moved_in, c.moved_out));
+                t.moved.insert((c.mover, c.store, g), (moved_in, moved_out));
             }
         }
     }

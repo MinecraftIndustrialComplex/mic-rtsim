@@ -6924,6 +6924,7 @@ mod replay_path {
         mod counted {
             use super::*;
             use crate::glass::page::{PageRead, district_page, read_district_page};
+            use crate::glass::units::{PAIR_IN, PAIR_OUT};
 
             /// Line A presses brass (inventory 0) into sheets at x 0 to 2 and drops them into a
             /// vault (1) at x 20 through a chute; line B's mover (`b_mover`: a funnel, counted,
@@ -7113,6 +7114,52 @@ mod replay_path {
                         (BlockPos::new(40, 64, 0), BlockPos::new(20, 64, 0), 0),
                     ]
                 );
+            }
+
+            /// Two movers at one block (a packager's packing and unpacking nodes) share Java's
+            /// counters there, which are keyed by position, so Java names the same counts under
+            /// both pairs: each direction is taken once, by the pair with an edge that way (SC94).
+            #[test]
+            fn two_movers_at_one_block_take_its_counts_once() {
+                let (mut b, ids) = vault_lines(20, model::PACKAGER);
+                let [_, c0, v, f1, _] = ids;
+                let src = b.store(3);
+                let unpack = b.node(
+                    NodeKind::Mover,
+                    model::PACKAGER,
+                    0,
+                    vec![RateEntry {
+                        flags: rate_flags::SHARED,
+                        ..entry(None, 1, 1)
+                    }],
+                );
+                b.edge(src, unpack);
+                b.edge(unpack, v);
+                b.nodes[src as usize].pos = BlockPos::new(60, 64, 0);
+                b.nodes[unpack as usize].pos = BlockPos::new(40, 64, 0);
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                assert_eq!(c.units.counted, vec![v]);
+                let mut pairs = vec![(c0, v), (f1, v), (unpack, v)];
+                pairs.sort_unstable();
+                assert_eq!(c.units.pairs, pairs);
+                let dirs = |p: (u32, u32)| c.units.pair_dirs[pairs.binary_search(&p).unwrap()];
+                assert_eq!(dirs((c0, v)), PAIR_IN | PAIR_OUT);
+                assert_eq!(dirs((f1, v)), PAIR_OUT);
+                assert_eq!(dirs((unpack, v)), PAIR_IN);
+                let same = |m: u32| Count {
+                    mover: m,
+                    store: v,
+                    good: Some(SHEET),
+                    since: 0,
+                    moved_in: 5,
+                    moved_out: 7,
+                };
+                c.count_sample(1, &[same(f1), same(unpack)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.moved.get(&(f1, v, SHEET)), Some(&(0, 7)));
+                assert_eq!(t.moved.get(&(unpack, v, SHEET)), Some(&(5, 0)));
+                assert_eq!(t.since.len(), 2);
             }
 
             /// Not counted: a belt takes from the vault (Java cannot count it), so the two lines

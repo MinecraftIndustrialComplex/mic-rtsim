@@ -72,6 +72,11 @@ pub struct Units {
     /// Every (mover, store) pair Java counts: a goods edge between a store of [`Units::counted`]
     /// and another node, by its far node, ascending, each once.
     pub pairs: Vec<(u32, u32)>,
+    /// Per pair of [`Units::pairs`]: the directions of Java's counts it takes ([`PAIR_IN`],
+    /// [`PAIR_OUT`]). Java keys its counters by the two blocks' positions, so the pairs of movers
+    /// at one block (a packager's packing and unpacking nodes) get the same counts: each
+    /// direction goes to the lowest of them with an edge that way, else the lowest (choice SC94).
+    pub pair_dirs: Vec<u8>,
     /// Per unit: the stores of [`Units::counted`] one of its nodes has a pair at, ascending.
     pub counted_of: Vec<Vec<u32>>,
     /// Per unit: every pair at those stores, its own and the other units', ascending: what its
@@ -79,6 +84,36 @@ pub struct Units {
     pub pairs_of: Vec<Vec<(u32, u32)>>,
     /// Each counted store's inventory, and the store.
     pub counted_inv: VecMap<u32, u32>,
+}
+
+/// A pair takes Java's counts into the store ([`Units::pair_dirs`]).
+pub const PAIR_IN: u8 = 1;
+/// A pair takes Java's counts out of the store.
+pub const PAIR_OUT: u8 = 2;
+
+/// [`Units::pair_dirs`] of `pairs` (ascending): per (mover block, store), each direction to the
+/// lowest pair with an edge that way (into the store: mover to store), else to the lowest.
+fn pair_dirs(g: &Graph, pairs: &[(u32, u32)]) -> Vec<u8> {
+    let mut dirs = vec![0u8; pairs.len()];
+    let mut at: BTreeMap<(BlockPos, u32), Vec<usize>> = BTreeMap::new();
+    for (i, &(m, h)) in pairs.iter().enumerate() {
+        at.entry((g.node(m).pos, h)).or_default().push(i);
+    }
+    for idx in at.values() {
+        let has = |i: usize, dir: u8| {
+            let (m, h) = pairs[i];
+            if dir == PAIR_IN {
+                g.in_g.of(h).iter().any(|&e| g.edge(e).from == m)
+            } else {
+                g.out_g.of(h).iter().any(|&e| g.edge(e).to == m)
+            }
+        };
+        for dir in [PAIR_IN, PAIR_OUT] {
+            let i = idx.iter().copied().find(|&i| has(i, dir)).unwrap_or(idx[0]);
+            dirs[i] |= dir;
+        }
+    }
+    dirs
 }
 
 impl Units {
@@ -232,6 +267,7 @@ impl Units {
         }
         pairs.sort_unstable();
         pairs.dedup();
+        let pair_dirs = pair_dirs(g, &pairs);
         for c in counted_of.iter_mut() {
             c.sort_unstable();
             c.dedup();
@@ -257,6 +293,7 @@ impl Units {
             keys,
             counted,
             pairs,
+            pair_dirs,
             counted_of,
             pairs_of,
             counted_inv,

@@ -614,7 +614,8 @@ Recommended: **count at the movers**.
   per (mover, store, good) in and out since the pair's `since` (`IND_COUNT_SAMPLE` 0x004F, not
   counted in the sweep's records, as `IND_PROBE_SAMPLE` 0x004D is, choice GB3), in the numbers of
   the latest compile whose END it sent (SC90). The mover's position names its node, so the unit is
-  known with no face mapping.
+  known with no face mapping; movers at one block (a packager's two nodes) share its counts, each
+  direction taken once (SC94).
 - The count points are Create's own movers, where they move real goods:
   - `InvManipulationBehaviour.insert` and `extract` (funnels and every other user of the behaviour),
     skipping simulated calls (`CapManipulationBehaviourBase.simulateNext`);
@@ -1198,6 +1199,7 @@ The options below stay as the record of what was offered.
 | SC91 | A unit's window opens only at a sweep whose sample holds every pair at its counted stores. Its pairs' `since`, by position, is kept with the window (`UnitState::count_since`): a sweep missing a pair discards the unit's window with warm-up; a pair whose `since` changed (Java forgot it) starts the window again from that sweep, with no warm-up. A unit with no counted store is unaffected | a missing sample leaves the unit's moves unknown for that sweep; a restart of Java's counters is a new base, not a fault of the line |
 | SC92 | `IGL5`: each unit's state adds its pairs' `since` and its residue bases, and the page's cut keys add a hash of the counted stores, so a changed `glass.countedStoresMax` drops the district's glass state as a changed `sectionsMax` does (SC53); `IGL4` pages read as dropped | a window's base must survive a save for the window to go on |
 | SC93 | The counting stats (samples read, sets sent) are `CountStats`, in memory only, not in `GlassStats`: the globals page has no format version, so a field added there fails the whole industry restore | as SC71 |
+| SC94 | Movers at one block share Java's counters, which are keyed by position: a packager is two nodes (packing and unpacking) at its block, and Java names the same counts under both pairs. The engine takes each direction once per (block, store): into the store from the lowest pair with an edge that way, out of it likewise, else the lowest pair (`Units::pair_dirs`) | counting both would double the packager's moves in its unit and in the store's residue; Java cannot tell which node a move was |
 
 ---
 
