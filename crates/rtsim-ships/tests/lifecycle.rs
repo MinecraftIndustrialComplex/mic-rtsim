@@ -1530,9 +1530,10 @@ fn a_haven_back_on_the_patrol_waits_out_its_cause_again() {
 
 /// S8b `a_broken_havens_pirate_turns_back_at_its_lane` (§2.4.6a rule 3, PC36). The haven is broken
 /// while one of its pirates sails out to a lane. At the lane it does not hunt: it turns for home
-/// at once, pays no toll, feeds nothing and robs nothing (the haven's hunts, fed-until, tolls and
-/// the ship's crew and hold are as they were, and the lane has no hunter of it), and is laid up
-/// on the tick it comes home.
+/// at once, pays no toll, feeds nothing and robs nothing (the haven's hunts, fed-until, tolls,
+/// coast and port raids and the ship's crew and hold are as they were, a port raid called
+/// straight included, and the lane has no hunter of it), and is laid up on the tick it comes
+/// home.
 #[test]
 fn a_broken_havens_pirate_turns_back_at_its_lane() {
     let tun = looks_often();
@@ -1558,7 +1559,7 @@ fn a_broken_havens_pirate_turns_back_at_its_lane() {
         };
         let hv = &c.ships.havens[h as usize];
         let (fed, toll) = (hv.fed_until, hv.counts.toll_milli);
-        let hunts = c.ships.stats.hunts;
+        let st = c.ships.stats;
         let x = c.ships.ship(p).unwrap();
         let (crew, cargo) = (x.crew, x.cargo.clone());
         idle_by(&mut c, &mut fake, arrive + 1, 1);
@@ -1566,8 +1567,21 @@ fn a_broken_havens_pirate_turns_back_at_its_lane() {
             Some(PState::Homebound { arrive: home }) => home,
             other => panic!("seed {seed}: at the lane it is {other:?}"),
         };
+        // Nor does it raid a port, from a hunt or called straight (S8b-3's port raids, PC36). The
+        // coast's villages are too strong for its pirates, so the straight call is made with the
+        // village undefended: only the break stops it.
+        let def = c.ships.tun.port_village_defence_per_pop;
+        c.ships.tun.port_village_defence_per_pop = 0.0;
+        let now = c.ships.now();
+        c.ships.port_raid(&mut c.world, p, lane, now);
+        c.ships.tun.port_village_defence_per_pop = def;
         let hv = &c.ships.havens[h as usize];
-        assert_eq!(c.ships.stats.hunts, hunts, "seed {seed}: no hunt");
+        let after = c.ships.stats;
+        assert_eq!(
+            (after.hunts, after.coast_raids, after.port_raids),
+            (st.hunts, st.coast_raids, st.port_raids),
+            "seed {seed}: no hunt, no raid"
+        );
         assert_eq!(
             (hv.fed_until, hv.counts.toll_milli),
             (fed, toll),
