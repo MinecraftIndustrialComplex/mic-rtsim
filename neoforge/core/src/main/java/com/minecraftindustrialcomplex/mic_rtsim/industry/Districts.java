@@ -230,6 +230,20 @@ public final class Districts {
         passes.addFirst(new Pass(dim, taken == null ? new LongOpenHashSet() : taken, true, waiters));
     }
 
+    /**
+     * True while a detection of {@code dim} that a command asked for ({@link #rescanSoon}) is under way or waiting:
+     * the district set is not yet what that command's edit makes it, so a command that reads the set ({@code merge},
+     * {@code split}) waits for the result line (DS-16).
+     */
+    public boolean commandPending(ResourceKey<Level> dim) {
+        if (job != null && job.dim == dim && !job.waiters.isEmpty())
+            return true;
+        for (Pass p : passes)
+            if (p.dim == dim && !p.waiters.isEmpty())
+                return true;
+        return false;
+    }
+
     /** Runs the callbacks of a finished detection; one that throws does not stop the others or the tick. */
     private static void fire(List<Runnable> waiters) {
         for (Runnable w : waiters) {
@@ -481,6 +495,8 @@ public final class Districts {
             if (level != null) {
                 job = new Rescan(level, p.full, p.dirtyHere);
                 job.waiters.addAll(p.waiters);
+            } else {
+                fire(p.waiters); // the dimension is gone: a command waiting on it hears that the districts are what they are
             }
         }
         if (job != null && job.step(IndustryConfig.get(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK))) {

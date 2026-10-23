@@ -36,7 +36,7 @@ holds the periodic detection pass or a simulated call that a wall-time phase wou
 SG43). Phases not named there keep their seconds.
 
 Every arm also gets a KubeJS script that records two numbers a tick for the `swticks` command (SG44;
-a gap over 10 s is a suspend of the laptop and is counted apart, "suspends", in no statistic, SG80):
+a gap over 10 s with a short tick time is a suspend of the laptop and is counted apart, "suspends", in no statistic, SG80):
 "ring", the server's tick time ring (what `neoforge tps` averages, which ends before
 ServerTickEvent.Post and so leaves out rtsim's Post handlers), and "gap", the wall time from one
 tick's end to the next (after every Post handler, so the whole tick; below 50 ms it includes the wait
@@ -83,8 +83,10 @@ let swTop = []
 let swSusp = []
 let swLast = -1
 let swPrev = 0
-// A gap over this is a suspend of the laptop (a lid close), not a tick: it is counted apart and left out of
-// every statistic and of the longest ticks (choice SG80; before it, a 1,726 s tick sat in one window's mean).
+// A gap over this whose tick time (the monotonic ring, which does not run while the laptop sleeps) is under
+// half of it is a suspend of the laptop (a lid close), not a tick: it is counted apart and left out of every
+// statistic and of the longest ticks (choice SG80; before it, a 1,726 s tick sat in one window's mean). A real
+// stall of the server, whose ring time is long too, stays in them.
 const SW_SUSPEND_MS = 10000
 
 function swPct(a, p) {
@@ -120,11 +122,11 @@ ServerEvents.tick(event => {
     swLast = tc
     swPrev = now
     if (gap < 0) return
-    if (gap > SW_SUSPEND_MS) {
+    const ms = s.getTickTimesNanos()[tc % 100] / 1e6
+    if (gap > SW_SUSPEND_MS && ms < gap / 2) {
         swSusp.push(gap)
         return
     }
-    const ms = s.getTickTimesNanos()[tc % 100] / 1e6
     swMs.push(ms)
     swGap.push(gap)
     swGt.push(tc)
@@ -679,6 +681,8 @@ def rescan_timed(s, timeout=300):
         now = perf()
         if now and now["state"] == "idle" and (before is None or now["detections"] > before["detections"]):
             r["after"] = now
+            # the command's detection is one commit; a ticked pass that finished first would be a second (SG81)
+            r["detections_counted"] = now["detections"] - (before["detections"] if before else 0)
             break
         time.sleep(1)
     else:
@@ -743,8 +747,10 @@ def scene_run(s, sc, profile_s, barrier=None):
         a = r.get("after") or {}
         log(s.run, "rescan", f"{r['seconds']:.1f} s, {r['ticks']} ticks, {a.get('work_us')} us of work over "
             f"{a.get('slices')} ticks, longest tick {a.get('longest_tick_us')} us",
-            "(timed out)" if r.get("timed_out") else "")
-    if sc.get("unload_after_adopts"):
+            "(timed out)" if r.get("timed_out") else "",
+            f"(counted {r['detections_counted']} detections, not 1: another pass committed)"
+            if r.get("detections_counted", 1) != 1 else "")
+    if sc.get("unload_after_adopts") and adopt_g is not None:
         # a glass verdict needs 6,000 quiet ticks after the last recompile, and a district declared late (a
         # deferred adopt) recompiles late: unload once every arm has run this many ticks since its adopts (SG82)
         n = sc["unload_after_adopts"]
