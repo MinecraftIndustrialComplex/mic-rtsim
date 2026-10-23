@@ -373,6 +373,45 @@ sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spi
   (`shots/v_ridge_ringA_*_before_after.png`).
 - Ice and Fire's lightning dragons in blue read navy at range: that is their own texture.
 
+### Round two (DHT67 to DHT70)
+
+Captured on 2026-10-23 in a private headless sway at 1920x1080 with the pack's Sodium 0.8.13, on a local verify
+branch: this branch plus the media stub, with two switches for before and after, `/micmedia legage` (the leg
+carries the age, or none, as before DHT67) and `/micmedia hold` (DHT68's hold on or off). Session 1, 15:00 to
+15:30, ran the first version (54d9e5d1); session 2, 15:51 to 16:05, the code review's fixes (5b424271). The
+world above, render distance 10, simulation distance 12, field of view 60 (15 zoomed), MEDIUM; the machine
+shared with other sessions' jobs. The takes are the hand-over's (`g_fly_m2`, `g_ring_m2`): a stage 4 fire dragon
+of 76 days flies an engine leg in and its body arrives 114 blocks from the camera (fly) or 149 (ring, inside DH's
+vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-round2-2026-10-23/` (`stills/`,
+`clips/`, `raw/`; the client's own media lines are in `raw/client-session*.log`).
+
+- **The size (DHT67).** Without the age the far model was drawn at stage 4's middle age, 87 days, render size
+  16.10, against the body's 12.80: 26% larger, and it shrank at the hand-over (`stills/s1_fly114_zoom_before.png`).
+  With the age, far model and body are both 12.80 in every frame logged, before, during and after the hold.
+- **The hold (DHT68).** Eight arrivals with the hold, four a session: each held 5.0 to 5.3 of the body's ticks,
+  246 to 257 ms, 11 to 15 frames, and the far model placed at every tick of it. With the hold off the body's first
+  frame is its rest pose, wings flat and legs down, and it unfolds over the next quarter second
+  (`stills/s1_fly114_before_hold-off_age-off.png`, `stills/s2_fly114_before_hold-off_age-off.png`, and the ring's).
+  With it, the frame sheets of every take, at 114 and 149 blocks, zoomed and not, show the far model flying up
+  to the swap and the body flying from its first frame, one dragon in every frame
+  (`stills/s{1,2}_*_after*.png`, `stills/s{1,2}_*_zoom_after.png`). Left: at the swap the wings jump to another
+  point of their beat, as the far model's loop and the body's own animation keep different clocks.
+- **A recording trap, not a render.** Session 1's clips (x264, 4:2:0 chroma) left a red tint under the body for
+  about 4 frames after the far model went, which read as a second dragon; it is in the red-difference plane only,
+  none of it in the luma (`stills/s1_encoder_chroma_ghost_luma-vs-red.png`). Session 2 recorded 4:4:4. Session
+  1's zoomed fly take also ran its clip's time faster than the wall's while the server lagged.
+- **The band's cap (DHT69).** 30 dragons in the band, MEDIUM: 24 counted, 6 left out, in both modes. Models on,
+  the first frame's view drew 10 in DH's pass and 13 in the band (the rest out of view); models off, 9 band boxes.
+  Looking down on them (`stills/s2_bandcap_30-in-band_24-drawn.png`): 24 models, none as boxes. Frames over 300 in
+  session 1, models on: mean 19.47 ms, p95 32.2; models off: 17.45, p95 23.5 (DH's pass 2.56 ms of CPU a frame
+  and the band 1.61 ms for the models), on a loaded machine.
+- **The RESET (DHT70).** 12 far dragons 300 to 800 blocks ahead, then DH's render distance from 160 to 150
+  chunks, which changes the far radius the client asks for, so it subscribes again and the server answers with a
+  RESET. Sampled every quarter second for 4 s and again at 5 s: 11 or 12 models drawn and none waiting throughout,
+  as before the change (`stills/s2_reset_before.png`, `s2_reset_0.5s_after.png`, `s2_reset_5s_after.png`; the
+  blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
+  rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
@@ -389,6 +428,11 @@ sessions' jobs, load average 6 to 40. Logs: `/home/greencheetah/mic-media/dh-spi
 - The real models with players' own trains (only DHT66's four designs ran: no carriage of block entities only,
   none mixing upright and upside-down bogeys) and a hand-over for each species (only a stage 4 fire dragon).
 - The real models under an Iris shader pack, or on a GPU other than the laptop's Radeon on Mesa.
+- The arrival's hold (DHT68) in a client for a named or leashed dragon, one with riders or a lightning dragon
+  breathing, and for any species but fire.
+- The far object that ran away from a dragon setting off from a hover (2 of 8 takes in "The body's copy (DHT47)",
+  a double image for up to 0.8 s): round two found no cause it could show, so DHT44's run on is not changed and
+  the case stays open.
 
 ### Traps the bench found
 
