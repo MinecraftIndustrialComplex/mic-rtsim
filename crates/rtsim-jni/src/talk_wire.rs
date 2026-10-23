@@ -9,7 +9,7 @@
 //!   id: 48 bytes of facts and then `n` news items of [`news::SIZE`] bytes, each with three refs of
 //!   [`reference::SIZE`] bytes (TK30).
 //! - **TALKED** (0x0A00, Java to the engine, journaled): a talk the village credits, 64 bytes
-//!   ([`talked`]), exactly once by its op id (docs/boundary.md §13.4).
+//!   ([`talked`]), exactly once by its op id (docs/boundary.md §13.7).
 //!
 //! The reasons for the layout are in TALK.md §9; this file is the layout. Every value is
 //! little-endian.
@@ -64,7 +64,7 @@ pub mod ask {
     }
 }
 
-/// TALKED (docs/boundary.md §13.4): a ribbit talked with a player and its village credits it. The
+/// TALKED (docs/boundary.md §13.7): a ribbit talked with a player and its village credits it. The
 /// journaled prefix (8 obsSeq, 16 gameTime) comes first, as for every journaled kind.
 pub mod talked {
     /// u64, Java's: the kernel's `Replay` applies a record of this op id once.
@@ -710,7 +710,7 @@ mod tests {
     /// The pinned talked record (Java's `TalkRecordsTest` pins the same bytes): observation 0x1234
     /// at game time 123,456, op id 0x0A0B0C0D0E0F1011, by the player (0x1111222233334444,
     /// 0x5555666677778888) to a ribbit of village 0x0102030405060708 whose body is dictionary id 3.
-    /// Built at the literal offsets of docs/boundary.md §13.4, not through this file's constants.
+    /// Built at the literal offsets of docs/boundary.md §13.7, not through this file's constants.
     #[test]
     fn the_talked_bytes_are_pinned() {
         let t = Talked {

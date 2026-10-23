@@ -42,7 +42,7 @@ import java.util.function.Supplier;
  *   <li><b>Voice</b> {@code ribbit.<profession>}; a nitwit that plays in a touring band is
  *       {@code ribbit.musician}; a ribbit with no profession data is plain {@code ribbit}.</li>
  *   <li><b>Holder</b> its village for a resident, the caravan's own board for a merchant puppet, none for a
- *       band's musician (the engine keeps no board for a band, TK38) and for a ribbit with no village.</li>
+ *       band's musician (the engine keeps no board for a band, TK62) and for a ribbit with no village.</li>
  *   <li><b>Attitude</b> wary toward a player its village dislikes (the sorcerer buff filter's own test).</li>
  *   <li><b>Credit</b> one TALKED (journaled, applied by the engine once by op id) per village, player and
  *       game day, capped by an attachment on the <i>player</i> ({@link #DAYS}): the credit lands on the
@@ -145,7 +145,7 @@ public final class RibbitTalker implements Talker {
     /**
      * A resident asks the engine what its village knows (TK49); a merchant that is a caravan's puppet speaks
      * for the caravan, as a wandering trader does. A band's musician has no board: the engine keeps none for a
-     * band (it answers a band's agent with no HOLDER, TK38), so it speaks at once. A baby has none (TK16).
+     * band (it has no caravan row to answer from), so it speaks at once (TK62). A baby has none (TK16).
      */
     @Override
     public TalkHolder holder(Entity entity) {
@@ -171,7 +171,7 @@ public final class RibbitTalker implements Talker {
     }
 
     /**
-     * A village that likes the player says so; one that dislikes him says that (TK61). The sorcerers have their
+     * A village that likes the player says so; one that dislikes him says that (TK64). The sorcerers have their
      * own lines for both ({@code ribbit.sorcerer.mood.*}); the voice chain picks them up under the same topic.
      */
     @Override
@@ -189,7 +189,7 @@ public final class RibbitTalker implements Talker {
     /**
      * As a villager: asleep and hurt as the core decides them (Ribbits has no sleeping goal, so a ribbit is
      * asleep only if something else put it to bed). Busy is also a ribbit playing in a band and a sorcerer
-     * casting its buff; a gardener watering and a fisherman fishing still stop to chat (TK62).
+     * casting its buff; a gardener watering and a fisherman fishing still stop to chat (TK63).
      */
     @Override
     public State state(Entity entity, ServerPlayer player) {
@@ -223,7 +223,7 @@ public final class RibbitTalker implements Talker {
     /**
      * Whether this talk can earn the village a credit: a resident of an adopted village that is not asleep,
      * busy or a baby, a real player, the engine able to take it, and this player not yet credited by the
-     * village today. A puppet gives none (TK63): it is far from home and its village did not see the chat.
+     * village today. A puppet gives none (TK61): it is far from home and its village did not see the chat.
      */
     @Override
     public boolean credits(Entity entity, ServerPlayer player) {

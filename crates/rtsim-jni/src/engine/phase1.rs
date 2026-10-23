@@ -1474,7 +1474,7 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
     take_world_commands(st);
 }
 
-/// A TALKED `Replay` admitted (docs/boundary.md §13.4): the village credits the player's talk with
+/// A TALKED `Replay` admitted (docs/boundary.md §13.7): the village credits the player's talk with
 /// one of its ribbits. A record that does not decode, names a village the world does not know (or
 /// a base), or is by nobody is refused and counted, never applied. A scripted village is skipped
 /// like every other kind's (its sentiment is the test's own).
