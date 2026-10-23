@@ -1543,7 +1543,10 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   its dead (MZB-131). Across a restart the bodies the pages held in Minecraft are kept the same way
   until the journal's replay has caught up, so a BAND_CASUALTIES or a BAND_DEMATERIALIZED journaled
   after the last page save is counted as the session that wrote it counted it; what the replay
-  did not count is dropped then, its members alive as before (MZB-138).
+  did not count is dropped then, its members alive as before (MZB-138). The replay has caught up
+  when the engine's `Replay` has applied every record before the session's first live one, however
+  many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
+  counts off the bodies kept for its epoch live and replayed alike (MZB-142).
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
