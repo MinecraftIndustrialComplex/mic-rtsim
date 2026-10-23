@@ -1080,12 +1080,14 @@ public final class ConflictGameTests {
                     check("its own kind, 0x0815", d.kind() == 0x0815 && d.view().capacity() == ConflictRecords.DifficultyRecord.SIZE);
                     ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 2, false)));
                 })
-                .thenWaitUntil(() -> check("the party", party(agent) != null && party(agent).stacks().size() == 1))
+                .thenWaitUntil(() -> check("the party, answered", party(agent) != null && party(agent).stacks().size() == 1
+                        && !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty()))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     ConflictBridge.Stack st = party(agent).stacks().get(0);
                     check("pending on Peaceful (" + st.state() + ")", st.state() == ConflictBridge.StackState.PENDING && st.bodies().isEmpty());
-                    check("no BAND_MATERIALIZED", about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty());
+                    List<ScriptedEngine.Received> m = about(ConflictRecords.BAND_MATERIALIZED, agent);
+                    check("BAND_MATERIALIZED with none placed", m.size() == 1 && m.get(0).aux() == 0);
                     seen[0] = difficulties.get().size();
                     server.setDifficulty(after, true);
                 })
@@ -1143,9 +1145,11 @@ public final class ConflictGameTests {
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 3)
                 .thenExecute(() -> {
                     check("not played while the player is away", bridge().noticesPlayed == played[0] && bridge().noticesKept() >= 1);
-                    // A real logout: the logged-out event fires and the entity leaves the level.
+                    // A real logout: the logged-out event fires and the entity is removed. The level's player
+                    // list is the entity manager's to change, which never had this player: take it out by hand.
                     level.getServer().getPlayerList().remove(player);
-                    check("logged out", player.isRemoved() && !level.players().contains(player));
+                    check("logged out", player.isRemoved());
+                    FakePlayers.remove(player);
                 })
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 2)
                 .thenExecute(() -> {
