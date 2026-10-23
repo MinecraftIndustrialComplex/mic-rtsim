@@ -6342,10 +6342,26 @@ mod replay_path {
         /// from a water tank (inventory 4, at x 80): three units. Returns the builder and A's
         /// press, B's and the boiler.
         pub(super) fn boiler_lines() -> (B, [u32; 3]) {
+            boiler_lines_from(false)
+        }
+
+        /// [`boiler_lines`]; with `source`, the pump draws from a water source in place of the
+        /// tank, so the boiler's unit has no store.
+        fn boiler_lines_from(source: bool) -> (B, [u32; 3]) {
             let (mut b, p0, p1) = two_lines(ORE, CRUSHED, 10);
-            let water = b.store(4);
-            b.nodes[water as usize].model = model::STORE_FLUID;
-            b.nodes[water as usize].flags = node_flags::FLUID;
+            let water = if source {
+                b.node(
+                    NodeKind::Source,
+                    model::WATER_SOURCE,
+                    node_flags::FLUID,
+                    Vec::new(),
+                )
+            } else {
+                let w = b.store(4);
+                b.nodes[w as usize].model = model::STORE_FLUID;
+                b.nodes[w as usize].flags = node_flags::FLUID;
+                w
+            };
             let pump = b.node(
                 NodeKind::Mover,
                 model::PUMP,
@@ -6449,6 +6465,56 @@ mod replay_path {
                 } else {
                     assert_eq!(st.get(CRUSHED), 0, "{st:?}");
                     assert_eq!(st.get(WATER), 100_000_000, "{st:?}");
+                }
+            }
+        }
+
+        /// A unit with no store (a boiler its pump fills from a water source) has nothing a window
+        /// could judge: its passed window, empty, leans on the district's pass (choice SC66), so
+        /// the network it drives runs for B; without the district's pass it may not replay, and B,
+        /// which passed its own window, makes nothing while A runs.
+        #[test]
+        fn a_unit_with_no_store_leans_on_the_districts_pass() {
+            for district_passed in [false, true] {
+                let (b, [p0, p1, boiler]) = boiler_lines_from(true);
+                let invs = lines(1000, (ORE, 1000));
+                let mut e = engine_with(&b, Tunables::default(), &invs);
+                judge(&mut e, &[(p0, verdict::PASS), (p1, verdict::PASS)]);
+                let c = e
+                    .glass
+                    .districts
+                    .get_mut(&D)
+                    .and_then(|g| g.compiled.as_mut())
+                    .expect("a compile");
+                assert_eq!(c.units.len(), 3);
+                let ub = c.units.of_node[boiler as usize];
+                assert!(c.units.stores[ub as usize].is_empty(), "no store");
+                let empty = |verdict| WindowResult {
+                    start: Tick(0),
+                    ticks: 1,
+                    verdict,
+                    goods: Vec::new(),
+                    stores: Vec::new(),
+                };
+                let st = &mut c.unit_state[ub as usize];
+                st.last = Some(empty(verdict::PASS));
+                st.passed = Some((Tick(0), 1));
+                st.edited = false;
+                c.passed = district_passed.then(|| empty(verdict::PASS));
+                assert_eq!(c.unit_may_replay(ub), district_passed);
+                feed(&mut e, &load_state(200, LoadState::Unloaded));
+                e.advance_to(Tick(3200));
+                assert_eq!(model(&e), replay_model::GLASS);
+                let rp = replay(&e);
+                assert_eq!(rp.gated()[boiler as usize], !district_passed);
+                assert_eq!(rp.gated()[p1 as usize], !district_passed, "B's press");
+                assert!(!rp.gated()[p0 as usize]);
+                let st = e.sim_stock(D).expect("replaying");
+                assert!((298..=300).contains(&st.get(SHEET)), "{st:?}");
+                if district_passed {
+                    assert!((296..=300).contains(&st.get(CRUSHED)), "{st:?}");
+                } else {
+                    assert_eq!(st.get(CRUSHED), 0, "{st:?}");
                 }
             }
         }
