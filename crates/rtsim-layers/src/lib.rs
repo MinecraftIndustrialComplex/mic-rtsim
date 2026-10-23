@@ -230,13 +230,14 @@ pub fn specs() -> Vec<Spec> {
                 "point",
                 "#e0b04a",
             )
-            .describe("Villages, player bases and havens, sized by population")
+            .describe("Villages, player bases, havens and lairs, sized by population")
             .priority(10)
             .legend(&[
                 ("Human village", "#e0b04a"),
                 ("Ribbit village", "#9b6bd6"),
                 ("Player base", "#4ab0e0"),
                 ("Haven", "#d0453a"),
+                ("Lair", "#8fa3b8"),
             ])
             .fields(&["Population"]),
             "phase1",
@@ -721,6 +722,7 @@ fn node_ci(k: NodeKind) -> u16 {
         NodeKind::Village(Culture::Ribbit) => 1,
         NodeKind::PlayerBase { .. } => 2,
         NodeKind::Haven(_) => 3,
+        NodeKind::Lair => 4,
     }
 }
 

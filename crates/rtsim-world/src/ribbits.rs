@@ -458,7 +458,7 @@ impl World {
     /// Whether a band from `home` may stop at node `j` now (P16): a ribbit village; a human
     /// village on the border (one with a ribbit neighbour); or a player settlement (an active
     /// base, P30) whose owners are all in good standing with the band's home (sentiment at or
-    /// above `band_standing_at_or_above`). Havens never.
+    /// above `band_standing_at_or_above`). Havens and lairs never.
     pub fn band_may_visit(&self, home: usize, j: usize, at: Tick) -> bool {
         let ribbit = |k: usize| matches!(self.nodes[k].kind, NodeKind::Village(Culture::Ribbit));
         match self.nodes[j].kind {
@@ -476,7 +476,7 @@ impl World {
                         })
                 })
             }
-            NodeKind::Haven(_) => false,
+            NodeKind::Haven(_) | NodeKind::Lair => false,
         }
     }
 

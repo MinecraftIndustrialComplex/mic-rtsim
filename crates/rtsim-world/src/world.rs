@@ -471,8 +471,8 @@ impl World {
             NodeKind::Village(rtsim_settle::Culture::Ribbit) => HolderKind::RibbitVillage,
             NodeKind::PlayerBase { .. } => HolderKind::PlayerBase,
             // A haven keeps no gossip of its own culture's kind; it remembers like a ribbit
-            // village (no vanilla gossip to write).
-            NodeKind::Haven(_) => HolderKind::RibbitVillage,
+            // village (no vanilla gossip to write). So does a lair.
+            NodeKind::Haven(_) | NodeKind::Lair => HolderKind::RibbitVillage,
         };
         self.knowledge.add_holder(actor, hk);
         let region = self.markets.insert(d.key, m, self.now);
@@ -614,7 +614,9 @@ impl World {
         let i = self.nodes.len();
         // Genesis stock is ledgered in the line books, as at build.
         self.add_node(sid, &d, m, costs, local);
-        if !matches!(d.kind, NodeKind::PlayerBase { .. }) {
+        // A settlement joining is news; a player base or a lair (a den with no market to speak
+        // of, MZB-59) is not.
+        if !matches!(d.kind, NodeKind::PlayerBase { .. } | NodeKind::Lair) {
             let (place, id) = (self.node_at(i, at), self.node_id(i));
             self.tape.event(
                 rtsim_archive::kinds::SETTLE_JOINED,

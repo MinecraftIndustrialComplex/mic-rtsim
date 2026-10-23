@@ -40,6 +40,7 @@ impl Encode for NodeKind {
                 w.u8(2);
                 c.encode(w);
             }
+            NodeKind::Lair => w.u8(3),
         }
     }
 }
@@ -50,6 +51,7 @@ impl Decode for NodeKind {
             0 => NodeKind::Village(Culture::decode(r)?),
             1 => NodeKind::PlayerBase { owner: r.u64()? },
             2 => NodeKind::Haven(Culture::decode(r)?),
+            3 => NodeKind::Lair,
             t => return Err(CodecError::Invalid(format!("node kind {t}"))),
         })
     }
@@ -186,5 +188,22 @@ mod tests {
             joined: Tick(99),
         };
         assert_eq!(back.insert(row.clone()), s.insert(row));
+    }
+
+    #[test]
+    fn a_lair_reads_back_as_a_lair() {
+        let mut s = Settlements::new();
+        let id = s.insert(Settlement {
+            key: 0xDE11,
+            kind: NodeKind::Lair,
+            pos: Pos::new(0, -40, 900),
+            pop: 1,
+            joined: Tick(7),
+        });
+        let back = Settlements::from_bytes(&s.to_bytes()).unwrap();
+        assert_eq!(back.to_bytes(), s.to_bytes());
+        assert_eq!(back.get(id).map(|x| x.kind), Some(NodeKind::Lair));
+        assert!(!NodeKind::Lair.is_storehouse());
+        assert_eq!(NodeKind::Lair.culture(), None);
     }
 }
