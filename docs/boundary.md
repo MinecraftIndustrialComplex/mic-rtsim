@@ -2058,7 +2058,7 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK48)
+## 13. Talking to NPCs: TALK_ASK and TALK_FACTS (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK56)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
 (a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
@@ -2067,8 +2067,8 @@ did what to whom and where. TALK.md §9 holds the reasons and the lines Java bui
 section is the wire.
 
 Reference codec `crates/rtsim-jni/src/talk_wire.rs` (every record's bytes are pinned by its tests).
-The Java codec comes with the slice that wires the core to it and takes the same pinned bytes. The
-engine side is `engine/talk.rs`.
+The Java codec is `talk/TalkRecords.java`, pure (no Minecraft types), and `TalkRecordsTest` pins the
+same bytes as the Rust tests. The engine side is `engine/talk.rs`; the Java side is §13.6.
 
 ### 13.1 Kind ranges (reserved)
 
@@ -2150,3 +2150,27 @@ engines do not record news yet). Posts one report on a village's board: village 
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
 it does to the knowledge tables, are TK40.
+
+### 13.6 What the Java side does with them
+
+- **The plugin.** `talk/TalkAsks` is a `SessionPlugin` that owns 0x00C0 to 0x00CF and 0x8A00 to 0x8AFF
+  (`TalkRecords.isTalkCommand`). A talker's click opens an ask with a Java id (per session, from 1);
+  at the end of every tick all open asks go out as one TALK_ASK through `boundary().direct` (the
+  dimension is defined first, `dimId` before `direct`; a full buffer drops the record and the next tick
+  writes it again). An ask closes on its TALK_FACTS, after 20 ticks, or when the session starts, stops or
+  fails; its callback runs once, with the answer or with null. At most 32 are open. On the pure-Java stub,
+  with no session or a failed one, no ask opens and the talker speaks at once (TK49).
+- **The answer.** `accept` decodes the record (a malformed one is counted and dropped, an answer for an
+  ask already closed counts as late) and resolves the dictionary names from the session's `EngineNames`
+  once, by the ref's class: dictionary 5 for a village, camp or chief (the culture), dictionary 3 for a
+  dragon, lair or ship (the body entity id), dictionary 2 for the goods. The talk reads it as a
+  `TalkAnswer`; a talker's candidates see only `api/TalkFacts` (no wire types).
+- **Holders.** A villager (not a child, TK16) of an adopted village asks as holder kind 1 with Java's village id; a wandering
+  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. Kinds 3 and 4 are
+  not asked by Java yet (TK38).
+- **Test hooks.** `TalkReport` is `NativeEngine.talkReport(...)` (`NativeCodec.Orders.talkReport`), with
+  `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
+  ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are
+  `gametest/TalkNewsGameTests`, each in a batch of its own because of the process-wide hooks.
+- **Nothing is written back.** An ask changes nothing in the world; the daily credit stays where slice 1
+  put it (TK1, TK2, TK25), and the engine hears of a talk only with TALKED, slice 3.

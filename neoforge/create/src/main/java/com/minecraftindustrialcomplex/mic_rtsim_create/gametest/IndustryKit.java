@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
@@ -125,6 +126,7 @@ public final class IndustryKit {
 
     /** Forgets the industry of the yard's chunks (and one ring around them). */
     public static void forget(GameTestHelper helper) {
+        TrainWatch.reportUnwatchedForTest(true); // a test that switched the report off and failed must not leave it off
         BlockPos a = helper.absolutePos(BlockPos.ZERO), b = helper.absolutePos(new BlockPos(33, 0, 33));
         int minCx = Math.min(a.getX(), b.getX()) >> 4, maxCx = Math.max(a.getX(), b.getX()) >> 4;
         int minCz = Math.min(a.getZ(), b.getZ()) >> 4, maxCz = Math.max(a.getZ(), b.getZ()) >> 4;
