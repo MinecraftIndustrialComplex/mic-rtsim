@@ -603,6 +603,9 @@ broken, and refounding at found sites.
    - **When it goes.** It assaults the weakest such haven when `3p - 6(1 - p) > 0`, the pirates'
      own hunt values, so p > 2/3. It never goes while a player's interest area is within view of
      the haven's dock.
+   - **Cause.** It looks only at havens that have held a patrolled lane for a game year (96 days)
+     since they last opened (PC31), so a band that has just landed is left alone until its
+     robberies are known.
    - **The fight.** The square law decides, so p > 2/3 means the navy wins outright.
    - **What breaks.**
      - The haven's ships in port are lost. No pressure is added, because no player did it.
