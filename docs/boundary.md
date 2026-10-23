@@ -1952,28 +1952,34 @@ the core's `far/FarLegs.java`; the bytes of one record are pinned on both sides 
 
 ### 12.2 The payloads and the far feed's message
 
-Two NeoForge payloads, both registered optional (`PayloadRegistrar.optional()`), so a client without them
-joins a server with them and the other way round. Neither goes through the engine.
+Three NeoForge payloads, all registered optional (`PayloadRegistrar.optional()`), so a client without them
+joins a server with them and the other way round. None goes through the engine.
 
-- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (1), `radius` (blocks, at most
+- **`mic_rtsim:far_sub`**, client to server: five varints, `version` (2), `radius` (blocks, at most
   16,384, PLACEHOLDER), `tier` (0 OFF, 1 LOW, 2 MEDIUM, 3 HIGH), `budget` (objects, capped by the tier at
   0, 48, 128 and 320, PLACEHOLDER) and `kinds` (a mask of `1 << kind`: 2 dragons, 4 carriages). Radius,
   budget or kinds 0 unsubscribes. A subscription of another version is ignored. A client sends it only
   when the server has the channel, at most once a second, and only when it changed.
 - **`mic_rtsim:far`**, server to client: one byte array (at most 1 MiB), a far feed message, once a second
   while subscribed and something changed (the first one always).
+- **`mic_rtsim:far_shape`**, server to client: `i64 hash` (big-endian, as `FriendlyByteBuf.writeLong`) and
+  one byte array (at most 32 KiB, PLACEHOLDER): a far shape, what an object looks like (DHT61, DHT62).
 
 The message (`far/FarWire.java`; unsigned LEB128 varints, `zig` a zigzag varint):
 
 ```
-u8 version (1), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
-INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb
+u8 version (2), varint flags (1 RESET), varlong gameTime, string dimension, zig ox, oy, oz, varint count, records
+INTRO  1: handle, i64 id, u8 kind, u8 style, u8 variant, u8 size, varint rgb, i64 shape, zig age
 LEG    2: handle, u8 state, zig y-oy, zig x0-ox, zig z0-oz, zig x1-ox, zig z1-oz, zig t0-gameTime, varlong t1-t0, varint radius
 SAMPLE 3: handle, u8 state, zig lx-8ox, zig ly-8oy, zig lz-8oz, zig tx-lx, zig ty-ly, zig tz-lz
 REAL   4: handle, zig entity (-1: none)
 GONE   5: handle
 ```
 
+- **Looks** (version 2, DHT60): an INTRO's `shape` is the content hash of what the object looks like (0:
+  none, drawn as a box), its `age` the object's age in days (a dragon's, for its size between stages; -1:
+  the source does not say, as the engine's legs do not). `style`, `variant` and `size` are a dragon's
+  species, colour and stage.
 - **Handles.** The server gives each object a small handle per subscriber in its INTRO; later records
   use it. An object the filter no longer chooses is held for two sweeps (PLACEHOLDER), then GONE. GONE
   frees the handle, and GONE records come first in a message so their handles can be reused in it. The
@@ -2001,7 +2007,34 @@ GONE   5: handle
   sampled mover is run on (DHT44): from where it is drawn, it heads for where its last two samples say
   it will be when the next one comes, and 10 ticks on past that (PLACEHOLDER) should the next be late,
   then waits; one that stopped or brakes to a stop stops there. A message that does not decode drops
-  every object, and the client subscribes again, so the server's RESET brings them back.
+  every object, and the client subscribes again, so the server's RESET brings them back. A dragon whose
+  INTRO says age -1 keeps the age an earlier INTRO of the same object gave (its body's, handed back to
+  its leg).
+
+**Shapes** (`far/FarShape.java`, DHT61, DHT62). A shape is a kind's raw layout, deflated (raw DEFLATE, no
+zlib header); its hash is over the raw bytes: FNV-1a 64, then `h ^= h >>> 33; h *= 0xff51afd7ed558ccd;
+h ^= h >>> 33`, and 0 becomes 1. The server sends each shape to a subscriber once, after the message whose
+INTRO first names it, nearest object first and at most 64 KiB a sweep (PLACEHOLDER; the rest go the next
+sweep; until they come the client draws nothing for the object for a short grace, about 2 s, then its box,
+DHT63). A RESET starts over on both sides: the server sends the
+shapes again after it, and the client forgets the ones it had when it reads it. Past 1,024 shapes sent
+(PLACEHOLDER) the server starts the subscriber's view over with a RESET, so neither side's set grows for a
+whole session. A client inflates each shape as it arrives (at most 1 MiB raw), checks the hash and the
+layout, and drops one that fails. A carriage's raw layout (`far/CarriageShape.java`, version 1, plain bytes as the message's):
+
+```
+u8 version (1), u8 assembly (Direction 3D data value: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
+varint palette size (at most 4,096), palette: varint global block state id each,
+zig min x, y, z, varint size x, y, z (1 to 1,024 each), varint block count (at most 65,536),
+per block, in (y, z, x) order: varint gap in the box's linear index ((y * sz + z) * sx + x) since the
+  last block (the first from -1), varint palette index,
+u8 bogey count (at most 4), per bogey: zig x, y, z, string style id, string size id (each at most 256
+  bytes), u8 upside down (0 or 1)
+```
+
+Coordinates are the contraption's own (Create's `Contraption.Blocks`, relative to its anchor, the leading
+bogey). The block state ids are the global ids chunk packets use, so they hold between one server and the
+clients joined to it. Block entity data, actors, storage, seats and glue are left out.
 
 ### 12.3 Sources and the filter
 
@@ -2011,8 +2044,8 @@ for each level a subscriber is in, and none when nobody is subscribed.
 | Source | Ids | What it gives |
 |---|---|---|
 | the engine's legs (core, priority 0) | the dragon's agent id | FLY, HUNT and ROOST legs from FAR_LEG |
-| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id |
-| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one |
+| Ice and Fire's bodies (`mic_rtsim_iceandfire`, priority 10) | the dragon's agent id | each puppet's body as a sample, FLY or ROOST, with its entity's network id and its age in days |
+| Create's trains (`mic_rtsim_create`, priority 0) | `0x54 << 56`, 48 bits of the train's id, the carriage index | every carriage's leading and trailing points, read as Create's map sync reads them, with its entity's network id while the server has one, and its shape (its blocks and bogeys, DHT61) |
 
 - **One item per id**: the highest priority wins, so a dragon's body replaces its leg on the same handle
   and gives it back when it goes (the hand-over, research note §5).

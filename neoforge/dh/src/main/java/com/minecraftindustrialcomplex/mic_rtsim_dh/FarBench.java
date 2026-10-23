@@ -146,6 +146,7 @@ final class FarBench {
                 FarDragonView.recuts = FarDragonView.confirms = FarDragonView.flips = 0;
                 FarBandRenderer.nanos = 0;
                 FarBandRenderer.frames = 0;
+                FarModelRenderer.stats(); // starts the models' sums over
                 feed0 = FarFeedClient.meter();
                 windowFrame0 = FarTrainView.frame();
                 windowNanos0 = System.nanoTime();
@@ -179,6 +180,8 @@ final class FarBench {
                         FarBandRenderer.lastBoxes,
                         FarBandRenderer.frames == 0 ? 0.0 : FarBandRenderer.nanos / 1e3 / FarBandRenderer.frames,
                         FarBandRenderer.frames));
+                for (String line : FarModelRenderer.stats())
+                    MicRtsimDh.LOGGER.info("far bench result {} {}", LABEL, line);
                 MicRtsimDh.LOGGER.info(String.format(Locale.ROOT,
                         "far bench result %s feed: %s; %d messages, %d bytes, %d records in %.2f s: %.1f messages/s, "
                                 + "%.0f bytes/s, %.1f records/s; holding %d objects; %d did not decode",
@@ -221,6 +224,9 @@ final class FarBench {
                         : FarTrainView.controllerNanos / 1e3 / FarTrainView.controllerFrames,
                 FarDragonView.lastDrawn, FarDragonView.lastHidden, FarBandRenderer.lastDrawn,
                 FarFeedClient.active() ? "active" : "not active", FarFeedClient.held(), FarFeedClient.meter()[1]));
+        if (ticks % (LOG_EVERY * 3) == 0)
+            for (String line : FarModelRenderer.stats())
+                MicRtsimDh.LOGGER.info("far bench {} {}: {}", LABEL, when, line);
     }
 
     private static void fail(String why) {
