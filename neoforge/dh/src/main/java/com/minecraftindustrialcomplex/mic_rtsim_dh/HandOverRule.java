@@ -5,8 +5,9 @@ package com.minecraftindustrialcomplex.mic_rtsim_dh;
  * apart from how anything is drawn, so another renderer can take the boxes' place and keep it.
  *
  * <ul>
- *   <li><b>The client has the real thing</b> (its entity, near where the mover is) and, for a dragon, it is short
- *       of DH's vanilla fade ({@link #bodyShown}): nobody; vanilla draws it.</li>
+ *   <li><b>The client has the real thing</b> (its entity, near where the mover is, and for a dragon its body
+ *       drawn by vanilla): no far model; vanilla draws it. A dragon's body is copied into DH's pass toward DH's
+ *       vanilla fade ({@link #bodyCopied}), so the fade mixes its pixels toward itself.</li>
  *   <li><b>Its midpoint is in a chunk the client has not loaded</b>: DH alone.</li>
  *   <li><b>In a loaded chunk</b>: the band renderer, in vanilla's pass. DH draws it too wherever any part of it
  *       could be in DH's vanilla fade ({@link FadeRing}), and {@link #PREPARE} blocks before that: the fade mixes

@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.client;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.iafenvoy.iceandfire.entity.LightningDragonEntity;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarLook;
 import com.minecraftindustrialcomplex.mic_rtsim.client.FarModel;
 import com.minecraftindustrialcomplex.mic_rtsim.client.NullVertexConsumer;
@@ -574,6 +575,15 @@ public final class DragonLook implements FarLook {
         standIns.values().removeIf(s -> now - s.used > LIVE_KEEP_NANOS);
         if (lastYaw.size() > 4096)
             lastYaw.clear();
+    }
+
+    /**
+     * Not while a lightning dragon breathes: its renderer adds a bolt to one shared renderer each time it draws
+     * one (LightningDragonEntityRenderer), so a copy would double the bolts in vanilla's own pass too.
+     */
+    @Override
+    public boolean copies(Entity body) {
+        return !(body instanceof LightningDragonEntity l && l.hasLightningTarget());
     }
 
     @Override

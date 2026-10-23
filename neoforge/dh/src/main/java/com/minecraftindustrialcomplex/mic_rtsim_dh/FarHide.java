@@ -2,7 +2,9 @@ package com.minecraftindustrialcomplex.mic_rtsim_dh;
 
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarMover;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
@@ -68,12 +70,18 @@ final class FarHide {
      * by 1.2 block box until its first client tick, and vanilla leaves it out beyond about 74 blocks at render
      * distance 10, 88 at 12: hidden for its entity then, the far box left a gap of a frame or two.
      *
+     * And, as vanilla's entity pass asks next, the section the body stands in has been built (or is outside
+     * the build height): vanilla leaves out a body over a section it has not built yet.
+     *
      * <p>Not for a carriage: Create hands its carriages to Flywheel, which draws them with no distance rule
      * while a new carriage entity's box is Create's 1 by 1 by 1 until its first client tick, and past
      * vanilla's own entity pass. Render thread only.
      */
     private static boolean bodyDrawn(Entity e, double cx, double cy, double cz) {
-        return e.shouldRender(cx, cy, cz);
+        if (!e.shouldRender(cx, cy, cz))
+            return false;
+        BlockPos at = e.blockPosition();
+        return e.level().isOutsideBuildHeight(at.getY()) || Minecraft.getInstance().levelRenderer.isSectionCompiled(at);
     }
 
     /**

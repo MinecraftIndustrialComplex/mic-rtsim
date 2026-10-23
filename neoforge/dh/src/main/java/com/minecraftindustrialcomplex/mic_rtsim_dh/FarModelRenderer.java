@@ -17,10 +17,12 @@ import com.seibel.distanthorizons.api.methods.events.sharedParameterObjects.DhAp
 import com.seibel.distanthorizons.api.objects.math.DhApiMat4f;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
@@ -86,11 +88,20 @@ final class FarModelRenderer {
     /** Dragons drawn live: the nearest this many, within this distance. PLACEHOLDERS (live costs CPU). */
     static final int LIVE_DRAGONS = 2;
     static final double LIVE_DISTANCE = 300.0;
+    /**
+     * Bodies copied into DH's pass (DHT47): the nearest this many in view. PLACEHOLDER. Each is a live render of
+     * a real dragon; past it a body is left to vanilla alone and fades out in DH's vanilla fade, as before DHT47.
+     */
+    static final int MAX_COPIES = 4;
     /** The models off, for the bench's before and after ({@code -Dmic_rtsim.farbench.models=false}). */
     static final boolean OFF = FarBench.ENABLED && "false".equals(System.getProperty("mic_rtsim.farbench.models"));
-    /** Lighting's two level lights (world axes), turned per model into its baked frame. */
+    /**
+     * Lighting's two level lights (world axes), turned per model into its baked frame; in a level lit as the
+     * Nether is ({@code constantAmbientLight}), the second points down ({@code Lighting.setupNetherLevel}).
+     */
     private static final Vector3f LIGHT0 = new Vector3f(0.2f, 1.0f, -0.7f).normalize(),
-            LIGHT1 = new Vector3f(-0.2f, 1.0f, 0.7f).normalize();
+            LIGHT1 = new Vector3f(-0.2f, 1.0f, 0.7f).normalize(),
+            NETHER_LIGHT1 = new Vector3f(-0.2f, -1.0f, 0.7f).normalize();
 
     /** One mover's model this frame. */
     private static final class Item {
@@ -115,6 +126,10 @@ final class FarModelRenderer {
     private static final Batch DH_BATCH = new Batch(true), BAND_BATCH = new Batch(false);
     private static final GlState SAVED = new GlState();
     private static final Vector3f L0 = new Vector3f(), L1 = new Vector3f();
+    /** Bodies whose copy threw: never copied again in this level (vanilla still draws them; they fade as before). */
+    private static final Set<Integer> FAILED_COPIES = new HashSet<>();
+    /** The pass being drawn is in a level lit as the Nether is. */
+    private static boolean netherLight;
 
     private static long frameNanos, lastPrune;
     /** The level the items were made in (replaced the frame it changes, so it never outlives it). */
@@ -152,10 +167,11 @@ final class FarModelRenderer {
             ITEMS.clear();
             DRAWN.clear();
             WAITING.clear();
+            FAILED_COPIES.clear();
         }
         if (OFF || !FarGates.ready())
             return;
-        if (!prewarmed) {
+        if (!prewarmed && level != null) {
             // Behind the loading screen when it joins a world, or in the options screen when the detail goes on
             prewarmed = true;
             FarLooks.prewarmAll();
@@ -174,6 +190,7 @@ final class FarModelRenderer {
     static void releaseAll() {
         prewarmed = false;
         WAITING.clear();
+        FAILED_COPIES.clear();
         ITEMS.clear();
         DRAWN.clear();
         POOL.clear(); // their models hold the old world's stand-ins
@@ -237,7 +254,7 @@ final class FarModelRenderer {
             if (!(dx * dx + dz * dz <= radiusSq))
                 continue;
             Entity body = FarHide.bodyCopied(m, level, x, y, z, cam);
-            if (body != null) {
+            if (body != null && copies(m, body)) {
                 copyBody(m, body, cam);
                 continue;
             }
@@ -323,6 +340,24 @@ final class FarModelRenderer {
     }
 
     /**
+     * Whether {@code body} may be copied this frame: its look allows it ({@link FarLook#copies}) and no copy of it
+     * has thrown in this level. Else the body is vanilla's alone, as before DHT47.
+     */
+    private static boolean copies(FarMover m, Entity body) {
+        if (FAILED_COPIES.contains(body.getId()))
+            return false;
+        FarLook look = FarLooks.of(m.kind());
+        try {
+            return look == null || look.copies(body);
+        } catch (RuntimeException | LinkageError e) {
+            if (errors++ < 5)
+                MicRtsimDh.LOGGER.error("mic_rtsim_dh: a far look failed", e);
+            FAILED_COPIES.add(body.getId());
+            return false;
+        }
+    }
+
+    /**
      * How far {@code it} reaches from its midpoint, for the hand-over: a dragon's as its boxes' (so both views
      * count the same dragons), a carriage's its model's.
      */
@@ -384,10 +419,11 @@ final class FarModelRenderer {
         for (Item it : ITEMS) {
             FarMover m = it.mover;
             if (it.body != null) {
-                // Vanilla draws the body; this is its copy for DH's fade, not a far model of the tier's
+                // Vanilla draws the body; this is its copy for DH's fade, not a far model of the tier's. Nearest
+                // first (ITEMS is sorted), the first MAX_COPIES in view
                 it.drawLive = true;
                 float rx = (float) (it.x - cam.x), ry = (float) (it.y - cam.y), rz = (float) (it.z - cam.z);
-                if (frustum.testSphere(rx, ry, rz, it.model.radius)) {
+                if (lastCopies < MAX_COPIES && frustum.testSphere(rx, ry, rz, it.model.radius)) {
                     DRAWN.add(it);
                     lastCopies++;
                 }
@@ -411,33 +447,36 @@ final class FarModelRenderer {
         if (DRAWN.isEmpty())
             return;
 
-        boolean timed = FarBench.ENABLED;
+        boolean timed = FarBench.ENABLED, timing = false;
         SAVED.read();
         depthFunc = SAVED.depthFunc;
         dhDrawFbo = SAVED.drawFbo;
-        GlState.syncCaches(SAVED);
         float fogStart = RenderSystem.getShaderFogStart(), fogEnd = RenderSystem.getShaderFogEnd();
-        RenderSystem.setShaderFogStart(Float.MAX_VALUE);
-        RenderSystem.setShaderFogEnd(Float.MAX_VALUE);
         // Saved here, not in RenderSystem's one backup slot, which a caller of DH's may be using
         Matrix4f savedProj = new Matrix4f(RenderSystem.getProjectionMatrix());
         VertexSorting savedSorting = RenderSystem.getVertexSorting();
-        RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
         Matrix4fStack stack = RenderSystem.getModelViewStack();
         stack.pushMatrix();
-        stack.set(mv);
-        RenderSystem.applyModelViewMatrix();
-        // ShaderInstance remembers the last program it bound; DH bound its own behind its back
-        ShaderInstance any = GameRenderer.getPositionTexShader();
-        if (any != null)
-            any.clear();
-        if (timed)
-            DH_GPU.begin();
+        // From here on everything is put back, whatever throws
         try {
-            Lighting.setupLevel();
+            GlState.syncCaches(SAVED);
+            RenderSystem.setShaderFogStart(Float.MAX_VALUE);
+            RenderSystem.setShaderFogEnd(Float.MAX_VALUE);
+            RenderSystem.setProjectionMatrix(proj, VertexSorting.DISTANCE_TO_ORIGIN);
+            stack.set(mv);
+            RenderSystem.applyModelViewMatrix();
+            // ShaderInstance remembers the last program it bound; DH bound its own behind its back
+            ShaderInstance any = GameRenderer.getPositionTexShader();
+            if (any != null)
+                any.clear();
+            if (timed) {
+                DH_GPU.begin();
+                timing = true;
+            }
+            light(level);
             draw(mc, DRAWN, mv, proj, true, cam, DH_BATCH);
         } finally {
-            if (timed)
+            if (timing)
                 DH_GPU.end();
             stack.popMatrix();
             RenderSystem.applyModelViewMatrix();
@@ -446,6 +485,15 @@ final class FarModelRenderer {
             RenderSystem.setShaderFogEnd(fogEnd);
             SAVED.apply();
         }
+    }
+
+    /** The level's diffuse lights, as vanilla's entity pass sets them ({@code LevelRenderer.renderLevel}). */
+    private static void light(ClientLevel level) {
+        netherLight = level.effects().constantAmbientLight();
+        if (netherLight)
+            Lighting.setupNetherLevel();
+        else
+            Lighting.setupLevel();
     }
 
     /**
@@ -517,7 +565,7 @@ final class FarModelRenderer {
         if (timed)
             BAND_GPU.begin();
         try {
-            Lighting.setupLevel();
+            light(level);
             draw(Minecraft.getInstance(), DRAWN, mv, proj, false, cam, BAND_BATCH);
         } finally {
             if (timed)
@@ -579,7 +627,7 @@ final class FarModelRenderer {
                             shader.LIGHT0_DIRECTION.upload();
                         }
                         if (shader.LIGHT1_DIRECTION != null) {
-                            shader.LIGHT1_DIRECTION.set(L1.set(LIGHT1).rotateY(turn));
+                            shader.LIGHT1_DIRECTION.set(L1.set(netherLight ? NETHER_LIGHT1 : LIGHT1).rotateY(turn));
                             shader.LIGHT1_DIRECTION.upload();
                         }
                         VertexBuffer vb = part.buffer();
@@ -593,20 +641,26 @@ final class FarModelRenderer {
                 }
             }
         if (anyLive) {
+            // Each its own batch: one that throws loses only itself (a body's copy is not tried again), and the
+            // rest still draw
             batch.vertices = 0;
-            try {
-                for (Item it : items) {
-                    if (!it.drawLive)
-                        continue;
+            for (Item it : items) {
+                if (!it.drawLive)
+                    continue;
+                try {
                     // A pose stack of its own: a render that throws half way leaves its pushes behind
                     PoseStack pose = new PoseStack();
                     pose.translate((float) (it.x - cam.x), (float) (it.y - cam.y), (float) (it.z - cam.z));
                     it.liveModel.live.render(pose, batch);
+                    batch.endBatch();
+                } catch (RuntimeException | LinkageError e) {
+                    batch.discard();
+                    if (it.body != null)
+                        FAILED_COPIES.add(it.body.getId());
+                    if (errors++ < 5)
+                        MicRtsimDh.LOGGER.error(it.body != null ? "mic_rtsim_dh: a dragon's copy failed; it is left to vanilla"
+                                : "mic_rtsim_dh: a far model failed live this frame", e);
                 }
-                batch.endBatch();
-            } catch (RuntimeException | LinkageError e) {
-                batch.discard();
-                throw e;
             }
             vertices += batch.vertices;
         }
