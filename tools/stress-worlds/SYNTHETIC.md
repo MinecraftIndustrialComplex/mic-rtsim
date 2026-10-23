@@ -92,7 +92,18 @@ Since 10.9 (choices SG43 to SG46):
   the autosaves' segments are copied to `<run>/segs`, since compaction deletes them;
 - `rtsim_reports.final` is `/rtsim district perf` at the end of the reloaded window.
 
-A laptop suspend shows as one tick with a gap of minutes on both arms: drop it before averaging.
+A laptop suspend (one tick with a gap over 10 s and a tick time under half of it) is counted apart, in `suspends` and `suspend_max_ms`
+of each window's `per_tick_ms`, and is in none of its statistics (SG80).
+
+Since the fixes for 10.9's findings (choices SG80 to SG82):
+
+- the scene's `"rescan"` times one full detection over the ticks it takes: the command returns when
+  it has recorded the edit (DS-16), so `sw.py` polls `rtsim district perf` until the detection is
+  idle. `sw-result.json` `rescan` holds the engine's work, ticks, phases and longest tick, the wall
+  time and the `swticks` numbers of the span;
+- the scene key `"unload_after_adopts"` (game ticks; the generated scene has 8,000) holds the unload
+  until every arm has run that many ticks since the adopts, so every district's glass verdict closes
+  first. The `verdicts` report is taken then.
 
 Then read what the engine learned from the rtsim arm's saved world:
 
