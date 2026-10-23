@@ -627,15 +627,11 @@ impl Ships {
         let frame = self.ships[s].frame;
         let here = self.position(w, s, at);
         let reach = u64::from(self.tun.view_radius) + u64::from(self.tun.body_radius);
-        self.players.values().any(|v| {
-            v.interest
-                .and_then(|st| w.legs.get(st.leg).filter(|r| r.generation == st.generation))
-                .is_some_and(|r| {
-                    r.path.frame == frame
-                        && r.path.t0 <= at
-                        && at <= r.path.t1
-                        && self.sdist(frame, (r.path.x0, r.path.z0), here) <= reach
-                })
+        self.view_areas(w).any(|r| {
+            r.path.frame == frame
+                && r.path.t0 <= at
+                && at <= r.path.t1
+                && self.sdist(frame, (r.path.x0, r.path.z0), here) <= reach
         })
     }
 
@@ -1467,5 +1463,44 @@ mod tests {
             beyond > 0,
             "no patrolled lane away from a closed port was judged"
         );
+    }
+
+    /// The view rules read the world's shared areas (U8). In the native link the ships keep no
+    /// area of their own, so a player whose area only the world holds (booked while the ships
+    /// were switched off and never routed to them) must still keep a relaunch, a launch and a
+    /// raid out of his sight. Quiet coast, seed 1: a slot laid up by a closure, and a shared area
+    /// booked at its home dock.
+    #[test]
+    fn the_view_rules_see_a_shared_area() {
+        let mut c = quiet_coast(1);
+        let (v, a, _) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let s = c.ships.service_ships[v as usize]
+            .ids()
+            .find(|&id| c.ships.ships[id].is_laid_up())
+            .expect("a laid-up slot");
+        let at = c.ships.now();
+        let here = c.ships.position(&c.world, s, at);
+        let frame = c.ships.ships[s].frame;
+        assert!(!c.ships.relaunch_in_view(&c.world, s, at));
+        assert!(!c.ships.point_in_view(&c.world, frame, here, at));
+        let radius = c.ships.tun.view_radius;
+        let pos = rtsim_settle::Pos::new(frame, here.0, here.1);
+        let (p, area) = c.world.observe_area((7, 7), pos, at, radius);
+        assert!(area.is_some(), "a new area");
+        assert!(
+            !c.ships.players.contains_key(&p),
+            "never routed to the ships"
+        );
+        assert!(c.ships.relaunch_in_view(&c.world, s, at));
+        assert!(c.ships.point_in_view(&c.world, frame, here, at));
+        assert_eq!(
+            c.ships.viewer_pos(&c.world, p),
+            Some((i64::from(here.0), i64::from(here.1)))
+        );
+        // Before the area begins, nobody watched.
+        assert!(!c.ships.point_in_view(&c.world, frame, here, Tick(at.0 - 1)));
     }
 }

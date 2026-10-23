@@ -63,7 +63,7 @@ use rtsim_settle::NodeKind;
 use rtsim_space::topology::{Iso, SharedTopologies, Topology};
 use rtsim_trade::{Amount, GoodId, MILLI, Price};
 use rtsim_travel::Medium;
-use rtsim_travel::legs::{LegId, LegIndex, Meeting, Owner, Path, Stamp};
+use rtsim_travel::legs::{LegId, LegIndex, LegRow, Meeting, Owner, Path, Stamp};
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -3922,7 +3922,7 @@ impl Ships {
 
     /// Where a player is, as the centre of its interest area in the shared leg index.
     fn viewer_pos(&self, w: &World, p: ActorId) -> Option<(i64, i64)> {
-        let s = self.players.get(&p)?.interest?;
+        let s = self.area_of(w, p)?;
         let r = w.legs.get(s.leg)?;
         Some((i64::from(r.path.x0), i64::from(r.path.z0)))
     }
@@ -5257,17 +5257,35 @@ impl Ships {
 
     /// Whether a player's interest centre is within `view_radius` of `dock` on `frame` at `at`.
     fn point_in_view(&self, w: &World, frame: u16, dock: (i32, i32), at: Tick) -> bool {
-        self.players.values().any(|v| {
-            v.interest
-                .and_then(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
-                .is_some_and(|r| {
-                    r.path.frame == frame
-                        && r.path.t0 <= at
-                        && at <= r.path.t1
-                        && self.sdist(frame, (r.path.x0, r.path.z0), dock)
-                            <= u64::from(self.tun.view_radius)
-                })
+        self.view_areas(w).any(|r| {
+            r.path.frame == frame
+                && r.path.t0 <= at
+                && at <= r.path.t1
+                && self.sdist(frame, (r.path.x0, r.path.z0), dock)
+                    <= u64::from(self.tun.view_radius)
         })
+    }
+
+    /// Player `p`'s interest area as the view rules read it: the ships' own (their own runs,
+    /// [`Ships::observe_player`]), else the world's shared one (the native link books one area per
+    /// player for every module, and the ships keep none of their own: U8).
+    fn area_of(&self, w: &World, p: ActorId) -> Option<Stamp> {
+        self.players
+            .get(&p)
+            .and_then(|v| v.interest)
+            .or_else(|| w.interest_area(p))
+    }
+
+    /// Every live interest area the rules that keep things out of a player's view weigh (rule 5,
+    /// PC44, PC90): each player's own area in the ships, and each shared area in the world, routed
+    /// to the ships or not (a player who came while they were switched off). The ships' own
+    /// `interest` alone left these rules blind in the native link, where it is always `None`. A
+    /// pass over the players.
+    pub(crate) fn view_areas<'a>(&'a self, w: &'a World) -> impl Iterator<Item = &'a LegRow> + 'a {
+        let own = self.players.values().filter_map(|v| v.interest);
+        let shared = w.players.keys().filter_map(|&p| w.interest_area(p));
+        own.chain(shared)
+            .filter_map(|s| w.legs.get(s.leg).filter(|r| r.generation == s.generation))
     }
 
     // ---- observations --------------------------------------------------------------------------
