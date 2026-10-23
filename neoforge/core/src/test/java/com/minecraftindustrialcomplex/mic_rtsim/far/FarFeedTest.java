@@ -103,15 +103,17 @@ class FarFeedTest {
         FarItem body = new FarItem(1, FarKind.DRAGON, 1, 2, 4, 0x4060C0, FarState.BODY,
                 new double[]{1001, 180, 0, 1000, 180, 0}, null, 4242, 10);
         List<FarWire.Rec> hand = v.step(List.of(carriage(100, 501, 0), body));
-        assertEquals(2, hand.size(), hand.toString());
-        assertInstanceOf(FarWire.Sample.class, hand.get(0));
-        assertEquals(new FarWire.Real(1, 4242), hand.get(1));
+        assertEquals(3, hand.size(), hand.toString());
+        assertEquals(moved.get(0), hand.get(0), "the carriage stood: its sample once more, to stop it");
+        assertInstanceOf(FarWire.Sample.class, hand.get(1));
+        assertEquals(new FarWire.Real(1, 4242), hand.get(2));
         // The carriage leaves: held for the grace (a newcomer takes a new handle), then GONE first, and the next
         // newcomer reuses its handle
         FarItem c200 = carriage(200, 0, 0);
         List<FarWire.Rec> swap = v.step(List.of(body, c200));
         assertTrue(swap.stream().noneMatch(r -> r instanceof FarWire.Gone), swap.toString());
-        assertEquals(2, ((FarWire.Intro) swap.get(0)).handle());
+        assertEquals(hand.get(1), swap.get(0), "the body stood: its sample once more");
+        assertEquals(2, ((FarWire.Intro) swap.get(1)).handle());
         for (int i = 1; i < FarView.GRACE_SWEEPS; i++)
             assertTrue(v.step(List.of(body, c200)).isEmpty(), "held");
         assertEquals(3, v.size());
@@ -119,6 +121,31 @@ class FarFeedTest {
         assertEquals(new FarWire.Gone(0), gone.get(0));
         assertEquals(0, ((FarWire.Intro) gone.get(1)).handle());
         assertEquals(3, v.size());
+    }
+
+    @Test
+    void aMoverThatStopsIsSentOnceMoreThenNotAgain() {
+        FarView v = new FarView();
+        v.step(List.of(carriage(100, 500, 0)));
+        assertTrue(v.step(List.of(carriage(100, 500, 0))).isEmpty(), "never moved: nothing to stop");
+        List<FarWire.Rec> moved = v.step(List.of(carriage(100, 520, 0)));
+        assertEquals(1, moved.size());
+        assertEquals(moved, v.step(List.of(carriage(100, 520, 0))), "stood: the same sample once more");
+        assertTrue(v.step(List.of(carriage(100, 520, 0))).isEmpty(), "and then nothing");
+        assertEquals(1, v.step(List.of(carriage(100, 540, 0))).size(), "off again");
+    }
+
+    @Test
+    void anEntityJoiningIsSentAtOnceAndNotAgainAtTheSweep() {
+        FarView v = new FarView();
+        assertEquals(null, v.real(100, 42), "an object this view does not hold");
+        v.step(List.of(carriage(100, 500, 0)));
+        assertEquals(new FarWire.Real(0, 42), v.real(100, 42));
+        assertEquals(null, v.real(100, 42), "already said");
+        FarItem withEntity = new FarItem(100, FarKind.CARRIAGE, 0, 0, 0, 0x3A3B3F, FarState.MOVING,
+                new double[]{503, 64, 0, 497, 64, 0}, null, 42, 0);
+        assertTrue(v.step(List.of(withEntity)).isEmpty(), "the sweep's item says the same");
+        assertEquals(List.of(new FarWire.Real(0, -1)), v.step(List.of(carriage(100, 500, 0))), "gone again");
     }
 
     @Test
