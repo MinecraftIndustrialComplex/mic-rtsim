@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Read-only views of the conflict for other crates (TALK, slice 4).
+//! Read-only views of the conflict for other crates (TALK, slice 4, docs/choices-talk.md TK74).
 //!
 //! This is the only way TALK reads a faction: `rtsim-jni` answers a camp (holder kind 3) from
 //! [`faction_facts`] and nothing else, so what the conflict keeps in its rows can change without
