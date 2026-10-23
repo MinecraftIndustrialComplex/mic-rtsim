@@ -792,16 +792,22 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
             .and_then(|g| u16::try_from(g).ok())
             .and_then(|g| phase1::catalog_item(st, GoodId(g)))
             .map(str::to_string),
-        // The culture data's, from 1 (BAND_MARCH).
+        // The culture data's, from 1 (BAND_MARCH), named as its bodies are
+        // (`mic_rtsim:conflict/goblin`), apart from phase 1's village cultures.
         wire::DICT_CULTURE => st
             .conflict
             .engine
             .cultures
             .list
             .get((id as usize).wrapping_sub(1))
-            .map(|c| c.def.name.clone()),
+            .map(|c| culture_name(&c.def.name)),
         _ => None,
     }
+}
+
+/// A conflict culture's name in dictionary kind 5 (docs/boundary.md §9.2).
+fn culture_name(culture: &str) -> String {
+    format!("mic_rtsim:conflict/{culture}")
 }
 
 /// (dictionary kind, the id a command carries, its name).
