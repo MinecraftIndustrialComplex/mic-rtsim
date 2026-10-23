@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 417.372118,
+      "wall_ms": 244.02518600000002,
       "checks": [
         {
           "name": "conservation",
@@ -91,9 +91,9 @@
           "faction": 3232825345,
           "actor": 4294967307,
           "step": "envoy",
-          "grievance": 337.6460253122448,
+          "grievance": 348.85300530058447,
           "by_kind": {
-            "killing": 123.87324850011326,
+            "killing": 135.08022848845297,
             "logging": 4.402859876702868,
             "smog": 209.36991693542862
           },
@@ -115,7 +115,8 @@
             "lanchester": 1.0,
             "floor": null,
             "untested": true,
-            "ammo_used": 0
+            "ammo_used": 0,
+            "roof_pass": 1.0
           },
           "survivors": 2,
           "stolen": [
@@ -149,7 +150,8 @@
             "lanchester": 1.0,
             "floor": null,
             "untested": true,
-            "ammo_used": 0
+            "ammo_used": 0,
+            "roof_pass": 1.0
           },
           "survivors": 1,
           "stolen": [
@@ -176,19 +178,19 @@
           "iron_ingot": 15.0
         },
         "from_villages": {
-          "bread": 3.47,
-          "emerald": 2.313,
+          "bread": 3.463,
+          "emerald": 2.359,
           "leather": 0.172,
-          "wheat": 16.657,
-          "wool": 1.388
+          "wheat": 16.621,
+          "wool": 1.385
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.47,
-          "emerald": 2.313,
+          "bread": 3.463,
+          "emerald": 2.359,
           "leather": 0.172,
-          "wheat": 16.657,
-          "wool": 1.388
+          "wheat": 16.621,
+          "wool": 1.385
         },
         "players_goods_landed_at_haven": {
           "bread": 3.0,
@@ -200,12 +202,77 @@
         "destroy:gasoline_bucket": 2
       },
       "haven_stock": {
-        "bread": 70.757,
-        "emerald": 32.885,
+        "bread": 73.75,
+        "emerald": 32.951,
         "leather": 3.658,
-        "wheat": 210.666,
+        "wheat": 217.456,
         "wool": 3.658
       },
+      "feelings": [
+        {
+          "village": "Brindle",
+          "toward_camp": -24,
+          "toward_players": {
+            "player b0b": 109
+          }
+        },
+        {
+          "village": "Oakford",
+          "toward_camp": -24,
+          "toward_players": {
+            "player b0b": 106
+          }
+        },
+        {
+          "village": "Highmoor",
+          "toward_camp": -24,
+          "toward_players": {
+            "player b0b": 107
+          }
+        },
+        {
+          "village": "Ashby",
+          "toward_camp": -48,
+          "toward_players": {
+            "player b0b": 107
+          }
+        },
+        {
+          "village": "Fernwick",
+          "toward_camp": -25,
+          "toward_players": {
+            "player b0b": 105
+          }
+        },
+        {
+          "village": "Coldwell",
+          "toward_camp": -21,
+          "toward_players": {
+            "player b0b": 107
+          }
+        },
+        {
+          "village": "Mirewater",
+          "toward_camp": -25,
+          "toward_players": {
+            "player b0b": 69
+          }
+        },
+        {
+          "village": "Bogsend",
+          "toward_camp": 0,
+          "toward_players": {
+            "player b0b": 67
+          }
+        },
+        {
+          "village": "Reedholm",
+          "toward_camp": 0,
+          "toward_players": {
+            "player b0b": 71
+          }
+        }
+      ],
       "stats": {
         "events": 298,
         "feud_wakes": 6,
@@ -253,7 +320,10 @@
         "items_from_villages": 22,
         "blocks_destroyed": 2,
         "feuds_forgotten": 0,
-        "reattributed": 0
+        "reattributed": 0,
+        "withdrawn": 0,
+        "peace_held": 0,
+        "notices_shown": 1
       },
       "log": [
         {
@@ -478,7 +548,7 @@
           "day": 21.387458333333335,
           "faction": "goblin camp 3232825345",
           "kind": "raid",
-          "what": "grievance against player b0b at 255.6 (smog first): a war band musters"
+          "what": "grievance against player b0b at 268.2 (smog first): a war band musters"
         },
         {
           "tick": 529078,
@@ -628,15 +698,53 @@
           "BAND_RECALL: recall 4300000200000001, reason 2"
         ]
       ],
-      "wire_bytes": 2888,
+      "wire_bytes": 2968,
       "state_hashes": [
-        "91a4c5a91302e727",
-        "8002cbf7ae24cb38"
-      ]
+        "8405b0753de685bf",
+        "f0df0d10ff0881a6"
+      ],
+      "archive": {
+        "rows_per_day": 9.416666666666666,
+        "full_days": 445412.8141592921,
+        "days": 24.0,
+        "rows": 226,
+        "by_severity_per_day": [
+          4.958333333333333,
+          2.0,
+          2.1666666666666665,
+          0.2916666666666667
+        ],
+        "legs_per_day": 6.208333333333333,
+        "payload_bytes_per_day": 44.625,
+        "dropped": 0,
+        "by_kind": {
+          "conflict.chief": 2,
+          "conflict.demand": 1,
+          "conflict.faction": 1,
+          "conflict.fight": 2,
+          "conflict.heir": 2,
+          "conflict.party": 6,
+          "conflict.party_home": 5,
+          "conflict.party_leg": 31,
+          "conflict.raid": 2,
+          "conflict.step": 6,
+          "conflict.unmet": 1,
+          "industry.attack": 2,
+          "industry.learned": 1,
+          "industry.reconcile": 1,
+          "knowledge.killing": 2,
+          "knowledge.rescue": 12,
+          "knowledge.robbery": 1,
+          "settle.house": 1,
+          "settle.joined": 1,
+          "trade.shift": 28,
+          "travel.band_leg": 118
+        }
+      }
     },
     {
       "variant": "tribute",
-      "wall_ms": 375.138785,
+      "wall_ms": 236.877517,
       "checks": [
         {
           "name": "conservation",
@@ -727,18 +835,18 @@
       "ledger": {
         "from_players": {},
         "from_villages": {
-          "bread": 3.388,
-          "emerald": 2.827,
+          "bread": 3.387,
+          "emerald": 2.831,
           "leather": 0.168,
-          "wheat": 16.262,
+          "wheat": 16.259,
           "wool": 1.355
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.388,
-          "emerald": 2.827,
+          "bread": 3.387,
+          "emerald": 2.831,
           "leather": 0.168,
-          "wheat": 16.262,
+          "wheat": 16.259,
           "wool": 1.355
         },
         "players_goods_landed_at_haven": {},
@@ -749,11 +857,58 @@
       "unmapped_industry_goods": {},
       "haven_stock": {
         "bread": 73.75,
-        "emerald": 68.648,
+        "emerald": 68.994,
         "leather": 3.658,
-        "wheat": 221.25,
+        "wheat": 221.1,
         "wool": 3.658
       },
+      "feelings": [
+        {
+          "village": "Brindle",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Oakford",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Highmoor",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Ashby",
+          "toward_camp": -48,
+          "toward_players": {}
+        },
+        {
+          "village": "Fernwick",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Coldwell",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Mirewater",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Bogsend",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Reedholm",
+          "toward_camp": 0,
+          "toward_players": {}
+        }
+      ],
       "stats": {
         "events": 73,
         "feud_wakes": 5,
@@ -801,7 +956,10 @@
         "items_from_villages": 22,
         "blocks_destroyed": 0,
         "feuds_forgotten": 0,
-        "reattributed": 0
+        "reattributed": 0,
+        "withdrawn": 0,
+        "peace_held": 0,
+        "notices_shown": 1
       },
       "log": [
         {
@@ -1101,15 +1259,47 @@
           "BAND_RECALL: recall 4300000400000000, reason 4"
         ]
       ],
-      "wire_bytes": 2400,
+      "wire_bytes": 2480,
       "state_hashes": [
-        "fffac45338ec8c07",
-        "30e7a028145611c3"
-      ]
+        "08abc50aa43a4b84",
+        "bb17141438c1ea10"
+      ],
+      "archive": {
+        "rows_per_day": 7.791666666666667,
+        "full_days": 538306.3957219251,
+        "days": 24.0,
+        "rows": 187,
+        "by_severity_per_day": [
+          4.791666666666667,
+          2.1666666666666665,
+          0.7916666666666666,
+          0.041666666666666664
+        ],
+        "legs_per_day": 5.375,
+        "payload_bytes_per_day": 20.416666666666668,
+        "dropped": 0,
+        "by_kind": {
+          "conflict.demand": 4,
+          "conflict.faction": 1,
+          "conflict.party": 5,
+          "conflict.party_home": 5,
+          "conflict.party_leg": 15,
+          "conflict.raid": 1,
+          "conflict.step": 5,
+          "conflict.tribute": 4,
+          "industry.learned": 1,
+          "industry.reconcile": 1,
+          "knowledge.robbery": 1,
+          "settle.house": 1,
+          "settle.joined": 1,
+          "trade.shift": 28,
+          "travel.band_leg": 114
+        }
+      }
     },
     {
       "variant": "converter",
-      "wall_ms": 259.176512,
+      "wall_ms": 238.178441,
       "checks": [
         {
           "name": "conservation",
@@ -1180,31 +1370,78 @@
       "ledger": {
         "from_players": {},
         "from_villages": {
-          "bread": 3.474,
-          "emerald": 2.286,
+          "bread": 3.463,
+          "emerald": 2.356,
           "leather": 0.172,
-          "wheat": 16.678,
-          "wool": 1.39
+          "wheat": 16.624,
+          "wool": 1.385
         },
         "gifts": {},
         "landed_at_haven": {
-          "bread": 3.474,
-          "emerald": 2.286,
+          "bread": 3.463,
+          "emerald": 2.356,
           "leather": 0.172,
-          "wheat": 16.678,
-          "wool": 1.39
+          "wheat": 16.624,
+          "wool": 1.385
         },
         "players_goods_landed_at_haven": {},
         "tribute": {}
       },
       "unmapped_industry_goods": {},
       "haven_stock": {
-        "bread": 75.882,
-        "emerald": 32.858,
+        "bread": 77.213,
+        "emerald": 32.948,
         "leather": 3.83,
-        "wheat": 214.931,
-        "wool": 5.048
+        "wheat": 235.613,
+        "wool": 5.043
       },
+      "feelings": [
+        {
+          "village": "Brindle",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Oakford",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Highmoor",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Ashby",
+          "toward_camp": -49,
+          "toward_players": {}
+        },
+        {
+          "village": "Fernwick",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Coldwell",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Mirewater",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Bogsend",
+          "toward_camp": 0,
+          "toward_players": {}
+        },
+        {
+          "village": "Reedholm",
+          "toward_camp": 0,
+          "toward_players": {}
+        }
+      ],
       "stats": {
         "events": 202,
         "feud_wakes": 6,
@@ -1252,7 +1489,10 @@
         "items_from_villages": 22,
         "blocks_destroyed": 0,
         "feuds_forgotten": 0,
-        "reattributed": 0
+        "reattributed": 0,
+        "withdrawn": 0,
+        "peace_held": 0,
+        "notices_shown": 1
       },
       "log": [
         {
@@ -1465,16 +1705,89 @@
           "BAND_RECALL: recall 4300000200000001, reason 4"
         ]
       ],
-      "wire_bytes": 1392,
+      "wire_bytes": 1472,
       "state_hashes": [
-        "91eba6c65cfaf2d5",
-        "139bdf3bd0dbaadf"
-      ]
+        "73ec9d02d64ae51e",
+        "ad2199e735a2bbed"
+      ],
+      "archive": {
+        "rows_per_day": 7.125,
+        "full_days": 588674.245614035,
+        "days": 24.0,
+        "rows": 171,
+        "by_severity_per_day": [
+          4.5,
+          2.0416666666666665,
+          0.5416666666666666,
+          0.041666666666666664
+        ],
+        "legs_per_day": 5.083333333333333,
+        "payload_bytes_per_day": 14.291666666666666,
+        "dropped": 0,
+        "by_kind": {
+          "conflict.calm": 1,
+          "conflict.complied": 1,
+          "conflict.demand": 2,
+          "conflict.faction": 1,
+          "conflict.party": 3,
+          "conflict.party_home": 3,
+          "conflict.party_leg": 15,
+          "conflict.raid": 1,
+          "conflict.step": 3,
+          "conflict.unmet": 1,
+          "industry.learned": 1,
+          "industry.reconcile": 1,
+          "knowledge.robbery": 1,
+          "settle.house": 1,
+          "settle.joined": 1,
+          "trade.shift": 28,
+          "travel.band_leg": 107
+        }
+      }
     }
   ],
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 91a4c5a91302e727, world 8002cbf7ae24cb38 (uninterrupted 91a4c5a91302e727, 8002cbf7ae24cb38)"
-  }
+    "detail": "saved and loaded on day 9.3: conflict 8405b0753de685bf, world f0df0d10ff0881a6 (uninterrupted 8405b0753de685bf, f0df0d10ff0881a6)"
+  },
+  "archive": {
+    "rows_per_day": 9.416666666666666,
+    "full_days": 445412.8141592921,
+    "days": 24.0,
+    "rows": 226,
+    "by_severity_per_day": [
+      4.958333333333333,
+      2.0,
+      2.1666666666666665,
+      0.2916666666666667
+    ],
+    "legs_per_day": 6.208333333333333,
+    "payload_bytes_per_day": 44.625,
+    "dropped": 0,
+    "by_kind": {
+      "conflict.chief": 2,
+      "conflict.demand": 1,
+      "conflict.faction": 1,
+      "conflict.fight": 2,
+      "conflict.heir": 2,
+      "conflict.party": 6,
+      "conflict.party_home": 5,
+      "conflict.party_leg": 31,
+      "conflict.raid": 2,
+      "conflict.step": 6,
+      "conflict.unmet": 1,
+      "industry.attack": 2,
+      "industry.learned": 1,
+      "industry.reconcile": 1,
+      "knowledge.killing": 2,
+      "knowledge.rescue": 12,
+      "knowledge.robbery": 1,
+      "settle.house": 1,
+      "settle.joined": 1,
+      "trade.shift": 28,
+      "travel.band_leg": 118
+    }
+  },
+  "archive_variant": "ignore"
 }
