@@ -471,8 +471,8 @@ impl World {
             NodeKind::Village(rtsim_settle::Culture::Ribbit) => HolderKind::RibbitVillage,
             NodeKind::PlayerBase { .. } => HolderKind::PlayerBase,
             // A haven keeps no gossip of its own culture's kind; it remembers like a ribbit
-            // village (no vanilla gossip to write).
-            NodeKind::Haven(_) => HolderKind::RibbitVillage,
+            // village (no vanilla gossip to write). So does a lair.
+            NodeKind::Haven(_) | NodeKind::Lair => HolderKind::RibbitVillage,
         };
         self.knowledge.add_holder(actor, hk);
         let region = self.markets.insert(d.key, m, self.now);

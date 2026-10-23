@@ -35,6 +35,9 @@ pub struct SynthGoods {
     pub clay: GoodId,
     pub emerald: GoodId,
     pub amethyst: GoodId,
+    /// The Umvuthana's tribute (MOWZIE.md ledger 12, MZ-6 (a)). No recipe makes it and nobody
+    /// needs it, so no market prices it yet: a demand in it uses its culture's fallback rate.
+    pub gold_nugget: GoodId,
 }
 
 pub fn goods() -> (Goods, SynthGoods) {
@@ -65,6 +68,7 @@ pub fn goods() -> (Goods, SynthGoods) {
             need_per_pop_day: 0,
             stack: 64,
         }),
+        gold_nugget: g.add(item("gold_nugget", 0, 64)),
     };
     (g, ids)
 }
