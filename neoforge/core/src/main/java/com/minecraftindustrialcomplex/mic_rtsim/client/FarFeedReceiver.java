@@ -78,9 +78,10 @@ final class FarFeedReceiver {
      * again, a swerve of 135 degrees in half a second drew the box 71 blocks from the dragon at worst over the
      * second's 20 sample timings, past the 64 within which a client counts the real thing as there (straight on, 65;
      * a quarter, 63.5), while a quarter still keeps a circling dragon's box within 7 blocks of a circle of radius 40
-     * at 1.5 blocks a tick (straight on, 22). The box turns on further than its run because that costs nothing at a
-     * hand-over: on that circle it faces within 2 degrees of the way the dragon flies, on average, against 33 turned
-     * as the run is.
+     * at 1.5 blocks a tick (straight on, 22). The box turns on further than its run because only its midpoint counts
+     * at a hand-over: on that circle it faces within 2 degrees of the way the dragon flies, on average, against 33
+     * turned as the run is and 15 straight on; weaving it faces worse (a 3 s weave of 30 degrees at 2 blocks a
+     * tick: 47 degrees off on average, 36 straight on).
      */
     static final double TURN_ON = 0.25;
 
@@ -288,7 +289,9 @@ final class FarFeedReceiver {
                 acc = new double[2];
                 for (int p = 0; p < 2; p++)
                     acc[p] = (speed(v, p) - speed(o.velocity, p)) / span;
-                turn = turnOf(o.velocity, o.velocityTicks, v, dt);
+                // A dragon's turn only: a carriage's bogeys keep to the track, each on along its own line
+                if (o.kind == FarKind.DRAGON)
+                    turn = turnOf(o.velocity, o.velocityTicks, v, dt);
             }
             o.velocity = v;
             o.velocityTicks = dt;
@@ -377,8 +380,8 @@ final class FarFeedReceiver {
 
     /**
      * The mover's turn across the ground, from its midpoint's heading over the gap before ({@code prev} over
-     * {@code prevTicks}) to that over the last ({@code v} over {@code ticks}): {radians a block, the most it turns
-     * between the two gaps}. One turn for the whole mover, so a carriage entering a curve bends neither end alone.
+     * {@code prevTicks}) to that over the last ({@code v} over {@code ticks}): {radians a block, the angle it turned
+     * between the two gaps}. One turn for the whole mover. A dragon's only: a carriage runs straight on.
      * Null when it did not turn, or a gap is too short to say.
      */
     private static double[] turnOf(double[] prev, double prevTicks, double[] v, double ticks) {
@@ -464,9 +467,10 @@ final class FarFeedReceiver {
          * A turning run at {@code t}: the midpoint on an arc of {@code turn[0]} radians a block across the ground,
          * from its heading at the sample (half a gap's turn past its heading over the last gap), turned at most
          * {@link #TURN_ON} of {@code turn[1]} past that and then straight on; its climb or dive kept. The segment
-         * turns about the midpoint as the arc would turn uncapped, up to {@code turn[1]}, and keeps its length (a
-         * straight run's points, each on its own velocity, would stretch it). Null when the midpoint does not move
-         * across the ground.
+         * turns about the midpoint as the arc would turn uncapped, up to {@code turn[1]}, and keeps its length at
+         * the run's points (a straight run's points, each on its own velocity, would stretch it; the drawn box
+         * between them, each end moved apart, does not quite keep it). Null when the midpoint does not move across
+         * the ground.
          */
         private Arc arc(double t) {
             double vx = (v[0] + v[3]) / 2.0, vy = (v[1] + v[4]) / 2.0, vz = (v[2] + v[5]) / 2.0;

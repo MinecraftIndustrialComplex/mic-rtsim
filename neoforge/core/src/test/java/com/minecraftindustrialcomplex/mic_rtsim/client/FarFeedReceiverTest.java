@@ -318,6 +318,76 @@ class FarFeedReceiverTest {
         }
     }
 
+    /**
+     * A carriage 10 blocks between bogeys at 0.7 blocks a tick (Create's top speed on a curve) along a track that
+     * runs east, through {@code turns} (each {radius, degrees, left above 0}), then straight on, sampled every
+     * second. Returns how far either bogey was drawn from where it is at worst, and the mean angle in degrees
+     * between the drawn carriage and the real one, from tick 60 on.
+     */
+    private double[] onTrack(double[]... turns) {
+        int n = 12_000;
+        double step = 0.05, x = -150.0, z = 0.0, h = 0.0;
+        double[][] track = new double[n][];
+        double done = 0.0;
+        for (int i = 0; i < n; i++) {
+            track[i] = new double[]{x, z};
+            double s = i * step - 150.0, turned = 0.0, at = 0.0;
+            // Heading at arc length s past the track's start of turns, at 0
+            for (double[] t : turns) {
+                double len = Math.toRadians(Math.abs(t[1])) * t[0];
+                if (s > at)
+                    turned += Math.copySign(Math.min(s - at, len) / t[0], t[1]);
+                at += len;
+            }
+            h = turned;
+            x += step * Math.cos(h);
+            z += step * Math.sin(h);
+            done = s;
+        }
+        double[][] t2 = track;
+        java.util.function.DoubleFunction<double[]> point = s -> t2[(int) Math.round((s + 150.0) / step)];
+        long g0 = 60_000 + (long) FarClock.ticks();
+        double worst = 0.0, facing = 0.0;
+        int counted = 0;
+        for (int t = 0; t <= 300; t++) {
+            if (t > 0)
+                FarClock.advance();
+            double lead = -60.0 + 0.7 * t;
+            double[] a = point.apply(lead), b = point.apply(lead - 10.0);
+            double[] seg = {a[0], 64, a[1], b[0], 64, b[1]};
+            if (t % 20 == 0) {
+                FarWire.Rec rec = FarWire.Sample.of(0, FarState.MOVING.wire, seg);
+                if (t == 0)
+                    send(FarWire.RESET, g0, new FarWire.Intro(0, ID, FarKind.CARRIAGE.wire, 0, 0, 0, 0x808080), rec);
+                else
+                    send(0, g0 + t, rec);
+            }
+            if (t < 60)
+                continue;
+            double[] d = new double[6];
+            mover().segmentAt(FarClock.ticks(), d);
+            for (int p = 0; p < 2; p++)
+                worst = Math.max(worst, Math.hypot(d[3 * p] - seg[3 * p], d[3 * p + 2] - seg[3 * p + 2]));
+            double off = Math.atan2(d[2] - d[5], d[0] - d[3]) - Math.atan2(seg[2] - seg[5], seg[0] - seg[3]);
+            facing += Math.toDegrees(Math.abs(Math.IEEEremainder(off, 2.0 * Math.PI)));
+            counted++;
+        }
+        assertTrue(done > 0.7 * 300, "the track is long enough");
+        return new double[]{worst, facing / counted};
+    }
+
+    @Test
+    void aCarriageOnACurveKeepsToItsTrack() {
+        // Its bogeys keep to the track, so each runs on along its own line; turned on an arc as a dragon is, a
+        // carriage faced 7.2 degrees off on average through a 90 degree curve of radius 25 (4.6 straight on) and
+        // its ends strayed 9.6 blocks on an S of two 45 degree curves of radius 30 (6.2 straight on)
+        double[] curve = onTrack(new double[]{25.0, 90.0});
+        FarObjects.clearAll();
+        double[] s = onTrack(new double[]{30.0, 45.0}, new double[]{30.0, -45.0});
+        assertTrue(curve[1] < 5.0, "faced off by " + curve[1] + " degrees on the curve");
+        assertTrue(s[0] < 8.0, "strayed " + s[0] + " on the S");
+    }
+
     @Test
     void aDragonSlowingHardWaitsForItInsteadOfGoingBack() {
         long g0 = 50_000;
