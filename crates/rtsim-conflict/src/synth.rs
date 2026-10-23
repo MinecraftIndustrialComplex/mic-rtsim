@@ -598,7 +598,10 @@ impl FakeConflict {
 
     fn camp_uuid(&mut self) -> Uuid {
         self.uuids += 1;
-        (0xCA3F_0000_0000_0000 | (self.player.1 & 0xFFFF_FFFF), self.uuids)
+        (
+            0xCA3F_0000_0000_0000 | (self.player.1 & 0xFFFF_FFFF),
+            self.uuids,
+        )
     }
 
     /// The camp's world, made when first named.
@@ -613,7 +616,13 @@ impl FakeConflict {
     }
 
     /// A body tagged `slot` and `generation` placed in a camp's world, as saved by vanilla.
-    pub fn camp_tagged_body(&mut self, faction: u64, body: u32, slot: u32, generation: u32) -> Uuid {
+    pub fn camp_tagged_body(
+        &mut self,
+        faction: u64,
+        body: u32,
+        slot: u32,
+        generation: u32,
+    ) -> Uuid {
         let uuid = self.camp_uuid();
         self.camp_world(faction).bodies.push(CampBody {
             uuid,
@@ -644,8 +653,15 @@ impl FakeConflict {
                 body: b.body,
                 slot: b.slot,
                 generation: b.generation,
-                flags: (if b.generation == 0 { boundary::BODY_STRAY } else { 0 })
-                    | (if b.elsewhere { boundary::BODY_ELSEWHERE } else { 0 }),
+                flags: (if b.generation == 0 {
+                    boundary::BODY_STRAY
+                } else {
+                    0
+                }) | (if b.elsewhere {
+                    boundary::BODY_ELSEWHERE
+                } else {
+                    0
+                }),
             })
             .collect();
         self.push(
@@ -831,7 +847,9 @@ impl FakeConflict {
             }
             ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE => {
                 let at = if l.action == ACTION_REMOVE && l.generation == 0 {
-                    camp.bodies.iter().position(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b))
+                    camp.bodies
+                        .iter()
+                        .position(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b))
                 } else {
                     held
                 };
@@ -1033,7 +1051,8 @@ impl CampRun {
                 next,
             );
             if self.watch && next >= self.next_obs {
-                self.c.observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
+                self.c
+                    .observe_player(&mut self.w, PLAYER, REFINERY_POS, next);
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
@@ -1063,8 +1082,11 @@ impl CampRun {
     /// A raid, as an order: `None` when the camp cannot field it.
     pub fn raid(&mut self) -> Option<rtsim_kernel::handle::Handle<crate::engine::Party>> {
         let at = self.c.now();
-        let kind = if self.c.cultures.get(self.c.factions[self.f as usize].culture).parties
-            [crate::culture::PartyKind::Raid.index()]
+        let kind = if self
+            .c
+            .cultures
+            .get(self.c.factions[self.f as usize].culture)
+            .parties[crate::culture::PartyKind::Raid.index()]
         .is_empty()
         {
             crate::culture::PartyKind::Invasion
@@ -1086,11 +1108,8 @@ impl CampRun {
     /// The engine to `to` with its commands held back: what it decided, for a crash test to apply
     /// (or lose) as it likes. The plugin's own queue is not delivered.
     pub fn decide(&mut self, to: Tick) -> Vec<Cmd> {
-        self.c.run_until(
-            &mut self.w,
-            &mut rtsim_ecology::infra::NoInfrastructure,
-            to,
-        );
+        self.c
+            .run_until(&mut self.w, &mut rtsim_ecology::infra::NoInfrastructure, to);
         self.c.take_commands()
     }
 
@@ -1148,8 +1167,10 @@ impl CampRun {
         let back = Conflict::load(self.c.tun.clone(), self.c.cultures.clone(), &self.c.save())
             .expect("loads");
         if back.state_hash() != h {
-            self.failures
-                .push(format!("tick {}: a save and load changed the books", self.c.now().0));
+            self.failures.push(format!(
+                "tick {}: a save and load changed the books",
+                self.c.now().0
+            ));
         }
         let (replaying, log) = (self.c.replaying, self.c.log_enabled);
         self.c = back;
@@ -1168,7 +1189,12 @@ impl CampRun {
         let Some(camp) = self.c.camp(self.f) else {
             return bad;
         };
-        let world = self.plugin.camps.get(&self.key).cloned().unwrap_or_default();
+        let world = self
+            .plugin
+            .camps
+            .get(&self.key)
+            .cloned()
+            .unwrap_or_default();
         let mut seen = std::collections::BTreeSet::new();
         for b in world.bodies.iter().filter(|b| b.generation != 0) {
             if !seen.insert((b.slot, b.generation)) {
@@ -1185,8 +1211,10 @@ impl CampRun {
         if settled {
             // A home body a census missed (`misses` above 0) may or may not be in the world: it
             // is the crash table's lost body, written off at the third miss.
-            let mut want: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
-            let mut maybe: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+            let mut want: std::collections::BTreeSet<(u32, u32)> =
+                std::collections::BTreeSet::new();
+            let mut maybe: std::collections::BTreeSet<(u32, u32)> =
+                std::collections::BTreeSet::new();
             for s in &camp.slots {
                 use crate::engine::SlotState::{Body, Dead, Left};
                 if matches!(s.state, Body | Left | Dead) && s.misses > 0 {
@@ -1240,76 +1268,74 @@ impl CampRun {
 
     /// One random event of [`CampRun::chaos`], then the check.
     pub fn chaos_step(&mut self, rng: &mut rtsim_kernel::rng::SlotRng) {
-        {
-            let now = self.c.now();
-            let what: String = match rng.below(16) {
-                0..=3 => {
-                    let span = 1 + rng.below(14 * (TICKS_PER_DAY / 24));
-                    self.run(now + span);
-                    format!("run {span}")
-                }
-                4 | 5 => {
-                    if self.plugin.camp_is_in(self.key) {
-                        "in (already)".into()
-                    } else {
-                        format!("camp in, epoch {:#x}", self.camp_in())
-                    }
-                }
-                6 => {
-                    if self.plugin.camp_is_in(self.key) {
-                        self.camp_out();
-                        "camp out".into()
-                    } else {
-                        "out (already)".into()
-                    }
-                }
-                7 | 8 => format!("raid {}", self.raid().is_some()),
-                9 | 10 => {
-                    let bodies: Vec<_> = self
-                        .plugin
-                        .camps
-                        .get(&self.key)
-                        .map(|c| c.bodies.clone())
-                        .unwrap_or_default();
-                    if bodies.is_empty() {
-                        "kill (none)".into()
-                    } else {
-                        let b = bodies[rng.below(bodies.len() as u64) as usize];
-                        self.plugin
-                            .camp_kill(self.key, b.uuid, boundary::BY_PLAYER, now + 1);
-                        format!("kill slot {} gen {:#x}", b.slot, b.generation)
-                    }
-                }
-                11 => {
-                    let body = self.body;
-                    self.plugin.camp_stray(self.key, body);
-                    "stray".into()
-                }
-                12 => {
-                    self.plugin.lose_answers += 1;
-                    "lose the next answer".into()
-                }
-                13 => {
-                    self.plugin.replay_answers = !self.plugin.replay_answers;
-                    format!("replay answers {}", self.plugin.replay_answers)
-                }
-                14 => {
-                    self.restart();
-                    "restart".into()
-                }
-                _ if self.round_trips => {
-                    self.round_trip();
-                    "save and load".into()
-                }
-                _ => "save (skipped)".into(),
-            };
-            self.events.push((now, what));
-            // Half the time the answers come before the check, half not.
-            if rng.below(2) == 0 {
-                let to = self.c.now() + 3;
-                self.run(to);
+        let now = self.c.now();
+        let what: String = match rng.below(16) {
+            0..=3 => {
+                let span = 1 + rng.below(14 * (TICKS_PER_DAY / 24));
+                self.run(now + span);
+                format!("run {span}")
             }
-            self.audit();
+            4 | 5 => {
+                if self.plugin.camp_is_in(self.key) {
+                    "in (already)".into()
+                } else {
+                    format!("camp in, epoch {:#x}", self.camp_in())
+                }
+            }
+            6 => {
+                if self.plugin.camp_is_in(self.key) {
+                    self.camp_out();
+                    "camp out".into()
+                } else {
+                    "out (already)".into()
+                }
+            }
+            7 | 8 => format!("raid {}", self.raid().is_some()),
+            9 | 10 => {
+                let bodies: Vec<_> = self
+                    .plugin
+                    .camps
+                    .get(&self.key)
+                    .map(|c| c.bodies.clone())
+                    .unwrap_or_default();
+                if bodies.is_empty() {
+                    "kill (none)".into()
+                } else {
+                    let b = bodies[rng.below(bodies.len() as u64) as usize];
+                    self.plugin
+                        .camp_kill(self.key, b.uuid, boundary::BY_PLAYER, now + 1);
+                    format!("kill slot {} gen {:#x}", b.slot, b.generation)
+                }
+            }
+            11 => {
+                let body = self.body;
+                self.plugin.camp_stray(self.key, body);
+                "stray".into()
+            }
+            12 => {
+                self.plugin.lose_answers += 1;
+                "lose the next answer".into()
+            }
+            13 => {
+                self.plugin.replay_answers = !self.plugin.replay_answers;
+                format!("replay answers {}", self.plugin.replay_answers)
+            }
+            14 => {
+                self.restart();
+                "restart".into()
+            }
+            _ if self.round_trips => {
+                self.round_trip();
+                "save and load".into()
+            }
+            _ => "save (skipped)".into(),
+        };
+        self.events.push((now, what));
+        // Half the time the answers come before the check, half not.
+        if rng.below(2) == 0 {
+            let to = self.c.now() + 3;
+            self.run(to);
         }
+        self.audit();
     }
 }

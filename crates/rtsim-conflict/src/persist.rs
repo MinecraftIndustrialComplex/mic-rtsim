@@ -41,8 +41,8 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
-    Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus, Party, Phase,
-    Line, Retired, Slot, SlotState, Source, Target, Throne,
+    Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus, Line, Party,
+    Phase, Retired, Slot, SlotState, Source, Target, Throne,
 };
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};

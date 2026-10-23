@@ -89,7 +89,13 @@ fn come_in(r: &mut CampRun) {
     r.run(to);
 }
 
-fn war_parties(r: &CampRun) -> Vec<(rtsim_kernel::handle::Handle<rtsim_conflict::engine::Party>, Phase, u32)> {
+fn war_parties(
+    r: &CampRun,
+) -> Vec<(
+    rtsim_kernel::handle::Handle<rtsim_conflict::engine::Party>,
+    Phase,
+    u32,
+)> {
     r.c.parties
         .iter()
         .filter(|(_, p)| p.kind.is_war())
@@ -112,9 +118,17 @@ fn a_first_census_adopts_the_jars_bodies_into_the_owed_slots() {
     assert!(r.c.camp_is_in(r.f));
     assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
     assert_eq!(applied(&r, boundary::ACTION_ADOPT), 9);
-    assert_eq!(applied(&r, boundary::ACTION_SPAWN), 0, "a stray fills a slot before any spawn");
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        0,
+        "a stray fills a slot before any spawn"
+    );
     assert_eq!(answered(&r, boundary::LINE_DONE), 9);
-    assert_eq!(tagged_bodies(&r), 9, "the jar's bodies carry their slots now");
+    assert_eq!(
+        tagged_bodies(&r),
+        9,
+        "the jar's bodies carry their slots now"
+    );
     assert_eq!(world_bodies(&r), 9);
     ok(&mut r);
     // Each member has its own generation, none 0.
@@ -148,7 +162,11 @@ fn a_den_found_empty_refills_to_its_cap_and_no_further() {
     assert_eq!(counts(&r), [0, 0, 0, 0, 0]);
     assert_eq!(r.c.factions[r.f as usize].cap, 1);
     come_in(&mut r);
-    assert_eq!(world_bodies(&r), 0, "nothing at the census: nothing to adopt or spawn");
+    assert_eq!(
+        world_bodies(&r),
+        0,
+        "nothing at the census: nothing to adopt or spawn"
+    );
     assert_eq!(orders(&r).len(), 0);
     r.run(day(3.0));
     assert_eq!(world_bodies(&r), 0, "a Frostmaw is recruited every 6 days");
@@ -170,7 +188,12 @@ fn a_refill_while_the_camp_is_out_is_spawned_at_the_next_census() {
     let mut r = grove(14, 9);
     come_in(&mut r);
     // Four are killed with the grove in; it goes out before they are replaced.
-    let uuids: Vec<_> = r.plugin.camps[&r.key].bodies.iter().take(4).map(|b| b.uuid).collect();
+    let uuids: Vec<_> = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .take(4)
+        .map(|b| b.uuid)
+        .collect();
     for u in uuids {
         let at = r.c.now() + 1;
         assert!(r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, at));
@@ -181,7 +204,11 @@ fn a_refill_while_the_camp_is_out_is_spawned_at_the_next_census() {
     assert_eq!(counts(&r), [5, 0, 0, 0, 0], "four members died");
     let sent = orders(&r).len();
     r.run(day(1.0) + 100);
-    assert_eq!(orders(&r).len(), sent, "a camp that is out is never ordered");
+    assert_eq!(
+        orders(&r).len(),
+        sent,
+        "a camp that is out is never ordered"
+    );
     // Two a day: the pool is back, as owed slots (the audit reads the pool, which adds them).
     ok(&mut r);
     let c = r.c.camp(r.f).unwrap();
@@ -207,7 +234,11 @@ fn strays_over_the_cap_are_removed_and_those_under_it_are_adopted() {
     come_in(&mut r);
     assert_eq!(counts(&r), [3, 0, 0, 0, 0], "the cap is 3");
     assert_eq!(applied(&r, boundary::ACTION_ADOPT), 3);
-    assert_eq!(applied(&r, boundary::ACTION_REMOVE), 2, "the two over it are removed");
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        2,
+        "the two over it are removed"
+    );
     assert_eq!(world_bodies(&r), 3);
     ok(&mut r);
     // One dies, the grove goes out and a player puts a body down: it comes back in at once, with
@@ -248,16 +279,22 @@ fn an_owed_slot_with_no_stray_is_spawned() {
 fn a_member_whose_body_is_missed_three_times_over_two_days_is_written_off() {
     let mut r = grove(17, 9);
     come_in(&mut r);
-    let lost = r.plugin.camps.get_mut(&r.key).unwrap().bodies.pop().unwrap();
-    let id = r
-        .c
-        .camp(r.f)
+    let lost = r
+        .plugin
+        .camps
+        .get_mut(&r.key)
         .unwrap()
-        .slots
-        .iter()
-        .find(|s| s.generation == lost.generation)
-        .unwrap()
-        .id;
+        .bodies
+        .pop()
+        .unwrap();
+    let id =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .find(|s| s.generation == lost.generation)
+            .unwrap()
+            .id;
     let census_at = |r: &mut CampRun, t: Tick| {
         r.run(t);
         r.camp_out();
@@ -281,7 +318,11 @@ fn a_member_whose_body_is_missed_three_times_over_two_days_is_written_off() {
     census_at(&mut r, t0 + days(1.0));
     assert_eq!(s(&r), Some((SlotState::Body, 2)));
     census_at(&mut r, t0 + days(1.5));
-    assert_eq!(s(&r), Some((SlotState::Body, 3)), "three misses, but not two days");
+    assert_eq!(
+        s(&r),
+        Some((SlotState::Body, 3)),
+        "three misses, but not two days"
+    );
     assert_eq!(r.c.stats.camp_written_off, 0);
     ok(&mut r);
     // A body found resets the misses.
@@ -292,13 +333,29 @@ fn a_member_whose_body_is_missed_three_times_over_two_days_is_written_off() {
     census_at(&mut r, t0 + days(2.0));
     census_at(&mut r, t0 + days(3.0));
     census_at(&mut r, t0 + days(3.9));
-    assert_eq!(s(&r), Some((SlotState::Body, 3)), "three misses within two days of the first");
+    assert_eq!(
+        s(&r),
+        Some((SlotState::Body, 3)),
+        "three misses within two days of the first"
+    );
     assert_eq!(r.c.stats.camp_written_off, 0);
     census_at(&mut r, t0 + days(4.1));
-    assert_eq!(r.c.stats.camp_written_off, 1, "the next miss is two days after the first");
+    assert_eq!(
+        r.c.stats.camp_written_off, 1,
+        "the next miss is two days after the first"
+    );
     assert_eq!(s(&r), None, "the slot is freed");
-    let retired = r.c.camp(r.f).unwrap().retired.iter().find(|x| x.generation == lost.generation).copied();
-    assert!(retired.is_some_and(|x| !x.died), "retired at a write-off, not a death");
+    let retired =
+        r.c.camp(r.f)
+            .unwrap()
+            .retired
+            .iter()
+            .find(|x| x.generation == lost.generation)
+            .copied();
+    assert!(
+        retired.is_some_and(|x| !x.died),
+        "retired at a write-off, not a death"
+    );
     ok(&mut r);
 }
 
@@ -318,18 +375,18 @@ fn a_death_at_home_costs_the_pool_a_member_and_its_generation_is_retired() {
     r.run(to);
     assert_eq!(counts(&r), [8, 0, 0, 0, 0]);
     assert_eq!(r.c.stats.camp_deaths, 1);
-    let died = r
-        .c
-        .camp(r.f)
-        .unwrap()
-        .retired
-        .iter()
-        .any(|x| x.generation == b.generation && x.died);
+    let died =
+        r.c.camp(r.f)
+            .unwrap()
+            .retired
+            .iter()
+            .any(|x| x.generation == b.generation && x.died);
     assert!(died);
     ok(&mut r);
     // The dead body comes back under its old tag (a world save restored): the next census removes
     // it and adopts nothing.
-    r.plugin.camp_tagged_body(r.key, b.body, b.slot, b.generation);
+    r.plugin
+        .camp_tagged_body(r.key, b.body, b.slot, b.generation);
     r.camp_out();
     let to = r.c.now() + 3;
     r.run(to);
@@ -404,6 +461,33 @@ fn a_death_for_a_generation_the_slot_does_not_hold_books_nothing() {
     assert_eq!(r.c.camp(r.f).unwrap().slots.len(), 8);
 }
 
+/// A CAMP_DEATH replayed from the journal (the same op id twice) is booked once: the pool loses one
+/// member, not two.
+#[test]
+fn a_death_replayed_from_the_journal_is_booked_once() {
+    let mut r = grove(125, 9);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let at = r.c.now() + 1;
+    r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+    let j = journal(&mut r);
+    assert_eq!(j.len(), 1);
+    for _ in 0..2 {
+        for (t, o) in j.clone() {
+            let at = t.max(r.c.now());
+            r.c.ingest(
+                &mut r.w,
+                &mut rtsim_ecology::infra::NoInfrastructure,
+                &o,
+                at,
+            );
+        }
+    }
+    assert_eq!(r.c.stats.camp_deaths, 1);
+    assert_eq!(counts(&r), [8, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
 /// Test 22, deaths in every phase (1): a body killed at the camp during a muster, with the pool at
 /// 0, kills that member's unit; a party left with no units ends through `home` (and goes on to be
 /// ordered again, the pool refilled later).
@@ -417,7 +501,8 @@ fn a_body_killed_during_a_muster_kills_that_members_unit() {
     ok(&mut r);
     let bodies: Vec<_> = r.plugin.camps[&r.key].bodies.clone();
     let at = r.c.now() + 1;
-    r.plugin.camp_kill(r.key, bodies[0].uuid, boundary::BY_PLAYER, at);
+    r.plugin
+        .camp_kill(r.key, bodies[0].uuid, boundary::BY_PLAYER, at);
     let to = r.c.now() + 5;
     r.run(to);
     assert_eq!(r.c.parties[p].alive(), 3, "the party lost that member");
@@ -433,7 +518,11 @@ fn a_body_killed_during_a_muster_kills_that_members_unit() {
     }
     let to = r.c.now() + days(2.0);
     r.run(to);
-    assert!(war_parties(&r).is_empty(), "the party ended: {:?}", war_parties(&r));
+    assert!(
+        war_parties(&r).is_empty(),
+        "the party ended: {:?}",
+        war_parties(&r)
+    );
     assert_eq!(r.c.factions[r.f as usize].away, 0);
     assert_eq!(world_bodies(&r), r.c.camp(r.f).unwrap().slots.len());
     ok(&mut r);
@@ -450,18 +539,21 @@ fn a_body_killed_between_a_musters_end_and_its_answer_is_a_death_and_the_answer_
     let p = r.raid().unwrap();
     let end = r.c.parties[p].until;
     r.run(end + 1);
-    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 4, "set-out lines in flight");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().in_flight(),
+        4,
+        "set-out lines in flight"
+    );
     // The line is applied in the tick it arrives, so the bodies are already gone: kill by the
     // record a body that died the same tick would send.
-    let victim = r
-        .c
-        .camp(r.f)
-        .unwrap()
-        .slots
-        .iter()
-        .find(|s| s.state == SlotState::Left)
-        .map(|s| (s.id, s.generation, s.body))
-        .unwrap();
+    let victim =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .find(|s| s.state == SlotState::Left)
+            .map(|s| (s.id, s.generation, s.body))
+            .unwrap();
     let d = boundary::CampDeath {
         faction: r.key,
         by: boundary::BY_PLAYER,
@@ -498,7 +590,20 @@ fn a_body_left_behind_by_a_party_that_is_out_dies_with_its_unit() {
     r.run(end + 100);
     assert_eq!(r.c.parties[p].phase, Phase::Out);
     assert_eq!(counts(&r)[2], 4, "left in the camp while it was out");
-    let b = r.plugin.camps[&r.key].bodies.iter().find(|b| b.generation != 0 && r.c.camp(r.f).unwrap().slots.iter().any(|s| s.generation == b.generation && s.state == SlotState::Left)).copied().unwrap();
+    let b = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| {
+            b.generation != 0
+                && r.c
+                    .camp(r.f)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .any(|s| s.generation == b.generation && s.state == SlotState::Left)
+        })
+        .copied()
+        .unwrap();
     let at = r.c.now() + 1;
     r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
     let to = r.c.now() + 3;
@@ -532,9 +637,16 @@ fn a_dead_slots_body_is_removed_at_the_next_census() {
     r.run(day(4.0));
     assert!(war_parties(&r).is_empty(), "the raid is home");
     let n = counts(&r);
-    assert!(n[4] >= 1, "members died away with their bodies left in the camp: {n:?}");
+    assert!(
+        n[4] >= 1,
+        "members died away with their bodies left in the camp: {n:?}"
+    );
     let dead = n[4];
-    assert_eq!(world_bodies(&r) as u32, n[0] + n[4], "their bodies are still there");
+    assert_eq!(
+        world_bodies(&r) as u32,
+        n[0] + n[4],
+        "their bodies are still there"
+    );
     ok(&mut r);
     r.watch = false;
     r.camp_in();
@@ -543,7 +655,11 @@ fn a_dead_slots_body_is_removed_at_the_next_census() {
     let n = counts(&r);
     assert_eq!(n[4], 0, "the dead slots are freed");
     assert_eq!(applied(&r, boundary::ACTION_REMOVE), dead as usize);
-    assert_eq!(applied(&r, boundary::ACTION_TAKE), 0, "no one is out: nothing is taken");
+    assert_eq!(
+        applied(&r, boundary::ACTION_TAKE),
+        0,
+        "no one is out: nothing is taken"
+    );
     assert_eq!(n[2] + n[3], 0);
     assert_eq!(world_bodies(&r), r.c.camp(r.f).unwrap().slots.len());
     ok(&mut r);
@@ -559,25 +675,35 @@ fn a_dead_slots_body_is_removed_at_the_next_census() {
 fn a_draw_takes_found_bodies_then_a_missed_one_and_its_set_out_is_nothing_to_do() {
     let mut r = grove(24, 4);
     come_in(&mut r);
-    let lost = r.plugin.camps.get_mut(&r.key).unwrap().bodies.pop().unwrap();
+    let lost = r
+        .plugin
+        .camps
+        .get_mut(&r.key)
+        .unwrap()
+        .bodies
+        .pop()
+        .unwrap();
     r.camp_out();
     let to = r.c.now() + 2;
     r.run(to);
     r.camp_in();
     let to = r.c.now() + 10;
     r.run(to);
-    let missed = r
-        .c
-        .camp(r.f)
-        .unwrap()
-        .slots
-        .iter()
-        .find(|s| s.generation == lost.generation)
-        .unwrap()
-        .misses;
+    let missed =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .find(|s| s.generation == lost.generation)
+            .unwrap()
+            .misses;
     assert_eq!(missed, 1);
     let p = r.raid().expect("four make a raid");
-    assert_eq!(counts(&r), [0, 0, 4, 0, 0], "the three found and the missed one: left");
+    assert_eq!(
+        counts(&r),
+        [0, 0, 4, 0, 0],
+        "the three found and the missed one: left"
+    );
     let end = r.c.parties[p].until;
     r.run(end + 10);
     assert_eq!(counts(&r), [0, 0, 0, 4, 0], "all away, gone");
@@ -589,12 +715,109 @@ fn a_draw_takes_found_bodies_then_a_missed_one_and_its_set_out_is_nothing_to_do(
         .collect();
     assert_eq!(setout.len(), 4);
     assert_eq!(
-        setout.iter().filter(|a| a.outcome == boundary::LINE_NOTHING).count(),
+        setout
+            .iter()
+            .filter(|a| a.outcome == boundary::LINE_NOTHING)
+            .count(),
         1,
         "the missed one's body was not there"
     );
-    assert_eq!(setout.iter().filter(|a| a.outcome == boundary::LINE_DONE).count(), 3);
+    assert_eq!(
+        setout
+            .iter()
+            .filter(|a| a.outcome == boundary::LINE_DONE)
+            .count(),
+        3
+    );
     assert_eq!(world_bodies(&r), 0);
+    ok(&mut r);
+}
+
+/// Test 22, the draw order with owed slots (the spec's walkthrough): a grove with three bodies
+/// found, one missed and two owed sends a party of four; the three found and the one missed are
+/// drawn, none owed, and the owed two stay owed.
+#[test]
+fn a_draw_leaves_the_owed_slots_for_last() {
+    let mut r = grove(124, 6);
+    come_in(&mut r);
+    let lost = r
+        .plugin
+        .camps
+        .get_mut(&r.key)
+        .unwrap()
+        .bodies
+        .pop()
+        .unwrap();
+    r.camp_out();
+    let to = r.c.now() + 2;
+    r.run(to);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    // Two members killed with the camp in: the pool refills them later, owed, and the camp goes
+    // out before the refill's spawn lines.
+    for i in 0..2 {
+        let b = r.plugin.camps[&r.key].bodies[i];
+        let at = r.c.now() + 1;
+        r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+    }
+    let to = r.c.now() + 5;
+    r.run(to);
+    r.camp_out();
+    let to = r.c.now() + days(1.2);
+    r.run(to);
+    r.raid().expect("six slots make a raid of four");
+    let c = r.c.camp(r.f).unwrap();
+    let drawn: Vec<_> = c
+        .slots
+        .iter()
+        .filter(|s| s.state == SlotState::Left)
+        .collect();
+    assert_eq!(drawn.len(), 4);
+    assert!(
+        drawn.iter().any(|s| s.generation == lost.generation),
+        "the missed one is drawn"
+    );
+    assert_eq!(counts(&r), [0, 2, 4, 0, 0], "no owed slot was drawn");
+    ok(&mut r);
+}
+
+/// §4.9, *Homecomings*: a party that walks home in its members' own bodies (embodied, its puppets
+/// in the world) has its survivors' bodies handed back at the camp that is in: a hand-back line
+/// for each puppet, not a spawn, and the world holds one body for each member. No flow of this
+/// slice leaves a party embodied at its homecoming (the walk home with bodies is M10's), so the
+/// state is made by hand: the party is marked embodied once it walks home.
+#[test]
+fn a_party_home_with_its_puppets_has_them_handed_back_not_spawned() {
+    let mut r = grove(127, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let mut t = r.c.now();
+    while r.c.parties[p].phase != Phase::Home {
+        t = t + 200;
+        r.run(t);
+        assert!(t < day(20.0), "the party never walked home");
+    }
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "away, gone");
+    assert_eq!(world_bodies(&r), 5);
+    let units = r.c.parties[p].units.clone();
+    r.c.parties[p].embodied = true;
+    r.c.parties[p].spawned = units;
+    let end = r.c.parties[p].until.max(t) + days(2.0);
+    r.run(end);
+    assert!(war_parties(&r).is_empty(), "home");
+    assert_eq!(
+        applied(&r, boundary::ACTION_HAND_BACK),
+        4,
+        "a hand-back for each puppet"
+    );
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), 0);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 9);
+    assert!(
+        !r.cmds.iter().any(|(_, c)| matches!(c, Cmd::Recall(_))),
+        "no recall: the camp is in"
+    );
     ok(&mut r);
 }
 
@@ -607,7 +830,11 @@ fn a_member_drawn_owed_carries_its_debt_and_is_spawned_once_at_home() {
     let mut r = den(25, 0);
     r.run(day(6.5));
     ok(&mut r);
-    assert_eq!(counts(&r), [0, 1, 0, 0, 0], "recruited while the den was out: owed");
+    assert_eq!(
+        counts(&r),
+        [0, 1, 0, 0, 0],
+        "recruited while the den was out: owed"
+    );
     let p = r.raid().expect("one Frostmaw makes the raid");
     assert_eq!(counts(&r), [0, 0, 0, 1, 0], "drawn owed: away, gone");
     // The den comes in while the party is out, and again: nothing happens to the slot.
@@ -623,7 +850,10 @@ fn a_member_drawn_owed_carries_its_debt_and_is_spawned_once_at_home() {
     let to = r.c.now() + 10;
     r.run(to);
     assert_eq!(counts(&r), [0, 0, 0, 1, 0], "still away and gone");
-    assert!(orders(&r).is_empty(), "no take and no spawn while it is away");
+    assert!(
+        orders(&r).is_empty(),
+        "no take and no spawn while it is away"
+    );
     assert_eq!(r.c.stats.camp_written_off, 0, "no member booked dead");
     assert_eq!(world_bodies(&r), 0);
     ok(&mut r);
@@ -636,7 +866,11 @@ fn a_member_drawn_owed_carries_its_debt_and_is_spawned_once_at_home() {
     }
     assert!(war_parties(&r).is_empty(), "the party is home");
     r.run(r.c.now() + 100);
-    assert_eq!(applied(&r, boundary::ACTION_SPAWN), before + 1, "spawned once");
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        before + 1,
+        "spawned once"
+    );
     assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
     assert_eq!(world_bodies(&r), 1, "one Frostmaw");
     ok(&mut r);
@@ -656,7 +890,10 @@ fn the_pool_and_the_members_away_never_pass_the_cap() {
         r.run(day(d));
         let pool = r.c.pool_at(r.f, r.c.now());
         let away = f64::from(r.c.factions[r.f as usize].away);
-        assert!(pool + away <= 9.0 + 1e-9, "day {d}: pool {pool}, {away} away");
+        assert!(
+            pool + away <= 9.0 + 1e-9,
+            "day {d}: pool {pool}, {away} away"
+        );
         r.audit();
     }
     assert!(r.c.parties.get(p).is_none(), "the raid came home");
@@ -688,7 +925,10 @@ fn a_feud_waits_for_the_lines_in_flight_and_goes_when_they_are_answered() {
         }
     }
     assert!(!blocked_days.is_empty(), "the feud waited for the line");
-    assert!(r.c.stats.parties.iter().sum::<u64>() >= 1, "the raid went after the answer");
+    assert!(
+        r.c.stats.parties.iter().sum::<u64>() >= 1,
+        "the raid went after the answer"
+    );
     // The war party went out within a day of the answer (the spawn line went out at about day 6
     // and was answered at about day 11).
     let first_raid = r
@@ -726,8 +966,20 @@ fn a_second_census_before_the_firsts_lines_has_them_answered_stale() {
         .filter(|a| a.line.action == boundary::ACTION_TAKE)
         .collect();
     assert_eq!(takes.len(), 8, "two reconciles of four takes");
-    assert_eq!(takes.iter().filter(|a| a.outcome == boundary::LINE_STALE).count(), 4);
-    assert_eq!(takes.iter().filter(|a| a.outcome == boundary::LINE_DONE).count(), 4);
+    assert_eq!(
+        takes
+            .iter()
+            .filter(|a| a.outcome == boundary::LINE_STALE)
+            .count(),
+        4
+    );
+    assert_eq!(
+        takes
+            .iter()
+            .filter(|a| a.outcome == boundary::LINE_DONE)
+            .count(),
+        4
+    );
     assert_eq!(counts(&r), [5, 0, 0, 4, 0], "each body taken once");
     assert_eq!(world_bodies(&r), 5);
     ok(&mut r);
@@ -742,22 +994,76 @@ fn a_session_start_voids_the_lines_and_the_next_census_orders_again() {
     r.plugin.answer_ticks = 5_000;
     r.camp_in();
     r.run(Tick(100));
-    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 9, "nine adopts in flight");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().in_flight(),
+        9,
+        "nine adopts in flight"
+    );
     r.restart();
     assert!(!r.c.camp_is_in(r.f));
     assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 0, "void");
     let sent = orders(&r).len();
     r.run(Tick(20_000));
     assert_eq!(orders(&r).len(), sent, "nothing is resent");
-    assert_eq!(counts(&r), [0, 9, 0, 0, 0], "the answers were lost: the slots are still owed");
+    assert_eq!(
+        counts(&r),
+        [0, 9, 0, 0, 0],
+        "the answers were lost: the slots are still owed"
+    );
     // The adopts were applied in the world: the next census finds nine tagged bodies in their slots.
     r.camp_in();
     let to = r.c.now() + 10;
     r.run(to);
     assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
-    assert_eq!(applied(&r, boundary::ACTION_ADOPT), 9, "each body adopted once");
+    assert_eq!(
+        applied(&r, boundary::ACTION_ADOPT),
+        9,
+        "each body adopted once"
+    );
     assert_eq!(applied(&r, boundary::ACTION_SPAWN), 0);
     ok(&mut r);
+}
+
+/// §4.9, *Epochs*: a CAMP_OUT for an epoch that is not the camp's is an older one's, and ends
+/// nothing: the camp stays in at its new epoch.
+#[test]
+fn a_late_out_for_an_older_epoch_ends_nothing() {
+    let mut r = grove(126, 9);
+    r.plugin.answer_ticks = 5_000;
+    let first = r.camp_in();
+    r.run(Tick(50));
+    r.camp_out();
+    r.run(Tick(60));
+    let second = r.camp_in();
+    r.run(Tick(70));
+    assert_ne!(first, second);
+    assert!(r.c.camp_is_in(r.f));
+    let flight = r.c.camp(r.f).unwrap().in_flight();
+    let at = r.c.now() + 1;
+    r.c.ingest(
+        &mut r.w,
+        &mut rtsim_ecology::infra::NoInfrastructure,
+        &Obs::CampOut(boundary::CampOut {
+            faction: r.key,
+            epoch: first,
+        }),
+        at,
+    );
+    assert!(r.c.camp_is_in(r.f), "still in");
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), flight);
+    assert_eq!(r.c.camp(r.f).unwrap().epoch, second);
+    // The right epoch's out does end it.
+    r.c.ingest(
+        &mut r.w,
+        &mut rtsim_ecology::infra::NoInfrastructure,
+        &Obs::CampOut(boundary::CampOut {
+            faction: r.key,
+            epoch: second,
+        }),
+        at + 1,
+    );
+    assert!(!r.c.camp_is_in(r.f));
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 0);
 }
 
 /// §4.9: a CAMP_CENSUS replayed from an earlier session only marks its camp out; its bodies are
@@ -790,7 +1096,11 @@ fn a_replayed_census_only_marks_its_camp_out() {
     r.c.replaying = false;
     r.flush(at);
     assert!(!r.c.camp_is_in(r.f), "marked out");
-    assert_eq!(r.c.camp(r.f).unwrap().slots, slots, "no slot changed: it holds no bodies");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().slots,
+        slots,
+        "no slot changed: it holds no bodies"
+    );
     assert_eq!(orders(&r).len(), sent, "and nothing was ordered");
     assert_eq!(r.c.stats.camp_censuses, 1);
     // The live census after it is booked.
@@ -860,9 +1170,15 @@ fn an_answer_for_a_generation_the_slot_no_longer_holds_books_nothing() {
     let after = r.c.camp(r.f).unwrap();
     for s in &before.slots {
         let t = after.slots.iter().find(|x| x.id == s.id).unwrap();
-        assert!(t.state == SlotState::Body, "the other answers booked: {t:?}");
+        assert!(
+            t.state == SlotState::Body,
+            "the other answers booked: {t:?}"
+        );
     }
-    assert_eq!(after.slots.len(), 2 + usize::from(r.c.camp(r.f).unwrap().slots.len() > 2));
+    assert_eq!(
+        after.slots.len(),
+        2 + usize::from(r.c.camp(r.f).unwrap().slots.len() > 2)
+    );
     ok(&mut r);
 }
 
@@ -919,7 +1235,11 @@ fn an_order_lost_before_it_is_applied_is_void_and_the_next_census_orders_it_agai
     let to = r.c.now() + 10;
     r.run(to);
     assert_eq!(world_bodies(&r), 1);
-    assert_eq!(applied(&r, boundary::ACTION_SPAWN), 1, "ordered again, once");
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        1,
+        "ordered again, once"
+    );
     assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
     ok(&mut r);
 
@@ -970,7 +1290,11 @@ fn a_set_out_applied_whose_answer_is_lost_is_found_gone_by_the_next_census() {
     r.run(end + 10);
     assert_eq!(applied(&r, boundary::ACTION_SET_OUT), 4);
     assert_eq!(world_bodies(&r), 5);
-    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 4, "the answer never came");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().in_flight(),
+        4,
+        "the answer never came"
+    );
     assert_eq!(counts(&r), [5, 0, 4, 0, 0]);
     r.camp_out();
     let to = r.c.now() + 2;
@@ -979,7 +1303,11 @@ fn a_set_out_applied_whose_answer_is_lost_is_found_gone_by_the_next_census() {
     let to = r.c.now() + 10;
     r.run(to);
     assert_eq!(counts(&r), [5, 0, 0, 4, 0], "left, no body: gone");
-    assert_eq!(applied(&r, boundary::ACTION_SET_OUT), 4, "not ordered twice");
+    assert_eq!(
+        applied(&r, boundary::ACTION_SET_OUT),
+        4,
+        "not ordered twice"
+    );
     assert_eq!(applied(&r, boundary::ACTION_TAKE), 0);
     ok(&mut r);
 }
@@ -1047,7 +1375,11 @@ fn a_removal_applied_whose_answer_is_lost_frees_the_dead_slot_at_the_next_census
     let to = r.c.now() + 10;
     r.run(to);
     assert_eq!(counts(&r)[4], 0, "freed");
-    assert_eq!(applied(&r, boundary::ACTION_REMOVE), dead as usize, "removed once");
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        dead as usize,
+        "removed once"
+    );
     assert_eq!(world_bodies(&r), r.c.camp(r.f).unwrap().slots.len());
     ok(&mut r);
 }
@@ -1072,7 +1404,11 @@ fn an_answer_in_the_journal_is_replayed_after_a_restart_and_booked_by_state() {
     r.restart();
     assert_eq!(counts(&r), [0, 1, 0, 0, 0], "voided: still owed");
     replay(&mut r, j);
-    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "booked by state: the spawn is done");
+    assert_eq!(
+        counts(&r),
+        [1, 0, 0, 0, 0],
+        "booked by state: the spawn is done"
+    );
     let sent = orders(&r).len();
     r.camp_in();
     let to = r.c.now() + 10;
@@ -1099,7 +1435,11 @@ fn an_answer_in_the_journal_is_replayed_after_a_restart_and_booked_by_state() {
     r.restart();
     assert_eq!(counts(&r), [5, 0, 4, 0, 0]);
     replay(&mut r, j);
-    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "booked by state: the takes are done");
+    assert_eq!(
+        counts(&r),
+        [5, 0, 0, 4, 0],
+        "booked by state: the takes are done"
+    );
     ok(&mut r);
 }
 
@@ -1151,14 +1491,22 @@ fn a_spawn_booked_but_not_on_disk_is_written_off_after_three_misses() {
     assert_eq!(counts(&r), [1, 0, 0, 0, 0], "the spawn is booked");
     r.plugin.camps = disk;
     r.restart();
-    assert_eq!(world_bodies(&r), 0, "the entity chunk never reached the disk");
+    assert_eq!(
+        world_bodies(&r),
+        0,
+        "the entity chunk never reached the disk"
+    );
     for round in 0..3 {
         r.camp_in();
         let to = r.c.now() + 10;
         r.run(to);
         let n = counts(&r);
         if round < 2 {
-            assert_eq!(n, [1, 0, 0, 0, 0], "census {round}: missed, not yet written off");
+            assert_eq!(
+                n,
+                [1, 0, 0, 0, 0],
+                "census {round}: missed, not yet written off"
+            );
             assert_eq!(r.c.camp(r.f).unwrap().slots[0].misses, round + 1);
         }
         r.camp_out();
@@ -1167,8 +1515,15 @@ fn a_spawn_booked_but_not_on_disk_is_written_off_after_three_misses() {
     }
     assert_eq!(r.c.stats.camp_written_off, 1);
     assert_eq!(counts(&r), [0, 0, 0, 0, 0], "a member lost");
-    assert!(r.c.camp(r.f).unwrap().retired.iter().all(|t| !t.died), "not at a death");
-    assert_eq!(applied(&r, boundary::ACTION_SPAWN), 1, "no second body meanwhile");
+    assert!(
+        r.c.camp(r.f).unwrap().retired.iter().all(|t| !t.died),
+        "not at a death"
+    );
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        1,
+        "no second body meanwhile"
+    );
     // The refill makes a new member.
     r.run(day(20.0));
     r.camp_in();
@@ -1267,8 +1622,16 @@ fn rich_ledger(r: &mut CampRun) {
         });
     }
     camp.retired = vec![
-        Retired { slot: 1, generation: 55, died: true },
-        Retired { slot: 4, generation: 77, died: false },
+        Retired {
+            slot: 1,
+            generation: 55,
+            died: true,
+        },
+        Retired {
+            slot: 4,
+            generation: 77,
+            died: false,
+        },
     ];
     camp.throne = Some(Throne {
         spot: (1.5, 64.0, -3.25),
@@ -1303,7 +1666,10 @@ fn a_refill_booked_on_the_wheel_survives_a_save_and_a_load() {
         let mut r = den(61, 0);
         come_in(&mut r);
         r.run(day(0.4));
-        assert!(r.c.camp(r.f).unwrap().refill_at.is_some(), "a refill is booked");
+        assert!(
+            r.c.camp(r.f).unwrap().refill_at.is_some(),
+            "a refill is booked"
+        );
         if let Some(d) = save_at {
             r.run(day(d));
             r.round_trip();
@@ -1326,7 +1692,9 @@ fn the_camp_ledger_survives_a_paged_save_and_goes_on_as_the_run_that_kept_going(
     use std::sync::{Arc, RwLock};
     let dir = std::env::temp_dir().join(format!("rtsim-camp-paged-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let store = Arc::new(RwLock::new(PageStore::open(&dir, Durability::NoSync).unwrap()));
+    let store = Arc::new(RwLock::new(
+        PageStore::open(&dir, Durability::NoSync).unwrap(),
+    ));
     let mut a = grove(62, 9);
     a.c.attach_store(store.clone(), 8 << 10);
     come_in(&mut a);
@@ -1351,7 +1719,9 @@ fn the_camp_ledger_survives_a_paged_save_and_goes_on_as_the_run_that_kept_going(
             std::fs::copy(e.path(), dir_b.join(e.file_name())).unwrap();
         }
     }
-    let store_b = Arc::new(RwLock::new(PageStore::open(&dir_b, Durability::NoSync).unwrap()));
+    let store_b = Arc::new(RwLock::new(
+        PageStore::open(&dir_b, Durability::NoSync).unwrap(),
+    ));
     let back = rtsim_conflict::Conflict::open_paged(
         store_b,
         8 << 10,
@@ -1361,7 +1731,11 @@ fn the_camp_ledger_survives_a_paged_save_and_goes_on_as_the_run_that_kept_going(
     )
     .unwrap()
     .expect("a meta page");
-    assert_eq!(back.state_hash(), a.c.state_hash(), "the same state at once");
+    assert_eq!(
+        back.state_hash(),
+        a.c.state_hash(),
+        "the same state at once"
+    );
     assert_eq!(back.camp(a.f), a.c.camp(a.f));
     let _ = p;
     std::fs::remove_dir_all(&dir).unwrap();
@@ -1402,7 +1776,11 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
             });
             r.watch = seed % 2 == 0;
             r.chaos(seed, 220);
-            assert!(r.failures.is_empty(), "{culture} seed {seed}: {:#?}", r.failures);
+            assert!(
+                r.failures.is_empty(),
+                "{culture} seed {seed}: {:#?}",
+                r.failures
+            );
             let bad = r.check();
             assert!(bad.is_empty(), "{culture} seed {seed}: {bad:#?}");
             assert!(
@@ -1425,7 +1803,11 @@ fn saving_and_loading_at_random_points_changes_nothing() {
             r.round_trips = round_trips;
             r.chaos(seed, 150);
             assert!(r.failures.is_empty(), "seed {seed}: {:#?}", r.failures);
-            (r.c.state_hash(), r.plugin.camps[&r.key].bodies.len(), r.c.stats.camp_lines)
+            (
+                r.c.state_hash(),
+                r.plugin.camps[&r.key].bodies.len(),
+                r.c.stats.camp_lines,
+            )
         };
         assert_eq!(end(true), end(false), "seed {seed}");
     }
