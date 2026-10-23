@@ -693,6 +693,9 @@ impl Ctx<'_> {
             NodeKind::Village(_) => plain(class::VILLAGE, key, 0),
             NodeKind::PlayerBase { owner } => plain(class::BASE, key, owner),
             NodeKind::Haven(_) => plain(class::HAVEN, key, 0),
+            // A Mowzie culture's lair has no class yet: LAIR is a dragon lair by the ecology's key,
+            // and the lair's Java side waits for its slice (MZB-65).
+            NodeKind::Lair => return unknown(),
         };
         if matches!(n.kind, NodeKind::Village(_)) {
             d.1 = self.culture_of_node(n.kind);
@@ -1884,6 +1887,19 @@ mod tests {
             ctx(&st).describe(st.phase1.world.nodes[st.phase1.node_of(8).unwrap()].actor);
         assert_eq!(r.a, 8);
         assert_eq!(what, Some((wire::DICT_CULTURE, "ribbit".into())));
+        // A Mowzie culture's lair is nobody yet (MZB-65): LAIR is a dragon lair's class.
+        st.phase1.world.join(
+            rtsim_world::NodeData {
+                key: 901,
+                kind: NodeKind::Lair,
+                pos: Pos::new(0, 2_400, 1_000),
+                pop: 1,
+                resources: Default::default(),
+            },
+            Tick(NOW),
+        );
+        let lair = st.phase1.world.nodes[st.phase1.world.node_of_key(901).unwrap()].actor;
+        assert_eq!(ctx(&st).describe(lair), unknown());
     }
 
     #[test]
