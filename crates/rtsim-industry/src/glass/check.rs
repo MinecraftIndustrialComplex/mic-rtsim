@@ -149,15 +149,21 @@ pub struct UnitState {
     /// Failed windows in a row.
     pub strikes: u32,
     pub windows_completed: u32,
+    /// When a derate last fell on one of its nodes (choice SC61): a window of its that started
+    /// before was judged against another model, so it lets the unit neither replay nor carry.
+    pub derated_at: Option<Tick>,
+    /// The goods its windows' rows held since the compile, kept as those rows go (a discard or a
+    /// conclusion): the veto reads them (choice SC65). Sorted.
+    pub touched: Vec<Good>,
 }
 
 /// Which chunks ran through a sweep, for the units' liveness (SECTIONS.md §3.4).
 pub enum Liveness<'a> {
     /// Every chunk of the district block-ticked throughout (IND_SWEEP_END's live flag).
     All,
-    /// Some did not. A unit ran when each chunk it lies in is loaded, block-ticks (a district
-    /// whose Java sends no IND_CHUNK_TICKING ticks every loaded chunk, G2-17) and did not stop
-    /// since the last sweep sampled.
+    /// Some did not. A unit ran when each chunk it lies in is loaded, was reported ticking
+    /// (IND_CHUNK_TICKING: Java reports no chunk that never ticked, so a district with none
+    /// reported runs no unit, choice SC58) and did not stop since the last sweep sampled.
     Partial {
         loaded: &'a BTreeSet<crate::ids::ChunkPos>,
         dim: u32,
@@ -293,6 +299,9 @@ pub struct Compiled {
     /// until this one's first district window concludes: a recompile does not lift the veto on a
     /// unit (SECTIONS.md §3.4, choice SC66). Sorted; [`Compiled::district_failing`] reads it.
     pub veto: Vec<Good>,
+    /// When the last derate fell (choice SC61): a unit's window that started before it was
+    /// judged against another model and names no node to derate. Carried by a recompile.
+    pub derated_at: Option<Tick>,
     pub windows_completed: u32,
     pub strikes: u32,
     /// Per (inventory, good): its stock as of the last sweep, spent and refilled as the model
@@ -366,8 +375,8 @@ pub struct DistrictGlass {
     /// Chunks that stopped running (unloaded, or stopped block-ticking) since the last sweep that
     /// sampled: a unit lying in one did not run throughout that sweep (§3.4).
     pub stopped: BTreeSet<crate::ids::ChunkPos>,
-    /// The district went away since its last sweep ([`super::Glass::away`]): the first sweep back
-    /// runs no unit (choice SC59).
+    /// The district went away ([`super::Glass::away`]) and is not back yet ([`super::Glass::back`]):
+    /// no unit runs (choice SC59).
     pub away: bool,
 }
 
@@ -589,6 +598,15 @@ fn rows_of(rows: &[Row], unit: u16) -> std::ops::Range<usize> {
 /// Of the failing goods (or `only` that good), the one the model is most optimistic on: it
 /// predicts more throughput than measured. Its η (measured over predicted, in 0 to 1), the good,
 /// and whether it is produced.
+/// Adds the goods of `rows` to a unit's sorted `touched`.
+fn keep_touched(touched: &mut Vec<Good>, rows: &[Row]) {
+    for r in rows {
+        if let Err(i) = touched.binary_search(&r.good) {
+            touched.insert(i, r.good);
+        }
+    }
+}
+
 fn most_optimistic(goods: &[GoodResult], only: Option<Good>) -> Option<(f64, Good, bool)> {
     let mut worst: Option<(f64, Good, bool)> = None;
     for r in goods {
@@ -732,6 +750,7 @@ impl Compiled {
             passed: None,
             edited: false,
             veto: Vec::new(),
+            derated_at: None,
             windows_completed: 0,
             strikes: 0,
             stock_est: BTreeMap::new(),
@@ -806,6 +825,11 @@ impl Compiled {
                 to.insert(o, u);
             }
         }
+        // A derate does not outlive its compile: a unit with one on its nodes was judged against a
+        // model the new compile does not have, and starts afresh (choice SC61).
+        if recompiled {
+            to.retain(|&o, _| old_state[o as usize].derated_at.is_none());
+        }
         for (&o, &u) in &to {
             let mut st = std::mem::take(&mut old_state[o as usize]);
             if recompiled {
@@ -843,6 +867,7 @@ impl Compiled {
         }
         old.advance(at, tun);
         self.ports_at = std::mem::take(&mut old.ports_at);
+        self.derated_at = old.derated_at;
         let old_state = std::mem::take(&mut old.unit_state);
         let old_rows = std::mem::take(&mut old.rows);
         self.adopt(&old.units, old_state, old_rows, true);
@@ -1051,6 +1076,7 @@ impl Compiled {
             .ready_at
             .max(Tick(at.0 + tun.warmup_ticks + self.graph.longest_latency));
         let span = rows_of(&self.rows, u);
+        keep_touched(&mut st.touched, &self.rows[span.clone()]);
         self.rows.drain(span);
     }
 
@@ -1436,8 +1462,9 @@ impl Compiled {
         for u in due {
             let res = self.judge_unit(u as u16, z).expect("open");
             let span = rows_of(&self.rows, u as u16);
-            self.rows.drain(span);
             let st = &mut self.unit_state[u];
+            keep_touched(&mut st.touched, &self.rows[span.clone()]);
+            self.rows.drain(span);
             st.windows_completed += 1;
             if res.verdict == report::verdict::PASS {
                 st.passed = Some((res.start, res.ticks));
@@ -1559,7 +1586,12 @@ impl Compiled {
     /// active, the search starts in the unit whose own last window failed worst on that good, and
     /// the derate is that window's (choice SC61); with none, over the district. Returns the probe
     /// set to send and a newly demoted model, if any.
-    fn act(&mut self, res: &WindowResult, tun: &GlassTunables) -> (Option<Vec<u32>>, Option<u32>) {
+    fn act(
+        &mut self,
+        at: Tick,
+        res: &WindowResult,
+        tun: &GlassTunables,
+    ) -> (Option<Vec<u32>>, Option<u32>) {
         if res.verdict != report::verdict::FAIL {
             self.strikes = 0;
             return (None, None);
@@ -1568,12 +1600,15 @@ impl Compiled {
         let Some((eta, good, produced)) = most_optimistic(&res.goods, None) else {
             return (None, None);
         };
+        // A unit's window that started before the last derate was judged against another model:
+        // it names no node (choice SC61).
+        let since = self.derated_at.unwrap_or(Tick::ZERO);
         let local = self
             .unit_state
             .iter()
             .enumerate()
             .filter_map(|(u, st)| {
-                let r = st.last.as_ref()?;
+                let r = st.last.as_ref().filter(|r| r.start >= since)?;
                 let (e, _, p) = most_optimistic(&r.goods, Some(good))?;
                 Some((e, u as u16, p))
             })
@@ -1592,6 +1627,12 @@ impl Compiled {
             .unwrap_or(Q::ONE)
             .mul(eta_q);
         self.regime.derate.insert(v, d);
+        self.derated_at = Some(at);
+        if let Some(&u) = self.units.of_node.get(v as usize)
+            && let Some(st) = self.unit_state.get_mut(u as usize)
+        {
+            st.derated_at = Some(at);
+        }
         self.event(GlassEvent::Derated {
             node: v,
             eta: eta_q,
@@ -1680,7 +1721,7 @@ impl Compiled {
                 let win = self.win.take().expect("open");
                 let res = self.judge(&win, tun.checksum_z);
                 self.windows_completed += 1;
-                out = self.act(&res, tun);
+                out = self.act(at, &res, tun);
                 if res.verdict == report::verdict::PASS {
                     self.passed = Some(res.clone());
                     self.edited = false;
@@ -2064,7 +2105,20 @@ impl Compiled {
         else {
             return false;
         };
-        if st.edited || !own.goods.iter().any(|g| g.verdict == report::verdict::PASS) {
+        if st.edited || st.derated_at.is_some_and(|d| own.start < d) {
+            return false;
+        }
+        // A window of unbounded goods alone (a black box, a port, a model demoted here) judged
+        // nothing: such a unit leans on the district's pass, as a district alone does (G-B4,
+        // choice SC66).
+        let judged = own.goods.iter().any(|g| g.verdict == report::verdict::PASS);
+        let leans = !own.goods.is_empty()
+            && own
+                .goods
+                .iter()
+                .all(|g| g.class == report::class::UNBOUNDED)
+            && self.eligible();
+        if !judged && !leans {
             return false;
         }
         let failing = self.district_failing();
@@ -2075,6 +2129,7 @@ impl Compiled {
             .goods
             .iter()
             .map(|g| g.good)
+            .chain(st.touched.iter().copied())
             .chain(self.rows[rows_of(&self.rows, u)].iter().map(|r| r.good))
             .chain(self.ubounds.iter().filter(|b| b.unit == u).map(|b| b.good));
         !touched.into_iter().any(|g| failing.contains(&g))
@@ -2208,7 +2263,9 @@ mod persist_impls {
         passed,
         edited,
         strikes,
-        windows_completed
+        windows_completed,
+        derated_at,
+        touched
     });
 
     impl Persist for GlassEvent {
@@ -2274,6 +2331,7 @@ mod persist_impls {
             self.passed.put(w);
             self.edited.put(w);
             self.veto.put(w);
+            self.derated_at.put(w);
             self.windows_completed.put(w);
             self.strikes.put(w);
             self.stock_est.put(w);
@@ -2313,6 +2371,7 @@ mod persist_impls {
                 passed: Persist::get(r)?,
                 edited: Persist::get(r)?,
                 veto: Persist::get(r)?,
+                derated_at: Persist::get(r)?,
                 windows_completed: Persist::get(r)?,
                 strikes: Persist::get(r)?,
                 stock_est: Persist::get(r)?,

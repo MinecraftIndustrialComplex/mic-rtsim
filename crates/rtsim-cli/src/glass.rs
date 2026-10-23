@@ -264,6 +264,8 @@ fn units(iv: &IndustryView, c: &Compiled) -> Value {
                 "windows_completed": st.windows_completed,
                 "strikes": st.strikes,
                 "edited": st.edited,
+                "derated_at": st.derated_at.map(|t| t.0),
+                "touched": st.touched.iter().map(|g| iv.good_name(*g)).collect::<Vec<_>>(),
                 "may_replay": c.unit_may_replay(i as u16),
             })
         })
@@ -404,7 +406,7 @@ fn print_text(v: &Value) {
         for (i, u) in us.iter().enumerate() {
             let open = &u["window"];
             println!(
-                "    unit {i}: sections {}, {} stores; window {}; {} windows, last {}, passed {}; {} strikes{}{}",
+                "    unit {i}: sections {}, {} stores; window {}; {} windows, last {}, passed {}; {} strikes{}{}{}",
                 u["sections"],
                 u["stores"].as_array().map_or(0, Vec::len),
                 if open.is_null() {
@@ -427,6 +429,10 @@ fn print_text(v: &Value) {
                     ", stale (edited)"
                 } else {
                     ""
+                },
+                match u["derated_at"].as_u64() {
+                    Some(t) => format!(", derated at {t}"),
+                    None => String::new(),
                 },
                 if u["may_replay"].as_bool() == Some(true) {
                     ", may replay"
