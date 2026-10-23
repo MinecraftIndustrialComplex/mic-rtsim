@@ -1,6 +1,5 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass;
 
-import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit;
 import net.minecraft.gametest.framework.GameTestGenerator;
 import net.minecraft.gametest.framework.TestFunction;
@@ -47,11 +46,22 @@ public final class SectionsFxGameTests {
             new Fx("half_loaded", true, HalfLoadedFactory::new, HalfLoadedFactory.Check::new),
             new Fx("hopper_vault", false, HopperAtASharedVaultFactory::new, HopperAtASharedVaultFactory.Check::new));
 
+    /** The fixtures {@code MIC_SEC1FX_ONLY} names (comma separated), or none when it is unset: all. */
+    private static Set<String> only() {
+        String only = System.getenv("MIC_SEC1FX_ONLY");
+        return only == null || only.isBlank() ? Set.of()
+                : Arrays.stream(only.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet());
+    }
+
+    /** Whether the named fixture is selected (no filter set, or it is named). */
+    static boolean selected(String name) {
+        Set<String> filter = only();
+        return filter.isEmpty() || filter.contains(name);
+    }
+
     @GameTestGenerator
     public static Collection<TestFunction> sections() {
-        String only = System.getenv("MIC_SEC1FX_ONLY");
-        Set<String> filter = only == null || only.isBlank() ? Set.of()
-                : Arrays.stream(only.split(",")).map(String::trim).filter(s -> !s.isEmpty()).collect(Collectors.toSet());
+        Set<String> filter = only();
         List<TestFunction> out = new ArrayList<>();
         for (int i = 0; i < ALL.size(); i++) {
             Fx fx = ALL.get(i);
@@ -62,7 +72,7 @@ public final class SectionsFxGameTests {
             GlassReplayGameTests.Scenario sc = fx.scenario().get();
             int maxTicks = probe.warmupTicks() + 2 * (WINDOW + GlassExitGameTests.SLACK) + sc.extraTicks() + sc.span() + 3 * IO_TICKS + SETTLE + 2000;
             out.add(new TestFunction("sec1fx_" + fx.name(), "sec1fx." + fx.name().toLowerCase(Locale.ROOT),
-                    MicRtsimCreate.MODID + ":" + IndustryKit.YARD, Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true,
+                    NAMESPACE + ":" + IndustryKit.YARD, Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true,
                     helper -> GlassReplayGameTests.start(helper, fx.factory().get(), slot, fx.partial(), false, fx.scenario().get())));
         }
         return out;
