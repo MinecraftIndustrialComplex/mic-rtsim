@@ -586,7 +586,9 @@ fn unattended(seed: u64, lifecycle: bool, windows: u64, years: u64) -> Life {
         if t.0.is_multiple_of(years * YEAR * TICKS_PER_DAY) {
             life.window_hunts.push(ships.stats.hunts - hunts0);
             hunts0 = ships.stats.hunts;
-            ships.check(&world).expect("check");
+            ships.check(&world).unwrap_or_else(|e| {
+                panic!("seed {seed} lifecycle {lifecycle} day {}: {e}", day(t))
+            });
         }
     }
     life.open /= samples as f64;
