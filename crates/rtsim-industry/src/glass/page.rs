@@ -21,10 +21,10 @@
 //!   `glass.sectionsMax` or `glass.countedStoresMax`, or a changed fold), or one of
 //!   the format before sections ([`GLASS_MAGIC_IGL1`]), before unit windows
 //!   ([`GLASS_MAGIC_IGL2`]), before the station discards ([`GLASS_MAGIC_IGL3`]) or before the
-//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]), drops that district's glass state alone ([`PageRead::Dropped`]): the
-//!   district learns again. The judging units are recomputed with the sections (a row cap's cut
-//!   held, `DistrictGlass::sections_cap`), their bounds from the solve, and their saved windows are
-//!   checked against them.
+//!   counted stores' window bases ([`GLASS_MAGIC_IGL4`]), drops that district's glass state
+//!   alone ([`PageRead::Dropped`]): the district learns again. The judging units are recomputed
+//!   with the sections (a row cap's cut held, `DistrictGlass::sections_cap`), their bounds from
+//!   the solve, and their saved windows are checked against them.
 
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 

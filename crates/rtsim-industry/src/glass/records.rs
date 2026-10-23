@@ -546,10 +546,12 @@ pub struct ProbeSet {
     pub nodes: Vec<u32>,
 }
 
-/// IND_COUNT_SET (0x8408): the (mover, store) node pairs whose moves Java counts for a district's
-/// compile (SECTIONS.md §4.2, slice S3): every edge between a counted shared store and its mover.
-/// Sent at every accepted compile END, a resend's too, and empty when nothing is counted; Java
-/// keeps it until the next one for that district, and applies it only to its current compile.
+/// IND_COUNT_SET (0x8408): the (mover, store) node pairs whose moves Java counts for a district
+/// (SECTIONS.md §4.2, slice S3), in the numbers of the compile it names: every edge between a
+/// counted store between units and its mover. Sent when the district's units change and the set
+/// differs from the one Java holds (after an ignored resend, again), and empty when nothing is
+/// counted now. Java keys each pair's counters by its mover's and store's positions, so a pair a
+/// later set names again keeps its counters and `since`; an empty set drops the district's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CountSet {
     pub district: DistrictId,
