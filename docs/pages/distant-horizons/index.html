@@ -190,7 +190,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   <a href="#built">Built</a>
   <a href="#bench">Measured</a>
   <a href="#foryou">Approved</a>
-  <a href="#gallery">Gallery</a>
+  <a href="#gallery">Gallery and new look</a>
   <a href="#items">The six</a>
   <a href="#walk">Walkthrough</a>
   <a href="#chunky">Far terrain</a>
@@ -203,12 +203,12 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 
 <header data-ss-id="page-header">
   <h1 data-ss-id="headline">Trains and dragons now move in Distant Horizons, on rtsim's own feed at 24 to 32 times less bandwidth than Create's</h1>
-  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on our own worlds are being captured for a <a href="#gallery">gallery</a>. Windmills, war and airships are still estimates.</p>
+  <p class="dek" data-ss-id="dek">Your ask was dragons out past render distance, trains and airships moving between bases, windmills still spinning, and smoke when war comes. The research of 21 October found all six doable, and you answered its four questions that day (DH-1 to DH-4). On 22 October phases 1 and 2 were built and landed on mic-rtsim main (ca5b3eb): trains, rtsim's own feed, dragons with beating wings, and the band where trains used to vanish. They were measured on your laptop, except the GPU. You approved them the same day, "Approve, ship with rtsim": the wire formats stand, and <code>mic_rtsim_dh</code> goes into the pack with mic-rtsim's own pack commit (<a href="#foryou">below</a>). Pictures and video of the far view on two worlds we generated ourselves are on <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery">the far view gallery</a>. You were unhappy with the box look it shows, so it is being replaced: trains drawn as the carriages players built, and dragons as the real Ice and Fire dragon. You approved the plan; a test runs first (<a href="#gallery">below</a>). Windmills, war and airships are still estimates.</p>
   <p class="lead" data-ss-id="lead">Distant Horizons, which the pack now ships at 3.3.3, lets a mod draw coloured boxes at any distance and move them every frame. The one hard limit is that boxes cannot rotate, so anything that turns (sails, wings, a ship changing course) is a flipbook of a few poses that swap. Trains and dragons are built; windmills, war and airships come next.</p>
   <div class="tiles" data-ss-id="kpi-tiles">
     <div class="tile" data-ss-id="kpi-bw"><div class="n">1.3 to 1.7 <small>KB/s</small></div><div class="t">for 50 trains on rtsim's feed, against 41.3 KB/s on Create's own sync</div></div>
     <div class="tile" data-ss-id="kpi-frame"><div class="n">2.7 <small>ms</small></div><div class="t">of a 12.5 ms frame at the heaviest load: 64 dragons and 50 trains on HIGH</div></div>
-    <div class="tile" data-ss-id="kpi-doable"><div class="n">2 <small>of 6</small></div><div class="t">things you asked for are built: trains and dragons</div></div>
+    <div class="tile" data-ss-id="kpi-doable"><div class="n">2 <small>of 6</small></div><div class="t">things you asked for are built: trains and dragons, their box look now being replaced</div></div>
     <div class="tile" data-ss-id="kpi-decide"><div class="n">0</div><div class="t">wait for you: the formats are approved and the jar ships with mic-rtsim</div></div>
   </div>
   <div class="box limits" data-ss-id="limits">
@@ -328,8 +328,31 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </section>
 
 <section id="gallery" data-ss-id="gallery" data-ss-section>
-  <h2 data-ss-id="gallery-h">Pictures and video: being captured</h2>
-  <p data-ss-id="gallery-p">You asked: <span class="why">"can you get me some videos / images of worlds with this mod"</span>. A capture run is recording trains and dragons in the far view on worlds we generated ourselves. They will go on a separate private page, the far view gallery, linked here and from the hub when it is ready.</p>
+  <h2 data-ss-id="gallery-h">The far view gallery, and the look that replaces the boxes</h2>
+  <p data-ss-id="gallery-p">You asked: <span class="why">"can you get me some videos / images of worlds with this mod"</span>. <a href="https://spacesheep.dev/@benmac/rtsim-dh-gallery"><strong>The far view gallery</strong></a> has 12 stills and 6 clips, on two worlds we generated ourselves: a hill view with trains crossing, dragons circling, a dragon flying in to become a real body, and a train arriving at a station to become a real Create train. Private page. The box look it shows is being replaced.</p>
+  <div class="box" data-ss-id="gallery-verdict">
+    <h3>Your verdict: the box look is being replaced <span class="done-tag">Being replaced</span></h3>
+    <p>You watched it and were <span class="why">"Really unhappy with how the DH stuff looks: A) Trains don't match the trains players built they are just black boxes. B) Dragons look like a blocky mess and not like dragons."</span></p>
+    <p>The cause: Distant Horizons' box tool draws only plain coloured boxes, with no textures and no rotation. The new plan, which you approved: <span class="why">"Looks good, go do some tests and implement if they look good."</span></p>
+    <ul>
+      <li><strong>Trains, drawn as the carriages players built.</strong> The server sends each carriage's block layout once, and the game bakes it into one textured model, drawn at its true angle inside Distant Horizons' own drawing, so hills hide it and fog fades it. The fallback is a copy of the carriage block by block, each block in its own colour.</li>
+      <li><strong>Dragons, in three levels.</strong> Far away, pictures of the real Ice and Fire dragon drawn in advance from many angles. Nearer, Ice and Fire's own model, for the nearest few. Close up, the real dragon.</li>
+    </ul>
+    <p><strong>Next:</strong> a test runs first. If it passes (clearly the player's build, clearly dragons, right behind hills and in fog, and cheap), it is built and landed overnight, and the morning page will show before and after.</p>
+  </div>
+  <div class="box" data-ss-id="gallery-fix">
+    <h3>Seen in the footage: hand-over glitches</h3>
+    <p>Each happens at a hand-over between the two renderers: Distant Horizons' drawing far away, and the game's own dragons and trains up close.</p>
+    <p><strong>Fixed on main</strong> (e9f4eccc, choices DHT40 to DHT45), not yet filmed again:</p>
+    <ul>
+      <li>The far object and the real body both showed for up to about 0.85 s. Now the far object goes in the frame the real one appears.</li>
+      <li>A real dragon spawned facing another way from its far object, and about 3 blocks higher. Now it faces the way its box flew, and the box is drawn at the body's middle.</li>
+      <li>A train vanished for about 0.7 s at the edge of the far view, about 160 blocks out, because fog hid the near box there. Now Distant Horizons draws on into its own fade, so the near box fades into the same box.</li>
+      <li>The far object trailed the real train by about half a second. Now it runs on from its last positions instead of trailing them.</li>
+    </ul>
+    <p><strong>Dropped, because the boxes are being replaced:</strong> the two fixes that only resized boxes, for a real dragon about twice its box's size and a train box bigger than the real carriage.</p>
+    <p>What already looked right: boxes keep to the right lane, with steady colour and no flicker.</p>
+  </div>
 </section>
 
 <section id="items" data-ss-id="items" data-ss-section>
@@ -554,7 +577,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 </main>
 
 <footer data-ss-react="off">
-  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb) and your approval. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
+  Built from research/distant-horizons-2026-10-21.md and DECISIONS.md DH-1 to DH-5 on mic-rtsim main (1476624), 21 October 2026; updated 22 October 2026 for phases 1 and 2 (ca5b3eb), your approval, the gallery and your verdict on its look. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.
 </footer>
 </body>
 </html>
