@@ -828,13 +828,19 @@ mod tests {
     use super::*;
     use crate::synth;
 
-    /// Closes trade port `d` now as a check would (blockaded and closed at `at`, its next check
-    /// booked unless one is: a port within its minimum open spell keeps its checks, and a second
-    /// would leave a stale one in the wheel) and lays up what the rule says.
+    /// Closes trade port `d` now as a check would (blockaded and closed at `at`, its open spell
+    /// over and forgotten as `PortState::step` forgets it, its next check booked unless one is: a
+    /// second would leave a stale one in the wheel) and lays up what the rule says.
     fn close(c: &mut synth::Coastal, d: u32, at: Tick) {
         let (w, s) = (&mut c.world, &mut c.ships);
         assert!(s.is_trade_port(w, d), "dock {d}");
+        let spell = s.min_open_ticks();
         let p = s.ports.entry(d).or_default();
+        assert!(
+            p.reopened.is_none_or(|r| at.0 >= r.0.saturating_add(spell)),
+            "dock {d} within its open spell: {p:?}"
+        );
+        p.reopened = None;
         p.blockaded = p.blockaded.or(Some(at));
         p.closed = Some(at);
         let booked = p.check.is_some();
