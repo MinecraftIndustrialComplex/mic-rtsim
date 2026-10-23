@@ -234,12 +234,16 @@ under its own heading.
   killer, as MZB-105 makes a machine's signals the settlers'.
 - **MZB-112** (M1's records wait for M1): DIFFICULTY and NOTICE_SHOWN are written against M1's layouts but
   sent only while `ConflictBridge.m1Records` is true, false until M1's engine half is on main (the engine
-  on main does not know their kinds). The GameTests check NOTICE_SHOWN only then.
+  on main does not know their kinds). The GameTests check NOTICE_SHOWN only then. Amended after M1
+  landed (36b019d6): `m1Records` is true; DIFFICULTY is the journaled 0x0815 (a u32 at 24, size 32,
+  at session start and on each change); FACTION_NOTICE's serial is read at 60 and NOTICE_SHOWN carries
+  it in its aux. Test 19 checks the serial and a Peaceful GameTest checks DIFFICULTY.
 - **MZB-113** (a withdrawn demand): DEMAND_SETTLED outcome 5 (withdrawn) is handled as every other
   outcome: the envoy's name goes and the news hook hears it. What withdrawal means is the engine's.
 - **MZB-114** (test 18's foliaath): Mowzie's Mobs is not on the core's GameTest server, so a datapack
   registered only there adds `minecraft:endermite` to `mic_rtsim:threat/ignored` as the foliaath's
-  stand-in. The shipped tag names `mowziesmobs:foliaath`, not required.
+  stand-in. The shipped tag names `mowziesmobs:foliaath`, not required, and test 18 reads the shipped
+  file from the core's jar to check it.
 - **MZB-115** (scripted tests use an unclaimed camp): GameTests that script the engine's side report their
   camps as `mic_rtsim:conflict/test_unclaimed_camp`, which no culture claims, so the native engine founds
   no faction of its own there and sends no TERRITORY or feud of its own into the test.
@@ -311,6 +315,20 @@ under its own heading.
 - **MZB-127** (a war chief with no units left): a chief-flagged stack whose count is 0 is a stack of the
   chief alone, one body of the stack's kind; the first build skipped it, so the chief got no body. Stacks
   keep the record's order otherwise (an empty stack without the chief is still skipped).
+- **MZB-128** (test 14's withdrawn demand, scripted): test 14's parties are scripted commands the
+  engine does not know, so its DEMAND_SETTLED 5 cannot come from the engine; the test sends it as M1's
+  engine does (the engine's own rule is M1's Rust tests). The engine sends it when its count of the
+  party reaches nothing, and MZB-32 lets a member still stand in Minecraft then; the test stands one up
+  (the settlers' party is an envoy and a guard, the guard killed by `/kill` first), so the name going
+  and the envoy's `settled.withdrawn` line can be seen. Then the envoy is killed by `/kill` too: no
+  ENVOY_ANSWER from the whole party, and its recall is RECALL_SETTLED (MZB-32).
+- **MZB-129** (test 19 across a logout): the logout is real (`PlayerList.remove`: the logged-out event
+  fires and the entity leaves the level) and the login is a new entity with the same id; no logged-in
+  event fires (the fake players never had one, and their connection is a stand-in). A restart is not in
+  the GameTest: the server has one bridge session, and ending it ends the engine for every later test.
+  The restart half (the engine resends a kept notice at session start) is M1's rtsim-jni test, and the
+  Java side of a resent notice is the FACTION_NOTICE this test sends. NOTICE_SHOWN's aux is checked
+  against the notice's serial (FACTION_NOTICE offset 60).
 
 ## M4 Camp reconciler, engine
 

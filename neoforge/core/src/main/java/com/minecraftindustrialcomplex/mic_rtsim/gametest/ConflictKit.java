@@ -292,7 +292,8 @@ public final class ConflictKit {
     }
 
     /** FACTION_NOTICE to {@code player} (null: the settlers) at step {@code step}. */
-    public static void notice(long faction, UUID player, String dimension, int signal, int x, int z, float grievance, int step) {
+    /** FACTION_NOTICE (aux = the rung) with the notice's serial, which NOTICE_SHOWN echoes in its aux (M1). */
+    public static void notice(long faction, UUID player, String dimension, int signal, int x, int z, float grievance, int step, int serial) {
         script(out -> {
             int dim = out.dict(Obs.DICT_DIMENSION, dimension);
             int at = out.reserve(ConflictRecords.FACTION_NOTICE, ConflictRecords.Notice.SIZE, step);
@@ -306,6 +307,7 @@ public final class ConflictKit {
             b.putInt(at + ConflictRecords.Notice.X, x);
             b.putInt(at + ConflictRecords.Notice.Z, z);
             b.putFloat(at + ConflictRecords.Notice.GRIEVANCE, grievance);
+            b.putInt(at + ConflictRecords.Notice.SERIAL, serial);
         });
     }
 

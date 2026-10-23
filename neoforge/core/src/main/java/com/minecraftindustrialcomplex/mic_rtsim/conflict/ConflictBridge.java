@@ -118,11 +118,8 @@ public final class ConflictBridge implements SessionPlugin {
     public static final int REQUEUE_COOLDOWN = 200;
     /** A slot's chunk before it is watched. */
     static final long NO_CHUNK = Long.MIN_VALUE;
-    /**
-     * M1's records (DIFFICULTY, NOTICE_SHOWN): sent once M1's engine half is on main. Until then the
-     * engine on main does not know their kinds.
-     */
-    static boolean m1Records = false;
+    /** M1's records (DIFFICULTY, NOTICE_SHOWN): on since M1's engine half is on main. */
+    static boolean m1Records = true;
 
     /** Whether M1's records are sent (GameTests check NOTICE_SHOWN only then). */
     public static boolean m1Records() {
