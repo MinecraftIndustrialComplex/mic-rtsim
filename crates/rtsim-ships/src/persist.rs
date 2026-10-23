@@ -65,8 +65,8 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use crate::engine::{
     Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate,
     PlayerView, PortState, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipId,
-    ShipLedger, ShipRange, ShipStats, ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE,
-    THREAT_TABLE,
+    ShipLedger, ShipRange, ShipStats, ShipTickets, Ships, Shut, Spells, Status,
+    THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -953,10 +953,12 @@ fn put_blockades(w: &mut Writer, ships: &Ships) {
         w.u64(t.0);
     }
     put_usize(w, idle.len());
-    for (id, (from, to)) in idle {
+    for (id, spells) in idle {
         w.u64(id.to_bits());
-        w.u64(from.0);
-        w.u64(to.0);
+        for (from, to) in spells {
+            w.u64(from.0);
+            w.u64(to.0);
+        }
     }
     counts.iter().for_each(|&c| w.var_u64(c));
 }
@@ -965,7 +967,7 @@ fn put_blockades(w: &mut Writer, ships: &Ships) {
 type Blockades = (
     BTreeMap<u32, PortState>,
     BTreeMap<u32, Tick>,
-    BTreeMap<ShipId, (Tick, Tick)>,
+    BTreeMap<ShipId, Spells>,
 );
 
 fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockades> {
@@ -1012,13 +1014,17 @@ fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockad
         laid_up.insert(v, Tick(r.u64()?));
     }
     let mut last: Option<ShipId> = None;
-    for _ in 0..r.len_prefix(24)? {
+    for _ in 0..r.len_prefix(40)? {
         let id: ShipId = handle(r)?;
         if last.is_some_and(|l| l >= id) {
             return bad("idle spells out of order".into());
         }
         last = Some(id);
-        idle.insert(id, (Tick(r.u64()?), Tick(r.u64()?)));
+        let mut spells = [(Tick::ZERO, Tick::ZERO); 2];
+        for sp in &mut spells {
+            *sp = (Tick(r.u64()?), Tick(r.u64()?));
+        }
+        idle.insert(id, spells);
     }
     s.blockades = r.var_u64()?;
     s.closures = r.var_u64()?;

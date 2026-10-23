@@ -298,6 +298,21 @@ impl NavyCounts {
 /// it until its haven is fed again (PC11) or refounds.
 pub const LAID_UP: Tick = Tick(u64::MAX);
 
+/// A merchant slot's last two idle spells (PC92), `[from, to)` each, the latest first; a slot
+/// laid up only once has [`NO_SPELL`] second. Two are enough. A spell's timetable departures
+/// matter only to the windows of voyages departing before the slot has sailed each of its hops
+/// again, within one period of the spell's end. The third spell, the one that forgets the
+/// first, begins only once the slot has relaunched from the second, and the second began in a
+/// lay-up of the service that started after the first ended and lasted at least the minimum
+/// closure. So the forgotten spell ended at least the minimum closure (30 days) before, and a
+/// voyage's window holds from its departure for at least the minimum closure less one period
+/// (a few days), longer than any voyage takes. [`Ships::lay_up_merchant`] asserts the first
+/// half.
+pub(crate) type Spells = [(Tick, Tick); 2];
+
+/// No spell: `[0, 0)` holds no departure.
+pub(crate) const NO_SPELL: (Tick, Tick) = (Tick::ZERO, Tick::ZERO);
+
 /// A navy (M2): a patrol service from a base.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Navy {
@@ -656,12 +671,12 @@ pub struct Ships {
     /// (PC93). Kept, not derived: which ports are closed says whether a service is laid up, but
     /// not since when once the earliest of its closed ports reopens.
     pub(crate) laid_up: BTreeMap<u32, Tick>,
-    /// Per merchant slot laid up by a closure: the spell it sails nothing, `[from, to)`, from its
-    /// lay-up to its relaunch (`to` is [`LAID_UP`] until one is booked, then the booked tick, put
-    /// off with it). Kept after the relaunch, so a flow window computed later still skips the
-    /// departures its timetable had in the spell (PC92); the slot's next lay-up replaces it, so
-    /// the map never holds more than the merchant slots.
-    pub(crate) idle: BTreeMap<ShipId, (Tick, Tick)>,
+    /// Per merchant slot laid up by a closure: its last two idle spells ([`Spells`]), each the
+    /// time it sails nothing, `[from, to)`, from a lay-up to the relaunch (`to` is [`LAID_UP`]
+    /// until one is booked, then the booked tick, put off with it). Kept after the relaunch, so a
+    /// flow window computed later still skips the departures its timetable had in them (PC92).
+    /// A third lay-up forgets the older: at most one entry per merchant slot ever laid up.
+    pub(crate) idle: BTreeMap<ShipId, Spells>,
     /// Per dock: the lanes with it at an end, in lane order (an index, rebuilt on load).
     pub(crate) dock_lanes: Vec<Vec<u32>>,
     /// Per lane: the (service, hop) pairs that sail it.
@@ -2574,12 +2589,14 @@ impl Ships {
                 };
                 let mut dep = sv.departure_at_or_before(ox.offset, j as usize, t.depart - 1);
                 // A slot laid up by a closure sails nothing from its lay-up to its relaunch, nor
-                // while that is put off (PC92).
-                if let (Some((_, d)), Some(&(from, to))) = (dep, self.idle.get(&o))
-                    && i128::from(d) >= i128::from(from.0)
-                    && i128::from(d) < i128::from(to.0)
-                {
-                    dep = sv.departure_at_or_before(ox.offset, j as usize, from.0 as i64 - 1);
+                // while that is put off (PC92): back past its spells, the latest first.
+                for &(from, to) in self.idle.get(&o).into_iter().flatten() {
+                    if let Some((_, d)) = dep
+                        && i128::from(d) >= i128::from(from.0)
+                        && i128::from(d) < i128::from(to.0)
+                    {
+                        dep = sv.departure_at_or_before(ox.offset, j as usize, from.0 as i64 - 1);
+                    }
                 }
                 if let Some((_, d)) = dep {
                     prev = Some(prev.map_or(d, |p: i64| p.max(d)));
@@ -5894,6 +5911,9 @@ impl Ships {
                 .iter()
                 .map(|v| v.capacity() * 16)
                 .sum::<usize>()
+            + self.ports.len() * btree(4, size_of::<PortState>())
+            + self.laid_up.len() * btree(4, size_of::<Tick>())
+            + self.idle.len() * btree(size_of::<ShipId>(), size_of::<Spells>())
     }
 
     /// The timetable of a service from `from`: each ship's next `n` departures (hop, dock node,

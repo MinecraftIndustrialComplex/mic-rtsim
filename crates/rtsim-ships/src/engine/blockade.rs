@@ -519,14 +519,25 @@ impl Ships {
     /// A merchant slot laid up in port (PC15's `LAID_UP`): no relaunch is due until its service
     /// sails again. Its crew stays with it; nothing is held, so nothing is lost. Its epoch moves
     /// on, so a late report about its last body changes nothing (PC95), and its booked voyages
-    /// are given up now rather than at their ends (PC92). Its idle spell begins now, or goes on
-    /// if it was waiting to relaunch: it has sailed nothing since that spell began.
+    /// are given up now rather than at their ends (PC92). Its idle spell goes on if it was
+    /// waiting to relaunch (it has sailed nothing since that spell began); otherwise a new one
+    /// begins now and the older of its two spells is forgotten ([`Spells`]).
     pub(crate) fn lay_up_merchant(&mut self, s: ShipId, at: Tick) {
-        let from = match (self.ships[s].status, self.idle.get(&s)) {
-            (Status::Lost { back, .. }, Some(&(from, to))) if to == back => from,
-            _ => at,
+        let spells = match (self.ships[s].status, self.idle.get(&s)) {
+            (Status::Lost { back, .. }, Some(&[(from, to), older])) if to == back => {
+                [(from, LAID_UP), older]
+            }
+            (_, Some(&[last, older])) => {
+                // Why two are enough: the forgotten spell ended a minimum closure ago.
+                debug_assert!(
+                    older == NO_SPELL || older.1.0.saturating_add(self.min_closed_ticks()) <= at.0,
+                    "{s:?} laid up at {at:?} forgets {older:?}"
+                );
+                [(at, LAID_UP), last]
+            }
+            (_, None) => [(at, LAID_UP), NO_SPELL],
         };
-        self.idle.insert(s, (from, LAID_UP));
+        self.idle.insert(s, spells);
         let x = &mut self.ships[s];
         x.status = Status::Lost {
             since: at,
@@ -572,7 +583,7 @@ impl Ships {
 
     /// Books slot `s`'s relaunch at `back`, its idle spell lasting until then (PC92).
     fn wait_to_relaunch(&mut self, s: ShipId, back: Tick) {
-        if let Some((_, to)) = self.idle.get_mut(&s) {
+        if let Some([(_, to), _]) = self.idle.get_mut(&s) {
             *to = back;
         }
         self.schedule(back, Ev::Relaunch { ship: s });
@@ -832,17 +843,19 @@ impl Ships {
                     "merchant {id:?} sails for a laid-up service, out of view with nothing promoted"
                 ));
             }
-            // Its idle spell (PC92): open while it is laid up, ending at its booked relaunch while
-            // it waits for one, and over before it sails or is lost again.
+            // Its idle spells (PC92): the latest open while it is laid up, ending at its booked
+            // relaunch while it waits for one, and over before it sails or is lost again; the
+            // older one over before the latest began.
             let bad = match (x.status, self.idle.get(&id)) {
                 (Status::Lost { back, .. }, None) => back == LAID_UP,
-                (Status::Lost { since, back }, Some(&(from, to))) => {
+                (Status::Active, None) => false,
+                (_, Some(&[(from, to), (f0, t0)])) if from > to || f0 > t0 || t0 > from => true,
+                (Status::Lost { since, back }, Some(&[(from, to), _])) => {
                     from > since
                         || (back == LAID_UP) != (to == LAID_UP)
                         || (to != back && to > since)
                 }
-                (Status::Active, Some(&(from, to))) => from > to || to > now,
-                (Status::Active, None) => false,
+                (Status::Active, Some(&[(_, to), _])) => to > now,
             };
             if bad {
                 return Err(format!(
@@ -1120,15 +1133,17 @@ mod tests {
             day(&mut c);
         }
         for &id in &ids {
-            let spell = c.ships.idle.get(&id).copied();
+            let spell = c.ships.idle.get(&id).map(|sp| sp[0]);
             assert!(
                 spell.is_some_and(|(from, to)| from == t1 && to >= leave),
                 "{id:?}: idle spell {spell:?}"
             );
         }
         let idle = |o: ShipId, d: i64| {
-            c.ships.idle.get(&o).is_some_and(|&(from, to)| {
-                i128::from(d) >= i128::from(from.0) && i128::from(d) < i128::from(to.0)
+            c.ships.idle.get(&o).is_some_and(|sp| {
+                sp.iter().any(|&(from, to)| {
+                    i128::from(d) >= i128::from(from.0) && i128::from(d) < i128::from(to.0)
+                })
             })
         };
         let (mut real, mut phantom) = (0, 0);
@@ -1174,6 +1189,218 @@ mod tests {
             dirs.len()
         );
         c.ships.check(&c.world).expect("checks");
+    }
+
+    /// The windows, `(lo, hi)`, of every departure in `(lo, now]` on lane directions `dirs` that
+    /// a slot sails (none within one of its idle spells).
+    fn real_windows(
+        c: &synth::Coastal,
+        dirs: &BTreeSet<(u32, u8)>,
+        lo: i64,
+    ) -> BTreeMap<(ShipId, u64), (u64, u64)> {
+        let mut out = BTreeMap::new();
+        let now = c.ships.now().0 as i64;
+        for &(l, d) in dirs {
+            for (o, voyage, dep) in departures(&c.ships, l, d, lo, now) {
+                let idle = c.ships.idle.get(&o).is_some_and(|sp| {
+                    sp.iter().any(|&(from, to)| {
+                        i128::from(dep) >= i128::from(from.0) && i128::from(dep) < i128::from(to.0)
+                    })
+                });
+                if !idle {
+                    let (_, _, a, b) = c.ships.window(&c.world, o, voyage).expect("a window");
+                    out.insert((o, voyage), (a, b));
+                }
+            }
+        }
+        out
+    }
+
+    /// PC92's two spells (the S8b-4b idle-spell review's probe A: with one spell kept, a slot laid
+    /// up again soon after its relaunch forgot the spell it had just left, and 145 to 149 windows
+    /// already computed moved per seed). On the quiet coast, seeds 1 to 3: port `a` of a
+    /// two-port service closes on day 10, reopens once its minimum is up, and every slot
+    /// relaunches; port `b` then closes 0, 1, 6, 24, 48 or 96 hours after the last relaunch. Each
+    /// slot keeps the spell it left second, behind its new one, and no window of a departure
+    /// since a period before the first closure moves.
+    #[test]
+    fn a_slot_laid_up_again_soon_after_its_relaunch_keeps_its_windows() {
+        let mut judged = 0;
+        for seed in 1..=3u64 {
+            for hours in [0u64, 1, 6, 24, 48, 96] {
+                let mut c = quiet_coast(seed);
+                let (v, a, b) = two_port_service(&c);
+                let t1 = Tick::from_days(10);
+                run(&mut c, t1);
+                close(&mut c, a, t1);
+                let ids: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+                let dirs: BTreeSet<(u32, u8)> = c
+                    .ships
+                    .laid_up
+                    .keys()
+                    .flat_map(|&s| c.ships.services[s as usize].legs.iter())
+                    .map(|g| (g.hop.lane, u8::from(!g.hop.forward)))
+                    .collect();
+                while c.ships.port(a).and_then(|p| p.reopened).is_none() {
+                    let t = c.ships.now() + TICKS_PER_DAY;
+                    run(&mut c, t);
+                }
+                let last = ids
+                    .iter()
+                    .map(|id| c.ships.idle[id][0].1)
+                    .max()
+                    .expect("a slot");
+                run(&mut c, last + hours * TICKS_PER_DAY / 24);
+                assert!(
+                    ids.iter().all(|&id| c.ships.ships[id].is_active()),
+                    "seed {seed}, {hours} h: a slot still waits"
+                );
+                let period = c
+                    .ships
+                    .services
+                    .iter()
+                    .map(|sv| sv.period)
+                    .max()
+                    .unwrap_or(0);
+                let before = real_windows(&c, &dirs, t1.0 as i64 - period as i64);
+                let spells: Vec<(Tick, Tick)> = ids.iter().map(|id| c.ships.idle[id][0]).collect();
+                let now = c.ships.now();
+                close(&mut c, b, now);
+                for (&id, &first) in ids.iter().zip(&spells) {
+                    assert_eq!(
+                        c.ships.idle[&id],
+                        [(now, LAID_UP), first],
+                        "seed {seed}, {hours} h: {id:?}"
+                    );
+                }
+                for (&(o, voyage), &w) in &before {
+                    let (_, _, lo, hi) = c.ships.window(&c.world, o, voyage).expect("a window");
+                    assert_eq!(
+                        (lo, hi),
+                        w,
+                        "seed {seed}, {hours} h after the last relaunch: {o:?} voyage {voyage}'s \
+                         window moved"
+                    );
+                }
+                judged += before.len();
+                c.ships.check(&c.world).expect("checks");
+            }
+        }
+        eprintln!("{judged} windows judged");
+        assert!(judged > 0);
+    }
+
+    /// PC92: a slot still waiting to relaunch when its service lays up again sails nothing from
+    /// its first lay-up on, so its spell keeps its start (the idle-spell review's probe B). On
+    /// the quiet coast, seed 1, port `a` of a two-port service closes on day 10, and in the first
+    /// hour after its reopening that any slot has relaunched, some still wait; the spells save
+    /// and load as they are. Port `b` closes then: a relaunched slot's new spell starts now with
+    /// its first behind it; a waiting slot is laid up again when its relaunch comes due, its
+    /// spell running on from day 10; and 40 days on, `b` reopened and the slots booked to
+    /// relaunch, the waiting ones' spells still start on day 10.
+    #[test]
+    fn a_slot_still_waiting_when_laid_up_again_keeps_its_spell() {
+        let mut c = quiet_coast(1);
+        let (v, a, b) = two_port_service(&c);
+        let t1 = Tick::from_days(10);
+        run(&mut c, t1);
+        close(&mut c, a, t1);
+        let ids: Vec<ShipId> = c.ships.service_ships[v as usize].ids().collect();
+        while c.ships.port(a).and_then(|p| p.reopened).is_none() {
+            let t = c.ships.now() + TICKS_PER_DAY;
+            run(&mut c, t);
+        }
+        while ids.iter().all(|&id| !c.ships.ships[id].is_active()) {
+            let t = c.ships.now() + TICKS_PER_DAY / 24;
+            run(&mut c, t);
+        }
+        let (waiting, sailing): (Vec<ShipId>, Vec<ShipId>) =
+            ids.iter().partition(|&&id| !c.ships.ships[id].is_active());
+        assert!(
+            !waiting.is_empty() && !sailing.is_empty(),
+            "{} waiting, {} sailing",
+            waiting.len(),
+            sailing.len()
+        );
+        let round_trip = |c: &synth::Coastal| {
+            let bytes = c.ships.save();
+            let back = Ships::load(c.ships.tun.clone(), &bytes).expect("loads");
+            assert_eq!(back.idle, c.ships.idle, "the spells round-trip");
+            assert_eq!(back.save(), bytes, "the bytes round-trip");
+        };
+        round_trip(&c);
+        let first: BTreeMap<ShipId, (Tick, Tick)> =
+            ids.iter().map(|&id| (id, c.ships.idle[&id][0])).collect();
+        let now = c.ships.now();
+        close(&mut c, b, now);
+        for &id in &sailing {
+            assert_eq!(c.ships.idle[&id], [(now, LAID_UP), first[&id]], "{id:?}");
+        }
+        // The waiting slots' relaunches come due and find their service laid up again.
+        let due = waiting.iter().map(|id| first[id].1).max().expect("a slot");
+        run(&mut c, due + TICKS_PER_DAY);
+        assert!(c.ships.port_closed(b));
+        for &id in &waiting {
+            assert!(c.ships.ships[id].is_laid_up(), "{id:?}");
+            assert_eq!(c.ships.idle[&id], [(t1, LAID_UP), NO_SPELL], "{id:?}");
+        }
+        run(&mut c, now + 40 * TICKS_PER_DAY);
+        assert!(!c.ships.port_closed(b), "b reopened");
+        for &id in &waiting {
+            let sp = c.ships.idle[&id];
+            assert!(
+                sp[0].0 == t1 && sp[0].1 != LAID_UP && sp[1] == NO_SPELL,
+                "{id:?}: {sp:?}"
+            );
+        }
+        round_trip(&c);
+        c.ships.check(&c.world).expect("checks");
+    }
+
+    /// PC92's spell bounds, `[from, to)`, in either of a slot's two spells: a departure at `from`
+    /// is the first it gives up and one at `to` the first it sails again. On the quiet coast, seed
+    /// 1, three departures follow one another on a lane direction, none sharing a tick or
+    /// another's quantum: `p` of any slot, then `d` of slot `o`, then `n`. A spell of `o`'s from
+    /// `d` takes `d` out of `n`'s window, which then opens where `d`'s does; one up to `d` leaves
+    /// `n`'s window as it was.
+    #[test]
+    fn an_idle_spell_holds_its_from_and_not_its_to() {
+        let mut c = quiet_coast(1);
+        let (v, _, _) = two_port_service(&c);
+        let g = c.ships.services[v as usize].legs[0];
+        let (lane, dir) = (g.hop.lane, u8::from(!g.hop.forward));
+        let q = c.world.cfg.trade.quantum.len() as i64;
+        let mut deps = departures(&c.ships, lane, dir, 0, 30 * TICKS_PER_DAY as i64);
+        deps.sort_by_key(|&(o, voyage, d)| (d, o, voyage));
+        let k = (1..deps.len() - 1)
+            .find(|&k| {
+                let (p, d, n) = (deps[k - 1].2, deps[k].2, deps[k + 1].2);
+                p / q < d / q && d < n
+            })
+            .expect("three departures apart");
+        let (o, voyage, d) = deps[k];
+        let (next, next_voyage, _) = deps[k + 1];
+        let window = |c: &synth::Coastal, id: ShipId, voyage: u64| {
+            c.ships.window(&c.world, id, voyage).expect("a window").2
+        };
+        let (opens, was) = (window(&c, o, voyage), window(&c, next, next_voyage));
+        assert!(opens < was, "{opens} {was}");
+        let later = Tick(d as u64 + 100 * TICKS_PER_DAY);
+        let (at, after) = (Tick(d as u64), Tick(d as u64 + 1));
+        let before = Tick(d as u64 - 1);
+        for (spells, want) in [
+            ([(at, after), NO_SPELL], opens),
+            ([(later, later + 1), (at, after)], opens),
+            ([(before, at), NO_SPELL], was),
+            ([(later, later + 1), (before, at)], was),
+        ] {
+            c.ships.idle.insert(o, spells);
+            assert_eq!(
+                window(&c, next, next_voyage),
+                want,
+                "{o:?}'s departure at {d} with spells {spells:?}"
+            );
+        }
     }
 
     /// PC94 and PC85: the navy keeps sailing and keeps no lane open. On the quiet coast, seeds 1
