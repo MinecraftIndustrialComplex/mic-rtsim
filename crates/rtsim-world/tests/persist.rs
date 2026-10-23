@@ -485,3 +485,31 @@ fn a_paged_grid_stepped_tick_by_tick_stays_within_its_budget() {
     drop(store);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A snapshot in an older world format is refused by name, never read as a damaged one: S8b-4a's
+/// closed lanes added a flag to the edge record every snapshot carries, so the format became
+/// `RTW4`; the one-blob form and the paged meta page start with the same magic.
+#[test]
+fn an_older_format_is_refused_by_name() {
+    let (w, _) = world(1);
+    let mut bytes = w.save();
+    assert_eq!(&bytes[..4], b"RTW4");
+    bytes[..4].copy_from_slice(b"RTW3");
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let err = World::load(cfg(1), goods, book, &bytes)
+        .err()
+        .expect("an RTW3 snapshot is refused");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("format RTW3") && msg.contains("reads RTW4"),
+        "the error names both formats: {msg}"
+    );
+    bytes[..4].copy_from_slice(b"XXXX");
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let err = World::load(cfg(1), goods, book, &bytes)
+        .err()
+        .expect("not a snapshot");
+    assert!(err.to_string().contains("not a phase 1 world snapshot"));
+}

@@ -20,7 +20,17 @@
 //! from before a release are not migrated. Slice S8b (§2.4.6a, 2026-10-22) adds to each haven row
 //! the tick it starves from, whether it is shut (since, when its site looks again, broken), the
 //! stamp of its one live look and its lifecycle counters, and the look itself (`Ev::Refound`,
-//! tag 12) to the wheel: still `RTS2`, for the same reason.
+//! tag 12) to the wheel: still `RTS2`, for the same reason. S8b-3's port raids grew the stats
+//! (25 to 28) and the ledger (`looted_from_ports`), which every save carries, so the format became
+//! `RTS3` (2026-10-23); an older save is refused by name ([`check_magic`]), not read as truncated.
+//! S8b-4 (rule 7, PC80, PC93) adds the port's check (`Ev::DockCheck`, tag 14) and a laid-up
+//! slot's relaunch (`Ev::Relaunch`, tag 15) to the wheel, and one trailing section after the
+//! resident state, written only once a port has a state, a service is laid up or a closure
+//! counter moved (so a run with closures off saves the bytes it did before, after the magic):
+//! the ports' states, the laid-up services' ticks, the slots' idle spells (PC92) and the
+//! closures' counters. A reader that finds no bytes left reads it as empty. The new tags and the
+//! section change the layout, so the format is `RTS4` (2026-10-23); an `RTS3` save is refused by
+//! name like the older ones.
 //!
 //! # Two forms (docs/choices-paging-modules.md, PM-S rows)
 //!
@@ -53,9 +63,10 @@ use rtsim_travel::Medium;
 use rtsim_travel::legs::{Meeting, Stamp};
 
 use crate::engine::{
-    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, PState, Pirate, PlayerView,
-    Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipLedger, ShipRange, ShipStats,
-    ShipTickets, Ships, Shut, Status, THREAT_ROWS_PER_PAGE, THREAT_TABLE,
+    Booked, Ev, Haven, HavenCounts, LaneThreat, NETWORK_KEY, Navy, NavyCounts, PState, Pirate,
+    PlayerView, PortState, Promoted, Role, SHIP_ROWS_PER_PAGE, SHIP_TABLE, Ship, ShipId,
+    ShipLedger, ShipRange, ShipStats, ShipTickets, Ships, Shut, Spells, Status,
+    THREAT_ROWS_PER_PAGE, THREAT_TABLE,
 };
 use crate::fight::Observed;
 use crate::geom::Polyline;
@@ -63,10 +74,28 @@ use crate::network::{Dock, Hop, Lane, NetworkLints};
 use crate::timetable::{Leg, Service, ServiceKind};
 use crate::tunables::ShipTunables;
 
-/// RTS2 since the rows moved to paged tables (RTS1 wrote an `Arena` and lists of ships per
-/// service). No reader of RTS1 is kept: nothing is released (no backward compatibility before a
-/// release).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTS2");
+/// RTS4 since S8b-4's closures added the wheel's tags 14 and 15 and the trailing blockade
+/// section; RTS3 since S8b-3's port raids grew the stats and the ledger; RTS2 since the rows moved
+/// to paged tables (RTS1 wrote an `Arena` and lists of ships per service). No reader of an older
+/// format is kept: nothing is released (no backward compatibility before a release).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTS4");
+
+/// Whether `magic` is this build's format: an older ships format (`RTS` and another digit) is
+/// named, so an old save says which format it is and never reads as a truncated one.
+fn check_magic(magic: u32, what: &str) -> Result<(), String> {
+    if magic == MAGIC {
+        return Ok(());
+    }
+    let b = magic.to_le_bytes();
+    if b[..3] == *b"RTS" && b[3].is_ascii_digit() {
+        return Err(format!(
+            "{what} of format RTS{}; this build reads RTS{} (no older save opens before a release)",
+            b[3] as char,
+            MAGIC.to_le_bytes()[3] as char
+        ));
+    }
+    Err(format!("not {what}"))
+}
 /// The row tables follow whole, in key order ([`Ships::save`]).
 const ROWS_INLINE: u8 = 0;
 /// The row tables are in their own pages; only their layouts and counts follow
@@ -552,12 +581,12 @@ impl Row for Ship {
 
 impl Encode for LaneThreat {
     fn encode(&self, w: &mut Writer) {
-        match self.haven {
-            Some(h) => {
-                w.u8(1);
-                w.var_u64(u64::from(h));
-            }
-            None => w.u8(0),
+        // The tag's bit 0 is the haven, bit 1 a heat (S8b-4): a row with no heat encodes as it
+        // did before, so closures off leave every save byte for byte as S8b-4a's.
+        let heat = self.heat_nano != 0 || self.heat_at != Tick(0);
+        w.u8(u8::from(self.haven.is_some()) | u8::from(heat) << 1);
+        if let Some(h) = self.haven {
+            w.var_u64(u64::from(h));
         }
         put_usize(w, self.hunters.len());
         self.hunters.iter().for_each(|s| w.u64(s.to_bits()));
@@ -568,15 +597,23 @@ impl Encode for LaneThreat {
             w.var_i64(*v);
         }
         w.var_i64(self.share);
+        if heat {
+            w.var_i64(self.heat_nano);
+            w.u64(self.heat_at.0);
+        }
     }
 }
 
 impl Decode for LaneThreat {
     fn decode(r: &mut Reader<'_>) -> codec::Result<Self> {
-        let haven = match r.u8()? {
-            0 => None,
-            1 => Some(get_u32(r)?),
-            t => return bad(format!("option tag {t}")),
+        let tag = r.u8()?;
+        if tag > 3 {
+            return bad(format!("lane threat tag {tag}"));
+        }
+        let haven = if tag & 1 == 1 {
+            Some(get_u32(r)?)
+        } else {
+            None
         };
         let n = r.len_prefix(8)?;
         let hunters = (0..n)
@@ -595,12 +632,19 @@ impl Decode for LaneThreat {
             return bad("a lane's escorts out of order".into());
         }
         let share = r.var_i64()?;
+        let (heat_nano, heat_at) = if tag & 2 == 2 {
+            (r.var_i64()?, Tick(r.u64()?))
+        } else {
+            (0, Tick(0))
+        };
         Ok(LaneThreat {
             haven,
             hunters,
             patrol_milli,
             escorts,
             share,
+            heat_nano,
+            heat_at,
         })
     }
 }
@@ -701,6 +745,20 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u32(haven);
             w.u32(epoch);
         }
+        Ev::Assault { navy, epoch } => {
+            w.u8(13);
+            w.u32(navy);
+            w.u32(epoch);
+        }
+        Ev::DockCheck { dock, epoch } => {
+            w.u8(14);
+            w.u32(dock);
+            w.u32(epoch);
+        }
+        Ev::Relaunch { ship } => {
+            w.u8(15);
+            w.u64(ship.to_bits());
+        }
     }
 }
 
@@ -763,6 +821,15 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             haven: r.u32()?,
             epoch: r.u32()?,
         },
+        13 => Ev::Assault {
+            navy: r.u32()?,
+            epoch: r.u32()?,
+        },
+        14 => Ev::DockCheck {
+            dock: r.u32()?,
+            epoch: r.u32()?,
+        },
+        15 => Ev::Relaunch { ship: handle(r)? },
         t => return bad(format!("event tag {t}")),
     })
 }
@@ -849,6 +916,141 @@ fn get_stats(r: &mut Reader<'_>) -> codec::Result<ShipStats> {
         port_raids: v[25],
         items_from_ports: v[26],
         port_raid_lost_milli: v[27],
+        ..ShipStats::default()
+    })
+}
+
+/// The ports' blockade states, the laid-up services, the slots' idle spells and the closures'
+/// counters (§2.4.6a rule 7, S8b-4), appended to the resident state: written only once a port
+/// has a state or a counter moved, so a run with closures off saves exactly the bytes it did
+/// before.
+fn put_blockades(w: &mut Writer, ships: &Ships) {
+    let (ports, laid_up, idle, s) = (&ships.ports, &ships.laid_up, &ships.idle, &ships.stats);
+    let counts = [
+        s.blockades,
+        s.closures,
+        s.reopenings,
+        s.ships_laid_up_by_closure,
+        s.closed_dock_days,
+        s.port_checks,
+        s.relaunches_put_off,
+    ];
+    if ports.is_empty() && laid_up.is_empty() && idle.is_empty() && counts.iter().all(|&c| c == 0) {
+        return;
+    }
+    w.u8(1);
+    put_usize(w, ports.len());
+    for (d, p) in ports {
+        w.var_u64(u64::from(*d));
+        for t in [p.blockaded, p.closed, p.check, p.reopened] {
+            put_opt_tick(w, t);
+        }
+        w.u32(p.epoch);
+    }
+    put_usize(w, laid_up.len());
+    for (v, t) in laid_up {
+        w.var_u64(u64::from(*v));
+        w.u64(t.0);
+    }
+    put_usize(w, idle.len());
+    for (id, spells) in idle {
+        w.u64(id.to_bits());
+        for (from, to) in spells {
+            w.u64(from.0);
+            w.u64(to.0);
+        }
+    }
+    counts.iter().for_each(|&c| w.var_u64(c));
+}
+
+/// The ports, laid-up services and idle spells [`put_blockades`] wrote.
+type Blockades = (
+    BTreeMap<u32, PortState>,
+    BTreeMap<u32, Tick>,
+    BTreeMap<ShipId, Spells>,
+);
+
+fn get_blockades(r: &mut Reader<'_>, s: &mut ShipStats) -> codec::Result<Blockades> {
+    let mut ports = BTreeMap::new();
+    let mut laid_up = BTreeMap::new();
+    let mut idle = BTreeMap::new();
+    if r.is_empty() {
+        return Ok((ports, laid_up, idle));
+    }
+    match r.u8()? {
+        1 => {}
+        t => return bad(format!("blockades tag {t}")),
+    }
+    let mut last: Option<u32> = None;
+    for _ in 0..r.len_prefix(5)? {
+        let d = get_u32(r)?;
+        if last.is_some_and(|l| l >= d) {
+            return bad("ports out of order".into());
+        }
+        last = Some(d);
+        let blockaded = get_opt_tick(r)?;
+        let closed = get_opt_tick(r)?;
+        let check = get_opt_tick(r)?;
+        let reopened = get_opt_tick(r)?;
+        let epoch = r.u32()?;
+        ports.insert(
+            d,
+            PortState {
+                blockaded,
+                closed,
+                check,
+                reopened,
+                epoch,
+            },
+        );
+    }
+    let mut last: Option<u32> = None;
+    for _ in 0..r.len_prefix(9)? {
+        let v = get_u32(r)?;
+        if last.is_some_and(|l| l >= v) {
+            return bad("laid-up services out of order".into());
+        }
+        last = Some(v);
+        laid_up.insert(v, Tick(r.u64()?));
+    }
+    let mut last: Option<ShipId> = None;
+    for _ in 0..r.len_prefix(40)? {
+        let id: ShipId = handle(r)?;
+        if last.is_some_and(|l| l >= id) {
+            return bad("idle spells out of order".into());
+        }
+        last = Some(id);
+        let mut spells = [(Tick::ZERO, Tick::ZERO); 2];
+        for sp in &mut spells {
+            *sp = (Tick(r.u64()?), Tick(r.u64()?));
+        }
+        idle.insert(id, spells);
+    }
+    s.blockades = r.var_u64()?;
+    s.closures = r.var_u64()?;
+    s.reopenings = r.var_u64()?;
+    s.ships_laid_up_by_closure = r.var_u64()?;
+    s.closed_dock_days = r.var_u64()?;
+    s.port_checks = r.var_u64()?;
+    s.relaunches_put_off = r.var_u64()?;
+    Ok((ports, laid_up, idle))
+}
+
+fn put_opt_tick(w: &mut Writer, t: Option<Tick>) {
+    match t {
+        Some(t) => {
+            w.u8(1);
+            w.u64(t.0);
+        }
+        None => w.u8(0),
+    }
+}
+
+fn get_opt_tick(r: &mut Reader<'_>) -> codec::Result<Option<Tick>> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some(Tick(r.u64()?)),
+        t => return bad(format!("option tag {t}")),
     })
 }
 
@@ -1056,9 +1258,30 @@ impl Ships {
                     w.bool(sh.broken);
                 }
             }
+            for t in [h.broken_at, h.holds_navy_lane_since] {
+                match t {
+                    None => w.u8(0),
+                    Some(t) => {
+                        w.u8(1);
+                        w.u64(t.0);
+                    }
+                }
+            }
+            put_usize(w, h.navy_hunts.len());
+            for &(nv, t) in &h.navy_hunts {
+                w.var_u64(u64::from(nv));
+                w.u64(t.0);
+            }
             w.u32(h.epoch);
             let c = h.counts;
-            for v in [c.toll_milli, c.laid_up, c.shuts, c.refounds] {
+            for v in [
+                c.toll_milli,
+                c.laid_up,
+                c.shuts,
+                c.refounds,
+                c.broken_shuts,
+                c.relaunched,
+            ] {
                 w.var_u64(v);
             }
             put_usize(w, h.ships.len());
@@ -1074,6 +1297,9 @@ impl Ships {
             w.var_u64(u64::from(n.service));
             put_usize(w, n.ships.len());
             n.ships.iter().for_each(|s| w.u64(s.to_bits()));
+            w.u32(n.epoch);
+            w.var_u64(n.counts.looked);
+            w.var_u64(n.counts.assaults);
         }
         self.wheel.encode_with(w, |e, w| put_ev(w, e));
         put_usize(w, self.players.len());
@@ -1112,6 +1338,7 @@ impl Ships {
         put_stats(w, &self.stats);
         put_usize(w, self.outbox.len());
         self.outbox.iter().for_each(|c| put_cmd(w, c));
+        put_blockades(w, self);
     }
 
     /// Reads an engine [`Ships::save`] wrote, with the tunables it ran with. Its row tables are
@@ -1119,9 +1346,7 @@ impl Ships {
     pub fn load(tun: ShipTunables, bytes: &[u8]) -> codec::Result<Ships> {
         let mut r = Reader::new(bytes);
         let r = &mut r;
-        if r.u32()? != MAGIC {
-            return bad("not a ships save".into());
-        }
+        check_magic(r.u32()?, "a ships save").or_else(bad)?;
         if r.u8()? != ROWS_INLINE {
             return bad("a ships meta page, not a whole save".into());
         }
@@ -1135,6 +1360,7 @@ impl Ships {
         s.ships = ships;
         s.threats = threats;
         s.rebuild_indexes()?;
+        s.restore_navy_looks();
         // The whole table is in memory already: check every row's service.
         for (_, x) in s.ships.iter() {
             if x.service.is_some_and(|v| v as usize >= s.services.len()) {
@@ -1169,12 +1395,27 @@ impl Ships {
                 }),
                 t => return bad(format!("haven shut tag {t}")),
             };
+            let mut opt_tick = || -> codec::Result<Option<Tick>> {
+                Ok(match r.u8()? {
+                    0 => None,
+                    1 => Some(Tick(r.u64()?)),
+                    t => return bad(format!("haven tick tag {t}")),
+                })
+            };
+            let broken_at = opt_tick()?;
+            let holds_navy_lane_since = opt_tick()?;
+            let n = r.len_prefix(9)?;
+            let navy_hunts = (0..n)
+                .map(|_| Ok((get_u32(r)?, Tick(r.u64()?))))
+                .collect::<codec::Result<Vec<_>>>()?;
             let epoch = r.u32()?;
             let counts = HavenCounts {
                 toll_milli: r.var_u64()?,
                 laid_up: r.var_u64()?,
                 shuts: r.var_u64()?,
                 refounds: r.var_u64()?,
+                broken_shuts: r.var_u64()?,
+                relaunched: r.var_u64()?,
             };
             let n = r.len_prefix(8)?;
             let hs = (0..n)
@@ -1196,6 +1437,9 @@ impl Ships {
                 lanes: hl,
                 fed_until,
                 shut,
+                broken_at,
+                holds_navy_lane_since,
+                navy_hunts,
                 epoch,
                 counts,
             });
@@ -1210,12 +1454,19 @@ impl Ships {
             let ns = (0..n)
                 .map(|_| handle(r))
                 .collect::<codec::Result<Vec<_>>>()?;
+            let epoch = r.u32()?;
+            let counts = NavyCounts {
+                looked: r.var_u64()?,
+                assaults: r.var_u64()?,
+            };
             navies.push(Navy {
                 node,
                 dock,
                 medium,
                 service,
                 ships: ns,
+                epoch,
+                counts,
             });
         }
         let wheel: TimingWheel<Ev> = TimingWheel::decode_with(r, get_ev)?;
@@ -1268,6 +1519,8 @@ impl Ships {
         for _ in 0..r.len_prefix(1)? {
             outbox.push(get_cmd(r)?);
         }
+        let mut stats = stats;
+        let (ports, laid_up, idle) = get_blockades(r, &mut stats)?;
         if !r.is_empty() {
             return bad(format!("{} trailing bytes", r.remaining()));
         }
@@ -1285,6 +1538,9 @@ impl Ships {
         s.observed = observed;
         s.ledger = ledger;
         s.stats = stats;
+        s.ports = ports;
+        s.laid_up = laid_up;
+        s.idle = idle;
         s.outbox = outbox;
         s.built = built;
         Ok(s)
@@ -1321,6 +1577,15 @@ impl Ships {
         self.dock_of.clear();
         for (i, d) in self.docks.iter().enumerate() {
             self.dock_of.insert((d.node, d.medium), i as u32);
+        }
+        self.dock_lanes = vec![Vec::new(); self.docks.len()];
+        for (l, ln) in self.lanes.iter().enumerate() {
+            for d in [ln.a, ln.b] {
+                let Some(v) = self.dock_lanes.get_mut(d as usize) else {
+                    return bad(format!("lane {l} ends at dock {d}"));
+                };
+                v.push(l as u32);
+            }
         }
         let next = u64::from(self.ships.meta().1);
         for (s, r) in self.service_ships.iter().enumerate() {
@@ -1429,9 +1694,7 @@ impl Ships {
         let fmt = page_format("the ships' meta page");
         let mut r = Reader::new(&raw);
         let r = &mut r;
-        if r.u32().map_err(&fmt)? != MAGIC {
-            return Err(PageError::Format("not a ships meta page".into()));
-        }
+        check_magic(r.u32().map_err(&fmt)?, "a ships meta page").map_err(PageError::Format)?;
         if r.u8().map_err(&fmt)? != ROWS_PAGED {
             return Err(PageError::Format(
                 "a whole ships save, not a meta page".into(),
@@ -1455,7 +1718,8 @@ impl Ships {
             .ok_or_else(|| PageError::Format("no ships network page".into()))?;
         let fmt = page_format("the ships' network page");
         let mut r = Reader::new(&raw);
-        if r.u32().map_err(&fmt)? != MAGIC || r.u8().map_err(&fmt)? != NETWORK {
+        check_magic(r.u32().map_err(&fmt)?, "a ships network page").map_err(PageError::Format)?;
+        if r.u8().map_err(&fmt)? != NETWORK {
             return Err(PageError::Format("not a ships network page".into()));
         }
         s.get_network(&mut r).map_err(&fmt)?;
@@ -1470,6 +1734,7 @@ impl Ships {
         );
         s.threats = PagedRows::open(THREAT_TABLE, threat_per, source, tb, threat_len);
         s.rebuild_indexes().map_err(&fmt)?;
+        s.restore_navy_looks();
         Ok(s)
     }
 

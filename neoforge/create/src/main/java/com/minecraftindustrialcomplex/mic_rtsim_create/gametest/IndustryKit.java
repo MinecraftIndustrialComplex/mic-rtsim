@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.StubEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
@@ -84,6 +85,27 @@ public final class IndustryKit {
         return i;
     }
 
+    /**
+     * A wait on the engine, which takes the journal's records on its own thread: the GameTest server ticks as fast as
+     * it can, so on a busy machine (a glass replay's step still running, other jobs) a timeout in ticks passes before
+     * the engine has taken a record Java handed over. While the check fails, the tick waits 5 ms, so a timeout of
+     * 4,000 ticks is at least 20 seconds of the engine's time.
+     */
+    public static Runnable paced(Runnable check) {
+        return () -> {
+            try {
+                check.run();
+            } catch (RuntimeException e) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+                throw e;
+            }
+        };
+    }
+
     public static void check(String what, boolean ok) {
         if (!ok)
             throw new GameTestAssertException(what);
@@ -125,6 +147,7 @@ public final class IndustryKit {
 
     /** Forgets the industry of the yard's chunks (and one ring around them). */
     public static void forget(GameTestHelper helper) {
+        TrainWatch.reportUnwatchedForTest(true); // a test that switched the report off and failed must not leave it off
         BlockPos a = helper.absolutePos(BlockPos.ZERO), b = helper.absolutePos(new BlockPos(33, 0, 33));
         int minCx = Math.min(a.getX(), b.getX()) >> 4, maxCx = Math.max(a.getX(), b.getX()) >> 4;
         int minCz = Math.min(a.getZ(), b.getZ()) >> 4, maxCz = Math.max(a.getZ(), b.getZ()) >> 4;

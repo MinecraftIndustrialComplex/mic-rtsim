@@ -10,11 +10,16 @@
 //! the ships and the herds (`engine/dragons.rs`, `engine/ships.rs`, `engine/herds.rs`), whom it
 //! mirrors:
 //!
-//! - **Observations** ([`observe_state`], [`journaled`]): BAND_STATE is latest state (counted);
-//!   the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay` (CHIEF_KILLED,
-//!   TRIBUTE_PAID, GIFT_GIVEN and BAND_LOOTED by their op ids too) into `Conflict::ingest`, at
-//!   their own time with the other modules and the world run to it first (the shared clock,
-//!   `engine/shared.rs`). Java's ids are translated to the conflict's own first (C2-4): items to
+//! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
+//!   are BAND_STATE (counted), CHIEF_STATE and HAVEN_CHEST (counted as deferred; 0x0093 is
+//!   retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID by
+//!   their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
+//!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
+//!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
+//!   slice (`Conflict::later`) are decoded, counted as deferred and given to the conflict at its
+//!   present, before the clock runs, so that it spends their op ids as `Replay` does (MZB-23).
+//!   Java's ids are translated to the conflict's own first (C2-4): items to
 //!   the phase 1 catalogue's goods, bodies to the culture data's, structures and pollution types
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
 //! - **Signals inside the engine** ([`simulate`], C2-7 to C2-9): each district's learned pollution
@@ -30,11 +35,15 @@
 //!   `rtsim_world::interest::Viewer` (owner bit 59), so war bands and envoys that enter a player's
 //!   view materialize.
 //! - **Commands** ([`write_queue`]): TERRITORY, FACTION_NOTICE, ENVOY_MATERIALIZE,
-//!   BAND_MATERIALIZE, BAND_STEER, BAND_RECALL and DEMAND_SETTLED, with sequences from the core's
-//!   counter after every other module's: all per session (K2-27, as the dragons' S11), so nothing
-//!   is kept or resent and none carries an op id; TERRITORY goes again for every faction at a
-//!   session start. Body kinds, the dimension and the tribute item go through the engine's
-//!   dictionary; ticks (an envoy's deadline, a steer's arrival) are game time.
+//!   BAND_MATERIALIZE, BAND_STEER, BAND_RECALL, DEMAND_SETTLED and the Mowzie kinds (AMBUSH_SPOT,
+//!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH), with sequences from the core's
+//!   counter after every other module's: all per session (K2-27, as the dragons' S11), so the
+//!   link keeps nothing and none but CAMP_RECONCILE carries an op id; TERRITORY goes again for
+//!   every faction at a session start, and every feud's notice not played yet (NOTICE_SHOWN),
+//!   which the conflict keeps in its pages, once the session's replay has caught up (at the first
+//!   record of this session or the simulate point, MZB-31). Body kinds, cultures, the dimension
+//!   and the tribute item go through the engine's dictionary; ticks (an envoy's deadline, a
+//!   steer's arrival, a march's muster end and waypoints) are game time.
 //! - **Pages** ([`Link::load`], [`save`]): the conflict pages through the engine's store
 //!   (`engine/paging.rs`, PF12): its meta page at table 0x4300 ('C') id 0, its row and index
 //!   tables at 0x4310 to 0x4318, a save writing the pages changed since the last one; in TEST
@@ -140,6 +149,12 @@ pub(super) struct Link {
     pub(super) commands_written: u64,
     /// Latest-wins BAND_STATE records seen (read for nothing yet).
     pub(super) band_states: u64,
+    /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
+    /// dropped.
+    pub(super) deferred: u64,
+    /// The kept notices go again once the session's replay has caught up (MZB-31): set by the
+    /// session reset, done at the first record of this session or the simulate point. Not saved.
+    notices_due: bool,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
 }
@@ -242,6 +257,8 @@ impl Link {
             ignored: 0,
             commands_written: 0,
             band_states: 0,
+            deferred: 0,
+            notices_due: false,
             fed: 0,
         }
     }
@@ -358,18 +375,37 @@ fn set_enabled(st: &mut State, on: bool) {
 }
 
 /// Bodies of an earlier session (or of before a switch-off) are gone: every party is abstract
-/// again, and TERRITORY goes out again for every faction.
+/// again, and TERRITORY goes out again for every faction. The kept notices follow once the
+/// replay has caught up ([`resend_notices_if_due`]).
 fn reset_if_due(st: &mut State) {
     if st.conflict.reset_due && running(st) {
         st.conflict.reset_due = false;
         st.conflict.engine.session_start();
+        st.conflict.notices_due = true;
         st.phase1.taint();
         take_commands(st);
     }
 }
 
-/// A record that is not journaled: MODULES and BAND_STATE. PLAYER positions go to the shared
-/// interest areas (`engine/shared.rs`).
+/// The kept notices to the plugin, once the session's replay has caught up (MZB-31): a
+/// NOTICE_SHOWN journaled last session after the pages' save has cleared its notice by now. A
+/// notice a replayed record made again is dropped from the queue first: what is kept is what
+/// goes.
+fn resend_notices_if_due(st: &mut State) {
+    if !st.conflict.notices_due || !running(st) {
+        return;
+    }
+    st.conflict.notices_due = false;
+    take_commands(st);
+    st.conflict
+        .queue
+        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
+    st.conflict.engine.resend_notices();
+    take_commands(st);
+}
+
+/// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
+/// positions go to the shared interest areas (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
@@ -378,14 +414,18 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
+            let Ok((_, o, _)) = boundary::decode_obs(b) else {
+                return;
+            };
             if !st.conflict.enabled {
                 st.conflict.ignored += 1;
                 return;
             }
-            // The engine reads nothing from BAND_STATE yet (a party's place is its march's
-            // closed form); it is counted.
-            if boundary::decode_obs(b).is_ok() {
-                st.conflict.band_states += 1;
+            match o {
+                // The engine reads nothing from BAND_STATE yet (a party's place is its march's
+                // closed form); it is counted.
+                Obs::State(_) => st.conflict.band_states += 1,
+                _ => st.conflict.deferred += 1,
             }
         }
         _ => {}
@@ -406,6 +446,9 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
         boundary::TRIBUTE_PAID => (64, 72),
         boundary::GIFT_GIVEN => (48, 56),
         boundary::BAND_LOOTED => (40, 48),
+        boundary::CAMP_DEATH => (64, 72),
+        boundary::TRADED => (56, 64),
+        boundary::CHIEF_PAID => (64, 72),
         _ => return 0,
     };
     if rec.size() >= size {
@@ -464,6 +507,13 @@ fn translate(st: &State, o: &mut Obs) {
             }
         }
         Obs::Casualties(c) => c.body = own_body(st, c.body),
+        Obs::CampDeath(d) => d.body = own_body(st, d.body),
+        Obs::CampCensus(c) => {
+            for b in &mut c.bodies {
+                b.body = own_body(st, b.body);
+            }
+        }
+        Obs::ChiefPaid(p) => p.items = own_items(st, &p.items),
         Obs::TributePaid(t) => t.items = own_items(st, &t.items),
         Obs::GiftGiven(g) => g.items = own_items(st, &g.items),
         Obs::Looted(l) => l.items = own_items(st, &l.items),
@@ -477,6 +527,10 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.ignored += 1;
         return;
     }
+    if wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first {
+        // The replay is over: the first record of this session.
+        resend_notices_if_due(st);
+    }
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -488,6 +542,17 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    if Conflict::later(&o) {
+        // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
+        // conflict at its present (the clock not run for it), which spends its op id and drops
+        // it, as `Replay` spent it (MZB-23).
+        st.conflict.deferred += 1;
+        with_infra(st, |c, w, infra| {
+            let now = c.now();
+            c.ingest(w, infra, &o, now);
+        });
+        return;
+    }
     if let Obs::Pollution(p) = &o
         && p.district != 0
     {
@@ -568,6 +633,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
+    resend_notices_if_due(st);
     let at = Tick(phase1::world_tick(st, st.game_time));
     shared::run_to(st, at);
     feed_districts(st, at);
@@ -738,8 +804,22 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
             .and_then(|g| u16::try_from(g).ok())
             .and_then(|g| phase1::catalog_item(st, GoodId(g)))
             .map(str::to_string),
+        // The culture data's, from 1 (BAND_MARCH), named as its bodies are
+        // (`mic_rtsim:conflict/goblin`), apart from phase 1's village cultures.
+        wire::DICT_CULTURE => st
+            .conflict
+            .engine
+            .cultures
+            .list
+            .get((id as usize).wrapping_sub(1))
+            .map(|c| culture_name(&c.def.name)),
         _ => None,
     }
+}
+
+/// A conflict culture's name in dictionary kind 5 (docs/boundary.md §9.2).
+fn culture_name(culture: &str) -> String {
+    format!("mic_rtsim:conflict/{culture}")
 }
 
 /// (dictionary kind, the id a command carries, its name).
@@ -783,7 +863,26 @@ fn names_needed(st: &State, q: &Queued) -> Result<Vec<Named>, (String, u32)> {
                 need(wire::DICT_BODY, s.body)?;
             }
         }
-        Cmd::Steer(_) | Cmd::Recall(_) | Cmd::Settled(_) => {}
+        Cmd::AmbushSpot(a) => need(wire::DICT_DIMENSION, a.dimension)?,
+        Cmd::Reconcile(r) => {
+            for l in r.lines.iter().filter(|l| l.body != 0) {
+                need(wire::DICT_BODY, l.body)?;
+            }
+        }
+        Cmd::March(m) => {
+            need(wire::DICT_DIMENSION, m.dimension)?;
+            if m.culture != 0 {
+                need(wire::DICT_CULTURE, m.culture)?;
+            }
+            for (body, _) in &m.units {
+                need(wire::DICT_BODY, *body)?;
+            }
+        }
+        Cmd::Steer(_)
+        | Cmd::Recall(_)
+        | Cmd::Settled(_)
+        | Cmd::TrainRobbed(_)
+        | Cmd::ChiefBody(_) => {}
     }
     Ok(out)
 }
@@ -846,6 +945,12 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
             match &mut cmd {
                 Cmd::Envoy(e) => e.deadline = (e.deadline - off).max(0),
                 Cmd::Steer(s) => s.arrive = (s.arrive - off).max(0),
+                Cmd::March(m) => {
+                    m.muster_end = (m.muster_end - off).max(0);
+                    for p in &mut m.waypoints {
+                        p.2 = (p.2 - off).max(0);
+                    }
+                }
                 _ => {}
             }
         }
@@ -889,7 +994,26 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                     s.body = id(wire::DICT_BODY, s.body);
                 }
             }
-            Cmd::Steer(_) | Cmd::Recall(_) | Cmd::Settled(_) => {}
+            Cmd::AmbushSpot(a) => a.dimension = id(wire::DICT_DIMENSION, a.dimension),
+            Cmd::Reconcile(r) => {
+                for l in r.lines.iter_mut().filter(|l| l.body != 0) {
+                    l.body = id(wire::DICT_BODY, l.body);
+                }
+            }
+            Cmd::March(m) => {
+                m.dimension = id(wire::DICT_DIMENSION, m.dimension);
+                if m.culture != 0 {
+                    m.culture = id(wire::DICT_CULTURE, m.culture);
+                }
+                for (body, _) in &mut m.units {
+                    *body = id(wire::DICT_BODY, *body);
+                }
+            }
+            Cmd::Steer(_)
+            | Cmd::Recall(_)
+            | Cmd::Settled(_)
+            | Cmd::TrainRobbed(_)
+            | Cmd::ChiefBody(_) => {}
         }
         let seq = st.session_seq();
         let mut rec = Vec::with_capacity(probe.len());
@@ -941,6 +1065,8 @@ pub struct ConflictLinkStats {
     pub ignored: u64,
     pub commands_written: u64,
     pub band_states: u64,
+    /// Records whose engine half comes with a later slice, dropped.
+    pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
     pub fed: u64,
 }
@@ -951,6 +1077,22 @@ impl super::Engine {
     pub fn with_conflict<R>(&self, f: impl FnOnce(&Conflict, &rtsim_world::World) -> R) -> R {
         let st = super::lock(&self.state);
         f(&st.conflict.engine, &st.phase1.world)
+    }
+
+    /// Runs `f` on the conflict and the phase 1 world it lives in, to change them (an order a
+    /// test gives the conflict itself, `Conflict::order_party`), under the state lock; what the
+    /// conflict decided joins the command queue, and the world is saved with the next save. For
+    /// tests and debugging, between steps only.
+    pub fn with_conflict_mut<R>(
+        &self,
+        f: impl FnOnce(&mut Conflict, &mut rtsim_world::World) -> R,
+    ) -> R {
+        let mut st = super::lock(&self.state);
+        let st = &mut *st;
+        let r = f(&mut st.conflict.engine, &mut st.phase1.world);
+        st.phase1.taint();
+        take_commands(st);
+        r
     }
 
     /// Keeps (or stops keeping) the conflict's log of what it decided, in memory and unsaved
@@ -979,6 +1121,7 @@ impl super::Engine {
                 ignored: l.ignored,
                 commands_written: l.commands_written,
                 band_states: l.band_states,
+                deferred: l.deferred,
                 fed: l.fed,
             },
         )

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use proptest::prelude::*;
 use rtsim_conflict::boundary::{self, Obs};
 use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
-use rtsim_conflict::engine::{Conflict, Signal, Target, village_outcome};
+use rtsim_conflict::engine::{Conflict, Phase, Signal, Target, village_outcome};
 use rtsim_conflict::{ConflictTunables, Cultures, Step, synth};
 use rtsim_ecology::infra::{DistrictIndex, IndustryLink, NoInfrastructure};
 use rtsim_industry::fake::Visit;
@@ -401,10 +401,24 @@ fn district_raids_are_never_better_than_observed_and_capped() {
 
 #[test]
 fn village_raids_move_stock_to_the_haven_exactly_and_capped() {
-    let (mut w, mut c, f) = setup(6);
+    // Goblins with no plunder drive of their own: the ordered band's is the one raid.
+    let (mut w, _) = synth::world(6);
+    let mut c = Conflict::new(6, ConflictTunables::default(), quiet_goblins(), Tick::ZERO);
+    synth::define_names(&mut c, &w);
+    let f = c
+        .add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO)
+        .unwrap();
     let ashby = w.node_of_key(4).expect("Ashby");
-    let before = w.market(ashby);
     let goods: Vec<GoodId> = w.goods.ids().collect();
+    // Ashby's lines stand at their targets on day 0, and a raid takes only the surplus over them
+    // (CL-D58): 20 items over each.
+    let m = w.market(ashby);
+    let rich: BTreeMap<GoodId, i64> = goods
+        .iter()
+        .map(|&g| (g, m.line(g).target + 20 * MILLI - m.stock(g)))
+        .filter(|e| e.1 > 0)
+        .collect();
+    w.stock_from_players(ashby, &rich, Tick(10));
     let p = c
         .order_party(
             &mut w,
@@ -424,7 +438,18 @@ fn village_raids_move_stock_to_the_haven_exactly_and_capped() {
         .loot_share_milli;
     let mut t = Tick(10);
     let mut checked_held = false;
+    let mut before = None;
     while !c.parties.is_empty() {
+        // The market as the raid reads it: the world at the band's arrival, its next event.
+        if before.is_none()
+            && let Some(x) = c.parties.get(p)
+            && x.phase == Phase::Out
+            && x.seg as usize + 2 >= x.route.len()
+            && c.next_due() == Some(x.times[x.seg as usize + 1])
+        {
+            w.run_until(x.times[x.seg as usize + 1]);
+            before = Some(w.market(ashby));
+        }
         t = c.next_due().unwrap_or(t + TICKS_PER_DAY);
         c.run_until(&mut w, &mut NoInfrastructure, t);
         w.check_conserved(t).expect("world conserved at every step");
@@ -434,13 +459,22 @@ fn village_raids_move_stock_to_the_haven_exactly_and_capped() {
         }
     }
     assert!(checked_held, "the band carried loot home");
+    assert_eq!(c.stats.raids_village, 1);
+    let before = before.expect("the band arrived");
     let taken = &c.ledger.from_villages;
     assert!(!taken.is_empty());
     let mut total = 0i128;
     for g in goods {
         let t = taken.get(&g).copied().unwrap_or(0);
         total += t;
-        assert!(t <= i128::from(before.stock(g)) * i128::from(share) / 1000 + 1);
+        let surplus = (before.stock(g) - before.line(g).target).max(0);
+        assert!(
+            t <= i128::from(surplus) * i128::from(share) / 1000 + 1,
+            "good {}: took {t} of a surplus of {surplus} ({} over {})",
+            g.index(),
+            before.stock(g),
+            before.line(g).target
+        );
     }
     assert!(total <= i128::from(carry));
     assert_eq!(&c.ledger.landed, taken, "all of it landed at the haven");

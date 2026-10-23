@@ -34,6 +34,8 @@ public final class MicRtsim {
         com.minecraftindustrialcomplex.mic_rtsim.far.FarFeed.register();
         // The vanilla herd adapter (docs/boundary.md §8): vanilla is built in, so the core registers it.
         com.minecraftindustrialcomplex.mic_rtsim.herd.HerdEvents.register();
+        // TALK (TALK.md): the gesture, the service, and the villager and wandering trader talkers.
+        com.minecraftindustrialcomplex.mic_rtsim.talk.TalkEvents.register();
         // The habitat sampler (docs/boundary.md §10): the engine's world model, built in as vanilla is.
         com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatEvents.register();
         // Deep Time's world layout, glued north and south (TP19); Toroidal World's shape is read

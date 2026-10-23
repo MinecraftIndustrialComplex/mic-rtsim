@@ -125,7 +125,8 @@ pub struct ShipTunables {
     pub coast_raid_milli: u32,
     /// A coast raid that finds no player district or train raids the port village at the lane's
     /// nearer end (§2.4.6a rule 6, PC9, PC40): the survivors carry off this many items a man, at
-    /// most `loot_share_milli` of each stock. 0 turns port raids off. TUNABLE 10 (between the
+    /// most `loot_share_milli` of each line's surplus over its target (PC72). 0 turns port raids
+    /// off. TUNABLE 10 (between the
     /// conflict engine's bandit thug, 12, and crossbowman, 8).
     pub port_raid_carry: u32,
     /// A port village's defence against pirates, per resident (§2.4.6a rule 6, PC9): the
@@ -155,9 +156,9 @@ pub struct ShipTunables {
     pub hunt_crew_value: f64,
 
     // ---- Havens that rise and fall (EQUILIBRIUM.md §2.4.6a, slice S8b) ----
-    /// Rules 1 to 5 of §2.4.6a (the toll, starving, laying up, shutting, refounding) are on. Off,
-    /// the havens behave exactly as S8 left them, so a measurement can pair each seed with the S8
-    /// behaviour. TUNABLE: on.
+    /// Rules 1 to 5 of §2.4.6a (the toll, starving, laying up, shutting, refounding) and the navy
+    /// assaults of rule 3 are on. Off, the havens behave exactly as S8 left them, so a measurement
+    /// can pair each seed with the S8 behaviour. TUNABLE: on.
     pub lifecycle: bool,
     /// A haven is fed while one of its pirates began a hunt within this many days (§2.4.6a rule 2,
     /// PC2); starving, it hires nobody and its pool deserts at the hire rate. TUNABLE 30 (six
@@ -168,10 +169,39 @@ pub struct ShipTunables {
     /// dock or no lane worth hunting looks again `base` days later. TUNABLE: base 48, cap 384,
     /// half-life 96.
     pub refound: RenewalRule,
+    /// A navy's home port looks for a haven to assault every this many days (§2.4.6a rule 3,
+    /// PC7); 0 never. TUNABLE 24, S1's census grid.
+    pub assault_every_days: u32,
+    /// A navy assaults only a haven that has robbed patrolled lanes for this many days (§2.4.6a
+    /// rule 3, PC31, PC35): its cause clock starts at its first hunt on a patrolled lane since it
+    /// opened (its founding or its refound) and starts again after `starve_days` with no such
+    /// hunt. A navy answers two years of robbery, not one hunt. 0 is no such wait. TUNABLE 192,
+    /// two game years (PC38's sweep: the coast's haven is manned 0.872 of the time).
+    pub assault_cause_days: u32,
     /// Navies: ships per patrol. PLACEHOLDER 2.
     pub navy_ships: u32,
     /// Lanes a patrol covers: those within this many lane hops of its base. PLACEHOLDER 2.
     pub patrol_hops: u32,
+
+    // ---- Ports that close under blockade (§2.4.6a rule 7, slice S8b-4) ----
+    /// Each lane's heat is an exponential average of its hazard share with this time constant,
+    /// days (PC20). 0 turns closures off: no heat is kept and no port closes, so the run is the
+    /// one S8b-4a left. TUNABLE 30.
+    pub blockade_days: f64,
+    /// A closed port stays closed at least this many days, however soon its lanes cool (PC21):
+    /// this is what keeps a port from flapping. TUNABLE 30.
+    pub blockade_min_closed_days: f64,
+    /// A port's lanes are weighed every this many days while one of them is warm or the port is
+    /// closed (PC25). TUNABLE 6 (two hunts of three days: a heat rise is seen within one hunt and
+    /// a cooling within the next).
+    pub blockade_check_days: f64,
+    /// A reopened port does not close again for this many days, however hot its lanes get
+    /// (PC99): its merchants hold their nerve. It may still be blockaded. 0 lets the next check
+    /// close it. TUNABLE 192 (two game years; the S8b-4 sweep's pick on the tree merged with
+    /// S8b-3's surplus-only raids, the smallest of 0, 48, 96 and 192 whose most closed port spends
+    /// at most a quarter of 1,000 years closed: 0.180, against 0.305 at 96, 0.440 at 48 and 0.638
+    /// at 0).
+    pub blockade_min_open_days: f64,
 }
 
 impl ShipTunables {
@@ -272,8 +302,14 @@ impl Default for ShipTunables {
                 cap_days: 384.0,
                 half_life_days: 96.0,
             },
+            assault_every_days: 24,
+            assault_cause_days: 192,
             navy_ships: 2,
             patrol_hops: 2,
+            blockade_days: 30.0,
+            blockade_min_closed_days: 30.0,
+            blockade_check_days: 6.0,
+            blockade_min_open_days: 192.0,
         }
     }
 }

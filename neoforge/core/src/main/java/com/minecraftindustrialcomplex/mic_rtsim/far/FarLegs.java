@@ -25,10 +25,28 @@ public final class FarLegs implements FarSource {
     public static final int AGENT = 16, BODY = 24, DIM = 28, KIND = 32, VARIANT = 33, STAGE = 34, Y = 36, X0 = 40,
             Z0 = 44, X1 = 48, Z1 = 52, T0 = 56, T1 = 64, RADIUS = 72;
 
-    /** How a body's look is drawn: its style number and colours per variant (registered by its plugin). */
-    public record Style(int style, int[] rgbByVariant) {
+    /**
+     * How a body's look is drawn: its style number, colours per variant, and how far above its feet its middle
+     * is at each stage (registered by its plugin). The engine's y is the body's feet, as its entity's is; a far
+     * mover's is its middle, as a body source samples it, so a leg is drawn {@link #centre} higher
+     * (docs/choices-dh-feed.md DHT42).
+     *
+     * @param centreByStage blocks from the feet to the middle for stages 1, 2, ...; empty for none
+     */
+    public record Style(int style, int[] rgbByVariant, double[] centreByStage) {
+        public Style(int style, int[] rgbByVariant) {
+            this(style, rgbByVariant, new double[0]);
+        }
+
         public int rgb(int variant) {
             return rgbByVariant.length == 0 ? 0x808080 : rgbByVariant[Math.floorMod(variant, rgbByVariant.length)];
+        }
+
+        /** Blocks from the feet to the middle at {@code stage} (1 up): the nearest stage known, or 0. */
+        public double centre(int stage) {
+            if (centreByStage.length == 0)
+                return 0.0;
+            return centreByStage[Math.max(0, Math.min(centreByStage.length - 1, stage - 1))];
         }
     }
 
@@ -44,9 +62,12 @@ public final class FarLegs implements FarSource {
         return s != null ? s : new Style(0, new int[]{0x808080});
     }
 
-    /** One dragon's last record. */
+    /**
+     * One dragon's last record, and the way its last flown leg went ({@code hx}, {@code hz}, a unit vector; 0, 0
+     * while none was seen): a client draws a dragon that stopped flying facing that way.
+     */
     public record Rec(long agent, FarState state, String body, String dimension, int variant, int stage, int y,
-            int x0, int z0, int x1, int z1, long t0, long t1, int radius) {
+            int x0, int z0, int x1, int z1, long t0, long t1, int radius, double hx, double hz) {
     }
 
     private final Map<Long, Rec> legs = new HashMap<>();
@@ -95,9 +116,16 @@ public final class FarLegs implements FarSource {
             legs.remove(agent);
             return true;
         }
+        int x0 = b.getInt(at + X0), z0 = b.getInt(at + Z0), x1 = b.getInt(at + X1), z1 = b.getInt(at + Z1);
+        Rec was = legs.get(agent);
+        double hx = was != null ? was.hx : 0.0, hz = was != null ? was.hz : 0.0;
+        double n = Math.hypot(x1 - x0, z1 - z0);
+        if (state == FarState.FLY && n > 1e-6) {
+            hx = (x1 - x0) / n;
+            hz = (z1 - z0) / n;
+        }
         legs.put(agent, new Rec(agent, state, body, dim, b.get(at + VARIANT) & 0xFF, b.get(at + STAGE) & 0xFF,
-                b.getInt(at + Y), b.getInt(at + X0), b.getInt(at + Z0), b.getInt(at + X1), b.getInt(at + Z1),
-                b.getLong(at + T0), b.getLong(at + T1), b.getInt(at + RADIUS)));
+                b.getInt(at + Y), x0, z0, x1, z1, b.getLong(at + T0), b.getLong(at + T1), b.getInt(at + RADIUS), hx, hz));
         return true;
     }
 
@@ -133,8 +161,10 @@ public final class FarLegs implements FarSource {
                 continue;
             Style s = style(r.body);
             int x1 = r.state == FarState.FLY ? r.x1 : r.x0, z1 = r.state == FarState.FLY ? r.z1 : r.z0;
+            // The engine's y is the feet; the mover's is the middle, where the body's samples put it
+            int y = r.y + (int) Math.round(s.centre(r.stage));
             out.accept(new FarItem(r.agent, FarKind.DRAGON, s.style(), r.variant, r.stage, s.rgb(r.variant), r.state,
-                    null, new FarItem.Leg(r.y, r.x0, r.z0, x1, z1, r.t0, r.t1, r.state == FarState.HUNT ? r.radius : 0),
+                    null, new FarItem.Leg(y, r.x0, r.z0, x1, z1, r.t0, r.t1, r.state == FarState.HUNT ? r.radius : 0),
                     -1, 0));
         }
     }

@@ -146,6 +146,8 @@ pub struct Java {
     pub module_mask: u32,
     /// Phase 1 commands applied, in order: (kind, record bytes).
     pub p1: Vec<(u16, Vec<u8>)>,
+    /// TALK_FACTS records applied, in order (their records).
+    pub talk_facts: Vec<Vec<u8>>,
     /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
     /// finds none.
     pub no_free_plot: bool,
@@ -286,6 +288,7 @@ impl Java {
             failed_seen: false,
             module_mask: 0,
             p1: Vec::new(),
+            talk_facts: Vec::new(),
             no_free_plot: false,
             fail_transfers: false,
             players: Vec::new(),
@@ -631,6 +634,9 @@ impl Java {
                 {
                     self.p1.push((rec.kind, rec.bytes.to_vec()));
                 }
+                if rec.kind == rtsim_jni::talk_wire::TALK_FACTS {
+                    self.talk_facts.push(rec.bytes.to_vec());
+                }
                 self.commands.push((k, rec.kind, op));
                 match rec.kind {
                     cmd::TRANSFER_TO_CONTAINER => {
@@ -947,7 +953,12 @@ impl Java {
                     cb::Cmd::Territory(_)
                     | cb::Cmd::Notice(_)
                     | cb::Cmd::Steer(_)
-                    | cb::Cmd::Settled(_) => {}
+                    | cb::Cmd::Settled(_)
+                    | cb::Cmd::AmbushSpot(_)
+                    | cb::Cmd::Reconcile(_)
+                    | cb::Cmd::TrainRobbed(_)
+                    | cb::Cmd::ChiefBody(_)
+                    | cb::Cmd::March(_) => {}
                 },
                 Err(_) => self.undecoded += 1,
             },
@@ -1580,7 +1591,22 @@ impl Java {
                     st.body = self.java_of_engine(wire::DICT_BODY, st.body);
                 }
             }
-            C::Steer(_) | C::Recall(_) | C::Settled(_) => {}
+            C::AmbushSpot(a) => a.dimension = self.java_dim(a.dimension),
+            C::Reconcile(r) => {
+                for l in r.lines.iter_mut().filter(|l| l.body != 0) {
+                    l.body = self.java_of_engine(wire::DICT_BODY, l.body);
+                }
+            }
+            C::March(m) => {
+                m.dimension = self.java_dim(m.dimension);
+                if m.culture != 0 {
+                    m.culture = self.java_of_engine(wire::DICT_CULTURE, m.culture);
+                }
+                for u in &mut m.units {
+                    u.0 = self.java_of_engine(wire::DICT_BODY, u.0);
+                }
+            }
+            C::Steer(_) | C::Recall(_) | C::Settled(_) | C::TrainRobbed(_) | C::ChiefBody(_) => {}
         }
         let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
         self.conflict_plugin.apply(vec![c.clone()], at);
@@ -1696,5 +1722,61 @@ impl Java {
                 wire::put_i32(r, it + obs::item::COUNT, -*n);
             }
         })
+    }
+}
+
+// ---- TALK (docs/boundary.md §13) ----------------------------------------------------------------
+
+impl Java {
+    /// Journals a TALKED (what a ribbit's credited talk becomes): village `village`, the player,
+    /// the ribbit's body id 0 (unknown), op id `op`. Returns its observation sequence.
+    pub fn talked(&mut self, village: u64, player: (u64, u64), op: u64) -> u64 {
+        let t = rtsim_jni::talk_wire::Talked {
+            obs_seq: 0,
+            game_time: self.game_time,
+            op_id: op,
+            village,
+            player,
+            body: 0,
+        };
+        self.journal_raw(&t.encode())
+    }
+
+    /// Journals a whole record the caller encoded (its sequence and game time are set here, like
+    /// [`Java::journal`]'s): for the malformed records a test sends.
+    pub fn journal_raw(&mut self, rec: &[u8]) -> u64 {
+        let mut r = rec.to_vec();
+        let seq = self.next_obs;
+        self.next_obs += 1;
+        wire::put_u64(&mut r, obs::OBS_SEQ, seq);
+        wire::put_i64(&mut r, obs::GAME_TIME, self.game_time);
+        self.journal.push_back((seq, r));
+        seq
+    }
+
+    /// Asks the engine about `village` for `player` (one TALK_ASK in the open buffer, no news) and
+    /// returns the answer's sentiment, or None when the engine did not answer.
+    pub fn talk_sentiment(&mut self, id: u64, village: u64, player: (u64, u64)) -> Option<i32> {
+        use rtsim_jni::talk_wire::{Ask, Facts, ask, encode_asks};
+        let dimension = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let rec = encode_asks(&[Ask {
+            id,
+            player,
+            holder_kind: ask::holder::VILLAGE,
+            dimension,
+            holder: village,
+            x: 0,
+            z: 0,
+            flags: 0,
+        }]);
+        if self.preamble() {
+            assert!(self.copy(&rec), "room for a TALK_ASK");
+        }
+        self.idle();
+        self.talk_facts
+            .iter()
+            .filter_map(|b| Facts::decode(b).ok())
+            .find(|(_, f)| f.ask_id == id)
+            .map(|(_, f)| f.sentiment)
     }
 }

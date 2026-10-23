@@ -32,5 +32,7 @@ public final class MicRtsimClient {
     private static void onLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         com.minecraftindustrialcomplex.mic_rtsim.client.FarFeedClient.loggingOut();
         FarObjects.clearAll();
+        // The far looks' meshes (DHT63): GPU buffers, freed here on the render thread
+        com.minecraftindustrialcomplex.mic_rtsim.client.FarLooks.clearAll();
     }
 }
