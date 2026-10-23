@@ -378,7 +378,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** A notice kept until its player is in range ((faction, player); player null for the settlers). */
     record Notice(long faction, UUID player, ResourceKey<Level> dimension, int signal, int x, int z, int step,
-                  float grievance) {}
+                  float grievance, int serial) {}
 
     private record NoticeKey(long faction, UUID player) {}
 
@@ -449,7 +449,7 @@ public final class ConflictBridge implements SessionPlugin {
         blockedHits = blockedTargets = 0;
         lastSettled = 0;
         difficulty = s.server().getWorldData().getDifficulty();
-        sendDifficulty();
+        sendDifficulty(s.gameTime());
     }
 
     @Override
@@ -618,7 +618,8 @@ public final class ConflictBridge implements SessionPlugin {
         UUID player = uuid(b.getLong(at + ConflictRecords.Notice.PLAYER_MOST), b.getLong(at + ConflictRecords.Notice.PLAYER_LEAST));
         notices.put(new NoticeKey(faction, player), new Notice(faction, player, level.dimension(),
                 b.getInt(at + ConflictRecords.Notice.SIGNAL), b.getInt(at + ConflictRecords.Notice.X),
-                b.getInt(at + ConflictRecords.Notice.Z), step, b.getFloat(at + ConflictRecords.Notice.GRIEVANCE)));
+                b.getInt(at + ConflictRecords.Notice.Z), step, b.getFloat(at + ConflictRecords.Notice.GRIEVANCE),
+                m1Records ? b.getInt(at + ConflictRecords.Notice.SERIAL) : 0));
     }
 
     /** One body kind of a materialize command, resolved. */
@@ -1173,7 +1174,7 @@ public final class ConflictBridge implements SessionPlugin {
         Difficulty d = s.server().getWorldData().getDifficulty();
         if (d != difficulty) {
             difficulty = d;
-            sendDifficulty();
+            sendDifficulty(now);
             for (Party p : byAgent.values())
                 for (Stack st : p.stacks)
                     if (st.state == StackState.PENDING)
@@ -1843,11 +1844,11 @@ public final class ConflictBridge implements SessionPlugin {
                 to.getRandom().nextLong()));
     }
 
-    /** NOTICE_SHOWN (M1): the engine forgets a kept notice when the step matches. */
+    /** NOTICE_SHOWN (M1): the engine forgets a kept notice when the serial matches. */
     private void shown(Notice n, long now) {
         if (!m1Records)
             return;
-        ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.NOTICE_SHOWN, ConflictRecords.NoticeShown.SIZE, n.step(), now);
+        ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.NOTICE_SHOWN, ConflictRecords.NoticeShown.SIZE, n.serial(), now);
         r.putLong(ConflictRecords.NoticeShown.FACTION, n.faction());
         if (n.player() != null) {
             r.putLong(ConflictRecords.NoticeShown.PLAYER_MOST, n.player().getMostSignificantBits());
@@ -1856,14 +1857,13 @@ public final class ConflictBridge implements SessionPlugin {
         session.boundary().commit(r);
     }
 
-    /** DIFFICULTY (M1, latest-wins, sticky): the engine sends no war party on Peaceful. */
-    private void sendDifficulty() {
+    /** DIFFICULTY (M1, journaled at session start and on each change): the engine sends no war party on Peaceful. */
+    private void sendDifficulty(long now) {
         if (!m1Records || session == null || difficulty == null)
             return;
-        byte[] body = new byte[ConflictRecords.DifficultyRecord.SIZE - 8];
-        ByteBuffer.wrap(body).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER)
-                .putInt(ConflictRecords.DifficultyRecord.DIFFICULTY - 8, difficulty.getId());
-        session.boundary().preamble(ConflictRecords.DIFFICULTY, 0, body);
+        ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.DIFFICULTY, ConflictRecords.DifficultyRecord.SIZE, 0, now);
+        r.putInt(ConflictRecords.DifficultyRecord.DIFFICULTY, difficulty.getId());
+        session.boundary().commit(r);
     }
 
     // ---- camps and loot (plugins) ---------------------------------------------------------------
