@@ -2537,7 +2537,10 @@ mod ships {
         let off = e.with_ships(|s, _| s.now());
         days(&mut j, 30);
         let on = e.with_ships(|_, w| w.now());
-        assert!(on.0 >= off.0 + 29 * rtsim_kernel::clock::TICKS_PER_DAY, "the world ran on alone");
+        assert!(
+            on.0 >= off.0 + 29 * rtsim_kernel::clock::TICKS_PER_DAY,
+            "the world ran on alone"
+        );
         assert_eq!(e.with_ships(|s, _| s.now()), off, "the ships stood still");
         j.modules(MODULES);
         j.idle();
