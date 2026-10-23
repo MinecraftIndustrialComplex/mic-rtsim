@@ -16,7 +16,7 @@ use rtsim_conflict::engine::{
 };
 use rtsim_conflict::{ConflictTunables, Cultures, Step, synth};
 use rtsim_ecology::infra::{
-    DistrictIndex, DistrictSite, Infrastructure, IndustryLink, NoInfrastructure, RaidOutcome,
+    DistrictIndex, DistrictSite, IndustryLink, Infrastructure, NoInfrastructure, RaidOutcome,
     TrainSighting,
 };
 use rtsim_industry::fake::Visit;
@@ -175,12 +175,17 @@ fn a_frostmaw_raids_invades_repeats_and_calms() {
     assert_eq!(w.nodes[node].kind, NodeKind::Lair, "a den is a lair");
     let p = c.player(&mut w, synth::PLAYER);
     let (raid, inv) = (theta(&c, f, Step::Raid), theta(&c, f, Step::Invasion));
-    let dwell = c.cultures.get(c.factions[f as usize].culture).def.dwell_days[Step::Raid.index()];
+    let dwell = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .def
+        .dwell_days[Step::Raid.index()];
     // Between Raid and Invasion until Raid's dwell is over.
     let mut seen = Vec::new();
     let mut t = Tick(10);
     let mut on_raid = None;
-    while on_raid.is_none_or(|d: Tick| t < Tick(d.0 + ((dwell + 1.0) * TICKS_PER_DAY as f64) as u64))
+    while on_raid
+        .is_none_or(|d: Tick| t < Tick(d.0 + ((dwell + 1.0) * TICKS_PER_DAY as f64) as u64))
     {
         let to = Tick(t.0 + TICKS_PER_DAY);
         seen.extend(feed(&mut c, &mut w, f, p, 1.5 * raid, t, to));
@@ -219,7 +224,12 @@ fn a_frostmaw_raids_invades_repeats_and_calms() {
     assert_eq!(s.escalations[Step::Scouts.index()], 0);
     assert_eq!(s.escalations[Step::Raid.index()], 1);
     assert_eq!(s.escalations[Step::Invasion.index()], 1);
-    assert_eq!(c.cultures.get(c.factions[f as usize].culture).next_up(Step::Invasion), None);
+    assert_eq!(
+        c.cultures
+            .get(c.factions[f as usize].culture)
+            .next_up(Step::Invasion),
+        None
+    );
     let gaps = repeat_gaps(&c);
     let invasions = gaps.iter().filter(|g| g.2.contains("invasion")).count();
     assert!(invasions >= 2, "the top rung comes again: {gaps:?}");
@@ -296,10 +306,7 @@ fn a_repeat_counts_from_the_arrival_home() {
             "day {day}: {gap} after home"
         );
     }
-    assert!(
-        seen.iter().all(|x| x.bands <= 1),
-        "never a second Frostmaw"
-    );
+    assert!(seen.iter().all(|x| x.bands <= 1), "never a second Frostmaw");
     c.check(&w).expect("books");
 }
 
@@ -785,7 +792,12 @@ fn grove_demand(
 #[test]
 fn tribute_at_a_market_price_is_its_worth_in_nuggets() {
     let mut asked = Vec::new();
-    for price in [PRICE_ONE / 4, PRICE_ONE / 9, PRICE_ONE / 20, PRICE_ONE / 1000] {
+    for price in [
+        PRICE_ONE / 4,
+        PRICE_ONE / 9,
+        PRICE_ONE / 20,
+        PRICE_ONE / 1000,
+    ] {
         let (w, c, _, _, d, want) = grove_demand(24, Some(price), 1.2);
         assert_eq!(d.tribute, want, "at {price}");
         asked.push(d.tribute);
@@ -815,7 +827,11 @@ fn a_priced_tribute_paid_in_full_settles() {
     let x = c.feud(f, p).unwrap();
     assert!(x.demand.is_none());
     assert_eq!(x.step, Step::Notice);
-    let respite = c.cultures.get(c.factions[f as usize].culture).def.respite_days;
+    let respite = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .def
+        .respite_days;
     assert_eq!(
         x.wait_until,
         Tick(at.0 + (respite * TICKS_PER_DAY as f64) as u64)
@@ -825,9 +841,11 @@ fn a_priced_tribute_paid_in_full_settles() {
         c.ledger.tribute.get(&nugget),
         Some(&i128::from(d.tribute * MILLI))
     );
-    assert!(c.take_commands().iter().any(
-        |m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_PAID)
-    ));
+    assert!(
+        c.take_commands()
+            .iter()
+            .any(|m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_PAID))
+    );
     c.check(&w).expect("books");
 }
 
@@ -855,9 +873,11 @@ fn a_refused_envoy_climbs_to_scouts() {
     assert_eq!(c.stats.tributes, 0);
     assert_eq!(c.stats.parties[PartyKind::Scouts.index()], 1);
     assert!(c.log.iter().any(|e| e.kind == "refused"));
-    assert!(c.take_commands().iter().any(
-        |m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_REFUSED)
-    ));
+    assert!(
+        c.take_commands()
+            .iter()
+            .any(|m| matches!(m, Cmd::Settled(s) if s.outcome == boundary::SETTLED_REFUSED))
+    );
     c.check(&w).expect("books");
 }
 
@@ -893,7 +913,11 @@ fn a_chief_killed_on_the_way_home_replans_the_feud() {
     let stamp = x.stamp;
     c.chief_killed(&mut w, band, Some(p), t);
     let x = c.feud(f, p).unwrap();
-    assert_eq!(x.step, Step::Notice, "Raid, Notice (no rung below it but none)");
+    assert_eq!(
+        x.step,
+        Step::Notice,
+        "Raid, Notice (no rung below it but none)"
+    );
     assert_ne!(x.stamp, stamp, "booked again");
     assert_eq!(c.parties[band].phase, Phase::Home, "it walks on home");
     let arrive = *c.parties[band].times.last().unwrap();
@@ -928,7 +952,10 @@ fn an_emptied_rung_neither_repeats_nor_loops() {
     let before = c.stats;
     let mid = Tick(t.0 + 10 * TICKS_PER_DAY);
     feed(&mut c, &mut w, f, p, 1.5 * raid, t, mid);
-    assert_eq!(c.stats.repeats, before.repeats, "no repeat of an empty rung");
+    assert_eq!(
+        c.stats.repeats, before.repeats,
+        "no repeat of an empty rung"
+    );
     assert_eq!(c.stats.parties, before.parties);
     assert!(c.stats.feud_wakes - before.feud_wakes < 50, "{:?}", c.stats);
     feed(
@@ -942,7 +969,11 @@ fn an_emptied_rung_neither_repeats_nor_loops() {
     );
     assert_eq!(c.stats.escalations[Step::Invasion.index()], 1);
     assert!(c.stats.repeats >= 1, "the Invasion repeats: {:?}", c.stats);
-    assert!(c.stats.feud_wakes - before.feud_wakes < 500, "{:?}", c.stats);
+    assert!(
+        c.stats.feud_wakes - before.feud_wakes < 500,
+        "{:?}",
+        c.stats
+    );
     c.check(&w).expect("books");
 }
 
@@ -1029,7 +1060,11 @@ fn an_ambush_is_one_threat_per_class() {
         assert_eq!(t.target, ThreatTarget::Train(TrainId(9)));
     }
     let times: std::collections::BTreeSet<u64> = rails.threats.iter().map(|t| t.at.0).collect();
-    assert_eq!(c.stats.ambushes, times.len() as u64, "one ambush, two threats");
+    assert_eq!(
+        c.stats.ambushes,
+        times.len() as u64,
+        "one ambush, two threats"
+    );
     let _ = f;
     c.check(&w).expect("books");
 }

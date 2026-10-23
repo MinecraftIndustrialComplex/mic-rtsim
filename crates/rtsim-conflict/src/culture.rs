@@ -759,14 +759,28 @@ mod tests {
     fn the_new_fields_are_checked() {
         let mut def = goblin_def();
         // Days that would overflow a tick sum, or are not days at all, are refused.
-        for bad in [0.0, -1.0, 1e300, f64::INFINITY, f64::NAN, MAX_REPEAT_DAYS + 1.0] {
+        for bad in [
+            0.0,
+            -1.0,
+            1e300,
+            f64::INFINITY,
+            f64::NAN,
+            MAX_REPEAT_DAYS + 1.0,
+        ] {
             def.repeat_days = Some(bad);
             assert!(Culture::resolve(def.clone()).is_err(), "repeat_days {bad}");
         }
         def.repeat_days = Some(MAX_REPEAT_DAYS);
         assert!(Culture::resolve(def.clone()).is_ok());
         def.repeat_days = Some(2.0);
-        for bad in [0.0, -1.0, 1e300, f64::INFINITY, f64::NAN, MAX_TRIBUTE_PER_COIN + 1.0] {
+        for bad in [
+            0.0,
+            -1.0,
+            1e300,
+            f64::INFINITY,
+            f64::NAN,
+            MAX_TRIBUTE_PER_COIN + 1.0,
+        ] {
             def.tribute_per_coin_fallback = bad;
             assert!(Culture::resolve(def.clone()).is_err(), "fallback {bad}");
         }
