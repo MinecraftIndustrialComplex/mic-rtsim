@@ -57,13 +57,15 @@ use crate::tunables::ConflictTunables;
 /// factions and maps of feuds and sources). RTC3: the indexes, parties and wheel follow the rest
 /// of the resident state (docs/choices-paging-followups.md PF10). RTC4: the Peaceful flag and its
 /// start and the last notice's serial follow presence, and a feud carries its kept notice and its
-/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC4");
+/// Envoy hold (MOWZIE.md ledger 14, MZB-10, MZB-22). RTC5: a party's recalled stacks are kept by
+/// the epoch recalled (MZB-131).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC5");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
-/// ends with the Peaceful flag, its start and the last notice's serial.
+/// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
+/// are RTC5's.
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 3;
+const META_VERSION: u16 = 4;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -325,6 +327,7 @@ fn put_faction(w: &mut Writer, x: &Faction) {
         w.f64(*v);
     }
     w.bool(x.chief_out);
+    w.bool(x.crystal);
 }
 
 fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
@@ -352,6 +355,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
                 .collect::<codec::Result<_>>()?
         },
         chief_out: r.bool()?,
+        crystal: r.bool()?,
     })
 }
 
@@ -473,7 +477,11 @@ fn put_party(w: &mut Writer, x: &Party) {
     put_opt(w, &x.feud, |w, a| w.u64(a.to_bits()));
     put_stacks(w, &x.units);
     put_stacks(w, &x.spawned);
-    put_stacks(w, &x.recalled);
+    put_usize(w, x.recalled.len());
+    for (epoch, stacks) in &x.recalled {
+        w.var_u64(u64::from(*epoch));
+        put_stacks(w, stacks);
+    }
     w.var_u64(u64::from(x.start_units));
     put_target(w, &x.target);
     w.u16(x.frame);
@@ -510,7 +518,10 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
     let feud = get_opt(r, handle)?;
     let units = get_stacks(r)?;
     let spawned = get_stacks(r)?;
-    let recalled = get_stacks(r)?;
+    let n = r.len_prefix(2)?;
+    let recalled = (0..n)
+        .map(|_| Ok((get_u32(r)?, get_stacks(r)?)))
+        .collect::<codec::Result<Vec<_>>>()?;
     let start_units = get_u32(r)?;
     let target = get_target(r)?;
     let frame = r.u16()?;
@@ -667,6 +678,8 @@ fn put_ledger(w: &mut Writer, l: &ConflictLedger) {
         &l.landed_from_players,
         &l.tribute,
         &l.gifts,
+        &l.destroyed,
+        &l.destroyed_from_players,
     ] {
         put_big(w, m);
     }
@@ -685,6 +698,8 @@ fn get_ledger(r: &mut Reader<'_>) -> codec::Result<ConflictLedger> {
         landed_from_players: get_big(r)?,
         tribute: get_big(r)?,
         gifts: get_big(r)?,
+        destroyed: get_big(r)?,
+        destroyed_from_players: get_big(r)?,
         unmapped: BTreeMap::new(),
     };
     let n = r.len_prefix(2)?;
@@ -724,6 +739,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.withdrawn,
         s.peace_held,
         s.notices_shown,
+        s.repeats,
     ]);
     v
 }
@@ -773,6 +789,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.withdrawn = n();
     s.peace_held = n();
     s.notices_shown = n();
+    s.repeats = n();
     s
 }
 
