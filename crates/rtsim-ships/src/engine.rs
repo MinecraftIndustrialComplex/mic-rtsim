@@ -3324,12 +3324,11 @@ impl Ships {
         }
         want.retain(|_, a| *a > 0);
         let got = w.stock_to_held(node, &want, at);
-        let mut items = 0i64;
         for (g, a) in &got {
             *self.ships[s].cargo.entry(*g).or_default() += *a;
             add(&mut self.ledger.looted_from_ports, *g, *a);
-            items += a / MILLI;
         }
+        let items = got.values().sum::<Amount>() / MILLI;
         self.stats.port_raids += 1;
         self.stats.items_from_ports += items.max(0) as u64;
         let key = w.nodes[node].key;
