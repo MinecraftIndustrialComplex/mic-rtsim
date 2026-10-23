@@ -216,6 +216,8 @@ pub fn run(o: &Options) -> Outcome {
         kill_chief: true,
         only_at_base: true,
     });
+    // The world's difficulty, as a plugin reports it at a session start (Normal: no change).
+    plugin.session_start(Tick::ZERO);
     c.add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO)
         .expect("goblins");
     let end = Tick::from_days(o.days);
