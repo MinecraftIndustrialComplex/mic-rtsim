@@ -333,21 +333,6 @@ public final class RescanBudgetGameTests {
     }
 
     /**
-     * The most one tick of a detection may spend ({@code Districts.Rescan.step}): it stops at the first item that takes
-     * the tick to the budget, so it is under the budget before the last chunk and spends that chunk whole. A chunk
-     * costs one, its block entities, and (when it is walked) a candidate inventory for each at most. The chunks are
-     * counted, not assumed: the yard's chunks also hold what earlier tests left (a bound of 45 a chunk failed with 76
-     * in one chunk of a run that landed beside them, and with 60 on the talk tree). The bound depends on the chunks'
-     * contents and the budget alone, so it does not move with the load.
-     */
-    private static int tickBound(ServerLevel level, BlockPos... in) {
-        int biggest = 0;
-        for (BlockPos p : in)
-            biggest = Math.max(biggest, level.getChunkAt(p).getBlockEntities().size());
-        return BUDGET + 2 * biggest;
-    }
-
-    /**
      * {@code /rtsim district rescan} is a full detection over the next ticks, not one big tick: the call itself does
      * no detection work, says the detection is under way, and the source hears again, once, when the districts are
      * committed; the districts were what they were until then, and no tick looked at more than a budget and a chunk.
@@ -385,9 +370,7 @@ public final class RescanBudgetGameTests {
                     record("theRescanCommandSpreadsOverTicksAndReportsWhenDone", "ticks / longest tick (us) / looked / phases",
                             ds.lastRescanSlices() + " / " + ds.lastRescanLongestNanos() / 1000 + " / " + ds.lastRescanLooked() + " / " + ds.lastRescanPhases());
                     check("spread over at least four ticks, got " + ds.lastRescanSlices(), ds.lastRescanSlices() >= 4);
-                    int bound = tickBound(helper.getLevel(), ms);
-                    check("no tick looked at more than a budget and a chunk (" + bound + "): " + ds.lastRescanLongestLooked(),
-                            ds.lastRescanLongestLooked() <= bound);
+                    checkTickBudget(ds, helper.getLevel(), BUDGET, ms);
                     check("the report came in a later tick than the call", sink.ticks.get(1) > sink.ticks.get(0));
                     check("the report is the districts' count: " + sink.lines.get(1), sink.lines.get(1).contains(": 1 districts;"));
                     check("the district is whole", districtAt(helper, ms[0]).chunks.size() == 4 && districtAt(helper, ms[0]).seeds() == 4);
