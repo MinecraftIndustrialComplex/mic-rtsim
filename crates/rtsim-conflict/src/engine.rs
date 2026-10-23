@@ -4031,9 +4031,11 @@ impl Conflict {
 
     /// Every notice of a feud not played yet goes to the plugin again, once a session (MOWZIE.md
     /// §4.11). The host calls it after the session's replay has caught up, so a NOTICE_SHOWN
-    /// journaled last session and not yet in the pages has cleared its notice first (MZB-31).
-    /// Page by page, keeping to the budget (PM-C8).
+    /// journaled last session and not yet in the pages has cleared its notice first (MZB-31). A
+    /// notice still queued (one a replayed record made again) is dropped first: what is kept is
+    /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
+        self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let kept: Vec<Cmd> = self

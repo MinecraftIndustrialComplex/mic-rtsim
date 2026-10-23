@@ -11,14 +11,15 @@
 //! mirrors:
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
-//!   are BAND_STATE (counted), CHIEF_STATE and HAVEN_CHEST (counted as deferred) and DIFFICULTY
-//!   (kept, and given to the conflict at its present while it is switched on: no war party
-//!   leaves on Peaceful); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   are BAND_STATE (counted), CHIEF_STATE and HAVEN_CHEST (counted as deferred; 0x0093 is
+//!   retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
 //!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID by
 //!   their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
-//!   world run to it first (the shared clock, `engine/shared.rs`). The Mowzie kinds whose engine
-//!   half comes with a later slice (`Conflict::later`) are decoded, counted as deferred and
-//!   dropped, before the clock runs. Java's ids are translated to the conflict's own first (C2-4): items to
+//!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
+//!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
+//!   slice (`Conflict::later`) are decoded, counted as deferred and given to the conflict at its
+//!   present, before the clock runs, so that it spends their op ids as `Replay` does (MZB-23).
+//!   Java's ids are translated to the conflict's own first (C2-4): items to
 //!   the phase 1 catalogue's goods, bodies to the culture data's, structures and pollution types
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
 //! - **Signals inside the engine** ([`simulate`], C2-7 to C2-9): each district's learned pollution
@@ -38,8 +39,9 @@
 //!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH), with sequences from the core's
 //!   counter after every other module's: all per session (K2-27, as the dragons' S11), so the
 //!   link keeps nothing and none but CAMP_RECONCILE carries an op id; TERRITORY goes again for
-//!   every faction at a session start, and with it every feud's notice not played yet
-//!   (NOTICE_SHOWN), which the conflict keeps in its pages. Body kinds, cultures, the dimension
+//!   every faction at a session start, and every feud's notice not played yet (NOTICE_SHOWN),
+//!   which the conflict keeps in its pages, once the session's replay has caught up (at the first
+//!   record of this session or the simulate point, MZB-31). Body kinds, cultures, the dimension
 //!   and the tribute item go through the engine's dictionary; ticks (an envoy's deadline, a
 //!   steer's arrival, a march's muster end and waypoints) are game time.
 //! - **Pages** ([`Link::load`], [`save`]): the conflict pages through the engine's store
@@ -150,9 +152,9 @@ pub(super) struct Link {
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
-    /// The world's difficulty as DIFFICULTY last said (not saved: the plugin sends it at each
-    /// session start); given to the conflict whenever it is switched on.
-    pub(super) difficulty: Option<u32>,
+    /// The kept notices go again once the session's replay has caught up (MZB-31): set by the
+    /// session reset, done at the first record of this session or the simulate point. Not saved.
+    notices_due: bool,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
 }
@@ -256,7 +258,7 @@ impl Link {
             commands_written: 0,
             band_states: 0,
             deferred: 0,
-            difficulty: None,
+            notices_due: false,
             fed: 0,
         }
     }
@@ -365,7 +367,6 @@ fn set_enabled(st: &mut State, on: bool) {
     }
     if on && !was {
         st.conflict.reset_due = true;
-        apply_difficulty(st);
     }
     reset_if_due(st);
     if on && !was && running(st) {
@@ -374,26 +375,33 @@ fn set_enabled(st: &mut State, on: bool) {
 }
 
 /// Bodies of an earlier session (or of before a switch-off) are gone: every party is abstract
-/// again, and TERRITORY goes out again for every faction.
+/// again, and TERRITORY goes out again for every faction. The kept notices follow once the
+/// replay has caught up ([`resend_notices_if_due`]).
 fn reset_if_due(st: &mut State) {
     if st.conflict.reset_due && running(st) {
         st.conflict.reset_due = false;
         st.conflict.engine.session_start();
+        st.conflict.notices_due = true;
         st.phase1.taint();
         take_commands(st);
     }
 }
 
-/// The difficulty DIFFICULTY last said, to the conflict at its present (no run: a latest-wins
-/// record is outside the shared clock), while it is switched on.
-fn apply_difficulty(st: &mut State) {
-    if !st.conflict.enabled {
+/// The kept notices to the plugin, once the session's replay has caught up (MZB-31): a
+/// NOTICE_SHOWN journaled last session after the pages' save has cleared its notice by now. A
+/// notice a replayed record made again is dropped from the queue first: what is kept is what
+/// goes.
+fn resend_notices_if_due(st: &mut State) {
+    if !st.conflict.notices_due || !running(st) {
         return;
     }
-    if let Some(d) = st.conflict.difficulty {
-        st.conflict.engine.set_difficulty(d);
-        take_commands(st);
-    }
+    st.conflict.notices_due = false;
+    take_commands(st);
+    st.conflict
+        .queue
+        .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
+    st.conflict.engine.resend_notices();
+    take_commands(st);
 }
 
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
@@ -409,12 +417,6 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             let Ok((_, o, _)) = boundary::decode_obs(b) else {
                 return;
             };
-            if let Obs::Difficulty(d) = o {
-                // Kept while switched off too: the conflict hears it when switched on.
-                st.conflict.difficulty = Some(d.difficulty);
-                apply_difficulty(st);
-                return;
-            }
             if !st.conflict.enabled {
                 st.conflict.ignored += 1;
                 return;
@@ -525,6 +527,10 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.ignored += 1;
         return;
     }
+    if wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first {
+        // The replay is over: the first record of this session.
+        resend_notices_if_due(st);
+    }
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -537,9 +543,14 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     };
     translate(st, &mut o);
     if Conflict::later(&o) {
-        // Its engine half comes with a later slice (MOWZIE.md §9): counted and dropped, the
-        // clock not run for it.
+        // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
+        // conflict at its present (the clock not run for it), which spends its op id and drops
+        // it, as `Replay` spent it (MZB-23).
         st.conflict.deferred += 1;
+        with_infra(st, |c, w, infra| {
+            let now = c.now();
+            c.ingest(w, infra, &o, now);
+        });
         return;
     }
     if let Obs::Pollution(p) = &o
@@ -622,6 +633,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
+    resend_notices_if_due(st);
     let at = Tick(phase1::world_tick(st, st.game_time));
     shared::run_to(st, at);
     feed_districts(st, at);
@@ -1055,8 +1067,6 @@ pub struct ConflictLinkStats {
     pub band_states: u64,
     /// Records whose engine half comes with a later slice, dropped.
     pub deferred: u64,
-    /// The world's difficulty as DIFFICULTY last said, if it said.
-    pub difficulty: Option<u32>,
     /// Sources the industry engine's districts set or changed.
     pub fed: u64,
 }
@@ -1067,6 +1077,22 @@ impl super::Engine {
     pub fn with_conflict<R>(&self, f: impl FnOnce(&Conflict, &rtsim_world::World) -> R) -> R {
         let st = super::lock(&self.state);
         f(&st.conflict.engine, &st.phase1.world)
+    }
+
+    /// Runs `f` on the conflict and the phase 1 world it lives in, to change them (an order a
+    /// test gives the conflict itself, `Conflict::order_party`), under the state lock; what the
+    /// conflict decided joins the command queue, and the world is saved with the next save. For
+    /// tests and debugging, between steps only.
+    pub fn with_conflict_mut<R>(
+        &self,
+        f: impl FnOnce(&mut Conflict, &mut rtsim_world::World) -> R,
+    ) -> R {
+        let mut st = super::lock(&self.state);
+        let st = &mut *st;
+        let r = f(&mut st.conflict.engine, &mut st.phase1.world);
+        st.phase1.taint();
+        take_commands(st);
+        r
     }
 
     /// Keeps (or stops keeping) the conflict's log of what it decided, in memory and unsaved
@@ -1096,7 +1122,6 @@ impl super::Engine {
                 commands_written: l.commands_written,
                 band_states: l.band_states,
                 deferred: l.deferred,
-                difficulty: l.difficulty,
                 fed: l.fed,
             },
         )

@@ -14,7 +14,8 @@ under its own heading.
   (a count, the flags or the killer kind), variable parts last, reserved fields zero, sizes a
   multiple of 8. `boundary.rs` is the reference codec, with a round trip and a size test per kind.
 - **MZB-2** (The planned kind ids): 0x0091 to 0x0093, 0x080C to 0x0814 and 0x8807 to 0x880B, as
-  MOWZIE.md §2 proposed them; `git log --all -S` found each only in this branch's commits.
+  MOWZIE.md §2 proposed them; `git log --all -S` found each only in this branch's commits. Amended
+  (review): DIFFICULTY moved to the fresh journaled id 0x0815 (MZB-17), and 0x0093 is retired.
 - **MZB-3** (FACTION_FOUND's census): the reserved word at 52 is a u16 count of home bodies at 52
   and a u8 census at 54 (1 chief present, 2 crystal held, as CAMP_CENSUS's flags), 55 reserved; the
   size stays 56. A camp has tens of bodies, so 16 bits is plenty. Nothing reads it before slice M4.
@@ -36,9 +37,12 @@ under its own heading.
   crystal), then two u64s that hold a stray's UUID (adopt, remove) or a party's agent and epoch (set
   out, hand back). The throne spot and direction are in the header, under a flag.
 - **MZB-9** (HAVEN_CHEST's free slots): a u32 at 32, as LAIR_CHEST reports them.
-- **MZB-10** (NOTICE_SHOWN names its rung): MOWZIE.md lists only faction and player; aux carries the
-  rung from FACTION_NOTICE's aux as well, and a kept notice is cleared only when it matches, so an
-  answer to an older notice cannot clear a newer one.
+- **MZB-10** (NOTICE_SHOWN names its notice's serial): MOWZIE.md lists only faction and player.
+  Amended (review): every kept notice has a serial, a u32 at FACTION_NOTICE's 60 (the reserved word;
+  the size stays 64, aux stays the rung), and NOTICE_SHOWN's aux echoes it in place of the rung. A
+  kept notice is cleared only when faction, player and serial match, so an answer to an older notice
+  cannot clear a newer one even on the same rung (the rung alone could not tell a notice from the one
+  after a feud fell and climbed back).
 - **MZB-11** (BAND_MARCH's small fields): kind uses BAND_MATERIALIZE's purposes (1 envoy to 6
   plunder); phases are numbered from 1 (1 mustering to 5 home), so 0 is never a phase; flags 1 the
   chief leads, 2 ended, 4 joint; the partner agent at 48 and the joint flag are written as zero; the
@@ -52,22 +56,33 @@ under its own heading.
   the census bodies and CHIEF_PAID's items on the way in, and AMBUSH_SPOT's dimension, CAMP_RECONCILE's
   line bodies and BAND_MARCH's dimension, culture and units on the way out, and moves BAND_MARCH's
   ticks by the test offset as the envoy's deadline; `rtsim-host`'s fake Java does the same on its
-  side. The later slices then need no wire work.
+  side. The later slices then need no wire work. Corrected (review): only rtsim-jni's `write_queue`
+  shifts BAND_MARCH's ticks; the fake Java leaves them as they come.
 - **MZB-14** (Peaceful holds the war rungs): on Peaceful `plan_feud` books no climb to a war rung
   (raid, invasion, siege), and the feud wake guards the same way. Notices, envoys and scouts are not
   war and go on, so a player on Peaceful still learns of a feud; grievance keeps its curve.
 - **MZB-15** (Peaceful stops what has left): a war party (plunder included) still mustering stands
   down at its muster's end: its bodies, if any, are recalled, its warriors go back to the pool, and
-  the feud it served steps down one rung so that it climbs back once Peaceful ends. One already out
-  goes home on arrival doing nothing, a waiting siege goes home at its next turn, an ambush does
-  nothing, and the plunder drive draws again later. Counted in `ConflictStats::peace_held`.
-- **MZB-16** (Only the flag is saved): one byte in the resident meta. Nothing records what Peaceful
-  held, because leaving Peaceful plans every feud again at the engine's present (page by page, in
-  the budget), which books whatever climb is due.
-- **MZB-17** (DIFFICULTY outside the shared clock): it is latest-wins, so rtsim-jni applies it at the
-  engine's present without running the modules. It is kept while the conflict module is off
-  (`ConflictLinkStats::difficulty`), applied when the module comes on, and never counted as ignored.
-  The conflict-only sim (`Conflict::ingest`) applies it at its record's time.
+  the feud it served steps down one rung so that it climbs back once Peaceful ends. Amended
+  (review): when Peaceful begins every war party already out stops at once, in handle order. One on
+  the road (Out) or waiting at its target (Waiting) goes home, a watched fight (Fighting) ends; each
+  in Minecraft is recalled with RECALL_SETTLED. `seen()` spawns no war body and `wave()` sends no wave
+  while it is Peaceful, so an Out party passing a player stays abstract and an ambush booked before
+  goes stale with the party's plan. The plunder drive draws again later. Counted in
+  `ConflictStats::peace_held`.
+- **MZB-16** (No burst on leaving Peaceful): amended (review). Leaving Peaceful at once booked every
+  held feud's climb on the same tick. Now the resident meta keeps the flag and the span's start
+  (`peaceful_since`); leaving it, every feud held below a war rung (no party, no demand) has its
+  dwell clock paused over the span (`since` moves on by the time it spent Peaceful) and then shifted
+  by a jitter in [0, dwell) drawn from the seed, the faction's key and the actor
+  (`StreamKey(seed, SYS_PEACE, key).slot(actor)`), and no climb comes before its full dwell. Every
+  feud is then planned again at the engine's present (page by page, in the budget).
+- **MZB-17** (DIFFICULTY is journaled): amended (review). It was latest-wins at 0x0093, applied
+  outside the shared clock, so a crash replay and the conflict-only sim could apply it at another
+  point among the other records. It is now the journaled kind 0x0815 (u32 at 24, size 32) and
+  0x0093 is retired. Java journals it at each session start and on each change; rtsim-jni and
+  `Conflict::ingest` both apply it at its game time in journal order through `set_difficulty`, and a
+  value equal to the engine's changes nothing. `ConflictLinkStats::difficulty` is gone.
 - **MZB-18** (The kept notice lives in the feud's row): an `Option<Box<Notice>>` in `Feud`, paged
   with the faction's row. A resident map was tried first and failed the paged test that forbids
   resident state growing with factions (2,877 bytes at 64 factions, 8,730 at 256).
@@ -82,14 +97,21 @@ under its own heading.
   unknown camp is ignored; each cleared notice counts in `ConflictStats::notices_shown`.
 - **MZB-22** (When a demand is withdrawn): only on the casualty path, when the last member of an
   envoy party falls and no player killed any member or its chief over the party's life (`breaker`);
-  a BAND_DEMATERIALIZED with no survivors withdraws nothing. The feud stays on Envoy with its dwell
-  begun again and is planned again, so it calms or climbs from there as before; the demand is
-  settled through the outbox (DEMAND_SETTLED 5) and counted in `ConflictStats::withdrawn`.
+  a BAND_DEMATERIALIZED with no survivors withdraws nothing. The demand is settled through the
+  outbox (DEMAND_SETTLED 5) and counted in `ConflictStats::withdrawn`. Amended (review): the old rule
+  (Envoy with its dwell begun again) let a feud past the Scouts threshold climb at the dwell's end,
+  sooner than the demand's deadline, so a mob killing the envoy brought the war forward. Now the
+  feud holds on Envoy with no climb until the withdrawn demand's deadline (`wait_until`, and
+  `Feud::envoy_again`, saved in the row), then sends a fresh envoy with a new demand, which runs as
+  any demand.
 - **MZB-23** (Deferred kinds are counted and dropped): a kind whose engine half comes later is
   decoded and translated, then dropped before the shared clock runs for it (in rtsim-jni before
-  `catch_up`, in `Conflict::ingest` before the op check) and counted in
-  `ConflictLinkStats::deferred`; its op id is still spent by `Replay`, so a record sent twice is
-  counted once. `Conflict::later` lists the kinds, and each later slice takes its own off the list.
+  `catch_up`) and counted in `ConflictLinkStats::deferred`. Corrected (review): the earlier text had
+  `Conflict::ingest` drop it before the op check and left rtsim-jni's op id spent only by `Replay`,
+  so the two paths differed. Both now hand it to `Conflict::ingest`, which spends its op id first and
+  then drops it, so a record sent twice is counted once in either path and the engine's op set is
+  the same (`Conflict::op_applied`). `Conflict::later` lists the kinds, and each later slice takes
+  its own off the list.
 - **MZB-24** (A reconcile in flight ends with the session): `session_start` drops any queued
   CAMP_RECONCILE with the territories and notices it rebuilds, as MOWZIE.md §4.9 voids an epoch's
   lines; nothing sends one yet.
@@ -98,13 +120,44 @@ under its own heading.
   `session_start`. Java's fake does not call it at open, so the rtsim-jni tests choose; the scenario
   calls it with Normal, so `rtsim-cli sim conflict` runs as before.
 - **MZB-26** (The page format): the conflict's pages are RTC4 with meta version 3 (the kept notice in
-  each feud, the Peaceful flag and three counters in the meta), with no migration. The rtsim-view
+  each feud with its serial and the Envoy hold, the Peaceful flag, its start, the last serial and
+  three counters in the meta), with no migration. The rtsim-view
   fixtures are fresh core and create GameTest saves from the merged head, as before.
 - **MZB-27** (The viewer hashes under the guard): the fresh core save put the herds' forage pages in a
   segment of their own, and `unreadable.rs` then panicked: rtsim-view's `load_world` took each paged
   module's state hash (which reads every page) outside its `guarded` load. The hash of phase 1,
   dragons, herds, ships and conflict is now taken inside the guard, so a page that cannot be read
   makes that module unreadable instead of the viewer panicking.
+- **MZB-28** (Serials are engine-wide): the review asked for a serial per kept notice. It is one
+  counter for the engine (`Conflict::notice_serial`, from 1, wrapping past 0), saved in the meta, not
+  one per feud: a feud forgotten and made again would restart a per-feud count at 1, and a stale
+  NOTICE_SHOWN for its first life could clear its new notice. A fork (reported).
+- **MZB-29** (Which stopped parties step back): a war party stopped on the road (Out) never did its
+  war, so its feud steps back a rung, as a mustering one does, if the feud is still on that party's
+  rung and served by it. One stopped Waiting or Fighting reached its target, so the feud keeps its
+  step. A fork (reported): the review did not say.
+- **MZB-30** (DIFFICULTY while the module is off): ignored and counted, as every journaled record is
+  (U10), not kept for later; the next session start sends it again. A fork (reported): the old
+  latest-wins rule kept it, which a journaled kind cannot do without a store of its own.
+- **MZB-31** (Kept notices after the replay): `session_start` (TERRITORY first) runs at
+  SESSION_START, but the kept notices go out only at the first record of this session or at the
+  first simulate point, after the replay has applied the NOTICE_SHOWN the pages missed. Sending them
+  first drops any FACTION_NOTICE the replay queued again, so each goes once.
+- **MZB-32** (No recall for nobody): a withdrawal that leaves no member spawned clears the party's
+  embodied flag and sends no BAND_RECALL; one with members still in Minecraft recalls them with
+  RECALL_SETTLED, not RECALL_DONE.
+- **MZB-33** (A test hook): `Engine::with_conflict_mut` lends the conflict and the world to a test
+  and then takes and sends the commands it queued, so the rtsim-jni tests can order a party
+  (`Conflict::order_party`) through the native engine.
+- **MZB-34** (The ambush under Peaceful at the engine): rtsim-jni has no rig with a train on a road a
+  band lies by, so the ambush case is an engine test with a fake `Infrastructure` (rails under the
+  raid's road): an ambush booked before Peaceful never falls. The Out, Waiting and Fighting cases are
+  rtsim-jni tests. A fork (reported).
+- **MZB-35** (List caps): every list of a variable-length record holds at most 1,024 entries
+  (`boundary::MAX_ENTRIES`); encoders write the first 1,024 and decoders refuse more
+  (`CodecError::TooMany`). At the cap CAMP_CENSUS, the largest, is 49,240 bytes, so the u16 size
+  always fits, and `finish` asserts it does. 1,024 is past any camp, party or route this slice can
+  make (PLACEHOLDER).
 
 ## M2 Cultures
 

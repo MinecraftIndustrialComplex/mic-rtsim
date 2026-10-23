@@ -1438,8 +1438,9 @@ engine decodes them, counts them as deferred and drops them, and sends none of t
 
 The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
-stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 to 0x0093
-(latest-wins), 0x080C to 0x0814 (journaled) and 0x8807 to 0x880B (commands). **Dictionary kind 0x20**
+stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 and 0x0092
+(latest-wins; 0x0093 is retired, DIFFICULTY's before it was journaled), 0x080C to 0x0815 (journaled)
+and 0x8807 to 0x880B (commands). **Dictionary kind 0x20**
 (each direction, as §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12
 are untouched.
 **Pages**: table 0x4300 ('C'), the meta page at id 0 and the rows at 0x4310 and up, as the ships'
@@ -1488,7 +1489,7 @@ are untouched.
 | 0x0090 | BAND_STATE (latest-wins) | flags: 1 ticking, 2 fighting | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 u32 members present, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z. Every 100 ticks per embodied party (PLACEHOLDER) | 56 |
 | 0x0091 | CHIEF_STATE (latest-wins) | flags: 1 crystal held | 8 u64 faction, 16 f32 health, 20 reserved | 24 |
 | 0x0092 | HAVEN_CHEST (latest-wins) | 0 | 8 u64 faction, 16 u32 dimension, 20 i32 x, 24 y, 28 z, 32 u32 free slots (as LAIR_CHEST), 36 reserved | 40 |
-| 0x0093 | DIFFICULTY (latest-wins) | 0 | 8 u32 difficulty (§9.2), 12 reserved | 16 |
+| 0x0093 | retired (DIFFICULTY's until MZB-17 journaled it as 0x0815; never reuse) | | | |
 | 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
 | 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
@@ -1506,13 +1507,24 @@ are untouched.
 | 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief; u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
-| 0x0811 | NOTICE_SHOWN | the notice's rung (FACTION_NOTICE's aux) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
+| 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
 | 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u32 outcome: 1 done, 2 nothing to do, 3 stale) | 48 + 16n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 
-All of 0x0800 to 0x0814 are journaled; 0x0090 to 0x0093 are latest-wins (§2.3). Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
+All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY and NOTICE_SHOWN today; the rest are
 deferred (§9.6).
+
+**List caps.** Every list of a variable-length record (observations and commands alike: members,
+items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
+entries (`boundary::MAX_ENTRIES`). At the cap every kind still fits the header's u16 size: the
+largest, CAMP_CENSUS with both its lists full, is 88 + 32 × 1,024 + 16 × 1,024 = 49,240 bytes. An
+encoder writes the first 1,024 entries of a longer list, and the count it writes is theirs; a decoder
+refuses a count above the cap (`CodecError::TooMany`) and a record cut short of its lists
+(`CodecError::Short`). Framing a record over 65,535 bytes is a bug the encoder asserts against
+(MZB-35).
 
 - **TERRITORY_SIGNAL** is what the plugin counts inside a territory the engine told it about
   (TERRITORY): logs broken (2), ore broken (3), blocks placed on the faction's plots (5), members
@@ -1530,10 +1542,14 @@ deferred (§9.6).
   that player (P14). CHIEF_KILLED routs the band (§9.5). Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
-- **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes.
-- **NOTICE_SHOWN** says the plugin has played a FACTION_NOTICE in the world: its rung in aux and its
-  faction and player as the notice's. One for a rung other than the kept notice's (an older notice)
-  changes nothing.
+- **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
+  journaled (MZB-17), so the engine applies it at its game time and its replay after a crash applies
+  it again in the same order as the rest; one with the value the engine already has changes nothing.
+  Like every journaled record it is ignored while the module is off (U10); the session start's
+  sends it again (MZB-30).
+- **NOTICE_SHOWN** says the plugin has played a FACTION_NOTICE in the world: its serial in aux and
+  its faction and player as the notice's. One with a serial other than the kept notice's (an older
+  notice) changes nothing (MZB-10, MZB-28).
 - **CAMP_CENSUS**, **CAMP_OUT**, **CAMP_BODIES** and **CAMP_DEATH** are the camp reconciler's
   (MOWZIE.md §4.9): a census when every chunk of a camp's footprint is FULL, under a new epoch, with
   every body of the camp's kinds in the footprint (by slot and generation, or a stray by UUID), the
@@ -1553,11 +1569,11 @@ deferred (§9.6).
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
-| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 reserved | 64 | |
+| 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
-| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 the demand was settled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
+| 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
 | 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
 | 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir; u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
@@ -1567,15 +1583,18 @@ deferred (§9.6).
 
 Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
 U4), so none is kept or resent, with three exceptions. TERRITORY is sent again for every faction at a
-session start (`Conflict::session_start`, C2-9), and after it every FACTION_NOTICE of that faction's
-feuds that no NOTICE_SHOWN has answered (MOWZIE.md ledger 14, MZB-20). BAND_MARCH goes again for
+session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that no NOTICE_SHOWN has
+answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
+notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). BAND_MARCH goes again for
 every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
 (C2-12). DEMAND_SETTLED 5 (withdrawn) follows the last member of an envoy party falling when no
 player killed any of it (BAND_CASUALTIES or CHIEF_KILLED with killer kind 1): no relief, no refusal
-and no climb, and the feud stays on Envoy (MOWZIE.md ledger 14; before, the demand ran to its
-deadline and expired as if refused). The plugin drops the demand it held and plays nothing for it.
+and no climb. The feud holds on Envoy until the withdrawn demand's deadline, then sends a fresh envoy
+with a new demand (MOWZIE.md ledger 14, MZB-22). No BAND_RECALL follows when nobody is left in
+Minecraft; one for members still spawned has reason 6 (MZB-32). The plugin drops the demand it held
+and plays nothing for it.
 
 **BAND_MARCH** replaces the agent's earlier ones (the higher revision wins). The engine's ticks in it
 (musterEndTick, each waypoint's) are game time, as ENVOY_MATERIALIZE's deadline; its waypoints are the
@@ -1592,13 +1611,15 @@ or event for kills are vanilla and NeoForge.
 or the action bar (Ben, 2026-10-22); feuds, raids and deaths reach players as gossip (the news
 system). The plugin plays it when the player it names is in range (the Frostmaw's roar from toward
 its den, MOWZIE.md §4.11; for a culture with nothing to play, a sign at the place or nothing) and
-then journals NOTICE_SHOWN with the notice's rung. Until then it holds the notice for the session. A
-notice the session ends on unplayed comes again at the next session start, after its faction's
-TERRITORY, so across logouts and restarts it waits for the player's next entry. A plugin that plays
+then journals NOTICE_SHOWN with the notice's serial (FACTION_NOTICE's 60). Until then it holds the
+notice for the session. A notice the session ends on unplayed comes again at the next session start,
+after its faction's TERRITORY and the journal's replay, so across logouts and restarts it waits for
+the player's next entry. A plugin that plays
 nothing answers NOTICE_SHOWN at once.
 
-**Difficulty.** The plugin sends DIFFICULTY at every session start and on every change of the
-world's difficulty. On Peaceful the engine sends no war band: the plugin needs no rule of its own.
+**Difficulty.** The plugin journals DIFFICULTY at every session start and on every change of the
+world's difficulty. On Peaceful the engine sends no war band and recalls the ones in the world
+(BAND_RECALL 6): the plugin needs no rule of its own.
 
 **An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
@@ -1664,20 +1685,27 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
   down at its muster's end (its warriors back in the pool, its feud a rung down, so that it climbs
-  again later). One already out goes home on arrival, a siege waiting at its target goes home at its next turn,
-  and an ambush or a plunder does nothing. Notices, envoys and scouts go on, and grievance keeps its curve. When Peaceful ends every
-  feud is planned again at once. Only the flag is saved (MZB-14 to MZB-17). rtsim-jni keeps the last
-  DIFFICULTY while the module is off and applies it when it comes on, at the engine's present.
+  again later). When Peaceful begins, every war party already out stops at once (MZB-15): one on the
+  road goes home, its feud a rung down (MZB-29); a watched fight ends; a siege waiting at its target
+  goes home. Those in Minecraft get BAND_RECALL 6. No war body spawns while it is Peaceful, and an
+  ambush booked before never falls. Notices, envoys and scouts go on, and grievance keeps its curve.
+  When Peaceful ends every feud is planned again, its dwell clock paused over the Peaceful span and
+  shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so no burst
+  of raids follows. The flag and the span's start are saved (MZB-14 to MZB-17).
 - **Kept notices** (ledger 14). A feud's last FACTION_NOTICE is kept in its row until a NOTICE_SHOWN
-  for its rung, faction and player, or until the feud is forgotten; a later notice replaces it. Each
-  session start sends it again after its faction's TERRITORY (MZB-18 to MZB-21).
-- **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud stays on Envoy, its dwell
-  begun again, and climbs or calms from there as before (MZB-22).
+  for its serial, faction and player, or until the feud is forgotten; a later notice replaces it.
+  Serials are engine-wide, so a forgotten and re-made feud never reuses one (MZB-28). Each session
+  sends it again after its faction's TERRITORY and the journal's replay (MZB-18 to MZB-21, MZB-31).
+- **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
+  deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
+  (MZB-22).
 - **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
   (M9), RAIL_PASS (M7), TRAIN_PASSED (M8) and the camp records (M4) come later, as do the commands,
   which the engine does not send yet, and FACTION_FOUND's census (M4). Until then rtsim-jni decodes
   each, translates its ids, counts it (`ConflictLinkStats::deferred`) and drops it before the shared
-  clock runs for it: no module catches up for a deferred record (MZB-23).
+  clock runs for it: no module catches up for a deferred record. One with an op id spends it in
+  the engine, in rtsim-jni as in `Conflict::ingest`, so the same record again is not counted twice
+  (MZB-23).
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
