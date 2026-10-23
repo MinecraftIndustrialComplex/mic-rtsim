@@ -1114,14 +1114,7 @@ impl Ships {
         let full = self.tun.medium(self.ships[s].medium).pirate_crew;
         let short = full.saturating_sub(self.ships[s].crew);
         let got = if short > 0 {
-            let due: u32 = self.havens[h as usize]
-                .ships
-                .iter()
-                .filter_map(|&o| self.ships.get(o))
-                .filter(|x| matches!(x.status, Status::Lost { .. }))
-                .map(|x| self.tun.medium(x.medium).pirate_crew)
-                .sum();
-            let spare = (self.crew_pool_milli(h, at) / 1000).saturating_sub(due);
+            let spare = (self.crew_pool_milli(h, at) / 1000).saturating_sub(self.due_crews(h));
             self.take_crew(h, short.min(spare), at)
         } else {
             0
@@ -1138,6 +1131,18 @@ impl Ships {
                 format!("makes up {got} crew from haven {h}'s pool ({pool:.1} left ashore)"),
             );
         }
+    }
+
+    /// The crews haven `h`'s empty slots need (§2.4.6): held back from top-ups and tolls, so an
+    /// empty slot is never starved by the ships afloat.
+    fn due_crews(&self, h: u32) -> u32 {
+        self.havens[h as usize]
+            .ships
+            .iter()
+            .filter_map(|&o| self.ships.get(o))
+            .filter(|x| matches!(x.status, Status::Lost { .. }))
+            .map(|x| self.tun.medium(x.medium).pirate_crew)
+            .sum()
     }
 
     /// The value a pirate of strength `a` puts on hunting a lane of `medium` defended by
@@ -3942,8 +3947,39 @@ impl Ships {
                 day_of(back)
             ),
         );
-        // Its haven's last ship gone: it shuts if it starves (§2.4.6a rule 4).
+        // Its haven's last ship gone: it shuts if it starves (§2.4.6a rule 4), and a fed one
+        // waits on its refits, fed until a month after the first is due (PC13).
+        self.wait_on_refits(h, at);
         self.haven_quiet(h, at);
+    }
+
+    /// A fed haven whose ships were all sunk is not shut: S8's refits answer the loss (§2.4.6a
+    /// rule 4, PC4). It counts as fed until `starve_days` after its first slot's refit is due
+    /// (PC13), so the band waits out S8's `min(96, 4 x 2^P)` days hiring, and a month of hires
+    /// mans a slot even from an empty pool (a crew of 6 takes 29.2 days from none). Pirates
+    /// that never sail again after that still starve it.
+    fn wait_on_refits(&mut self, h: u32, at: Tick) {
+        let hv = &self.havens[h as usize];
+        if !self.tun.lifecycle || hv.shut.is_some() || self.starving(h, at) {
+            return;
+        }
+        let mut first = None::<Tick>;
+        for &s in &hv.ships {
+            match self.ships.get(s).map(|x| x.status) {
+                Some(Status::Active) | None => return,
+                Some(Status::Lost { back, .. }) if back != LAID_UP => {
+                    first = Some(first.map_or(back, |f| f.min(back)));
+                }
+                Some(Status::Lost { .. }) => {}
+            }
+        }
+        let Some(first) = first else {
+            return;
+        };
+        let until = first.max(at) + self.starve_ticks();
+        self.settle_pool(h, at);
+        let hv = &mut self.havens[h as usize];
+        hv.fed_until = hv.fed_until.max(until);
     }
 
     /// A lost pirate ship's slot is refitted when its wait is over and the haven's pool can man
@@ -4053,9 +4089,10 @@ impl Ships {
     /// pays for the fight it judged the lane by. Its crew `c` of strength `A` against a merchant
     /// crew and the lane's defence `D` loses `c x (1 - square_law(A, D))` men, in thousandths:
     /// the square law's share, never a roll. Haven `h`'s pool pays first (the men ashore who
-    /// make up the losses); what it lacks comes off the crew in whole men, rounded up. A crew
-    /// paid to the last man loses its ship, as a fight would (no killer, so no pressure).
-    /// Whether the ship was lost.
+    /// make up the losses), as far as it goes beyond its empty slots' crews, as a top-up does
+    /// (PC12); what it lacks comes off the crew in whole men, rounded up. A crew paid to the last
+    /// man loses its ship, as a fight would (no killer, so no pressure). Whether the ship was
+    /// lost.
     fn pay_toll(&mut self, w: &mut World, s: ShipId, h: u32, lane: u32, at: Tick) -> bool {
         let a = self.strength(s);
         let mt = self.tun.medium(self.ships[s].medium);
@@ -4068,8 +4105,9 @@ impl Ships {
             return false;
         }
         self.settle_pool(h, at);
+        let due = self.due_crews(h).saturating_mul(1000);
         let hv = &mut self.havens[h as usize];
-        let from_pool = toll.min(hv.pool_milli);
+        let from_pool = toll.min(hv.pool_milli.saturating_sub(due));
         hv.pool_milli -= from_pool;
         hv.counts.toll_milli += u64::from(toll);
         let men = (toll - from_pool).div_ceil(1000);
