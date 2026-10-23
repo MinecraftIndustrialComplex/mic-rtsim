@@ -607,6 +607,12 @@ impl Ships {
                     x.status
                 ));
             }
+            if x.is_laid_up() && (x.promoted.is_some() || !x.cargo.is_empty()) {
+                return Err(format!(
+                    "merchant {id:?} laid up mid-voyage: promoted {:?}, holding {:?}",
+                    x.promoted, x.cargo
+                ));
+            }
             if laid && x.is_active() && !x.embodied && x.promoted.is_none() {
                 return Err(format!(
                     "merchant {id:?} sails for a laid-up service, out of view with nothing promoted"
