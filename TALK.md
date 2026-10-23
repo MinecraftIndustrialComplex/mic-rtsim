@@ -523,8 +523,8 @@ lands, and landed on main.
 
 1. **The talk path and vanilla villagers** (Java only, no boundary change): `talk/` in the core (the
    API, the listener on both sides, the picker, rate limits, no repeats, the lang counts, names),
-   villagers and wandering traders, fluff and Java-side mood, the gossip credit with its cap, the core
-   lang file. GameTests:
+   villagers and wandering traders, fluff and Java-side mood, the gossip credit with its cap, the TQ-2
+   hint (TK27), the core lang file. GameTests:
    - `talk_line_reaches_only_the_talker`: two mock players by a villager; one crouch-clicks; only he
      receives a line, and it is a `mic_rtsim.talk.` key;
    - `talk_opens_no_trade_screen`: a crouching click on a villager with trades and on a wandering
@@ -554,7 +554,7 @@ lands, and landed on main.
   On's key for blocks too, for new installs. (c) Talk only with something in the off hand, leaving
   Shift with both hands empty to Carry On. Built on (a).
 - **TQ-2. How players find out they can talk.** (a, recommended) A line in the pack's guide and the
-  first time a player opens a villager's trades, a one-time action-bar hint ("Crouch and right-click
+  first time a player closes a villager's trades (TK27), a one-time action-bar hint ("Crouch and right-click
   to talk"), never again for him. (b) The pack's guide only. (c) Nothing. Built on (a).
 - **TQ-3. Names.** (a, recommended) Villages, camps and chiefs get generated names (two parts from a
   list, the same for everyone), always with a direction and distance, so "Mudhollow raided Lowmarsh,
