@@ -80,7 +80,9 @@ under its own heading.
   `player_stale_ticks` (2,400), with the fake player reporting where it stands before each step; the camp
   is 40 blocks from the player so every party comes into view at once, and any stack still pending has
   its chunks forced (MZB-103). It stops at the raid's first materialization (seen setting out); the
-  director's arc 112 blocks out is the JNI protocol test's.
+  director's arc 112 blocks out is the JNI protocol test's. The player kills 32 of the camp's kin
+  (grievance 256): the chief's temper is random and bends each threshold up to 1/0.6 of the culture's,
+  so 16 kills (128) decayed below a meek chief's raid threshold (117) on the three-day climb.
 - **MZB-118** (where a notice plays): a kept notice plays its sound to its player once they stand inside
   the faction's territory or within 256 blocks of the notice's place, tested every 20 ticks.
 - **MZB-119** (pinning bodies in the far stack test): the stack test turns off its bodies' AI so no stroll
