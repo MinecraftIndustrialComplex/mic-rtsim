@@ -279,7 +279,7 @@ fn idx(x: u32) -> f64 {
 impl Report {
     /// The flat form the JNI inspection call returns (`NativeEngine.glassReport`); -1 is "none":
     ///
-    /// - header (41): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
+    /// - header (42): 0 compile, 1 rounds, 2 converged (0 or 1), 3 nodes, 4 edges, 5 solve µs,
     ///   6 window start tick, 7 window ticks done, 8 window ticks target, 9 windows completed,
     ///   10 verdict, 11 strikes, 12 goods, 13 solves, 14 demoted kinds, 15 latency ticks,
     ///   16 accepted at (tick), 17 ready at (tick), 18 sweeps taken, 19 sweeps sampled,

@@ -103,7 +103,7 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0402 | IND_INVENTORY | kind flags | 24 u64 district, 32 u32 revision, 36 u32 index, 40 i32 x, 44 i32 y, 48 i32 z, 52 u32 itemSlots, 56 i64 fluidCapacity, 64 i64 energyCapacity | 72 |
 | 0x0403 | IND_DISTRICT_REMOVED | 0 | 24 u64 district | 32 |
 | 0x0404 | IND_EDIT | 1 placed, 2 broken, 3 configured, 4 command | 24 u64 district, 32 u64 playerMost, 40 u64 playerLeast, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved | 64 |
-| 0x0405 | IND_DISCARD | 1 unattributed session, 2 creative block, 3 overstressed, 4 progressive contraption, 5 other | 24 u64 district | 32 |
+| 0x0405 | IND_DISCARD | 1 unattributed session, 2 creative block, 3 overstressed, 4 progressive contraption, 5 other | 24 u64 district, 32 u64 station (the station whose call made an `other` discard, 0 for none; SECTIONS.md SC76) | 40 |
 | 0x0406 | IND_LOAD_STATE | 0 unloaded, 1 partial, 2 live | 24 u64 district, 32 u32 tickingChunks, 36 u32 totalChunks | 40 |
 | 0x0407 | IND_CHUNK_LOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 appliedEpoch | 48 |
 | 0x040A | IND_CHUNK_UNLOADED | 0 | 24 u64 district, 32 u32 dim, 36 i32 x, 40 i32 z, 44 u32 reserved (0); at `ChunkEvent.Unload` (I7, IR6) | 48 |
@@ -158,7 +158,8 @@ revision replaces the old lists. Detection (I2) is the Java side's.
 
 **Edits and staleness.** IND_EDIT (a `BlockEvent` with a player inside the district) makes a learned
 district Stale (I5: stale freezes) and discards the open window. IND_DISCARD discards the open window
-only. Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
+only; a station's `other` discard also the glass windows of what its ports reach (SECTIONS.md §3.6).
+Machine edits by machines and chunk loaders switching are not edits (INDUSTRY.md §3.3). The
 district keeps the players of its last edits (placed, broken, configured; not commands): the last 8
 distinct players with the tick of each one's latest edit, saved with it, so the dragons can name a
 well's builders (docs/choices-oilgate.md OGC54).
