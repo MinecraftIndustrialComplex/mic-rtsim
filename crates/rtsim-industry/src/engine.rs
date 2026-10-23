@@ -45,7 +45,8 @@ use crate::ids::{
 use crate::learn::{LinkKey, Sample};
 use crate::obs::{
     BlockFlags, Carriage, CarriageResult, Conditions, Direction, EditKind, LoadState, NotLearnable,
-    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture, UnwatchedStop,
+    Obs, PackageEvent, ReconcileResult, StationDecl, Timed, TrainCall, TrainDeparture,
+    UnwatchedStop,
 };
 use crate::reconcile::{self, GoodLookup};
 use crate::threat::{
@@ -2602,7 +2603,14 @@ impl Engine {
     }
 
     /// One trip along the edge `(from, c.station)`: `from` is where the train's leg began at `depart`.
-    fn line_edge(&mut self, at: Tick, c: &TrainCall, from: StationId, depart: Tick, cargo: GoodVec) {
+    fn line_edge(
+        &mut self,
+        at: Tick,
+        c: &TrainCall,
+        from: StationId,
+        depart: Tick,
+        cargo: GoodVec,
+    ) {
         let e = self.lines.entry((from, c.station)).or_default();
         let first = e.trips == 0;
         if first {
