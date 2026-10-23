@@ -477,18 +477,27 @@ fn the_network_page_is_written_only_when_it_changes() {
 
 /// A save in an older ships format is refused by name, never read as a truncated one: S8b-3's
 /// stats and ledger made the format `RTS3`, and an `RTS2` page used to fail as "truncated" deep in
-/// the stats (the rtsim-view fixtures, 2026-10-23).
+/// the stats (the rtsim-view fixtures, 2026-10-23); S8b-4's closures made it `RTS4`. A save with
+/// no ships magic at all is "not a ships save".
 #[test]
 fn an_older_format_is_refused_by_name() {
     let mut bytes = Ships::new(1, ShipTunables::default(), Tick::ZERO).save();
-    assert_eq!(&bytes[..4], b"RTS3");
-    bytes[..4].copy_from_slice(b"RTS2");
+    assert_eq!(&bytes[..4], b"RTS4");
+    for old in [b"RTS3", b"RTS2"] {
+        bytes[..4].copy_from_slice(old);
+        let err = Ships::load(ShipTunables::default(), &bytes)
+            .err()
+            .expect("an older save is refused");
+        let msg = err.to_string();
+        let name = std::str::from_utf8(old).expect("ascii");
+        assert!(
+            msg.contains(&format!("format {name}")) && msg.contains("reads RTS4"),
+            "the error names both formats: {msg}"
+        );
+    }
+    bytes[..4].copy_from_slice(b"XXXX");
     let err = Ships::load(ShipTunables::default(), &bytes)
         .err()
-        .expect("an RTS2 save is refused");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("format RTS2") && msg.contains("reads RTS3"),
-        "the error names both formats: {msg}"
-    );
+        .expect("a foreign save is refused");
+    assert!(err.to_string().contains("not a ships save"), "{err}");
 }
