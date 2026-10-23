@@ -20,7 +20,7 @@
 pub const BAND_STATE: u16 = 0x0090;
 pub const CHIEF_STATE: u16 = 0x0091;
 pub const HAVEN_CHEST: u16 = 0x0092;
-pub const DIFFICULTY: u16 = 0x0093;
+// 0x0093 is retired: DIFFICULTY was latest-wins there before it was journaled (MZB-17).
 pub const FACTION_FOUND: u16 = 0x0800;
 pub const TERRITORY_SIGNAL: u16 = 0x0801;
 pub const POLLUTION: u16 = 0x0802;
@@ -42,6 +42,7 @@ pub const NOTICE_SHOWN: u16 = 0x0811;
 pub const CAMP_BODIES: u16 = 0x0812;
 pub const CAMP_OUT: u16 = 0x0813;
 pub const CHIEF_PAID: u16 = 0x0814;
+pub const DIFFICULTY: u16 = 0x0815;
 
 pub const TERRITORY: u16 = 0x8800;
 pub const FACTION_NOTICE: u16 = 0x8801;
@@ -332,7 +333,8 @@ pub struct HavenChest {
     pub free: u32,
 }
 
-/// The world's difficulty (latest-wins): `DIFFICULTY_PEACEFUL` to `DIFFICULTY_HARD`.
+/// The world's difficulty (journaled, at the game time it took effect): `DIFFICULTY_PEACEFUL` to
+/// `DIFFICULTY_HARD`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Difficulty {
     pub difficulty: u32,
@@ -424,8 +426,8 @@ pub struct Traded {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoticeShown {
     pub faction: u64,
-    /// The notice's step, as FACTION_NOTICE's aux.
-    pub step: u32,
+    /// The notice's serial, as FACTION_NOTICE's (aux).
+    pub serial: u32,
     /// The notice's player; (0, 0) for the settlers.
     pub player: Uuid,
 }
@@ -570,6 +572,10 @@ pub struct Territory {
 pub struct Notice {
     pub faction: u64,
     pub step: u32,
+    /// The notice's identity (from 1, one per notice, counted engine-wide so that no two notices
+    /// of a feud share one): NOTICE_SHOWN echoes it, so an answer to an older notice of the same
+    /// feud changes nothing.
+    pub serial: u32,
     /// Whom; (0, 0) for the settlers (any player near).
     pub player: Uuid,
     pub dimension: u32,
@@ -810,6 +816,29 @@ pub enum CodecError {
     Short,
     BadSize,
     Unknown(u16),
+    /// A list's count above [`MAX_ENTRIES`].
+    TooMany,
+}
+
+/// The most entries any list of a variable-length record carries (docs/boundary.md §9.1). At it
+/// every record's size still fits the header's u16: the largest, CAMP_CENSUS with both of its
+/// lists at the cap, is 88 + 32 × 1024 + 16 × 1024 = 49,240 bytes. An encoder writes the first
+/// `MAX_ENTRIES` entries of a longer list (the count it writes is theirs); a decoder refuses a
+/// count above it.
+pub const MAX_ENTRIES: usize = 1024;
+
+/// The first [`MAX_ENTRIES`] of a list, as an encoder writes them.
+fn capped<T>(v: &[T]) -> &[T] {
+    &v[..v.len().min(MAX_ENTRIES)]
+}
+
+/// A list's count as read, refused above [`MAX_ENTRIES`].
+fn count(n: u32) -> Result<usize, CodecError> {
+    let n = n as usize;
+    if n > MAX_ENTRIES {
+        return Err(CodecError::TooMany);
+    }
+    Ok(n)
 }
 
 struct W<'a> {
@@ -877,6 +906,11 @@ impl W<'_> {
     }
     fn finish(&mut self, kind: u16, aux: u32, size: usize) {
         let size = size.div_ceil(8) * 8;
+        // The caps keep every kind under it (MAX_ENTRIES); a record past it cannot be framed.
+        assert!(
+            size <= usize::from(u16::MAX),
+            "a record of kind {kind:#06x} of {size} bytes does not fit its u16 size"
+        );
         if self.b.len() < self.start + size {
             self.b.resize(self.start + size, 0);
         }
@@ -1007,11 +1041,12 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.finish(BAND_SPAWN_REJECTED, r.reason, 48);
         }
         Obs::Dematerialized(d) => {
+            let survivors = capped(&d.survivors);
             w.u64(24, d.agent);
             w.u32(32, d.epoch);
-            w.u32(36, d.survivors.len() as u32);
-            w.pairs(40, &d.survivors);
-            w.finish(BAND_DEMATERIALIZED, d.reason, 40 + 8 * d.survivors.len());
+            w.u32(36, survivors.len() as u32);
+            w.pairs(40, survivors);
+            w.finish(BAND_DEMATERIALIZED, d.reason, 40 + 8 * survivors.len());
         }
         Obs::Casualties(c) => {
             w.u64(24, c.agent);
@@ -1040,22 +1075,25 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(40, t.epoch);
             w.uuid(48, t.player);
             w.u64(64, t.op);
-            w.items(72, &t.items);
-            w.finish(TRIBUTE_PAID, t.items.len() as u32, 72 + 16 * t.items.len());
+            let items = capped(&t.items);
+            w.items(72, items);
+            w.finish(TRIBUTE_PAID, items.len() as u32, 72 + 16 * items.len());
         }
         Obs::GiftGiven(g) => {
             w.u64(24, g.faction);
             w.uuid(32, g.player);
             w.u64(48, g.op);
-            w.items(56, &g.items);
-            w.finish(GIFT_GIVEN, g.items.len() as u32, 56 + 16 * g.items.len());
+            let items = capped(&g.items);
+            w.items(56, items);
+            w.finish(GIFT_GIVEN, items.len() as u32, 56 + 16 * items.len());
         }
         Obs::Looted(l) => {
             w.u64(24, l.agent);
             w.u32(32, l.epoch);
             w.u64(40, l.op);
-            w.items(48, &l.items);
-            w.finish(BAND_LOOTED, l.items.len() as u32, 48 + 16 * l.items.len());
+            let items = capped(&l.items);
+            w.items(48, items);
+            w.finish(BAND_LOOTED, items.len() as u32, 48 + 16 * items.len());
         }
         Obs::ChiefState(c) => {
             w.u64(8, c.faction);
@@ -1070,8 +1108,8 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.finish(HAVEN_CHEST, 0, 40);
         }
         Obs::Difficulty(d) => {
-            w.u32(8, d.difficulty);
-            w.finish(DIFFICULTY, 0, 16);
+            w.u32(24, d.difficulty);
+            w.finish(DIFFICULTY, 0, 32);
         }
         Obs::RailPass(p) => {
             w.u64(24, p.faction);
@@ -1101,16 +1139,17 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.finish(CAMP_DEATH, d.by, 72);
         }
         Obs::CampCensus(c) => {
+            let (bodies, traded) = (capped(&c.bodies), capped(&c.traded));
             w.u64(24, c.faction);
             w.u64(32, c.epoch);
             w.u32(40, c.flags);
             w.f32(44, c.health);
             w.pos(48, c.throne);
             w.f32(72, c.direction);
-            w.u32(76, c.traded.len() as u32);
+            w.u32(76, traded.len() as u32);
             w.u32(80, c.traded_slot);
             w.u32(84, c.traded_generation);
-            for (k, b) in c.bodies.iter().enumerate() {
+            for (k, b) in bodies.iter().enumerate() {
                 let o = 88 + 32 * k;
                 w.u32(o, b.body);
                 w.u32(o + 4, b.flags);
@@ -1118,11 +1157,11 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
                 w.u32(o + 12, b.generation);
                 w.uuid(o + 16, b.uuid);
             }
-            let t0 = 88 + 32 * c.bodies.len();
-            for (k, u) in c.traded.iter().enumerate() {
+            let t0 = 88 + 32 * bodies.len();
+            for (k, u) in traded.iter().enumerate() {
                 w.uuid(t0 + 16 * k, *u);
             }
-            w.finish(CAMP_CENSUS, c.bodies.len() as u32, t0 + 16 * c.traded.len());
+            w.finish(CAMP_CENSUS, bodies.len() as u32, t0 + 16 * traded.len());
         }
         Obs::Traded(t) => {
             w.u64(24, t.faction);
@@ -1134,20 +1173,21 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
         Obs::NoticeShown(n) => {
             w.u64(24, n.faction);
             w.uuid(32, n.player);
-            w.finish(NOTICE_SHOWN, n.step, 48);
+            w.finish(NOTICE_SHOWN, n.serial, 48);
         }
         Obs::CampBodies(b) => {
             w.u64(24, b.faction);
             w.u64(32, b.epoch);
             w.u64(40, b.op);
-            for (k, l) in b.lines.iter().enumerate() {
+            let lines = capped(&b.lines);
+            for (k, l) in lines.iter().enumerate() {
                 let o = 48 + 16 * k;
                 w.u32(o, l.line);
                 w.u32(o + 4, l.slot);
                 w.u32(o + 8, l.generation);
                 w.u32(o + 12, l.outcome);
             }
-            w.finish(CAMP_BODIES, b.lines.len() as u32, 48 + 16 * b.lines.len());
+            w.finish(CAMP_BODIES, lines.len() as u32, 48 + 16 * lines.len());
         }
         Obs::CampOut(c) => {
             w.u64(24, c.faction);
@@ -1161,8 +1201,9 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(40, c.flags);
             w.uuid(48, c.player);
             w.u64(64, c.op);
-            w.items(72, &c.items);
-            w.finish(CHIEF_PAID, c.items.len() as u32, 72 + 16 * c.items.len());
+            let items = capped(&c.items);
+            w.items(72, items);
+            w.finish(CHIEF_PAID, items.len() as u32, 72 + 16 * items.len());
         }
     }
 }
@@ -1236,7 +1277,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             cmd_seq: r.u64(40)?,
         }),
         BAND_DEMATERIALIZED => {
-            let n = r.u32(36)? as usize;
+            let n = count(r.u32(36)?)?;
             Obs::Dematerialized(BandDematerialized {
                 agent: r.u64(24)?,
                 epoch: r.u32(32)?,
@@ -1271,19 +1312,19 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             epoch: r.u32(40)?,
             player: r.uuid(48)?,
             op: r.u64(64)?,
-            items: r.items(72, aux as usize)?,
+            items: r.items(72, count(aux)?)?,
         }),
         GIFT_GIVEN => Obs::GiftGiven(GiftGiven {
             faction: r.u64(24)?,
             player: r.uuid(32)?,
             op: r.u64(48)?,
-            items: r.items(56, aux as usize)?,
+            items: r.items(56, count(aux)?)?,
         }),
         BAND_LOOTED => Obs::Looted(BandLooted {
             agent: r.u64(24)?,
             epoch: r.u32(32)?,
             op: r.u64(40)?,
-            items: r.items(48, aux as usize)?,
+            items: r.items(48, count(aux)?)?,
         }),
         CHIEF_STATE => Obs::ChiefState(ChiefState {
             faction: r.u64(8)?,
@@ -1297,7 +1338,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             free: r.u32(32)?,
         }),
         DIFFICULTY => Obs::Difficulty(Difficulty {
-            difficulty: r.u32(8)?,
+            difficulty: r.u32(24)?,
         }),
         RAIL_PASS => Obs::RailPass(RailPass {
             faction: r.u64(24)?,
@@ -1326,8 +1367,8 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             op: r.u64(64)?,
         }),
         CAMP_CENSUS => {
-            let n = aux as usize;
-            let t = r.u32(76)? as usize;
+            let n = count(aux)?;
+            let t = count(r.u32(76)?)?;
             let bodies = (0..n)
                 .map(|k| {
                     let o = 88 + 32 * k;
@@ -1365,11 +1406,11 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
         }),
         NOTICE_SHOWN => Obs::NoticeShown(NoticeShown {
             faction: r.u64(24)?,
-            step: aux,
+            serial: aux,
             player: r.uuid(32)?,
         }),
         CAMP_BODIES => {
-            let lines = (0..aux as usize)
+            let lines = (0..count(aux)?)
                 .map(|k| {
                     let o = 48 + 16 * k;
                     Ok(LineAnswer {
@@ -1398,7 +1439,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             flags: r.u32(40)?,
             player: r.uuid(48)?,
             op: r.u64(64)?,
-            items: r.items(72, aux as usize)?,
+            items: r.items(72, count(aux)?)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -1428,6 +1469,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.i32(48, n.x);
             w.i32(52, n.z);
             w.f32(56, n.grievance);
+            w.u32(60, n.serial);
             w.finish(FACTION_NOTICE, n.step, 64);
         }
         Cmd::Envoy(e) => {
@@ -1442,11 +1484,12 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u32(88, e.tribute_item);
             w.i32(92, e.tribute_count);
             w.i64(96, e.deadline);
-            w.pairs(104, &e.members);
+            let members = capped(&e.members);
+            w.pairs(104, members);
             w.finish(
                 ENVOY_MATERIALIZE,
-                e.members.len() as u32,
-                104 + 8 * e.members.len(),
+                members.len() as u32,
+                104 + 8 * members.len(),
             );
         }
         Cmd::Materialize(m) => {
@@ -1465,15 +1508,16 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.pos(72, m.target);
             w.uuid(96, m.target_player);
             w.f32(112, m.speed);
-            for (k, s) in m.members.iter().enumerate() {
+            let members = capped(&m.members);
+            for (k, s) in members.iter().enumerate() {
                 w.u32(120 + 16 * k, s.body);
                 w.u32(124 + 16 * k, s.count);
                 w.u32(128 + 16 * k, s.flags);
             }
             w.finish(
                 BAND_MATERIALIZE,
-                m.members.len() as u32,
-                120 + 16 * m.members.len(),
+                members.len() as u32,
+                120 + 16 * members.len(),
             );
         }
         Cmd::Steer(s) => {
@@ -1516,7 +1560,8 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.pos(40, c.throne);
             w.f32(64, c.direction);
             w.u32(68, c.flags);
-            for (k, l) in c.lines.iter().enumerate() {
+            let lines = capped(&c.lines);
+            for (k, l) in lines.iter().enumerate() {
                 let o = 72 + 32 * k;
                 w.u32(o, l.slot);
                 w.u32(o + 4, l.generation);
@@ -1526,11 +1571,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
                 w.u64(o + 16, l.a);
                 w.u64(o + 24, l.b);
             }
-            w.finish(
-                CAMP_RECONCILE,
-                c.lines.len() as u32,
-                72 + 32 * c.lines.len(),
-            );
+            w.finish(CAMP_RECONCILE, lines.len() as u32, 72 + 32 * lines.len());
         }
         Cmd::TrainRobbed(t) => {
             w.u64(16, t.faction);
@@ -1543,10 +1584,11 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u64(32, c.epoch);
             w.f32(40, c.health);
             w.u32(44, c.flags);
-            for (k, u) in c.traded.iter().enumerate() {
+            let traded = capped(&c.traded);
+            for (k, u) in traded.iter().enumerate() {
                 w.uuid(48 + 16 * k, *u);
             }
-            w.finish(CHIEF_BODY, c.traded.len() as u32, 48 + 16 * c.traded.len());
+            w.finish(CHIEF_BODY, traded.len() as u32, 48 + 16 * traded.len());
         }
         Cmd::March(m) => {
             w.u64(16, m.agent);
@@ -1559,18 +1601,19 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u8(46, m.flags);
             w.u64(48, m.partner);
             w.i64(56, m.muster_end);
-            w.u32(64, m.units.len() as u32);
-            w.pairs(72, &m.units);
-            let w0 = 72 + 8 * m.units.len();
-            for (k, p) in m.waypoints.iter().enumerate() {
+            let (units, waypoints) = (capped(&m.units), capped(&m.waypoints));
+            w.u32(64, units.len() as u32);
+            w.pairs(72, units);
+            let w0 = 72 + 8 * units.len();
+            for (k, p) in waypoints.iter().enumerate() {
                 w.i32(w0 + 16 * k, p.0);
                 w.i32(w0 + 16 * k + 4, p.1);
                 w.i64(w0 + 16 * k + 8, p.2);
             }
             w.finish(
                 BAND_MARCH,
-                m.waypoints.len() as u32,
-                w0 + 16 * m.waypoints.len(),
+                waypoints.len() as u32,
+                w0 + 16 * waypoints.len(),
             );
         }
     }
@@ -1606,6 +1649,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             x: r.i32(48)?,
             z: r.i32(52)?,
             grievance: r.f32(56)?,
+            serial: r.u32(60)?,
         }),
         ENVOY_MATERIALIZE => Cmd::Envoy(EnvoyMaterialize {
             agent: r.u64(16)?,
@@ -1619,10 +1663,10 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             tribute_item: r.u32(88)?,
             tribute_count: r.i32(92)?,
             deadline: r.i64(96)?,
-            members: r.pairs(104, aux as usize)?,
+            members: r.pairs(104, count(aux)?)?,
         }),
         BAND_MATERIALIZE => {
-            let n = aux as usize;
+            let n = count(aux)?;
             let members = (0..n)
                 .map(|k| {
                     Ok(Stack {
@@ -1683,7 +1727,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             reach: r.f32(88)?,
         }),
         CAMP_RECONCILE => {
-            let lines = (0..aux as usize)
+            let lines = (0..count(aux)?)
                 .map(|k| {
                     let o = 72 + 32 * k;
                     Ok(ReconcileLine {
@@ -1717,12 +1761,12 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             epoch: r.u64(32)?,
             health: r.f32(40)?,
             flags: r.u32(44)?,
-            traded: (0..aux as usize)
+            traded: (0..count(aux)?)
                 .map(|k| r.uuid(48 + 16 * k))
                 .collect::<Result<Vec<_>, CodecError>>()?,
         }),
         BAND_MARCH => {
-            let k = r.u32(64)? as usize;
+            let k = count(r.u32(64)?)?;
             let w0 = 72 + 8 * k;
             Cmd::March(BandMarch {
                 agent: r.u64(16)?,
@@ -1736,7 +1780,7 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
                 partner: r.u64(48)?,
                 muster_end: r.i64(56)?,
                 units: r.pairs(72, k)?,
-                waypoints: (0..aux as usize)
+                waypoints: (0..count(aux)?)
                     .map(|j| {
                         let o = w0 + 16 * j;
                         Ok((r.i32(o)?, r.i32(o + 4)?, r.i64(o + 8)?))
@@ -1935,7 +1979,7 @@ mod tests {
             }),
             Obs::NoticeShown(NoticeShown {
                 faction: 77,
-                step: 1,
+                serial: 3,
                 player: (11, 22),
             }),
             Obs::CampBodies(CampBodies {
@@ -1987,6 +2031,7 @@ mod tests {
             Cmd::Notice(Notice {
                 faction: 77,
                 step: 1,
+                serial: 3,
                 player: (0, 0),
                 dimension: 1,
                 signal: 0,
@@ -2142,7 +2187,7 @@ mod tests {
             BAND_STATE => 56,
             CHIEF_STATE => 24,
             HAVEN_CHEST => 40,
-            DIFFICULTY => 16,
+            DIFFICULTY => 32,
             FACTION_FOUND => 56,
             TERRITORY_SIGNAL => 72,
             POLLUTION => 64,
@@ -2280,5 +2325,267 @@ mod tests {
         assert_eq!(decode_obs(&b), Err(CodecError::Unknown(0x08FF)));
         b[2..4].copy_from_slice(&12u16.to_le_bytes());
         assert_eq!(decode_obs(&b), Err(CodecError::BadSize));
+    }
+
+    /// The variable-length kinds (docs/boundary.md §9.1): where each list's count is, aux or a
+    /// field.
+    fn counts(kind: u16) -> &'static [Option<usize>] {
+        match kind {
+            BAND_DEMATERIALIZED => &[Some(36)],
+            CAMP_CENSUS => &[None, Some(76)],
+            BAND_MARCH => &[Some(64), None],
+            TRIBUTE_PAID | GIFT_GIVEN | BAND_LOOTED | CAMP_BODIES | CHIEF_PAID
+            | ENVOY_MATERIALIZE | BAND_MATERIALIZE | CAMP_RECONCILE | CHIEF_BODY => &[None],
+            _ => &[],
+        }
+    }
+
+    fn many_items(n: usize) -> Vec<Item> {
+        (0..n as u32)
+            .map(|i| Item {
+                item: i + 1,
+                count: i as i32,
+            })
+            .collect()
+    }
+
+    /// A sample with every list `n` entries long (by index, so a shorter one is a prefix).
+    fn long_obs(o: &Obs, n: usize) -> Option<Obs> {
+        let mut o = o.clone();
+        let m = n as u32;
+        match &mut o {
+            Obs::Dematerialized(d) => d.survivors = (0..m).map(|i| (i + 1, i)).collect(),
+            Obs::TributePaid(t) => t.items = many_items(n),
+            Obs::GiftGiven(g) => g.items = many_items(n),
+            Obs::Looted(l) => l.items = many_items(n),
+            Obs::ChiefPaid(c) => c.items = many_items(n),
+            Obs::CampCensus(c) => {
+                c.bodies = (0..m)
+                    .map(|i| CensusBody {
+                        body: i + 1,
+                        flags: 0,
+                        slot: i,
+                        generation: 1,
+                        uuid: (u64::from(i), 7),
+                    })
+                    .collect();
+                c.traded = (0..u64::from(m)).map(|i| (i, i + 1)).collect();
+            }
+            Obs::CampBodies(b) => {
+                b.lines = (0..m)
+                    .map(|i| LineAnswer {
+                        line: i,
+                        slot: i,
+                        generation: 1,
+                        outcome: LINE_DONE,
+                    })
+                    .collect();
+            }
+            _ => return None,
+        }
+        Some(o)
+    }
+
+    fn long_cmd(c: &Cmd, n: usize) -> Option<Cmd> {
+        let mut c = c.clone();
+        let m = n as u32;
+        match &mut c {
+            Cmd::Envoy(e) => e.members = (0..m).map(|i| (i + 1, i)).collect(),
+            Cmd::Materialize(b) => {
+                b.members = (0..m)
+                    .map(|i| Stack {
+                        body: i + 1,
+                        count: i,
+                        flags: 0,
+                    })
+                    .collect();
+            }
+            Cmd::Reconcile(r) => {
+                r.lines = (0..m)
+                    .map(|i| ReconcileLine {
+                        slot: i,
+                        generation: 1,
+                        body: 1,
+                        action: ACTION_SPAWN,
+                        flags: 0,
+                        a: 0,
+                        b: u64::from(i),
+                    })
+                    .collect();
+            }
+            Cmd::ChiefBody(b) => b.traded = (0..u64::from(m)).map(|i| (i, i + 1)).collect(),
+            Cmd::March(b) => {
+                b.units = (0..m).map(|i| (i + 1, i)).collect();
+                b.waypoints = (0..m as i32).map(|i| (i, -i, i64::from(i))).collect();
+            }
+            _ => return None,
+        }
+        Some(c)
+    }
+
+    /// Every variable-length sample at `n` entries a list, encoded: (kind, the record).
+    fn long_records(n: usize) -> Vec<(u16, Vec<u8>)> {
+        let mut v = Vec::new();
+        for o in obs().iter().filter_map(|o| long_obs(o, n)) {
+            let mut b = Vec::new();
+            encode_obs(1, 2, &o, &mut b);
+            v.push((o.kind(), b));
+        }
+        for c in cmds().iter().filter_map(|c| long_cmd(c, n)) {
+            let mut b = Vec::new();
+            encode_cmd(1, &c, &mut b);
+            v.push((c.kind(), b));
+        }
+        v
+    }
+
+    fn decode_any(b: &[u8]) -> Result<(), CodecError> {
+        if u16::from_le_bytes([b[0], b[1]]) >= 0x8800 {
+            decode_cmd(b).map(|_| ())
+        } else {
+            decode_obs(b).map(|_| ())
+        }
+    }
+
+    /// Item 9 of the M1 review: past `MAX_ENTRIES` a list is cut to its first `MAX_ENTRIES`, so
+    /// every kind's size fits the header's u16 (CAMP_CENSUS was past it at 2,048 bodies).
+    #[test]
+    fn every_list_is_capped_so_every_size_fits_its_u16() {
+        let mut kinds = BTreeSet::new();
+        for o in obs() {
+            let Some(long) = long_obs(&o, MAX_ENTRIES + 5) else {
+                continue;
+            };
+            let mut b = Vec::new();
+            encode_obs(1, 2, &long, &mut b);
+            let aux = u32::from_le_bytes(b[4..8].try_into().unwrap());
+            assert_eq!(b.len(), documented_size(o.kind(), aux, &b));
+            assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
+            let (_, back, size) = decode_obs(&b).unwrap();
+            assert_eq!(size, b.len());
+            assert_eq!(
+                back,
+                long_obs(&o, MAX_ENTRIES).unwrap(),
+                "the first ones are kept"
+            );
+            kinds.insert(o.kind());
+        }
+        for c in cmds() {
+            let Some(long) = long_cmd(&c, MAX_ENTRIES + 5) else {
+                continue;
+            };
+            let mut b = Vec::new();
+            encode_cmd(1, &long, &mut b);
+            let aux = u32::from_le_bytes(b[4..8].try_into().unwrap());
+            assert_eq!(b.len(), documented_size(c.kind(), aux, &b));
+            assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
+            let (_, back, size) = decode_cmd(&b).unwrap();
+            assert_eq!(size, b.len());
+            assert_eq!(
+                back,
+                long_cmd(&c, MAX_ENTRIES).unwrap(),
+                "the first ones are kept"
+            );
+            kinds.insert(c.kind());
+        }
+        // Every variable-length kind: 7 observations and 5 commands.
+        assert_eq!(kinds.len(), 12);
+        assert!(kinds.iter().all(|k| !counts(*k).is_empty()));
+        // The largest record there is, CAMP_CENSUS with both lists at the cap.
+        let census = long_records(MAX_ENTRIES)
+            .into_iter()
+            .find(|(k, _)| *k == CAMP_CENSUS)
+            .unwrap();
+        assert_eq!(census.1.len(), 49_240);
+    }
+
+    /// A count above `MAX_ENTRIES` is refused, even when the record holds that many entries.
+    #[test]
+    fn a_count_above_the_cap_is_refused() {
+        let mut tried = 0;
+        for (kind, rec) in long_records(MAX_ENTRIES) {
+            assert_eq!(decode_any(&rec), Ok(()));
+            for at in counts(kind) {
+                let mut b = rec.clone();
+                let too_many = (MAX_ENTRIES as u32 + 1).to_le_bytes();
+                b[at.unwrap_or(4)..at.unwrap_or(4) + 4].copy_from_slice(&too_many);
+                let aux = u32::from_le_bytes(b[4..8].try_into().unwrap());
+                let size = documented_size(kind, aux, &b);
+                b.resize(size, 0);
+                b[2..4].copy_from_slice(&(size as u16).to_le_bytes());
+                assert_eq!(decode_any(&b), Err(CodecError::TooMany), "{kind:#06x}");
+                tried += 1;
+            }
+        }
+        assert_eq!(tried, 14);
+    }
+
+    /// A record whose size stops short of the entries its counts say is refused. Cut by 16 bytes,
+    /// a whole entry of every list (an item's second half is reserved, so 8 would cut nothing
+    /// read).
+    #[test]
+    fn a_record_cut_short_of_its_lists_is_refused() {
+        let records = long_records(3);
+        assert_eq!(records.len(), 12);
+        for (kind, rec) in records {
+            let mut b = rec.clone();
+            let size = b.len() - 16;
+            b.truncate(size);
+            b[2..4].copy_from_slice(&(size as u16).to_le_bytes());
+            assert_eq!(decode_any(&b), Err(CodecError::Short), "{kind:#06x}");
+            // Cut without its size: the size says more than there is.
+            assert_eq!(
+                decode_any(&rec[..rec.len() - 8]),
+                Err(CodecError::BadSize),
+                "{kind:#06x}"
+            );
+        }
+    }
+
+    /// Item 2 of the M1 review: FACTION_NOTICE carries its serial at 60, NOTICE_SHOWN in aux.
+    #[test]
+    fn a_notice_and_its_answer_carry_the_serial() {
+        let notice = cmds()
+            .into_iter()
+            .find(|c| matches!(c, Cmd::Notice(_)))
+            .unwrap();
+        let mut b = Vec::new();
+        encode_cmd(1, &notice, &mut b);
+        assert_eq!(
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            1,
+            "aux: the rung"
+        );
+        assert_eq!(
+            u32::from_le_bytes(b[60..64].try_into().unwrap()),
+            3,
+            "60: the serial"
+        );
+        let shown = obs()
+            .into_iter()
+            .find(|o| matches!(o, Obs::NoticeShown(_)))
+            .unwrap();
+        let mut b = Vec::new();
+        encode_obs(1, 2, &shown, &mut b);
+        assert_eq!(
+            u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            3,
+            "aux: the serial"
+        );
+    }
+
+    /// Item 6 of the M1 review: DIFFICULTY is journaled (obsSeq at 8, gameTime at 16).
+    #[test]
+    fn difficulty_is_journaled_at_its_game_time() {
+        let o = Obs::Difficulty(Difficulty {
+            difficulty: DIFFICULTY_HARD,
+        });
+        assert!(o.is_journaled());
+        let mut b = Vec::new();
+        encode_obs(41, 9_000, &o, &mut b);
+        assert_eq!(b.len(), 32);
+        assert_eq!(u16::from_le_bytes([b[0], b[1]]), 0x0815);
+        assert_eq!(u32::from_le_bytes(b[24..28].try_into().unwrap()), 3);
+        assert_eq!(decode_obs(&b), Ok((Some((41, 9_000)), o, 32)));
     }
 }
