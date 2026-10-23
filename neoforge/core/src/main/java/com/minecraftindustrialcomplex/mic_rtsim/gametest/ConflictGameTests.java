@@ -992,6 +992,8 @@ public final class ConflictGameTests {
                 .thenExecute(() -> {
                     int py = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, px, bz);
                     player[0] = FakePlayers.add(level, new Vec3(px + 0.5, py, bz + 0.5), "conflict_feud");
+                    // Creative: the scouts' crossbows find no target in it (the fake player is never ticked).
+                    player[0].setGameMode(GameType.CREATIVE);
                     BlockPos camp = new BlockPos(bx, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz), bz);
                     faction[0] = bridge().reportCamp(level, "mic_rtsim:conflict/goblin_camp", camp,
                             x -> x.getTags().contains(kinTag), null, false, 0, 0);
