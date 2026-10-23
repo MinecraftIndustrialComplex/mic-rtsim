@@ -457,7 +457,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         crystal: r.bool()?,
         cap: get_u32(r)?,
         away: get_u32(r)?,
-        camp: get_opt(r, |r| get_camp(r))?.map(Box::new),
+        camp: get_opt(r, get_camp)?.map(Box::new),
     })
 }
 

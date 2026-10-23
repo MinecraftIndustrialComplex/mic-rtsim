@@ -872,7 +872,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     let mut away = None;
     let mut out_for = 0;
     while r.c.parties.get(p).is_some_and(|x| x.phase != Phase::Home) && t < at_day(20.0) {
-        t = t + 200;
+        t += 200;
         r.run(t);
         if r.c.parties.get(p).is_some_and(|x| x.phase == Phase::Out) {
             out_for += 1;
@@ -911,7 +911,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     let p = r.raid().expect("a raid");
     let mut t = r.c.now();
     while r.c.parties[p].phase != Phase::Home && t < at_day(20.0) {
-        t = t + 200;
+        t += 200;
         r.run(t);
     }
     let units = r.c.parties[p].units.clone();

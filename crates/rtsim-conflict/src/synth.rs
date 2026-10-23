@@ -1184,10 +1184,10 @@ impl CampRun {
             .filter(|o| matches!(o, Obs::CampDeath(d) if d.faction == self.key && d.flags & boundary::DEATH_STRAY == 0))
             .count() as u32;
         for o in &lost {
-            if let Obs::CampBodies(b) = o {
-                if b.faction == self.key {
-                    self.plugin.lost_removals += self.plugin.removals_of(b.op);
-                }
+            if let Obs::CampBodies(b) = o
+                && b.faction == self.key
+            {
+                self.plugin.lost_removals += self.plugin.removals_of(b.op);
             }
         }
         for camp in self.plugin.camps.values_mut() {
