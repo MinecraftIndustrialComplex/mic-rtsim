@@ -335,6 +335,12 @@ fn put_faction(w: &mut Writer, x: &Faction) {
 
 fn put_camp(w: &mut Writer, c: &Camp) {
     w.u64(c.epoch);
+    w.u64(c.seen);
+    put_usize(w, c.answered.len());
+    for (op, line) in &c.answered {
+        w.u64(*op);
+        w.var_u64(u64::from(*line));
+    }
     w.var_u64(u64::from(c.seq));
     w.var_u64(u64::from(c.refill));
     put_opt(w, &c.refill_at, |w, t| w.u64(t.0));
@@ -368,6 +374,16 @@ fn put_camp(w: &mut Writer, c: &Camp) {
 
 fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let epoch = r.u64()?;
+    let seen = r.u64()?;
+    let n = r.len_prefix(9)?;
+    let mut answered: Vec<(u64, u32)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let a = (r.u64()?, get_u32(r)?);
+        if answered.last().is_some_and(|l| *l >= a) {
+            return bad("answers out of order".to_string());
+        }
+        answered.push(a);
+    }
     let seq = get_u32(r)?;
     let refill = get_u32(r)?;
     let refill_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
@@ -420,6 +436,8 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     })?;
     Ok(Camp {
         epoch,
+        seen,
+        answered,
         seq,
         refill,
         refill_at,

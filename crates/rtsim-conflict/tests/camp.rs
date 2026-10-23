@@ -68,7 +68,7 @@ fn applied(r: &CampRun, action: u8) -> usize {
 }
 
 /// Lines the plugin answered with `outcome`.
-fn answered(r: &CampRun, outcome: u32) -> usize {
+fn answered(r: &CampRun, outcome: u8) -> usize {
     r.plugin
         .applied
         .iter()
@@ -1182,6 +1182,237 @@ fn an_answer_for_a_generation_the_slot_no_longer_holds_books_nothing() {
     ok(&mut r);
 }
 
+/// Ingests `o` at the engine's present, as a record the journal delivers.
+fn ingest(r: &mut CampRun, o: &Obs) {
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut rtsim_ecology::infra::NoInfrastructure, o, at);
+}
+
+/// An answer is booked by the action it carries, not by the state its slot has now (review of
+/// 408d4a07, items 3, 4 and 6): a raid of nine sets four bodies out, the answer waits in the
+/// plugin's queue past CAMP_OUT, the party gets home abstractly (left becomes body), and then the
+/// answer arrives. The four bodies are not there: the slots are owed, and the next census spawns
+/// them, rather than missing four bodies three times and writing four members off.
+#[test]
+fn a_set_out_answer_that_arrives_after_its_party_is_home_books_the_four_bodies_gone() {
+    let mut r = grove(61, 9);
+    come_in(&mut r);
+    r.plugin.answer_ticks = 30 * TICKS_PER_DAY;
+    let p = r.raid().unwrap();
+    let end = r.c.parties[p].until;
+    r.run(end + 10);
+    assert_eq!(applied(&r, boundary::ACTION_SET_OUT), 4, "applied at once");
+    assert_eq!(world_bodies(&r), 5);
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 4);
+    r.camp_out();
+    assert!(
+        r.plugin.camp_pending(r.key),
+        "the answer is still on its way"
+    );
+    // The party's raid ends with the camp out: its members come home as bodies.
+    let mut t = r.c.now();
+    while counts(&r)[SlotState::Left as usize] > 0 {
+        t = t + 600;
+        assert!(t < end + days(20.0), "the party never got home");
+        r.run(t);
+    }
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0], "home: body, in the books");
+    assert!(r.plugin.camp_pending(r.key), "and the answer not yet in");
+    // The answer arrives: four of the nine are not in the world.
+    let to = r.c.now() + 30 * TICKS_PER_DAY;
+    r.run(to);
+    assert_eq!(counts(&r), [5, 4, 0, 0, 0], "booked by its action: gone");
+    assert_eq!(world_bodies(&r), 5);
+    // The next census orders the four spawns and no member is lost.
+    r.plugin.answer_ticks = 0;
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    assert_eq!(world_bodies(&r), 9);
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), 4);
+    for _ in 0..4 {
+        r.camp_out();
+        let to = r.c.now() + 2;
+        r.run(to);
+        r.camp_in();
+        let to = r.c.now() + day(1.0).0;
+        r.run(to);
+    }
+    assert_eq!(r.c.stats.camp_written_off, 0, "no member written off");
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// One op has several CAMP_BODIES records (a holder's, journaled again at load, and held lines
+/// answered later): they are skipped by (op, line), not by op. A four-line set-out answered as two
+/// records of two lines books all four.
+#[test]
+fn an_answer_split_over_two_records_books_every_line() {
+    let mut r = grove(62, 9);
+    come_in(&mut r);
+    r.plugin.answer_ticks = 30 * TICKS_PER_DAY;
+    let p = r.raid().unwrap();
+    let end = r.c.parties[p].until;
+    r.run(end + 10);
+    assert_eq!(counts(&r), [5, 0, 4, 0, 0]);
+    let mut records: Vec<_> = journal(&mut r)
+        .into_iter()
+        .filter_map(|(_, o)| match o {
+            Obs::CampBodies(b) => Some(b),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(records.len(), 1);
+    let whole = records.remove(0);
+    assert_eq!(whole.lines.len(), 4);
+    assert!(
+        whole
+            .lines
+            .iter()
+            .all(|l| l.action == boundary::ACTION_SET_OUT)
+    );
+    for half in whole.lines.chunks(2) {
+        let record = boundary::CampBodies {
+            lines: half.to_vec(),
+            ..whole.clone()
+        };
+        ingest(&mut r, &Obs::CampBodies(record));
+    }
+    assert_eq!(r.c.stats.camp_answers, 9 + 4, "every line booked");
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0], "left, body gone: gone");
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 0);
+    ok(&mut r);
+}
+
+/// An answer (a holder's record, journaled again) delivered after its slot has moved on is skipped
+/// by its (op, line): the slot is not booked gone a second time. Here the set-out's answer comes
+/// twice around a whole cycle: the party is home, its bodies handed back, and the first answer's
+/// copy must not turn a living body's slot owed (a second spawn would make a second body).
+#[test]
+fn an_answer_delivered_twice_is_booked_once_even_after_the_slot_moved_on() {
+    let mut r = grove(63, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    let end = r.c.parties[p].until;
+    r.plugin.answer_ticks = 1_000;
+    r.run(end + 10);
+    let copy: Vec<Obs> = r
+        .plugin
+        .queued()
+        .into_iter()
+        .filter(|o| matches!(o, Obs::CampBodies(_)))
+        .collect();
+    assert_eq!(copy.len(), 1, "the set-out's answer, on its way");
+    r.run(end + 2_000);
+    assert_eq!(counts(&r), [5, 0, 0, 4, 0]);
+    // The raid ends; the party comes home and its members are handed back: nine bodies again.
+    let mut t = r.c.now();
+    while counts(&r)[SlotState::Body as usize] < 9 {
+        t = t + 600;
+        assert!(
+            t < end + days(20.0),
+            "the party never got home: {:?}",
+            counts(&r)
+        );
+        r.run(t);
+    }
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0]);
+    let (sent, bodies) = (orders(&r).len(), world_bodies(&r));
+    ingest(&mut r, &copy[0]);
+    assert_eq!(counts(&r), [9, 0, 0, 0, 0], "booked once: not again");
+    r.run(t + 100);
+    assert_eq!(orders(&r).len(), sent, "no order for it");
+    assert_eq!(world_bodies(&r), bodies);
+    ok(&mut r);
+}
+
+/// An answer of an epoch a later census has superseded books nothing: that census read the world
+/// after the lines were applied, and the answer's fact is older than the books.
+#[test]
+fn an_answer_of_a_superseded_epoch_books_nothing() {
+    let mut r = grove(64, 9);
+    come_in(&mut r);
+    let first = r.c.camp(r.f).unwrap().seen;
+    let old = boundary::CampBodies {
+        faction: r.key,
+        epoch: first,
+        op: 0xFEED,
+        lines: {
+            let s = &r.c.camp(r.f).unwrap().slots[0];
+            vec![boundary::LineAnswer {
+                line: 0,
+                slot: s.id,
+                generation: s.generation,
+                action: boundary::ACTION_TAKE,
+                outcome: boundary::LINE_DONE,
+            }]
+        },
+    };
+    r.camp_out();
+    let to = r.c.now() + 2;
+    r.run(to);
+    let second = r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    assert_ne!(first, second);
+    assert_eq!(r.c.camp(r.f).unwrap().seen, second);
+    assert!(
+        r.c.camp(r.f).unwrap().answered.is_empty(),
+        "a new epoch, a fresh set"
+    );
+    let before = r.c.camp(r.f).unwrap().clone();
+    ingest(&mut r, &Obs::CampBodies(old));
+    assert_eq!(r.c.camp(r.f).unwrap(), &before, "superseded");
+    // The same answer under the latest epoch is booked: the body is gone.
+    let mut now = boundary::CampBodies {
+        faction: r.key,
+        epoch: second,
+        op: 0xFEED,
+        lines: Vec::new(),
+    };
+    now.lines = {
+        let s = &r.c.camp(r.f).unwrap().slots[0];
+        vec![boundary::LineAnswer {
+            line: 0,
+            slot: s.id,
+            generation: s.generation,
+            action: boundary::ACTION_TAKE,
+            outcome: boundary::LINE_DONE,
+        }]
+    };
+    ingest(&mut r, &Obs::CampBodies(now));
+    assert_eq!(counts(&r)[SlotState::Owed as usize], 1);
+}
+
+/// A camp death is idempotent by its slot and generation, so its op id is not kept: the set of
+/// applied ops does not grow with each death (a farmed grove is a death a few minutes), and the
+/// same record twice (the journal's, then a holder's) is booked once.
+#[test]
+fn a_camp_death_spends_no_op_id_and_is_booked_once() {
+    let mut r = grove(65, 9);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let at = r.c.now() + 1;
+    r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+    let j = journal(&mut r);
+    let op = match &j[0].1 {
+        Obs::CampDeath(d) => d.op,
+        o => panic!("{o:?}"),
+    };
+    for _ in 0..3 {
+        ingest(&mut r, &j[0].1);
+    }
+    assert_eq!(r.c.stats.camp_deaths, 1);
+    assert_eq!(counts(&r), [8, 0, 0, 0, 0]);
+    assert!(!r.c.op_applied(op), "no op id kept for a camp record");
+    assert!(
+        !r.c.op_applied(r.c.camp(r.f).unwrap().seen),
+        "nor an epoch's"
+    );
+    ok(&mut r);
+}
+
 // ---- crashes: MOWZIE.md §4.9's crash table, the engine's half ----------------------------------
 
 /// Lines of `action` in the commands the engine held back.
@@ -1589,12 +1820,14 @@ fn a_death_booked_whose_body_is_on_disk_is_removed_by_the_census() {
 // ---- every new state through a save and a paged save -------------------------------------------
 
 /// A ledger with every field set: slots in each state with misses and lines in flight, retired
-/// generations of both kinds, a throne, an epoch and a booked refill.
+/// generations of both kinds, a throne, an epoch, the answers booked in it and a booked refill.
 fn rich_ledger(r: &mut CampRun) {
     use rtsim_conflict::engine::{Line, Retired, Slot, Throne};
     let k = &mut r.c.factions[r.f as usize];
     let camp = k.camp.as_mut().expect("a ledger");
     camp.epoch = 0x1234_5678_9abc;
+    camp.seen = 0x1234_5678_9abc;
+    camp.answered = vec![(0xAB00, 0), (0xAB00, 3), (0xCD00, 1)];
     camp.seq = 7;
     camp.refill = 3;
     camp.refill_at = Some(Tick(123_456));

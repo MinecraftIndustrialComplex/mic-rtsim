@@ -125,6 +125,12 @@ pub struct Throne {
 pub struct Camp {
     /// The epoch the camp is in at (a Java op id); 0 while it is out.
     pub epoch: u64,
+    /// The latest epoch a census named, in or out (and replayed ones too): the only epoch whose
+    /// answers are still booked, an older one's being superseded by that census.
+    pub seen: u64,
+    /// The (op, line) answers booked in `seen`'s epoch, in order: the records that may come twice
+    /// (a holder's, journaled again) are skipped by it. Cleared at each census of a new epoch.
+    pub answered: Vec<(u64, u32)>,
     /// CAMP_RECONCILEs sent in this epoch (the decision in their op ids).
     pub seq: u32,
     /// The stamp of the booked refill event, and its tick.
@@ -169,6 +175,25 @@ impl Camp {
         self.slots.iter().filter(|s| s.line.is_some()).count() as u32
     }
 
+    /// Notes a census of `epoch` (replayed or not): a new epoch ends the old one's answers.
+    fn see(&mut self, epoch: u64) {
+        if self.seen != epoch {
+            self.seen = epoch;
+            self.answered.clear();
+        }
+    }
+
+    /// Records the answer to line `line` of reconcile `op`; false if it was booked already.
+    fn answer(&mut self, op: u64, line: u32) -> bool {
+        match self.answered.binary_search(&(op, line)) {
+            Ok(_) => false,
+            Err(at) => {
+                self.answered.insert(at, (op, line));
+                true
+            }
+        }
+    }
+
     fn retired_gen(&self, id: u32) -> Option<u32> {
         self.retired
             .iter()
@@ -206,6 +231,7 @@ impl Camp {
         std::mem::size_of::<Camp>()
             + self.slots.capacity() * std::mem::size_of::<Slot>()
             + self.retired.capacity() * std::mem::size_of::<Retired>()
+            + self.answered.capacity() * std::mem::size_of::<(u64, u32)>()
     }
 }
 
@@ -740,6 +766,7 @@ impl Conflict {
             if let Some(camp) = self.camp_mut(f) {
                 camp.epoch = 0;
                 camp.refill_at = None;
+                camp.see(c.epoch);
             }
             return;
         }
@@ -751,6 +778,7 @@ impl Conflict {
         self.camp_sync(f, at);
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
         camp.epoch = c.epoch;
+        camp.see(c.epoch);
         camp.seq = 0;
         camp.refill = camp.refill.wrapping_add(1);
         camp.refill_at = None;
@@ -972,18 +1000,26 @@ impl Conflict {
 
     // ---- CAMP_BODIES -----------------------------------------------------------------------
 
-    /// Java's answer to a CAMP_RECONCILE: the engine books the world fact each line reports, by the
-    /// slot's state (docs/boundary.md §9.3), as it books TAKEN and DIED. *Body gone* (a take, a
-    /// set-out or a removal, done or with nothing to do): home, body becomes owed; away, left
-    /// becomes gone; dead, left is freed. *Body there* (a spawn, a hand-back or an adoption, done
-    /// or with nothing to do): home, owed becomes home, body; away, gone becomes left, reconciled
-    /// as at a census. A stale line books nothing. An answer for a generation its slot no longer
-    /// holds books nothing, and one already booked (its op id) is a no-op.
+    /// Java's answer to a CAMP_RECONCILE: the engine books the world fact each line reports, by
+    /// the action the line carries (docs/boundary.md §9.3) and the slot's state, as it books TAKEN
+    /// and DIED. *Body gone* (a take, a set-out or a removal, done or with nothing to do): home,
+    /// body becomes owed; away, left becomes gone; dead, left is freed. *Body there* (a spawn, a
+    /// hand-back or an adoption, done or with nothing to do): home, owed becomes home, body; away,
+    /// gone becomes left, reconciled as at a census. A stale line books nothing. An answer for a
+    /// generation its slot no longer holds books nothing.
+    ///
+    /// The action is the answer's own, not the slot's line in flight: a line voided at CAMP_OUT or
+    /// at a session start is answered all the same (Java applied it before), and the slot's state
+    /// may have moved on since (a party home abstractly turns left into body), so only the action
+    /// says which fact the answer is. An answer is booked once, by its (op, line): one op has
+    /// several records (a holder's, journaled again, and held lines answered later). Only the
+    /// latest census's epoch is answered: an older epoch's answers are superseded by that census,
+    /// which read the world after the lines were applied.
     pub(super) fn camp_bodies(&mut self, b: &CampBodies, at: Tick) {
         let Some(&f) = self.by_key.get(&b.faction) else {
             return;
         };
-        if self.camp(f).is_none() || !self.first_time(b.op) {
+        if self.camp(f).is_none_or(|k| k.seen != b.epoch) {
             return;
         }
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
@@ -999,9 +1035,11 @@ impl Conflict {
             let Some(i) = camp.index(a.slot, a.generation) else {
                 continue;
             };
+            if !camp.answer(b.op, a.line) {
+                continue;
+            }
             let s = &mut camp.slots[i];
-            let mine = s.line.filter(|l| l.op == b.op);
-            if mine.is_some() {
+            if s.line.is_some_and(|l| l.op == b.op) {
                 s.line = None;
                 cleared += 1;
             }
@@ -1009,15 +1047,7 @@ impl Conflict {
             if a.outcome != LINE_DONE && a.outcome != LINE_NOTHING {
                 continue;
             }
-            // The action: what was in flight, else what the state implies.
-            let action = mine.map_or(
-                match s.state {
-                    SlotState::Owed => ACTION_SPAWN,
-                    SlotState::Left | SlotState::Dead => ACTION_TAKE,
-                    SlotState::Body | SlotState::Gone => 0,
-                },
-                |l| l.action,
-            );
+            let action = a.action;
             let gone = matches!(action, ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE);
             // An adoption with nothing to do found no stray to adopt: no body is there.
             let there = match action {
