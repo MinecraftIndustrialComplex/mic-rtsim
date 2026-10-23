@@ -4,7 +4,8 @@
 //! fast it forgives, the thresholds of each rung of the ladder, its units and the make-up of each
 //! party it sends, its haven's market, and whom it hates.
 //!
-//! The built-in cultures are `data/cultures/goblin.json`, `bandit.json` and `raider.json`. Every
+//! The built-in cultures are `data/cultures/goblin.json`, `bandit.json` and `raider.json`, and
+//! Mowzie's Mobs' `frostmaw.json` and `umvuthana.json` (MOWZIE.md §4.1, ledger 15). Every
 //! number in them is a TUNABLE PLACEHOLDER (P18's soak sets real ones); every body is an abstract
 //! body kind (`mic_rtsim:conflict/<culture>/<unit>`) that a plugin maps to a mod's entity (P15;
 //! candidates P8: Goblin's Tyranny for goblins, Illager Invasion for raiders, `minecraft:pillager`
@@ -12,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use rtsim_industry::threat::ThreatClass;
+use rtsim_industry::threat::{ThreatClass, ThreatSource};
 use rtsim_kernel::clock::TICKS_PER_DAY;
 use serde::{Deserialize, Serialize};
 
@@ -158,6 +159,25 @@ impl UnitClass {
     }
 }
 
+/// Who the industry engine is told attacks, in ambushes and district raids (MOWZIE.md ledger 9):
+/// bandits unless the culture says otherwise, a boss for the Frostmaw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CampSource {
+    #[default]
+    Bandit,
+    Boss,
+}
+
+impl CampSource {
+    pub const fn threat(self) -> ThreatSource {
+        match self {
+            CampSource::Bandit => ThreatSource::Bandit,
+            CampSource::Boss => ThreatSource::Boss,
+        }
+    }
+}
+
 /// What a party is for. The numbers are the boundary's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -245,6 +265,11 @@ pub struct UnitDef {
     /// (overnight choice C2-1, K2-13's recommendation). PLACEHOLDER; 0 when the data leaves it out.
     #[serde(default)]
     pub breaks: u32,
+    /// The unit row this one fights as while its faction's chief has lost its crystal (MOWZIE.md
+    /// ledger 9: the Frostmaw is `ground_ranged` with it, `ground_melee` without). Absent: the
+    /// same row either way.
+    #[serde(default)]
+    pub without_crystal: Option<String>,
 }
 
 /// A culture as its JSON says.
@@ -268,7 +293,8 @@ pub struct CultureDef {
     pub dwell_days: Vec<f64>,
     /// Days an envoy's demand stands.
     pub demand_days: f64,
-    /// Tribute asked per point of grievance, in whole coins of the tribute good.
+    /// Tribute asked per point of grievance, in coins of its haven's money, converted to the
+    /// tribute good at the haven market's price (MOWZIE.md ledger 12).
     pub tribute_per_grievance: f64,
     /// Days after a tribute paid in full before the feud may climb again.
     pub respite_days: f64,
@@ -311,6 +337,34 @@ pub struct CultureDef {
     /// A band routs after losing this share of its units.
     pub rout_share: f64,
     pub chief_lifespan_days: u64,
+    /// Days after a war party comes home before a feud still on Raid or Invasion, and at or above
+    /// that rung's threshold, sends the rung's party again (MOWZIE.md ledger 3). Absent: never
+    /// (only Siege repeats, every `siege_interval_days`).
+    #[serde(default)]
+    pub repeat_days: Option<f64>,
+    /// Who its ambushes and district raids are, to the industry engine (ledger 9).
+    #[serde(default)]
+    pub source: CampSource,
+    /// What its parties take is destroyed where it is taken (eaten), as the dragons' food is,
+    /// never carried home (ledger 10).
+    #[serde(default)]
+    pub loot_destroyed: bool,
+    /// Units of the tribute good asked per coin when the haven's market has no price for it
+    /// (ledger 12): 9 gold nuggets an emerald for the Umvuthana. 1 when absent.
+    #[serde(default = "one")]
+    pub tribute_per_coin_fallback: f64,
+    /// Whether its camp is a haven with a market (C24). A camp that trades nothing joins the world
+    /// as a lair, `NodeKind::Lair` (ledger 13). True when absent.
+    #[serde(default = "yes")]
+    pub haven: bool,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A culture resolved for the engine: names turned into indices, rates per tick.
@@ -322,10 +376,17 @@ pub struct Culture {
     pub lambda: f64,
     pub thresholds: [f64; 6],
     pub dwell_ticks: [u64; Step::COUNT],
-    /// Each party kind's make-up as (unit index, count).
+    /// Each party kind's make-up as (unit index, count). Empty for a rung the culture skips.
     pub parties: [Vec<(u8, u32)>; PartyKind::COUNT],
     pub market: rtsim_settle::Culture,
+    /// Each unit's row without its chief's crystal (its own index when it has no other).
+    pub bare: Vec<u8>,
 }
+
+/// The longest `repeat_days` a culture may set: ten years.
+pub const MAX_REPEAT_DAYS: f64 = 3650.0;
+/// The most units of the tribute good a culture may ask per coin when its market has no price.
+pub const MAX_TRIBUTE_PER_COIN: f64 = 1000.0;
 
 pub fn days_to_ticks(d: f64) -> u64 {
     (d.max(0.0) * TICKS_PER_DAY as f64).ceil() as u64
@@ -373,13 +434,49 @@ impl Culture {
                     .iter()
                     .position(|x| &x.name == u)
                     .ok_or(format!("{n}: party {name} names unknown unit {u}"))?;
+                if *c == 0 {
+                    // A make-up of no warriors would wait for no pool (MZB-64).
+                    return Err(format!("{n}: party {name} has no {u}"));
+                }
                 parties[kind.index()].push((i as u8, *c));
             }
         }
-        for k in PartyKind::ALL {
-            if parties[k.index()].is_empty() {
-                return Err(format!("{n}: no {} party", k.name()));
-            }
+        // A rung's party may be empty: the climb skips it (MOWZIE.md ledger 2). Plunder is
+        // needed only by a culture that plunders.
+        if def.plunder_mean_days.is_some() && parties[PartyKind::Plunder.index()].is_empty() {
+            return Err(format!("{n}: plunders but has no plunder party"));
+        }
+        if def.units.len() > usize::from(u8::MAX) {
+            return Err(format!("{n}: too many units"));
+        }
+        let mut bare = Vec::with_capacity(def.units.len());
+        for (i, u) in def.units.iter().enumerate() {
+            bare.push(match &u.without_crystal {
+                Some(b) => def.units.iter().position(|x| &x.name == b).ok_or(format!(
+                    "{n}: unit {} names unknown unit {b} without its crystal",
+                    u.name
+                ))? as u8,
+                None => i as u8,
+            });
+        }
+        // Finite and bounded, so tick sums and the tribute stay far from overflow (MZB-51).
+        if def
+            .repeat_days
+            .is_some_and(|d| !(d.is_finite() && d > 0.0 && d <= MAX_REPEAT_DAYS))
+        {
+            return Err(format!(
+                "{n}: repeat_days must be above 0 and at most {MAX_REPEAT_DAYS}"
+            ));
+        }
+        let f = def.tribute_per_coin_fallback;
+        if !(f.is_finite() && f > 0.0 && f <= MAX_TRIBUTE_PER_COIN) {
+            return Err(format!(
+                "{n}: tribute_per_coin_fallback must be above 0 and at most {MAX_TRIBUTE_PER_COIN}"
+            ));
+        }
+        if !def.haven && !def.loot_destroyed {
+            // A lair has no storehouse: loot carried home could never land (MZB-56).
+            return Err(format!("{n}: a camp with no haven must destroy its loot"));
         }
         let market = match def.market_culture.as_str() {
             "human" => rtsim_settle::Culture::Human,
@@ -397,6 +494,7 @@ impl Culture {
             dwell_ticks: dwell.map(days_to_ticks),
             parties,
             market,
+            bare,
             def,
         })
     }
@@ -417,6 +515,45 @@ impl Culture {
         &self.def.units[usize::from(i)]
     }
 
+    /// Unit `i` as it fights: its own row with the chief's crystal, else its `without_crystal`
+    /// row (MOWZIE.md ledger 9).
+    pub fn unit_as(&self, i: u8, crystal: bool) -> &UnitDef {
+        if crystal {
+            self.unit(i)
+        } else {
+            self.unit(self.bare[usize::from(i)])
+        }
+    }
+
+    /// Whether rung `s` is on this culture's ladder: Notice always (it sends nothing), a party
+    /// rung when its party is not empty (MOWZIE.md ledger 2), `Step::None` never.
+    pub fn has_rung(&self, s: Step) -> bool {
+        match PartyKind::of_step(s) {
+            Some(k) => !self.parties[k.index()].is_empty(),
+            None => s == Step::Notice,
+        }
+    }
+
+    /// The rung a climb from `s` goes to: the next one up on the ladder, skipping empty rungs.
+    /// `None` at the top.
+    pub fn next_up(&self, s: Step) -> Option<Step> {
+        let mut u = s.up()?;
+        while !self.has_rung(u) {
+            u = u.up()?;
+        }
+        Some(u)
+    }
+
+    /// The rung a step down from `s` lands on: the next one down with a party, floored at
+    /// Notice; Notice steps down to `Step::None`.
+    pub fn next_down(&self, s: Step) -> Step {
+        let mut d = s.down();
+        while d > Step::Notice && !self.has_rung(d) {
+            d = d.down();
+        }
+        d
+    }
+
     pub fn hates(&self, culture: &str) -> bool {
         self.def.hates.iter().any(|h| h == culture)
     }
@@ -431,6 +568,8 @@ pub struct Cultures {
 pub const GOBLIN_JSON: &str = include_str!("../data/cultures/goblin.json");
 pub const BANDIT_JSON: &str = include_str!("../data/cultures/bandit.json");
 pub const RAIDER_JSON: &str = include_str!("../data/cultures/raider.json");
+pub const FROSTMAW_JSON: &str = include_str!("../data/cultures/frostmaw.json");
+pub const UMVUTHANA_JSON: &str = include_str!("../data/cultures/umvuthana.json");
 
 impl Cultures {
     /// Cultures from JSON documents, one culture each.
@@ -446,9 +585,17 @@ impl Cultures {
         Ok(Cultures { list })
     }
 
-    /// Goblins, bandits and raiders (`data/cultures`).
+    /// Goblins, bandits, raiders, the Frostmaw and the Umvuthana (`data/cultures`), in that
+    /// order: an index is saved, so new cultures go last.
     pub fn builtin() -> Cultures {
-        Cultures::from_json(&[GOBLIN_JSON, BANDIT_JSON, RAIDER_JSON]).expect("built-in cultures")
+        Cultures::from_json(&[
+            GOBLIN_JSON,
+            BANDIT_JSON,
+            RAIDER_JSON,
+            FROSTMAW_JSON,
+            UMVUTHANA_JSON,
+        ])
+        .expect("built-in cultures")
     }
 
     pub fn index_of(&self, name: &str) -> Option<u16> {
@@ -488,7 +635,7 @@ mod tests {
     #[test]
     fn the_builtin_cultures_resolve() {
         let c = Cultures::builtin();
-        assert_eq!(c.list.len(), 3);
+        assert_eq!(c.list.len(), 5);
         let g = c.get(c.index_of("goblin").unwrap());
         assert!(g.signals[SignalKind::Logging.index()].weight > 0.0);
         assert_eq!(g.threshold(Step::None), 0.0);
@@ -504,5 +651,153 @@ mod tests {
         assert!(Culture::resolve(def.clone()).is_err());
         def.thresholds = vec![10.0, 5.0, 20.0, 30.0, 40.0, 50.0];
         assert!(Culture::resolve(def).is_err());
+    }
+
+    fn goblin_def() -> CultureDef {
+        serde_json::from_str(GOBLIN_JSON).unwrap()
+    }
+
+    /// Goblins with only the named party kinds kept.
+    fn goblin_with(keep: &[&str]) -> Culture {
+        let mut def = goblin_def();
+        def.parties.retain(|k, _| keep.contains(&k.as_str()));
+        Culture::resolve(def).unwrap()
+    }
+
+    #[test]
+    fn the_mowzie_cultures_resolve() {
+        let c = Cultures::builtin();
+        // The older cultures keep their indices (an index is saved).
+        assert_eq!(c.index_of("goblin"), Some(0));
+        assert_eq!(c.index_of("raider"), Some(2));
+        let fm = c.get(c.index_of("frostmaw").unwrap());
+        assert_eq!(fm.def.source, CampSource::Boss);
+        assert!(!fm.def.haven && fm.def.loot_destroyed);
+        assert_eq!(fm.def.repeat_days, Some(4.0));
+        assert!(fm.def.tribute_good.is_none());
+        assert!(!fm.has_rung(Step::Envoy) && !fm.has_rung(Step::Scouts));
+        assert!(fm.has_rung(Step::Raid) && fm.has_rung(Step::Invasion));
+        assert!(!fm.has_rung(Step::Siege));
+        assert_eq!(fm.next_up(Step::Notice), Some(Step::Raid));
+        assert_eq!(fm.next_up(Step::Invasion), None);
+        assert_eq!(fm.unit_as(0, true).class, UnitClass::GroundRanged);
+        assert_eq!(fm.unit_as(0, false).class, UnitClass::GroundMelee);
+        assert_eq!(fm.unit_as(0, false).body, fm.unit(0).body);
+        assert!(c.of_structure("mowziesmobs:frostmaw_spawn").is_some());
+
+        let um = c.get(c.index_of("umvuthana").unwrap());
+        // Both Mowzie cultures are bosses to the industry engine (ledger 9, MZB-61).
+        assert_eq!(um.def.source, CampSource::Boss);
+        assert!(um.def.haven && um.def.loot_destroyed);
+        assert!(um.def.repeat_days.is_none());
+        assert_eq!(um.def.tribute_good.as_deref(), Some("gold_nugget"));
+        assert_eq!(um.def.tribute_per_coin_fallback, 9.0);
+        assert_eq!(um.next_up(Step::Raid), Some(Step::Invasion));
+        assert_eq!(um.next_up(Step::Invasion), None);
+        assert!(um.hates("human"));
+        assert!(um.def.units.iter().all(|u| u.carry == 0 && u.breaks == 0));
+        assert_eq!(um.unit_as(1, false).name, "raptor");
+        assert!(c.of_structure("mowziesmobs:umvuthana_grove").is_some());
+    }
+
+    #[test]
+    fn absent_fields_keep_the_old_behaviour() {
+        let g = Culture::resolve(goblin_def()).unwrap();
+        assert_eq!(g.def.repeat_days, None);
+        assert_eq!(g.def.source, CampSource::Bandit);
+        assert!(!g.def.loot_destroyed);
+        assert!(g.def.haven);
+        assert_eq!(g.def.tribute_per_coin_fallback, 1.0);
+        for s in Step::ALL {
+            assert_eq!(g.has_rung(s), s != Step::None);
+            assert_eq!(g.next_up(s), s.up());
+            assert_eq!(g.next_down(s), s.down());
+        }
+        assert!((0..4).all(|u| g.bare[u] as usize == u));
+    }
+
+    #[test]
+    fn an_empty_top_rung_ends_the_ladder() {
+        let c = goblin_with(&["envoy", "scouts", "raid", "invasion", "plunder"]);
+        assert!(!c.has_rung(Step::Siege));
+        assert_eq!(c.next_up(Step::Raid), Some(Step::Invasion));
+        assert_eq!(c.next_up(Step::Invasion), None);
+        assert_eq!(c.next_down(Step::Invasion), Step::Raid);
+    }
+
+    #[test]
+    fn only_raid_among_the_war_rungs() {
+        let c = goblin_with(&["raid", "plunder"]);
+        assert_eq!(c.next_up(Step::None), Some(Step::Notice));
+        assert_eq!(c.next_up(Step::Notice), Some(Step::Raid));
+        assert_eq!(c.next_up(Step::Raid), None);
+        assert_eq!(c.next_down(Step::Raid), Step::Notice);
+        assert_eq!(c.next_down(Step::Notice), Step::None);
+        assert_eq!(c.next_down(Step::None), Step::None);
+    }
+
+    #[test]
+    fn a_step_down_crosses_empty_rungs() {
+        // Siege with Invasion and Raid empty: one step down from Siege lands on Scouts.
+        let c = goblin_with(&["envoy", "scouts", "siege", "plunder"]);
+        assert_eq!(c.next_down(Step::Siege), Step::Scouts);
+        assert_eq!(c.next_up(Step::Scouts), Some(Step::Siege));
+        // With every party rung below it empty too, it lands on Notice.
+        let c = goblin_with(&["siege", "plunder"]);
+        assert_eq!(c.next_down(Step::Siege), Step::Notice);
+    }
+
+    #[test]
+    fn a_culture_that_plunders_needs_a_plunder_party() {
+        let mut def = goblin_def();
+        def.parties.remove("plunder");
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.plunder_mean_days = None;
+        assert!(Culture::resolve(def).is_ok());
+    }
+
+    #[test]
+    fn the_new_fields_are_checked() {
+        let mut def = goblin_def();
+        // Days that would overflow a tick sum, or are not days at all, are refused.
+        for bad in [
+            0.0,
+            -1.0,
+            1e300,
+            f64::INFINITY,
+            f64::NAN,
+            MAX_REPEAT_DAYS + 1.0,
+        ] {
+            def.repeat_days = Some(bad);
+            assert!(Culture::resolve(def.clone()).is_err(), "repeat_days {bad}");
+        }
+        def.repeat_days = Some(MAX_REPEAT_DAYS);
+        assert!(Culture::resolve(def.clone()).is_ok());
+        def.repeat_days = Some(2.0);
+        for bad in [
+            0.0,
+            -1.0,
+            1e300,
+            f64::INFINITY,
+            f64::NAN,
+            MAX_TRIBUTE_PER_COIN + 1.0,
+        ] {
+            def.tribute_per_coin_fallback = bad;
+            assert!(Culture::resolve(def.clone()).is_err(), "fallback {bad}");
+        }
+        def.tribute_per_coin_fallback = MAX_TRIBUTE_PER_COIN;
+        assert!(Culture::resolve(def.clone()).is_ok());
+        def.tribute_per_coin_fallback = 9.0;
+        def.units[0].without_crystal = Some("nobody".into());
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.units[0].without_crystal = Some("archer".into());
+        let c = Culture::resolve(def.clone()).unwrap();
+        assert_eq!(c.unit_as(0, false).name, "archer");
+        assert_eq!(c.unit_as(0, true).name, "warrior");
+        // A lair cannot carry loot home: it has no storehouse.
+        def.haven = false;
+        assert!(Culture::resolve(def.clone()).is_err());
+        def.loot_destroyed = true;
+        assert!(Culture::resolve(def).is_ok());
     }
 }
