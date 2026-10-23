@@ -372,7 +372,9 @@ impl World {
         if let Some(old) = d.predation
             && old.haven != haven
         {
-            let idle = old.share_milli == 0 && d.raid.values().all(|p| p.is_idle(b + 1));
+            // Arrivals up to boundary `b` are landed; what arrives at `b + 1` and later is still
+            // sailing (the books' `in_transit(b)`), and is dropped with the pipeline.
+            let idle = old.share_milli == 0 && d.raid.values().all(|p| p.is_idle(b));
             if !idle {
                 return false;
             }
