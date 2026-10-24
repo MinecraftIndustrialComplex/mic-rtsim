@@ -61,6 +61,9 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * on the rail (within 2.5 blocks of it; a sample is on it) at the rail's height plus Create's one block of
  * normal, and an entry before its exit.
  *
+ * <p>A second test, {@link #aTrainAtACirclesEdgeIsOnePass} (MZB-390), walks a point along a circle's edge
+ * with no train, for the margin that ends a pass.
+ *
  * <p>Territories are scripted as TERRITORY (the engine's own way in) and removed at the end, with the trains
  * and graphs. MZB-383's case, a station inside the circle, is not covered: the synthetic graph holds no
  * station (see MZB-387).
@@ -368,8 +371,11 @@ public final class TrainSamplerGameTests {
                             check(r.name + " " + c.label() + ": entry " + p.entry() + " is before exit " + p.exit(), p.entry() < p.exit());
                             check(r.name + " " + c.label() + ": the train had been added (" + r.added + ") and the pass is over (" + now + ")",
                                     p.entry() >= r.added && p.exit() <= now);
-                            check(r.name + " " + c.label() + ": at most two samples long (" + (p.exit() - p.entry()) + " ticks)",
-                                    p.exit() - p.entry() <= 2L * TrainSampler.PERIOD);
+                            // The pass ends at the first sample beyond the radius plus MARGIN (MZB-390), so it holds the rail's
+                            // 2 * (CIRCLE + MARGIN) blocks around the circle and, at most, a sample's slack at either end
+                            long longest = (long) Math.ceil(2.0 * (CIRCLE + TrainSampler.MARGIN) / (r.speed * TrainSampler.PERIOD)) + 1L;
+                            check(r.name + " " + c.label() + ": at most " + longest + " samples long (" + (p.exit() - p.entry()) + " ticks)",
+                                    p.exit() - p.entry() <= longest * TrainSampler.PERIOD);
                             double toCentre = Math.hypot(p.x() - c.x(), p.z() - c.z());
                             record("trainSampler", r.name + " " + c.label() + " pass",
                                     "point (" + p.x() + ", " + p.y() + ", " + p.z() + ") " + off + " off the rail, " + toCentre
@@ -380,6 +386,77 @@ public final class TrainSamplerGameTests {
                     check("the sampler sent " + expected + " passes, not " + (TrainSampler.passes - before[1]),
                             TrainSampler.passes - before[1] == expected);
                     record("trainSampler", "samples and passes", (TrainSampler.samples - before[0]) + " and " + (TrainSampler.passes - before[1]));
+                })
+                .thenSucceed();
+    }
+
+    /** Distances from the centre of the edge walk's samples (MZB-390), one a tick, each 0.2 radians on from the last. */
+    private static final double[] EDGE_WALK = {150, 95, 108, 97, 112, 99, 130, 101, 96, 139, 99.5, 141, 150, 98, 145};
+    /** The passes open after each sample of {@link #EDGE_WALK}: in at 1, held through the band, out at 11; in at 13, out at 14. */
+    private static final int[] EDGE_OPEN = {0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0};
+    private static final int EDGE_R = 100;
+
+    /**
+     * MZB-390, the circle's edge: a point walked along the edge of a radius-100 circle, in and out of it by
+     * a few blocks a sample, is one pass, and it ends only at a sample beyond the radius plus
+     * {@link TrainSampler#MARGIN}. The walk (distances from the centre, 0.2 radians apart, 24 to 57 blocks
+     * between samples): 150 (beyond the margin), 95 (in), then 108, 97, 112, 99, 130, 101, 96, 139, 99.5
+     * (swapping in and out, never past 140), 141 (beyond: the pass ends), then 150, 98 (in) and 145 (the second
+     * pass, a train that came back after leaving). The pass rule alone, with no Create train
+     * ({@link TrainSampler.Walk}); the old rule (a pass ends at the first sample outside the radius) sends six
+     * passes for this walk (replayed outside the game), this one two.
+     */
+    @GameTest(template = YARD, batch = "rail_sampler_edge", timeoutTicks = 600)
+    public static void aTrainAtACirclesEdgeIsOnePass(GameTestHelper helper) {
+        var level = helper.getLevel();
+        int[] base = ConflictKit.farBase();
+        long faction = ConflictKit.newFaction();
+        long train = 0x5EED_ED6EL;
+        UUID owner = UUID.nameUUIDFromBytes(("mic_rtsim_create:trainsampler edge owner " + System.nanoTime()).getBytes(StandardCharsets.UTF_8));
+        TrainSampler.Walk walk = new TrainSampler.Walk(train, owner);
+        long[] before = new long[1];
+        long[] at = new long[EDGE_WALK.length];
+        ConflictKit.onEnd(helper, () -> ConflictKit.territoryRemoved(faction, DIM));
+
+        var seq = helper.startSequence()
+                .thenExecute(() -> {
+                    before[0] = TrainSampler.passes;
+                    ConflictKit.territory(faction, DIM, RAIL_MASK, base[0], base[1], EDGE_R);
+                })
+                .thenWaitUntil(() -> {
+                    check("the conflict engine is up", RtsimApi.conflictUp());
+                    check("the territory is applied", RtsimApi.territories().get(faction) != null);
+                });
+        for (int i = 0; i < EDGE_WALK.length; i++) {
+            int k = i;
+            seq = seq.thenExecuteAfter(1, () -> {
+                double angle = 0.2 * k;
+                at[k] = level.getGameTime();
+                walk.to(Level.OVERWORLD, base[0] + EDGE_WALK[k] * Math.cos(angle), Y0 + 1.0, base[1] + EDGE_WALK[k] * Math.sin(angle), at[k]);
+                check("sample " + k + " (" + EDGE_WALK[k] + " from the centre): " + EDGE_OPEN[k] + " passes open, got " + walk.open(),
+                        walk.open() == EDGE_OPEN[k]);
+                if (k == 11)
+                    check("the first pass has been sent (" + (TrainSampler.passes - before[0]) + ")", TrainSampler.passes - before[0] == 1);
+            });
+        }
+        seq.thenWaitUntil(() -> check("both passes have reached the engine", ConflictKit.railPasses(faction).size() >= 2))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    var got = ConflictKit.railPasses(faction);
+                    check("exactly two passes, got " + got.size(), got.size() == 2);
+                    check("the sampler sent two, not " + (TrainSampler.passes - before[0]), TrainSampler.passes - before[0] == 2);
+                    ConflictKit.RailPassRecord first = ConflictKit.railPass(got.get(0)), second = ConflictKit.railPass(got.get(1));
+                    check("the first pass is from sample 0 (" + at[0] + ") to sample 11 (" + at[11] + "), got " + first.entry() + " to " + first.exit(),
+                            first.entry() == at[0] && first.exit() == at[11]);
+                    check("the second pass is from sample 12 (" + at[12] + ") to sample 14 (" + at[14] + "), got " + second.entry() + " to " + second.exit(),
+                            second.entry() == at[12] && second.exit() == at[14]);
+                    check("both are the point's train, " + train, first.train() == train && second.train() == train);
+                    // The nearest sample of each: 95 in the first pass, 98 in the second
+                    check("the first pass's point is the nearest sample (" + first.x() + ", " + first.z() + ")",
+                            Math.abs(Math.hypot(first.x() - base[0], first.z() - base[1]) - 95.0) < 0.01);
+                    check("the second pass's point is the nearest sample (" + second.x() + ", " + second.z() + ")",
+                            Math.abs(Math.hypot(second.x() - base[0], second.z() - base[1]) - 98.0) < 0.01);
+                    record("trainSampler", "edge walk", "passes " + first.entry() + " to " + first.exit() + " and " + second.entry() + " to " + second.exit());
                 })
                 .thenSucceed();
     }

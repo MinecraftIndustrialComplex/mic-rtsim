@@ -30,11 +30,11 @@ import java.util.function.LongConsumer;
  * on its edge ({@code TravellingPoint.getPosition}), so a curve is read where the track is and not by the
  * chord between two stations. The segment from the train's last sample to this one is tested against the
  * territories ({@link Territories#crossing}): a circle it meets opens a pass for the train, which keeps
- * the sample nearest the circle's centre (only samples, so the point is on the track), and a pass whose
- * circle no longer holds the train is sent with {@code exit} the sample's game time. A segment across
- * dimensions, longer than {@link #MAX_SEGMENT} blocks (a portal, a wrapped world's seam, a teleport), or of
- * a train that derailed or has no graph, is not tested: it ends the train's passes at its last sample and
- * the next sample starts a fresh segment.
+ * the sample nearest the circle's centre (only samples, so the point is on the track), and a pass is sent,
+ * with {@code exit} the sample's game time, at the first sample beyond the circle's radius plus
+ * {@link #MARGIN} (MZB-390). A segment across dimensions, longer than {@link #MAX_SEGMENT} blocks (a portal,
+ * a wrapped world's seam, a teleport), or of a train that derailed or has no graph, is not tested: it ends
+ * the train's passes at its last sample and the next sample starts a fresh segment.
  *
  * <p>D1: with no territory that minds the rail the tick is one array read; a sample reads at most the cells
  * of its segment's box (two blocks of track at most 128 long, so at most four) and a short list, allocating
@@ -49,6 +49,13 @@ public final class TrainSampler {
     public static final int PERIOD = 20;
     /** A segment longer than this, in blocks, is not tested (MZB-322). */
     public static final double MAX_SEGMENT = 128.0;
+    /**
+     * How far beyond a circle's radius, in blocks, a train may stray before its pass ends (MZB-390): the
+     * distance a train at Create's default powered top speed (2 blocks a tick) covers in one sample period, so a
+     * train inside the circle cannot reach the margin's far side by its next sample, and a track along the
+     * edge, or a train reversing on it, is one pass and not one for each swap in and out.
+     */
+    public static final double MARGIN = 2.0 * PERIOD;
     private static final int SIGNAL = ConflictRecords.SIGNAL_RAIL;
 
     /** A pass in progress: the circle's faction and the sample nearest its centre so far. */
@@ -56,7 +63,6 @@ public final class TrainSampler {
         final long faction;
         final long entry;
         double x, y, z, d2 = Double.POSITIVE_INFINITY;
-        long stamp = Long.MIN_VALUE;
 
         Open(long faction, long entry) {
             this.faction = faction;
@@ -77,8 +83,10 @@ public final class TrainSampler {
 
     /** What the sampler remembers of a train. */
     private static final class State {
+        /** Null for a {@link Walk}. */
         Train train;
         final long id;
+        UUID owner;
         final int bucket;
         boolean seen, has;
         ResourceKey<Level> dim;
@@ -87,8 +95,13 @@ public final class TrainSampler {
         final List<Open> open = new ArrayList<>(2);
 
         State(Train train) {
+            this(CreateIds.of(train.id), train.owner);
             this.train = train;
-            this.id = CreateIds.of(train.id);
+        }
+
+        State(long id, UUID owner) {
+            this.id = id;
+            this.owner = owner;
             this.bucket = (int) Long.remainderUnsigned(id, PERIOD);
         }
     }
@@ -190,6 +203,7 @@ public final class TrainSampler {
             if (s == null)
                 STATES.put(t.id, s = new State(t));
             s.train = t;
+            s.owner = t.owner;
             s.seen = true;
             BUCKETS[s.bucket].add(s);
         }
@@ -222,7 +236,11 @@ public final class TrainSampler {
         }
         ResourceKey<Level> dim = p.node1.getLocation().getDimension();
         Vec3 at = p.getPosition(t.graph);
-        double x = at.x, y = at.y, z = at.z;
+        advance(s, dim, at.x, at.y, at.z, now);
+    }
+
+    /** The train is at (x, y, z) in {@code dim} at game time {@code now}: opens, extends and sends its passes. */
+    private static void advance(State s, ResourceKey<Level> dim, double x, double y, double z, long now) {
         // The segment from the last sample, unless a portal, a seam or a teleport lies in it
         double mx = x - s.x, mz = z - s.z;
         boolean continued = s.has && dim.equals(s.dim) && mx * mx + mz * mz <= MAX_SEGMENT * MAX_SEGMENT;
@@ -236,21 +254,22 @@ public final class TrainSampler {
         territories.crossing(dim, x0, z0, x, z, SIGNAL, HIT);
         for (int i = 0, n = HIT.size(); i < n; i++) {
             Territories.Territory c = HIT.get(i);
-            Open o = find(s, c.faction());
-            if (o == null) {
-                o = new Open(c.faction(), entry);
+            if (find(s, c.faction()) == null) {
+                Open o = new Open(c.faction(), entry);
                 if (continued)
                     o.take(c, s.x, s.y, s.z); // a segment that clips the circle keeps the nearer of its two ends
                 s.open.add(o);
             }
-            o.take(c, x, y, z);
-            // Kept while the new sample is inside: a pass whose circle the train has left is sent below
-            o.stamp = c.meets(x, z, x, z) ? now : Long.MIN_VALUE;
         }
         s.dim = dim;
+        // A pass opens where a segment meets the radius and ends beyond radius + MARGIN (or when the circle is
+        // gone or no longer minds the rail), so a train at the edge is one pass
         for (int i = s.open.size() - 1; i >= 0; i--) {
             Open o = s.open.get(i);
-            if (o.stamp != now) {
+            Territories.Territory c = territories.get(o.faction);
+            if (c != null)
+                o.take(c, x, y, z);
+            if (c == null || !c.minds(SIGNAL) || !c.dimension().equals(dim) || !c.within(x, z, MARGIN)) {
                 s.open.remove(i);
                 send(s, o, now);
             }
@@ -283,7 +302,34 @@ public final class TrainSampler {
     }
 
     private static void send(State s, Open o, long exit) {
-        if (RtsimApi.railPass(o.faction, s.id, s.train.owner, s.dim, o.x, o.y, o.z, o.entry, exit))
+        if (RtsimApi.railPass(o.faction, s.id, s.owner, s.dim, o.x, o.y, o.z, o.entry, exit))
             passes++;
+    }
+
+    /**
+     * A point walked through the pass rules with no Create train (GameTests: the circle's edge, MZB-390). Not
+     * filed in the sampler's lists, so it is sampled only when {@link #to} says; it sends what a train would.
+     */
+    public static final class Walk {
+        private final State s;
+
+        public Walk(long train, UUID owner) {
+            s = new State(train, owner);
+        }
+
+        /** The next sample, at (x, y, z) in {@code dim} and game time {@code now}. */
+        public void to(ResourceKey<Level> dim, double x, double y, double z, long now) {
+            advance(s, dim, x, y, z, now);
+        }
+
+        /** The point is lost, as a train that derailed is: its passes end at its last sample. */
+        public void lose() {
+            TrainSampler.lose(s);
+        }
+
+        /** How many passes are open. */
+        public int open() {
+            return s.open.size();
+        }
     }
 }
