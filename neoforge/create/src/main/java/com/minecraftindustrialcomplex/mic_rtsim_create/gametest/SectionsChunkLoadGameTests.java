@@ -780,11 +780,14 @@ public final class SectionsChunkLoadGameTests {
      * A compile of a district whose network reaches into an away district loads nothing (SECTIONS.md §2.8,
      * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
-     * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
-     * driver (every source fixed), and its members are bounded. {@code /rtsim district graph} writes the compile without loading
-     * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
-     * it (the network lists only what loaded this session): the next compile still finds the network
-     * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
+     * outside A, is a crossing one, so a shared part (SEC-1 S5-2, choice SC153): millstone A's domain is
+     * SHARED with B as its only peer, the motor a foreign source (B's chunks hold it: no rows, no driver, its
+     * ratio known), one speed row at 64 RPM (the motor's candidate), and the members are not bounded.
+     * {@code /rtsim district graph} writes the compile without loading anything either. Then B's block
+     * entities are taken out of the network, as a restart with B away leaves it (the network lists only what
+     * loaded this session): the next compile still finds the network crossing (choice SC44: CA's chain reaches
+     * B, which is not loaded), but no listed source has a known ratio, so the domain is unstable as before: one
+     * row at the speed of A's members, no driver, bounded, not shared.
      */
     @GameTest(template = YARD, batch = "sec1_4", timeoutTicks = 12000)
     public static void aCompileLoadsNoChunk(GameTestHelper helper) {
@@ -815,10 +818,18 @@ public final class SectionsChunkLoadGameTests {
                     check("the reads stopped at B: " + java.unloadedStops, java.unloadedStops > 0);
                     GlassKit.Domain d = millDomain(g);
                     record(t, "millstone A's domain", d);
+                    GlassKit.Source motor = d.source(f.motor.asLong());
+                    record(t, "the motor's source, peers, current", motor + ", " + d.peers() + ", " + d.current());
+                    check("a shared part: " + d, d.shared());
+                    check("its peer is B: " + d.peers() + " for " + f.db(), d.peers().equals(List.of(f.db())));
                     check("one level: " + d.levels(), d.levels().size() == 1);
-                    check("at the network's last speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
+                    check("at the motor's speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
+                    check("and turning at it now: " + d.current(), d.current() != GlassRecords.NONE);
                     check("no driver: " + d.sources(), d.driven().isEmpty());
-                    checkBounded(g, d);
+                    check("the motor is a foreign source: " + motor, motor != null && motor.rows().isEmpty() && motor.driver() == GlassRecords.NONE
+                            && motor.current() == GlassRecords.NONE && motor.ratioKnown());
+                    check("no tail: " + d.foreign(), d.foreign() == 0);
+                    checkNotBounded(g, d);
                     try {
                         Path p = GlassGraphCommand.write(ind(), level.getServer(), ind().district(f.da()));
                         record(t, "graph dump", p);
@@ -857,6 +868,8 @@ public final class SectionsChunkLoadGameTests {
                     watch.on = false;
                     GlassKit.Domain d = millDomain(GlassKit.latest(f.da()));
                     record(t, "millstone A's domain, B unlisted", d);
+                    check("no source is listed: " + d.sources(), d.sources().isEmpty());
+                    check("not a shared part: " + d, !d.shared() && d.peers().isEmpty() && d.foreign() == 0);
                     check("still one level: " + d.levels(), d.levels().size() == 1);
                     check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
                     check("still no driver: " + d.sources(), d.driven().isEmpty());
@@ -878,14 +891,23 @@ public final class SectionsChunkLoadGameTests {
     }
 
     private static void checkBounded(GlassKit.Graph g, GlassKit.Domain d) {
+        checkMembers(g, d, true);
+    }
+
+    /** The domain's member nodes are modelled, not bounded (a shared part: its network is modelled with its peers). */
+    private static void checkNotBounded(GlassKit.Graph g, GlassKit.Domain d) {
+        checkMembers(g, d, false);
+    }
+
+    private static void checkMembers(GlassKit.Graph g, GlassKit.Domain d, boolean bounded) {
         int n = 0;
         for (GlassKit.Member m : d.members()) {
             if (m.node() == GlassRecords.NONE)
                 continue;
             for (GlassKit.Node node : g.nodes())
                 if (node.index() == m.node()) {
-                    check("member node " + node.index() + " (kind " + node.kind() + ", model " + node.model() + ") is bounded",
-                            node.has(GlassRecords.Node.BOUNDED));
+                    check("member node " + node.index() + " (kind " + node.kind() + ", model " + node.model() + ") is " + (bounded ? "" : "not ") + "bounded",
+                            node.has(GlassRecords.Node.BOUNDED) == bounded);
                     n++;
                 }
         }
@@ -992,13 +1014,17 @@ public final class SectionsChunkLoadGameTests {
     }
 
     /**
-     * A boiler on a chain drives the next district, the driver part (SECTIONS.md §2.6, choice SC11): a
-     * network whose members lie in more than one district is unstable in every district on it, the
-     * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
+     * A boiler on a chain drives the next district, the loaded half (SECTIONS.md §2.6, SEC-1 S5-2, choice
+     * SC153): a network whose members lie in more than one district is a shared part in every district on it,
+     * the boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
      * 20 mB of water a tick, and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a
      * millstone; the chain reaches CB in B, two chunks away, with a cog and a millstone. Both chunks are
-     * forced. In both districts' compiles the millstone's domain has one speed row, no driver (every
-     * source fixed, not the boiler's ladder of rows) and bounded members.
+     * forced. In both districts' compiles the millstone's domain is SHARED and names the other district as its
+     * only peer. A's part tabulates the engine's shaft as a driven source (19 boiler levels and the boiler as
+     * its driver) and has more than one speed row; B's lists the same shaft as a foreign source (no rows, no
+     * driver, its ratio known), has a speed row for each speed an engine gives, and turns at one of them. Each
+     * lists only the members in its own chunks (the middle chunk holds no kinetic block, so the tail is
+     * empty), and the millstones' nodes are not bounded.
      */
     @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 12000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
@@ -1071,14 +1097,46 @@ public final class SectionsChunkLoadGameTests {
                     }
                 }))
                 .thenExecute(() -> {
+                    // the members Create's network holds in each district's chunk, by position
+                    var network = kinetic(level, ca).getOrCreateNetwork();
+                    LongOpenHashSet inA = new LongOpenHashSet(), inB = new LongOpenHashSet(), elsewhere = new LongOpenHashSet();
+                    for (KineticBlockEntity m : network.members.keySet()) {
+                        int cx = m.getBlockPos().getX() >> 4;
+                        (cx == ax ? inA : cx == bx ? inB : elsewhere).add(m.getBlockPos().asLong());
+                    }
+                    record(t, "network members in A, in B, elsewhere", inA.size() + ", " + inB.size() + ", " + elsewhere.size());
+                    check("the network has members in A and B and none between: " + inA.size() + "/" + inB.size() + "/" + elsewhere.size(),
+                            !inA.isEmpty() && !inB.isEmpty() && elsewhere.isEmpty());
                     for (int i = 0; i < 2; i++) {
                         String which = i == 0 ? "A (the boiler's)" : "B";
                         GlassKit.Graph g = GlassKit.latest(ids[i]);
                         GlassKit.Domain d = millDomain(g);
                         record(t, "district " + which + ": graph, domain", g.describe() + "; " + d);
-                        check(which + ": one level: " + d.levels(), d.levels().size() == 1);
-                        check(which + ": no driver: " + d.sources(), d.driven().isEmpty());
-                        checkBounded(g, d);
+                        check(which + ": a shared part: " + d, d.shared());
+                        check(which + ": the other district is its one peer: " + d.peers(), d.peers().equals(List.of(ids[1 - i])));
+                        GlassKit.Source engineShaft = d.source(shaft.asLong());
+                        record(t, which + ": the engine shaft's source, speed rows, current", engineShaft + "; " + d.levels() + "; " + d.current());
+                        check(which + ": the engine's shaft is a source: " + d.sources(), engineShaft != null);
+                        if (i == 0) {
+                            check(which + ": the shaft has a row for each boiler level: " + engineShaft.rows().size(), engineShaft.rows().size() == 19);
+                            check(which + ": and the boiler as its driver: " + d.sources(), !d.driven().isEmpty() && engineShaft.driver() != GlassRecords.NONE);
+                            check(which + ": more than one speed row: " + d.levels(), d.levels().size() > 1);
+                        } else {
+                            check(which + ": the shaft is a foreign source: " + engineShaft, engineShaft.rows().isEmpty()
+                                    && engineShaft.driver() == GlassRecords.NONE && engineShaft.current() == GlassRecords.NONE && engineShaft.ratioKnown());
+                            check(which + ": no driver of its own: " + d.sources(), d.driven().isEmpty());
+                            check(which + ": a speed row at least: " + d.levels(), !d.levels().isEmpty());
+                            check(which + ": turning at one of them: " + d.current(), d.current() != GlassRecords.NONE);
+                        }
+                        // the members are the district's own: all of those in its chunks, none in the other's, no tail
+                        int listed = 0;
+                        for (GlassKit.Member m : d.ownMembers())
+                            listed += m.count();
+                        record(t, which + ": members listed, tail", listed + ", " + d.foreign());
+                        check(which + ": every member in its chunks and no other: " + listed + " of " + (i == 0 ? inA : inB).size(),
+                                listed == (i == 0 ? inA : inB).size());
+                        check(which + ": no tail: " + d.tail(), d.foreign() == 0 && d.tail().isEmpty());
+                        checkNotBounded(g, d);
                     }
                     water[0] = false;
                     clear(level, ax - 1, az - 1, bx + 1, az + 1);
