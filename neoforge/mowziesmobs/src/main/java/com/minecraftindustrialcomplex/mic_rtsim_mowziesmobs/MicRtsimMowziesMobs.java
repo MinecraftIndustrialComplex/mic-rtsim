@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBodies;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.mojang.logging.LogUtils;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -54,6 +55,7 @@ public final class MicRtsimMowziesMobs {
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
         RtsimApi.registerPlugin(GroveChests.INSTANCE); // HAVEN_CHEST (MZB-422): the chest a grove's tribute goes into
+        IndustryApi.register(MowzieStrength.INSTANCE); // IND_FIGHT's attacker strength (MZB-435)
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(LivingDamageEvent.Post.class, FightWatch::onDamage);
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
