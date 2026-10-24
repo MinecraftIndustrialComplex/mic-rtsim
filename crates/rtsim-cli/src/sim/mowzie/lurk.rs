@@ -48,15 +48,22 @@ use super::{Check, HOUR, check};
 const LAG: u64 = 100;
 /// The industry's good the trains carry.
 const CARGO_GOOD: Good = Good(1);
-/// What each of a line's two trains carries a leg: 640 items, whose tenth (64) is the Frostmaw's
-/// carry, and 320, whose tenth (32) is under it.
-const CARGO: [i64; 2] = [640, 320];
+/// What each of a line's two trains carries a leg: 1280 items, whose tenth (128) is over the
+/// Frostmaw's carry of 64, so the carry limits the theft, and 320, whose tenth (32) is under it, so
+/// the cap does. (At 640 the two limits coincide and a wrong carry or a missing cap goes unseen.)
+const CARGO: [i64; 2] = [1280, 320];
 /// The most a train loses in a day, a Frostmaw's carry (MOWZIE.md §4.4).
 const DAY_MAX: i64 = 64;
 /// The most two trains lose over a middling 2-day wait (§4.4).
 const WAIT_MAX: i64 = 256;
 /// The share of the passes the cooldown lets through that rob, at `ambush_milli` 500 (MZB-371).
 const SHARE: (f64, f64) = (0.35, 0.65);
+
+/// What a train carries each leg: its id picks one of [`CARGO`] (the train number, from the low
+/// byte of its id).
+fn cargo_of(train: u64) -> i64 {
+    CARGO[(train & 0xff).saturating_sub(1) as usize % CARGO.len()]
+}
 
 /// A scene: lines, dens with the tick each is found, and the days to run.
 #[derive(Clone)]
@@ -456,7 +463,6 @@ impl Rig {
             Ext::Depart(k) => {
                 let leg = self.legs[k];
                 let (from, to) = leg.ends(&self.scene.lines);
-                let which = (leg.train & 0xff).saturating_sub(1) as usize % CARGO.len();
                 self.engine.ingest(&Timed {
                     at: leg.depart,
                     obs: IndObs::TrainDeparted(TrainDeparture {
@@ -469,7 +475,7 @@ impl Rig {
                             index: 0,
                             item_slots: 36,
                             fluid_capacity: 0,
-                            goods: GoodVec::from_pairs([(CARGO_GOOD, CARGO[which])]),
+                            goods: GoodVec::from_pairs([(CARGO_GOOD, cargo_of(leg.train))]),
                         }],
                     }),
                 });
@@ -795,6 +801,35 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
             format!(
                 "{name}: {robbed_days} train-days robbed, most items {most_day} (limit {DAY_MAX}), \
                  most robberies in one day {most_rob}"
+            ),
+        );
+        // Each robbery takes the Frostmaw's carry or a tenth of the train's cargo, whichever is
+        // less: the 1280-item train loses 64 (the carry), the 320-item train 32 (the cap).
+        let robberies_all: Vec<&PassLog> = runs
+            .iter()
+            .flat_map(|a| a.passes.iter().filter(|p| p.items > 0))
+            .collect();
+        let want = |p: &PassLog| DAY_MAX.min(cargo_of(p.train) / 10);
+        let wrong = robberies_all.iter().filter(|p| p.items != want(p)).count();
+        let by_cargo = |c: i64| {
+            robberies_all
+                .iter()
+                .filter(|p| cargo_of(p.train) == c)
+                .map(|p| p.items)
+                .collect::<BTreeSet<i64>>()
+        };
+        check(
+            out,
+            "each robbery takes the carry or a tenth of its train's cargo, whichever is less",
+            wrong == 0 && by_cargo(CARGO[0]).len() == 1 && by_cargo(CARGO[1]).len() == 1,
+            format!(
+                "{name}: {} robberies, {wrong} off min({DAY_MAX}, cargo / 10); a {}-item train \
+                 loses {:?}, a {}-item train {:?}",
+                robberies_all.len(),
+                CARGO[0],
+                by_cargo(CARGO[0]),
+                CARGO[1],
+                by_cargo(CARGO[1])
             ),
         );
         let wait = runs

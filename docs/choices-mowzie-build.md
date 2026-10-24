@@ -3622,9 +3622,15 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - **`synth::pass_tick(lines, leg, spot)`** is the first sampler tick (every 20 ticks, at the trains'
       1.4 blocks a tick) at or after the polyline's nearest approach to the spot's track point, when that
       is within the spot's reach.
-    - **The cargo.** Each line's two trains carry 640 and 320 of one good a leg, so the Frostmaw's 64-item
-      carry (a tenth of 640) and a tenth of 320 (32) both bind somewhere; two trains over a 2-day wait
-      lose at most 64 + 32 each time they are robbed, well under §4.4's 256.
+    - **The cargo.** Each line's two trains carry 1280 and 320 of one good a leg, so the Frostmaw's 64-item
+      carry binds on the first (a tenth of 1280 is 128) and the industry's 10% theft cap on the second
+      (32); two trains over a 2-day wait lose at most 64 + 32 each time they are robbed, 192 over the wait,
+      under §4.4's 256. (At 640 and 320 the first train's tenth was 64, the carry itself, so a carry of 1000
+      or no cap at all gave the same theft.) The run checks that every robbery takes `min(64, cargo / 10)`
+      of its train, and that each train's robberies all take the one value. Mutated, the carry at 1000
+      fails that check (59 of 119 robberies off at 12 legs a day, 48 of 96 at 24; the 1280-item train loses
+      128), the day and wait limits too (128 over 64; a wait of 320 over 256); with no cap (`theft_cap_ppm`
+      at 1,000,000) only that check fails (60 of 119, 48 of 96; the 320-item train loses 64).
     - **The share.** `ambush_milli` rolls on every pass, but the industry's per-train cooldown
       (`cooldown_ticks` 24,000) turns a hit into `attacks_skipped` when the train was robbed in the last
       day. So the share is judged on the first pass of a train in each day of a wait that the cooldown
