@@ -19,6 +19,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -45,8 +46,8 @@ public final class DetectionLoadGameTests {
     /**
      * Describing a vault never waits for a chunk of it still loading, and describes it as when it is whole
      * (R2-11, RG17). A two-block vault along x across the border of a far chunk A (its controller, A's east
-     * edge) and the next chunk N (its other block). Both are let go until neither has a chunk holder, so the
-     * controller comes back without the handler it built; then A alone is held FULL, and N is at level 34. In
+     * edge) and the next chunk N (its other block). Both are let go until both have unloaded, so the controller
+     * comes back as a new object without the handler it built; then A alone is held FULL, and N is at level 34. In
      * one tick N gets a FULL ticket and the distance manager's updates run ({@code save(false)}):
      * {@code Level.isLoaded} passes in N while N is not FULL, the state the first detection after a start met.
      * The detection's description of the vault, asked at once, must leave N not FULL (before the fix the
@@ -64,6 +65,7 @@ public final class DetectionLoadGameTests {
         BlockState vault = AllBlocks.ITEM_VAULT.getDefaultState().setValue(ItemVaultBlock.HORIZONTAL_AXIS, Direction.Axis.X);
         int slots = 2 * AllConfigs.server().logistics.vaultCapacity.get();
         District.Inventory[] whole = new District.Inventory[1];
+        BlockEntity[] old = new BlockEntity[2];
         helper.startSequence()
                 .thenExecute(() -> {
                     level.setChunkForced(ax, az, true);
@@ -83,13 +85,17 @@ public final class DetectionLoadGameTests {
                     record("aVaultIsDescribedWithoutWaitingForAChunkStillLoading", "described whole", whole[0]);
                     check("both loaded, the vault is an inventory of " + slots + " slots: " + whole[0], whole[0] != null
                             && (whole[0].kind() & IndRecords.Inventory.KIND_ITEMS) != 0 && whole[0].itemSlots() == slots);
+                    old[0] = Loaded.blockEntity(level, controller);
+                    old[1] = Loaded.blockEntity(level, part);
                     level.setChunkForced(ax, az, false);
                     level.setChunkForced(nx, az, false);
                 })
-                .thenWaitUntil(paced(() -> check("A and N unload (no chunk holder)", cache.chunkMap.getVisibleChunkIfPresent(a.toLong()) == null
-                        && cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
+                // Unloaded, not only without a visible holder: a holder still waiting in ChunkMap's pendingUnloads
+                // comes back FULL, with its old block entities (and the handler the vault built), at a new ticket.
+                .thenWaitUntil(paced(() -> check("A and N unload (block entities removed, no chunk holder)", old[0].isRemoved() && old[1].isRemoved()
+                        && cache.chunkMap.getVisibleChunkIfPresent(a.toLong()) == null && cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
                 .thenExecute(() -> cache.addRegionTicket(FULL_ONLY, a, 0, a))
-                .thenWaitUntil(paced(() -> check("A loads", Loaded.blockEntity(level, controller) instanceof ItemVaultBlockEntity)))
+                .thenWaitUntil(paced(() -> check("A loads, a new controller", Loaded.blockEntity(level, controller) instanceof ItemVaultBlockEntity v && v != old[0])))
                 .thenExecute(() -> {
                     check("N is away (level 34)", cache.getChunkNow(nx, az) == null && !level.isLoaded(part));
                     cache.addRegionTicket(FULL_ONLY, n, 0, n);
