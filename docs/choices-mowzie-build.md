@@ -3271,8 +3271,8 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
 
     Warm (windows 4 to 6): a sample takes about 0.25 to 0.3 microseconds at the median and 0.8 at the
     99th percentile, against the budget's 2; a tick takes 4 microseconds on average and 15 at the 99th
-    percentile, against 20. The worst tick (30 microseconds) is a tick that sent several passes, and is over
-    the 20 only as a maximum. Both budgets are PLACEHOLDERS, and these figures meet them. The numbers are
+    percentile, against 20. The worst warm tick (30 microseconds) is over the 20 only as a maximum, which the
+    budget does not bound. Both budgets are PLACEHOLDERS, and these figures meet them. The numbers are
     wall time in a GameTest server that ticks unthrottled, with a JIT that has seen 72,000 samples; a
     dedicated server with the pack's mods will see more cache misses, which this bench does not model.
 - **MZB-389** (tests 10 and 11, step 12): written and compiled, not run (the GameTest round is the lead's).
