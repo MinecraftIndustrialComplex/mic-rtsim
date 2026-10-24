@@ -4906,6 +4906,142 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    // ---- M7 review fixes: the rail across a session start ------------------------------------------
+
+    /// A den with the industry module on, a line between two declared stations, and the owner on
+    /// it; the dimension's id in Java's dictionary.
+    mod rail_session {
+        use super::*;
+        use rtsim_industry::ids::{BlockPos, DistrictId, StationId, TrainId};
+        use rtsim_industry::obs::{
+            CargoFrom, Obs as IO, StationDecl, Timed, TrainCall, TrainDeparture,
+        };
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+
+        fn line(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32) {
+            let (dir, e, mut j) = den(name, 0);
+            j.modules(MODULES | MODULE_INDUSTRY);
+            j.idle();
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            j.game_time += 60_000;
+            for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::Station(StationDecl {
+                        station,
+                        district: Some(DistrictId(district)),
+                        dim,
+                        pos: BlockPos::new(x, 64, 1000),
+                        name: 0,
+                    }),
+                });
+            }
+            (dir, e, j, dim)
+        }
+
+        fn depart(j: &mut Java, train: u64, from: StationId, to: StationId) {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainDeparted(TrainDeparture {
+                    train: TrainId(train),
+                    station: from,
+                    district: DistrictId(from.0 - 9),
+                    destination: Some(to),
+                    eta_ticks: 2_000,
+                    carriages: Vec::new(),
+                }),
+            });
+        }
+
+        fn arrive(j: &mut Java, train: u64, at: StationId) {
+            j.industry_obs(&Timed {
+                at: Tick(j.game_time as u64),
+                obs: IO::TrainArrived(TrainCall {
+                    train: TrainId(train),
+                    station: at,
+                    district: DistrictId(at.0 - 9),
+                    simulated: false,
+                    cargo_from: CargoFrom::Approach,
+                    carriages: Vec::new(),
+                }),
+            });
+        }
+
+        fn passed(j: &mut Java, dim: u32, train: u64, owner: (u64, u64), exit: i64) {
+            j.conflict_obs(&O::RailPass(cb::RailPass {
+                faction: CAMP,
+                train,
+                owner,
+                dimension: dim,
+                pos: (980.5, 66.25, 1000.5),
+                entry: exit - 100,
+                exit,
+            }));
+        }
+
+        /// The notices the plugin was sent, in order.
+        fn notices(j: &Java) -> Vec<cb::Notice> {
+            cmds(j)
+                .filter_map(|c| match c {
+                    C::Notice(n) => Some(*n),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// MZB-375: the conflict's replay-end trigger runs before the rail call, as it does before
+        /// any conflict record. A session whose first record is a TRAIN_ARRIVED for a train the
+        /// conflict holds passes for (held across the restart), and whose catch-up makes the
+        /// owner's feud escalate to its Notice, sends the plugin that notice once, after the
+        /// territory, and keeps it until it is played.
+        #[test]
+        fn a_session_whose_first_record_is_an_arrival_keeps_its_notice() {
+            let (dir, e, mut j, dim) = line("conflict-rail-notice");
+            j.conflict_plugin.play_notices = false;
+            depart(&mut j, 77, WEST, EAST);
+            j.game_time += 200;
+            let exit = j.game_time - 50;
+            for _ in 0..60 {
+                passed(&mut j, dim, 77, PLAYER, exit);
+            }
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (held, kept) = e.with_conflict(|c, _| (c.held_passes(), c.kept_notices()));
+            assert_eq!(held, 60, "the train's passes wait for its arrival");
+            assert!(kept.is_empty(), "no notice yet: {kept:?}");
+            save(&e, &mut j);
+            let (gt, saved) = (j.game_time, j.world_save());
+            let _ = j.crash();
+
+            // The next session: its first record is the arrival, half a day on, by which time the
+            // rail's grievance has climbed to the Notice.
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES | MODULE_INDUSTRY;
+            j.game_time = gt + 12_000;
+            j.conflict_plugin.play_notices = false;
+            arrive(&mut j, 77, EAST);
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (calls, held, replaying) =
+                e.with_conflict(|c, _| (c.stats.rail_calls, c.held_passes(), c.replaying));
+            assert_eq!((calls, held), (1, 0), "the arrival called the rail");
+            assert!(!replaying, "the replay ended with the session's first record");
+            let kept = e.with_conflict(|c, _| c.kept_notices());
+            assert_eq!(kept.len(), 1, "the feud's notice is kept: {kept:?}");
+            assert_eq!(notices(&j), kept, "the plugin was sent it, once");
+            let order: Vec<&str> = cmds(&j)
+                .filter(|c| matches!(c, C::Territory(_) | C::Notice(_)))
+                .map(|c| c.name())
+                .collect();
+            assert_eq!(order, vec!["TERRITORY", "FACTION_NOTICE"]);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+    }
+
     // ---- M4: the camp reconciler through the journal ----------------------------------------------
 
     /// The Umvuthana's warrior, as Java names it.
