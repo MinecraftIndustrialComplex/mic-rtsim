@@ -98,20 +98,9 @@ public final class SectionsChunkLoadGameTests {
 
     // ---- shared helpers --------------------------------------------------------------------------
 
-    /** A wait on the world's IO; while the check fails the tick sleeps 5 ms (ReconcileAheadGameTests.io). */
+    /** A wait on the world's IO or the engine; while the check fails the tick sleeps 5 ms ({@link IndustryKit#paced}). */
     private static Runnable io(Runnable check) {
-        return () -> {
-            try {
-                check.run();
-            } catch (RuntimeException e) {
-                try {
-                    Thread.sleep(5);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                throw e;
-            }
-        };
+        return IndustryKit.paced(check);
     }
 
     private static int farChunk(GameTestHelper helper, boolean x, int offset) {
@@ -223,6 +212,14 @@ public final class SectionsChunkLoadGameTests {
     private static void force(ServerLevel level, int minCx, int maxCx, int cz, boolean on) {
         for (int cx = minCx; cx <= maxCx; cx++)
             level.setChunkForced(cx, cz, on);
+    }
+
+    /** Whether the chunks from {@code minCx} to {@code maxCx} in row {@code cz} tick (at their middle, at {@code Y}). */
+    private static boolean allTick(ServerLevel level, int minCx, int maxCx, int cz) {
+        for (int cx = minCx; cx <= maxCx; cx++)
+            if (!Loaded.ticks(level, new BlockPos(cx * 16 + 8, Y, cz * 16 + 8)))
+                return false;
+        return true;
     }
 
     private static boolean allLoaded(ServerLevel level, int minCx, int maxCx, int cz) {
@@ -518,6 +515,9 @@ public final class SectionsChunkLoadGameTests {
         helper.startSequence()
                 .thenExecute(() -> force(level, ax, bx, az, true))
                 .thenWaitUntil(io(() -> check("the fourteen chunks load", allLoaded(level, ax, bx, az))))
+                // forced chunks come FULL before they tick, under load by many ticks: a part placed in one that
+                // does not tick yet attaches at its first tick
+                .thenWaitUntil(io(() -> check("the fourteen chunks tick", allTick(level, ax, bx, az))))
                 .thenExecute(() -> {
                     clear(level, ax - 1, az - 1, bx + 1, az + 1);
                     GlassCorpusKit.motor(helper, motor, Direction.UP, 64);
@@ -532,13 +532,20 @@ public final class SectionsChunkLoadGameTests {
                     playerPlaced(helper, millA);
                     playerPlaced(helper, millB);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     District da = districtAt(helper, millA), db = districtAt(helper, millB);
                     check("both districts exist", da != null && db != null && da.id != db.id);
                     ids[0] = da.id;
                     ids[1] = db.id;
-                })
-                .thenWaitUntil(() -> check("the motor in B turns millstone A: " + speedOf(level, millA), Math.abs(speedOf(level, millA)) == 64))
+                }))
+                .thenWaitUntil(io(() -> {
+                    KineticNetwork n = net.get();
+                    check("the motor in B turns millstone A: " + speedOf(level, millA) + " (motor " + speedOf(level, motor)
+                            + ", capacity " + n.calculateCapacity() + ", stress " + n.calculateStress() + ", sources "
+                            + n.sources.size() + ", members " + n.members.size() + ", A and B tick " + Loaded.ticks(level, millA)
+                            + ", " + Loaded.ticks(level, motor) + ", test tick " + helper.getTick() + ")",
+                            Math.abs(speedOf(level, millA)) == 64);
+                }))
                 .thenExecute(() -> {
                     KineticNetwork n = net.get();
                     cap[0] = n.calculateCapacity();
@@ -772,10 +779,10 @@ public final class SectionsChunkLoadGameTests {
                     mark[1] = g == null ? -1 : g.end().compile();
                     ind().glass().requestCompile(ind().district(f.da()));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     GlassKit.Graph g = GlassKit.latest(f.da());
                     check("a new complete compile of A", g != null && g.complete() && g.end().compile() > mark[1]);
-                })
+                }))
                 .thenExecute(() -> {
                     watch.check("the compile loaded B");
                     GlassKit.Graph g = GlassKit.latest(f.da());
@@ -818,10 +825,10 @@ public final class SectionsChunkLoadGameTests {
                     mark[1] = g == null ? -1 : g.end().compile();
                     ind().glass().requestCompile(ind().district(f.da()));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     GlassKit.Graph g = GlassKit.latest(f.da());
                     check("a new complete compile of A", g != null && g.complete() && g.end().compile() > mark[1]);
-                })
+                }))
                 .thenExecute(() -> {
                     watch.check("the second compile loaded B");
                     watch.on = false;
@@ -1034,12 +1041,12 @@ public final class SectionsChunkLoadGameTests {
                         ind().glass().requestCompile(ind().district(ids[i]));
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(io(() -> {
                     for (int i = 0; i < 2; i++) {
                         GlassKit.Graph g = GlassKit.latest(ids[i]);
                         check("a new complete compile of " + (i == 0 ? "A" : "B"), g != null && g.complete() && g.end().compile() > compiles[i]);
                     }
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         String which = i == 0 ? "A (the boiler's)" : "B";
