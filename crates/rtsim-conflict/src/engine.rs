@@ -33,6 +33,7 @@ use rtsim_industry::threat::{Loads, Threat, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
+use rtsim_kernel::renewal::LossCause;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_knowledge::{
     ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
@@ -3506,7 +3507,7 @@ impl Conflict {
             // fall (choice K2-12).
             let missing = f64::from(count) * (1.0 - o.survived);
             let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
-            self.lose_units(p, |c| c.threat() == class, lost);
+            self.lose_units(w, p, |c| c.threat() == class, lost, LossCause::Player);
             let got = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
             blocks += o.destroyed_blocks;
@@ -3549,12 +3550,18 @@ impl Conflict {
             * MILLI
     }
 
-    /// Takes `n` units away from the stacks whose class matches, in stack order.
+    /// Takes `n` units away from the stacks whose class matches, in stack order, lost to `cause`
+    /// (a player's district's defences are a player's; a village's are the faction's own affair,
+    /// MZB-259). A boss's band that loses its last unit loses its chief with it (MZB-266): the fall
+    /// with no killer, and the band's feud steps down. The pressure goes before `party_lost`, whose
+    /// `unblock` plans the wait from it.
     fn lose_units(
         &mut self,
+        w: &mut World,
         p: Handle<Party>,
         class: impl Fn(crate::culture::UnitClass) -> bool,
         mut n: u32,
+        cause: LossCause,
     ) {
         let f = self.parties[p].faction;
         let classes: Vec<bool> = self.parties[p]
@@ -3576,7 +3583,23 @@ impl Conflict {
                 self.stats.casualties += u64::from(t);
             }
         }
-        self.party_lost(p, lost, self.now);
+        let at = self.now;
+        if lost > 0
+            && self.parties[p].alive() == 0
+            && self.culture(f).renewal.is_some_and(|r| r.boss)
+        {
+            self.ensure_chief(w, f, at);
+            if self.parties[p].chief {
+                let (x, z) = self.party_pos(p, at);
+                let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
+                self.chief_falls(w, f, None, fall, "the band is wiped out", at);
+                if let Some(a) = self.parties[p].feud {
+                    self.step_down(f, a, at);
+                }
+            }
+        }
+        self.renewal_bump(f, lost, cause, at);
+        self.party_lost(p, lost, at);
     }
 
     /// A raid on a village's or a rival haven's market: Lanchester's linear law against the
@@ -3633,7 +3656,7 @@ impl Conflict {
         );
         let alive = self.parties[p].alive();
         let lost = alive - ((f64::from(alive) * survived).round() as u32).min(alive);
-        self.lose_units(p, |_| true, lost);
+        self.lose_units(w, p, |_| true, lost, LossCause::Faction);
         self.stats.raids_village += 1;
         // The survivors carry off what they can of the caps read before the fight (the fight takes
         // no time, so the market has not moved).
@@ -5066,7 +5089,7 @@ impl Conflict {
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
-                self.chief_killed(w, p, killer, at);
+                self.chief_killed_by(w, p, killer, ck.by, at);
             }
             Obs::EnvoyAnswer(a) => {
                 let Some(p) = self.party_of(a.agent, a.epoch) else {
@@ -5267,12 +5290,34 @@ impl Conflict {
 
     /// The war chief falls (C24, C25): the band routs, the heir takes over holding the grudge,
     /// the faction is cowed for a while (a bold heir recovers sooner), and the killer's feud drops
-    /// rungs.
+    /// rungs. The kill is a player's with a `killer`, unclaimed (`BY_NONE`) without
+    /// ([`Conflict::chief_killed_by`]).
     pub fn chief_killed(
         &mut self,
         w: &mut World,
         p: Handle<Party>,
         killer: Option<ActorId>,
+        at: Tick,
+    ) {
+        let by = if killer.is_some() {
+            boundary::BY_PLAYER
+        } else {
+            boundary::BY_NONE
+        };
+        self.chief_killed_by(w, p, killer, by, at);
+    }
+
+    /// The war chief of a party away falls, killed by `by` (CHIEF_KILLED, MZB-263): the fall
+    /// ([`Conflict::chief_falls`]), the pressure of a renewal culture's camp (a player's loss
+    /// bumps it, before anything plans the wait), the feud the band served, or the killer's when
+    /// it served none, drops rungs ([`Conflict::step_down`]), and the band routs: a fight ends, a
+    /// band on the road walks home, and a rescue is reported when a player broke it (CL-D61).
+    pub fn chief_killed_by(
+        &mut self,
+        w: &mut World,
+        p: Handle<Party>,
+        killer: Option<ActorId>,
+        by: u32,
         at: Tick,
     ) {
         let f = self.parties[p].faction;
@@ -5283,55 +5328,14 @@ impl Conflict {
         if !self.parties[p].chief {
             return;
         }
-        self.stats.chiefs_killed += 1;
         self.parties[p].chief = false;
         let (x, z) = self.party_pos(p, at);
         let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
-        let chief = self.factions[f as usize].chief;
-        let heir = self.factions[f as usize].heir;
-        if let Some(k) = killer {
-            let pos = self.factions[f as usize].pos;
-            let r = w.knowledge.record(Report {
-                who: k,
-                whom: chief,
-                kind: ReportKind::Killing,
-                severity: SEVERITY_UNIT,
-                flags: 0,
-                at,
-                place: Place::new(pos.frame, pos.x, 64, pos.z),
-            });
-            w.knowledge.witness(chief, r, at);
-            w.knowledge.witness(heir, r, at);
-        }
-        w.knowledge.die(chief, at);
-        self.succeed(w, f, at, killer, true);
-        let bend = self.temper(f).bend(Trait::Bold, 1000, 50).max(1);
-        let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
-            / f64::from(bend)) as u64;
-        self.factions[f as usize].cowed_until = at + cowed;
-        let fid = self.fid(f);
-        self.tape
-            .event(kinds::CONFLICT_CHIEF, fall, fid, killer.map_or(0, aid), 0)
-            .text(|| {
-                format!(
-                    "the band routs; cowed for {:.1} days",
-                    cowed as f64 / TICKS_PER_DAY as f64
-                )
-            });
+        let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
+        let cause = self.renewal_cause(f, by);
+        self.renewal_bump(f, 1, cause, at);
         if let Some(a) = self.parties[p].feud.or(killer) {
-            let steps = self.tun.chief_rout_steps;
-            if let Some(from) = self.feud(f, a).map(|x| x.step) {
-                // Each step down skips the rungs the culture has no party for (MOWZIE.md
-                // ledger 2).
-                let c = self.culture(f);
-                let mut to = from;
-                for _ in 0..steps {
-                    to = c.next_down(to);
-                }
-                let feud = self.feud_mut(f, a).expect("exists");
-                feud.step = to.max(Step::Notice);
-                feud.since = at;
-            }
+            self.step_down(f, a, at);
         }
         if let Some(k) = killer {
             self.parties[p].breaker = Some(k);
@@ -5360,6 +5364,129 @@ impl Conflict {
         for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
+    }
+
+    /// The war chief's body dies at its camp (CAMP_DEATH with `DEATH_CHIEF`, MZB-264), `killer`
+    /// being the player that did it, if one did: the fall ([`Conflict::chief_falls`]) and the heir,
+    /// and only the killer's own feud steps down, since no band broke (a third player's kill at the
+    /// camp steps no one else's, MOWZIE.md *Kills*). Each band the chief led rotates home routed:
+    /// they are collected before the succession, which clears their flag (MZB-139), with no
+    /// breaker and no rescue news. The camp's pressure is the caller's (`camp_death`). A chief
+    /// the books already buried (dead of age) is not killed twice: the body is the old one's.
+    pub fn chief_killed_at_camp(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        killer: Option<ActorId>,
+        at: Tick,
+    ) {
+        let chief = self.factions[f as usize].chief;
+        self.ensure_chief(w, f, at);
+        if self.factions[f as usize].chief != chief {
+            return;
+        }
+        let led: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.faction == f && x.chief)
+            .map(|(h, _)| h)
+            .collect();
+        let fall = spot(at, self.factions[f as usize].pos);
+        let cowed = self.chief_falls(w, f, killer, fall, "the chief's body falls", at);
+        if let Some(k) = killer {
+            self.step_down(f, k, at);
+        }
+        for p in led {
+            match self.parties[p].phase {
+                Phase::Home => {}
+                Phase::Fighting => self.end_fight(w, p, boundary::RECALL_ROUTED, at),
+                _ => {
+                    self.stats.routs += 1;
+                    self.go_home(w, p, boundary::RECALL_ROUTED, at);
+                }
+            }
+        }
+        self.note(
+            at,
+            Some(f),
+            "chief",
+            format!(
+                "the war chief falls at its camp; cowed for {:.1} days",
+                cowed as f64 / TICKS_PER_DAY as f64
+            ),
+        );
+        for a in self.feud_actors(f) {
+            self.plan_feud(f, a, at, false);
+        }
+    }
+
+    /// What every fall of the war chief shares (MZB-262): the count, the Killing report witnessed
+    /// by the old chief and the heir when a player did it, the old chief's death, the heir's
+    /// succession, the faction cowed for `cowed_days` (a bold heir recovers sooner) and the tape's
+    /// event, which opens with `what`. How long it is cowed, in ticks.
+    fn chief_falls(
+        &mut self,
+        w: &mut World,
+        f: u32,
+        killer: Option<ActorId>,
+        fall: At,
+        what: &str,
+        at: Tick,
+    ) -> u64 {
+        self.stats.chiefs_killed += 1;
+        let chief = self.factions[f as usize].chief;
+        let heir = self.factions[f as usize].heir;
+        if let Some(k) = killer {
+            let pos = self.factions[f as usize].pos;
+            let r = w.knowledge.record(Report {
+                who: k,
+                whom: chief,
+                kind: ReportKind::Killing,
+                severity: SEVERITY_UNIT,
+                flags: 0,
+                at,
+                place: Place::new(pos.frame, pos.x, 64, pos.z),
+            });
+            w.knowledge.witness(chief, r, at);
+            w.knowledge.witness(heir, r, at);
+        }
+        w.knowledge.die(chief, at);
+        self.succeed(w, f, at, killer, true);
+        let bend = self.temper(f).bend(Trait::Bold, 1000, 50).max(1);
+        let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
+            / f64::from(bend)) as u64;
+        self.factions[f as usize].cowed_until = at + cowed;
+        let fid = self.fid(f);
+        self.tape
+            .event(kinds::CONFLICT_CHIEF, fall, fid, killer.map_or(0, aid), 0)
+            .text(|| {
+                format!(
+                    "{what}; cowed for {:.1} days",
+                    cowed as f64 / TICKS_PER_DAY as f64
+                )
+            });
+        cowed
+    }
+
+    /// A feud steps down `chief_rout_steps` rungs when its chief's band is routed, skipping the
+    /// rungs the culture has no party for (MOWZIE.md ledger 2), and never below Notice. A feud
+    /// at Notice or lower is left as it is, `since` too: a step down never raises one (MZB-262).
+    fn step_down(&mut self, f: u32, a: ActorId, at: Tick) {
+        let Some(from) = self
+            .feud(f, a)
+            .map(|x| x.step)
+            .filter(|s| *s > Step::Notice)
+        else {
+            return;
+        };
+        let c = self.culture(f);
+        let mut to = from;
+        for _ in 0..self.tun.chief_rout_steps {
+            to = c.next_down(to);
+        }
+        let feud = self.feud_mut(f, a).expect("exists");
+        feud.step = to.max(Step::Notice);
+        feud.since = at;
     }
 
     // ---- reads ------------------------------------------------------------------------------

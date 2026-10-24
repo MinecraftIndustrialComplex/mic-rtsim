@@ -29,8 +29,8 @@ use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
     BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE, CampBodies,
-    CampCensus, CampDeath, CampOut, CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF,
-    LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, ReconcileLine,
+    CampCensus, CampDeath, CampOut, CampReconcile, CensusBody, DEATH_CHIEF, DEATH_STRAY,
+    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -1338,15 +1338,28 @@ impl Conflict {
         if state != SlotState::Dead {
             self.renewal_bump(f, 1, cause, at);
         }
+        // The chief's body falls the chief at its camp (MZB-265); a Dead slot's is no second fall.
+        // Who killed it is a player for a player's kill or a body taken, else no one.
+        let chief = d.flags & DEATH_CHIEF != 0 && state != SlotState::Dead;
+        let named = matches!(d.by, boundary::BY_PLAYER | boundary::BY_TAKEN) && d.killer != (0, 0);
+        let killer = (chief && named).then(|| self.player(w, d.killer));
         match state {
             SlotState::Body | SlotState::Owed => {
                 self.camp_mut(f).expect("a ledger").free(i, true);
                 self.pool_shift(f, -1.0, at);
+                if chief {
+                    self.chief_killed_at_camp(w, f, killer, at);
+                }
             }
             SlotState::Dead => self.camp_mut(f).expect("a ledger").free(i, true),
             SlotState::Left | SlotState::Gone => {
                 self.camp_mut(f).expect("a ledger").free(i, true);
                 self.pool_shift(f, 0.0, at);
+                // Before the member's loss to its party, so a band that loses its chief unit
+                // routs as a chief's band.
+                if chief {
+                    self.chief_killed_at_camp(w, f, killer, at);
+                }
                 self.member_died(w, party, d.body, at);
             }
         }
@@ -1470,5 +1483,30 @@ impl Conflict {
             }
         }
         bad
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::synth::CampRun;
+
+    /// What a Frostmaw's loss does to the den's pressure depends on who dealt it (MZB-259): a
+    /// district's walls are a player's, a village's are the faction's own affair. Either way a boss
+    /// whose last unit falls loses its chief (MZB-266).
+    #[test]
+    fn a_villages_walls_are_no_players_loss_and_a_districts_are() {
+        for (cause, pressure) in [(LossCause::Faction, 0.0), (LossCause::Player, 1.0)] {
+            let mut r = CampRun::new(61, "frostmaw", 1);
+            r.camp_in();
+            let to = r.c.now() + 10;
+            r.run(to);
+            let p = r.raid().expect("a raid goes");
+            r.c.lose_units(&mut r.w, p, |_| true, 1, cause);
+            assert_eq!(r.c.stats.chiefs_killed, 1, "{cause:?}");
+            let camp = r.c.camp(r.f).expect("a ledger");
+            assert_eq!(camp.pressure.parts().0, pressure, "{cause:?}");
+            assert!(camp.arrival_at.is_some(), "{cause:?}: a wait is booked");
+        }
     }
 }

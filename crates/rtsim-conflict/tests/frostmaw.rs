@@ -6,10 +6,17 @@
 //! chief's death, at the den and away, and the crystal the steal takes are tested here as well.
 //! Played against the emulated plugin (`synth::CampRun`) on the shipped cultures.
 
+use rtsim_conflict::Step;
 use rtsim_conflict::boundary;
-use rtsim_conflict::engine::SlotState;
-use rtsim_conflict::synth::CampRun;
+use rtsim_conflict::culture::SignalKind;
+use rtsim_conflict::engine::{Party, Signal, SlotState};
+use rtsim_conflict::synth::{CAMP_POS, CampRun, Fight};
+use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
+use rtsim_industry::ids::{Good, GoodVec};
+use rtsim_industry::threat::Threat;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
+use rtsim_kernel::handle::Handle;
+use rtsim_knowledge::ActorId;
 
 fn days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64).round() as u64
@@ -433,4 +440,242 @@ fn the_den_saves_its_pressure_and_wait() {
     assert_eq!(back.pending_by_kind().get("arrival"), Some(&1));
     std::fs::remove_dir_all(&dir).unwrap();
     std::fs::remove_dir_all(&dir_b).unwrap();
+}
+
+// ---- the chief's fall --------------------------------------------------------------------------
+
+/// A player at the den: the Killing report, the successor, the cowed faction, the pressure, and
+/// the next wait that follows from it (MZB-262, 264, 265).
+fn feud_with(r: &mut CampRun, who: ActorId, step: Step) {
+    let at = r.c.now() + 1;
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(r.key),
+            kind: SignalKind::Killing,
+            // 80 grievance: above the Raid rung's 70, so a replan leaves a feud standing there.
+            amount: 10.0,
+            actor: who,
+            pos: CAMP_POS,
+            district: None,
+        },
+        at,
+    );
+    r.c.feud_mut(r.f, who).expect("a feud").step = step;
+}
+
+fn step_of(r: &CampRun, who: ActorId) -> Option<Step> {
+    r.c.feud(r.f, who).map(|f| f.step)
+}
+
+/// The Frostmaw is the camp's chief: a player that kills its body at the den fells a war chief. The
+/// faction is cowed, an heir takes over, the player is reported for the killing, and the death is
+/// a player's loss, so the wait is 12 days (MZB-264, 265).
+#[test]
+fn a_player_killing_the_frostmaw_at_its_den_is_the_chiefs_fall() {
+    let mut r = den(51, 1);
+    come_in(&mut r);
+    let chief = r.c.factions[r.f as usize].chief;
+    assert_eq!(r.c.stats.chiefs_killed, 0);
+    let died = kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_eq!(r.c.stats.successions, 1);
+    assert_ne!(r.c.factions[r.f as usize].chief, chief, "the heir is chief");
+    assert!(
+        r.c.factions[r.f as usize].cowed_until > died,
+        "cowed for a while"
+    );
+    assert!(
+        r.w.knowledge.notable(chief).is_none(),
+        "the old chief is dead"
+    );
+    assert_eq!(pressure_of(&r), 1.0);
+    assert_eq!(arrival_at(&r), Some(died + days(12.0)));
+    assert_eq!(counts(&r), [0, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// A mob's kill of the Frostmaw is the chief's fall too, with no killer to blame and no loss a
+/// player caused: the base wait, no Killing report (MZB-262, 265).
+#[test]
+fn a_mob_killing_the_frostmaw_at_its_den_is_a_fall_with_no_pressure() {
+    let mut r = den(52, 1);
+    come_in(&mut r);
+    let died = kill_the_frostmaw(&mut r, boundary::BY_MOB);
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_eq!(pressure_of(&r), 0.0);
+    assert_eq!(arrival_at(&r), Some(died + days(6.0)));
+    assert!(
+        r.c.feud(r.f, r.player).is_none(),
+        "no one is to blame: no feud against the player"
+    );
+    ok(&mut r);
+}
+
+/// Only the killer's own feud steps down at the den, from Raid to Notice (the culture has no rung
+/// between); a third player's feud stands where it was, since no band broke (MZB-264). A feud at
+/// Notice is not raised by it, nor is its `since` touched, and a player with no feud gets none
+/// from a step down (MZB-262).
+#[test]
+fn only_the_killers_feud_steps_down_at_the_den() {
+    let mut r = den(53, 1);
+    come_in(&mut r);
+    let other = r.c.player(&mut r.w, (0x0713, 0xE2));
+    let idle = r.c.player(&mut r.w, (0x1D1E, 0x01));
+    let me = r.player;
+    feud_with(&mut r, me, Step::Raid);
+    feud_with(&mut r, other, Step::Raid);
+    assert_eq!(step_of(&r, idle), None);
+    kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    assert_eq!(step_of(&r, r.player), Some(Step::Notice), "the killer's");
+    assert_eq!(step_of(&r, other), Some(Step::Raid), "a third player's");
+    assert_eq!(step_of(&r, idle), None);
+    ok(&mut r);
+    // At Notice, a step down changes nothing, `since` included.
+    let mut r = den(54, 1);
+    come_in(&mut r);
+    let me = r.player;
+    feud_with(&mut r, me, Step::Notice);
+    let since = r.c.feud(r.f, r.player).unwrap().since;
+    kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    assert_eq!(step_of(&r, r.player), Some(Step::Notice));
+    assert_eq!(r.c.feud(r.f, r.player).unwrap().since, since);
+}
+
+/// A body carried off is the player's kill of a chief too (BY_TAKEN, MZB-265), but a killer the
+/// record does not name is no one: `d.killer` of 0 reports no one, and no feud steps down.
+#[test]
+fn a_body_taken_names_its_taker_only_when_the_record_does() {
+    let mut r = den(55, 1);
+    come_in(&mut r);
+    let me = r.player;
+    feud_with(&mut r, me, Step::Raid);
+    // The emulated plugin names a killer for a player's kill only: a taken body carries none.
+    kill_the_frostmaw(&mut r, boundary::BY_TAKEN);
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_eq!(step_of(&r, r.player), Some(Step::Raid), "no killer named");
+    assert_eq!(pressure_of(&r), 1.0, "but a taken body is a loss");
+    ok(&mut r);
+}
+
+/// The Frostmaw out on a raid and killed by the player it fights: a chief's fall away (MZB-263),
+/// the pressure bumped once, the band routed home, and the den waits 12 days from the band's loss.
+/// The synth no longer lets the dead chief come home as a survivor (MZB-272).
+#[test]
+fn the_frostmaw_killed_on_a_raid_is_a_fall_and_the_den_waits() {
+    let mut r = den(56, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 0.0,
+        after: 200,
+        kill_chief: true,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    r.watch = true;
+    let p = r.raid().expect("a raid goes");
+    assert!(r.c.parties[p].chief, "the Frostmaw leads its own raid");
+    r.camp_out();
+    r.run(Tick(days(4.0)));
+    assert_eq!(r.c.stats.chiefs_killed, 1, "{:#?}", r.c.stats);
+    assert_eq!(r.c.stats.successions, 1);
+    assert_eq!(pressure_of(&r), 1.0, "bumped once, not by the loss too");
+    assert!(war_parties(&r).is_empty(), "the band is gone");
+    assert_eq!(r.c.factions[r.f as usize].away, 0);
+    let t = arrival_at(&r).expect("a wait is booked");
+    assert!(t > r.c.now(), "the wait is still running");
+    ok(&mut r);
+    r.run(t + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    ok(&mut r);
+}
+
+fn war_parties(r: &CampRun) -> Vec<Handle<Party>> {
+    r.c.parties
+        .iter()
+        .filter(|(_, x)| x.faction == r.f && x.kind.is_war())
+        .map(|(h, _)| h)
+        .collect()
+}
+
+/// Walls that hold no one: every raid on a district is lost to the last unit.
+struct Walls;
+
+impl Infrastructure for Walls {
+    fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
+        Vec::new()
+    }
+
+    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+        Some(RaidOutcome {
+            survived: 0.0,
+            floor: None,
+            untested: false,
+            stolen: GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+
+    fn good_name(&self, _: Good) -> Option<String> {
+        None
+    }
+}
+
+/// A Frostmaw lost to a district's defences, abstractly, with no one watching, leaves no unit
+/// alive and loses its chief with it (MZB-266): M4 kept the chief through the wipe-out, so a
+/// Frostmaw the walls killed came back as the same chief. It is a loss a player's district caused:
+/// the pressure is bumped once and the den waits 12 days.
+#[test]
+fn a_frostmaw_lost_to_a_districts_walls_loses_its_chief_and_is_a_player_loss() {
+    let mut r = den(57, 1);
+    r.infra = Box::new(Walls);
+    come_in(&mut r);
+    let chief = r.c.factions[r.f as usize].chief;
+    r.raid().expect("a raid goes");
+    r.run(Tick(days(4.0)));
+    assert_eq!(r.c.stats.raids_district, 1, "the walls were met");
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_ne!(r.c.factions[r.f as usize].chief, chief);
+    assert!(
+        r.c.factions[r.f as usize].cowed_until > Tick(1),
+        "cowed by it"
+    );
+    assert_eq!(pressure_of(&r), 1.0);
+    assert!(war_parties(&r).is_empty());
+    let t = arrival_at(&r).expect("a wait is booked");
+    assert!(t > r.c.now());
+    ok(&mut r);
+    r.run(t + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    ok(&mut r);
+}
+
+/// A Dead slot's body killed later is no second fall of the chief (MZB-265): the Frostmaw that died
+/// away with its body left in the camp fell once, when it died.
+#[test]
+fn a_dead_slots_chief_body_is_not_felled_twice() {
+    let mut r = den(58, 1);
+    r.plugin.fight = Some(Fight {
+        kill_share: 1.0,
+        after: 200,
+        kill_chief: false,
+        only_at_base: false,
+    });
+    come_in(&mut r);
+    r.watch = true;
+    r.raid().expect("a raid goes");
+    r.camp_out();
+    r.run(Tick(days(4.0)));
+    r.watch = false;
+    assert_eq!(counts(&r)[4], 1, "its slot is dead, its body still stands");
+    let falls = r.c.stats.chiefs_killed;
+    let b = r.plugin.camps[&r.key].bodies[0];
+    assert!(b.chief, "the body is the chief's");
+    let at = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at));
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert_eq!(r.c.stats.chiefs_killed, falls, "no second fall");
+    ok(&mut r);
 }
