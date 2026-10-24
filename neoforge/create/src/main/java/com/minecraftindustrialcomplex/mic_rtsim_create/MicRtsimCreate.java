@@ -52,5 +52,11 @@ public final class MicRtsimCreate {
         }
         if (com.minecraftindustrialcomplex.mic_rtsim_create.bench.SamplerBench.ENABLED)
             com.minecraftindustrialcomplex.mic_rtsim_create.bench.SamplerBench.register();
+        // M7's test 10 needs a Mowzie's Mobs on the run's classpath (-PwithMowzie), so it has no @GameTestHolder: it is
+        // registered when the event fires (GameTest runs only) and the mod is there (MZB-329)
+        modBus.addListener((net.neoforged.neoforge.event.RegisterGameTestsEvent e) -> {
+            if (net.neoforged.fml.ModList.get().isLoaded("mowziesmobs"))
+                e.register(com.minecraftindustrialcomplex.mic_rtsim_create.gametest.RailFrostmawGameTests.class);
+        });
     }
 }
