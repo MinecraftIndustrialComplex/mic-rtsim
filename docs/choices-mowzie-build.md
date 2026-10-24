@@ -932,11 +932,14 @@ under its own heading.
 - **MZB-234** (the Peaceful rule; rewords MZB-215): on Peaceful no new body appears, so a SPAWN is STALE
   and makes no body; a HAND_BACK proceeds, since the body is the one that returns (it is added, then its
   puppet goes); bodies already standing stay, as the jar's do. Both halves are tested.
-- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"): at the arm, a holder
-  noted by UUID that `level.getEntity` does not return falls back to the chunk it was noted in at commit
-  time, and `holdersUnresolved` counts it. The lead's text skipped it as unloaded and so already written;
-  the fallback is the conservative option, since a holder in a chunk that is only being unloaded may not be
-  written yet, and one more noted chunk costs one more write.
+- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"; reworded by MZB-597):
+  at the arm, a holder noted by UUID that `level.getEntity` does not return is noted all the same, at the
+  chunk the entity object last stood in while a weak reference to it is alive (`holdersRemembered`), and only
+  when that reference is gone at the chunk it was noted in at commit time (`holdersUnresolved`). The lead's
+  text skipped it as unloaded and so already written; noting it is the conservative option, since a holder in
+  a chunk that is only being unloaded may not be written yet, and one more noted chunk costs one more write.
+  The first version always fell back to the commit-time chunk, which a body that had walked on before its
+  chunk was hidden had already left (MZB-597).
 - **MZB-236** (a hand-back adds the body first): `Camps.handBack` makes the body, `copy`s the puppet's state
   into it and adds it; only after the add succeeds does `bridge.handBack` despawn the puppet. One tick with
   both present is acceptable. If the add fails (another mod cancels the join), the puppet stays, nothing is
@@ -1126,6 +1129,24 @@ under its own heading.
   without it the poll is the one that finds the change, and the test records that), and every footprint level
   reads `NO_HOLDER`. With the silent-event test (MZB-290) the two sides of the assertion discriminate:
   event off, the poll moves `pollChanges`; event on, it does not.
+
+- **MZB-597** (the barrier notes a holder it cannot find where the object last stood; re-review P3-3;
+  rewords MZB-235): `ChunkWriteBarrier.dependsOnHolder` keeps, with the commit-time chunk, a
+  `WeakReference<Entity>` for each holder. At the arm a holder `level.getEntity` finds is noted where it stands
+  (`holdersResolved`); one it does not find (its chunk hidden, or the entity removed by the unload, which leaves
+  the Entity object with the position it had) is noted at the chunk of the object's own `chunkPosition()`
+  (`holdersRemembered`); the commit-time chunk is the fallback only when the reference is cleared
+  (`holdersUnresolved`). `holdersMoved` counts a holder noted in a chunk other than its commit-time one by
+  either path. The reference is weak, so it keeps no entity alive and no chunk loaded (D1). Residue: a holder
+  removed in a chunk after walking out of the one the record rode on leaves that earlier chunk unnoted, since
+  its last write may not include the holder in either; recorded and not closed, because a removed holder's
+  record is the engine's to settle and the tick that removed it dirtied the chunk it left. A public
+  `forgetHolderReferences` clears every reference, for the GameTests only (the state a collected entity
+  leaves, which a test cannot reach by waiting for the collector). Tests (core): the existing
+  `aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave` now clears B's reference after
+  discarding it (found 2, moved 1, remembered 0, lost 1) and the new `aHolderRemovedAfterWalkingIsNotedWhereItWasLastSeen`
+  (batch `mic_rtsim_journal_barrier_remembered`) walks a holder into the second chunk and removes it
+  (found 0, moved 1, remembered 1, lost 0; the second chunk noted, the first not).
 
 ### M5 design for the implementer
 
