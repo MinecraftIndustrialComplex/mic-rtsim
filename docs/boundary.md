@@ -1598,8 +1598,12 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   chest tribute can go into (MZB-422): the chest's place and free slots as they are, journaled so
   that a replay after a crash knows the chest the session knew (MZB-446). It names a state, so a
   copy is idempotent (the latest record wins). Java sends it from the server, never carried by a
-  holder: when the chest chosen or its free slots change (at most once per tick per grove) and once
-  at the start of a session, for a grove whose camp is in or comes in.
+  holder: when the chest chosen or its free slots change (at most once per tick per grove), once
+  at the start of a session, for a grove whose camp is in or comes in, and after every stack it places
+  in the chest, whether or not the free-slot count changed. The engine takes a slot off its count at
+  each stack it sends, as if the stack filled one, and a stack that merged into a partly filled slot
+  leaves the count one short until a HAVEN_CHEST says otherwise (the re-check, R5); the record is the
+  chest's state, so an extra copy changes nothing.
 - **RAIL_PASS** is one Create train's pass through a camp's range, at the sampled point nearest the
   camp (MOWZIE.md §4.3); **TRAIN_PASSED** a train passing a lurking party's AMBUSH_SPOT (§4.4).
 
