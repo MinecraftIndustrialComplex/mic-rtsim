@@ -1281,6 +1281,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
 pub fn encode_cmd(cmd_seq: u64, cmd: &Cmd, out: &mut Vec<u8>) -> Result<(), WireError> {
     match cmd {
         Cmd::ProbeSet(p) => glass::codec::encode_probe_set(cmd_seq, p, out),
+        Cmd::CountSet(c) => glass::codec::encode_count_set(cmd_seq, c, out),
         Cmd::ChunkReconcile(c) => {
             let mut w = W::cmd(out, IND_CHUNK_RECONCILE, n32(c.deltas.len()), cmd_seq);
             w.put_u64(c.op.0);
@@ -1351,6 +1352,11 @@ pub fn decode_cmd(rec: &[u8]) -> Result<Option<(u64, Cmd)>, WireError> {
         let (kind, aux, rec) = header(rec)?;
         let (seq, p) = glass::codec::decode_probe_set(kind, aux, rec)?;
         return Ok(Some((seq, Cmd::ProbeSet(p))));
+    }
+    if R(rec).get_u16(0) == glass::codec::IND_COUNT_SET {
+        let (kind, aux, rec) = header(rec)?;
+        let (seq, c) = glass::codec::decode_count_set(kind, aux, rec)?;
+        return Ok(Some((seq, Cmd::CountSet(c))));
     }
     if !CMD_KINDS.contains(&R(rec).get_u16(0)) {
         return Ok(None);
@@ -2084,6 +2090,7 @@ mod tests {
                     G::Domain(d) => 72 + 24 * d.levels.len() + 24 * d.members.len(),
                     G::End(_) => 80,
                     G::ProbeSample(p) => 40 + 16 * p.goods.len(),
+                    G::CountSample(c) => 32 + 40 * c.counts.len(),
                     G::ChunkTicking(_) => 48,
                 }
             }
@@ -2130,6 +2137,7 @@ mod tests {
                     G::Domain(_) => 0x004B,
                     G::End(_) => 0x004C,
                     G::ProbeSample(_) => 0x004D,
+                    G::CountSample(_) => 0x004F,
                     G::ChunkTicking(_) => 0x040B,
                 }
             }
@@ -2173,6 +2181,7 @@ mod tests {
             Cmd::DepositDelta(_) => 48,
             Cmd::WritePackage(c) => 56 + 16 * c.goods.len(),
             Cmd::ProbeSet(p) => (32 + 4 * p.nodes.len()).div_ceil(8) * 8,
+            Cmd::CountSet(c) => 32 + 8 * c.pairs.len(),
         }
     }
 
@@ -2183,6 +2192,7 @@ mod tests {
             Cmd::DepositDelta(_) => 0x8403,
             Cmd::WritePackage(_) => 0x8404,
             Cmd::ProbeSet(_) => 0x8406,
+            Cmd::CountSet(_) => 0x8408,
         }
     }
 

@@ -110,6 +110,8 @@ public final class GlassCompiler {
         GraphBuilder.Encoded end;
         long resendAt = Long.MAX_VALUE;
         long[] nodePos;
+        /** The node numbering of the latest compile (IND_COUNT_SET is read in it), and of the one whose END was last sent (IND_COUNT_SAMPLE is written in it). */
+        Numbering numbering, sent;
         // IND_PROBE_SET: the compile it named and its nodes.
         int probeCompile;
         int[] probeNodes = new int[0];
@@ -165,14 +167,17 @@ public final class GlassCompiler {
         final List<GraphBuilder.Encoded> records;
         final GraphBuilder.Encoded end;
         final boolean resend;
+        /** The numbering of the compile these records are: what the engine holds once the END is written. */
+        final Numbering numbering;
         int cursor;
         boolean dropped;
 
-        Send(State st, List<GraphBuilder.Encoded> records, GraphBuilder.Encoded end, boolean resend) {
+        Send(State st, List<GraphBuilder.Encoded> records, GraphBuilder.Encoded end, boolean resend, Numbering numbering) {
             this.st = st;
             this.records = records;
             this.end = end;
             this.resend = resend;
+            this.numbering = numbering;
         }
     }
 
@@ -210,6 +215,7 @@ public final class GlassCompiler {
         if (ind.district(d.id) != d) {
             State st = states.remove(d.id);
             setReached(d.id, null, null);
+            ind.counting().drop(d.id);
             if (st != null) {
                 if (job != null && job.st == st)
                     abort("removed");
@@ -480,11 +486,15 @@ public final class GlassCompiler {
                 GlassRecords.End.REASON_NONE, fp, g.frame, j.revision, compileTicks);
         st.records = records;
         st.nodePos = new long[g.nodeCount()];
-        for (GraphBuilder.Node n : g.nodes())
+        boolean[] store = new boolean[g.nodeCount()];
+        for (GraphBuilder.Node n : g.nodes()) {
             st.nodePos[n.index] = n.pos().asLong();
+            store[n.index] = n.kind == GlassRecords.Node.STORE;
+        }
+        st.numbering = new Numbering(st.compileNo, st.nodePos, store, g.frame);
         st.restarts = 0;
         st.probeNodes = new int[0];
-        sends.add(new Send(st, records, st.end, false));
+        sends.add(new Send(st, records, st.end, false, st.numbering));
         compiles++;
         lastCompileNanos = j.nanos;
         lastGraph.put(st.district, g);
@@ -502,10 +512,11 @@ public final class GlassCompiler {
         MicRtsim.LOGGER.warn("[mic_rtsim] glass: district {} is not compilable (reason {}): {}", st.district, j.g.notCompilable, j.g.notCompilableWhy);
         st.records = List.of();
         st.nodePos = new long[0];
+        st.numbering = new Numbering(st.compileNo, st.nodePos, new boolean[0], j.g.frame);
         st.end = end(st, GlassRecords.End.NOT_COMPILABLE, 0, 0, 0, 0, 0, j.g.notCompilable, 0, j.g.frame, j.revision,
                 (int) Math.max(0, now - j.startTick));
         st.compiledHash = new Long2LongOpenHashMap(j.chunkHash);
-        sends.add(new Send(st, st.records, st.end, false));
+        sends.add(new Send(st, st.records, st.end, false, st.numbering));
         lastGraph.remove(st.district);
         // the last compile's reached chunks stay (SC77): an edit there still asks this district to recompile
     }
@@ -590,6 +601,8 @@ public final class GlassCompiler {
             int flags = s.end.aux() | (s.resend ? GlassRecords.End.RESEND : 0);
             if (!write(s.end, now, flags))
                 s.dropped = true;
+            else
+                s.st.sent = s.numbering; // the engine now holds this compile: its samples are numbered by it
             sends.poll();
             // A dropped record loses the compile on the engine's side: send it again soon.
             s.st.resendAt = now + (s.dropped ? 20 : GlassConfig.get(GlassConfig.RESEND_TICKS));
@@ -627,7 +640,7 @@ public final class GlassCompiler {
             if (queued)
                 continue;
             st.resendAt = Long.MAX_VALUE;
-            sends.add(new Send(st, st.records, st.end, true));
+            sends.add(new Send(st, st.records, st.end, true, st.numbering));
         }
     }
 
@@ -811,9 +824,64 @@ public final class GlassCompiler {
         st.probeNodes = nodes;
     }
 
+    // ---- counting at the movers (§4.2, IND_COUNT_SET and IND_COUNT_SAMPLE) ----------------------
+
+    /**
+     * IND_COUNT_SET from the engine: the (mover node, store node) pairs of the compile it names that Java
+     * counts the moves of. Resolved to block positions with that compile's node numbers and handed to
+     * {@link Counting}, which keeps a pair it already holds (its counters and {@code since}) and drops the
+     * ones no longer named; an empty set drops the district's counters. Ignored (counted, and the counters
+     * left as they are) when the compile is not Java's latest complete one, or sits on a moving frame, whose
+     * positions are not the world's, or the set is malformed (shorter than its count says, none of its nodes
+     * in the compile).
+     */
+    public void countSet(ByteBuffer b, int at, int size, int aux) {
+        Counting counting = ind.counting();
+        // A set that is not what it says (too short for its header or for its count of pairs, a negative count)
+        // is a malformed one: counted as ignored, and the district's counters are left as they are.
+        if (size < GlassRecords.CountSet.PAIRS || aux < 0
+                || (long) aux * GlassRecords.CountSet.PAIR > size - GlassRecords.CountSet.PAIRS) {
+            counting.setsIgnored++;
+            return;
+        }
+        long district = b.getLong(at + GlassRecords.CountSet.DISTRICT);
+        int compile = b.getInt(at + GlassRecords.CountSet.COMPILE);
+        int n = aux;
+        State st = states.get(district);
+        District d = ind.district(district);
+        if (n == 0) {
+            counting.setsTaken++;
+            counting.empty(district);
+            return;
+        }
+        Numbering num = st == null ? null : st.numbering;
+        if (st == null || d == null || num == null || num.compile != compile || st.compileNo != compile || num.frame != 0) {
+            counting.setsIgnored++;
+            return;
+        }
+        long[] movers = new long[n], stores = new long[n];
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            int m = b.getInt(at + GlassRecords.CountSet.PAIRS + GlassRecords.CountSet.PAIR * i + GlassRecords.CountSet.P_MOVER);
+            int s = b.getInt(at + GlassRecords.CountSet.PAIRS + GlassRecords.CountSet.PAIR * i + GlassRecords.CountSet.P_STORE);
+            if (m < 0 || m >= num.pos.length || s < 0 || s >= num.pos.length)
+                continue;
+            movers[k] = num.pos[m];
+            stores[k] = num.pos[s];
+            k++;
+        }
+        if (k == 0) {
+            counting.setsIgnored++; // none of the nodes is in the compile: not the set of this compile
+            return;
+        }
+        counting.apply(district, d.dim, movers, stores, k, ind.gameTime());
+    }
+
     /** Called at the end of each of a district's sweeps: its probes, as IND_PROBE_SAMPLE. */
     public void swept(ServerLevel level, District d, long now, int sweep) {
         State st = states.get(d.id);
+        if (st != null && st.sent != null)
+            ind.counting().sample(d, st.sent, sweep, now);
         if (st == null || st.probeNodes.length == 0 || st.probeCompile != st.compileNo || st.nodePos == null)
             return;
         for (int node : st.probeNodes) {

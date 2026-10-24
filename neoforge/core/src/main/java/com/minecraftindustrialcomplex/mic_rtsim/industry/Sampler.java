@@ -141,6 +141,7 @@ public final class Sampler {
         Industry.GoodsCounter goods = ind.counter();
         StockAccess access = access(level, inv);
         access.read(goods);
+        ind.counting().snapshot(d, inv, d.sweepNo); // the movers' counters as of this read (SC88: a store not read sends none)
         int[] ids = goods.nonZeroIds();
         int from = 0;
         do {
