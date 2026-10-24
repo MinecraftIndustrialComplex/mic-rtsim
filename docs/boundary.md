@@ -1478,7 +1478,8 @@ are untouched.
   once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). HUNT_APPLIED carries the
   OWED_HUNT's op, the engine's own (allocator 0x43), and is booked by the state of the faction's hunts, not
   by an op set: it clears the hunt, or the replaced hunt, whose op it names, and a copy finds none
-  (MZB-449). CAMP_DEATH has
+  (MZB-449). The OWED_HUNT carries that replaced op and `rest`, the plugin's rule for them is in the
+  records' notes below. CAMP_DEATH has
   one in its record, but the engine does not keep it: a death is idempotent by its slot and
   generation, and a set of every camp death's op id would grow with each death of a farmed grove.
   The engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is
@@ -1618,7 +1619,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
 | 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
-| 0x880C | OWED_HUNT | 0 | 16 u64 faction, 24 u64 district, 32 u64 opId (the engine's, allocator 0x43), 40 u32 dimension, 44 u32 count, 48 i32 centreX, 52 i32 centreZ, 56 u32 radius (blocks), 60 reserved | 64 | HUNT_APPLIED |
+| 0x880C | OWED_HUNT | 0 | 16 u64 faction, 24 u64 district, 32 u64 opId (the engine's, allocator 0x43), 40 u64 replaced (the op of the hunt this one replaced while it was in flight, 0 none), 48 u32 dimension, 52 u32 count, 56 i32 centreX, 60 i32 centreZ, 64 u32 radius (blocks), 68 u32 rest (the animals to kill instead of `count` when the last op the plugin applied for this faction and district is `replaced`; 0 with no `replaced`) | 72 | HUNT_APPLIED |
 
 Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
 U4), so none is kept or resent, with four exceptions. TERRITORY is sent again for every faction at a
@@ -1626,7 +1627,7 @@ session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that n
 answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
 notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). Every OWED_HUNT no HUNT_APPLIED has answered goes
 again with the notices, for the same reason (MZB-449); and a hunt whose replaced op's answer comes late
-goes again at once with the count that is left, a count of 0 being the hunt cancelled. Neither goes
+goes again at once with the count that is left (`rest`, below), a count of 0 being the hunt cancelled. Neither goes
 while the session's replay is open (`Conflict::replaying`): the host takes every command out of the
 engine's outbox after each ingest, so a hunt a replayed raid owed, or a replayed late answer sent
 again, would reach the plugin of the next session, which had forgotten what it applied, and the animals
@@ -1788,10 +1789,19 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
   HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for the op a hunt replaced
-  takes the count that op owed off the hunt held and sends it again with what is left, and any other op
-  changes nothing (MZB-449). Java keeps the latest OWED_HUNT for each faction and district until it applies
-  it, answers a count of 0 with a HUNT_APPLIED that kills none, and ignores an OWED_HUNT whose op it applied
-  since the session started (the last op for each faction and district, unsaved). The chief's slot, the heir's MASK and SEAT_HEIR pair and its
+  leaves the hunt held at its `rest` and sends it again with that count and no `replaced`, and any other op
+  changes nothing (MZB-449). A hunt that replaces another carries that op as `replaced` and, as `rest`,
+  what the replacing raid owes on its own (`min(hunt_cap, n)`), which is not the held count less the
+  replaced hunt's: the cap clips that sum. **Java's rule** (M9c builds it): for each faction and district
+  the plugin keeps the last op it applied, unsaved (a session start clears it). It keeps the latest
+  OWED_HUNT for each faction and district until it applies it, and answers a count of 0 with a
+  HUNT_APPLIED that kills none. For an OWED_HUNT it reads: if its `op` is the last op applied, it is
+  ignored (the engine sent the rest of a hunt the plugin had applied already; a hunt answered once is
+  still answered once, as MZB-426 says); else if its `replaced` is the last op applied, it kills `rest`
+  animals (the replaced hunt's animals have died already); else it kills `count`. Applying a hunt sets
+  the last op applied to its `op`. So the animals owed die once, whichever of the two hunts the plugin
+  applied before the engine read the first one's answer, except for a third raid inside one answer's
+  flight (the residual named in MZB-449). The chief's slot, the heir's MASK and SEAT_HEIR pair and its
   wheel event are in MZB-401 to MZB-445.
 - **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
   to carry their action (MZB-168). CAMP_CENSUS

@@ -741,11 +741,16 @@ pub struct OwedHunt {
     pub district: u64,
     /// Booked once: the hunt's own id (the engine allocator's byte, the camp's hash).
     pub op: u64,
+    /// The op this hunt replaced while it was in flight; 0 for none (MZB-449, the re-check).
+    pub replaced: u64,
     pub dimension: u32,
     pub count: u32,
     /// The district's centre, in blocks.
     pub centre: (i32, i32),
     pub radius: u32,
+    /// The animals to kill instead of `count` when the last op the plugin applied for this
+    /// faction and district is `replaced`: what the replacing raid owes on its own.
+    pub rest: u32,
 }
 
 /// A chief's health, crystal and trade memory, ahead of a stack, spawn line or hand-back.
@@ -1656,12 +1661,14 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
             w.u64(16, h.faction);
             w.u64(24, h.district);
             w.u64(32, h.op);
-            w.u32(40, h.dimension);
-            w.u32(44, h.count);
-            w.i32(48, h.centre.0);
-            w.i32(52, h.centre.1);
-            w.u32(56, h.radius);
-            w.finish(OWED_HUNT, 0, 64);
+            w.u64(40, h.replaced);
+            w.u32(48, h.dimension);
+            w.u32(52, h.count);
+            w.i32(56, h.centre.0);
+            w.i32(60, h.centre.1);
+            w.u32(64, h.radius);
+            w.u32(68, h.rest);
+            w.finish(OWED_HUNT, 0, 72);
         }
         Cmd::March(m) => {
             w.u64(16, m.agent);
@@ -1842,10 +1849,12 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             faction: r.u64(16)?,
             district: r.u64(24)?,
             op: r.u64(32)?,
-            dimension: r.u32(40)?,
-            count: r.u32(44)?,
-            centre: (r.i32(48)?, r.i32(52)?),
-            radius: r.u32(56)?,
+            replaced: r.u64(40)?,
+            dimension: r.u32(48)?,
+            count: r.u32(52)?,
+            centre: (r.i32(56)?, r.i32(60)?),
+            radius: r.u32(64)?,
+            rest: r.u32(68)?,
         }),
         BAND_MARCH => {
             let k = count(r.u32(64)?)?;
@@ -2256,10 +2265,23 @@ mod tests {
                 faction: 77,
                 district: 9_000_000_017,
                 op: AGENT_NAMESPACE << 56 | 31,
+                replaced: AGENT_NAMESPACE << 56 | 30,
                 dimension: 1,
-                count: 6,
+                count: 8,
                 centre: (-1200, 3400),
                 radius: 48,
+                rest: 3,
+            }),
+            Cmd::OwedHunt(OwedHunt {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 32,
+                replaced: 0,
+                dimension: 1,
+                count: 2,
+                centre: (i32::MIN, i32::MAX),
+                radius: 48,
+                rest: 0,
             }),
             Cmd::March(BandMarch {
                 agent: 5,
@@ -2317,7 +2339,7 @@ mod tests {
             AMBUSH_SPOT => 96,
             CAMP_RECONCILE => 72 + 32 * n,
             TRAIN_ROBBED => 32,
-            OWED_HUNT => 64,
+            OWED_HUNT => 72,
             CHIEF_BODY => 48 + 16 * n,
             BAND_MARCH => 72 + 8 * u32_at(64) + 16 * n,
             k => panic!("kind {k:#06x} has no documented size"),

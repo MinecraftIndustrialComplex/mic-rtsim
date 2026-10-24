@@ -2606,6 +2606,13 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     take them first, so they are settled at landing.
   - One hunt is in flight for each district. It is resent at each session start and booked once by the engine's own books (the hunt's op id, MZB-449).
     HUNT_APPLIED clears it whatever `killed` is.
+  - Amended at the re-check, R2: OWED_HUNT gains `replaced: u64` (the op of the hunt this one replaced in
+    flight, 0 none) and `rest: u32` (the animals to kill instead of `count` if the plugin's last applied op
+    for the faction and district is `replaced`: what the replacing raid owes on its own, `min(hunt_cap, n)`).
+    The u64 goes at offset 40, in MZB-1's pattern (the u64s first), so the u32s move to dimension 48,
+    count 52, centreX 56, centreZ 60, radius 64 and `rest` 68 (it took the 4 reserved bytes); the record is
+    72 bytes, not 64. It is an unreleased internal record with no reader yet, so there is no compat question
+    (the coordinator approved it). The layout is in boundary.md §9.
 - **MZB-426** (applying a hunt): core `conflict/OwedHunts.java`, vanilla only.
   - It keeps the latest command for each faction and district, unsaved.
   - Once the circle's chunks tick entities, it kills up to `count` animals in it, nearest the centre first.
@@ -2615,6 +2622,13 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - It journals HUNT_APPLIED even when it killed none (the hunt is spent), with the circle's entity chunks
     in M5's barrier.
   - A crash between the kills and the save can apply one hunt twice, bounded by the cap.
+  - Amended at the re-check, R2: the plugin's rule is exact, for each faction and district. It keeps the last
+    op it applied (unsaved). An OWED_HUNT whose `op` is that op is ignored, although a hunt answered once is
+    still answered once. One whose `replaced` is that op kills `rest` animals, the replaced hunt's having died
+    already. Anything else kills `count`. Applying a hunt sets the last op to its `op`. This closes the race
+    in which the plugin applies a replacement at once, before the engine has read the replaced hunt's answer:
+    the late answer re-sends the replacement with `rest`, which the plugin ignores, since it applied that op,
+    and 13 animals no longer die for 8 owed (MZB-449).
 - **MZB-427** (plunder takes livestock goods, the rest of ledger 11):
   - A culture field `plunder_goods: Vec<String>`. Umvuthana's is `["leather", "wool"]`; the catalogue has no
     meat good.
@@ -2900,8 +2914,8 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   RTC8 first) is a two-line change. There is no migration: the mods are unreleased.
 - **MZB-449** (hunts, M9a; settles MZB-424 to MZB-427's open edges):
   - A hunt is `Hunt { district, pos, count, op, replaced }` in `Faction.hunts` (`replaced` added at review,
-    P3-8, below). The op is the 0x43 allocator byte over `identity_op(key, HUNT_SLOT ^ hash(district, tick,
-    held op))`.
+    P3-8, below; at the re-check, R2, it is `Option<(op, rest)>` and OWED_HUNT carries both). The op is
+    the 0x43 allocator byte over `identity_op(key, HUNT_SLOT ^ hash(district, tick, held op))`.
   - A raid on a district that already has a hunt adds its count to the old one, capped at `hunt_cap`, with a
     new op; the plugin keeps the latest command for the district, so the old one never applies after the
     new one is read. (Amended at review, P3-8: "a late HUNT_APPLIED for a replaced op is spent and clears
@@ -2915,25 +2929,33 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - HUNT_APPLIED is booked by the state of the faction's hunts, in one rule (amended at review, P3-6 and
     P3-8, with the coordinator's condition): an answer clears a hunt only when its op id is that hunt's own
     op or the op it replaced, and never whatever hunt the faction happens to hold.
-    - A hunt keeps the op it replaced and the count that op owed (`Hunt.replaced`, one entry deep, saved in
-      RTC8 with the hunt, which is M9's own unreleased format, so no bump).
+    - A hunt keeps the op it replaced and `rest`, what the replacing raid owes on its own (`Hunt.replaced`,
+      one entry deep, saved in RTC8 with the hunt, which is M9's own unreleased format, so no bump; the u32
+      held the replaced hunt's count before the re-check and has the same width, and `memory()` counts the
+      `Hunt` whole).
     - The answer for the held op spends the hunt, with the replaced entry it carried. `killed` is booked.
-    - The answer for the replaced op takes its count off the held hunt's (saturating), clears the replaced
-      entry, books `killed`, and sends the held hunt to the plugin again, under its op, with the count that
-      is left (the plugin keeps the latest command for a district, so the one it holds is replaced). A held
-      hunt left at 0 is cleared and sent as a count of 0, which the plugin applies as a hunt that kills
-      none: its pending 8 are cancelled. Without the second send the engine's books were right and the
-      plugin still killed the 8.
+    - The answer for the replaced op sets the held hunt's count to `rest`, clears the replaced entry, books
+      `killed`, and sends the held hunt to the plugin again, under its op, with that count and `replaced`
+      0 (the plugin keeps the latest command for a district, so the one it holds is replaced; a plugin that
+      applied the held op meanwhile ignores the repeat, MZB-426). A held hunt left at 0 (a replacing raid
+      that owed nothing of its own) is cleared and sent as a count of 0, which the plugin applies as a hunt
+      that kills none: its pending animals are cancelled. Without the second send the engine's books were
+      right and the plugin still killed them.
     - An answer for any other op finds no hunt: a copy (replayed after a save, or a holder's), an answer
       for an op booked already, or an op older than the replaced one. It changes nothing and sends nothing.
     - So HUNT_APPLIED is out of `applied_ops` (`Obs::op()` and rtsim-jni's `op_of` no longer name it): each
       op is cleared at its first answer, so no set of them is needed and none would stop growing. A copy
       for a replaced op, delivered once its first answer is booked, finds the entry gone.
-    - Residuals, named: a third hunt owed while two applied ones are unanswered forgets the oldest replaced
-      op, so its late answer takes nothing off and that hunt's animals are paid on top, at most the cap. A
-      re-sent hunt reaching a plugin that applied the held op in the meantime kills again, so Java keeps,
-      for each faction and district, the last op it applied and ignores an OWED_HUNT with that op (M9c's
-      notes). Both are bounded by the cap and need two answers in flight at once.
+    - Residual, named: a third raid owed inside one answer's flight, with the plugin having skipped the
+      second hunt, replaces the second's `replaced` entry (the entry is one deep). The plugin reads the
+      third hunt, whose `replaced` is the skipped second op and not its last applied (the first), so it
+      kills the third's whole `count`, which holds the first hunt's animals again; the first's late answer
+      then finds no hunt. The first hunt's animals are paid twice, the overpay bounded by the cap (13
+      killed for 10 owed in `a_third_raid_inside_one_answers_flight_overpays_by_at_most_the_cap`). It needs
+      two answers in flight and a plugin that skipped a hunt, which the chunks that tick make rare.
+      The other residual of review P3-8 (a re-sent hunt reaching a plugin that applied the held op in the
+      meantime) is closed at the re-check, R2: Java ignores an OWED_HUNT with the last op it applied, and
+      the emulator models that.
   - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
     `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
     or the animals die twice.
@@ -2954,6 +2976,21 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     several (1,500 filler records on a minimum-size buffer, the answer in a later hand-over than the
     session start), with the second hunt's answer journaled (spent, nothing sent) and lost (the rest goes
     once).
+  - Amended at the re-check, R2: the race paid the replaced hunt on top when the plugin applied the
+    replacement at once. The plugin applies op1 (5); before op1's answer is read a second raid sends
+    OWED_HUNT(op2, 8) and the plugin applies it at once; the late answer re-sent op2 with 3, which the plugin
+    ignores (MZB-426): 13 animals died for 8 owed. The fix is in the record, not in a wait: OWED_HUNT carries
+    `replaced` (op1) and `rest` (`min(cap, n)`, the second raid's own count, as if op1's answer had been read
+    first), and the plugin's rule (MZB-426) kills `rest` when the last op it applied is `replaced`. On a
+    replacement the engine sets the new op, `count = min(cap, held + n)` and `replaced = Some((old op,
+    min(cap, n)))`; the late answer for the replaced op sets the held count to `rest` and re-sends with
+    `replaced` 0, and a `rest` of 0 is the hunt cancelled, as before. This also fixes the capped race:
+    6 owed and applied, then 6 more before the answer is read, with the cap at 8, ended at 8 killed (the
+    capped sum less the 6 left the second raid 2) and now ends at 12, each raid its own 6.
+    `FakeConflict` models the plugin's rule, and `every_ordering_of_two_raids_kills_the_animals_owed` plays
+    the orderings (op1's answer read before the second raid; op1 applied with its answer late and op2
+    applied before and after that answer; the capped pair) with a save and load before each step, asserting
+    that the animals killed equal what is owed. The coordinator's late-copy test passes unchanged.
   - The hunt's centre is the party's target position (the district's centre) and its radius 48
     (PLACEHOLDER).
   - Plunder with `plunder_goods` takes those goods and no others, and what the survivors take is the whole of
@@ -3361,8 +3398,15 @@ Two fixes for M6:
 - **M9c, bands and the world:**
   1. `registerMaker`, `Slot.extras` and `RaptorMaker`, with Peaceful.
   2. `OwedHunts` and the hunt records. Java keeps, for each faction and district, the last op it applied
-     and ignores an OWED_HUNT that names it again (the engine may send the held hunt a second time with a
-     reduced count, MZB-449); a count of 0 is applied as a hunt that kills none and is answered all the same.
+     (unsaved, cleared at a session start), and reads each OWED_HUNT by this rule (MZB-426 and MZB-449,
+     amended at the re-check; boundary.md §9 has it too):
+     - an OWED_HUNT naming that op again is ignored (the engine may send the held hunt a second time,
+       with `rest`); a hunt answered once is still answered once;
+     - one whose `replaced` equals that op kills `rest` animals, not `count` (the replaced hunt's animals
+       have died already, and `rest` is what the replacing raid owes on its own);
+     - anything else kills `count`.
+     Applying a hunt sets the last op to its `op`. A count of 0 is applied as a hunt that kills none and is
+     answered all the same. The records are 72 bytes with `replaced` at 40 and `rest` at 68.
   3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer.
   4. `MowzieStrength`.
   5. GameTests 12, 13, 14, 16, 17 and 20.
