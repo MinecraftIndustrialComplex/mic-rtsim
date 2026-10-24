@@ -981,8 +981,8 @@ and the two actors:
   packet. A betrayal names the camp that fell on its ally.
 - **A raid, an invasion or a skirmish fell on a target:** `who` the camp, `whom` the target (the
   village or haven it marched on, else the feud's player), the severity byte the outcome
-  (`report::raid`: 1 held, a watched fight the band left bored or done; 2 beaten, a rout, or an
-  unwatched raid that lost warriors and took nothing; 3 plundered, it took goods or blocks), joint
+  (`report::raid`: 1 held, a watched fight the band left bored or done; 2 beaten, a rout in a fight
+  or on the road, or an unwatched raid that lost warriors and took nothing; 3 plundered, it took goods or blocks), joint
   or not by a flag (unused so far). A raid that found nothing is no news.
 - **A chief or a champion fell:** `who` the camp, `whom` the fallen notable, the severity byte how
   (`report::fell`: 1 died of age, 2 killed in a fight). When a player killed the chief, the

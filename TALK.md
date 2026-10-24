@@ -544,7 +544,9 @@ kinds, their lines and the engine side; the conflict engine records 10, 13 and 1
   warriors fell; one that took nothing and lost nobody found nothing to raid and is no news. Also
   when a watched fight ends: a rout is beaten, a band that leaves bored or done is held (what its
   mobs carry off comes later, as BAND_LOOTED, and is not counted), and one that leaves because the
-  world turned Peaceful is no raid. Whom is the node the band marched on, a village or a rival
+  world turned Peaceful is no raid. A band whose war chief is killed while it is out on the road or
+  waiting for an ally routs there (CL-D61): the raid was beaten off before it arrived; one still
+  mustering at its camp had set out on nobody and is no raid. Whom is the node the band marched on, a village or a rival
   camp's haven, which witnesses it too (a haven's camp through its chief and heir), else the player
   its feud is against; a band after neither records nothing. A fight that ends early (the watching
   player leaves, the session restarts, the band dies outside the fight) records nothing yet.
