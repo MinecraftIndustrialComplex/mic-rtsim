@@ -307,6 +307,10 @@ impl Conflict {
     }
 }
 
+/// A line a pass is counted on: its two stations' ids (either order) and the one nearer the
+/// pass that has a district.
+type LineAt = ((u64, u64), Option<(Pos, DistrictId)>);
+
 /// A pass waiting for its train's next arrival to name the line it ran (MZB-308).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Held {
@@ -588,7 +592,7 @@ impl Conflict {
         exit: Tick,
         point: Pos,
         y: i32,
-        line: Option<((u64, u64), Option<(Pos, DistrictId)>)>,
+        line: Option<LineAt>,
     ) {
         let m = self.factions.row_mut(f).rail_entry(actor);
         if m.last.is_none() || exit >= m.t_ref {
@@ -608,7 +612,7 @@ impl Conflict {
         exit: Tick,
         point: Pos,
         y: i32,
-        line: Option<((u64, u64), Option<(Pos, DistrictId)>)>,
+        line: Option<LineAt>,
     ) {
         if let (Some(m), Some((ids, near))) = (self.factions.row_mut(f).rail_meter_mut(actor), line)
         {

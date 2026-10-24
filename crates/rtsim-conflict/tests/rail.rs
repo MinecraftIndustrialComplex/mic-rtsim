@@ -700,7 +700,7 @@ fn the_gate_pushes_only_on_the_band_and_the_day() {
     let mut pushes = 0;
     for step in 1..=(6 * 240u64) {
         let t = Tick(step * 100);
-        if t.0 % 2_000 == 0 {
+        if t.0.is_multiple_of(2_000) {
             c.ingest(&mut w, &mut probe, &pass(1, PLAYER, t.0), t);
         } else {
             c.run_until(&mut w, &mut probe, t);
@@ -1243,7 +1243,7 @@ fn rail_run(seed: u64, trip: Trip) -> RunEnd {
         let t = Tick(step * 1_000);
         let train = 1 + step % 3;
         c.ingest(&mut w, &mut probe, &pass(train, PLAYER, t.0), t);
-        if step % 6 == 0 {
+        if step.is_multiple_of(6) {
             c.ingest(
                 &mut w,
                 &mut probe,
@@ -1378,8 +1378,13 @@ mod synthetic {
     #[test]
     fn a_leg_passes_each_den_once_then_arrives() {
         let l = line(12.0);
-        let events =
-            synth::rail_events(&[l.clone()], &[den(Tick::ZERO)], 5, 0.0, Tick::from_days(3));
+        let events = synth::rail_events(
+            std::slice::from_ref(&l),
+            &[den(Tick::ZERO)],
+            5,
+            0.0,
+            Tick::from_days(3),
+        );
         let mut passes = Vec::new();
         let mut arrivals = Vec::new();
         for (t, e) in &events {
@@ -1458,7 +1463,7 @@ mod synthetic {
         let l = line(12.0);
         let run = |seed| {
             synth::rail_events(
-                &[l.clone()],
+                std::slice::from_ref(&l),
                 &[den(Tick::ZERO)],
                 seed,
                 0.4,
