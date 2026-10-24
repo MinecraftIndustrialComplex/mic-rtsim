@@ -150,6 +150,9 @@ pub const ACTION_SET_OUT: u8 = 4;
 pub const ACTION_HAND_BACK: u8 = 5;
 pub const ACTION_REMOVE: u8 = 6;
 pub const ACTION_SEAT_HEIR: u8 = 7;
+/// Take a warrior at home for the heir (slot 0, generation 0: Java picks the one farthest from
+/// every player); always paired with `ACTION_SEAT_HEIR` in one CAMP_RECONCILE (MZB-408).
+pub const ACTION_MASK: u8 = 8;
 /// CAMP_RECONCILE line flags.
 pub const LINE_CHIEF: u8 = 1;
 pub const LINE_CRYSTAL: u8 = 2;
@@ -678,7 +681,7 @@ pub struct ReconcileLine {
     pub slot: u32,
     pub generation: u32,
     pub body: u32,
-    /// `ACTION_SPAWN` to `ACTION_SEAT_HEIR`.
+    /// `ACTION_SPAWN` to `ACTION_MASK`.
     pub action: u8,
     /// `LINE_CHIEF`, `LINE_CRYSTAL`.
     pub flags: u8,

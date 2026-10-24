@@ -71,7 +71,9 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
 
-pub use camp::{Answered, Camp, Line, Retired, Slot, SlotState, Throne};
+pub use camp::{
+    Answered, CHIEF_SLOT, Camp, Heir, Line, Placing, Retired, Slot, SlotState, TRADED_CAP, Throne,
+};
 
 /// A feud's `wait_until` while only a change of its camp's room or lines can end the wait: no
 /// event is booked for it, and `Conflict::unblock` plans it again when one comes.
@@ -365,6 +367,11 @@ pub(crate) enum Ev {
     /// A renewal culture's wait has run out: its camp gains a member (`Camp::arrival`, MZB-255).
     /// Booked whether the camp is in or out.
     Arrival {
+        faction: u32,
+        stamp: u32,
+    },
+    /// A camp's chief to come is due (`Camp::heir`, MZB-406). Wheel tag 9.
+    CampHeir {
         faction: u32,
         stamp: u32,
     },
@@ -776,6 +783,14 @@ pub fn body_id(c: &Cultures, name: &str) -> u32 {
         .map_or(0, |i| i as u32 + 1)
 }
 
+/// Whether a culture's chief goes into a band as a stack of its own (BAND_CHIEF, MEMBER_CHIEF,
+/// ledger 24). Before M11 gives the grove's chief its aloft puppet, a chief that is a body of its
+/// own has none, so its band carries no chief flag and the Umvuthi stays on its throne until a
+/// held take removes it (MZB-414).
+pub fn chief_stack(c: &crate::culture::Culture) -> bool {
+    c.def.chief_body.is_none()
+}
+
 /// The engine's item dictionary: a world good's id + 1 (named by the catalogue).
 pub fn item_of(g: GoodId) -> u32 {
     u32::from(g.0) + 1
@@ -909,6 +924,7 @@ impl Conflict {
                 Ev::Plunder { .. } => "plunder",
                 Ev::Refill { .. } => "refill",
                 Ev::Arrival { .. } => "arrival",
+                Ev::CampHeir { .. } => "camp_heir",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -2749,10 +2765,12 @@ impl Conflict {
             0
         };
         let times = self.times_for(f, &route, at + muster);
-        let chief = matches!(
-            kind,
-            PartyKind::Raid | PartyKind::Invasion | PartyKind::Siege
-        ) && !self.factions[f as usize].chief_out;
+        // The war chief leads the kinds its culture names, once at a time. A culture whose chief
+        // is a body of its own needs it fit to go (MZB-413).
+        let chief_body = self.culture(f).def.chief_body.is_some();
+        let chief = self.culture(f).leads(kind)
+            && !self.factions[f as usize].chief_out
+            && (!chief_body || self.chief_can_lead(f));
         if chief {
             self.factions[f as usize].chief_out = true;
         }
@@ -2788,6 +2806,9 @@ impl Conflict {
         if kind.is_war() {
             self.factions[f as usize].away += start_units;
             self.camp_draw(f, p, start_units, at);
+            if chief && chief_body {
+                self.camp_draw_chief(f, p);
+            }
         }
         let pos = self.factions[f as usize].pos;
         let fid = self.fid(f);
@@ -3149,7 +3170,26 @@ impl Conflict {
             e.2.carry += i64::from(n) * i64::from(ud.carry);
             e.2.blocks += n * ud.breaks;
         }
+        // A chief that leads adds its own strength, in the class of the first unit (MZB-413).
+        let lead = self.chief_strength(p);
+        if lead > 0.0
+            && let Some(&(u, _)) = x.units.iter().find(|e| e.1 > 0)
+            && let Some(e) = m.get_mut(&self.unit_row(x.faction, u).class.threat())
+        {
+            e.1 += lead;
+        }
         m
+    }
+
+    /// What the party's chief adds to its strength while it leads (MZB-413): a culture's
+    /// `chief_strength`, for a party whose chief flag is up.
+    fn chief_strength(&self, p: Handle<Party>) -> f64 {
+        let x = &self.parties[p];
+        if x.chief {
+            f64::from(self.culture(x.faction).def.chief_strength)
+        } else {
+            0.0
+        }
     }
 
     fn strength(&self, p: Handle<Party>) -> f64 {
@@ -3157,7 +3197,8 @@ impl Conflict {
         x.units
             .iter()
             .map(|&(u, n)| f64::from(n) * self.unit_row(x.faction, u).strength)
-            .sum()
+            .sum::<f64>()
+            + self.chief_strength(p)
     }
 
     /// Unit `u` of faction `f` as it fights now: the row its chief's crystal picks (MOWZIE.md
@@ -4043,7 +4084,7 @@ impl Conflict {
                 stacks.push(boundary::Stack {
                     body: body_id(&self.cultures, &c.unit(u).body),
                     count: t,
-                    flags: if x.chief && stacks.is_empty() && x.wave == 0 {
+                    flags: if x.chief && chief_stack(&c) && stacks.is_empty() && x.wave == 0 {
                         boundary::MEMBER_CHIEF
                     } else {
                         0
@@ -4089,7 +4130,11 @@ impl Conflict {
             } else {
                 0
             }) | boundary::BAND_SURFACE
-                | if x.chief { boundary::BAND_CHIEF } else { 0 },
+                | if x.chief && chief_stack(&c) {
+                    boundary::BAND_CHIEF
+                } else {
+                    0
+                },
             wave: x.wave,
             arc_centre: (f64::from(centre.0), f64::from(centre.1)),
             bearing_deg: bearing,
@@ -4652,6 +4697,7 @@ impl Conflict {
             }
             Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
             Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
+            Ev::CampHeir { faction, stamp } => self.camp_heir_event(faction, stamp, at),
         }
     }
 

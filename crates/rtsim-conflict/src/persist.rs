@@ -43,7 +43,8 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    Line, Party, Phase, Retired, Slot, SlotState, Source, Target, Throne,
+    Heir, Line, Party, Phase, Placing, Retired, Slot, SlotState, Source, TRADED_CAP, Target,
+    Throne,
 };
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -62,15 +63,18 @@ use crate::tunables::ConflictTunables;
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
-/// arrival (M6, MZB-271).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC7");
+/// arrival (M6, MZB-271). RTC8: a camp's ledger goes on with its heir, its chief's trade memory,
+/// the tribute it owes and is placing and the heir's pair in flight, a faction ends with its owed
+/// hunts, and the wheel's events may be a camp heir (M9, MZB-437).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
-/// event may differ. 6: a camp carries its pressure and arrival (M6).
+/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: a camp carries its heir,
+/// memory and tribute, and a faction its hunts (M9).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 6;
+const META_VERSION: u16 = 7;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -382,6 +386,34 @@ fn put_camp(w: &mut Writer, c: &Camp) {
     w.u32(at_day);
     w.var_u64(u64::from(c.arrival));
     put_opt(w, &c.arrival_at, |w, t| w.u64(t.0));
+    put_opt(w, &c.heir, |w, h| {
+        w.u64(h.due.0);
+        w.bool(h.found_empty);
+    });
+    w.var_u64(u64::from(c.heir_stamp));
+    put_usize(w, c.traded.len());
+    for t in &c.traded {
+        w.u64(t.0);
+        w.u64(t.1);
+    }
+    put_usize(w, c.owed_tribute.len());
+    for (g, m) in &c.owed_tribute {
+        w.var_u64(u64::from(*g));
+        w.i64(*m);
+    }
+    put_opt(w, &c.placing, |w, p| {
+        w.u64(p.op);
+        w.var_u64(u64::from(p.good));
+        w.i64(p.amount);
+    });
+    put_opt(w, &c.mask, |w, m| {
+        w.u64(m.0);
+        w.var_u64(u64::from(m.1));
+    });
+    put_opt(w, &c.seat, |w, m| {
+        w.u64(m.0);
+        w.var_u64(u64::from(m.1));
+    });
 }
 
 fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
@@ -462,6 +494,40 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let pressure = Pressure::from_parts(p, r.u32()?);
     let arrival = get_u32(r)?;
     let arrival_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    let heir = get_opt(r, |r| {
+        Ok(Heir {
+            due: Tick(r.u64()?),
+            found_empty: r.bool()?,
+        })
+    })?;
+    let heir_stamp = get_u32(r)?;
+    let n = r.len_prefix(16)?;
+    let mut traded: Vec<(u64, u64)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t = (r.u64()?, r.u64()?);
+        if traded.last().is_some_and(|l| *l >= t) || n > TRADED_CAP {
+            return bad("trade memory out of order or over its cap".to_string());
+        }
+        traded.push(t);
+    }
+    let n = r.len_prefix(2)?;
+    let mut owed_tribute: Vec<(u32, i64)> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let e = (get_u32(r)?, r.i64()?);
+        if owed_tribute.last().is_some_and(|l| l.0 >= e.0) || e.1 <= 0 {
+            return bad("owed tribute out of order or not positive".to_string());
+        }
+        owed_tribute.push(e);
+    }
+    let placing = get_opt(r, |r| {
+        Ok(Placing {
+            op: r.u64()?,
+            good: get_u32(r)?,
+            amount: r.i64()?,
+        })
+    })?;
+    let mask = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
+    let seat = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
     Ok(Camp {
         epoch,
         seen,
@@ -475,6 +541,13 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         pressure,
         arrival,
         arrival_at,
+        heir,
+        heir_stamp,
+        traded,
+        owed_tribute,
+        placing,
+        mask,
+        seat,
     })
 }
 
@@ -791,6 +864,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::CampHeir { faction, stamp } => {
+            w.u8(9);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -832,6 +910,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             stamp: get_u32(r)?,
         },
         8 => Ev::Arrival {
+            faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        9 => Ev::CampHeir {
             faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
