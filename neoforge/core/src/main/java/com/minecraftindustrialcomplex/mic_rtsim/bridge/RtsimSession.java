@@ -163,6 +163,11 @@ public final class RtsimSession {
     final Engine engine;
     final JournalSavedData journalData;
     final BoundarySession boundary;
+    /**
+     * The engine life (ReinstallRules.engineLife, RG13): new whenever the engine's pages are, which is
+     * when its reconcile epochs start again from 1. The industry module stamps applied epochs with it.
+     */
+    final long engineLife;
     final PuppetRegistry registry = new PuppetRegistry();
     final CommandDispatcher commands;
     /** Phase 1: villages, markets, gossip, damage, rescues, robbery, bases, growth (PLAN.md §8). */
@@ -220,6 +225,16 @@ public final class RtsimSession {
         this.engine = engine;
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
+        boolean pagesFresh = boundary.start().pagesObsSeq() == 0;
+        try {
+            this.engineLife = ReinstallRules.engineLife(server.getWorldPath(LevelResource.ROOT).resolve("rtsim"), pagesFresh,
+                    new java.security.SecureRandom()::nextLong);
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException("writing the engine life (world/rtsim/" + ReinstallRules.LIFE_FILE + ")", e);
+        }
+        if (pagesFresh)
+            MicRtsim.LOGGER.info("[mic_rtsim] the engine's pages are new: engine life {}; reconcile epochs that chunks hold from"
+                    + " earlier pages are void as the chunks load", Long.toHexString(engineLife));
         this.commands = new CommandDispatcher(this);
         this.boundary.onAck(this::onAcked);
         for (int i = 0; i < 2; i++) {
@@ -282,6 +297,11 @@ public final class RtsimSession {
 
     public BoundarySession boundary() {
         return boundary;
+    }
+
+    /** The engine life (RG13): changes exactly when the engine's pages start over. */
+    public long engineLife() {
+        return engineLife;
     }
 
     public PuppetRegistry registry() {

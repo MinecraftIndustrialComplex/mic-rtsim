@@ -125,7 +125,7 @@ what was verified, not what is known to break.
 | `mic_rtsim:player_blocks` | chunks | with the chunk | blocks players placed, per section (G12) |
 | `mic_rtsim_ribbits:cargo` | ribbit merchants | with the ribbit | a ribbit caravan's pack (G15) |
 | `mic_rtsim:industry_seeds` | chunks | with the chunk | the player-placed industrial block entities detection starts from (I2, H3) |
-| `mic_rtsim:reconcile` | chunks | with the chunk, in the same NBT as its block entities | per district, the reconcile epoch applied, and its IND_RECONCILE_RESULT until the engine acknowledges it (I8, H15, H16) |
+| `mic_rtsim:reconcile` | chunks | with the chunk, in the same NBT as its block entities | per district, the reconcile epoch applied, the engine life that issued it (`life`, RG13; an entry of another life is dropped at the chunk's load), and its IND_RECONCILE_RESULT until the engine acknowledges it (I8, H15, H16) |
 | `mic_rtsim:ported` | item entities | never | the drops of a stock block a player broke, already counted as that break's port (H14) |
 | `mic_rtsim_iceandfire:spawn_type` | Ice and Fire dragons | never | the `MobSpawnType` of the dragon's `FinalizeSpawnEvent`, read when it joins (DRAGON_UNTAGGED's spawn kind, Z10) |
 | `mic_rtsim:pending` | postbox chunks | with the chunk | also the COMMAND_RESULT of an IND_WRITE_PACKAGE written into a loaded postbox, until acknowledged (Q21) |
@@ -140,3 +140,4 @@ what was verified, not what is known to break.
 | `data/mic_rtsim_create_repairs.dat` | the repair schematic files this world wrote (district, file, level, anchor), so retention deletes only its own (R25) |
 | `mic_rtsim-reinstall.txt` (in the world directory) | the reinstall guard's marker (UR-1): written and synced when `level.dat` shows the world ran without rtsim, deleted after the reset's first save; while it exists every start resets the sim |
 | `rtsim-reinstall-<time>/` (in the world directory) | the engine pages a reinstall reset moved aside (UR-1); never read again, the admin's to delete |
+| `rtsim/bridge-life.txt` (in the engine's page directory) | the engine life (RG13, docs/choices-reinstall-guard.md): a hex token Java draws when the engine's pages are new and keeps while they are not; it goes wherever `world/rtsim/` goes, so a sim reset always starts a new life and voids the reconcile epochs chunks hold from the old one |
