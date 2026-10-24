@@ -407,6 +407,11 @@ pub struct ConflictStats {
     /// [`REPLAY_HOLD_SLACK_TICKS`] (docs/replay-gate.md §6.1, RP-48, RP-51). Not saved: this
     /// process's, so the slack can be set from data (rtsim-jni logs each new largest).
     pub fight_record_gap_max: u64,
+    /// Replayed fight records ([`boundary::BAND_FIGHT`]) of a newer epoch that found no hold:
+    /// a fight recorded at or past its hold's slack, which the replay resolved unwatched there
+    /// (docs/replay-gate.md §6.1, RP-56). Honoured as the epoch floor only, so it counts once.
+    /// rtsim-jni logs each.
+    pub fights_unheld: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -717,6 +722,10 @@ pub struct Conflict {
     /// (docs/replay-gate.md §6.1, RP-23): per party, the tick it arrived and the plan of its
     /// poll. In memory only: a restart from pages saved mid-replay arrives again at the poll.
     pub(crate) held: BTreeMap<Handle<Party>, (Tick, u32)>,
+    /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
+    /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
+    /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
+    pub(crate) unheld_fights: BTreeMap<Handle<Party>, u32>,
     /// Live watched fights whose first BAND_MATERIALIZED has not come yet (RP-51): per party,
     /// the fight's epoch and the tick `start_fight` decided it, for
     /// `ConflictStats::fight_record_gap_max`. In memory only.
@@ -807,6 +816,7 @@ impl Conflict {
             floors: BTreeMap::new(),
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
+            unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
         }
     }
@@ -4157,7 +4167,12 @@ impl Conflict {
             } else {
                 0
             }) | boundary::BAND_SURFACE
-                | if x.chief { boundary::BAND_CHIEF } else { 0 },
+                | if x.chief { boundary::BAND_CHIEF } else { 0 }
+                | if arc.is_some() {
+                    boundary::BAND_FIGHT
+                } else {
+                    0
+                },
             wave: x.wave,
             arc_centre: (f64::from(centre.0), f64::from(centre.1)),
             bearing_deg: bearing,
@@ -4868,6 +4883,7 @@ impl Conflict {
         self.fill_deaths.clear();
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
         self.held.clear();
+        self.unheld_fights.clear();
         // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
         for (agent, floor) in std::mem::take(&mut self.floors) {
             if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
@@ -5431,6 +5447,11 @@ impl Conflict {
                 let Some(p) = Party::of_agent(l.agent).filter(|p| self.parties.contains(*p)) else {
                     return;
                 };
+                // A replayed fight that found no hold was resolved unwatched, its loot with it
+                // (RP-56).
+                if self.unheld_fights.get(&p) == Some(&l.epoch) {
+                    return;
+                }
                 // Items real mobs carried off from containers: they left the player's world.
                 let goods = self.goods_of(w, &l.items);
                 for (g, a) in goods {
@@ -5474,7 +5495,9 @@ impl Conflict {
     /// - A newer epoch: the record's epoch, embodied, nothing placed, wave 0, and the record's
     ///   waves are filled. An older embodied epoch's bodies leave the books as `start_fight`'s
     ///   and `seen`'s new epoch drops them live, not folded into a recalled stack (RP-46): that
-    ///   epoch's later records count against nothing, as they did live.
+    ///   epoch's later records count against nothing, as they did live. A held party's fight
+    ///   record ([`boundary::BAND_FIGHT`]) also ends the hold in `fight_held`; one that finds
+    ///   no hold raises the floor only, and its later records count against nothing (RP-56).
     /// - The same epoch, embodied, at or above the party's `wave`: the waves from the party's
     ///   to the record's are filled. Below it, or not embodied: nothing (the pages hold that
     ///   fill, or the body is gone).
@@ -5499,6 +5522,22 @@ impl Conflict {
         if !newer && !same {
             return;
         }
+        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command,
+        // and `start_fight` always takes a new epoch, so a record of the same one, or a
+        // sighting's, is no fight. A sighting only embodies and keeps the hold.
+        let fight = newer && m.flags & u32::from(boundary::BAND_FIGHT) != 0;
+        let held = if fight { self.held_since(p, at) } else { None };
+        if fight && held.is_none() {
+            // Recorded at or past its hold's slack, whose poll resolves the round unwatched as
+            // of the hold: the epoch floor only, so that its bodies and loot count against
+            // nothing (no double).
+            if self.unheld_fights.insert(p, m.epoch) != Some(m.epoch) {
+                self.stats.fights_unheld += 1;
+            }
+            self.raise_floor(m.agent, m.epoch);
+            return;
+        }
+        let x = &self.parties[p];
         let envoy = x.kind == PartyKind::Envoy;
         // This epoch's deaths since its previous honoured record (none yet for a newer one).
         let dead = self.fill_deaths.remove(&p).unwrap_or(0);
@@ -5518,9 +5557,7 @@ impl Conflict {
             self.place(p, &fill);
         }
         self.parties[p].wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
-        // A held arrival's fight: `start_fight` always takes a new epoch, so a record of the
-        // same one is no fight (§6.1, RP-23).
-        if newer && let Some(arrival) = self.held_since(p, at) {
+        if let Some(arrival) = held {
             self.held.remove(&p);
             self.fight_held(w, p, arrival, at);
         }

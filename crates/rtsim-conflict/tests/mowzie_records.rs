@@ -1912,7 +1912,8 @@ fn the_replay_keeps_the_bodies_and_its_end_makes_them_abstract() {
     assert_eq!(back.parties[band], after);
 }
 
-/// A replayed BAND_MATERIALIZED for `band` at `epoch`, `wave`, with `spawned` placed at once.
+/// A replayed BAND_MATERIALIZED for `band` at `epoch`, `wave`, with `spawned` placed at once: a
+/// sighting's (no [`boundary::BAND_FIGHT`]).
 fn materialized(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs {
     Obs::Materialized(boundary::BandMaterialized {
         agent: Party::agent(band),
@@ -1920,6 +1921,19 @@ fn materialized(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs
         dimension: 0,
         wave,
         spawned,
+        flags: 0,
+    })
+}
+
+/// [`materialized`] for a fight's wave ([`boundary::BAND_FIGHT`], RP-56).
+fn fought(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs {
+    Obs::Materialized(boundary::BandMaterialized {
+        agent: Party::agent(band),
+        epoch,
+        dimension: 0,
+        wave,
+        spawned,
+        flags: u32::from(boundary::BAND_HOSTILE | boundary::BAND_FIGHT),
     })
 }
 
@@ -2724,6 +2738,236 @@ fn a_held_arrivals_refused_fight_is_fought_when_replayed() {
     assert_eq!(a_refused_fight_after_the_save(true), live);
 }
 
+/// How a held arrival's fight records come in [`a_held_arrivals_fight`]'s replay.
+#[derive(Clone, Copy, Debug)]
+enum Records {
+    /// Java's journal stalls at the fight's first record: it and every record after it come
+    /// later than the session that went on had them, the fight's at the held arrival + this.
+    FightAt(u64),
+    /// The band's sighting, decided the tick before its arrival, journaled in the fight's step:
+    /// its record at the fight's tick, just before it (RP-56's case B).
+    SightingWithTheFight,
+}
+
+/// What [`a_held_arrivals_fight`] came to: the session that went on's arrival and the replay's
+/// (the replay's pool not compared), the items each took from players, the replay's fight
+/// records that found no hold, and the arrival's tick.
+#[derive(Debug)]
+struct HeldFight {
+    live: Arrival,
+    back: Arrival,
+    live_loot: i128,
+    back_loot: i128,
+    unheld: u64,
+    arrival: Tick,
+}
+
+/// fixes4 item 2 (RP-56): a raid on the refinery, the pages saved while it marches there unseen,
+/// the player watching from `watch` ticks before its arrival, so the band is seen on its road
+/// and fought at its arrival; once its fight's first record is in, its bodies carry 5 items off
+/// a player's container (BAND_LOOTED at the fight's epoch). The session goes on until the band
+/// is home. A restart from the pages replays the records as `records` has them, ends its replay
+/// and runs on two days.
+fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let x = &r.c.parties[band];
+    assert!(x.phase == Phase::Out && !x.embodied, "on its road, unseen");
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (casualties, watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    run_journaled(
+        &mut r,
+        &mut walls,
+        Tick(arrival.0 - watch - 1),
+        &mut journal,
+    );
+    r.watch = true;
+    r.next_obs = Tick(arrival.0 - watch);
+    let mut end = arrival;
+    let mut looted = false;
+    while r.c.parties.get(band).is_some() {
+        end += 100;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+        if !looted && r.c.parties.contains(band) && fight_materialized(&r, band, &journal) {
+            looted = true;
+            let iron =
+                r.w.goods
+                    .find("iron")
+                    .or_else(|| r.w.goods.ids().next())
+                    .unwrap();
+            let o = Obs::Looted(boundary::BandLooted {
+                agent: Party::agent(band),
+                epoch: r.c.parties[band].epoch,
+                op: 77,
+                items: vec![boundary::Item {
+                    item: item_of(iron),
+                    count: 5,
+                }],
+            });
+            r.c.ingest(&mut r.w, &mut walls, &o, end);
+            journal.push((end, o));
+        }
+    }
+    assert!(looted, "the band fought");
+    let loot = |c: &Conflict| c.ledger.from_players.values().sum::<i128>();
+    let live = Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: r.c.stats.casualties - casualties,
+        watched: r.c.stats.raids_watched - watched,
+        pool: f64::NAN,
+    };
+    let live_loot = loot(&r.c);
+    let fight = journal
+        .iter()
+        .position(|(_, o)| {
+            matches!(o, Obs::Materialized(m)
+                if m.agent == Party::agent(band) && m.flags & u32::from(boundary::BAND_FIGHT) != 0)
+        })
+        .expect("the fight's record");
+    let mut late = 0;
+    match records {
+        Records::FightAt(at) => {
+            late = (arrival.0 + at)
+                .checked_sub(journal[fight].0.0)
+                .expect("recorded after its decision");
+            for (t, _) in &mut journal[fight..] {
+                *t += late;
+            }
+        }
+        Records::SightingWithTheFight => {
+            let (seen, (at, o)) = journal[..fight]
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, (_, o))| matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band)))
+                .expect("seen on its road");
+            assert!(
+                matches!(o, Obs::Materialized(m) if m.flags & u32::from(boundary::BAND_FIGHT) == 0),
+                "a sighting's record"
+            );
+            assert!(
+                *at >= arrival && seen + 1 == fight,
+                "seen the tick before the arrival: {at:?}, the arrival {arrival:?}"
+            );
+            journal[seen].0 = journal[fight].0;
+        }
+    }
+    journal.push((end + late, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let (casualties, watched) = (back.stats.casualties, back.stats.raids_watched);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut w, &mut walls, end + late + 2 * TICKS_PER_DAY);
+    HeldFight {
+        live,
+        back: Arrival {
+            raids: walls.raids.iter().copied().collect(),
+            casualties: back.stats.casualties - casualties,
+            watched: back.stats.raids_watched - watched,
+            pool: f64::NAN,
+        },
+        live_loot,
+        back_loot: loot(&back),
+        unheld: back.stats.fights_unheld,
+        arrival,
+    }
+}
+
+impl HeldFight {
+    /// The replay's fight as the session that went on had it, every record held.
+    fn assert_as_live(&self) {
+        let of = |a: &Arrival, loot: i128| (a.raids.clone(), a.casualties, a.watched, loot);
+        assert_eq!(
+            (of(&self.back, self.back_loot), self.unheld),
+            (of(&self.live, self.live_loot), 0),
+            "{self:?}"
+        );
+    }
+}
+
+/// [`a_held_arrivals_fight`] past the hold's slack: the replay resolved the arrival unwatched
+/// there, once, and the fight's records count against nothing: no casualty, no item, no fight
+/// watched, the record counted as unheld.
+fn assert_resolved_at_the_slack(h: &HeldFight) {
+    let slack = h.arrival + REPLAY_HOLD_SLACK_TICKS;
+    assert_eq!(
+        (
+            h.back.raids.as_slice(),
+            h.back.casualties,
+            h.back.watched,
+            h.back_loot,
+            h.unheld
+        ),
+        ([slack].as_slice(), 0, 0, 0, 1),
+        "{h:?}"
+    );
+}
+
+/// fixes4 item 2 (RP-56): a held arrival's fight recorded past the hold's slack is no double.
+/// The replay resolves the arrival unwatched at the slack (one abstract raid), and the late
+/// record, a fight's by its echoed flag, finds no hold: counted, the epoch floor raised, the
+/// band not embodied, so the fight's casualties and loot count against nothing. The replay used
+/// to embody the band at the record's epoch and count them on top of the raid.
+#[test]
+fn a_held_arrivals_fight_recorded_after_the_slack_is_no_double() {
+    let h = a_held_arrivals_fight(3_000, Records::FightAt(REPLAY_HOLD_SLACK_TICKS + 600));
+    assert!(h.live.raids.is_empty() && h.live.watched == 1, "{h:?}");
+    assert_resolved_at_the_slack(&h);
+}
+
+/// fixes4 item 2 (RP-56): the slack's edge. A fight recorded one tick inside it is the held
+/// arrival's fight, as the session that went on had it (watched, its casualties and loot
+/// counted once, no abstract raid); one exactly at `since` + the slack is past it: the poll
+/// there resolved the arrival unwatched, and the record finds no hold, as one after the slack.
+#[test]
+fn a_held_arrivals_fight_recorded_exactly_at_the_slack_finds_no_hold() {
+    let h = a_held_arrivals_fight(3_000, Records::FightAt(REPLAY_HOLD_SLACK_TICKS - 1));
+    assert!(h.live.casualties > 0 && h.live_loot > 0, "{h:?}");
+    h.assert_as_live();
+    assert_resolved_at_the_slack(&a_held_arrivals_fight(
+        3_000,
+        Records::FightAt(REPLAY_HOLD_SLACK_TICKS),
+    ));
+}
+
+/// fixes4 item 2 (RP-56, the lead's case B): the band seen the tick before its arrival, the
+/// arrival watched, both journaled in one step, so the sighting's record and the fight's come
+/// at the same tick inside the hold, the sighting's first. The sighting only embodies and keeps
+/// the hold; the fight's record ends it: one fight, its casualties and loot counted once, as in
+/// the session that went on, and no abstract raid. Ending the hold at the sighting (resolving
+/// the arrival unwatched there) would have raided as well as fought.
+#[test]
+fn a_sighting_journaled_with_a_held_arrivals_fight_is_no_double() {
+    let h = a_held_arrivals_fight(1, Records::SightingWithTheFight);
+    assert!(
+        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
+        "{h:?}"
+    );
+    h.assert_as_live();
+}
+
 /// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
 fn fight_materialized(r: &Run, band: Handle<Party>, journal: &[(Tick, Obs)]) -> bool {
     let x = &r.c.parties[band];
@@ -3135,6 +3379,8 @@ enum Then {
     /// A player comes into view of the waiting band 3,000 ticks after the decision, once (seen,
     /// no fight), and goes stale.
     Sighting,
+    /// The same 300 ticks after the decision: its record inside the hold's slack (RP-56).
+    SightingInSlack,
     /// A player stands at the refinery from 600 ticks before the band's next round on: seen
     /// there, and the round fought.
     Fight,
@@ -3182,7 +3428,12 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
     let (pages, world) = (r.c.save(), r.w.save());
     let watched = r.c.stats.raids_watched;
     journal.clear();
-    run_journaled(&mut r, &mut walls, decision + 600, &mut journal);
+    // Past the decision: up to the sighting's, inside the slack, for that one.
+    let past = match then {
+        Then::SightingInSlack => 1,
+        _ => 600,
+    };
+    run_journaled(&mut r, &mut walls, decision + past, &mut journal);
     let x = &r.c.parties[band];
     assert_eq!(
         (x.phase, x.embodied),
@@ -3192,8 +3443,12 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
     assert!(walls.raids.contains(&decision), "{:?}", walls.raids);
     let next = x.until;
     let end = match then {
-        Then::Sighting => {
-            let seen = decision + 3_000;
+        Then::Sighting | Then::SightingInSlack => {
+            let seen = decision
+                + match then {
+                    Then::Sighting => 3_000,
+                    _ => 300,
+                };
             r.watch = true;
             r.next_obs = seen;
             run_journaled(&mut r, &mut walls, seen + 1, &mut journal);
@@ -3232,7 +3487,12 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
     for (at, o) in &journal {
         back.run_until(&mut w, &mut walls, *at);
         back.ingest(&mut w, &mut walls, o, *at);
-        let _ = back.take_commands();
+        // Rule U: no recall reaches Java while replaying (§4.4), so no body vanishes in view.
+        let sent = back.take_commands();
+        assert!(
+            !sent.iter().any(|c| matches!(c, Cmd::Recall(_))),
+            "{sent:?}"
+        );
     }
     assert!(back.replaying());
     (
@@ -3278,6 +3538,39 @@ fn a_sighting_of_a_siege_waiting_after_a_held_arrival_is_no_fight() {
         let (live, arrival) = a_siege_held_then(false, then, false);
         assert_eq!(live.raids, vec![arrival], "{then:?}: {live:?}");
         a_siege_held_then(false, then, true).0.assert_as(&live);
+    }
+}
+
+/// fixes4 item 2 (RP-56): an unwatched siege decision (its arrival, then its next round), then a
+/// sighting of the band waiting, its record inside the hold's slack, the pages from before the
+/// decision. The record is a sighting's by its echoed flag, so it embodies the band, keeps the
+/// hold and fights nothing; the decision resolves unwatched at the slack's poll. The replay used
+/// to read it as the held decision's fight: Fighting, a fight watched, the decision's raid lost.
+///
+/// Case A's cost (decided by the lead): the arrival's poll is `arrive`'s unwatched branch, which
+/// recalls the band the sighting embodied, where the session that went on kept it embodied.
+/// The recall reaches no one while replaying (Rule U, checked in [`a_siege_held_then`]), the
+/// crashed session's bodies are gone, and the replay end makes every band abstract.
+#[test]
+fn a_sighting_inside_a_held_decisions_slack_is_no_fight() {
+    for round in [true, false] {
+        let (live, decision) = a_siege_held_then(round, Then::SightingInSlack, false);
+        assert_eq!(live.raids, vec![decision], "{live:?}");
+        assert_eq!(
+            (live.phase, live.embodied, live.watched),
+            (Phase::Waiting, true, 0),
+            "round {round}"
+        );
+        let back = a_siege_held_then(round, Then::SightingInSlack, true).0;
+        if round {
+            back.assert_as(&live);
+        } else {
+            assert!(!back.embodied, "recalled at the slack's poll: {back:?}");
+            back.assert_as(&SiegeAt {
+                embodied: false,
+                ..live
+            });
+        }
     }
 }
 
@@ -3402,7 +3695,7 @@ fn a_round_fought_past_its_boredom_replayed(
         back.begin_replay(true);
     }
     let records = [
-        (round + 115, materialized(band, epoch + 1, 0, 4)),
+        (round + 115, fought(band, epoch + 1, 0, 4)),
         (round + 1_000, fillers_casualty()),
     ];
     for (at, o) in &records {

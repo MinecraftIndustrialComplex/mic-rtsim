@@ -796,7 +796,7 @@ public final class ConflictBridge implements SessionPlugin {
         p.lastState = now;
         byAgent.put(agent, p);
         int n = tryPlace(st, level, now) ? st.slots.size() : 0;
-        journalMaterialized(p, 0, n, now);
+        journalMaterialized(p, 0, 0, n, now);
         ConflictNews.post(ConflictNews.Event.DEMAND_MADE, faction, p.player);
     }
 
@@ -933,16 +933,18 @@ public final class ConflictBridge implements SessionPlugin {
             if (tryPlace(st, level, now))
                 n += st.alive();
         }
-        journalMaterialized(p, wave, n, now);
+        journalMaterialized(p, wave, pflags, n, now);
     }
 
-    private void journalMaterialized(Party p, int wave, int spawned, long now) {
+    /** {@code flags}: the command's, echoed (docs/boundary.md §9.3): a replay tells a fight from a sighting by them. */
+    private void journalMaterialized(Party p, int wave, int flags, int spawned, long now) {
         int dim = session.dimId(p.dimension);
         ByteBuffer r = session.boundary().beginJournaled(ConflictRecords.BAND_MATERIALIZED, ConflictRecords.Materialized.SIZE, spawned, now);
         r.putLong(ConflictRecords.Materialized.AGENT, p.agent);
         r.putInt(ConflictRecords.Materialized.EPOCH, p.epoch);
         r.putInt(ConflictRecords.Materialized.DIM, dim);
         r.putInt(ConflictRecords.Materialized.WAVE, wave);
+        r.putInt(ConflictRecords.Materialized.FLAGS, flags);
         session.boundary().commit(r);
         materialized++;
     }

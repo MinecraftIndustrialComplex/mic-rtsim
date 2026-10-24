@@ -170,6 +170,9 @@ pub(super) struct Link {
     /// The largest gap from a watched fight's decision to its first BAND_MATERIALIZED last
     /// logged (`ConflictStats::fight_record_gap_max`, RP-51). Not saved.
     gap_logged: u64,
+    /// The replayed fight records that found no hold last logged (`ConflictStats::fights_unheld`,
+    /// RP-56). Not saved.
+    unheld_logged: u64,
 }
 
 /// The conflict's own dictionary (C2-4): the catalogue's goods as items (`item_of`), the culture
@@ -277,6 +280,7 @@ impl Link {
             copies_refused: 0,
             fed: 0,
             gap_logged: 0,
+            unheld_logged: 0,
         }
     }
 
@@ -624,6 +628,7 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     });
     st.phase1.taint();
     log_fight_record_gap(st);
+    log_fights_unheld(st);
     reset_if_due(st);
     take_commands(st);
     if !was_running && running(st) {
@@ -649,6 +654,23 @@ fn log_fight_record_gap(st: &mut State) {
     } else {
         log_info(&line);
     }
+}
+
+/// Warns of each replayed fight that found no hold (RP-56): its BAND_MATERIALIZED came at or past
+/// the replay hold's slack, so the replay resolved it unwatched there and its records count
+/// against nothing (docs/replay-gate.md §6.1). Past the slack a fight's records are not doubled,
+/// but the fight is booked as the abstract raid, not as watched.
+fn log_fights_unheld(st: &mut State) {
+    let n = st.conflict.engine.stats.fights_unheld;
+    if n <= st.conflict.unheld_logged {
+        return;
+    }
+    st.conflict.unheld_logged = n;
+    log_warn(&format!(
+        "conflict: a replayed watched fight's BAND_MATERIALIZED found no hold, {n} this process: \
+         recorded at or past the replay hold's slack ({REPLAY_HOLD_SLACK_TICKS} ticks), it was \
+         resolved unwatched there and its bodies and loot count against nothing"
+    ));
 }
 
 /// Runs `f` on the conflict with the phase 1 world and the industry engine's threat interface.
