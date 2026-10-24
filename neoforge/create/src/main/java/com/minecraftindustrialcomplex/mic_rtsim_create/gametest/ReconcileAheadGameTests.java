@@ -163,6 +163,78 @@ public final class ReconcileAheadGameTests {
         return n;
     }
 
+    /**
+     * The last hand-over in the engine's received log, once every step Java handed over has run: what the
+     * engine receives later was handed over later. A count across a wait starts from a mark like this, not
+     * from a total taken before it: the log keeps only its last 10,000 records and drops the oldest, and a
+     * chunk wait on the unthrottled server runs other districts' sweeps and resends for tens of thousands of
+     * ticks (61,188 in one wait for a chunk to unload), so a total can stay put or shrink after a new record.
+     */
+    private static long receivedMark() {
+        engine().awaitIdle();
+        List<ScriptedEngine.Received> all = engine().received();
+        return all.isEmpty() ? Long.MIN_VALUE : all.get(all.size() - 1).handover();
+    }
+
+    /** What the engine's received log spans now, against a mark: dropped records show as an oldest hand-over past it. */
+    private static String receivedSpan(long mark) {
+        List<ScriptedEngine.Received> all = engine().received();
+        return all.isEmpty() ? "the received log is empty" : "the received log: " + all.size() + " records, hand-overs "
+                + all.get(0).handover() + " to " + all.get(all.size() - 1).handover() + ", the mark " + mark
+                + (all.get(0).handover() > mark ? " (records after it dropped)" : "");
+    }
+
+    /** The IND_CHUNK_LOADED of a district's chunk journaled after a mark ({@link #receivedMark}). */
+    private static int loadedAfter(long mark, long district, int cx, int cz) {
+        int n = 0;
+        for (ScriptedEngine.Received r : journaled(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, district))
+            if (r.handover() > mark && r.view().getInt(IndRecords.ChunkLoaded.X) == cx && r.view().getInt(IndRecords.ChunkLoaded.Z) == cz)
+                n++;
+        return n;
+    }
+
+    /** A district's IND_APPROACH received after a mark ({@link #receivedMark}), not skipped, oldest first. */
+    private static List<ByteBuffer> approachesAfter(long mark, long district) {
+        List<ByteBuffer> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : engine().received(IndRecords.IND_APPROACH))
+            if (r.handover() > mark && !r.skipped() && r.bytes().length >= IndRecords.Approach.DISTRICT + 8
+                    && r.view().getLong(IndRecords.Approach.DISTRICT) == district)
+                out.add(r.view());
+        return out;
+    }
+
+    /**
+     * The command results of some op ids over a whole test, taken in every tick ({@link ChunkWait#eachTick})
+     * as the engine receives them. Read at the test's end, the engine's received log would miss the early
+     * ones: it keeps only its last 10,000 records ({@link #receivedMark}).
+     */
+    private static final class Results {
+        private final java.util.Set<ScriptedEngine.Received> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        private final java.util.Map<Long, List<Integer>> byOp = new java.util.HashMap<>();
+
+        Results(ChunkWait waits, long... ops) {
+            for (long op : ops)
+                byOp.put(op, new ArrayList<>());
+            waits.eachTick(this::take);
+        }
+
+        private void take() {
+            for (ScriptedEngine.Received r : engine().received(Obs.COMMAND_RESULT)) {
+                if (r.skipped())
+                    continue;
+                List<Integer> l = byOp.get(r.view().getLong(Obs.CommandResult.OP_ID));
+                if (l != null && seen.add(r))
+                    l.add(r.aux());
+            }
+        }
+
+        /** An op's results so far, oldest first, as {@code commandResults} reads them from the log. */
+        List<Integer> of(long op) {
+            take();
+            return List.copyOf(byOp.get(op));
+        }
+    }
+
     private static int epochIn(ServerLevel level, int cx, int cz, long district) {
         LevelChunk c = level.getChunkSource().getChunkNow(cx, cz);
         return c == null ? -1 : c.getData(IndustryAttachments.RECONCILE.get()).epoch(district);
@@ -307,6 +379,7 @@ public final class ReconcileAheadGameTests {
         long a = engineOp(), b = engineOp(), c = engineOp(), d4 = engineOp();
         long[] id = {0};
         int[] mark = {0};
+        long[] since = {0};
         helper.startSequence()
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(waits.chunks(() -> check("the far chunk loads", level.getChunkSource().getChunkNow(fx, fz) != null)))
@@ -330,12 +403,12 @@ public final class ReconcileAheadGameTests {
                 .thenWaitUntil(waits.engine(() -> check("held" + pipeline(a), ind().reconciler().held() == mark[0] + 1)))
                 .thenExecute(() -> {
                     ind().reconciler().restartForTest(); // what a restart loses: the held commands live in memory
-                    mark[0] = loadedCount(id[0], fx, fz);
+                    since[0] = receivedMark();
                     level.setChunkForced(fx, fz, true);
                 })
                 .thenWaitUntil(waits.chunks(() -> loads(level, fx, fz)))
                 .thenWaitUntil(waits.engine(() -> {
-                    check("the load is reported", loadedCount(id[0], fx, fz) > mark[0]);
+                    check("the load is reported", loadedAfter(since[0], id[0], fx, fz) > 0);
                     check("with epoch 0: nothing was applied", lastLoaded(id[0], fx, fz).view().getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 0);
                     check("no result for a yet", result(a) == null);
                 }))
@@ -632,8 +705,10 @@ public final class ReconcileAheadGameTests {
         waits.onEnd(() -> level.setChunkForced(fx, fz, false));
         BlockPos chestPos = new BlockPos(fx * 16 + 5, 100, fz * 16 + 11);
         long a = engineOp(), b = engineOp();
+        Results results = new Results(waits, a, b);
         long[] id = {0};
         int[] mark = {0};
+        long[] since = {0};
         AtomicReference<OnDisk> disk = new AtomicReference<>();
         int[] saves = {0};
         long[] late0 = {0};
@@ -711,22 +786,23 @@ public final class ReconcileAheadGameTests {
                     chunk.setData(IndustryAttachments.RECONCILE.get(), d.epochs());
                     chunk.setUnsaved(true);
                     ind().reconciler().restartForTest();
-                    mark[0] = loadedCount(id[0], fx, fz);
+                    since[0] = receivedMark();
                     level.setChunkForced(fx, fz, false);
                 })
                 .thenWaitUntil(waits.chunks(() -> check("unloads with what was on disk", unloaded(level, fx, fz, id[0]))))
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(waits.chunks(() -> loads(level, fx, fz)))
                 .thenWaitUntil(waits.engine(() -> {
-                    check("the load is reported", loadedCount(id[0], fx, fz) > mark[0]);
+                    check("the load is reported", loadedAfter(since[0], id[0], fx, fz) > 0);
                     int gold = count(container(level, chestPos), Items.GOLD_INGOT);
                     record("aReconcileSurvivesACrashBetweenTheJournalWriteAndTheChunkWrite", "after the restart",
-                            gold + " gold, epoch " + epochIn(level, fx, fz, id[0]) + ", a " + commandResults(a) + ", b " + commandResults(b));
+                            gold + " gold, epoch " + epochIn(level, fx, fz, id[0]) + ", a " + results.of(a) + ", b " + results.of(b)
+                                    + "; " + receivedSpan(since[0]));
                     check("b's gold survived the crash, once: 12 gold, got " + gold, gold == 12);
                     check("epoch 2", epochIn(level, fx, fz, id[0]) == 2);
                     check("IND_CHUNK_LOADED says epoch 2", lastLoaded(id[0], fx, fz).view().getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 2);
-                    check("a and b each applied once", commandResults(a).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1
-                            && commandResults(b).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1);
+                    check("a and b each applied once", results.of(a).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1
+                            && results.of(b).stream().filter(s -> s == Obs.CommandResult.APPLIED).count() == 1);
                 }))
                 .thenExecute(() -> {
                     WATCH = null;
@@ -768,7 +844,7 @@ public final class ReconcileAheadGameTests {
         BlockPos chestPos = new BlockPos(ax * 16 + 8, 100, az * 16 + 8);
         long[] id = {0};
         ServerPlayer[] player = {null};
-        int[] mark = {0};
+        long[] mark = {0}; // a hand-over (receivedMark): the approach records counted are the ones after it
         int[] walk = {0}; // blocks a tick east
         waits.eachTick(() -> {
             if (player[0] != null && walk[0] != 0)
@@ -793,13 +869,12 @@ public final class ReconcileAheadGameTests {
                 .thenExecute(() -> {
                     // West of A, 120 blocks from A's west edge: the district's box is 120 away, B is 184 away.
                     player[0] = FakePlayers.add(level, new Vec3(ax * 16 - 120 + 0.5, 100, az * 16 + 8.5), "ahead_walker");
-                    mark[0] = received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size();
+                    mark[0] = receivedMark();
                     walk[0] = 1;
                 })
-                .thenWaitUntil(waits.engine(() -> check("approach records while walking",
-                        received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size() >= mark[0] + 3)))
+                .thenWaitUntil(waits.engine(() -> check("approach records while walking", approachesAfter(mark[0], id[0]).size() >= 3)))
                 .thenExecute(() -> {
-                    List<ByteBuffer> recs = received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]);
+                    List<ByteBuffer> recs = approachesAfter(mark[0], id[0]);
                     ByteBuffer last = recs.get(recs.size() - 1);
                     int distance = last.getInt(IndRecords.Approach.DISTANCE);
                     int toB = (int) Math.round(bx * 16 - player[0].getX());
@@ -811,28 +886,26 @@ public final class ReconcileAheadGameTests {
                     long eta = Integer.toUnsignedLong(last.getInt(IndRecords.Approach.ETA_TICKS));
                     check("an ETA near the distance at one block a tick: " + eta, eta != 0xFFFF_FFFFL && Math.abs(eta - distance) <= 25);
                     walk[0] = 0;
-                    mark[0] = recs.size();
+                    mark[0] = receivedMark();
                 })
-                .thenWaitUntil(waits.engine(() -> check("standing still",
-                        received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size() >= mark[0] + 3)))
+                .thenWaitUntil(waits.engine(() -> check("standing still", approachesAfter(mark[0], id[0]).size() >= 3)))
                 .thenExecute(() -> {
-                    List<ByteBuffer> recs = received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]);
+                    List<ByteBuffer> recs = approachesAfter(mark[0], id[0]);
                     check("standing still is not closing", (aux(recs.get(recs.size() - 1)) & IndRecords.Approach.FLAG_CLOSING) == 0);
                     walk[0] = -1;
-                    mark[0] = recs.size();
+                    mark[0] = receivedMark();
                 })
-                .thenWaitUntil(waits.engine(() -> check("walking away",
-                        received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size() >= mark[0] + 2)))
+                .thenWaitUntil(waits.engine(() -> check("walking away", approachesAfter(mark[0], id[0]).size() >= 2)))
                 .thenExecute(() -> {
-                    List<ByteBuffer> recs = received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]);
+                    List<ByteBuffer> recs = approachesAfter(mark[0], id[0]);
                     check("walking away is not closing", (aux(recs.get(recs.size() - 1)) & IndRecords.Approach.FLAG_CLOSING) == 0);
                     walk[0] = 0;
                     level.setChunkForced(bx, az, true);
                 })
                 .thenWaitUntil(waits.chunks(() -> check("B loads", level.getChunkSource().getChunkNow(bx, az) != null)))
-                .thenExecute(() -> mark[0] = received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size())
-                .thenExecuteAfter(80, () -> check("nothing unloaded, no approach: " + (received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size() - mark[0]),
-                        received(IndRecords.IND_APPROACH, IndRecords.Approach.DISTRICT, id[0]).size() == mark[0]))
+                .thenExecute(() -> mark[0] = receivedMark())
+                .thenExecuteAfter(80, () -> check("nothing unloaded, no approach: " + approachesAfter(mark[0], id[0]).size(),
+                        approachesAfter(mark[0], id[0]).isEmpty()))
                 .thenExecute(() -> {
                     FakePlayers.remove(player[0]);
                     player[0] = null;

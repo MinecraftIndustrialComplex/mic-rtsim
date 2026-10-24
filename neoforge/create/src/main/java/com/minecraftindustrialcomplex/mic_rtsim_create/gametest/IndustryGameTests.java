@@ -1061,8 +1061,8 @@ public final class IndustryGameTests {
         long op = engineOp();
         long[] id = {0};
         int[] heldBefore = {0};
-        int[] loadsBefore = {0};
-        int[] unloadsBefore = {0};
+        long[] loadsFrom = {0}; // hand-overs (receivedMark): the records counted are the ones after them
+        long[] unloadsFrom = {0};
         helper.startSequence()
                 .thenExecute(() -> level.setChunkForced(fx, fz, true))
                 .thenWaitUntil(waits.chunks(() -> {
@@ -1080,15 +1080,15 @@ public final class IndustryGameTests {
                     id[0] = d.id;
                 }))
                 .thenExecute(() -> {
-                    unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();
+                    unloadsFrom[0] = receivedMark();
                     level.setChunkForced(fx, fz, false);
                 })
                 .thenWaitUntil(waits.chunks(() -> check("the far chunk unloads (ChunkEvent.Unload, saved)",
                         level.getChunkSource().getChunkNow(fx, fz) == null && ind().districts().loadedChunks(ind().district(id[0])) == 0)))
                 .thenWaitUntil(waits.engine(() -> {
                     // I7: the unload is journaled for the engine, with the chunk's coordinates.
-                    List<ByteBuffer> gone = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]);
-                    check("IND_CHUNK_UNLOADED went out at the unload", gone.size() == unloadsBefore[0] + 1);
+                    List<ByteBuffer> gone = receivedAfter(unloadsFrom[0], IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]);
+                    check("IND_CHUNK_UNLOADED went out at the unload", gone.size() == 1);
                     ByteBuffer u = gone.get(gone.size() - 1);
                     check("for that chunk: " + u.getInt(IndRecords.ChunkUnloaded.X) + ", " + u.getInt(IndRecords.ChunkUnloaded.Z),
                             u.getInt(IndRecords.ChunkUnloaded.X) == fx && u.getInt(IndRecords.ChunkUnloaded.Z) == fz);
@@ -1099,7 +1099,7 @@ public final class IndustryGameTests {
                 })
                 .thenWaitUntil(waits.engine(() -> check("the reconcile is held" + ReconcileAheadGameTests.pipeline(op), ind().reconciler().held() == heldBefore[0] + 1 && result(op) == null)))
                 .thenExecute(() -> {
-                    loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
+                    loadsFrom[0] = receivedMark();
                     level.setChunkForced(fx, fz, true);
                 })
                 .thenWaitUntil(waits.chunks(() -> loads(level, fx, fz)))
@@ -1107,33 +1107,34 @@ public final class IndustryGameTests {
                     ByteBuffer r = result(op);
                     check("applied once the chunk loaded", r != null && r.getLong(IndRecords.ReconcileResult.ENTRIES + 16) == 7);
                     check("the chest holds 7 gold", count((Container) level.getBlockEntity(chestPos), Items.GOLD_INGOT) == 7);
-                    List<ByteBuffer> loads = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
-                    check("IND_CHUNK_LOADED went out at the load", loads.size() > loadsBefore[0]);
+                    List<ByteBuffer> loads = receivedAfter(loadsFrom[0], IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
+                    check("IND_CHUNK_LOADED went out at the load", !loads.isEmpty());
                     // R1, R3: the held reconcile lands at the load, before IND_CHUNK_LOADED, which carries its epoch.
                     check("with epoch 1", loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH) == 1);
                 }))
                 .thenExecute(() -> {
-                    unloadsBefore[0] = received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size();
+                    unloadsFrom[0] = receivedMark();
                     level.setChunkForced(fx, fz, false);
                 })
                 .thenWaitUntil(waits.chunks(() -> check("unloads again (ChunkEvent.Unload, saved)",
                         level.getChunkSource().getChunkNow(fx, fz) == null && ind().districts().loadedChunks(ind().district(id[0])) == 0)))
                 .thenWaitUntil(waits.engine(() -> {
-                    check("IND_CHUNK_UNLOADED again", received(IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size()
-                            == unloadsBefore[0] + 1);
+                    check("IND_CHUNK_UNLOADED again",
+                            receivedAfter(unloadsFrom[0], IndRecords.IND_CHUNK_UNLOADED, IndRecords.ChunkUnloaded.DISTRICT, id[0]).size() == 1);
                 }))
                 .thenExecute(() -> {
-                    loadsBefore[0] = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size();
+                    loadsFrom[0] = receivedMark();
                     level.setChunkForced(fx, fz, true);
                 })
                 .thenWaitUntil(waits.chunks(() -> loads(level, fx, fz)))
                 .thenWaitUntil(waits.engine(() -> {
-                    List<ByteBuffer> loads = received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
-                    check("loaded again", loads.size() > loadsBefore[0]);
+                    List<ByteBuffer> loads = receivedAfter(loadsFrom[0], IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]);
+                    check("loaded again", !loads.isEmpty());
                     int epoch = loads.get(loads.size() - 1).getInt(IndRecords.ChunkLoaded.APPLIED_EPOCH);
                     check("epoch 1 came back from the chunk's NBT: " + epoch, epoch == 1);
                     check("and so did the gold", count((Container) level.getBlockEntity(chestPos), Items.GOLD_INGOT) == 7);
-                    record("aHeldReconcileAppliesWhenItsChunkLoads", "chunk loads reported", loads.size());
+                    record("aHeldReconcileAppliesWhenItsChunkLoads", "chunk loads reported",
+                            received(IndRecords.IND_CHUNK_LOADED, IndRecords.ChunkLoaded.DISTRICT, id[0]).size());
                 }))
                 .thenExecute(() -> {
                     level.setBlock(chestPos, Blocks.AIR.defaultBlockState(), 3);
@@ -1295,6 +1296,15 @@ public final class IndustryGameTests {
         List<ByteBuffer> out = new ArrayList<>();
         for (var r : engine().received(kind))
             if (r.handover() > mark)
+                out.add(r.view());
+        return out;
+    }
+
+    /** As {@code received(kind, offset, value)}, the records after a mark: not skipped, the u64 at {@code offset} equal. */
+    private static List<ByteBuffer> receivedAfter(long mark, int kind, int offset, long value) {
+        List<ByteBuffer> out = new ArrayList<>();
+        for (var r : engine().received(kind))
+            if (r.handover() > mark && !r.skipped() && r.bytes().length >= offset + 8 && r.view().getLong(offset) == value)
                 out.add(r.view());
         return out;
     }
