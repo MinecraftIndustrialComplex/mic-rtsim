@@ -638,3 +638,564 @@ fn a_raid_at_a_track_waits_and_goes_home_raiding_nothing() {
         "and looks for a district at the end"
     );
 }
+
+// ---- the gate, the wake and the held passes (MZB-305 to MZB-311, MZB-319) ----------------------
+
+use rtsim_conflict::boundary::{Obs, RailPass, Uuid};
+use rtsim_conflict::engine::{RailCall, StationEnd};
+
+/// A RAIL_PASS of `train` for the den `faction`, a few blocks off its camp, exiting at `exit`.
+fn pass_at(faction: u64, train: u64, owner: Uuid, pos: (f64, f64, f64), exit: u64) -> Obs {
+    Obs::RailPass(RailPass {
+        faction,
+        train,
+        owner,
+        dimension: 0,
+        pos,
+        entry: exit as i64 - 100,
+        exit: exit as i64,
+    })
+}
+
+/// The usual pass: 80 blocks east of the den, on a track at y 66.
+fn pass(train: u64, owner: Uuid, exit: u64) -> Obs {
+    pass_at(CAMP, train, owner, (980.5, 66.25, 1000.5), exit)
+}
+
+const NOBODY: Uuid = (0, 0);
+
+fn end(id: u64, x: i32, z: i32, district: Option<u64>) -> StationEnd {
+    StationEnd {
+        id,
+        dim: 0,
+        x,
+        z,
+        district,
+    }
+}
+
+fn meter_of(c: &Conflict, f: u32, a: ActorId) -> RailMeter {
+    c.factions.row(f).rail_meter(a).cloned().expect("a meter")
+}
+
+#[test]
+fn the_gate_pushes_only_on_the_band_and_the_day() {
+    // A leg a day settles at 1.3 legs a day, under the culture's tolerance of 2: counted, never
+    // pushed.
+    let (mut w, mut c, f, player) = dens(41);
+    let mut probe = Probe::default();
+    for day in 1..=5u64 {
+        let t = Tick(day * TICKS_PER_DAY);
+        c.ingest(&mut w, &mut probe, &pass(day, PLAYER, t.0), t);
+    }
+    let m = meter_of(&c, f, player);
+    assert!(m.per_day(Tick(5 * TICKS_PER_DAY)) < 2.0);
+    assert_eq!((c.stats.rail_pushes, m.pushed_at), (0, None));
+    assert!(rail_source(&c, f, player).is_none());
+
+    // Twelve a day: every push is the band or the day, the first one is the first rate at the
+    // tolerance, and the wakes stay under three a day.
+    let (mut w, mut c, f, player) = dens(42);
+    let mut last: (f64, Option<Tick>) = (0.0, None);
+    let mut pushes = 0;
+    for step in 1..=(6 * 240u64) {
+        let t = Tick(step * 100);
+        if t.0 % 2_000 == 0 {
+            c.ingest(&mut w, &mut probe, &pass(1, PLAYER, t.0), t);
+        } else {
+            c.run_until(&mut w, &mut probe, t);
+        }
+        let Some(m) = c.factions.row(f).rail_meter(player) else {
+            continue;
+        };
+        if m.pushed_at == last.1 {
+            continue;
+        }
+        pushes += 1;
+        let (old_p, old_at) = last;
+        let now = m.pushed_at.unwrap();
+        let day = old_at.is_none_or(|a| now.0 >= a.0 + TICKS_PER_DAY);
+        let band = (m.pushed - old_p).abs() >= (0.1 * old_p).max(1.0) - 1e-6;
+        assert!(
+            day || band,
+            "a push at {now:?} from {old_p} to {}",
+            m.pushed
+        );
+        if old_at.is_none() {
+            assert!(m.pushed >= 2.0, "first push {}", m.pushed);
+        }
+        last = (m.pushed, m.pushed_at);
+    }
+    assert_eq!(pushes, c.stats.rail_pushes);
+    assert!(pushes >= 6, "a push a day at least: {pushes}");
+    assert!(c.stats.rail_wakes <= 3 * 6, "{} wakes", c.stats.rail_wakes);
+    let s = rail_source(&c, f, player).expect("the source");
+    assert!(
+        (s.rate * TICKS_PER_DAY as f64 - 12.0).abs() < 2.0,
+        "{}",
+        s.rate * TICKS_PER_DAY as f64
+    );
+    // Its position is the pass's point, its pin the track's y.
+    assert_eq!(s.pos, Pos::new(0, 980, 1000));
+    assert_eq!(s.pin.as_deref().copied(), Some(track(66)));
+}
+
+#[test]
+fn the_wake_is_the_band_edge_or_the_day() {
+    // Four legs at once: 2.0 a day, which is not under the tolerance, so it is pushed. The band's
+    // lower edge (1.0 a day) is 33,272 ticks on and the day is 24,000: the day comes first.
+    let (mut w, mut c, f, player) = dens(43);
+    let mut probe = Probe::default();
+    for _ in 0..4 {
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 10_000), Tick(10_000));
+    }
+    let m = meter_of(&c, f, player);
+    assert_eq!((m.pushed, m.pushed_at), (2.0, Some(Tick(10_000))));
+    assert_eq!(m.falls_to(1.0), Tick(10_000 + 33_272));
+    assert_eq!(c.stats.rail_pushes, 1);
+    let before = c.stats.rail_wakes;
+    c.run_until(&mut w, &mut probe, Tick(33_999));
+    assert_eq!(c.stats.rail_wakes, before, "not before the day is out");
+    c.run_until(&mut w, &mut probe, Tick(34_000));
+    assert_eq!(c.stats.rail_wakes, before + 1);
+    // The resync pushed the rate now (1.21 a day, under the tolerance, so the meter is quiet).
+    let m = meter_of(&c, f, player);
+    assert_eq!(c.stats.rail_pushes, 2);
+    assert_eq!(m.pushed_at, Some(Tick(34_000)));
+    assert!(
+        (m.pushed - 2.0 * (-0.5f64).exp()).abs() < 1e-9,
+        "{}",
+        m.pushed
+    );
+
+    // Twelve a day, then nothing: the band's lower edge comes well before the day.
+    let (mut w, mut c, f, player) = dens(44);
+    // The stream stops at the first pass after the fourth day that pushes: the day is then a full
+    // day off and the band's edge a few thousand ticks.
+    let mut t_last = Tick::ZERO;
+    for k in 1..=(8 * 12u64) {
+        let t = Tick(k * 2_000);
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, t.0), t);
+        t_last = t;
+        if t.0 > 4 * TICKS_PER_DAY && meter_of(&c, f, player).pushed_at == Some(t) {
+            break;
+        }
+    }
+    assert!(
+        t_last.0 < 8 * TICKS_PER_DAY,
+        "a pass pushed after the fourth day"
+    );
+    let m = meter_of(&c, f, player);
+    let (p, pushed_at) = (m.pushed, m.pushed_at.unwrap());
+    let edge = m.falls_to(p - (0.1 * p).max(1.0));
+    let expect = edge
+        .min(Tick(pushed_at.0 + TICKS_PER_DAY))
+        .max(Tick(t_last.0 + 1));
+    assert!(
+        expect == edge,
+        "the band edge is first: {edge:?} {pushed_at:?}"
+    );
+    let before = c.stats.rail_wakes;
+    c.run_until(&mut w, &mut probe, Tick(expect.0 - 1));
+    assert_eq!(c.stats.rail_wakes, before);
+    let pushes = c.stats.rail_pushes;
+    c.run_until(&mut w, &mut probe, expect);
+    assert_eq!(c.stats.rail_wakes, before + 1);
+    assert_eq!(
+        c.stats.rail_pushes,
+        pushes + 1,
+        "the wake at the edge pushes"
+    );
+    let m = meter_of(&c, f, player);
+    assert!(m.pushed < p * 0.91, "{} from {p}", m.pushed);
+}
+
+#[test]
+fn a_quiet_meter_retires_and_pushes_zero() {
+    // A meter that was pushed and has fallen under the tolerance keeps its source at the last
+    // rate until it has fallen to 0.01 a day, when it pushes 0 and goes with its lines.
+    let (mut w, mut c, f, player) = dens(45);
+    let mut probe = Probe::default();
+    for _ in 0..4 {
+        c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 10_000), Tick(10_000));
+    }
+    c.run_until(&mut w, &mut probe, Tick(34_000));
+    let m = meter_of(&c, f, player);
+    assert!(m.pushed > 0.0 && m.pushed < 2.0);
+    let retire = m.falls_to(0.01);
+    c.run_until(&mut w, &mut probe, Tick(retire.0 - 1));
+    assert!(c.factions.row(f).rail_meter(player).is_some());
+    assert!(rail_source(&c, f, player).is_some());
+    c.run_until(&mut w, &mut probe, retire);
+    assert!(c.factions.row(f).rail_meter(player).is_none(), "retired");
+    assert!(rail_source(&c, f, player).is_none(), "pushed to 0");
+    assert!(c.factions.row(f).reach_ids(SignalKind::Rail).is_empty());
+    // Its feud, if it has not been forgotten by now, hears no rail.
+    if let Some(fe) = c.feud(f, player) {
+        assert_eq!(fe.raw[SignalKind::Rail.index()], 0.0);
+    }
+
+    // One leg, never pushed: it retires without a push.
+    let (mut w, mut c, f, player) = dens(46);
+    c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 1_000), Tick(1_000));
+    let retire = meter_of(&c, f, player).falls_to(0.01);
+    assert!(retire.0 > 4 * TICKS_PER_DAY, "{retire:?}");
+    c.run_until(&mut w, &mut probe, retire);
+    assert!(c.factions.row(f).rail_meter(player).is_none());
+    assert_eq!(c.stats.rail_pushes, 0);
+    assert!(c.feud(f, player).is_none(), "it never made a feud");
+}
+
+#[test]
+fn a_stale_rail_wake_is_counted() {
+    // Each gate books the meter's wake anew: the one before it is stale when it fires.
+    let (mut w, mut c, f, player) = dens(47);
+    let mut probe = Probe::default();
+    c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 1_000), Tick(1_000));
+    c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 2_000), Tick(2_000));
+    assert_eq!(c.pending_by_kind().get("rail"), Some(&2));
+    let retire = meter_of(&c, f, player).falls_to(0.01);
+    let stale = c.stats.stale;
+    c.run_until(&mut w, &mut probe, Tick(retire.0 + 10));
+    assert_eq!(c.stats.stale, stale + 1, "the first booking");
+    assert_eq!(c.stats.rail_wakes, 1, "the second one retired the meter");
+    assert!(c.factions.row(f).rail_meter(player).is_none());
+    assert_eq!(c.pending_by_kind().get("rail"), None);
+}
+
+#[test]
+fn rail_pass_for_an_unknown_faction_or_a_zero_weight_culture_is_dropped() {
+    let (mut w, mut c, f, player) = dens(48);
+    let mut probe = Probe::default();
+    // An unknown faction key.
+    c.ingest(
+        &mut w,
+        &mut probe,
+        &pass_at(0xDEAD, 3, PLAYER, (980.5, 66.0, 1000.5), 1_000),
+        Tick(1_000),
+    );
+    // An Umvuthana den minds no rail.
+    let u = c
+        .add_faction(
+            &mut w,
+            DEN_B,
+            "umvuthana",
+            Pos::new(0, CAMP_POS.x + 300, CAMP_POS.z),
+            Tick::ZERO,
+        )
+        .unwrap();
+    c.ingest(
+        &mut w,
+        &mut probe,
+        &pass_at(DEN_B, 4, PLAYER, (1180.5, 66.0, 1000.5), 1_100),
+        Tick(1_100),
+    );
+    assert_eq!((c.stats.rail_unknown, c.stats.rail_passes), (2, 0));
+    assert!(!c.holds_train(3) && !c.holds_train(4));
+    assert!(c.factions.row(u).rail.is_empty() && c.factions.row(f).rail.is_empty());
+    assert!(c.feud(u, player).is_none());
+    // A pass for the Frostmaw den is taken.
+    c.ingest(&mut w, &mut probe, &pass(5, PLAYER, 1_200), Tick(1_200));
+    assert_eq!((c.stats.rail_unknown, c.stats.rail_passes), (2, 1));
+}
+
+#[test]
+fn an_owned_pass_counts_at_once_and_an_ownerless_one_on_credit() {
+    let (mut w, mut c, f, player) = dens(49);
+    let mut probe = Probe::default();
+    // An owned pass is counted when it comes (its exit clamped to the present) and held.
+    c.ingest(&mut w, &mut probe, &pass(7, PLAYER, 90_000), Tick(1_000));
+    let m = meter_of(&c, f, player);
+    assert_eq!(
+        (m.n, m.t_ref),
+        (1.0, Tick(1_000)),
+        "an exit after now is now"
+    );
+    assert_eq!(m.last, Some((Pos::new(0, 980, 1000), 66)));
+    assert!(c.holds_train(7) && c.held_passes() == 1);
+    // The train arrives: the line is credited, the count is not made twice.
+    let (a, b) = (
+        end(11, CAMP_POS.x - 200, CAMP_POS.z, None),
+        end(12, CAMP_POS.x + 300, CAMP_POS.z, Some(5)),
+    );
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 7,
+            line: Some((b, a)),
+        },
+        Tick(2_000),
+    );
+    let m = meter_of(&c, f, player);
+    assert_eq!(m.n, 1.0);
+    assert_eq!(m.lines.len(), 1);
+    let l = &m.lines[0];
+    assert_eq!((l.a, l.b, l.n), (11, 12, 1.0), "the lower id first");
+    assert_eq!(
+        (l.point, l.y, l.near),
+        (
+            Pos::new(0, 980, 1000),
+            66,
+            Some((Pos::new(0, CAMP_POS.x + 300, CAMP_POS.z), DistrictId(5)))
+        ),
+        "the only station with a district"
+    );
+    assert!(!c.holds_train(7) && c.held_passes() == 0);
+    assert_eq!((c.stats.rail_calls, c.stats.rail_let_go), (1, 0));
+    // The busiest line is the source's pin: the next push carries the station.
+    for k in 0..5 {
+        c.ingest(
+            &mut w,
+            &mut probe,
+            &pass(8, PLAYER, 3_000 + k),
+            Tick(3_000 + k),
+        );
+    }
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 8,
+            line: Some((a, b)),
+        },
+        Tick(3_100),
+    );
+    c.run_until(&mut w, &mut probe, Tick(3_200));
+    let s = rail_source(&c, f, player).expect("pushed");
+    assert_eq!(
+        s.pin.as_deref().and_then(|p| p.station),
+        Some((Pos::new(0, CAMP_POS.x + 300, CAMP_POS.z), DistrictId(5)))
+    );
+
+    // An ownerless pass is held and counted for nobody until its line is named; then it counts
+    // against the player with the most time in the two stations' chunks.
+    let (mut w, mut c, f, player) = dens(50);
+    let station_a = Pos::new(0, CAMP_POS.x - 200, CAMP_POS.z);
+    c.observe_presence(&mut w, PLAYER, station_a, Tick(100));
+    c.observe_presence(&mut w, PLAYER, station_a, Tick(600));
+    c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
+    assert!(c.factions.row(f).rail.is_empty(), "held, not counted");
+    assert!(c.holds_train(9));
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 9,
+            line: Some((
+                end(21, station_a.x, station_a.z, None),
+                end(22, 1180, 1000, None),
+            )),
+        },
+        Tick(1_500),
+    );
+    let m = meter_of(&c, f, player);
+    assert_eq!((m.n, m.t_ref), (1.0, Tick(1_000)), "counted at its exit");
+    assert_eq!(m.lines.len(), 1);
+    assert_eq!(m.lines[0].near, None, "neither station has a district");
+    // With nobody at either station it counts against nobody.
+    let (mut w, mut c, f, _) = dens(51);
+    c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 9,
+            line: Some((end(21, 700, 1000, None), end(22, 1180, 1000, None))),
+        },
+        Tick(1_500),
+    );
+    assert!(c.factions.row(f).rail.is_empty());
+    assert!(!c.holds_train(9));
+    assert_eq!(c.stats.rail_let_go, 0, "credited, not let go");
+}
+
+#[test]
+fn an_ownerless_pass_let_go_counts_against_the_chunks_top_or_nobody() {
+    let day = TICKS_PER_DAY;
+    // The player stood where the train passed: a day on, the pass counts against them, at its
+    // exit. Letting go runs first in the next call into the engine, whichever it is.
+    let (mut w, mut c, f, player) = dens(52);
+    let mut probe = Probe::default();
+    let point = Pos::new(0, 980, 1000);
+    c.observe_presence(&mut w, PLAYER, point, Tick(100));
+    c.observe_presence(&mut w, PLAYER, point, Tick(600));
+    c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 99,
+            line: None,
+        },
+        Tick(1_000 + day - 1),
+    );
+    assert!(c.holds_train(9), "not before the day is out");
+    assert_eq!(c.stats.rail_let_go, 0);
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 99,
+            line: None,
+        },
+        Tick(1_000 + day),
+    );
+    assert!(!c.holds_train(9));
+    assert_eq!(c.stats.rail_let_go, 1);
+    let m = meter_of(&c, f, player);
+    assert_eq!((m.n, m.t_ref), (1.0, Tick(1_000)));
+    assert!(m.lines.is_empty(), "no line was named");
+
+    // Nobody there: the pass counts against nobody; the settlers do not get it.
+    let (mut w, mut c, f, _) = dens(53);
+    c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
+    c.ingest(
+        &mut w,
+        &mut probe,
+        &pass(10, NOBODY, 1_000 + day),
+        Tick(1_000 + day),
+    );
+    assert_eq!(c.stats.rail_let_go, 1, "the first went, the second is held");
+    assert!(c.holds_train(10) && !c.holds_train(9));
+    assert!(c.factions.row(f).rail.is_empty());
+    // A rail wake does it too, and an owned pass is only dropped (it was counted when it came).
+    let (mut w, mut c, f, player) = dens(54);
+    c.ingest(&mut w, &mut probe, &pass(9, PLAYER, 1_000), Tick(1_000));
+    c.run_until(&mut w, &mut probe, Tick(9 * day));
+    assert!(!c.holds_train(9), "the retirement wake let it go");
+    assert!(
+        c.factions.row(f).rail_meter(player).is_none(),
+        "and retired it"
+    );
+    assert_eq!(c.stats.rail_let_go, 1);
+}
+
+#[test]
+fn held_passes_are_capped_per_train_and_in_all() {
+    // A train's 65th pass lets its oldest go. Nobody is at the points; a player stands at the
+    // stations, so what the call credits is what was still held.
+    let (mut w, mut c, f, player) = dens(55);
+    let mut probe = Probe::default();
+    let station_a = Pos::new(0, CAMP_POS.x - 200, CAMP_POS.z);
+    c.observe_presence(&mut w, PLAYER, station_a, Tick(10));
+    c.observe_presence(&mut w, PLAYER, station_a, Tick(60));
+    for k in 1..=70u64 {
+        c.ingest(
+            &mut w,
+            &mut probe,
+            &pass(5, NOBODY, 100 + k * 100),
+            Tick(100 + k * 100),
+        );
+    }
+    assert_eq!(c.held_passes(), 64);
+    assert_eq!(c.stats.rail_let_go, 6);
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 5,
+            line: Some((
+                end(21, station_a.x, station_a.z, None),
+                end(22, 1180, 1000, None),
+            )),
+        },
+        Tick(8_000),
+    );
+    let m = meter_of(&c, f, player);
+    // The 64 newest (exits 800 to 7,100), not the first six.
+    let want: f64 = (7..=70u64)
+        .map(|k| (-((7_100 - (100 + k * 100)) as f64) / TAU).exp())
+        .sum();
+    assert!((m.n_at(Tick(7_100)) - want).abs() < 1e-9, "{} {want}", m.n);
+    assert_eq!(c.held_passes(), 0);
+
+    // 65 trains of 64 passes make 4,160: the table's own cap lets the 64 oldest of all go, which
+    // are the first train's.
+    let (mut w, mut c, _, _) = dens(56);
+    for train in 1..=65u64 {
+        for j in 1..=64u64 {
+            let t = 1_000 + train * 64 + j;
+            c.ingest(&mut w, &mut probe, &pass(train, NOBODY, t), Tick(t));
+        }
+    }
+    assert_eq!(c.held_passes(), 4_096);
+    assert_eq!(c.stats.rail_let_go, 64);
+    assert!(!c.holds_train(1) && c.holds_train(2) && c.holds_train(65));
+}
+
+#[test]
+fn a_self_edge_or_no_departure_lets_go() {
+    // The pass is let go now, not credited to any line: counted against the point chunk's top
+    // when it had no owner, and no line is made.
+    for line in [
+        None,
+        Some((end(21, 700, 1000, None), end(21, 700, 1000, None))),
+    ] {
+        let (mut w, mut c, f, player) = dens(57);
+        let mut probe = Probe::default();
+        let point = Pos::new(0, 980, 1000);
+        c.observe_presence(&mut w, PLAYER, point, Tick(100));
+        c.observe_presence(&mut w, PLAYER, point, Tick(600));
+        c.ingest(&mut w, &mut probe, &pass(9, NOBODY, 1_000), Tick(1_000));
+        assert!(c.holds_train(9));
+        c.rail_call(&mut w, &RailCall { train: 9, line }, Tick(1_200));
+        assert!(!c.holds_train(9));
+        assert_eq!((c.stats.rail_calls, c.stats.rail_let_go), (1, 1));
+        let m = meter_of(&c, f, player);
+        assert_eq!(m.n, 1.0);
+        assert!(m.lines.is_empty());
+    }
+    // A call for a train that holds nothing is only counted.
+    let (mut w, mut c, f, _) = dens(58);
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 1,
+            line: None,
+        },
+        Tick(5),
+    );
+    assert_eq!((c.stats.rail_calls, c.stats.rail_let_go), (1, 0));
+    assert!(c.factions.row(f).rail.is_empty());
+}
+
+#[test]
+fn the_nearer_station_with_a_district_is_the_pin() {
+    let (mut w, mut c, f, player) = dens(59);
+    let mut probe = Probe::default();
+    let (a, b) = (
+        end(31, CAMP_POS.x + 100, CAMP_POS.z, Some(8)),
+        end(32, CAMP_POS.x + 600, CAMP_POS.z, Some(9)),
+    );
+    // The point is 80 east of the den: A (100 east) is the nearer.
+    c.ingest(&mut w, &mut probe, &pass(1, PLAYER, 1_000), Tick(1_000));
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 1,
+            line: Some((b, a)),
+        },
+        Tick(1_100),
+    );
+    let m = meter_of(&c, f, player);
+    assert_eq!(
+        m.lines[0].near,
+        Some((Pos::new(0, CAMP_POS.x + 100, CAMP_POS.z), DistrictId(8)))
+    );
+    // Another pass far east: the same line's point and station follow the latest pass.
+    c.ingest(
+        &mut w,
+        &mut probe,
+        &pass_at(CAMP, 2, PLAYER, (1480.5, 66.0, 1000.5), 2_000),
+        Tick(2_000),
+    );
+    c.rail_call(
+        &mut w,
+        &RailCall {
+            train: 2,
+            line: Some((a, b)),
+        },
+        Tick(2_100),
+    );
+    let m = meter_of(&c, f, player);
+    assert_eq!(m.lines.len(), 1);
+    assert_eq!(m.lines[0].point, Pos::new(0, 1480, 1000));
+    assert_eq!(
+        m.lines[0].near,
+        Some((Pos::new(0, CAMP_POS.x + 600, CAMP_POS.z), DistrictId(9)))
+    );
+}

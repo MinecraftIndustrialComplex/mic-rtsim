@@ -6,7 +6,7 @@
 //! - **Factions** (table 0x4310, keyed by the faction's index, which is never reused: factions
 //!   are never removed): the faction, its feuds (folded into its row, PM-C2: a faction's feuds are
 //!   few and every one of them is read with the faction's culture and chief) and the sources that
-//!   reach it (folded, PM-C3: the old `source_index`).
+//!   reach it (folded, PM-C3: the old `source_index`) and its rail meters (M7, MZB-304).
 //! - **Sources** (table 0x4312, keyed by a source id handed out in order and never reused): a
 //!   continuous emitter, its key and kind, whom it counts against and the factions it reaches.
 //!   A resident index from (key, kind) to the id and the rate (PM-C4) finds it.
@@ -23,7 +23,7 @@ use rtsim_kernel::rows::{PagedRows, Row};
 use rtsim_knowledge::ActorId;
 
 use crate::culture::SignalKind;
-use crate::engine::{Faction, Feud, Source};
+use crate::engine::{Faction, Feud, LineCount, RailMeter, Source};
 use crate::presence::ChunkKey;
 
 /// Row tables take the conflict's table (0x4300) plus 0x10 and up, so rtsim-jni's per-table
@@ -64,6 +64,8 @@ pub struct FactionRow {
     pub feuds: Vec<(ActorId, Feud)>,
     /// The sources that reach this faction, by (kind, source id), sorted (PM-C3).
     pub reach: Vec<(SignalKind, u32)>,
+    /// The rail meters, one per actor, sorted by actor (M7, MZB-304).
+    pub rail: Vec<RailMeter>,
 }
 
 impl FactionRow {
@@ -72,7 +74,33 @@ impl FactionRow {
             x,
             feuds: Vec::new(),
             reach: Vec::new(),
+            rail: Vec::new(),
         }
+    }
+
+    pub(crate) fn rail_at(&self, a: ActorId) -> Result<usize, usize> {
+        self.rail.binary_search_by(|m| m.actor.cmp(&a))
+    }
+
+    /// The rail meter of `a`, if it has one.
+    pub fn rail_meter(&self, a: ActorId) -> Option<&RailMeter> {
+        self.rail_at(a).ok().map(|i| &self.rail[i])
+    }
+
+    pub(crate) fn rail_meter_mut(&mut self, a: ActorId) -> Option<&mut RailMeter> {
+        self.rail_at(a).ok().map(|i| &mut self.rail[i])
+    }
+
+    /// The rail meter of `a`, made if it has none.
+    pub(crate) fn rail_entry(&mut self, a: ActorId) -> &mut RailMeter {
+        let i = match self.rail_at(a) {
+            Ok(i) => i,
+            Err(i) => {
+                self.rail.insert(i, RailMeter::new(a));
+                i
+            }
+        };
+        &mut self.rail[i]
     }
 
     pub(crate) fn feud_at(&self, a: ActorId) -> Result<usize, usize> {
@@ -113,6 +141,12 @@ impl Row for FactionRow {
             + self.feuds.iter().filter(|e| e.1.notice.is_some()).count()
                 * std::mem::size_of::<crate::boundary::Notice>()
             + self.reach.capacity() * std::mem::size_of::<(SignalKind, u32)>()
+            + self.rail.capacity() * std::mem::size_of::<RailMeter>()
+            + self
+                .rail
+                .iter()
+                .map(|m| m.lines.capacity() * std::mem::size_of::<LineCount>())
+                .sum::<usize>()
             + self
                 .x
                 .camp

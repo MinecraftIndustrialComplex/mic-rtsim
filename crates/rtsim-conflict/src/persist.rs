@@ -803,6 +803,16 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::Rail {
+            faction,
+            actor,
+            stamp,
+        } => {
+            w.u8(10);
+            w.var_u64(u64::from(faction));
+            w.u64(actor.to_bits());
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -845,6 +855,11 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         },
         8 => Ev::Arrival {
             faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        10 => Ev::Rail {
+            faction: get_u32(r)?,
+            actor: handle(r)?,
             stamp: get_u32(r)?,
         },
         t => return bad(format!("event tag {t}")),
@@ -929,6 +944,12 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.camp_written_off,
         s.arrivals,
         s.renewal_losses,
+        s.rail_passes,
+        s.rail_pushes,
+        s.rail_wakes,
+        s.rail_let_go,
+        s.rail_unknown,
+        s.rail_calls,
     ]);
     v
 }
@@ -987,6 +1008,12 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.camp_written_off = n();
     s.arrivals = n();
     s.renewal_losses = n();
+    s.rail_passes = n();
+    s.rail_pushes = n();
+    s.rail_wakes = n();
+    s.rail_let_go = n();
+    s.rail_unknown = n();
+    s.rail_calls = n();
     s
 }
 
@@ -1069,7 +1096,12 @@ impl Decode for FactionRow {
             }
             reach.push(e);
         }
-        Ok(FactionRow { x, feuds, reach })
+        Ok(FactionRow {
+            x,
+            feuds,
+            reach,
+            rail: Vec::new(),
+        })
     }
 }
 
