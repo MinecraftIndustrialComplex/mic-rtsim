@@ -37,7 +37,27 @@ gap's saves dropped their `mic_rtsim:industry_seeds` attachments.
 
 ## Part 3: the first detection's long tick (R2-11)
 
-R2-11_PLACEHOLDER
+What R2-11 saw (docs/deploy-rehearsal-live.md 10.6): where districts exist at a start, the session's
+first detection spent 0.68 to 2.2 s in one tick. Reproduced on two copies of r-reset-reload's world without
+its `world/rtsim/` (p2-a with no time limit, p2-b with RG12's), each base forceloaded 20 s after the start, as
+10.6's runs do, and started twice:
+
+| Run | Longest detection tick | Block entities in it | Longest look at one chunk | Chunks loaded meanwhile |
+|---|---|---|---|---|
+| p2-a, no time limit | 2,205 ms | 276 | 2,177 ms | 972 (first by `create:depot`) |
+| p2-b, time limit 5 ms | 1,136 ms | 30 | 1,136 ms | 680 (first by `create:belt`) |
+| p2-b again, same world | 588 ms | 71 | 586 ms | 534 |
+| p2-a again, same world | 11 ms | 274 | 9 ms | 0 |
+| p3b, the reinstall rerun's restart | 10 ms | 234 | 9 ms | 0 |
+
+The time was not cold code, as 10.6 first read it, but chunk loads inside one look at one chunk: the
+detection asks only loaded chunks, and still hundreds of chunks loaded while it looked.
+
+| Id | Choice | Why |
+|---|---|---|
+| RG12 | **A detection's tick also stops at a time limit: `rescanSliceMicros` (industry config), default 5,000 us, 0 for none.** `Districts.Rescan.step` looks at chunks until the block entity budget (`rescanBlockEntitiesPerTick`, 256) or the time limit, whichever comes first, and always at least one chunk a tick. The cut falls only between chunks, and nothing commits until every chunk is looked at, so a detection spread over more ticks finds the same districts. Counters: `rtsim district perf` gives the longest tick (its block entities, the longest look at one chunk, the classes and chunks loaded meanwhile) and `rtsim perf`'s industry block "last detection: longest chunk N us, C classes loaded, L chunk loads (first by <block entity type>)". The first chunk load inside a detection step logs its stack once a session, as a warning. GameTests run at the default, except `anAdoptThatFitsTheBudgetIsDetectedInTheCall`, which is about the count budget and sets 0. Test: `aTickStopsAtTheTimeLimitAndDetectsTheSame` (RescanBudgetGameTests: at 1 us, one chunk a tick, four ticks at least for four chunks, the same chunks and seeds as a one-call detection, no chunk loaded). | The budget counts block entities, so a tick whose block entities cost more than usual (cold classes, a slow plugin) had no bound. 5 ms is a tenth of a tick: a detection of a large base (about 800 machines) still finishes within seconds. It cannot bound one look, which is why RG15 was needed: p2-b's 30-block-entity tick still took 1.1 s. |
+| RG15 | **Fan links read only FULL chunks (the cause).** The stack RG12's watch caught: `FanLinks.fromHost` asked `Level.isLoaded` and then `getBlockState` along a host's rays. `isLoaded` asks only the chunk's ticket level, so a chunk that is due but still loading (the forceload's chunks, at a start) passes it; `getBlockState` then waits for that chunk in `managedBlock` (C2ME's `instrumentAwaitChunk` on this pack), which runs the server thread's task queue, and every other chunk load due completes inside the look. Now every read of `FanLinks` goes through `Loaded` (`getChunkNow`: a chunk that is not FULL reads as not loaded), and a fan's flow limit is cut short of the first chunk that is not FULL before Create's `AirCurrent.getFlowLimit` reads it, as the glass compile's `FanCurrent` already did. For loaded chunks the links are the same; a chunk still loading is treated as unloaded, as the rest of the detection treats it, and its load marks it for the next detection, which links it. Test: `aLinkNeverWaitsForAChunkStillLoading` (GlassFanLinkGameTests: a fan's chunk held at level 34, given a FULL ticket and the distance manager's updates in the same tick; the depot's links must not name the fan and the chunk must still not be FULL after the look; once it loads, the fan is linked). | The core's own reads (`describe`, `canonicalInventory`, the walk) already went through `getChunkNow`; the plugin hook was the gap. A wait is never bounded by a time limit, so the read itself had to change. |
+| RG16 | **Not changed: other `Level.isLoaded` reads outside detection.** The same test passes chunks still loading in `TrainWatch`, `WritePackages` and `MailWatch` (create), `PowerLinks` (powergrid, tick sampling), `Nests` and `Lairs` (iceandfire), `RadarPlugin.facts` (radar), `ResidentSpawner` (growth), `ConflictBridge` and `HerdBridge` (`hasChunk`), and `FarHide` (dh, `hasChunk`). None is in a detection step. | Each can make its own tick wait for a load the same way; a finding for their owners (`Loaded`, or `getChunkNow`, is the fix), not this branch's. |
 
 ## For Ben
 

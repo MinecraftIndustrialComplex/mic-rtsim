@@ -970,6 +970,11 @@ and Ben has two choices to make before rtsim goes on: DR6, changed by DS-10, and
   code; warm detections take at most 35 ms), and its slice budget counts block entities, not time, so
   nothing cuts that slice short.
   One slow tick before players are on; not a deploy blocker (10.6).
+  **Fixed** with the reinstall guard (docs/choices-reinstall-guard.md, Part 3): the time went to chunk
+  loads, not cold code. Create's fan links asked `Level.isLoaded`, which a chunk that is due but still
+  loading passes, and the block read that followed waited for that chunk while every other chunk load
+  due ran: 534 to 972 chunk loads inside one look at one chunk. Fan links now read only FULL chunks
+  (RG15), and a detection's tick also stops at a time limit, 5 ms by default (RG12).
 
 ### 10.1 What ran
 
@@ -1137,9 +1142,10 @@ ticks in r1-rtsim (311 us a tick mean, p50 120 us) and 3.0 s over 8,516 in r3-rt
   reload, reset and reinstall runs), the session's first detection looked at 271 to 305 block entities
   in one tick of 0.68 s (r1-reload, load 19), 1.33 s (r-reset, load 10) and 2.2 s (r-reset-reload, load
   36), with no GC pause over 0.3 s near it; in r1-rtsim and r2-rtsim, where every detection came minutes
-  after the start, the longest tick was 16 to 35 ms. It reads only loaded chunks (`getChunkNow`), so it
-  is cold code, not chunk loads. One slow tick at boot, before players are on; for the owners: the
-  slice budget counts block entities, not time (R2-11).
+  after the start, the longest tick was 16 to 35 ms. The core reads only loaded chunks (`getChunkNow`),
+  so this was first read as cold code; it was chunk loads inside one look: Create's fan links asked
+  `Level.isLoaded`, which a chunk still loading passes, and waited for that chunk (R2-11, fixed). One
+  slow tick at boot, before players are on.
 
 ### 10.7 Heap and GC (DR2)
 
