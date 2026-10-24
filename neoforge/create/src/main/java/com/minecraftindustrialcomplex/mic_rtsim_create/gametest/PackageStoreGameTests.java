@@ -138,6 +138,23 @@ public final class PackageStoreGameTests {
     }
 
     /** Sends a package from a frogport: into its own inventory, which it empties onto its chain. */
+    /** The state that decides whether a frogport can put a package on {@code conveyor}'s loop: for a failing check's message. */
+    /** Each package replaced by Create's own read of its written tag, as a chunk load brings it back. */
+    private static void roundTrip(List<ChainConveyorPackage> packages, ServerLevel level) {
+        for (int i = 0; i < packages.size(); i++)
+            packages.set(i, ChainConveyorPackage.read(packages.get(i).write(level.registryAccess()), level.registryAccess()));
+    }
+
+    private static String kinetics(ServerLevel level, BlockPos conveyor, BlockPos frog) {
+        ChainConveyorBlockEntity c = conveyor(level, conveyor);
+        FrogportBlockEntity f = frog(level, frog);
+        if (c == null)
+            return "no conveyor";
+        return "speed " + c.getSpeed() + " (theoretical " + c.getTheoreticalSpeed() + ", overstressed " + c.isOverStressed() + ", source "
+                + c.source + "), looping " + looping(level, conveyor) + ", travelling " + travelling(level, conveyor) + ", the frogport holds "
+                + held(level, frog) + (f != null && f.isAnimationInProgress() ? " (animating)" : "");
+    }
+
     private static void send(ServerLevel level, BlockPos from, ItemStack box) {
         FrogportBlockEntity f = frog(level, from);
         check("the frogport is loaded", f != null);
@@ -705,14 +722,18 @@ public final class PackageStoreGameTests {
                     ByteBuffer d = declaration(store[0]);
                     check("the declaration carries the epoch", d.getInt(IndRecords.PackageStore.EPOCH) == f.epoch());
                     at[1] = f.epoch();
-                    // A restart: Create's tables start empty, CA's packages come back from its saved tag, the stores
-                    // and the frontier load from IndustryData. One package is not in CA's tag: the chunk was saved
-                    // after it left, and a crash lost its release before IndustryData was saved.
+                    // A restart: Create's tables start empty, CA's packages come back from their saved tags, the
+                    // stores and the frontier load from IndustryData. One package is not in CA's tag: the chunk was
+                    // saved after it left, and a crash lost its release before IndustryData was saved. Each package
+                    // goes through Create's own write and read; the conveyor itself is not reloaded in place (that
+                    // clears its kinetics: speed 0, no source, until a neighbour update).
                     ChainConveyorBlockEntity ca = conveyor(level, y.ca);
                     ChainConveyorPackage first = ca.getLoopingPackages().get(0);
                     unfound[0] = Frontier.key(first.item).serial();
                     ca.getLoopingPackages().remove(first);
-                    ca.loadWithComponents(ca.saveWithoutMetadata(level.registryAccess()), level.registryAccess());
+                    roundTrip(ca.getLoopingPackages(), level);
+                    for (List<ChainConveyorPackage> moving : ca.getTravellingPackages().values())
+                        roundTrip(moving, level);
                     ca.routingTable.entriesByDistance.clear();
                     conveyor(level, y.cb).routingTable.entriesByDistance.clear();
                     Set<Long> kept = new HashSet<>(serials);
@@ -723,6 +744,7 @@ public final class PackageStoreGameTests {
                 })
                 .thenWaitUntil(() -> check("the kept route is back on CA",
                         conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)).equals(toB)))
+                .thenWaitUntil(() -> check("CA turns after the restart: " + kinetics(level, y.ca, fa.pos), conveyor(level, y.ca).getSpeed() != 0))
                 .thenWaitUntil(() -> check("a held list of this epoch", !heldLists(at[1]).isEmpty()))
                 .thenExecute(() -> {
                     Frontier f = PackageStores.of(ind()).frontier;
@@ -743,7 +765,7 @@ public final class PackageStoreGameTests {
                     send(level, fa.pos, box("east", 4));
                     send(level, fa.pos, box("east", 5));
                 })
-                .thenWaitUntil(() -> check("four circle CA, seven held records: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
+                .thenWaitUntil(() -> check("four circle CA, seven held records: " + heldRecords(store[0]).size() + "; " + kinetics(level, y.ca, fa.pos),
                         looping(level, y.ca) == 4 && heldRecords(store[0]).size() == 7))
                 .thenIdle(60)
                 .thenExecute(() -> {
