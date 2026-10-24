@@ -33,7 +33,7 @@
     "plunder": []
   },
   "pool_cap": 1,
-  "recruits_per_day": 0.16666666666666666,
+  "recruits_per_day": 0.0,
   "march_blocks_per_tick": 0.02,
   "muster_days": 1.0,
   "patience_days": 2.0,
@@ -52,5 +52,6 @@
   "source": "boss",
   "loot_destroyed": true,
   "haven": false,
-  "camp_bodies": true
+  "camp_bodies": true,
+  "renewal": { "base_days": 6.0, "cap_days": 192.0, "half_life_days": 96.0, "boss": true }
 }

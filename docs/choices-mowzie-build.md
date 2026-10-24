@@ -1861,6 +1861,13 @@ The tests:
   carries no site ledger row (S9, M12); a CHIEF_STATE lost in a crash leaves the engine's crystal wrong
   until the den's next census (MZB-269), which matters only to a raid drawn from it in between; a Frostmaw
   lured from or unloaded away from its den is M12's.
+- **MZB-293** (where the rate check sits, built): `RenewalDef::rule(culture, what)` holds the numbers of
+  MZB-251 (finite, `base_days > 0`, `cap_days >= base_days`, `half_life_days > 0`) and returns the kernel's
+  `RenewalRule`, so a second renewal (M9's `chief_renewal`) calls it with its own `what` and none of the
+  culture-level checks. The checks that `recruits_per_day == 0` and `camp_bodies` is true belong to the
+  `renewal` field alone, in `Culture::resolve`: a culture whose chief renews while its warriors still refill
+  by rate is legal, and the Frostmaw's rule does not have to be edited for it. The `rate_den_cultures`
+  helper of `synth` (MZB-286) and `CampRun::with_cultures` serve the engine tests that keep a rate.
 
 ### M6 design for the implementer
 
