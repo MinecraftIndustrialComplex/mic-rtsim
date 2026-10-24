@@ -99,6 +99,14 @@ public final class MowzieCamps {
      * (3, 0, 3.5) of the unrotated template, MZB-217).
      */
     static long declareDen(ServerLevel level, StructureStart start, boolean late) {
+        return declareDen(level, start, late, MicRtsimMowziesMobs.DEN_STRUCTURE);
+    }
+
+    /**
+     * As above under another structure name (GameTests: a name no culture claims, so the engine leaves the
+     * camp to the test's scripted lines).
+     */
+    public static long declareDen(ServerLevel level, StructureStart start, boolean late, String structure) {
         BoundingBox b = start.getBoundingBox();
         for (StructurePiece p : start.getPieces()) {
             if (p instanceof FrostmawPieces.FrostmawPiece) {
@@ -108,7 +116,7 @@ public final class MowzieCamps {
         }
         AABB box = new AABB(b.minX(), b.minY(), b.minZ(), b.maxX() + 1, b.maxY() + 1, b.maxZ() + 1);
         Vec3 spot = denSpot(b);
-        long f = RtsimApi.declareCamp(level, start.getChunkPos(), MicRtsimMowziesMobs.DEN_STRUCTURE, DenKind.INSTANCE,
+        long f = RtsimApi.declareCamp(level, start.getChunkPos(), structure, DenKind.INSTANCE,
                 BlockPos.containing(spot), spot, box, 0, late);
         if (f != 0)
             dens++;
@@ -127,6 +135,11 @@ public final class MowzieCamps {
      * MOTION_BLOCKING_NO_LEAVES surface; MZB-218). A start with no fire pit piece is no grove.
      */
     static long declareGrove(ServerLevel level, StructureStart start, boolean late) {
+        return declareGrove(level, start, late, MicRtsimMowziesMobs.GROVE_STRUCTURE);
+    }
+
+    /** As above under another structure name (GameTests). */
+    public static long declareGrove(ServerLevel level, StructureStart start, boolean late, String structure) {
         BoundingBox fp = null;
         for (StructurePiece p : start.getPieces()) {
             if (p instanceof UmvuthanaGrovePieces.FirepitPiece) {
@@ -140,7 +153,7 @@ public final class MowzieCamps {
         }
         BlockPos centre = groveCentre(level, fp);
         Vec3 spot = new Vec3(centre.getX() + 0.5, centre.getY(), centre.getZ() + 0.5);
-        long f = RtsimApi.declareCamp(level, start.getChunkPos(), MicRtsimMowziesMobs.GROVE_STRUCTURE, GroveKind.INSTANCE, centre,
+        long f = RtsimApi.declareCamp(level, start.getChunkPos(), structure, GroveKind.INSTANCE, centre,
                 spot, null, GROVE_RADIUS, late);
         if (f != 0)
             groves++;
