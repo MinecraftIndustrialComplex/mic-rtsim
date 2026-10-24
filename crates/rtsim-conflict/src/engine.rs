@@ -4257,7 +4257,14 @@ impl Conflict {
                 (i64::from(from.0), i64::from(from.1)),
             );
             let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
+            let wave = self.parties[p].wave;
             self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+            // A wave commanded is in Minecraft by the books, also after Java refused the first
+            // one and left the band unembodied: its bodies' records find the band again, and the
+            // fight's end recalls them.
+            if self.parties[p].wave != wave {
+                self.parties[p].embodied = true;
+            }
         }
         let plan = self.parties[p].plan;
         self.schedule(
