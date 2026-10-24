@@ -239,6 +239,10 @@ checked against what landed and amended where main differs from what they assume
 
 - S4p's generations judge copies; RP's epochs judge bodies. Neither reads the other. UNNAMED_GEN and
   the generation table change nothing in RP.
+- **A known non-case (SEC-1's meeting-point review):** a session of a bridge that names no
+  generation (SECTIONS.md SC128's unnamed generation) replayed in a later session is moot before
+  release, since every bridge now journals its JOURNAL_GEN at open and nothing unreleased keeps
+  backward compatibility.
 - **RP's epoch rule (RP-7):** an agent's next epoch is above every epoch the engine has seen for it:
   in its pages, in a replayed *_MATERIALIZED, and in a copy. Today a replayed MATERIALIZED is ignored
   (conflict `ingest` about L4910, herds about L2158), so an epoch decided after the pages comes again
