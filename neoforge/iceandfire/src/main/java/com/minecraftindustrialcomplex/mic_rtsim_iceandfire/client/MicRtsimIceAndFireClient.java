@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.client.FarLooks;
 import com.minecraftindustrialcomplex.mic_rtsim.far.FarKind;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
 import net.neoforged.api.distmarker.Dist;
+import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
@@ -31,8 +32,9 @@ public final class MicRtsimIceAndFireClient {
             if (look.arrivals.cancels(e.getEntity()))
                 e.setCanceled(true);
         });
-        // A held body's name tag goes with its model (GeckoLib still runs vanilla's render for it after a cancel)
-        NeoForge.EVENT_BUS.addListener(RenderNameTagEvent.class, e -> {
+        // A held body's name tag goes with its model (GeckoLib still runs vanilla's render for it after a cancel); last,
+        // so a listener that forces name tags on does not bring it back
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, RenderNameTagEvent.class, e -> {
             if (look.arrivals.holds(e.getEntity()))
                 e.setCanRender(TriState.FALSE);
         });
