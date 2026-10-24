@@ -30,9 +30,9 @@ import java.util.Map;
  * snapshotted with the stock (a count and the stock it explains belong to one instant), and the snapshots go
  * out as IND_COUNT_SAMPLE records just before the sweep's IND_SWEEP_END ({@link #sample}).
  *
- * <p><b>Count points.</b> The movers of a mod call {@link #moved} (or {@link #inserted} and
- * {@link #extracted}) at the place where a real move happens, with the mover's block position and the position
- * of the inventory it moved to or from. This class knows no mod's names: {@code mic_rtsim_create}'s mixins
+ * <p><b>Count points.</b> The movers of a mod call {@link #isMover} and then {@link #moved} at the place
+ * where a real move happens, with the mover's block position and the position of the inventory it moved
+ * to or from. This class knows no mod's names: {@code mic_rtsim_create}'s mixins
  * are the count points of Create (PATCHES.md). A call costs a null test of {@link #active()} when nothing is
  * counted, and one hash lookup on the mover's position when something is, the target's canonical inventory
  * ({@link Districts#canonicalInventory}) being worked out only for a mover that has keys.
@@ -130,6 +130,17 @@ public final class Counting {
     // ---- the count points -----------------------------------------------------------------------
 
     /**
+     * The cheap test of a count point: whether the block at {@code mover} has counted pairs in this
+     * (server) level. One hash lookup; a count point asks it before it works out the move's target.
+     */
+    public boolean isMover(Level level, BlockPos mover) {
+        if (!(level instanceof ServerLevel))
+            return false;
+        Long2ObjectOpenHashMap<Key[]> map = byMover.get(level.dimension());
+        return map != null && map.containsKey(mover.asLong());
+    }
+
+    /**
      * A real move of {@code n} of {@code stack} by the block at {@code mover}, between it and the inventory
      * at {@code target}: into the store when {@code into}, else out of it. Simulated moves and client-side
      * ones are not moves: the caller does not report them (and a level that is not a {@link ServerLevel} is
@@ -151,16 +162,6 @@ public final class Counting {
         for (Key k : ks)
             if (k.store == sp)
                 count(k, stack, n, into);
-    }
-
-    /** {@code stack} was offered to the inventory at {@code target} and {@code remainder} came back: the difference moved in. */
-    public void inserted(Level level, BlockPos mover, BlockPos target, ItemStack stack, ItemStack remainder) {
-        moved(level, mover, target, stack, stack.getCount() - remainder.getCount(), true);
-    }
-
-    /** {@code taken} was drawn from the inventory at {@code target}. */
-    public void extracted(Level level, BlockPos mover, BlockPos target, ItemStack taken) {
-        moved(level, mover, target, taken, taken.getCount(), false);
     }
 
     private void count(Key k, ItemStack stack, int n, boolean into) {
