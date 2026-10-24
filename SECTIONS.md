@@ -610,26 +610,39 @@ Recommended: **count at the movers**.
   without an op id, as `IND_PROBE_SET` 0x8406 is, choice GB5): the (mover, store) node pairs of a
   compile, sent when the district's units change and the set differs from the one Java holds (SC89).
   Java keys each pair's counters by the mover's and the store's positions, so a pair a later set
-  names again keeps them, and answers in each sweep, before the sweep's END, with cumulative amounts
-  per (mover, store, good) in and out since the pair's `since` (`IND_COUNT_SAMPLE` 0x004F, not
-  counted in the sweep's records, as `IND_PROBE_SAMPLE` 0x004D is, choice GB3), in the numbers of
-  the latest compile whose END it sent (SC90). The mover's position names its node, so the unit is
+  names again keeps them (a compile or a revision change does not clear them), and answers in each
+  sweep, before the sweep's END, with cumulative amounts per (mover, store, good) in and out since the
+  pair's `since` (`IND_COUNT_SAMPLE` 0x004F, not counted in the sweep's records, as `IND_PROBE_SAMPLE`
+  0x004D is, choice GB3), in the numbers of the latest compile whose END it sent (SC90). A pair's counts
+  are taken at the moment the sampler reads the store's inventory in that sweep, so a count and the stock
+  it explains belong to one instant, and a store the sweep did not read sends nothing (SC88). A set is
+  ignored when its compile is not Java's latest complete one or sits on a moving frame (the engine's
+  outbox sends it again, SC89); a set that names a pair keeps its counters, one that leaves it out drops
+  them, and an empty set drops the district's. The mover's position names its node, so the unit is
   known with no face mapping; movers at one block (a packager's two nodes) share its counts, each
   direction taken once (SC94).
-- The count points are Create's own movers, where they move real goods:
-  - `InvManipulationBehaviour.insert` and `extract` (funnels and every other user of the behaviour),
-    skipping simulated calls (`CapManipulationBehaviourBase.simulateNext`);
-  - the chute's transfers (`ChuteBlockEntity.handleInput` :346, `handleDownwardOutput` :367,
-    `handleUpwardOutput` :423, through the handler `grabCapability` :503 returns);
-  - the arm's `ArmInteractionPoint.insert` :116 and `extract` :123 and :130, which carry the
-    `ArmBlockEntity`;
-  - the basin's outputs into a neighbouring inventory (`BasinBlockEntity.tryClearingSpoutputOverflow`,
-    lines 416, 426 and 448 to 449; `acceptOutputsInner`, lines 546 to 549, 597 and 606);
-  - the frogport's push into and pull from neighbouring inventories
-    (`FrogportBlockEntity.tryPushingToAdjacentInventories`, lines 262 to 282; the pull, lines 302 to
-    308);
-  - the packager's extraction from its target (`PackagerBlockEntity.attemptToSend`, lines 440 and 455)
-    and its unpacking into it (`DefaultUnpackingHandler.unpack`, lines 41 to 74);
+- The count points are Create's own movers, where they move real goods. Each wraps the one call that
+  touches the inventory (MixinExtras `@WrapOperation`, PATCHES.md rows 64 to 75), counts only a real
+  call (not `simulate`, a server level) and only when the mover's block has a counted pair, so a move
+  is counted once; the inventory is the target's canonical inventory (`Districts.canonicalInventory`):
+  - `InvManipulationBehaviour.extract` and `insert` (rows 64, 65): the andesite and brass funnels, the
+    funnel under a belt, the mechanical crafter's output and the smart observer's extraction; the
+    mover is the behaviour's block entity. An arm's insert at a funnel point goes through the funnel's
+    behaviour, so it is counted once, under the funnel;
+  - the chute's and the smart chute's transfers (rows 66 to 68): `handleInput`, the draw from the
+    inventory above (`startLocation` 1) or below (0), `handleDownwardOutput` and `handleUpwardOutput`;
+  - the arm's `ArmInteractionPoint.insert` and `extract` (rows 69, 70), the base class's calls: the
+    special points (funnel, belt, depot, composter) override them and do not reach an inventory
+    through them;
+  - the basin's spout push, the real insert in `BasinBlockEntity.tryClearingSpoutputOverflow` (row 71);
+    `acceptOutputsInner` only fills the spout buffer and moves nothing. A basin's spout turns sideways
+    only for a belt, a funnel or a block with a `DirectBeltInputBehaviour` (`BasinBlock.canOutputTo`),
+    and none of those is a store, so in Create 6.0.10 this hook has no store to count at (SC82);
+  - the frogport's push into and pull from the inventory below it (rows 72, 73), a package counting as
+    its contents;
+  - the packager's extraction from its target (`PackagerBlockEntity.attemptToSend`, row 74) and its
+    unpacking into it (`DefaultUnpackingHandler.unpack`, row 75); the special unpacking handlers
+    (basin, crafter, a block that voids) and a mod's own are not counted;
   - fluids at `FluidNetwork.tick` :66, where a pipe network fills and drains its endpoints
     (UNVERIFIED: which position names the mover, the pump or the pipe end at the store). Not in S3:
     a fluid store is never counted, so it makes a judging group (SC79).
@@ -806,8 +819,10 @@ No migration code (no backward compatibility before release; G2-85). On load:
 
 ### 7.3 Counters (Java)
 
-- One hash test per real move at a count point (is this mover counted), and one counter update when it
-  is. Counted movers are only those at shared stores, which the fold keeps few. A cap
+- One static null test per real move at a count point (`Counting.active()` is null while nothing is
+  counted), then one hash lookup on the mover's position when something is; the target's canonical
+  inventory is worked out, and a counter updated, only for a counted mover. Counted movers are only those
+  at shared stores, which the fold keeps few. A cap
   `glass.countedStoresMax` (TUNABLE, 256 per district, SC78) turns the rest into judging groups.
 - S1's guards add one `shouldTickBlocksAt` or `getChunkNow` test per chain lookup and per member in a
   network recount, and each saves a chunk load that today costs far more.
@@ -884,10 +899,10 @@ New `CorpusFactory` fixtures next to `PackageLoopFactory` and `BoilerOverstressF
 
 | Fixture | What it is | Checks |
 |---|---|---|
-| `VaultBetweenMixersFactory` | a vault between two brass mixing lines (one fills it by funnel, one draws by funnel) | two sections, the vault shared and counted at its funnels; each passes its own window; break and replace the second mixer: the first keeps its passed window and replays while away |
+| `VaultBetweenMixersFactory` | a vault between two lines (one fills it by chute, one draws by smart chute; SC83) | two sections, the vault shared and counted at its two movers, the counts exact against the vault's stock; each passes its own window; break and replace the second line's press in one tick: the first keeps its passed window, the counters go on (SC84), and both replay while away |
 | `HopperAtASharedVaultFactory` | the same with a vanilla hopper also feeding the vault | the hopper is modelled and not counted, so the compile makes the two sections a judging group with the vault interior; the group's row balances and passes |
 | `ResidueAtASharedVaultFactory` | `VaultBetweenMixersFactory` with the test inserting into the vault through its capability for one window (another mod's mover) | that window's residue fails both units on the inserted good, as a judging group would (SC88); the next window judges the two apart again |
-| `BasinIntoASharedVaultFactory` | a mixer's basin putting its output into a vault another line draws from | the basin's outputs are counted (§4.2); two sections, each passes |
+| `BasinIntoASharedVaultFactory` | a mixer's basin pouring into a chute onto a vault another line draws from (a basin cannot pour into a store itself; SC82) | two sections, each passes; the basin's pair, forced by the test, counts the recipe's output and the chute counts it on into the vault |
 | `BeltIntoPressFactory` | a belt straight from a press into a saw | one section (SEC-1's "cannot be split") |
 | `SharedBoilerTwoLinesFactory` | one boiler network driving a crushing line and a press line that share nothing else | three sections: the boiler's, and two lines on one domain (Q1 a); an edit to the press line's belt stales only it; adding presses until the stress passes the least capacity the crushing line's window ran at stales the crushing line too |
 | `StationPressLineFactory` | a station's portable storage interface emptied by a funnel into a vault feeding a press line (`StationCargoGameTests`' kit) | the cargo maps through `IND_STATION_PORTS` to the press line's section |
@@ -1195,6 +1210,9 @@ The options below stay as the record of what was offered.
 | SC79 | A shared store is counted (S3) when it is an item store and every goods edge at it runs to one of §4.2's count points (`COUNTED_MODELS`: chute, andesite and brass funnels, arm, smart chute, packager, frogport, basin); observe edges do not count (SC49). Fluid stores are not counted in S3: they stay in their sections' judging group | the fluid mover's position at `FluidNetwork.tick` is UNVERIFIED; a store a hopper or another mod reaches cannot be counted at all |
 | SC80 | `HopperAtASharedVaultFactory` (§9.2) presses its second line's brass into sheets instead of mixing it (no mixing recipe takes brass), and draws from the vault by a smart chute under it, not a funnel; `FrozenNeighbourFactory` is the same two lines without the hopper | the fixture tests the judging group a hopper makes, which needs only a mover that draws from the vault; the corpus' press line is already learned |
 | SC81 | `SharedBoilerTwoLinesFactory` (§9.2) stands a millstone line for the crushing line (a crushing wheel needs the item-drop machinery around it), and drives the press through a gearbox off the 128 RPM stage, so the press, its extra presses and the millstone all sit on the boiler's domain | the fixture tests two units on one domain and the domain check, which need only two lines that share the boiler's network and nothing else |
+| SC82 | `BasinIntoASharedVaultFactory` (§9.2) is `BrassMixingFactory`'s line with its spout chute onto the vault (the build `VaultBetweenMixersFactory` shares), not a basin pouring into the vault: `BasinBlock.canOutputTo` turns a spout sideways only for a belt, a funnel or a block with a `DirectBeltInputBehaviour` below and beside it (a chute, another basin, a drain, a saw, a drill, a millstone, a crafter), and no store has one, so a vault there leaves the spout facing down and the goods in the basin's own output. The table's "the basin's outputs are counted" has no store to count at in Create 6.0.10: the move into the vault is counted at the spout chute (`ChuteBlockEntityMixin`), and the row's "two sections, each passes" is checked on that build. The basin's own count point (row 71) is tested on its real hop, basin to chute, with the pair (basin, chute) forced onto the district (`Counting.holdForTest`: every later set keeps it, and the engine skips it in a sample): the basin counts the recipe's output and the chute counts the same goods on into the vault, within what the chute holds. `COUNTED_MODELS` (SC79) names BASIN, but a basin under a mixer or press is a MIXER or PRESS node (`CreateCompile.basinNode`); a modded store with a `DirectBeltInputBehaviour` that a basin fed would not be counted until the engine adds those models there, which needs no Java change (the hook is at the basin block) | the table's premise cannot be built with Create's blocks; the fixture checks what can |
+| SC83 | `VaultBetweenMixersFactory` (§9.2) fills the vault by the corpus' spout chute over it and draws it by the press line's smart chute under it, as SC80 does, so its counted movers are a chute and a smart chute, not two funnels. Create's `handleInput` (the smart chute's draw), `handleDownwardOutput` (the chute's push) and the count's exactness (over 600 ticks the stock changes by what the pairs counted in less out) are checked there; the funnel, arm, frogport, packager and unpacking count points (PATCHES.md rows 64, 65, 68 to 70, 72 to 75) have no fixture, and are checked only by the launch (`defaultRequire 1`: a Create update that moves their call fails the boot). A mixin whose call is still there but no longer reaches the inventory would count nothing, which shows as a residue and a failed window (SC88), not a wrong pass | each needs a build the corpus lacks (an arm or a frogport at a shared store, a packager with a unit on each side); the funnel and the other point's hooks are the same wrap on one call |
+| SC84 | An edit that spans a compile resets the units at a shared counted store, and with them Java's counters: `VaultBetweenMixersFactory` first broke the second line's press and placed it 20 ticks later, and a compile between the two (line B without its press) left both units with 0 windows and no verdict, and the pairs with a new `since`, as a changed section fingerprint drops a unit's state (SC62; the vault is held by one section's nodes or by two, and the fingerprints name their stores). The fixture now breaks and places the press in one tick, which is the table's "break and replace": the recompile finds the press as it was and clears the second unit's edit (§3.6), the first keeps its passed window, and the pairs keep their `since`. The second unit is therefore not stale after the recompile, which the fixture did not expect at first. A player who replaces a machine over several ticks resets what the two lines at a shared vault had learned (the lines learn again, and nothing is judged wrong in the meantime) | the observed behaviour of the engine's recompile; the cause (the fingerprint change) is read from the engine, not isolated by a test |
 | SC88 | A unit's row at its counted stores (§4.2): interior stock less the ports at its interior inventories, plus its own pairs' moves (in less out), plus each counted store's residue (the store's stock less the ports at its inventory and every pair's moves there) less the residue at the window's first sample. The residue goes to every unit at the store, so a move no pair counted fails each of them on its good, and the district learns as it would with one judging group. Ports naming a counted store's inventory are booked there and are no unit's production. In the bounds a counted store's edge is its mover's unit's, and a drain shortfall at a counted store goes to its takers' units, split by flow share | the identity of §4.1 stays exact for each unit, and a residue cannot be split between the units, so it is charged to all of them |
 | SC89 | `IND_COUNT_SET` is an outbox: the glass keeps the (compile, pairs) Java holds per district, marks a district at every change to its units (and at a compile kept across a session) and, at the end of each ingest, sends a set where they differ: the (mover, store) pairs of its counted stores between units (stores whose sections lie in two units or more; one inside one unit needs no count), ascending. An empty set goes when Java holds one and nothing is counted now (no compile, one unit, a compile of the last session's numbers). An ignored resend marks what Java holds unknown, so the set goes again; a new session clears it | a set at every END would repeat every `glass.resendTicks`; a set only at an accepted compile would miss a cut a sweep or a station's ports changed |
 | SC90 | Java's count contract: it keys each pair's counters by the mover's and the store's positions, so a pair a later set names again keeps its counts and `since`, and an empty set drops the district's counters. Each sweep's `IND_COUNT_SAMPLE` goes before that sweep's END and is in the node numbers of the latest compile whose END Java sent, leaving out pairs that compile lacks; a pair that counted nothing yet comes with no good, for its `since`. The engine reads a sample only of the compile it holds | a recompile that renumbers the nodes must not restart a line's counters; samples of a compile the engine has not accepted yet name other blocks |
@@ -1234,6 +1252,16 @@ The options below stay as the record of what was offered.
   state into a loaded network is not part of this design.
 - **Fluid counting** (§4.2): which position names a pipe network's mover is UNVERIFIED. Until it is, a
   store shared by two sections through pipes is a judging group.
+- **Counting at the movers** (§4.2, S3). Verified by GameTest at a vault between two lines
+  (`VaultBetweenMixersFactory`, `ResidueAtASharedVaultFactory`): a chute's push and a smart chute's draw are each
+  counted once (over 600 ticks the vault's stock changes by what the pairs counted in less out), Java takes the
+  engine's sets for the far and the control copy, nothing counts while the far copy is away, a move no count
+  point knows (a test's capability insert) leaves a residue that fails both units' window on that good (SC88),
+  and the next window passes both again with their strikes back at 0. UNVERIFIED by any GameTest, and checked
+  only by the launch (`defaultRequire 1`): the funnel, arm, frogport, packager and unpacking count points (SC83),
+  and whether a Create update adds a path into an inventory that no hooked call touches (it would show as a
+  residue and a failed window, not a wrong pass). A basin has no store to pour into in Create 6.0.10 (SC82), so
+  its hook is tested only on its hop to a chute.
 - **Uncounted movers at shared stores** (vanilla hoppers, the drill's shortcut, other mods) make judging
   groups (§4.3). How many shared stores a hopper reaches was not measured; on a base with many hoppers
   at shared stores, more sections are judged together.
