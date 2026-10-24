@@ -619,22 +619,33 @@ final class CreateCompile implements GlassExtractor.Compile {
      * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
      * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
      * may hold members that never loaded this session) or to a kinetic block entity of the same network.
-     * Each chunk it links into is kept (choice SC77). Reads only loaded chunks.
+     * Each chunk it links into is kept (choice SC77), and so is each loaded chunk outside the district across
+     * a face that any listed member, inside or out, may turn, though nothing is there yet: a part a player
+     * places there joins the network (review M3). Reads only loaded chunks.
      */
     private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
         boolean out = false;
         for (KineticBlockEntity m : net.members.keySet()) {
-            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+            if (!listed(net, m) || !Loaded.at(level, m.getBlockPos()))
                 continue;
             BlockPos p = m.getBlockPos();
+            boolean in = !outside(m);
+            int lx = p.getX() & 15, lz = p.getZ() & 15;
+            if (!in && lx != 0 && lx != 15 && lz != 0 && lz != 15)
+                continue; // outside and off its chunk's border: no face leaves its chunk
             BlockState state = m.getBlockState();
             IRotate block = state.getBlock() instanceof IRotate r ? r : null;
             for (Direction f : Direction.values()) {
+                if (f.getAxis() == Direction.Axis.Y)
+                    continue;
                 BlockPos n = p.relative(f);
-                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, n, block != null && connects(block, p, state, f)))
+                boolean may = block != null && connects(block, p, state, f);
+                if (in && linksOutTo(id, n, may))
                     out |= reached(n);
+                else if (may && ((n.getX() >> 4) != (p.getX() >> 4) || (n.getZ() >> 4) != (p.getZ() >> 4)) && Loaded.at(level, n))
+                    reached(n);
             }
-            if (block != null)
+            if (in && block != null)
                 for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
                     if (linksOutTo(id, n, true))
                         out |= reached(n);
