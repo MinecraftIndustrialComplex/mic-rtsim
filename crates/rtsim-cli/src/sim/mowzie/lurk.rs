@@ -127,6 +127,8 @@ pub(super) enum Trip {
     Paged,
     /// A session restart: the lurks go to Java again.
     Restart,
+    /// The engine opens from its pages, then the session restarts (a load, then a session start).
+    PagedRestart,
 }
 
 /// What a run leaves, to compare with the run that kept going.
@@ -628,7 +630,7 @@ impl Rig {
                 self.load_drift |= back.save() != bytes;
                 self.c = back;
             }
-            Trip::Paged => {
+            Trip::Paged | Trip::PagedRestart => {
                 let store = self.store.clone().expect("a paged rig");
                 let mut batch = SaveBatch::new();
                 let t = self.c.save_paged(&mut batch, META_KEY);
@@ -649,26 +651,31 @@ impl Rig {
                     .expect("opens")
                     .expect("a meta page");
                 self.load_drift |= self.c.state_hash() != hash;
-            }
-            Trip::Restart => {
-                // The session ends: Java's table is gone with it, the engine starts another, and
-                // once its replay is over says every lurk again, which the new table hears at once.
-                self.c.session_start();
-                self.c.resend_notices();
-                self.table.clear();
-                self.lagged.clear();
-                self.due.clear();
-                let from = Tick(self.c.now().0 + 1);
-                self.say(true);
-                for (_, cmd) in std::mem::take(&mut self.lagged) {
-                    self.hear(&cmd, from);
+                if how == Trip::PagedRestart {
+                    self.restart();
                 }
             }
+            Trip::Restart => self.restart(),
         }
-        if how != Trip::Restart {
+        if !matches!(how, Trip::Restart | Trip::PagedRestart) {
             self.c.replaying = replaying;
         }
         self.c.log_enabled = log;
+    }
+
+    /// The session ends: Java's table is gone with it, the engine starts another, and once its
+    /// replay is over says every lurk again, which the new table hears at once.
+    fn restart(&mut self) {
+        self.c.session_start();
+        self.c.resend_notices();
+        self.table.clear();
+        self.lagged.clear();
+        self.due.clear();
+        let from = Tick(self.c.now().0 + 1);
+        self.say(true);
+        for (_, cmd) in std::mem::take(&mut self.lagged) {
+            self.hear(&cmd, from);
+        }
     }
 
     fn tape(&self) -> Tape {
@@ -1023,17 +1030,20 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
 
 // ---- run 8: save and restore in a lurk, a cowed time and a meter's decay --------------------------
 
+/// The day the Decay point's line is cut from 24 to 4 legs a day.
+const DECAY_CUT: u64 = 7;
+
 /// The three points run 8 saves and restores at (MZB-372); a reconcile in flight is
 /// `reconcile_in_flight`'s.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Point {
     /// Two dens' bands lie in wait at one track point, each with passes behind it.
     Lurk,
-    /// A day after a lurking chief fell: its faction is cowed (and provoked again), and the other
-    /// den's bands go on lurking.
+    /// A day after a lurking chief fell, and right after the faction is provoked again: it is cowed,
+    /// and the other den's bands go on lurking.
     Cowed,
-    /// A day after a line's service was cut, with a train in flight (its passes held) and the
-    /// meter's wake booked.
+    /// After a line's service was cut from 24 to 4 legs a day, with a band lurking, a train in
+    /// flight (its passes held) and the meter's wake booked.
     Decay,
 }
 
@@ -1055,9 +1065,9 @@ impl Point {
                 s
             }
             Point::Decay => {
-                let mut s = scene(12.0, 30);
+                let mut s = scene(24.0, 30);
                 s.lines[0].service.push(synth::Service {
-                    from: Tick::from_days(10),
+                    from: Tick::from_days(DECAY_CUT),
                     per_day: 4.0,
                     path: 0,
                 });
@@ -1084,7 +1094,11 @@ struct Went {
 
 fn go(point: Point, seed: u64, trip: Trip) -> Went {
     let scene = point.scene();
-    let mut r = Rig::new(seed, &scene, trip == Trip::Paged);
+    let mut r = Rig::new(
+        seed,
+        &scene,
+        matches!(trip, Trip::Paged | Trip::PagedRestart),
+    );
     let end = r.end;
     let mut reached;
     let mut cowed_f = None;
@@ -1095,7 +1109,11 @@ fn go(point: Point, seed: u64, trip: Trip) -> Went {
             });
             if !reached {
                 // One band alone will do, but say so.
-                let mut r2 = Rig::new(seed, &scene, trip == Trip::Paged);
+                let mut r2 = Rig::new(
+                    seed,
+                    &scene,
+                    matches!(trip, Trip::Paged | Trip::PagedRestart),
+                );
                 reached = r2.until(end, |r| {
                     r.lurking() == 1 && r.lurks.last().is_some_and(|l| l.passes >= 2)
                 });
@@ -1123,11 +1141,15 @@ fn go(point: Point, seed: u64, trip: Trip) -> Went {
                 r.say(false);
                 cowed_f = Some(f);
                 reached = r.until(end, |r| r.now().0 >= killed.0 + TICKS_PER_DAY);
+                // Cowed still, the faction is provoked: its feud climbs again and waits for the end
+                // of the cowed time. The trip is right after that.
+                r.provoke();
             }
         }
         Point::Decay => {
             reached = r.until(end, |r| {
-                r.now() >= Tick::from_days(11)
+                r.now() >= Tick::from_days(DECAY_CUT)
+                    && r.lurking() >= 1
                     && r.c.held_passes() > 0
                     && r.c.pending_by_kind().get("rail").is_some_and(|n| *n > 0)
             });
@@ -1138,11 +1160,6 @@ fn go(point: Point, seed: u64, trip: Trip) -> Went {
     let (before_starts, before_resent) = (r.lurks.len(), r.resent);
     r.trip(trip);
     let resent = r.resent - before_resent;
-    if cowed_f.is_some() {
-        // Cowed still, the faction is provoked: its feud climbs again, and waits for the end of
-        // the cowed time.
-        r.provoke();
-    }
     r.advance(end);
     Went {
         tape: r.tape(),
@@ -1165,17 +1182,17 @@ pub(super) fn trips(out: &mut Vec<Check>) {
         (
             Point::Lurk,
             "a save in the middle of a lurk, blob and paged, goes on as the run that kept going",
-            "a restart in the middle of a lurk says each lurking band's spot once more, and the lurk goes on",
+            "a restart in the middle of a lurk, also after a load from pages, says each lurking band's spot once more, and the lurk goes on",
         ),
         (
             Point::Cowed,
             "a save in a cowed time, with the other den lurking, blob and paged, goes on as the run that kept going",
-            "a restart in a cowed time says the lurking den's spot once more, and the lurks come as they would have",
+            "a restart in a cowed time, also after a load from pages, says the lurking den's spot once more, and the lurks come as they would have",
         ),
         (
             Point::Decay,
-            "a save in a meter's decay, with passes held and a wake booked, goes on as the run that kept going",
-            "a restart in a meter's decay changes no lurk, no grievance and no count",
+            "a save in a meter's decay, with a band lurking, passes held and a wake booked, goes on as the run that kept going",
+            "a restart in a meter's decay, with a band lurking and also after a load from pages, changes no lurk, no grievance and no count",
         ),
     ] {
         let (mut same, mut ok, mut detail) = (true, true, Vec::new());
@@ -1185,10 +1202,11 @@ pub(super) fn trips(out: &mut Vec<Check>) {
             let blob = go(point, seed, Trip::Blob);
             let paged = go(point, seed, Trip::Paged);
             let restart = go(point, seed, Trip::Restart);
+            let paged_restart = go(point, seed, Trip::PagedRestart);
             let state = match point {
                 Point::Lurk => control.lurking >= 1,
                 Point::Cowed => control.cowed && control.starts >= 1,
-                Point::Decay => control.held > 0,
+                Point::Decay => control.held > 0 && control.lurking >= 1,
             };
             let eq =
                 |w: &Went| w.tape == control.tape && w.at == control.at && !w.drift && w.reached;
@@ -1207,44 +1225,49 @@ pub(super) fn trips(out: &mut Vec<Check>) {
                 if eq(&blob) { "same" } else { "DIFFERENT" },
                 if eq(&paged) { "same" } else { "DIFFERENT" },
             ));
-            // The restart: one spot per band lurking then, and everything else as before.
-            let s = &restart.tape.stats;
-            let c = &control.tape.stats;
-            let lurk_same = restart.tape.lurk_wire == control.tape.lurk_wire
-                && restart.tape.grievance == control.tape.grievance
-                && (
-                    s.lurks,
-                    s.lurks_ended,
-                    s.passes,
-                    s.lurk_robberies,
-                    s.ambushes,
-                    s.stale,
-                ) == (
-                    c.lurks,
-                    c.lurks_ended,
-                    c.passes,
-                    c.lurk_robberies,
-                    c.ambushes,
-                    c.stale,
-                );
-            let once = restart.resent == restart.lurking as u64 && restart.starts == control.starts;
-            r_ok &= lurk_same && once && restart.reached;
-            r_detail.push(format!(
-                "seed {seed}: {} lurking, {} spots said again, the lurk stream {} and the \
-                 grievances {} the run that kept going",
-                restart.lurking,
-                restart.resent,
-                if restart.tape.lurk_wire == control.tape.lurk_wire {
-                    "the same as"
-                } else {
-                    "DIFFERENT from"
-                },
-                if restart.tape.grievance == control.tape.grievance {
-                    "match"
-                } else {
-                    "DIFFER from"
-                },
-            ));
+            // The restart, plain and after a load from pages: one spot per band lurking then, and
+            // everything else as before.
+            for (what, restart) in [("restart", &restart), ("paged restart", &paged_restart)] {
+                let s = &restart.tape.stats;
+                let c = &control.tape.stats;
+                let lurk_same = restart.tape.lurk_wire == control.tape.lurk_wire
+                    && restart.tape.grievance == control.tape.grievance
+                    && (
+                        s.lurks,
+                        s.lurks_ended,
+                        s.passes,
+                        s.lurk_robberies,
+                        s.ambushes,
+                        s.stale,
+                    ) == (
+                        c.lurks,
+                        c.lurks_ended,
+                        c.passes,
+                        c.lurk_robberies,
+                        c.ambushes,
+                        c.stale,
+                    );
+                let once = restart.resent == restart.lurking as u64
+                    && restart.starts == control.starts
+                    && !restart.drift;
+                r_ok &= lurk_same && once && restart.reached;
+                r_detail.push(format!(
+                    "seed {seed}, {what}: {} lurking, {} spots said again, the lurk stream {} and \
+                     the grievances {} the run that kept going",
+                    restart.lurking,
+                    restart.resent,
+                    if restart.tape.lurk_wire == control.tape.lurk_wire {
+                        "the same as"
+                    } else {
+                        "DIFFERENT from"
+                    },
+                    if restart.tape.grievance == control.tape.grievance {
+                        "match"
+                    } else {
+                        "DIFFER from"
+                    },
+                ));
+            }
         }
         check(out, saved, same && ok, detail.join("; "));
         check(out, restarted, r_ok && ok, r_detail.join("; "));
