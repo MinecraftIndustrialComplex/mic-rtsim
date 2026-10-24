@@ -807,4 +807,158 @@ public final class PackageStoreGameTests {
                 });
         restore(s, level, y).thenSucceed();
     }
+
+    // ---- slice S4c2: the draw ------------------------------------------------------------------------
+
+    /** The frontier's CHAIN_DRAWN records of a store. */
+    private static List<ByteBuffer> drawnRecords(long store) {
+        return chainRecords(store, IndRecords.ChainPackage.CHAIN_DRAWN);
+    }
+
+    private static Set<Long> serialsOf(List<ByteBuffer> records) {
+        Set<Long> out = new HashSet<>();
+        for (ByteBuffer r : records)
+            out.add(r.getLong(IndRecords.ChainPackage.SERIAL));
+        return out;
+    }
+
+    /**
+     * Slice S4c2 (SECTIONS.md §2.5; choices SC141 to SC143), scripted as the engine's IND_HELD_DRAW (the engine gives
+     * back a draw that no replay pool of its own covers, and no pool here does, so the test holds its Return asks off). Three
+     * packages for FB are held on CA, as in {@link #aRouteToAnAwayFrogportIsKept}. Draw two: each is marked and told
+     * once (CHAIN_DRAWN, key only, at CA). Once B ticks again the third lands in FB, and the two drawn ones keep
+     * circling CA. After a restart (as there) the session's held list names them last, as drawn. A and B then unload,
+     * and the Remove of one waits for CA: at CA's first tick once it loads that package is taken off the chain and
+     * released (CHAIN_RELEASED), and only it. The other, given back (Return), lands in FB with its key, and nothing
+     * is held.
+     */
+    @GameTest(template = YARD, batch = "sec1_s4c2", timeoutTicks = TIMEOUT)
+    public static void aHeldPackageDrawnIsRemovedOnce(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        String t = "aHeldPackageDrawnIsRemovedOnce";
+        Yard y = Yard.at(helper, 6200, false);
+        Frog fa = new Frog(y.ca.west(2), y.ca, "west"), fb = new Frog(y.cb.east(2), y.cb, "east");
+        long[] store = {-1};
+        int[] epoch = {0};
+        long[] drawn = {0, 0};
+        long[] other = {0};
+        Set<Long> serials = new HashSet<>();
+        GameTestSequence s = build(helper, y, false, List.of(fa, fb))
+                .thenWaitUntil(() -> checkStore(level, List.of(fa, fb), new long[] {y.da(), y.db()}, store))
+                .thenExecute(() -> {
+                    Frontier.ignoreReturnsForTest = true;
+                    level.setChunkForced(y.ax + 1, y.az, false);
+                    level.setChunkForced(y.bx, y.az, false);
+                })
+                .thenWaitUntil(() -> check("B is FULL and does not tick", level.getChunkSource().getChunkNow(y.bx, y.az) != null
+                        && !level.shouldTickBlocksAt(net.minecraft.world.level.ChunkPos.asLong(y.bx, y.az)) && Loaded.ticks(level, y.ca)
+                        && !Loaded.ticks(level, fb.pos)))
+                .thenWaitUntil(() -> {
+                    List<Frontier.Kept> k = PackageStores.of(ind()).frontier.keptAt(level.dimension(), y.ca);
+                    check("CA keeps the route to FB: " + k, k != null && k.size() == 1);
+                })
+                .thenExecute(() -> {
+                    for (int i = 1; i <= 3; i++)
+                        send(level, fa.pos, box("east", i));
+                })
+                .thenWaitUntil(() -> check("three packages circle CA, held: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
+                        looping(level, y.ca) == 3 && heldRecords(store[0]).size() == 3))
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    serials.addAll(serialsOf(heldRecords(store[0])));
+                    check("three keys: " + serials, serials.size() == 3 && f.held().keySet().equals(serials));
+                    List<Long> sorted = new ArrayList<>(serials);
+                    java.util.Collections.sort(sorted);
+                    drawn[0] = sorted.get(0);
+                    drawn[1] = sorted.get(1);
+                    other[0] = sorted.get(2);
+                    epoch[0] = f.epoch();
+                    IndustryTestKit.heldDraw(store[0], epoch[0], IndRecords.HeldDraw.DRAW, drawn[0], drawn[1]);
+                })
+                .thenWaitUntil(() -> check("two drawn, each told: " + drawnRecords(store[0]).size(),
+                        serialsOf(drawnRecords(store[0])).equals(Set.of(drawn[0], drawn[1]))))
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    record(t, "drawn: " + f.perfLine(), drawnRecords(store[0]).size());
+                    check("told once each", drawnRecords(store[0]).size() == 2);
+                    for (ByteBuffer r : drawnRecords(store[0])) {
+                        check("a key only", r.getInt(IndRecords.ChainPackage.PACKAGES) == 0 && aux(r) == 0
+                                && r.getInt(IndRecords.ChainPackage.EPOCH) == epoch[0]);
+                        check("at CA", r.getInt(IndRecords.ChainPackage.X) == y.ca.getX() && r.getInt(IndRecords.ChainPackage.Z) == y.ca.getZ());
+                    }
+                    check("marked", f.held().get(drawn[0]).drawn() && f.held().get(drawn[1]).drawn() && !f.held().get(other[0]).drawn());
+                    level.setChunkForced(y.ax + 1, y.az, true);
+                    level.setChunkForced(y.bx, y.az, true);
+                })
+                .thenWaitUntil(() -> check("the third lands in FB: FB " + held(level, fb.pos) + ", CA " + looping(level, y.ca),
+                        held(level, fb.pos) == 1 && looping(level, y.ca) == 2))
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    check("the drawn two still circle CA: " + keysAt(level, y.ca) + ", FB " + held(level, fb.pos),
+                            new HashSet<>(keysAt(level, y.ca)).equals(Set.of(drawn[0], drawn[1])) && held(level, fb.pos) == 1
+                                    && travelling(level, y.ca) == 0);
+                    check("held: the drawn two", f.held().keySet().equals(Set.of(drawn[0], drawn[1])));
+                    // A restart, as in aRouteToAnAwayFrogportIsKept.
+                    ChainConveyorBlockEntity ca = conveyor(level, y.ca);
+                    ca.loadWithComponents(ca.saveWithoutMetadata(level.registryAccess()), level.registryAccess());
+                    PackageStores.forgetForTest(ind());
+                    Frontier.firstTickForTest(ca);
+                })
+                .thenWaitUntil(() -> {
+                    List<ByteBuffer> lists = heldLists(epoch[0]);
+                    ByteBuffer l = lists.isEmpty() ? null : lists.get(lists.size() - 1);
+                    int n = l == null ? 0 : aux(l);
+                    check("a held list naming the two, drawn", l != null && n >= 2 && l.getInt(IndRecords.HeldList.DRAWN) == 2
+                            && Set.of(l.getLong(IndRecords.HeldList.SERIALS + 8 * (n - 2)), l.getLong(IndRecords.HeldList.SERIALS + 8 * (n - 1)))
+                                    .equals(Set.of(drawn[0], drawn[1])));
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    record(t, "after the restart: " + f.perfLine(), keysAt(level, y.ca).size());
+                    check("still drawn after the restart", f.held().get(drawn[0]).drawn() && f.held().get(drawn[1]).drawn());
+                    check("still circling CA: " + keysAt(level, y.ca), looping(level, y.ca) == 2 && held(level, fb.pos) == 1);
+                    force(level, y, false);
+                })
+                .thenWaitUntil(() -> check("A unloads", level.getChunkSource().getChunkNow(y.ax, y.az) == null))
+                .thenExecute(() -> IndustryTestKit.heldDraw(store[0], epoch[0], IndRecords.HeldDraw.REMOVE, drawn[0]))
+                .thenWaitUntil(() -> {
+                    Frontier.Held h = PackageStores.of(ind()).frontier.held().get(drawn[0]);
+                    check("the removal waits for CA", h != null && h.removing());
+                })
+                .thenExecute(() -> {
+                    check("not released yet", !serialsOf(chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED)).contains(drawn[0]));
+                    force(level, y, true);
+                })
+                .thenWaitUntil(() -> check("CA's first tick takes it off: " + keysAt(level, y.ca), Loaded.ticks(level, y.ca)
+                        && keysAt(level, y.ca).equals(List.of(drawn[1]))))
+                .thenWaitUntil(() -> check("released once",
+                        serialsOf(chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED)).contains(drawn[0])))
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    record(t, "removed: " + f.perfLine(), keysAt(level, y.ca).size());
+                    List<ByteBuffer> rel = chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED);
+                    check("only the removed one released: " + serialsOf(rel), rel.size() == 1);
+                    check("held: the other drawn one", f.held().keySet().equals(Set.of(drawn[1])));
+                    check("nothing more in FB", held(level, fb.pos) == 1);
+                    Frontier.ignoreReturnsForTest = false;
+                    IndustryTestKit.heldDraw(store[0], epoch[0], IndRecords.HeldDraw.RETURN, drawn[1]);
+                })
+                .thenWaitUntil(() -> check("given back, it lands in FB: FB " + held(level, fb.pos) + ", CA " + looping(level, y.ca),
+                        held(level, fb.pos) == 2 && looping(level, y.ca) == 0 && travelling(level, y.ca) == 0))
+                .thenWaitUntil(() -> check("in at FB with its key",
+                        serialsOf(chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN)).equals(Set.of(other[0], drawn[1]))))
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    record(t, "given back: " + f.perfLine(), held(level, fb.pos));
+                    check("nothing held", f.held().isEmpty());
+                    check("one release in all", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_RELEASED).size() == 1);
+                    FrogportBlockEntity frog = frog(level, fb.pos);
+                    for (int i = 0; i < frog.inventory.getSlots(); i++)
+                        frog.inventory.setStackInSlot(i, ItemStack.EMPTY);
+                });
+        restore(s, level, y).thenExecute(() -> Frontier.ignoreReturnsForTest = false).thenSucceed();
+    }
 }
