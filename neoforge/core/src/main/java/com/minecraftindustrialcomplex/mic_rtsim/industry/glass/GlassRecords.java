@@ -210,9 +210,12 @@ public final class GlassRecords {
         public static final int SWEEP = 24;     // u32
         public static final int COMPILE = 28;   // u32
         public static final int ENTRIES = 32;   // n x Count40
-        /** Count40: u32 mover node, u32 store node, u32 good (NONE), u32 reserved, i64 since, i64 in, i64 out. */
+        /**
+         * Count40: u32 mover node, u32 store node, u32 good (NONE), u32 entries (how many entries the entry's
+         * (mover, store) pair has in all, over every record of the sweep), i64 since, i64 in, i64 out.
+         */
         public static final int ENTRY = 40;
-        public static final int E_MOVER = 0, E_STORE = 4, E_GOOD = 8, E_SINCE = 16, E_IN = 24, E_OUT = 32;
+        public static final int E_MOVER = 0, E_STORE = 4, E_GOOD = 8, E_ENTRIES = 12, E_SINCE = 16, E_IN = 24, E_OUT = 32;
 
         public static int size(int n) {
             return ENTRIES + ENTRY * n;

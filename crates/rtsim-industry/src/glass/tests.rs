@@ -7129,6 +7129,7 @@ mod replay_path {
                         since: a.since.0,
                         moved_in: a.made,
                         moved_out: 0,
+                        entries: 1,
                     },
                     Count {
                         mover: f1,
@@ -7137,6 +7138,7 @@ mod replay_path {
                         since: a.since.1,
                         moved_in: 0,
                         moved_out: a.took,
+                        entries: 1,
                     },
                 ]
             }
@@ -7293,12 +7295,51 @@ mod replay_path {
                     since: 0,
                     moved_in: 5,
                     moved_out: 7,
+                    entries: 1,
                 };
                 c.count_sample(1, &[same(f1), same(unpack)]);
                 let t = c.counts.as_ref().expect("taken");
                 assert_eq!(t.moved.get(&(f1, v, SHEET)), Some(&(0, 7)));
                 assert_eq!(t.moved.get(&(unpack, v, SHEET)), Some(&(5, 0)));
                 assert_eq!(t.since.len(), 2);
+            }
+
+            /// A pair with more goods than one record holds comes in several records, and each entry
+            /// says how many entries the pair has in all: a pair whose records did not all arrive
+            /// gives no cover (its lost goods would read as not moved), one that did gives it.
+            #[test]
+            fn a_pair_split_over_records_gives_cover_only_whole() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let [_, c0, v, f1, _] = ids;
+                let tun = GlassTunables::default();
+                let mut c = Compiled::new(b.graph(), Tick(0), &tun, &BTreeSet::new());
+                let entry = |m: u32, g: u32, of: u32| Count {
+                    mover: m,
+                    store: v,
+                    good: Some(Good(g)),
+                    since: 10,
+                    moved_in: 3,
+                    moved_out: 0,
+                    entries: of,
+                };
+                // c0 has two entries but only the first record came; f1 has one, whole.
+                c.count_sample(1, &[entry(c0, 1, 2), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
+                assert_eq!(t.since_of((f1, v)), Some(10));
+                // The second record of the same sweep completes it.
+                c.count_sample(1, &[entry(c0, 2, 2)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), Some(10));
+                // A later sweep starts over: its one record of c0's two is partial again.
+                c.count_sample(2, &[entry(c0, 2, 2), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
+                assert_eq!(t.since_of((f1, v)), Some(10));
+                // An entry that states no count (zero) is no whole pair.
+                c.count_sample(3, &[entry(c0, 1, 0), entry(f1, 1, 1)]);
+                let t = c.counts.as_ref().expect("taken");
+                assert_eq!(t.since_of((c0, v)), None);
             }
 
             /// Not counted: a belt takes from the vault (Java cannot count it), so the two lines

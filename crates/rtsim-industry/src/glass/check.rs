@@ -252,6 +252,22 @@ pub struct CountTake {
     pub since: BTreeMap<(u32, u32), i64>,
     /// (mover, store, good) to (moved in, moved out).
     pub moved: BTreeMap<(u32, u32, Good), (i64, i64)>,
+    /// (mover, store) to how many entries its records said the pair has in all (the largest said).
+    pub stated: BTreeMap<(u32, u32), u32>,
+    /// (mover, store) to how many entries of it the records of the sweep held.
+    pub got: BTreeMap<(u32, u32), u32>,
+}
+
+impl CountTake {
+    /// The pair's `since`, when the sample holds the pair whole: at least one entry, and as many
+    /// as it says the pair has. A pair split over records, one of them lost, is partial: its
+    /// goods in the records that came would count, and those in the lost one read as not moved.
+    pub fn since_of(&self, pair: (u32, u32)) -> Option<i64> {
+        let since = *self.since.get(&pair)?;
+        let stated = self.stated.get(&pair).copied().unwrap_or(0);
+        let got = self.got.get(&pair).copied().unwrap_or(0);
+        (stated >= 1 && got >= stated).then_some(since)
+    }
 }
 
 /// What the district's glass did, for operators and tests (bounded: the last few events).
@@ -1327,7 +1343,7 @@ impl Compiled {
             .map(|ps| {
                 let mut out = Vec::with_capacity(ps.len());
                 for &(m, h) in ps {
-                    let since = *take?.since.get(&(m, h))?;
+                    let since = take?.since_of((m, h))?;
                     out.push((self.graph.node(m).pos, self.graph.node(h).pos, since));
                 }
                 out.sort_unstable();
@@ -1337,7 +1353,8 @@ impl Compiled {
     }
 
     /// IND_COUNT_SAMPLE of sweep `sweep` for this compile: the counters of the pairs of the count
-    /// set it names; several records of one sweep add up, and a later sweep's replaces them.
+    /// set it names; several records of one sweep add up, and a later sweep's replaces them. A pair
+    /// whose entries are fewer than its records say ([`Count::entries`]) gives no cover.
     pub fn count_sample(&mut self, sweep: u32, counts: &[super::records::Count]) {
         if self.counts.as_ref().is_none_or(|t| t.sweep != sweep) {
             self.counts = Some(CountTake {
@@ -1352,6 +1369,9 @@ impl Compiled {
                 continue;
             };
             t.since.insert((c.mover, c.store), c.since);
+            *t.got.entry((c.mover, c.store)).or_insert(0) += 1;
+            let said = t.stated.entry((c.mover, c.store)).or_insert(0);
+            *said = (*said).max(c.entries);
             // Each count once, though Java names it under every pair of movers at one block
             let dirs = units.pair_dirs[i];
             let moved_in = if dirs & PAIR_IN != 0 { c.moved_in } else { 0 };

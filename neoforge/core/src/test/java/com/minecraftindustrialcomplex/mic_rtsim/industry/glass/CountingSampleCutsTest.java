@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.industry.glass;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** {@link Counting#cuts}: a count sample's records are cut only between (mover node, store node) pairs. */
 class CountingSampleCutsTest {
@@ -29,5 +30,11 @@ class CountingSampleCutsTest {
         // pairs of 2, 25, 3 entries and a record of 10: the big pair is split in 10s, its last 5 shared with the next pair
         assertArrayEquals(of(2, 12, 22, 30), Counting.cuts(of(0, 2, 27), 30, 10));
         assertArrayEquals(of(10, 20, 25), Counting.cuts(of(0), 25, 10));
+    }
+
+    @Test
+    void aRecordThatHoldsNoEntryIsRefusedNotLoopedOn() {
+        assertThrows(IllegalArgumentException.class, () -> Counting.cuts(of(0), 5, 0));
+        assertThrows(IllegalArgumentException.class, () -> Counting.cuts(of(0), 5, -3));
     }
 }

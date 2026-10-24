@@ -293,7 +293,7 @@ pub fn encode_obs(
                 w.put_u32(x.mover);
                 w.put_u32(x.store);
                 w.put_u32(x.good.map_or(NONE, |g| g.0));
-                w.zero(4);
+                w.put_u32(x.entries);
                 w.put_i64(x.since);
                 w.put_i64(x.moved_in);
                 w.put_i64(x.moved_out);
@@ -499,6 +499,7 @@ pub fn decode_obs(kind: u16, aux: u32, rec: &[u8]) -> Result<(u64, Tick, GlassOb
                             mover: r.get_u32(o),
                             store: r.get_u32(o + 4),
                             good: (g != NONE).then_some(Good(g)),
+                            entries: r.get_u32(o + 12),
                             since: r.get_i64(o + 16),
                             moved_in: r.get_i64(o + 24),
                             moved_out: r.get_i64(o + 32),
@@ -735,6 +736,7 @@ mod tests {
                     since: 1_000,
                     moved_in: 64,
                     moved_out: -3,
+                    entries: 1,
                 },
                 Count {
                     mover: 5,
@@ -743,6 +745,7 @@ mod tests {
                     since: i64::MIN,
                     moved_in: 0,
                     moved_out: i64::MAX,
+                    entries: u32::MAX,
                 },
             ],
         };

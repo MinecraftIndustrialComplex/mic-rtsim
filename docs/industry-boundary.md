@@ -485,9 +485,13 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
 - **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
   `count` blocks at speed `ratio × root speed` and `impact` SU per RPM each.
 - **Count40:** `0 u32 mover, 4 u32 store, 8 u32 good (NONE: the pair counted nothing yet),
-  12 reserved, 16 i64 since, 24 i64 in, 32 i64 out`: what the mover put into the store and took
+  12 u32 entries, 16 i64 since, 24 i64 in, 32 i64 out`: what the mover put into the store and took
   from it since game time `since`, cumulative, in the sample's compile's node numbers. One entry
-  per (pair, good). A large sample comes in several records of one sweep.
+  per (pair, good). `entries` is how many entries the entry's (mover, store) pair has in all over
+  the sweep's records (at least 1; the same on each of the pair's entries). A large sample comes in
+  several records of one sweep, cut between pairs; only a pair with more goods than one record
+  holds (about 1,600) is split, and the engine gives no cover to a pair it got fewer entries of
+  than `entries` (a lost part would read as goods not moved; SECTIONS.md §13, SC123).
 - **Pair8:** `0 u32 mover, 4 u32 store`: node numbers of the set's compile, ascending by mover
   then store. Java keys each pair's counters by the two blocks' positions, so a pair a later set
   names again keeps them and its `since`; a pair no set names any more is dropped, and an empty set
