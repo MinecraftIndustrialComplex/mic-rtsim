@@ -29,6 +29,11 @@ public final class ThreatClasses {
     public static final TagKey<EntityType<?>> RANGED = tag("threat/ground_ranged");
     public static final TagKey<EntityType<?>> FLYING = tag("threat/flying");
     public static final TagKey<EntityType<?>> SIEGE = tag("threat/siege");
+    /**
+     * Never a threat, whatever its class (MOWZIE.md §4.15, ledger 20): a mob that never moves (Mowzie's
+     * Foliaath) is no pressure on a district. Checked first.
+     */
+    public static final TagKey<EntityType<?>> IGNORED = tag("threat/ignored");
 
     /**
      * Blocks a burrowing attacker cannot come up through (OILGATE.md §4.6, OG-9e): a machine standing on
@@ -47,9 +52,14 @@ public final class ThreatClasses {
         return TagKey.create(Registries.ENTITY_TYPE, ResourceLocation.fromNamespaceAndPath(MicRtsim.MODID, path));
     }
 
-    /** True for an entity that attacks districts: a hostile mob ({@link Enemy}), or one tagged with a class. */
+    /**
+     * True for an entity that attacks districts: a hostile mob ({@link Enemy}), or one tagged with a class;
+     * never one tagged {@link #IGNORED}.
+     */
     public static boolean hostile(Entity e) {
         EntityType<?> t = e.getType();
+        if (t.is(IGNORED))
+            return false;
         return e instanceof Enemy || t.is(MELEE) || t.is(RANGED) || t.is(FLYING) || t.is(SIEGE);
     }
 

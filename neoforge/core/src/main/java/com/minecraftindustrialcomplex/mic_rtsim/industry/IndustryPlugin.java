@@ -233,6 +233,18 @@ public interface IndustryPlugin {
         return null;
     }
 
+    // ---- fights (MOWZIE.md §4.13, ledger 19) ---------------------------------------------------
+
+    /**
+     * An attacker's strength in an observed fight (IND_FIGHT's attacker strength), in the engine's unit:
+     * one ordinary mob (a zombie, health x attack 20 x 3). NaN when this plugin does not know the entity;
+     * the first plugin with a finite, non-negative answer wins, and the core counts 1 otherwise. Asked
+     * once per attacker per fight.
+     */
+    default float fightStrength(net.minecraft.world.entity.Entity attacker) {
+        return Float.NaN;
+    }
+
     // ---- conditions (I12) -----------------------------------------------------------------------
 
     /**
