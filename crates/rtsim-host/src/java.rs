@@ -105,6 +105,9 @@ pub struct Java {
     pub e: Arc<Engine>,
     // the journal (saved with the "world")
     pub journal: VecDeque<(u64, Vec<u8>)>,
+    /// The newest acknowledged JOURNAL_GEN, kept past the trim and sent first at a session start
+    /// (Java's `Journal.pinnedGen`, docs/boundary.md §3.2).
+    pub pinned_gen: Option<(u64, Vec<u8>)>,
     pub next_obs: u64,
     pub last_applied_cmd: u64,
     pub dict: Vec<(u32, String)>,
@@ -210,6 +213,7 @@ pub struct Java {
 #[derive(Clone)]
 pub struct WorldSave {
     pub journal: VecDeque<(u64, Vec<u8>)>,
+    pub pinned_gen: Option<(u64, Vec<u8>)>,
     pub next_obs: u64,
     pub last_applied_cmd: u64,
     pub dict: Vec<(u32, String)>,
@@ -219,6 +223,7 @@ impl WorldSave {
     pub fn fresh() -> Self {
         WorldSave {
             journal: VecDeque::new(),
+            pinned_gen: None,
             next_obs: 1,
             last_applied_cmd: 0,
             dict: Vec::new(),
@@ -266,6 +271,7 @@ impl Java {
         let mut j = Java {
             e,
             journal: save.journal,
+            pinned_gen: save.pinned_gen,
             next_obs,
             last_applied_cmd: save.last_applied_cmd,
             dict: save.dict,
@@ -331,6 +337,7 @@ impl Java {
     pub fn world_save(&self) -> WorldSave {
         WorldSave {
             journal: self.journal.clone(),
+            pinned_gen: self.pinned_gen.clone(),
             next_obs: self.next_obs,
             last_applied_cmd: self.last_applied_cmd,
             dict: self.dict.clone(),
@@ -533,8 +540,9 @@ impl Java {
         let mut submitted = false;
         if self.preamble() {
             let entries: Vec<(u64, Vec<u8>)> = self
-                .journal
+                .pinned_gen
                 .iter()
+                .chain(&self.journal)
                 .filter(|(s, _)| *s > self.sent_obs)
                 .cloned()
                 .collect();
@@ -801,7 +809,10 @@ impl Java {
             if self.pending_ack > 0 && !self.hold_acks {
                 let a = self.pending_ack;
                 while self.journal.front().is_some_and(|(s, _)| *s <= a) {
-                    self.journal.pop_front();
+                    let e = self.journal.pop_front().unwrap();
+                    if wire::u16_at(&e.1, wire::R_KIND) == obs::JOURNAL_GEN {
+                        self.pinned_gen = Some(e);
+                    }
                 }
                 if self.policy == Policy::Play {
                     self.acks.push(a);

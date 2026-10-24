@@ -180,8 +180,9 @@ fn a_copy_from_a_generation_no_disk_kept_applies_once() {
     crash_with_an_unsaved_journal(false);
 }
 
-/// A sim reset between the unload and the load: the pages are gone, so the engine knows no
-/// generation and the copy applies (the reinstall guard's RG14 drops such records in Java before
+/// A sim reset between the unload and the load: the pages are gone, so the engine knows the
+/// generation only from the JOURNAL_GEN the journal kept past the trim, which admitted nothing
+/// after it, and the copy applies (the reinstall guard's RG14 drops such records in Java before
 /// they are journaled; the engine on its own takes the world's word).
 #[test]
 fn after_a_reset_an_unknown_copy_applies() {
@@ -206,6 +207,55 @@ fn after_a_reset_an_unknown_copy_applies() {
     no_error(&j);
     assert_eq!(ledger(&j.e, 8), 2);
     assert_eq!(copies(&j.e), (1, 0));
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// Pages older than the journal's first entry (restored from a backup, say: a fresh folder stands
+/// for them), after an acknowledgement trimmed the session's JOURNAL_GEN. The journal keeps that
+/// JOURNAL_GEN past the trim, so the engine admits the entries after it in their own generation,
+/// and a copy of one of them is dropped: the replay applied it. A copy from the trimmed stretch is
+/// dropped too; that stretch is what such pages lose (docs/boundary.md §3.2, Known limit).
+#[test]
+fn a_copy_of_a_record_replayed_into_older_pages_never_applies_twice() {
+    let dir = tmpdir("reassert-older-pages");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let gen_seq = j.journal.front().unwrap().0;
+    let trimmed = carried(&mut j, 8, 2);
+    j.idle();
+    save_pages(&mut j);
+    let through = j.e.inspect().replay.applied_through().0;
+    j.run_until("the acknowledgement", |j| {
+        j.journal.front().is_none_or(|(s, _)| *s > through)
+    });
+    assert_eq!(
+        j.pinned_gen.as_ref().map(|(s, _)| *s),
+        Some(gen_seq),
+        "the session's JOURNAL_GEN outlives the trim"
+    );
+    j.hold_acks = true;
+    let replayed = carried(&mut j, 7, 5);
+    j.idle();
+    let saved = stop(j);
+    assert!(saved.pinned_gen.is_some(), "and the world save keeps it");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let mut j = start(&dir, saved);
+    assert_eq!(
+        (ledger(&j.e, 8), ledger(&j.e, 7)),
+        (0, 5),
+        "the trimmed stretch is lost, the rest replayed"
+    );
+    reassert(&mut j, &replayed);
+    reassert(&mut j, &trimmed);
+    j.idle();
+    no_error(&j);
+    assert_eq!(
+        (ledger(&j.e, 8), ledger(&j.e, 7)),
+        (0, 5),
+        "the replayed record applied once"
+    );
+    assert_eq!(copies(&j.e), (0, 2));
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
