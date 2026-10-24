@@ -31,7 +31,9 @@ import java.util.List;
  * carries the {@code CHAIN_IN} and the COMMAND_RESULT until the engine acknowledges them
  * ({@link Industry#commandResultInChunk(LevelChunk, long, long, int, List)}); a later session journals
  * both again at the chunk's load, and the engine's Replay takes each op once.
- * <b>Room:</b> whole packages into the frogport's free slots (18); what does not fit is not written.
+ * <b>Room:</b> whole packages into the frogport's free slots (18), one kept free: a package Create is
+ * catching lands with {@code insertItem} at the end of its animation and drops into the world when the
+ * inventory is full. What does not fit is not written.
  */
 public final class WriteChains {
     private WriteChains() {}
@@ -91,7 +93,7 @@ public final class WriteChains {
         int boxes = (stacks.size() + PackageItem.SLOTS - 1) / PackageItem.SLOTS;
         Industry.GoodsCounter goods = ind.counter();
         int done = 0;
-        while (done < count && freeSlots(target) >= boxes) {
+        while (done < count && freeSlots(target) > boxes) {
             for (int from = 0; from < stacks.size(); from += PackageItem.SLOTS) {
                 List<ItemStack> part = new ArrayList<>();
                 for (int i = from; i < Math.min(stacks.size(), from + PackageItem.SLOTS); i++)

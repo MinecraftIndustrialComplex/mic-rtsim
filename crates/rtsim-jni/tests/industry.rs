@@ -1489,7 +1489,7 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
         }),
     };
     // Written, its COMMAND_RESULT, then both again (a chunk's pending records at its load).
-    for _ in 0..2 {
+    let written_and_answered = |j: &mut Java| {
         j.industry_obs(&chain_in(Some(op)));
         j.journal(
             wire::obs::COMMAND_RESULT,
@@ -1500,17 +1500,37 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
                 wire::put_u64(r, wire::obs::command_result::OP_ID, op);
             },
         );
-    }
+    };
+    written_and_answered(&mut j);
+    written_and_answered(&mut j);
     // Two that Create moved: no op, both taken.
     j.industry_obs(&chain_in(None));
     j.industry_obs(&chain_in(None));
     j.mc_run_until(Tick(at.0 + 40));
-    let (written, moved) = industry(&j.e, |ie| {
+    // A durable world save lets the replay forget the op; a chunk that unloaded before the
+    // acknowledgement still carries both records and journals them again at its next load
+    // (review finding 1): the store's mark takes the record once all the same.
+    let durable = j.next_obs - 1;
+    {
+        let r = j
+            .reserve(wire::obs::WORLD_SAVED, wire::obs::world_saved::SIZE, 0)
+            .expect("room");
+        wire::put_u64(r, wire::obs::world_saved::DURABLE_OBS_SEQ, durable);
+    }
+    j.mc_run_until(Tick(at.0 + 80));
+    written_and_answered(&mut j);
+    j.mc_run_until(Tick(at.0 + 120));
+    let (written, moved, again) = industry(&j.e, |ie| {
         let s = &ie.stores()[&store];
-        (s.counts.written, s.counts.packages_in)
+        (
+            s.counts.written,
+            s.counts.packages_in,
+            ie.stats.chain_writes_again,
+        )
     });
     assert_eq!(written, 2, "the written packages are taken once");
     assert_eq!(moved, 4, "packages Create moved are taken every time");
+    assert_eq!(again, 1, "the third copy came after the op was forgotten");
     assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }

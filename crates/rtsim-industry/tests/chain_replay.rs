@@ -441,3 +441,147 @@ fn chain_pools_and_debts_survive_a_restore() {
     );
     assert_eq!(back.sim_stock(MINE), e.sim_stock(MINE));
 }
+
+/// A frogport's chunk carries a written `CHAIN_IN` until the engine acknowledges it; one that
+/// unloads first journals it again at its next load, after WORLD_SAVED let the replay forget its op
+/// (choice SC113). The engine takes it once.
+#[test]
+fn a_written_chain_in_journaled_again_later_is_taken_once() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    // The mill's frogport is full: every write fits nothing, and the next may go.
+    let failed = writes(&mut e);
+    assert!(!failed.is_empty());
+    // Earlier writes' answers were taken as lost when the next went; the last is the store's.
+    let last = failed.last().expect("a write").op;
+    assert!(e.command_failed(Tick(20_100), last));
+    assert_eq!(e.stats.chain_writes_failed, 1);
+    // The mine loads: the pool goes back to the store, owed to the mill's frogport.
+    live(&mut e, MINE, 20_100);
+    let o = owed(&e);
+    assert!(o >= 2 * BATCH, "{o}");
+    e.advance_to(Tick(20_400));
+    let w = writes(&mut e);
+    assert_eq!(w.len(), 1, "one write, the next waits for its answer");
+    let took = i64::from(w[0].count) * w[0].goods.get(IRON);
+    written(&mut e, 20_400, &w[0]);
+    assert_eq!(owed(&e), o - took);
+    let counted = e.stores()[&S].counts.written;
+    // Much later the frogport's chunk loads and journals the same record again.
+    e.advance_to(Tick(30_000));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(30_000), x.op);
+    }
+    written(&mut e, 20_400, &w[0]);
+    assert_eq!(owed(&e), o - took, "taken once");
+    assert_eq!(e.stats.chain_writes_again, 1);
+    assert_eq!(e.stores()[&S].counts.written, counted);
+    e.check_books().expect("books");
+}
+
+/// Without an answer (a crash between the command and its result, or a catch-up that runs ahead
+/// of Java), a frogport is written again only once the answer is taken as lost: one write in ten
+/// periods, not one a period.
+#[test]
+fn an_unanswered_write_holds_the_next_until_its_answer_is_lost() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    // One step of 20,000 ticks; the first whole package is there after about 1,300.
+    e.advance_to(Tick(20_100));
+    let n = writes(&mut e).len();
+    assert!(
+        (8..=11).contains(&n),
+        "a write a period would be about 94: {n}"
+    );
+}
+
+/// A split moves the importer's frogport to another store while a cluster holds the pool toward
+/// it: the pool goes back to the store that lists the frogport now.
+#[test]
+fn a_pool_returns_to_the_store_that_lists_its_frogport_now() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    away(&mut e, MILL, 100);
+    e.advance_to(Tick(6_100));
+    const S2: StoreId = StoreId(6);
+    let mut whole = store();
+    let mill = whole.frogports.pop().expect("mill");
+    send(
+        &mut e,
+        6_100,
+        Obs::PackageStore(StoreDecl {
+            store: S2,
+            dim: 0,
+            into: None,
+            frogports: vec![rtsim_industry::obs::StoreFrogport {
+                from: Some(S),
+                ..mill
+            }],
+            hops: vec![],
+        }),
+    );
+    whole.hops = vec![];
+    send(&mut e, 6_100, Obs::PackageStore(whole));
+    // The mill loads first and does not draw, then the mine: the pool leaves the cluster.
+    live(&mut e, MILL, 6_200);
+    live(&mut e, MINE, 6_200);
+    assert!(!e.replays(MINE) && !e.replays(MILL));
+    let moved = e.stores()[&S2].owed_to(frog(MILL)).get(IRON);
+    assert!(moved > 0, "{:?}", e.stores()[&S2].owed);
+    assert!(e.stores()[&S].owed.is_empty(), "{:?}", e.stores()[&S].owed);
+    assert_eq!(e.stats.chain_pools_lost, 0);
+}
+
+/// A district the black box replays in part, its frogport's chunk loaded: packages Create moves
+/// there are the world's, an ordinary port, never the replay's stock. Its replay has no import
+/// link there (the frogport is not in its part), so the engine writes what the mine sends.
+#[test]
+fn a_loaded_frogport_of_a_partly_replayed_district_is_no_part_of_the_replay() {
+    let mut e = engine(Tunables::default());
+    send(&mut e, 0, Obs::PackageStore(store()));
+    district(&mut e, MINE, 1_000, 0.05, -0.05);
+    // The mill's vault has iron to use while away.
+    district(&mut e, MILL, 500, -0.04, 0.05);
+    send(&mut e, 15, chain(MINE, ChainDirection::Out, 1, None));
+    away(&mut e, MINE, 100);
+    // The mill's vault unloads, its frogport stays loaded.
+    send(
+        &mut e,
+        200,
+        Obs::ChunkUnloaded {
+            district: MILL,
+            chunk: chunks(MILL)[0],
+        },
+    );
+    send(
+        &mut e,
+        200,
+        Obs::LoadState {
+            district: MILL,
+            state: LoadState::Partial,
+            ticking_chunks: 1,
+            total_chunks: 2,
+        },
+    );
+    e.advance_to(Tick(201));
+    assert!(e.replays(MILL), "the vault replays");
+    e.advance_to(Tick(400));
+    let before = e.sim_stock(MILL).expect("replays").get(IRON);
+    let ports = e.district(MILL).expect("mill").ports.get(IRON);
+    send(&mut e, 400, chain(MILL, ChainDirection::In, 1, None));
+    assert_eq!(e.sim_stock(MILL).expect("replays").get(IRON), before);
+    assert_eq!(
+        e.district(MILL).expect("mill").ports.get(IRON),
+        ports + BATCH
+    );
+    let w = run_writing(&mut e, 400, 12_000, 50);
+    assert!(!w.is_empty());
+    assert!(w.iter().all(|x| x.pos == frog(MILL) && x.district == MILL));
+    assert_eq!(
+        e.sim_stock(MILL).expect("replays").get(IRON),
+        before - (0.04 * 11_600.0) as i64,
+        "the writes are the frogport's, not the vault's"
+    );
+    e.check_books().expect("books");
+}

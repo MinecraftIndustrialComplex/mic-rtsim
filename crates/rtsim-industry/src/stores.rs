@@ -21,12 +21,13 @@
 //! them (UR-1: the packages are on the chain). What replays send each other (slice S4b) is
 //! virtual: a cluster's `PoolKey::Chain` pool while one holds it, else the store's
 //! [`PackageStore::owed`], written into a loaded importer's frogport as real packages
-//! (`Engine::write_chain`).
+//! (`Engine::store_write_wake`).
 
 use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
+use rtsim_kernel::journal::OpId;
 
 use crate::ids::{BlockPos, DistrictId, GoodVec, StoreId};
 use crate::obs::{ChainDirection, ChainPackage, StoreCensus, StoreDecl};
@@ -150,10 +151,56 @@ pub struct PackageStore {
     /// One package's contents toward each frogport (by position), from the last `CHAIN_OUT` routed
     /// there: the replay's room and the engine's writes count packages of it.
     pub batch: BTreeMap<BlockPos, GoodVec>,
-    /// When the engine last wrote toward each frogport (by position): no other write is sent
-    /// there until a `CHAIN_IN` with an op answers it or `chain_write_ticks` pass (Java answers a
-    /// write that fitted nothing with no record).
-    pub writing: BTreeMap<BlockPos, Tick>,
+    /// The engine's writes toward each frogport (by position) that Java has not answered: no
+    /// other write is sent there until each is answered (a `CHAIN_IN` with its op, or FAILED) or
+    /// its answer is taken as lost.
+    pub writing: BTreeMap<BlockPos, Writing>,
+    /// The last written `CHAIN_IN` taken toward each frogport (by position): a record no later
+    /// than it was taken already (choice SC113).
+    pub marks: BTreeMap<BlockPos, WriteMark>,
+}
+
+/// The engine's writes toward one frogport that Java has not answered yet (choice SC113).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Writing {
+    /// When the last of them was sent.
+    pub at: Tick,
+    pub ops: Vec<OpId>,
+}
+
+/// The last written `CHAIN_IN` the engine took toward one frogport (choice SC113): its record's
+/// own game time and the op ids taken at that time. A frogport's chunk carries such a record until
+/// the engine acknowledges it; one that unloads first is saved with it and journals it again at its
+/// next load, after the op id may be forgotten (WORLD_SAVED). Writes into one frogport are answered
+/// in order, so a record no later than the mark, of an op the mark holds when as late, is that one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WriteMark {
+    pub at: Tick,
+    pub ops: Vec<OpId>,
+}
+
+impl WriteMark {
+    /// A written record at `recorded` of `op` that was taken already.
+    pub fn covers(&self, recorded: Tick, op: OpId) -> bool {
+        recorded < self.at || (recorded == self.at && self.ops.contains(&op))
+    }
+
+    fn add(&mut self, recorded: Tick, op: OpId) {
+        if recorded > self.at {
+            self.at = recorded;
+            self.ops.clear();
+        }
+        if recorded == self.at && !self.ops.contains(&op) {
+            self.ops.push(op);
+        }
+    }
+
+    /// The later of two marks (both ops when as late).
+    fn merge(&mut self, o: &WriteMark) {
+        for &op in &o.ops {
+            self.add(o.at, op);
+        }
+    }
 }
 
 impl PackageStore {
@@ -232,6 +279,8 @@ impl PackageStore {
             pool,
             owed: self.owed.remove(&pos).unwrap_or_default(),
             batch: self.batch.remove(&pos),
+            writing: self.writing.remove(&pos),
+            mark: self.marks.remove(&pos),
         }
     }
 
@@ -249,6 +298,64 @@ impl PackageStore {
         if let Some(b) = t.batch {
             self.batch.entry(pos).or_insert(b);
         }
+        if let Some(w) = t.writing {
+            self.add_writing(pos, &w);
+        }
+        if let Some(m) = t.mark {
+            self.marks.entry(pos).or_default().merge(&m);
+        }
+    }
+
+    fn add_writing(&mut self, pos: BlockPos, w: &Writing) {
+        let e = self.writing.entry(pos).or_default();
+        e.at = e.at.max(w.at);
+        for &op in &w.ops {
+            if !e.ops.contains(&op) {
+                e.ops.push(op);
+            }
+        }
+    }
+
+    /// A written `CHAIN_IN` at `recorded` of `op` toward `pos` that the engine took already.
+    pub fn written_again(&self, pos: BlockPos, recorded: Tick, op: OpId) -> bool {
+        self.marks.get(&pos).is_some_and(|m| m.covers(recorded, op))
+    }
+
+    /// The engine sent writes `ops` toward `pos` at `at`.
+    pub fn sent_writes(&mut self, pos: BlockPos, at: Tick, ops: Vec<OpId>) {
+        self.writing.insert(pos, Writing { at, ops });
+    }
+
+    /// Whether a write toward `pos` is still unanswered at `at`, its answer not yet taken as lost
+    /// after `lost` ticks.
+    pub fn write_pending(&self, pos: BlockPos, at: Tick, lost: u64) -> bool {
+        self.writing
+            .get(&pos)
+            .is_some_and(|w| !w.ops.is_empty() && at < w.at + lost)
+    }
+
+    /// Java answered write `op` (toward any frogport). True when this store sent it.
+    pub fn write_answered(&mut self, op: OpId) -> bool {
+        let Some(pos) = self
+            .writing
+            .iter()
+            .find(|(_, w)| w.ops.contains(&op))
+            .map(|(p, _)| *p)
+        else {
+            return false;
+        };
+        let w = self.writing.get_mut(&pos).expect("found");
+        w.ops.retain(|&o| o != op);
+        if w.ops.is_empty() {
+            self.writing.remove(&pos);
+        }
+        true
+    }
+
+    /// A written `CHAIN_IN` of `op` at `recorded` toward `pos` is taken: marked, and answered.
+    pub fn take_written(&mut self, pos: BlockPos, recorded: Tick, op: OpId) {
+        self.marks.entry(pos).or_default().add(recorded, op);
+        self.write_answered(op);
     }
 
     /// What replays owe the frogport at `pos`, by good.
@@ -440,6 +547,8 @@ struct Taken {
     pool: Pool,
     owed: GoodVec,
     batch: Option<GoodVec>,
+    writing: Option<Writing>,
+    mark: Option<WriteMark>,
 }
 
 /// What [`declare`] did, for the engine's log.
@@ -495,6 +604,12 @@ pub fn declare(
         for (pos, b) in &gone.batch {
             into.batch.entry(*pos).or_insert_with(|| b.clone());
         }
+        for (pos, w) in &gone.writing {
+            into.add_writing(*pos, w);
+        }
+        for (pos, m) in &gone.marks {
+            into.marks.entry(*pos).or_default().merge(m);
+        }
         return Declared::Removed(true);
     }
     // What other stores held for the frogports coming from them.
@@ -542,6 +657,8 @@ persist_struct!(StoreCounts {
     in_census,
     written
 });
+persist_struct!(Writing { at, ops });
+persist_struct!(WriteMark { at, ops });
 persist_struct!(PackageStore {
     id,
     dim,
@@ -556,7 +673,8 @@ persist_struct!(PackageStore {
     counts,
     owed,
     batch,
-    writing
+    writing,
+    marks
 });
 
 /// A store's page.

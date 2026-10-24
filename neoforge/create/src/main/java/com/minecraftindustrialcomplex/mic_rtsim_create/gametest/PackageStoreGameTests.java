@@ -524,8 +524,9 @@ public final class PackageStoreGameTests {
      * Slice S4b (choice SC113): IND_WRITE_CHAIN writes whole packages into a loaded frogport, addressed to its
      * filter, and the frogport keeps them (Create never sends out a package its filter matches). One CHAIN_IN
      * with the engine's op says what was written; the frogport's chunk carries it with the COMMAND_RESULT until
-     * the engine acknowledges them. The op again is DUPLICATE; more packages than free slots write what fits;
-     * a full frogport is FAILED, with no record.
+     * the engine acknowledges them. The op again is DUPLICATE; more packages than free slots write what fits,
+     * keeping one slot free for a package Create catches; a frogport with that one slot left is FAILED, with
+     * no record.
      */
     @GameTest(template = YARD, batch = "sec1_s4b", timeoutTicks = TIMEOUT)
     public static void anEngineWriteLandsInALoadedFrogport(GameTestHelper helper) {
@@ -581,9 +582,9 @@ public final class PackageStoreGameTests {
                     List<ByteBuffer> in = writtenIn(store[0], op2);
                     record(t, "FB after op 2", held(level, fb.pos) + " packages, CHAIN_INs " + in.size()
                             + (in.isEmpty() ? "" : ", packages " + in.get(0).getInt(IndRecords.ChainPackage.PACKAGES)));
-                    check("FB is full: " + held(level, fb.pos), held(level, fb.pos) == 18);
-                    check("op 2 wrote the 16 that fitted", in.size() == 1 && in.get(0).getInt(IndRecords.ChainPackage.PACKAGES) == 16
-                            && goodsIn(in.get(0), IndRecords.ChainPackage.ENTRIES, aux(in.get(0)), IndRecords.ENTRY16) == 64);
+                    check("FB has one slot left: " + held(level, fb.pos), held(level, fb.pos) == 17);
+                    check("op 2 wrote the 15 that fitted", in.size() == 1 && in.get(0).getInt(IndRecords.ChainPackage.PACKAGES) == 15
+                            && goodsIn(in.get(0), IndRecords.ChainPackage.ENTRIES, aux(in.get(0)), IndRecords.ENTRY16) == 60);
                     IndustryTestKit.writeChain(op3, store[0], y.db(), at[1], at[0], fb.pos, 1, Map.of(iron, 4L));
                 })
                 .thenWaitUntil(() -> check("op 3 failed", commandResults(op3).contains(Obs.CommandResult.FAILED)))
