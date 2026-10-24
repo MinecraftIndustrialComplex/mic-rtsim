@@ -3894,6 +3894,16 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   it before the chunk could be saved) nearer the middle than a vanilla chest. It is written and compiled, not run; on
   the base it would fail by the first HAVEN_CHEST naming the nearer chest (FREE 27) in place of the vanilla one.
 
+- **MZB-643** (a body's extras drop nothing; amends MZB-428 and MZB-431; review P2-2): `ConflictBridge.isExtra`
+  says whether an entity is one of a live slot's extras (a raptor's follower) and `ConflictEvents` cancels
+  LivingDropsEvent and LivingExperienceDropEvent for such an entity, as it does for a chief's second body (MZB-431).
+  A follower is no member, so its death books nothing, yet a stack that comes back (the raptor lives, the players
+  walk off and return) is made again with four new followers: each of the old ones was a mask (the jar's
+  `umvuthana_*` loot) and 6 experience to farm. A member's own drops are unchanged (they carry its record,
+  `onDrops`). Test 12 now has a player kill the raptor's four followers and asserts the counts of item entities and
+  experience orbs within 40 blocks are unchanged ten ticks later (a follower's `xpReward` is 6, so a base that
+  dropped would show orbs); written and compiled, not run.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so

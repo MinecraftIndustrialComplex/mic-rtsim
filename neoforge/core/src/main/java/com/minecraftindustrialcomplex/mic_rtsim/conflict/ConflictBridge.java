@@ -1904,6 +1904,15 @@ public final class ConflictBridge implements SessionPlugin {
         return sl != null && sl.entity == e ? sl : null;
     }
 
+    /**
+     * Whether an entity is a live member's extra (a raptor's follower, MZB-428). Its death books nothing (it is no
+     * member), so it drops no loot and no experience either (MZB-643): the stack is made again with new ones.
+     */
+    public boolean isExtra(Entity e) {
+        Slot sl = extraOf.get(e.getUUID());
+        return sl != null && sl.extras.contains(e);
+    }
+
     // ---- the envoy: guard, answers, payment -----------------------------------------------------
 
     /**
