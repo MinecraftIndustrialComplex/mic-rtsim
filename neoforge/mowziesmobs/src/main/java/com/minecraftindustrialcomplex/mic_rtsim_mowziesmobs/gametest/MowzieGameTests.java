@@ -2218,5 +2218,132 @@ public final class MowzieGameTests {
                 .thenSucceed();
     }
 
+    // ---- MZB-595: a puppet is no stray ------------------------------------------------------------
+
+    /**
+     * A SET_OUT puppet of the den's Frostmaw joining beside the den makes no recount (MZB-595): the body is
+     * handed to a puppet, the den's slot is free for a moment, and the puppet, which is the engine's and carries
+     * the bridge's tag, joins the level within the footprint. It is not a stray. An adopted Frostmaw, a SET_OUT of
+     * its slot with a one-unit Frostmaw band materialized in the same hand-over: DONE, the puppet stands, and
+     * 40 ticks later the stray watch counter has not moved, the den made no second census and is in under the
+     * epoch it had.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_puppet_stray", skyAccess = true)
+    public static void aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount(GameTestHelper helper) {
+        String test = "aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2], agent = new long[1], was = new long[4];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    Camps c = MowzieKit.camps();
+                    was[0] = c.strayWatches;
+                    was[1] = c.handedOff;
+                    was[2] = c.recounts;
+                    was[3] = den.site().epoch();
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.Band b = ConflictKit.band(agent[0], den.faction, RtsimTests.dimension(helper));
+                    b.arcX = den.spot.x;
+                    b.arcZ = den.spot.z;
+                    b.targetX = den.spot.x + 1000;
+                    b.targetY = den.spot.y;
+                    b.targetZ = den.spot.z;
+                    b.speed = 0f;
+                    ConflictKit.together(() -> {
+                        op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                                CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, agent[0], b.epoch)));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    });
+                })
+                .thenWaitUntil(() -> {
+                    MowzieKit.answered(den.faction, op[1], 1);
+                    bandStands(agent[0], 1);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    Camps c = MowzieKit.camps();
+                    check("one handed off (" + (c.handedOff - was[1]) + ")", c.handedOff - was[1] == 1);
+                    Mob p = bandStands(agent[0], 1)[0];
+                    check("a Frostmaw puppet inside the den's footprint", p instanceof EntityFrostmaw && RtsimApi.isPuppet(p)
+                            && den.site().contains(p.position()));
+                    check("the den holds nothing now", MowzieKit.held(den.faction).isEmpty());
+                    check("no stray watch (" + (c.strayWatches - was[0]) + ")", c.strayWatches == was[0]);
+                    check("no recount (" + (c.recounts - was[2]) + ")", c.recounts == was[2]);
+                    check("no second census (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 1);
+                    check("no new epoch", den.site().in() && den.site().epoch() == was[3]);
+                    record(test, "puppet", "the SET_OUT puppet joined at " + p.position() + " and the den neither watched nor recounted");
+                })
+                .thenSucceed();
+    }
+
+    // ---- MZB-596: the event and the poll agree at an unload -------------------------------------
+
+    /**
+     * With the ticket event live, an unload leaves the poll nothing to correct (MZB-596): the event posts the
+     * unloaded level (MAX_LEVEL + 1), the chunk map has no holder for it later, and both read as
+     * {@link Camps#NO_HOLDER}, so the poll that follows finds no level moved. A den counted, its chunks released:
+     * once CAMP_OUT has come, the chunks are unloaded and a poll period has passed, the poll has run on the den
+     * ({@code polls} moved) and found nothing ({@code pollChanges} as it was). The ticket events fired for the
+     * den's chunks, so the premise (the event path is live) holds; where it does not (C2ME), the test only
+     * records that. The silent-event test beside it is what shows the poll finds the changes alone.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_poll_agrees", skyAccess = true)
+    public static void withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect(GameTestHelper helper) {
+        String test = "withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        Camps camps = MowzieKit.camps();
+        long[] n = new long[2]; // pollChanges and polls at the CAMP_OUT
+        int[][] events = new int[1][];
+
+        helper.startSequence()
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    events[0] = MowzieKit.watchTicketEvents(helper, den.site().footprintChunks());
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(den::release)
+                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenExecute(() -> {
+                    n[0] = camps.pollChanges;
+                    n[1] = camps.polls;
+                })
+                .thenWaitUntil(io(() -> {
+                    for (ChunkPos p : den.site().footprintChunks())
+                        check("chunk (" + p.x + ", " + p.z + ") is unloaded", !level.hasChunk(p.x, p.z));
+                }))
+                .thenIdle(Camps.POLL_PERIOD + 3)
+                .thenExecute(() -> {
+                    check("the poll ran on the den (" + (camps.polls - n[1]) + " polls of any camp)", camps.polls > n[1]);
+                    if (events[0][0] > 0)
+                        check("the poll found no level moved by the unload (" + (camps.pollChanges - n[0]) + " chunks)", camps.pollChanges == n[0]);
+                    else
+                        record(test, "event", "no ticket event fired for the den's chunks (C2ME?): the premise does not hold; the poll found "
+                                + (camps.pollChanges - n[0]) + " chunks moved");
+                    for (int l : den.site().levels())
+                        check("every footprint level reads as no holder (" + l + ")", l == Camps.NO_HOLDER);
+                    record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
+                })
+                .thenSucceed();
+    }
+
     // @@NEXT@@
 }

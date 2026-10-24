@@ -1023,9 +1023,12 @@ under its own heading.
   mod 20, kept as 20 lists so a tick touches only its own slot) through `ChunkMapInvoker.getUpdatingChunkIfPresent`,
   null being `NO_HOLDER`, and a camp whose levels moved is looked at at the end of that tick, which is the
   same `look` the event feeds. A camp costs 5 to 21 lookups every 20 ticks. The event listener stays as an
-  early hint where it fires (vanilla, the GameTests); levels from both are clamped to `NO_HOLDER`, so the
-  event's value for an unloaded chunk and the poll's agree and the poll reports only real corrections. The
-  poll is correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
+  early hint where it fires (vanilla, the GameTests). The first wording said levels from both were clamped
+  to `NO_HOLDER` so that the two agree at an unload; they did not: the event posts 45 (`UNLOADED_LEVEL`,
+  MAX_LEVEL + 1) and the poll read a missing holder as 46, so the poll would have reported the unload
+  as a change after the event had already moved the camp, and C2ME's NEW status is 45 as well. Now both read
+  through `Camps.norm`, every level above `ChunkLevel.MAX_LEVEL` being `NO_HOLDER` (MZB-596). The poll is
+  correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
   under C2ME, and a line is not played on a stale level: `playable` (MZB-233) reads the levels afresh from the
   chunk map before it decides, since a line is played at once and cannot wait for the next poll (a camp it
   finds moved is also looked at at the end of the tick). Counters `polls` (camps polled) and `pollChanges`
@@ -1101,6 +1104,28 @@ under its own heading.
   `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (batch `mowzie_raptor_standin`): two raptor units
   embodied, both the grove warrior, no `EntityUmvuthanaRaptor` and no `EntityUmvuthanaFollowerToRaptor` in the
   area after 40 ticks.
+
+- **MZB-595** (a puppet is no stray, and only the stray-watching camps are walked; re-review P3-1):
+  `strayJoined` ran for every join of a Mob, including the engine's own puppets, and walked every camp.
+  A SET_OUT puppet of the den's Frostmaw joining beside the den, the chief's body handed to a puppet, would
+  have made the den look again. Now a tagged entity (`RtsimAttachments.isTagged`: a puppet carries the
+  bridge's agent tag, a body the camp tag) returns first, and `Camps` keeps, per dimension, the camps whose
+  kind has a stray radius above zero (`strayers`, filled in `declare`, cleared in `clear`), so a join walks
+  only those. Test: `aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount` (batch
+  `mowzie_puppet_stray`): a SET_OUT of an adopted Frostmaw's slot with a one-unit band materialized in the
+  same hand-over, DONE, the puppet standing, and 40 ticks later the stray watch has not moved, no second
+  census and no new epoch.
+- **MZB-596** (the event and the poll agree at an unload; re-review P3-2; corrects MZB-290): the event
+  posts `UNLOADED_LEVEL` (45) when the last ticket goes, the poll read a chunk with no holder as
+  `NO_HOLDER` (46), and C2ME's holder reads 45 for a chunk of status NEW. `Camps.norm` now maps every level
+  above `ChunkLevel.MAX_LEVEL` to `NO_HOLDER` in `declare`, `onTicket` and `refreshLevels`, so a chunk that
+  is gone is one value however it is reached and the poll reports only real corrections. Test:
+  `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect` (batch `mowzie_poll_agrees`): a den counted
+  and released, CAMP_OUT, then the chunks unloaded and a poll period passed: the poll has run on the den
+  (`polls` moved), `pollChanges` has not (only where the ticket event fired for the den's chunks, since
+  without it the poll is the one that finds the change, and the test records that), and every footprint level
+  reads `NO_HOLDER`. With the silent-event test (MZB-290) the two sides of the assertion discriminate:
+  event off, the poll moves `pollChanges`; event on, it does not.
 
 ### M5 design for the implementer
 
