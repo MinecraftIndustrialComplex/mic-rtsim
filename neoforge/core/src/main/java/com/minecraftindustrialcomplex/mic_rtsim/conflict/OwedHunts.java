@@ -161,14 +161,22 @@ public final class OwedHunts {
                 a -> eligible(a) && dist2(a, cx, cz) <= r2));
         prey.sort(Comparator.<Animal>comparingDouble(a -> dist2(a, cx, cz)).thenComparing(a -> a.getUUID()));
         int dead = 0;
-        for (Animal a : prey) {
-            if (dead >= n)
-                break;
-            a.kill(); // drops fall (MZB-426); another mod may cancel it, which is no kill
-            if (!a.isAlive())
-                dead++;
+        try {
+            for (Animal a : prey) {
+                if (dead >= n)
+                    break;
+                try {
+                    a.kill(); // drops fall (MZB-426); another mod may cancel it, which is no kill
+                } finally {
+                    if (!a.isAlive())
+                        dead++; // one that died before a handler threw is dead all the same
+                }
+            }
+        } finally {
+            // Whatever a handler threw, the animals killed so far are dead for good: answer with their number, so that
+            // the engine does not send the same hunt again at the next session start and kill that many twice (MZB-646).
+            answer(s, h, dead, level, chunks, now);
         }
-        answer(s, h, dead, level, chunks, now);
     }
 
     /** HUNT_APPLIED, journaled, and the hunt is spent. */
