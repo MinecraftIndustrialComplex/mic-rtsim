@@ -554,7 +554,8 @@ class IndustryWireContractTest {
             case "IND_DISCARD":
                 return journaled(n, IndRecords.IND_DISCARD, IndRecords.Discard.SIZE,
                         code("discard_reason", f.sym("discard_reason")), f)
-                        .put64("district", IndRecords.Discard.DISTRICT, f.u64("district"));
+                        .put64("district", IndRecords.Discard.DISTRICT, f.u64("district"))
+                        .put64("station", IndRecords.Discard.STATION, f.u64("station"));
             case "IND_LOAD_STATE":
                 return journaled(n, IndRecords.IND_LOAD_STATE, IndRecords.LoadState.SIZE,
                         code("load_state", f.sym("load_state")), f)

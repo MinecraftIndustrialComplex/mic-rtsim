@@ -12,7 +12,7 @@ class GlassReportTest {
 
     @Test
     void decodesTheDocumentedLayout() {
-        double[] v = new double[GlassReport.HEADER + GlassReport.GOOD_STRIDE];
+        double[] v = new double[GlassReport.HEADER + GlassReport.GOOD_STRIDE + 1 + GlassReport.UNIT_STRIDE];
         v[0] = 3; // compile
         v[1] = 2; // rounds
         v[2] = 1; // converged
@@ -24,7 +24,7 @@ class GlassReportTest {
         v[15] = 40; // latency
         double[] checksum = {100, 1300, 9, 7, 2, 2000, 4, -1, 900, 2, 1, 2, 3, 4, 5, 6, 7};
         System.arraycopy(checksum, 0, v, 16, checksum.length);
-        double[] replay = {GlassReport.REPLAY_GLASS, 5000, 3, 9, 1, 2, 1, 4};
+        double[] replay = {GlassReport.REPLAY_GLASS, 5000, 3, 9, 1, 2, 1, 4, 8};
         System.arraycopy(replay, 0, v, 33, replay.length);
         int b = GlassReport.HEADER;
         v[b] = 7;
@@ -39,6 +39,10 @@ class GlassReportTest {
         v[b + 13] = 0.1175;
         v[b + 14] = 2; // why: rule
         v[b + 15] = 5;
+        int t = GlassReport.HEADER + GlassReport.GOOD_STRIDE;
+        v[t] = 1; // units
+        double[] unit = {2, 9, 1, -3, 60, 4, 5, 64, 9, 300, 1, GlassReport.PASS, 0, 21, 700};
+        System.arraycopy(unit, 0, v, t + 1, unit.length);
         GlassReport r = GlassReport.decode(v);
         assertEquals(3, r.compile());
         assertTrue(r.converged());
@@ -56,8 +60,9 @@ class GlassReportTest {
         assertEquals(-1, c.districtRevision());
         assertEquals(900, c.lastDiscardTick());
         assertEquals(2, c.lastDiscardReason());
-        for (int reason = 1; reason <= 7; reason++)
+        for (int reason = 1; reason <= 8; reason++)
             assertEquals(reason, c.discards(reason));
+        assertTrue(c.summary().contains("station cargo 8"), c.summary());
         assertTrue(c.summary().contains("last discard dropped records at 900"), c.summary());
         GlassReport.Replay rp = r.replay();
         assertEquals(GlassReport.REPLAY_GLASS, rp.model());
@@ -76,6 +81,16 @@ class GlassReportTest {
         assertEquals(0.1175, g.hi());
         assertEquals(120, g.samples());
         assertEquals("rule at n5", g.reason());
+        assertEquals(1, r.units().size());
+        GlassReport.Unit u = r.units().get(0);
+        assertEquals(2, u.sections());
+        assertEquals(9, u.nodes());
+        assertTrue(u.holds(-3, 60, 4) && u.holds(5, 64, 9) && !u.holds(6, 64, 9));
+        assertEquals(300, u.windowTicks());
+        assertEquals(GlassReport.PASS, u.verdict());
+        assertTrue(u.passed() && !u.stale() && u.mayReplay() && !u.frozen() && u.unbounded());
+        assertEquals(700, u.readyAt());
+        assertEquals(1, r.unitsAt(0, 62, 5).size());
         assertNull(GlassReport.decode(null));
         assertThrows(IllegalArgumentException.class, () -> GlassReport.decode(new double[GlassReport.HEADER + 3]));
     }

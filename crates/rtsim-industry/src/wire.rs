@@ -651,9 +651,14 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.zero(4);
             w.finish()
         }
-        Obs::Discard { district, reason } => {
+        Obs::Discard {
+            district,
+            reason,
+            station,
+        } => {
             let mut w = W::obs(out, IND_DISCARD, discard_code(*reason), seq, at);
             w.put_u64(district.0);
+            w.put_u64(station.map_or(0, |s| s.0));
             w.finish()
         }
         Obs::LoadState {
@@ -1024,10 +1029,12 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             }
         }
         IND_DISCARD => {
-            check(kind, size, 32)?;
+            check(kind, size, 40)?;
+            let station = r.get_u64(32);
             Obs::Discard {
                 district: r.district(24),
                 reason: discard_from(kind, aux.into())?,
+                station: (station != 0).then_some(StationId(station)),
             }
         }
         IND_LOAD_STATE => {
@@ -1909,6 +1916,12 @@ mod tests {
             v.push(Obs::Discard {
                 district: d,
                 reason,
+                station: None,
+            });
+            v.push(Obs::Discard {
+                district: d,
+                reason,
+                station: Some(StationId(0x5eed_0000_0000_0001)),
             });
         }
         for state in [LoadState::Unloaded, LoadState::Partial, LoadState::Live] {
@@ -2085,7 +2098,7 @@ mod tests {
             Obs::DistrictRemoved { .. } => 32,
             Obs::PowerLink { .. } => 40,
             Obs::Edit { .. } => 64,
-            Obs::Discard { .. } => 32,
+            Obs::Discard { .. } => 40,
             Obs::LoadState { .. } => 40,
             Obs::ChunkLoaded { .. } => 48,
             Obs::ChunkUnloaded { .. } => 48,
