@@ -3,6 +3,9 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.bobmowzie.mowziesmobs.server.item.ItemHandler;
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
+import com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthiTrade;
+import com.bobmowzie.mowziesmobs.server.message.MessageUmvuthiTrade;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
@@ -23,6 +26,7 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.damagesource.DamageSource;
@@ -30,6 +34,7 @@ import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
@@ -49,6 +54,7 @@ import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -57,6 +63,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
+import java.lang.reflect.Proxy;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -606,6 +615,55 @@ public final class MowzieKit {
     public static void allOutcomes(String what, Map<Integer, Integer> o, int outcome) {
         for (Map.Entry<Integer, Integer> e : o.entrySet())
             check(what + ": line " + e.getKey() + " is " + outcomeName(outcome) + ", not " + outcomeName(e.getValue()), e.getValue() == outcome);
+    }
+
+    // ---- the Umvuthi's trade (MZB-418; tests 13 and 25) ------------------------------------------
+
+    /** A masked player: the jar's fear mask on the head, which the Umvuthana look for in a trader. */
+    public static void mask(Player p) {
+        p.setItemSlot(EquipmentSlot.HEAD, new ItemStack(ItemHandler.UMVUTHANA_MASK_FEAR.get()));
+    }
+
+    /** A test {@code IPayloadContext}: the player is the payer and {@code enqueueWork} runs at once (no network thread). */
+    public static IPayloadContext payload(ServerPlayer player) {
+        return (IPayloadContext) Proxy.newProxyInstance(IPayloadContext.class.getClassLoader(), new Class<?>[] {IPayloadContext.class},
+                (proxy, m, args) -> {
+                    switch (m.getName()) {
+                        case "player":
+                            return player;
+                        case "enqueueWork":
+                            if (args[0] instanceof Supplier<?> s)
+                                return CompletableFuture.completedFuture(s.get());
+                            ((Runnable) args[0]).run();
+                            return CompletableFuture.completedFuture(null);
+                        default:
+                            throw new UnsupportedOperationException(m.getName());
+                    }
+                });
+    }
+
+    /** As below, paying the Umvuthi's own desires (7 gold blocks in the pack's config). */
+    public static boolean payUmvuthi(ServerPlayer payer, EntityUmvuthi umvuthi) {
+        return payUmvuthi(payer, umvuthi, umvuthi.getDesires().copy());
+    }
+
+    /**
+     * The player opens the Umvuthi's trade, puts {@code pay} in its input slot (there is none once it has traded) and
+     * sends the jar's {@code MessageUmvuthiTrade}, handled at once by {@code handleServer} as the server would; then it
+     * closes the menu. Returns whether the jar remembers the player afterwards. The first such payment calls
+     * {@code rememberTrade} (CHIEF_PAID, MZB-418); a later one gives Sun's Blessing and no record.
+     */
+    public static boolean payUmvuthi(ServerPlayer payer, EntityUmvuthi umvuthi, ItemStack pay) {
+        boolean traded = umvuthi.hasTradedWith(payer);
+        umvuthi.setCustomer(payer);
+        ContainerUmvuthiTrade menu = new ContainerUmvuthiTrade(97, umvuthi, payer.getInventory());
+        payer.containerMenu = menu;
+        if (!traded)
+            menu.getSlot(0).set(pay.copy());
+        MessageUmvuthiTrade.handleServer(new MessageUmvuthiTrade(umvuthi.getId()), payload(payer));
+        menu.removed(payer);
+        payer.containerMenu = payer.inventoryMenu;
+        return umvuthi.hasTradedWith(payer);
     }
 
     // ---- record markers -------------------------------------------------------------------------
