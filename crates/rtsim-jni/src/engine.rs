@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use mic_native_rt::snapshot::SnapshotCell;
 use mic_native_rt::{self as rt, Pool};
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
-use rtsim_kernel::journal::{ObsSeq, OpId, Outbox, Reconcile, Replay, Verdict};
+use rtsim_kernel::journal::{GEN_BLOCK, ObsSeq, OpId, Outbox, Reconcile, Replay, Verdict};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 
 use crate::buffers::Buf;
@@ -113,7 +113,17 @@ pub const DEFAULT_CAPACITY: usize = 256 * 1024;
 pub const KEY_META: PageKey = PageKey::new(1, 0);
 pub const KEY_WORLD: PageKey = PageKey::new(1, 1);
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTJM");
-const META_VERSION: u16 = 1;
+const META_VERSION: u16 = 2;
+/// The journal's closed generations (docs/boundary.md §3.2), [`GEN_BLOCK`] a page from id 0:
+/// written once, when a block gains one.
+pub const GEN_TABLE: u16 = 2;
+/// The generation the engine judges a session's records in when its bridge sends no JOURNAL_GEN:
+/// this bit with the session's first sequence.
+const UNNAMED_GEN: u64 = 1 << 63;
+
+fn gen_key(k: usize) -> PageKey {
+    PageKey::new(GEN_TABLE, k as u64)
+}
 
 /// `nOpen` flags.
 pub const FLAG_TEST: u32 = 1;
@@ -312,6 +322,10 @@ pub struct Stats {
     pub archive_pending_bytes: AtomicU64,
     /// The view tap's counters (`tap.rs`). Not in Java's array.
     pub tap: tap::Counters,
+    /// Copies of carried records (REASSERT, docs/boundary.md §3.2) applied, and dropped as already
+    /// in the engine's state. Not in Java's array.
+    pub copies_applied: AtomicU64,
+    pub copies_dropped: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -332,6 +346,12 @@ struct State {
     dict_sent: HashSet<(u32, u32)>,
     /// The first observation sequence of this session; anything below is a replay.
     session_first: u64,
+    /// Whether this session's own records started with its JOURNAL_GEN, or one was made up.
+    session_gen_seen: bool,
+    /// The closed generations the pages hold (written in [`GEN_TABLE`]), and the paged saves'
+    /// failures seen when they were last written: a failure since means write them all again.
+    gens_written: usize,
+    gens_failures: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
     /// A test's rewound command sequence (`REWIND_CMD_SEQ`): the next commands take sequences
@@ -388,6 +408,9 @@ impl State {
             cmd_dict_next: HashMap::new(),
             dict_sent: HashSet::new(),
             session_first: 1,
+            session_gen_seen: false,
+            gens_written: 0,
+            gens_failures: 0,
             pages_obs_seq: 0,
             last_applied_cmd: 0,
             rewind: None,
@@ -897,10 +920,11 @@ impl Engine {
         let world = store
             .get(KEY_WORLD)
             .map_err(|e| format!("cannot read the engine's world page: {e}"))?;
-        let (replay, outbox) = match meta {
+        let (mut replay, outbox) = match meta {
             Some(b) => decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?,
             None => (Replay::new(ObsSeq(0)), Outbox::new()),
         };
+        load_gens(&mut store, &mut replay)?;
         let world = match world {
             Some(b) => {
                 World::from_bytes(&b).map_err(|e| format!("the engine's world page: {e}"))?
@@ -986,6 +1010,8 @@ impl Engine {
         }
 
         let mut st = lock(&self.state);
+        st.gens_written = replay.closed_len();
+        st.gens_failures = st.paging.failures_seen;
         st.replay = replay;
         st.outbox = outbox;
         st.world = world;
@@ -1484,6 +1510,7 @@ impl Engine {
                     )),
                 }
                 st.session_first = world_next.max(st.pages_obs_seq + 1);
+                st.session_gen_seen = false;
                 Self::log_received(st, h, rec, 0, false);
             }
             k if obs::is_journaled(k) => self.journaled(st, h, rec),
@@ -1529,21 +1556,133 @@ impl Engine {
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
             self.save_now(st, false);
         }
-        let op = op_of(rec);
-        let mut verdict = st.replay.admit(ObsSeq(seq), op);
-        if let Verdict::Gap { expected, got } = verdict {
-            self.stats.gaps.fetch_add(1, Ordering::AcqRel);
-            log_warn(&format!(
-                "observations {} to {} never arrived (a journal trimmed past the pages); going on from {}",
-                expected.0,
-                got.0 - 1,
-                got.0
-            ));
-            st.replay.skip_to(got);
-            verdict = st.replay.admit(ObsSeq(seq), op);
+        if rec.kind == obs::JOURNAL_GEN {
+            self.journal_gen(st, h, rec, seq);
+            return;
         }
+        if seq >= st.session_first && !st.session_gen_seen {
+            // A bridge that names no generation: this session's records still must not extend
+            // the last one's, whose sequences a crash may hand out again (docs/boundary.md §3.2).
+            st.session_gen_seen = true;
+            let nonce = UNNAMED_GEN | st.session_first;
+            log_warn(&format!(
+                "this session's first record ({seq}) is not a JOURNAL_GEN: its records are judged as generation {nonce:#x}"
+            ));
+            st.replay.begin_gen(nonce, ObsSeq(seq - 1));
+        }
+        if rec.kind == obs::REASSERT {
+            self.reasserted(st, h, rec, seq);
+            return;
+        }
+        let op = op_of(rec);
+        let verdict = self.admitted(st, seq, |r| r.admit(ObsSeq(seq), op));
         let skipped = verdict == Verdict::AlreadyApplied;
         Self::log_received(st, h, rec, seq, skipped);
+        self.dispatch(st, rec, seq, verdict);
+    }
+
+    /// `admit` (a [`Replay`] admission of `seq`), going on past a gap: what the gap held is lost
+    /// (a journal trimmed past the pages).
+    fn admitted(
+        &self,
+        st: &mut State,
+        seq: u64,
+        admit: impl Fn(&mut Replay) -> Verdict,
+    ) -> Verdict {
+        let verdict = admit(&mut st.replay);
+        let Verdict::Gap { expected, got } = verdict else {
+            return verdict;
+        };
+        self.stats.gaps.fetch_add(1, Ordering::AcqRel);
+        log_warn(&format!(
+            "observations {} to {} never arrived (a journal trimmed past the pages); going on from {}",
+            expected.0,
+            got.0 - 1,
+            got.0
+        ));
+        st.replay.skip_to(ObsSeq(seq));
+        admit(&mut st.replay)
+    }
+
+    /// JOURNAL_GEN: a session's generation opens at its sequence (docs/boundary.md §3.2).
+    fn journal_gen(&self, st: &mut State, h: u64, rec: &Rec<'_>, seq: u64) {
+        if rec.size() < obs::journal_gen::SIZE {
+            self.set_protocol_error(format!("a JOURNAL_GEN is only {} bytes", rec.size()));
+            return;
+        }
+        if seq >= st.session_first {
+            st.session_gen_seen = true;
+        }
+        let nonce = wire::u64_at(rec.bytes, obs::journal_gen::GEN);
+        let verdict = self.admitted(st, seq, |r| r.admit_gen(ObsSeq(seq), nonce));
+        Self::log_received(st, h, rec, seq, verdict == Verdict::AlreadyApplied);
+        match verdict {
+            Verdict::AlreadyApplied => {
+                self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
+            }
+            Verdict::Gap { .. } => {
+                self.set_protocol_error(format!(
+                    "observation {seq} still a gap after skipping to it"
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    /// REASSERT: a copy of a record a chunk or entity carried, judged by the generation it was
+    /// first journaled in (docs/boundary.md §3.2). Applied as the record itself under the copy's sequence when it
+    /// is new; otherwise answered as a record whose op id was already heard.
+    fn reasserted(self: &Arc<Self>, st: &mut State, h: u64, rec: &Rec<'_>, seq: u64) {
+        let b = rec.bytes;
+        let Some(inner) = reasserted_record(b) else {
+            self.set_protocol_error(format!(
+                "a REASSERT of {} bytes holds no journaled record",
+                rec.size()
+            ));
+            return;
+        };
+        let verdict = self.admitted(st, seq, |r| r.admit(ObsSeq(seq), None));
+        let nonce = wire::u64_at(b, obs::reassert::GEN);
+        let of = ObsSeq(wire::u64_at(inner, obs::OBS_SEQ));
+        let mut copy = inner.to_vec();
+        wire::put_u64(&mut copy, obs::OBS_SEQ, seq);
+        let r = Rec {
+            kind: wire::u16_at(&copy, wire::R_KIND),
+            aux: wire::u32_at(&copy, wire::R_AUX),
+            bytes: &copy,
+        };
+        match verdict {
+            Verdict::Apply => {}
+            Verdict::AlreadyApplied => {
+                // The pages include this copy: it was judged when it first came.
+                Self::log_received(st, h, rec, seq, true);
+                self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
+                st.world.refused_journaled(&r);
+                return;
+            }
+            Verdict::DuplicateOp | Verdict::Gap { .. } => {
+                self.set_protocol_error(format!(
+                    "observation {seq} (a REASSERT) not admitted: {verdict:?}"
+                ));
+                return;
+            }
+        }
+        let new = st.replay.copy_is_new(nonce, of);
+        Self::log_received(st, h, rec, seq, !new);
+        if !new {
+            self.stats.copies_dropped.fetch_add(1, Ordering::AcqRel);
+            Self::answered_again(st, &r);
+            return;
+        }
+        self.stats.copies_applied.fetch_add(1, Ordering::AcqRel);
+        let op = op_of(&r);
+        let verdict = st.replay.admit_copy(nonce, of, ObsSeq(seq), op);
+        self.dispatch(st, &r, seq, verdict);
+    }
+
+    /// A journaled record admitted by sequence, to the module that claims it.
+    fn dispatch(&self, st: &mut State, rec: &Rec<'_>, seq: u64, verdict: Verdict) {
+        let b = rec.bytes;
         match verdict {
             Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
             Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),
@@ -1577,11 +1716,7 @@ impl Engine {
                 if rec.kind == obs::TRANSFER {
                     self.stats.op_duplicates.fetch_add(1, Ordering::AcqRel);
                 }
-                if industry::claims(rec) {
-                    industry::answered_again(st, rec);
-                }
-                dragons::answered_again(st, rec);
-                st.world.refused_journaled(rec);
+                Self::answered_again(st, rec);
             }
             Verdict::Gap { .. } => {
                 self.set_protocol_error(format!(
@@ -1589,6 +1724,15 @@ impl Engine {
                 ));
             }
         }
+    }
+
+    /// A record already in the engine's state: an answer for an op it heard is still an answer.
+    fn answered_again(st: &mut State, rec: &Rec<'_>) {
+        if industry::claims(rec) {
+            industry::answered_again(st, rec);
+        }
+        dragons::answered_again(st, rec);
+        st.world.refused_journaled(rec);
     }
 
     /// Snapshots the pages at this step boundary and writes them on the IO lane. `pending`: a
@@ -1630,6 +1774,7 @@ impl Engine {
         tickets.conflict = t;
         let failures = self.stats.save_failures.load(Ordering::Acquire);
         whole.extend(worldmodel::snapshot(st, failures));
+        whole.extend(gen_blocks(st));
         let (p1, t) = phase1::snapshot(st, &mut batch, test);
         tickets.world = t;
         st.paging.in_flight += 1;
@@ -1922,6 +2067,63 @@ fn lowest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// The record a REASSERT holds: a whole journaled record, neither a copy nor a generation.
+fn reasserted_record(b: &[u8]) -> Option<&[u8]> {
+    let inner = b.get(obs::reassert::INNER..)?;
+    if inner.len() < obs::BODY {
+        return None;
+    }
+    let kind = wire::u16_at(inner, wire::R_KIND);
+    let size = wire::u16_at(inner, wire::R_SIZE) as usize;
+    let fits = size >= obs::BODY && size <= inner.len() && size.is_multiple_of(wire::RECORD_ALIGN);
+    let journaled = obs::is_journaled(kind) && kind != obs::REASSERT && kind != obs::JOURNAL_GEN;
+    (fits && journaled).then(|| &inner[..size])
+}
+
+/// The blocks of closed generations a save writes: those that gained one since the pages' last,
+/// or every block after a paged save failed (it may have held one).
+fn gen_blocks(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
+    let closed = st.replay.closed_len();
+    let failed = st.paging.failures_seen != st.gens_failures;
+    if closed == st.gens_written && !failed {
+        return Vec::new();
+    }
+    let from = if failed {
+        0
+    } else {
+        st.gens_written / GEN_BLOCK
+    };
+    let out = (from..closed.div_ceil(GEN_BLOCK))
+        .map(|k| (gen_key(k), st.replay.closed_block(k)))
+        .collect();
+    st.gens_written = closed;
+    st.gens_failures = st.paging.failures_seen;
+    out
+}
+
+/// Reads the closed generations the meta page counts.
+fn load_gens(store: &mut PageStore, replay: &mut Replay) -> Result<(), String> {
+    let n = replay.closed_expected();
+    for k in 0..n.div_ceil(GEN_BLOCK) {
+        let b = store
+            .get(gen_key(k))
+            .map_err(|e| format!("cannot read the journal's generations, block {k}: {e}"))?
+            .ok_or_else(|| {
+                format!("the journal's generations: block {k} of {n} generations is missing")
+            })?;
+        replay
+            .load_closed_block(&b)
+            .map_err(|e| format!("the journal's generations, block {k}: {e}"))?;
+    }
+    if replay.closed_len() != n {
+        return Err(format!(
+            "the journal's generations: the meta page counts {n}, the blocks hold {}",
+            replay.closed_len()
+        ));
+    }
+    Ok(())
+}
+
 fn op_of(rec: &Rec<'_>) -> Option<OpId> {
     let b = rec.bytes;
     let raw = match rec.kind {
@@ -2133,6 +2335,15 @@ mod tests {
     fn meta_round_trips() {
         let mut replay = Replay::new(ObsSeq(4));
         replay.admit(ObsSeq(5), Some(OpId(wire::JAVA_OP_BIT | 3)));
+        // Generations: more closed ones than a block holds, and an open one with a copy.
+        for g in 0..GEN_BLOCK as u64 + 3 {
+            let at = replay.applied_through().0 + 1;
+            replay.admit_gen(ObsSeq(at), 100 + g);
+            replay.admit(ObsSeq(at + 1), None);
+        }
+        let at = replay.applied_through().0 + 1;
+        replay.admit(ObsSeq(at), None);
+        replay.admit_copy(7, ObsSeq(3), ObsSeq(at), None);
         let mut outbox: Outbox<TransferCmd> = Outbox::new();
         outbox.push_with_op(
             TransferCmd {
@@ -2143,8 +2354,47 @@ mod tests {
             },
             OpId(4242),
         );
-        let (r, o) = decode_meta(&encode_meta(&replay, &outbox)).unwrap();
+        let (mut r, o) = decode_meta(&encode_meta(&replay, &outbox)).unwrap();
+        assert_eq!(r.closed_expected(), GEN_BLOCK + 2);
+        for k in 0..r.closed_expected().div_ceil(GEN_BLOCK) {
+            r.load_closed_block(&replay.closed_block(k)).unwrap();
+        }
         assert_eq!(r, replay);
         assert_eq!(o, outbox);
+        assert!(!r.copy_is_new(7, ObsSeq(3)), "the open generation's copies");
+        assert!(
+            !r.copy_is_new(100, ObsSeq(6)),
+            "the first closed generation"
+        );
+        assert!(!r.copy_is_new(100, ObsSeq(7)), "its last");
+        assert!(r.copy_is_new(100, ObsSeq(8)), "past its last");
+    }
+
+    #[test]
+    fn a_save_writes_the_generation_blocks_that_changed_and_all_after_a_failure() {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut st = State::new(rx, None);
+        assert!(gen_blocks(&mut st).is_empty(), "none closed");
+        // The first opens a generation and each later one closes the one before: a block and one.
+        for g in 0..GEN_BLOCK as u64 + 2 {
+            let at = st.replay.applied_through().0 + 1;
+            st.replay.admit_gen(ObsSeq(at), 1 + g);
+        }
+        let keys = |v: Vec<(PageKey, Vec<u8>)>| v.into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+        assert_eq!(keys(gen_blocks(&mut st)), vec![gen_key(0), gen_key(1)]);
+        assert!(gen_blocks(&mut st).is_empty(), "nothing new");
+        let at = st.replay.applied_through().0 + 1;
+        st.replay.admit_gen(ObsSeq(at), 9999);
+        assert_eq!(
+            keys(gen_blocks(&mut st)),
+            vec![gen_key(1)],
+            "only the block that grew"
+        );
+        st.paging.failures_seen += 1;
+        assert_eq!(
+            keys(gen_blocks(&mut st)),
+            vec![gen_key(0), gen_key(1)],
+            "a failed save may have held any of them"
+        );
     }
 }

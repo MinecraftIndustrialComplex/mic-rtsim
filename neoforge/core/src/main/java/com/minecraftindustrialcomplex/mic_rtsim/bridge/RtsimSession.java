@@ -907,7 +907,7 @@ public final class RtsimSession {
     /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, records));
+        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), records));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
@@ -923,9 +923,9 @@ public final class RtsimSession {
     }
 
     /**
-     * An entity that carries pending records came back from disk: journal them again (the engine has
-     * maybe never seen them, if the journal on disk was older than the entity's chunk) and drop them
-     * once acknowledged in this session.
+     * An entity that carries pending records came back from disk: journal a copy of each (REASSERT,
+     * docs/boundary.md §3.2; the engine has maybe never seen them, if the journal on disk was older than
+     * the entity's chunk, and applies a copy only then) and drop them once the copies are acknowledged.
      */
     public void reassert(Entity holder) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
@@ -937,9 +937,9 @@ public final class RtsimSession {
             return;
         }
         long last = 0;
-        for (byte[] record : p.records())
-            last = boundary.recommit(record);
-        reasserted += p.records().size();
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last = boundary.reassert(r.gen(), r.bytes());
+        reasserted += p.entries().size();
         dropPendingWhenAcked(holder, last);
     }
 
@@ -959,11 +959,11 @@ public final class RtsimSession {
             return;
         }
         java.util.Map<Long, Long> last = new java.util.LinkedHashMap<>();
-        for (byte[] record : p.records())
-            last.put(pendingOp(record), boundary.recommit(record));
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last.put(pendingOp(r.bytes()), boundary.reassert(r.gen(), r.bytes()));
         for (java.util.Map.Entry<Long, Long> e : last.entrySet())
             dropFromChunkWhenAcked(chunk, e.getKey(), e.getValue());
-        reasserted += p.records().size();
+        reasserted += p.entries().size();
     }
 
     /**
@@ -996,7 +996,7 @@ public final class RtsimSession {
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
@@ -1013,14 +1013,11 @@ public final class RtsimSession {
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p == null)
                 return;
-            java.util.List<byte[]> keep = new java.util.ArrayList<>();
-            for (byte[] r : p.records())
-                if (pendingOp(r) != opId)
-                    keep.add(r);
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep = p.filter(r -> pendingOp(r) != opId);
             if (keep.isEmpty())
                 c.removeData(RtsimAttachments.PENDING);
             else
-                c.setData(RtsimAttachments.PENDING, p.with(keep));
+                c.setData(RtsimAttachments.PENDING, keep);
             c.setUnsaved(true);
         });
     }
