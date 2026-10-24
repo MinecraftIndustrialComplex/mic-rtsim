@@ -941,10 +941,17 @@ impl FakeConflict {
             .camps
             .get(&r.faction)
             .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
+        // The heir's pair is one unit (MZB-408): if either line cannot be done, both are stale and
+        // nothing changes. The warrior to mask must be at home, and the heir's body not stand yet.
+        let pair = r.lines.iter().any(|l| l.action == boundary::ACTION_MASK);
+        let pair_ok = !pair || (live && self.pair_possible(r.faction, &r.lines));
         let mut lines = Vec::new();
         for (i, l) in r.lines.iter().enumerate() {
             let mut taken = None;
-            let outcome = if !live {
+            let outcome = if !live
+                || (!pair_ok
+                    && matches!(l.action, boundary::ACTION_MASK | boundary::ACTION_SEAT_HEIR))
+            {
                 boundary::LINE_STALE
             } else if l.action == boundary::ACTION_MASK {
                 let (outcome, slot, generation) = self.mask(r.faction);
@@ -1051,6 +1058,25 @@ impl FakeConflict {
                 self.push(at, Obs::CampDeath(d));
             }
         }
+    }
+
+    /// Whether the heir's pair in `lines` can be done whole: a warrior to mask, and no body of the
+    /// seat's slot and generation standing already.
+    fn pair_possible(&mut self, faction: u64, lines: &[boundary::ReconcileLine]) -> bool {
+        let camp = self.camp_world(faction);
+        let warrior = camp
+            .bodies
+            .iter()
+            .any(|b| b.generation != 0 && !b.chief && !b.elsewhere && !b.near);
+        let standing = lines
+            .iter()
+            .filter(|l| l.action == boundary::ACTION_SEAT_HEIR)
+            .any(|l| {
+                camp.bodies
+                    .iter()
+                    .any(|b| l.generation != 0 && b.slot == l.slot && b.generation == l.generation)
+            });
+        warrior && !standing
     }
 
     /// MASK: the plugin takes the warrior at home farthest from every player (here, the last one

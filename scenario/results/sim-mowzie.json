@@ -44,7 +44,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash d9b1396d01882873"
+          "detail": "state hash f8df5b4dddbd5e41"
         }
       ],
       "rungs": [
@@ -132,7 +132,10 @@
         "camp_deaths": 0,
         "camp_written_off": 0,
         "arrivals": 0,
-        "renewal_losses": 0
+        "renewal_losses": 0,
+        "tribute_stacks": 0,
+        "hunts_owed": 0,
+        "hunts_killed": 0
       },
       "log": [
         {
@@ -453,8 +456,8 @@
     },
     {
       "run": 5,
-      "built": false,
-      "slice": "the rest M9",
+      "built": true,
+      "slice": "",
       "checks": [
         {
           "name": "Notice, Envoy, Scouts, Raid, Invasion, and never Siege",
@@ -479,7 +482,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash f25211654e57badc"
+          "detail": "state hash 8e91277bd91c819c"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -490,6 +493,31 @@
           "name": "a demand at 9 nuggets a coin, refused at the envoy, climbs to Scouts",
           "ok": true,
           "detail": "asked 248 gold_nugget (ceil of base x 9 is 248); then Some((Scouts, true)), the plugin told it was refused: true"
+        },
+        {
+          "name": "plunder takes leather and wool only, up to the band's reach whatever it carries, and eats it where it stands",
+          "ok": true,
+          "detail": "8 raids of 8 worlds ate 240 items; nothing else taken, none landed"
+        },
+        {
+          "name": "an Invasion draws the Umvuthi and fights at 12.6; a raid leaves it on its throne at 3.8",
+          "ok": true,
+          "detail": "fights (count, strength) [(4, 3.8000000000000003), (8, 12.600000000000001)]; the chief stayed for the raid: true, left with the Invasion: true, home in its generation: true; books hold: true"
+        },
+        {
+          "name": "the grove in and out: bands leave and come home, the pool refills to its cap, no census books a living survivor dead",
+          "ok": true,
+          "detail": "6 rounds of Invasion and Raid with the camp out and in; 0 deaths booked, 0 written off, 0 ghosts, 6 rounds with a band away at the census; "
+        },
+        {
+          "name": "hunts are never over the culture's cap, and an answer spends them whatever it killed",
+          "ok": true,
+          "detail": "owed after each of 8 raids [2, 4, 6, 8, 8, 8, 8, 8] (cap 8); 8 ops over 8 commands; the plugin killed 3 and the hunt is spent: true"
+        },
+        {
+          "name": "gold gifts are worth nuggets over 9 a coin, a trade a tenth of that",
+          "ok": true,
+          "detail": "relief of 81 nuggets 4.9860, of 9 emeralds 4.9860, of a trade of 810 nuggets 4.9860"
         }
       ],
       "rungs": [
@@ -573,7 +601,10 @@
         "camp_deaths": 0,
         "camp_written_off": 0,
         "arrivals": 0,
-        "renewal_losses": 0
+        "renewal_losses": 0,
+        "tribute_stacks": 0,
+        "hunts_owed": 0,
+        "hunts_killed": 0
       },
       "log": [
         {
@@ -728,7 +759,7 @@
           "day": 21.084541666666667,
           "faction": "umvuthana camp 3232825345",
           "kind": "plunder",
-          "what": "finds nothing worth taking at node 4: 1 items spare within reach"
+          "what": "finds nothing worth taking at node 4: 0 items spare within reach"
         },
         {
           "tick": 529078,
@@ -741,8 +772,8 @@
     },
     {
       "run": 6,
-      "built": false,
-      "slice": "the grove M9",
+      "built": true,
+      "slice": "",
       "checks": [
         {
           "name": "killed by a mob the next wait is 6.00 days, by a player the first time 12.00",
@@ -782,7 +813,22 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state e0b1ba87de518de9 against e0b1ba87de518de9, then [1, 0, 0, 0, 0]"
+          "detail": "state 689d917e47c7ca8d against 689d917e47c7ca8d, then [1, 0, 0, 0, 0]"
+        },
+        {
+          "name": "an emptied grove refills to its cap of 9 at 2 a day, its chief untouched",
+          "ok": true,
+          "detail": "0 left, 2 after one day, full after Some(4.5) days; the Umvuthi stands in its own slot and body: true"
+        },
+        {
+          "name": "a grove found without its Umvuthi seats its heir at 192.00 days, none before",
+          "ok": true,
+          "detail": "booked at Some(192.0) days; 0 masks by day 191; seated Some(1264732912) with 1 mask; 8 warriors and one Umvuthi stand"
+        },
+        {
+          "name": "a grove whose census finds an untagged Umvuthi adopts it at once, its wait over",
+          "ok": true,
+          "detail": "chief Some((Body, 3228400350)) at tick 11, 9 warriors"
         }
       ],
       "rungs": [],
@@ -852,17 +898,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 94d75cc395ee0897 against 94d75cc395ee0897, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state d8db56867c201875 against d8db56867c201875, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state d99953d42bccc971 against d99953d42bccc971, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state c47557deaaa7261d against c47557deaaa7261d, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state dd3b0008289825eb against dd3b0008289825eb, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state 425d89e91fc3d480 against 425d89e91fc3d480, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
@@ -896,7 +942,7 @@
     {
       "run": 10,
       "built": false,
-      "slice": "the Umvuthi's marches M10, held lines M5 and M9, heirs M9 and M11",
+      "slice": "the Umvuthi's marches M10, held lines M5 and M9, the chief's casualties on a march M11",
       "checks": [
         {
           "name": "a first census adopts the jar's bodies and spawns none",
@@ -992,6 +1038,11 @@
           "name": "chaos holds I1 to I5 after every event (I6 is by construction), every member lost unseen is written off and no other, none at all where holders journal again, no draw passes its bound",
           "ok": true,
           "detail": "64 camps of 220 events each; 873 camp in, 380 camp out, 1148 kill slot, 851 lose the next, 422 raid true, 881 replay answers, 919 restart, 815 save and load, 907 stray; 1215 censuses, 2274 lines, 1435 answers, 662 deaths, 4 written off, each a ghost"
+        },
+        {
+          "name": "grove chaos with heirs: no two live chief bodies, the chief in no pool count, every MASK done with its SEAT_HEIR done, after every event",
+          "ok": true,
+          "detail": "32 groves of 220 events (7040 in all); 50 heirs seated, 16 of 417 Invasions took the Umvuthi"
         }
       ],
       "rungs": [],
@@ -1009,9 +1060,20 @@
     },
     {
       "run": 12,
-      "built": false,
-      "slice": "M9",
-      "checks": [],
+      "built": true,
+      "slice": "",
+      "checks": [
+        {
+          "name": "killed as fast as it comes back for 60 game years at base 6, the Umvuthi returns about 1.8 times a year",
+          "ok": true,
+          "detail": "106 seats, 1.822 a game year against the closed form's 1.810 (a wait of 53.03 days) and the doc's 1.8; every wait the kernel's on its day: true; the last waits [53.05, 53.06, 53.06, 53.07, 53.07, 53.07, 53.07, 53.07, 53.07, 53.07] days"
+        },
+        {
+          "name": "killed as fast as it comes back for 60 game years at base 24, the Umvuthi returns about 1.0 times a year",
+          "ok": true,
+          "detail": "59 seats, 1.003 a game year against the closed form's 1.000 (a wait of 96.00 days) and the doc's 1; every wait the kernel's on its day: true; the last waits [96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0] days"
+        }
+      ],
       "rungs": [],
       "stats": null,
       "log": []

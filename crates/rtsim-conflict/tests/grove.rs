@@ -207,6 +207,55 @@ fn a_lost_answer_to_the_heirs_pair_is_mended_by_the_census() {
     ok(&mut r);
 }
 
+/// MZB-406, MZB-409: a player kills the heir after the world seated it and before the books heard
+/// (the pair's answer is lost; a holder keeps its record for the next camp-in). The death is
+/// booked as a chief's, so the pressure steps and the next heir is due after the longer wait; the
+/// record that lands late seats no one, and the books never hold a chief whose body is gone.
+#[test]
+fn an_heir_killed_before_its_seat_is_answered_is_booked_dead_and_its_late_record_seats_no_one() {
+    let mut r = grove(8, 9);
+    r.plugin.holders_again = true;
+    come_in(&mut r);
+    let generation = r.c.camp(r.f).unwrap().heir_generation(r.key).unwrap();
+    r.run(Tick(heir_due(&r).0 - 10));
+    r.plugin.lose_answers = 1;
+    r.run(heir_due(&r) + 100);
+    assert_eq!(chief_bodies(&r).len(), 1, "the world has its chief");
+    assert_eq!(chief(&r), None, "the books do not know yet");
+    let body = chief_bodies(&r)[0];
+    let at = r.c.now() + 1;
+    assert!(
+        r.plugin
+            .camp_kill(r.key, body.uuid, boundary::BY_PLAYER, at)
+    );
+    r.run(at + 5);
+    assert_eq!(chief(&r), None, "no chief, dead before it was heard");
+    let wait = (heir_due(&r).0 - at.0) as f64 / TICKS_PER_DAY as f64;
+    assert!(
+        (26.0..31.0).contains(&wait),
+        "one player's loss doubles the wait of 6 x 2^1.25 days: {wait}"
+    );
+    assert_ne!(
+        r.c.camp(r.f).unwrap().heir_generation(r.key),
+        Some(generation),
+        "the next heir has another generation"
+    );
+    // The record the holder kept lands at the next camp-in.
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    r.camp_in();
+    r.run(r.c.now() + 100);
+    assert_eq!(chief(&r), None, "the late record seats no one");
+    assert!(chief_bodies(&r).is_empty());
+    r.run(heir_due(&r) + 100);
+    let (state, second) = chief(&r).expect("the next heir sits");
+    assert_eq!(state, SlotState::Body);
+    assert_ne!(second, generation);
+    r.settle();
+    assert_eq!(r.c.stats.camp_written_off, 0, "nothing was written off");
+    ok(&mut r);
+}
+
 /// MZB-406, MZB-407: a player's kill of the chief steps the camp's pressure by one, so its heir
 /// is due after twice the wait of a death no player caused; the players the chief had traded with
 /// are forgotten; the heir that comes has another generation. (The pressure is what is left of the
