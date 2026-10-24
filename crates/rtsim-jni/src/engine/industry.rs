@@ -684,7 +684,22 @@ fn districts_fit(o: &Obs) -> bool {
         Obs::PowerLink { sink, source } => {
             return sink.0 < DISTRICT_ID_LIMIT && source.is_none_or(|s| s.0 < DISTRICT_ID_LIMIT);
         }
-        Obs::Conditions(_) | Obs::CarriageResult(_) | Obs::TrainUnwatched(_) => {
+        // A package store's page key is its id, which must fit as a district's does.
+        Obs::ChainPackage(p) => {
+            return p.store.0 < DISTRICT_ID_LIMIT
+                && p.district.is_none_or(|d| d.0 < DISTRICT_ID_LIMIT);
+        }
+        Obs::PackageStore(s) => {
+            return s.store.0 < DISTRICT_ID_LIMIT
+                && s.into.is_none_or(|i| i.0 < DISTRICT_ID_LIMIT)
+                && s.frogports
+                    .iter()
+                    .all(|f| f.district.is_none_or(|d| d.0 < DISTRICT_ID_LIMIT));
+        }
+        Obs::StoreCensus(c) => return c.store.0 < DISTRICT_ID_LIMIT,
+        Obs::Conditions(_)
+        | Obs::CarriageResult(_)
+        | Obs::TrainUnwatched(_) => {
             return true;
         }
     };

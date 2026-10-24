@@ -1451,7 +1451,9 @@ impl Part {
                     .filter(|&(k, &a)| a > 0 && !self.st.empty.contains_key(&(inv, k.good())))
                     .map(|(k, _)| k.good())
                     .collect();
-                rg.room[v] = !self.st.full.contains_key(&inv);
+                rg.room[v] = !self.st.full.contains_key(&inv)
+                    && graph.node(v as u32).flags & crate::glass::records::node_flags::CHAIN_PORT
+                        == 0;
             } else if !self.st.dry.is_empty() {
                 rg.held[v].retain(|g| !self.st.dry.contains(g));
             }
