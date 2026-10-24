@@ -96,6 +96,9 @@ public final class Counting {
 
     private record Pair(long mover, long store) {}
 
+    /** Pairs a GameTest forces ({@link #holdForTest}): every set keeps them. */
+    private record Forced(ResourceKey<Level> dim, java.util.Set<Pair> pairs) {}
+
     /** A district's keys. */
     private static final class Held {
         final ResourceKey<Level> dim;
@@ -112,6 +115,7 @@ public final class Counting {
 
     private final Industry ind;
     private final Long2ObjectOpenHashMap<Held> held = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<Forced> forced = new Long2ObjectOpenHashMap<>();
     /** Per dimension, the keys by their mover's position: what a count point looks up. */
     private final Reference2ObjectArrayMap<ResourceKey<Level>, Long2ObjectOpenHashMap<Key[]>> byMover = new Reference2ObjectArrayMap<>();
     private Industry.GoodsCounter scratch;
@@ -195,6 +199,12 @@ public final class Counting {
             Key k = old == null ? null : old.keys.get(p);
             next.put(p, k != null ? k : new Key(district, p.mover, p.store, now));
         }
+        Forced f = forced.get(district);
+        if (f != null && f.dim.equals(dim))
+            for (Pair p : f.pairs) {
+                Key k = old == null ? null : old.keys.get(p);
+                next.putIfAbsent(p, k != null ? k : new Key(district, p.mover, p.store, now));
+            }
         if (old != null)
             for (Map.Entry<Pair, Key> e : old.keys.entrySet())
                 if (!next.containsKey(e.getKey()))
@@ -207,8 +217,9 @@ public final class Counting {
         refresh();
     }
 
-    /** Drops every counter of {@code district} (an empty set, its removal). */
+    /** Drops every counter of {@code district}: its removal (the pairs a GameTest forced go too). */
     void drop(long district) {
+        forced.remove(district);
         Held h = held.remove(district);
         if (h == null)
             return;
@@ -217,9 +228,30 @@ public final class Counting {
         refresh();
     }
 
+    /** An empty set: no pair is named, so every counter of {@code district} goes (but the pairs a GameTest forced). */
+    void empty(long district) {
+        Held h = held.get(district);
+        if (h == null)
+            return;
+        Forced f = forced.get(district);
+        Map<Pair, Key> keep = new LinkedHashMap<>();
+        for (Map.Entry<Pair, Key> e : h.keys.entrySet()) {
+            if (f != null && f.pairs.contains(e.getKey()))
+                keep.put(e.getKey(), e.getValue());
+            else
+                unindex(h.dim, e.getValue());
+        }
+        if (keep.isEmpty())
+            held.remove(district);
+        else
+            held.put(district, new Held(h.dim, keep));
+        refresh();
+    }
+
     /** Drops everything: the session ends, or the module goes off. */
     public void clear() {
         held.clear();
+        forced.clear();
         byMover.clear();
         refresh();
     }
@@ -393,16 +425,23 @@ public final class Counting {
     }
 
     /**
-     * Adds one pair to {@code district}'s keys as a set would, with its counters starting at {@code now}: for a
-     * GameTest of a count point whose block the engine names no pair for (see BasinIntoASharedVaultFactory). The
-     * engine skips a pair it did not name when it reads a sample, and its next set replaces the district's keys.
+     * Forces one pair onto {@code district}'s keys, its counters starting at {@code now}: for a GameTest of a
+     * count point whose block the engine names no pair for (see BasinIntoASharedVaultFactory). Every set the
+     * engine sends afterwards keeps the pair, so the test can count over a stretch; the engine skips a pair it
+     * did not name when it reads a sample, and the district's removal drops it.
      */
     public void holdForTest(long district, ResourceKey<Level> dim, BlockPos mover, BlockPos store, long now) {
+        Pair p = new Pair(mover.asLong(), store.asLong());
+        Forced f = forced.get(district);
+        if (f == null || !f.dim.equals(dim)) {
+            f = new Forced(dim, new java.util.LinkedHashSet<>());
+            forced.put(district, f);
+        }
+        f.pairs.add(p);
         Held old = held.get(district);
         Map<Pair, Key> next = new LinkedHashMap<>();
         if (old != null && old.dim.equals(dim))
             next.putAll(old.keys);
-        Pair p = new Pair(mover.asLong(), store.asLong());
         if (next.containsKey(p))
             return;
         Key k = new Key(district, p.mover, p.store, now);

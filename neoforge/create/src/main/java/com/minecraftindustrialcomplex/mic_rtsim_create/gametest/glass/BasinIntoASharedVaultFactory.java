@@ -6,36 +6,40 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestHelper;
 
-import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.A_BY_BASIN;
+import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.A_BY;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.FEED;
+import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.MIXER;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.PRESS;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.HopperAtASharedVaultFactory.VAULT;
 
 /**
- * SEC-1 fixture (SECTIONS.md §9.2, slice S3): a mixer's basin putting its output straight into a vault that
- * another line draws from. {@link BrassMixingFactory}'s line moved one lower, so its basin's spout (facing east)
- * pours into the vault's top layer with no chute between ({@code BasinBlockEntity.tryClearingSpoutputOverflow}
- * inserts into the inventory at {@code below().relative(FACING)}); the second line is
- * {@link HopperAtASharedVaultFactory}'s press line under the vault. The basin's output is the move Java counts
- * at the basin ({@code BasinBlockEntityMixin}, PATCHES.md).
+ * SEC-1 fixture (SECTIONS.md §9.2, slice S3): a mixer's basin putting its output into a vault another line draws
+ * from. The line is {@link BrassMixingFactory}'s, its basin's spout (facing east) pouring into the chute at the
+ * diagonal below, which drops onto the vault; the second line is {@link HopperAtASharedVaultFactory}'s press
+ * line under the vault (the same build as {@link VaultBetweenMixersFactory}, whose checks are the table row's:
+ * two units, each passes, counted once).
  *
- * <p><b>The engine does not count a mixer's basin (SC82).</b> A mixer or a press over a basin compiles to a MIXER
- * or PRESS node at the basin's position ({@code CreateCompile.basinNode}); {@code COUNTED_MODELS} names only
- * BASIN, the node of a basin with no machine over it, so the vault has a goods edge from an uncounted model, is
- * not countable, and the two lines are one judging group at it (as with a hopper). The table's row (two sections,
- * each passes) is then a gap check, and the Java count point at the basin is tested on its own: the fixture holds
- * the (basin, vault) and (smart chute, vault) pairs for the far district itself
- * ({@code Counting.holdForTest}, which the engine skips when it reads a sample), and compares over a stretch what
- * the vault's stock changed by with what the two counted. The Java side counts the basin whichever model the
- * engine gives the block, so adding MIXER and PRESS to {@code COUNTED_MODELS} closes the gap with no Java change,
- * and then the engine's own pairs are the ones checked.
+ * <p><b>A basin cannot pour into a vault itself (SC82).</b> {@code BasinBlock.canOutputTo} turns a basin's
+ * spout sideways only for a belt, a funnel or a block with a {@code DirectBeltInputBehaviour} at the block
+ * diagonally below (a chute, another basin, a depot's behaviour, a drill or saw, ...): no store has one, so a
+ * vault or chest beside and below a basin leaves its spout facing down (it then puts goods into its own output
+ * inventory), and no vault can be the target of {@code BasinBlockEntity.tryClearingSpoutputOverflow}. The
+ * basin's hop is to a chute, which the engine does not count (a chute is a mover, not a store), so the move
+ * into the vault is counted at the chute ({@code ChuteBlockEntityMixin}); the table's "the basin's outputs are
+ * counted" has no such store in Create 6.0.10.
+ *
+ * <p>What this fixture adds is the Java count point at the basin ({@code BasinBlockEntityMixin}, PATCHES.md),
+ * tested on the real spout hop: it forces the pair (basin, spout chute) onto the far district
+ * ({@code Counting.holdForTest}, which every later set keeps and which the engine skips when it reads a
+ * sample), and checks over a stretch that what the basin counted is the recipe's output and is what the chute
+ * then counted into the vault, within the chute's contents in flight.
  */
 public final class BasinIntoASharedVaultFactory implements CorpusFactory {
-    /** The basin of line A: BrassMixing's (8,3,8) moved by {@link HopperAtASharedVaultFactory#A_BY_BASIN}. */
-    static final BlockPos BASIN = new BlockPos(8, 3, 8).offset(A_BY_BASIN);
-    static final BlockPos MIXER = BASIN.above(2);
+    /** The basin of line A (BrassMixing's (8,3,8)) and the chute its spout pours into (its (9,2,8)). */
+    static final BlockPos BASIN = new BlockPos(8, 3, 8).offset(A_BY);
+    static final BlockPos SPOUT_CHUTE = new BlockPos(9, 2, 8).offset(A_BY);
 
-    private final HopperAtASharedVaultFactory lines = new HopperAtASharedVaultFactory(false, "basin_vault", true);
+    private final HopperAtASharedVaultFactory lines = new HopperAtASharedVaultFactory(false, "basin_vault");
 
     @Override
     public String name() {
@@ -59,11 +63,12 @@ public final class BasinIntoASharedVaultFactory implements CorpusFactory {
         static final int COUNT_TICKS = 600, LEARN_DEADLINE = 9000;
         /** One craft per 32 ticks makes 2 brass ({@link BrassMixingFactory}): 37.5 in {@link #COUNT_TICKS}; bounds for the start. */
         static final int MIN_IN = 30, MAX_IN = 45;
+        /** What the spout chute holds in flight between the basin's count and its own: a stack of 2 and one dropping. */
+        static final int IN_FLIGHT = 4;
 
         private Phase phase = Phase.LEARN;
         private long phaseAt, nextRead;
-        private long stock0, in0, out0;
-        private boolean engineCounts;
+        private long basin0, chute0;
 
         @Override
         public int extraTicks() {
@@ -75,7 +80,6 @@ public final class BasinIntoASharedVaultFactory implements CorpusFactory {
             phase = Phase.LEARN;
             phaseAt = run.now();
             nextRead = 0;
-            engineCounts = false;
         }
 
         @Override
@@ -105,6 +109,11 @@ public final class BasinIntoASharedVaultFactory implements CorpusFactory {
                 count(run, now);
         }
 
+        private static long chuteIn(GlassReplayGameTests.Run run, BlockPos chute, BlockPos store) {
+            long[] k = IndustryKit.ind().counting().counters(run.fd, chute, store);
+            return k == null ? -1 : k[1];
+        }
+
         private void learn(GlassReplayGameTests.Run run, GlassReport fr, long now) {
             if (now - phaseAt > LEARN_DEADLINE) {
                 SectionsFx.check(run, "the lines' units learn before the scenario's deadline", false, SectionsFx.describe(fr));
@@ -117,54 +126,46 @@ public final class BasinIntoASharedVaultFactory implements CorpusFactory {
                 if (!SectionsFx.learned(u))
                     return;
             BlockPos mixer = run.far.absolutePos(MIXER), press = run.far.absolutePos(PRESS), basin = run.far.absolutePos(BASIN);
+            BlockPos chute = run.far.absolutePos(SPOUT_CHUTE), vault = run.far.absolutePos(VAULT);
+            BlockPos store = VaultBetweenMixersFactory.storeOf(run, vault);
             GlassReport.Unit first = SectionsFx.unitAt(fr, mixer), second = SectionsFx.unitAt(fr, press);
             String d = SectionsFx.describe(fr);
             SectionsFx.info(run, "far units", d);
-            SectionsFx.check(run, "the mixer's line and the press line each learn (a window passed)",
-                    SectionsFx.learned(first) && SectionsFx.learned(second), d);
-            engineCounts = VaultBetweenMixersFactory.hasMover(run.fd, basin);
-            // TODO(engine): COUNTED_MODELS (glass/sections.rs) names BASIN only; a basin under a mixer or press is a MIXER or PRESS node
-            // at the basin's position, so a vault it fills is not countable and the lines are one group (SC82). Adding MIXER and PRESS
-            // there makes this turn ok, with no Java change (the count point is at the basin block, whatever its model).
-            SectionsFx.gap(run, "the basin's output is counted and the two lines are two judging units, each passing",
-                    engineCounts && first != null && second != null && first != second,
-                    "S3: COUNTED_MODELS lacks MIXER and PRESS, the models of a basin with a machine over it (SC82)", d + "; " + VaultBetweenMixersFactory.pairsText(run.fd));
-            // The Java count point, with the pairs held here when the engine named none: the basin's output and the smart chute's draw.
-            Counting c = IndustryKit.ind().counting();
-            BlockPos vault = run.far.absolutePos(VAULT), store = VaultBetweenMixersFactory.storeOf(run, vault);
+            SectionsFx.check(run, "the mixer's line and the press line are two judging units, each passing (the vault is counted at the chute above it and the smart chute under it)",
+                    first != null && second != null && first != second && SectionsFx.learned(first) && SectionsFx.learned(second)
+                            && VaultBetweenMixersFactory.hasMover(run.fd, chute) && VaultBetweenMixersFactory.hasMover(run.fd, run.far.absolutePos(FEED)),
+                    d + "; " + VaultBetweenMixersFactory.pairsText(run.fd));
             SectionsFx.check(run, "the vault has a canonical inventory to count at", store != null, store);
             if (store == null) {
                 go(Phase.DONE, now);
                 return;
             }
-            if (!engineCounts) {
-                c.holdForTest(run.fd, run.level().dimension(), basin, store, now);
-                c.holdForTest(run.fd, run.level().dimension(), run.far.absolutePos(FEED), store, now);
-                SectionsFx.info(run, "the engine named no pair at the basin", "held for the test: " + VaultBetweenMixersFactory.pairsText(run.fd));
-            }
-            stock0 = VaultBetweenMixersFactory.total(VaultBetweenMixersFactory.handler(run, vault));
-            long[] m = VaultBetweenMixersFactory.moved(run.fd);
-            in0 = m[0];
-            out0 = m[1];
+            // The engine names no pair at the basin (its hop is to a chute): force the one the count point reports.
+            SectionsFx.info(run, "the engine's pair at the basin", String.valueOf(VaultBetweenMixersFactory.hasMover(run.fd, basin)));
+            Counting c = IndustryKit.ind().counting();
+            c.holdForTest(run.fd, run.level().dimension(), basin, chute, now);
+            basin0 = 0;
+            chute0 = chuteIn(run, chute, store);
+            SectionsFx.info(run, "forced for the test", "(basin, spout chute) " + SectionsFx.pos(basin) + " to " + SectionsFx.pos(chute) + "; "
+                    + VaultBetweenMixersFactory.pairsText(run.fd));
             go(Phase.COUNT, now);
         }
 
         private void count(GlassReplayGameTests.Run run, long now) {
             if (now - phaseAt < COUNT_TICKS)
                 return;
-            BlockPos basin = run.far.absolutePos(BASIN), vault = run.far.absolutePos(VAULT);
-            Counting c = IndustryKit.ind().counting();
-            long stock = VaultBetweenMixersFactory.total(VaultBetweenMixersFactory.handler(run, vault));
-            long[] m = VaultBetweenMixersFactory.moved(run.fd);
-            long ds = stock - stock0, in = m[0] - in0, out = m[1] - out0;
+            BlockPos basin = run.far.absolutePos(BASIN), chute = run.far.absolutePos(SPOUT_CHUTE), vault = run.far.absolutePos(VAULT);
             BlockPos store = VaultBetweenMixersFactory.storeOf(run, vault);
-            long[] k = c.counters(run.fd, basin, store);
-            SectionsFx.info(run, "counts over " + (now - phaseAt) + " ticks", "the vault's stock " + stock0 + " to " + stock + ", counted in " + in
-                    + ", out " + out + "; " + VaultBetweenMixersFactory.pairsText(run.fd));
+            Counting c = IndustryKit.ind().counting();
+            long[] k = c.counters(run.fd, basin, chute);
+            long in = k == null ? -1 : k[1] - basin0, onward = chuteIn(run, chute, store) - chute0;
+            SectionsFx.info(run, "counts over " + (now - phaseAt) + " ticks", "the basin counted in " + in + ", the chute counted into the vault " + onward
+                    + "; " + VaultBetweenMixersFactory.pairsText(run.fd));
+            SectionsFx.check(run, "the forced pair survives the engine's sets", k != null, VaultBetweenMixersFactory.pairsText(run.fd));
             SectionsFx.check(run, "the basin's pair counted its spout's output (one craft per 32 ticks makes 2 brass)",
                     k != null && in >= MIN_IN && in <= MAX_IN, "in " + in + " (expected " + MIN_IN + " to " + MAX_IN + ")");
-            SectionsFx.check(run, "every move at the vault is counted once: the stock changed by what was counted in less what was counted out",
-                    ds == in - out, "stock " + (ds >= 0 ? "+" : "") + ds + ", counted " + (in - out) + " (in " + in + ", out " + out + ")");
+            SectionsFx.check(run, "...and the chute counted the same goods on into the vault, less what it holds in flight (each real move once)",
+                    k != null && onward >= 0 && Math.abs(in - onward) <= IN_FLIGHT, "basin in " + in + ", chute into the vault " + onward);
             go(Phase.DONE, now);
         }
 
