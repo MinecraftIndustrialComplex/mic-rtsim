@@ -505,8 +505,10 @@ under its own heading.
   gone). A record only a holder has is no cover in the emulation: it is journaled again at a session
   start, and books then only while its epoch is the latest a census named (MZB-169); a census since
   reads the world and writes off by its own table. The plan also has a holder journal its record
-  when its chunk loads, which a camp coming in does; a record of an older epoch books nothing then
-  either, so the table is what counts. An answer lost with no restart after it, which the chaos run
+  when its chunk loads, which a camp coming in does: a footprint holder's record that arrives at
+  camp-in, before the new census, still carries the latest epoch and books (Java sends the census
+  only after every footprint holder has journaled, MZB-174); one that arrives after a census of a
+  later epoch is of an older epoch and books nothing, so for it the table is what counts. An answer lost with no restart after it, which the chaos run
   does, is the emulation being harder than the plugin: a real answer is lost at a crash, and the
   restart after it journals the holders again. The chaos run ends with `settle` and asserts that the
   engine's write-offs are exactly the ghosts the run made and that none is left (`CampRun::track`
@@ -530,9 +532,8 @@ under its own heading.
   `boundary.rs` (encode, decode, fixture, generator), docs/boundary.md's row 0x0812 and
   MOWZIE.md's record table; rtsim-jni uses the same codec, so its decoder follows. A fork
   (reported): the lead's decision after the review, not the plan's wording; the main session
-  accepted it on 2026-10-23. MOWZIE.md's §4.9 prose
-  and crash table rows 2 and 3 still say an answer is "booked by state"; they should say "by the
-  action it carries".
+  accepted it on 2026-10-23. MOWZIE.md's §4.9 prose,
+  ledger 7 and crash table rows 2 to 4 say so now (MZB-174).
 - **MZB-169** (an answer line is booked once by (op, line), and only in the latest census's
   epoch): one op has several CAMP_BODIES records, since a holder's record is journaled again at load
   and held lines are answered later, so the skip is per line, not per op (a four-line set-out
@@ -633,6 +634,24 @@ under its own heading.
   0.20) and passes on M4 (0.178), which is the load, not a speed-up. Slots a day and conservation
   are as before (0, ok). The bench builds goblins, bandits and raiders (`synth::many`), none with
   `camp_bodies`, so this is the cost of the pool's room and the page's new fields, not of a ledger.
+
+- **MZB-174** (the contract that makes the epoch gate safe, an M5 obligation): MZB-169's gate books
+  an answer line only while its epoch is the latest a census of the camp named, so a holder's record
+  that reaches the engine after a census of a later epoch books nothing. The review (P2-1) found
+  that gate drops a late holder record, and the decision is a contract and no engine change:
+  **Java sends a camp's census only after every holder in its footprint has journaled its record
+  again.** A footprint holder loads with the camp's chunks, so M5's census (sent when every
+  footprint chunk is FULL with its entities in) waits for those records, and they reach the engine
+  carrying the epoch that is still the latest, before the new census; the books take them by the
+  action each carries. MOWZIE.md §4.9 (the CAMP_BODIES bullet, the journal-again sentence, crash
+  table rows 2 to 4) and ledger 7 say so, in the reviewer's words. The cost that remains and is
+  known: a holder outside the footprint whose record arrives after a census of a later epoch is
+  not booked. That census books the missing body by its table (a body left becomes gone), and a
+  body at home is missed and written off at the third miss over two days, so one member is lost.
+  This happens only after a crash, and the camp refills the member at its rate (`pool_at`). The
+  engine cannot tell that holder's record from one of a superseded census, which is why it books
+  nothing rather than guess (MZB-169). For M5: wait for the holders in the census's footprint;
+  a holder outside it is not waited for, and is the cost above.
 
 ## M5 Camp reconciler, Java
 
