@@ -48,6 +48,7 @@ pub mod scenario;
 pub mod synth;
 pub mod tables;
 pub mod tunables;
+pub mod view;
 
 pub use culture::{CultureDef, Cultures, SignalKind, Step, UnitClass};
 pub use engine::{Conflict, ConflictStats, FeudView, Purpose};

@@ -4,6 +4,7 @@
 
 mod bench;
 mod export;
+mod glass;
 mod lines;
 mod run;
 mod sim;
@@ -87,6 +88,12 @@ usage:
       player is offline, applied on load), tribute and converter (de-escalation), and a save and
       restore in the middle. Writes JSON to FILE (default scenario/results/sim-conflict.json).
       Exits 1 if a check fails.
+  rtsim-cli sim mowzie [list | run N ...] [--seed S] [--out FILE | --no-write] [--quiet]
+      Mowzie's Mobs' Frostmaw and Umvuthana (MOWZIE.md §7's runs, numbered as there; list
+      names each run and the slice that builds it). Built so far (slice M2): run 1's den ladder
+      on kills (Notice straight to Raid, repeats, calm) and run 5's grove ladder (a demand in
+      gold nuggets, no Siege); the other runs print the slice that builds them. Writes JSON to
+      FILE (default scenario/results/sim-mowzie.json). Exits 1 if a check fails.
   rtsim-cli sim census [--scenario all|ecology,ships,conflict] [--days N] [--every N] [--seed S]
       The who-is-alive census (EQUILIBRIUM.md S1): each scenario's synthetic world with nobody
       watching, one fixed-width line per kind of site every N days (default 24, for 960 days):
@@ -112,7 +119,11 @@ usage:
       Serves a saved world to the viewer page on loopback (VIEWER.md); --help for options.
   rtsim-cli lines <world> [--json]
       The industry engine's learned train lines (trips, mean travel ticks, cargo per trip) and
-      each district's station exchange rules, from the world's confirmed save (read only).";
+      each district's station exchange rules, from the world's confirmed save (read only).
+  rtsim-cli glass <world> [district] [--json | --graph]
+      Each district's glass box state (its compile, what replays it, its last and passed
+      windows, its ticking chunks) from the confirmed save (read only); --graph adds the
+      compile's records.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -274,6 +285,7 @@ fn main() -> ExitCode {
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
         ["sim", "census", rest @ ..] => sim::census::cli(rest),
         ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
+        ["sim", "mowzie", rest @ ..] => sim::mowzie::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
         ["sim", "quiet", rest @ ..] => {
             let mut o = sim::quiet::Options {
@@ -452,6 +464,7 @@ fn main() -> ExitCode {
         ["export", rest @ ..] => export::cli(rest),
         ["view", rest @ ..] => view::cli(rest),
         ["lines", rest @ ..] => lines::cli(rest),
+        ["glass", rest @ ..] => glass::cli(rest),
         ["help" | "--help" | "-h"] => {
             println!("{USAGE}");
             ExitCode::SUCCESS

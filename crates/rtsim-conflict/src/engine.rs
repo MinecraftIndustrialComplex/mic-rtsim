@@ -29,11 +29,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use rtsim_archive::{At, Severity, Tape, kinds};
 use rtsim_ecology::infra::Infrastructure;
 use rtsim_industry::ids::DistrictId;
-use rtsim_industry::threat::{Loads, Threat, ThreatSource, ThreatTarget};
+use rtsim_industry::threat::{Loads, Threat, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_knowledge::report::{fell, raid};
 use rtsim_knowledge::{
     ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
 };
@@ -61,6 +62,9 @@ const SYS_AMBUSH: SystemId = SystemId::named("conflict.ambush");
 const SYS_CHIEF: SystemId = SystemId::named("conflict.chief");
 const SYS_PEACE: SystemId = SystemId::named("conflict.peace");
 
+/// The most a market price may raise a demand above the culture's fallback per coin (MZB-57): a
+/// good whose price has collapsed would otherwise be asked by the million.
+pub const TRIBUTE_PRICE_CAP: f64 = 4.0;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -92,6 +96,9 @@ pub struct Faction {
     pub observed: Vec<(f64, f64)>,
     /// The war chief is out with a band.
     pub chief_out: bool,
+    /// The chief holds its crystal (MOWZIE.md ledger 9): units with a `without_crystal` row fight
+    /// as that row while it does not. True until a report says otherwise.
+    pub crystal: bool,
 }
 
 /// What an envoy asked.
@@ -167,6 +174,12 @@ impl Feud {
     }
 }
 
+/// A rung the world's Peaceful holds back: the war rungs, whose parties never leave, and the
+/// Envoy, whose pillager stand-in cannot exist on Peaceful (MZB-132). Scouts go on.
+fn peace_holds(step: Step) -> bool {
+    step.is_war() || step == Step::Envoy
+}
+
 /// A continuous source with no direct actor: a district's or a chunk's emissions. P14 as Ben
 /// changed it: it counts against the player who has spent the most time in its chunks
 /// ([`crate::presence`]), and against the shared settlers only while nobody has.
@@ -224,8 +237,11 @@ pub struct Party {
     pub units: Vec<(u8, u32)>,
     /// In Minecraft now, by unit index.
     pub spawned: Vec<(u8, u32)>,
-    /// In Minecraft when the engine recalled it, until the plugin counts the survivors.
-    pub recalled: Vec<(u8, u32)>,
+    /// In Minecraft when the engine recalled it, by the epoch recalled, until the plugin counts
+    /// that epoch's survivors (BAND_DEMATERIALIZED names the epoch it despawns). A band seen
+    /// again at a new epoch while an older one walks off keeps both, so each epoch's dead are
+    /// counted once, against its own bodies (MZB-131).
+    pub recalled: Vec<(u32, Vec<(u8, u32)>)>,
     pub start_units: u32,
     pub target: Target,
     pub frame: u16,
@@ -255,6 +271,29 @@ pub struct Party {
 impl Party {
     pub fn alive(&self) -> u32 {
         self.units.iter().map(|u| u.1).sum()
+    }
+
+    /// Moves the bodies in Minecraft (`spawned`) into the recalled stack of the current epoch,
+    /// merging with the one it has (MZB-131, MZB-138). Nothing moves when none is spawned.
+    fn fold_spawned_into_recalled(&mut self) {
+        let s = std::mem::take(&mut self.spawned);
+        if s.is_empty() {
+            return;
+        }
+        let epoch = self.epoch;
+        let i = match self.recalled.iter().position(|e| e.0 == epoch) {
+            Some(i) => i,
+            None => {
+                self.recalled.push((epoch, Vec::new()));
+                self.recalled.len() - 1
+            }
+        };
+        for (u, n) in s {
+            match self.recalled[i].1.iter_mut().find(|e| e.0 == u) {
+                Some(e) => e.1 += n,
+                None => self.recalled[i].1.push((u, n)),
+            }
+        }
     }
 
     pub fn agent(id: Handle<Party>) -> u64 {
@@ -344,6 +383,9 @@ pub struct ConflictStats {
     pub peace_held: u64,
     /// Notices the plugin played (NOTICE_SHOWN).
     pub notices_shown: u64,
+    /// War parties sent again on the same rung, `repeat_days` after the last came home (MOWZIE.md
+    /// ledger 3).
+    pub repeats: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -357,6 +399,11 @@ pub struct ConflictLedger {
     pub gifts: BTreeMap<GoodId, i128>,
     /// Industry goods stolen that the world's catalogue has no good for, by name (items).
     pub unmapped: BTreeMap<String, i64>,
+    /// Taken from villages by a culture whose loot is destroyed where it is taken (MOWZIE.md
+    /// ledger 10): part of `from_villages`, never carried.
+    pub destroyed: BTreeMap<GoodId, i128>,
+    /// The same for goods taken from players: part of `from_players`.
+    pub destroyed_from_players: BTreeMap<GoodId, i128>,
 }
 
 fn add(m: &mut BTreeMap<GoodId, i128>, g: GoodId, a: Amount) {
@@ -546,6 +593,11 @@ impl NodeIndex {
 }
 
 /// Where `pos` is at `at`, for the archive.
+/// `t` plus `dt` ticks, held at the end of time rather than wrapping.
+fn later(t: Tick, dt: u64) -> Tick {
+    Tick(t.0.saturating_add(dt))
+}
+
 fn spot(at: Tick, pos: Pos) -> At {
     At::new(at.0, u32::from(pos.frame), pos.x, pos.z)
 }
@@ -624,6 +676,10 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
+    /// Between a session's start and the replay having caught up (`replay_done`): the bodies the
+    /// pages held in Minecraft are kept as recalled stacks for the replayed records to count
+    /// (MZB-138). Not state: a session sets it.
+    pub replaying: bool,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -706,6 +762,7 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
+            replaying: false,
         }
     }
 
@@ -884,7 +941,8 @@ impl Conflict {
 
     // ---- factions -------------------------------------------------------------------------
 
-    /// A faction's camp: joins the world as a haven node (C24) if no node has its key, registers
+    /// A faction's camp: joins the world as a haven node (C24), or as a lair for a culture with no
+    /// haven (MOWZIE.md ledger 13), if no node has its key, registers
     /// the faction, its chief and heir, books its plunder drive, and tells the plugin its
     /// territory. Idempotent by key. `None` for an unknown culture.
     pub fn add_faction(
@@ -906,7 +964,11 @@ impl Conflict {
             None => w.join(
                 NodeData {
                     key,
-                    kind: NodeKind::Haven(cu.market),
+                    kind: if cu.def.haven {
+                        NodeKind::Haven(cu.market)
+                    } else {
+                        NodeKind::Lair
+                    },
                     pos,
                     pop: (cu.def.pool_cap / 4).max(1),
                     resources: BTreeMap::new(),
@@ -935,6 +997,7 @@ impl Conflict {
             plunder_stamp: 0,
             observed: Vec::new(),
             chief_out: false,
+            crystal: true,
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -1125,7 +1188,7 @@ impl Conflict {
         if rate <= 0.0 {
             return Tick(u64::MAX / 2);
         }
-        at + ((n - have) / rate).ceil() as u64 + 1
+        later(at, (((n - have) / rate).ceil() as u64).saturating_add(1))
     }
 
     /// The chief, after a death of age the world's knowledge processed (the heir takes over).
@@ -1134,13 +1197,18 @@ impl Conflict {
         if w.knowledge.notable(chief).is_some() {
             return;
         }
-        self.succeed(w, f, at, None);
+        self.succeed(w, f, at, None, false);
     }
 
     /// The heir becomes chief (C24: it holds the grudges it inherited) and a new heir is named.
-    fn succeed(&mut self, w: &mut World, f: u32, at: Tick, killer: Option<ActorId>) {
+    /// `killed` is a chief killed in a fight, by `killer` when a player did it; else one dead of age.
+    /// The old chief leaves its band, if it was out with one: no party carries the chief flag
+    /// afterwards, so the band goes on without a chief body and a CHIEF_KILLED for it later is
+    /// stale, not the new chief's death (MZB-139).
+    fn succeed(&mut self, w: &mut World, f: u32, at: Tick, killer: Option<ActorId>, killed: bool) {
         let key = self.factions[f as usize].key;
         let node = self.factions[f as usize].node;
+        let fallen = self.factions[f as usize].chief;
         let home = w.nodes[node].actor;
         let lifespan = self.culture(f).def.chief_lifespan_days * TICKS_PER_DAY;
         let (heir, heir_seed) = {
@@ -1170,6 +1238,23 @@ impl Conflict {
             x.chiefs = n + 2;
             x.chief_out = false;
         }
+        let led: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.faction == f && x.chief)
+            .map(|(h, _)| h)
+            .collect();
+        for p in led {
+            self.parties[p].chief = false;
+        }
+        // News of the fall (TALK.md §9.4, TK26), witnessed by the new chief and heir, so the camp
+        // tells its own loss (its chief's Killing names the dead chief, who has left the camp).
+        if !fallen.is_null() {
+            let pos = self.factions[f as usize].pos;
+            let place = Place::new(pos.frame, pos.x, 64, pos.z);
+            let severity = if killed { fell::KILLED } else { fell::DIED };
+            self.camp_news(w, f, ReportKind::Fell, fallen, severity, place, &[], at);
+        }
         self.stats.successions += 1;
         // The grudges the new chief inherited become grievance against those players (C24).
         let feelings = w.knowledge.sentiment_snapshot(chief, at);
@@ -1185,11 +1270,15 @@ impl Conflict {
             let feud = self.feud_entry(f, p, at);
             feud.g.add(SignalKind::Killing, g, at, lambda);
         }
-        let what = match killer {
-            Some(_) => {
+        // A chief killed by no player (a mob, `/kill`, anything else) did not die of age (MZB-140).
+        let what = match (killed, killer) {
+            (true, Some(_)) => {
                 "its war chief is killed; the heir takes over, holding the grudge".to_string()
             }
-            None => "its chief dies of age; the heir takes over".to_string(),
+            (true, None) => {
+                "its war chief is killed, by no player; the heir takes over".to_string()
+            }
+            (false, _) => "its chief dies of age; the heir takes over".to_string(),
         };
         let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
         self.tape
@@ -1581,8 +1670,55 @@ impl Conflict {
         self.culture(f).def.hysteresis * self.theta(f, s)
     }
 
-    /// Books the feud's next event: the earliest of its next rung (after the dwell), its fall
-    /// below the current rung, its demand's deadline. A new stamp makes the older booking stale.
+    /// The earliest tick a feud on Raid or Invasion with no party out and no demand may send its
+    /// rung's party again (MOWZIE.md ledger 3, MZB-51): `repeat_days` after the later of the
+    /// rung's start and the arrival home of any war party of this feud still on its way home, and
+    /// not while cowed or waiting for the pool. `None` for a culture that does not repeat, a feud
+    /// that cannot repeat now, or a rung whose party is empty (MZB-64).
+    fn repeat_after(&self, f: u32, a: ActorId, feud: &Feud) -> Option<Tick> {
+        let c = self.culture(f);
+        let days = c.def.repeat_days?;
+        // On Peaceful no war party leaves; leaving it plans every feud again (`set_difficulty`).
+        if self.peaceful
+            || !matches!(feud.step, Step::Raid | Step::Invasion)
+            || !c.has_rung(feud.step)
+            || feud.party.is_some()
+            || feud.demand.is_some()
+        {
+            return None;
+        }
+        // The pool refills while a party walks home: counting from its turn could field a second
+        // band (a second Frostmaw) before the first is back.
+        let back = self
+            .parties
+            .iter()
+            .filter(|(_, x)| {
+                x.faction == f && x.feud == Some(a) && x.phase == Phase::Home && x.kind.is_war()
+            })
+            .filter_map(|(_, x)| x.times.last().copied())
+            .max();
+        let from = back.map_or(feud.since, |b| b.max(feud.since));
+        Some(
+            later(from, days_to_ticks(days))
+                .max(self.factions[f as usize].cowed_until)
+                .max(feud.wait_until),
+        )
+    }
+
+    /// When the feud repeats: at [`Self::repeat_after`], once the grievance is at the rung's
+    /// threshold.
+    fn repeat_at(&self, f: u32, a: ActorId, feud: &Feud) -> Option<Tick> {
+        let after = self.repeat_after(f, a, feud)?;
+        let lambda = self.culture(f).lambda;
+        feud.g
+            .crossing_up(self.theta(f, feud.step), lambda)
+            .map(|t| t.max(after))
+    }
+
+    /// Books the feud's next event: the earliest of its next rung (after the dwell), its rung's
+    /// repeat, its fall below the current rung, its demand's deadline. A new stamp makes the older
+    /// booking stale. Empty rungs are skipped (MOWZIE.md ledger 2): a climb's threshold is the
+    /// rung it goes to, its dwell the rung it leaves.
     fn plan_feud(&mut self, f: u32, a: ActorId, at: Tick, from_wake: bool) {
         let Some(feud) = self.feud(f, a) else {
             return;
@@ -1595,16 +1731,25 @@ impl Conflict {
                 next = Some(next.map_or(t, |n: Tick| n.min(t)));
             }
         };
-        // On Peaceful no war party leaves: the climb to a war rung waits for the world to change
-        // (`set_difficulty` plans every feud again then).
+        // On Peaceful no war party and no envoy leaves: the climb to such a rung waits for the
+        // world to change, and so do an open demand's deadline and a withdrawn one's fresh envoy
+        // (`set_difficulty` plans every feud again then, MZB-132).
         let peaceful = self.peaceful;
         if let Some(d) = feud.demand {
-            take(Some(d.deadline));
+            if !peaceful {
+                take(Some(d.deadline));
+            }
         } else if feud.party.is_none() {
             if feud.holds_envoy() {
                 // A withdrawn demand: no climb, a fresh envoy at the old deadline (MZB-22).
-                take(Some(feud.wait_until.max(cowed)));
-            } else if let Some(up) = feud.step.up().filter(|u| !(peaceful && u.is_war())) {
+                if !peaceful {
+                    take(Some(feud.wait_until.max(cowed)));
+                }
+            } else if let Some(up) = self
+                .culture(f)
+                .next_up(feud.step)
+                .filter(|u| !(peaceful && peace_holds(*u)))
+            {
                 let dwell = feud.since + self.culture(f).dwell_ticks[feud.step.index()];
                 take(
                     feud.g
@@ -1612,6 +1757,7 @@ impl Conflict {
                         .map(|t| t.max(dwell).max(cowed).max(feud.wait_until)),
                 );
             }
+            take(self.repeat_at(f, a, feud));
             if feud.step > Step::None {
                 take(feud.g.crossing_down(self.down_theta(f, feud.step), lambda));
             } else if feud.raw.iter().all(|r| *r <= 0.0) {
@@ -1652,31 +1798,40 @@ impl Conflict {
             feud.holds_envoy(),
         );
         if let Some(d) = demand {
-            if at >= d.deadline {
+            // Not on Peaceful: no envoy came, and the deadline is moved when it ends (MZB-132).
+            if at >= d.deadline && !self.peaceful {
                 self.demand_due(w, f, a, at);
             }
         } else if party.is_none() {
             let cowed = self.factions[f as usize].cowed_until > at;
             let dwell = since + self.culture(f).dwell_ticks[step.index()];
-            let up = step.up();
-            if again && !cowed && at >= wait && g >= self.down_theta(f, step) {
+            let up = self.culture(f).next_up(step);
+            // A repeat of the rung's war party (MOWZIE.md ledger 3); never on Peaceful
+            // (`repeat_after`).
+            let repeat = self
+                .feud(f, a)
+                .and_then(|feud| self.repeat_after(f, a, feud))
+                .is_some_and(|t| at >= t && g >= self.theta(f, step) * (1.0 - 1e-9));
+            if again && !cowed && !self.peaceful && at >= wait && g >= self.down_theta(f, step) {
                 self.envoy_again(w, f, a, at);
             } else if let Some(up) = up.filter(|u| {
                 !again
                     && !cowed
-                    && !(self.peaceful && u.is_war())
+                    && !(self.peaceful && peace_holds(*u))
                     && at >= dwell
                     && at >= wait
                     && g >= self.theta(f, *u) * (1.0 - 1e-9)
             }) {
-                self.escalate(w, f, a, up, at);
+                self.escalate(w, f, a, up, at, false);
+            } else if repeat {
+                self.escalate(w, f, a, step, at, true);
             } else if step > Step::None && g < self.down_theta(f, step) {
+                let to = self.culture(f).next_down(step);
                 let feud = self.feud_mut(f, a).expect("exists");
-                feud.step = step.down();
+                feud.step = to;
                 feud.since = at;
                 feud.envoy_again = false;
                 self.stats.calmed += 1;
-                let to = step.down();
                 let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
                 self.tape.event(
                     kinds::CONFLICT_CALM,
@@ -1721,8 +1876,9 @@ impl Conflict {
         }
     }
 
-    /// Climbs to rung `to`, doing what it says.
-    fn escalate(&mut self, w: &mut World, f: u32, a: ActorId, to: Step, at: Tick) {
+    /// Climbs to rung `to`, doing what it says; or, `again`, sends the party of the rung the feud
+    /// is on once more (MOWZIE.md ledger 3), counted as a repeat and not as a step.
+    fn escalate(&mut self, w: &mut World, f: u32, a: ActorId, to: Step, at: Tick, again: bool) {
         let lambda = self.culture(f).lambda;
         let feud = self.feud(f, a).expect("exists");
         let g = feud.g.total_at(at, lambda);
@@ -1730,10 +1886,18 @@ impl Conflict {
         let focus = feud.focus;
         if to.is_war() || to == Step::Scouts || to == Step::Envoy {
             let pk = PartyKind::of_step(to).expect("a party rung");
+            if self.culture(f).parties[pk.index()].is_empty() {
+                // `next_up` and `repeat_after` never pick an empty rung. Were one picked anyway,
+                // a pool wait for no warriors would wake the feud every tick: change and book
+                // nothing (MZB-64).
+                debug_assert!(false, "escalate to the empty rung {}", to.name());
+                return;
+            }
             let target = self.target_of(w, f, focus, at);
             let Some(p) = self.send_party(w, f, Some(a), pk, target, at) else {
-                // Not enough warriors: wait for the pool (closed form).
-                let need = self.party_size(f, pk) as f64 / 2.0;
+                // Not enough warriors: wait for the pool (closed form). The whole warriors
+                // `send_party` needs, so the wait ends when it can send (MOWZIE.md ledger 6).
+                let need = (self.party_size(f, pk) as f64 / 2.0).ceil();
                 let ready = self.pool_ready(f, need, at);
                 let feud = self.feud_mut(f, a).expect("exists");
                 feud.wait_until = ready;
@@ -1758,6 +1922,25 @@ impl Conflict {
         feud.since = at;
         feud.wait_until = Tick::ZERO;
         feud.envoy_again = false;
+        if again {
+            self.stats.repeats += 1;
+            self.note(
+                at,
+                Some(f),
+                "repeat",
+                format!(
+                    "grievance against {} still at {g:.1} ({} first): the {} comes again",
+                    self.actor_name(w, a),
+                    kind.name(),
+                    if to == Step::Invasion {
+                        "invasion"
+                    } else {
+                        "war band"
+                    }
+                ),
+            );
+            return;
+        }
         self.stats.escalations[to.index()] += 1;
         let pos = focus.map_or(self.factions[f as usize].pos, |fo| fo.pos);
         let severity = if matches!(to, Step::Invasion | Step::Siege) {
@@ -1776,6 +1959,12 @@ impl Conflict {
                 to.index() as i64,
             )
             .text(|| format!("{} ({} first, grievance {g:.1})", to.name(), kind.name()));
+        // News of the rung (TALK.md §9.4, TK26): the camp has sworn against `a`. Not against the
+        // settlers, whom no line can name.
+        if a != self.settlers {
+            let place = Place::new(pos.frame, pos.x, 64, pos.z);
+            self.camp_news(w, f, ReportKind::Feud, a, to.index() as u8, place, &[], at);
+        }
         if to == Step::Notice {
             let player = self.uuid_of(w, a);
             self.notice_serial = self.notice_serial.wrapping_add(1).max(1);
@@ -1832,7 +2021,10 @@ impl Conflict {
         let good = self.tribute_good(w, f);
         let base = self.culture(f).def.tribute_per_grievance * g;
         let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50);
-        let tribute = ((base * f64::from(bend) / 1000.0).ceil() as i64).max(1);
+        let per_coin = self.tribute_per_coin(w, f, good);
+        // Held to what the envoy's wire count (an i32) can say (MZB-57).
+        let tribute = ((base * f64::from(bend) / 1000.0 * per_coin).ceil() as i64)
+            .clamp(1, i64::from(i32::MAX));
         let deadline = at + days_to_ticks(self.culture(f).def.demand_days);
         let feud = self.feud_mut(f, a).expect("exists");
         feud.demand = Some(Demand {
@@ -1883,7 +2075,8 @@ impl Conflict {
         );
         let target = self.target_of(w, f, focus, at);
         let Some(p) = self.send_party(w, f, Some(a), PartyKind::Envoy, target, at) else {
-            let need = self.party_size(f, PartyKind::Envoy) as f64 / 2.0;
+            // The whole warriors `send_party` needs, as `escalate` waits for (MZB-52).
+            let need = (self.party_size(f, PartyKind::Envoy) as f64 / 2.0).ceil();
             let ready = self.pool_ready(f, need, at);
             self.feud_mut(f, a).expect("exists").wait_until = ready;
             return;
@@ -1904,6 +2097,23 @@ impl Conflict {
             .and_then(|n| w.goods.find(n))
             .or_else(|| w.goods.currency(c.market))
             .unwrap_or(GoodId(0))
+    }
+
+    /// Units of the tribute good one coin of the haven's money buys (MOWZIE.md ledger 12): 1 for
+    /// money itself, else at the haven market's price, else the culture's fallback while that
+    /// market has no price for it. A price that has fallen near nothing asks at most
+    /// [`TRIBUTE_PRICE_CAP`] times the fallback (MZB-57).
+    fn tribute_per_coin(&self, w: &World, f: u32, good: GoodId) -> f64 {
+        if w.goods.is_currency(good) {
+            return 1.0;
+        }
+        let price = w.market(self.factions[f as usize].node).price(good);
+        let fallback = self.culture(f).def.tribute_per_coin_fallback;
+        if price > 0 {
+            (PRICE_ONE as f64 / price as f64).min(TRIBUTE_PRICE_CAP * fallback)
+        } else {
+            fallback
+        }
     }
 
     /// Where a feud's party goes: its focus's district, else the place, else the camp's edge.
@@ -1982,11 +2192,18 @@ impl Conflict {
                     self.actor_name(w, a)
                 ),
             );
-            if g >= self.theta(f, Step::Scouts) * (1.0 - 1e-9) {
-                self.escalate(w, f, a, Step::Scouts, at);
+            // The next rung up the culture has (MOWZIE.md ledger 2): Scouts, unless it skips them.
+            // On Peaceful the refusal is recorded all the same (an answer in flight when the
+            // world changed), but a rung it holds back waits for Normal (MZB-134).
+            let up = self.culture(f).next_up(Step::Envoy);
+            if let Some(up) = up.filter(|u| {
+                g >= self.theta(f, *u) * (1.0 - 1e-9) && !(self.peaceful && peace_holds(*u))
+            }) {
+                self.escalate(w, f, a, up, at, false);
             } else if g < self.down_theta(f, Step::Envoy) {
+                let to = self.culture(f).next_down(Step::Envoy);
                 let feud = self.feud_mut(f, a).expect("exists");
-                feud.step = Step::Notice;
+                feud.step = to;
                 feud.since = at;
             } else {
                 let feud = self.feud_mut(f, a).expect("exists");
@@ -2124,6 +2341,16 @@ impl Conflict {
 
     // ---- tribute, gifts, trade --------------------------------------------------------------
 
+    /// The actor whose open demand names this envoy (`demand.envoy`), among the faction's feuds. An
+    /// envoy going home has no feud of its own any more (`go_home`), and its demand is still open
+    /// (MZB-143).
+    fn demand_actor(&self, f: u32, p: Handle<Party>) -> Option<ActorId> {
+        self.feuds_of(f)
+            .iter()
+            .find(|(_, x)| x.demand.is_some_and(|d| d.envoy == Some(p)))
+            .map(|e| e.0)
+    }
+
     /// Tribute paid to a faction (at its envoy or its camp): the goods enter the world at the
     /// haven's market (players' goods coming in), and the open demand on the payer (or else on the
     /// settlers) counts them. Returns whether a demand was met.
@@ -2147,15 +2374,20 @@ impl Conflict {
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
-        let by_envoy = envoy
-            .and_then(Party::of_agent)
-            .and_then(|p| self.parties.get(p))
-            .filter(|x| x.faction == f)
-            .and_then(|x| x.feud);
-        let who = by_envoy
-            .into_iter()
-            .chain([payer, settlers])
-            .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some()));
+        // A payment to an envoy settles that envoy's own demand and no other (MZB-137): one that
+        // reaches an envoy whose demand is over (settled, expired, withdrawn) is a gift, not a
+        // payment on another demand open for the payer or the settlers. The demand is the one
+        // that names the envoy (`demand.envoy`), found among the faction's feuds: an envoy going
+        // home has no feud of its own any more (`go_home`), and its demand is still open
+        // (MZB-143).
+        let who = match envoy {
+            Some(agent) => Party::of_agent(agent)
+                .filter(|p| self.parties.get(*p).is_some_and(|x| x.faction == f))
+                .and_then(|p| self.demand_actor(f, p)),
+            None => [payer, settlers]
+                .into_iter()
+                .find(|a| self.feud(f, *a).is_some_and(|x| x.demand.is_some())),
+        };
         let Some(a) = who else {
             // No demand open: a tribute is a gift.
             self.gift_value(w, f, payer, goods, at);
@@ -2373,7 +2605,8 @@ impl Conflict {
     }
 
     /// Musters a party at the camp. War parties draw on the pool (at least half their make-up, or
-    /// none goes); envoys and scouts always go.
+    /// none goes); envoys and scouts always go. A kind the culture has no party for sends nothing
+    /// (MOWZIE.md ledger 2; the ladder never climbs to such a rung).
     fn send_party(
         &mut self,
         w: &mut World,
@@ -2384,6 +2617,9 @@ impl Conflict {
         at: Tick,
     ) -> Option<Handle<Party>> {
         let make: Vec<(u8, u32)> = self.culture(f).parties[kind.index()].clone();
+        if make.is_empty() {
+            return None;
+        }
         let want: u32 = make.iter().map(|u| u.1).sum();
         let units = if kind.is_war() {
             let have = self.pool_at(f, at).floor() as u32;
@@ -2565,6 +2801,20 @@ impl Conflict {
         match self.parties[p].phase {
             Phase::Mustering if self.peaceful && self.parties[p].kind.is_war() => {
                 self.stand_down(w, p, at);
+            }
+            // An envoy waits out Peaceful where it is, nothing booked: `resume_envoys` books it
+            // again when the world is not (MZB-132).
+            Phase::Mustering | Phase::Waiting
+                if self.peaceful && self.parties[p].kind == PartyKind::Envoy =>
+            {
+                self.stats.peace_held += 1;
+                let f = self.parties[p].faction;
+                self.note(
+                    at,
+                    Some(f),
+                    "peaceful",
+                    "the envoy waits: the world is Peaceful".into(),
+                );
             }
             Phase::Mustering => {
                 self.parties[p].phase = Phase::Out;
@@ -2782,13 +3032,12 @@ impl Conflict {
         p: Handle<Party>,
     ) -> BTreeMap<rtsim_industry::threat::ThreatClass, (u32, f64, Loads)> {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         let mut m = BTreeMap::new();
         for &(u, n) in &x.units {
             if n == 0 {
                 continue;
             }
-            let ud = c.unit(u);
+            let ud = self.unit_row(x.faction, u);
             let e = m
                 .entry(ud.class.threat())
                 .or_insert((0u32, 0.0f64, Loads::default()));
@@ -2802,13 +3051,22 @@ impl Conflict {
 
     fn strength(&self, p: Handle<Party>) -> f64 {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         x.units
             .iter()
-            .map(|&(u, n)| f64::from(n) * c.unit(u).strength)
+            .map(|&(u, n)| f64::from(n) * self.unit_row(x.faction, u).strength)
             .sum()
     }
 
+    /// Unit `u` of faction `f` as it fights now: the row its chief's crystal picks (MOWZIE.md
+    /// ledger 9). A body is always its own row's.
+    fn unit_row(&self, f: u32, u: u8) -> &crate::culture::UnitDef {
+        self.culture(f)
+            .unit_as(u, self.factions[f as usize].crystal)
+    }
+
+    /// A war band falls on a train it crosses (C16, I24): one threat per class of unit, each with
+    /// that class's count, strength and carry (MOWZIE.md ledger 9, MZB-53), as district raids
+    /// send them. One ambush however many classes took something.
     fn ambush(
         &mut self,
         infra: &mut dyn Infrastructure,
@@ -2821,40 +3079,43 @@ impl Conflict {
             self.stats.peace_held += 1;
             return;
         }
-        let id = fnv1a64(
-            &[
-                Party::agent(p).to_le_bytes(),
-                at.0.to_le_bytes(),
-                train.to_le_bytes(),
-            ]
-            .concat(),
-        );
-        let s = self.strength(p);
-        let n = self.parties[p].alive();
-        let carry: i64 = {
-            let x = &self.parties[p];
-            let c = self.culture(x.faction);
-            x.units
-                .iter()
-                .map(|&(u, k)| i64::from(k) * i64::from(c.unit(u).carry))
-                .sum()
-        };
-        let t = Threat {
-            id,
-            source: ThreatSource::Bandit,
-            class: rtsim_industry::threat::ThreatClass::GroundMelee,
-            count: n,
-            strength: s,
-            target: ThreatTarget::Train(rtsim_industry::ids::TrainId(train)),
-            at,
-            loads: Some(Loads { carry, blocks: 0 }),
-        };
-        let Some(loot) = infra.raid_train(&t) else {
-            return;
-        };
-        self.stats.ambushes += 1;
-        let got = self.take_industry_loot(w, infra, p, &loot);
         let f = self.parties[p].faction;
+        let source = self.culture(f).def.source.threat();
+        let mut hit = false;
+        let mut got = 0;
+        for (class, (count, strength, loads)) in self.strength_by_class(p) {
+            let id = fnv1a64(
+                &[
+                    Party::agent(p).to_le_bytes(),
+                    at.0.to_le_bytes(),
+                    train.to_le_bytes(),
+                    (class.index() as u64).to_le_bytes(),
+                ]
+                .concat(),
+            );
+            let t = Threat {
+                id,
+                source,
+                class,
+                count,
+                strength,
+                target: ThreatTarget::Train(rtsim_industry::ids::TrainId(train)),
+                at,
+                loads: Some(Loads {
+                    carry: loads.carry,
+                    blocks: 0,
+                }),
+            };
+            let Some(loot) = infra.raid_train(&t) else {
+                continue;
+            };
+            hit = true;
+            got += self.take_industry_loot(w, infra, p, &loot);
+        }
+        if !hit {
+            return;
+        }
+        self.stats.ambushes += 1;
         let (x, z) = self.party_pos(p, at);
         let frame = u32::from(self.parties[p].frame);
         self.tape
@@ -2874,6 +3135,17 @@ impl Conflict {
         );
     }
 
+    /// Goods `a` (thousandths) of `g` taken from players by party `p`: carried home, or destroyed
+    /// where taken by a culture whose loot is (MOWZIE.md ledger 10).
+    fn took_from_players(&mut self, p: Handle<Party>, g: GoodId, a: Amount) {
+        add(&mut self.ledger.from_players, g, a);
+        if self.culture(self.parties[p].faction).def.loot_destroyed {
+            add(&mut self.ledger.destroyed_from_players, g, a);
+        } else {
+            *self.parties[p].from_players.entry(g).or_default() += a;
+        }
+    }
+
     /// Maps industry goods to the world's by name into the party's players' goods. Returns items.
     fn take_industry_loot(
         &mut self,
@@ -2890,9 +3162,7 @@ impl Conflict {
             let short = name.rsplit(':').next().unwrap_or(&name).to_string();
             match w.goods.find(&name).or_else(|| w.goods.find(&short)) {
                 Some(wg) => {
-                    let a = n.saturating_mul(MILLI);
-                    *self.parties[p].from_players.entry(wg).or_default() += a;
-                    add(&mut self.ledger.from_players, wg, a);
+                    self.took_from_players(p, wg, n.saturating_mul(MILLI));
                     got += n;
                 }
                 None => *self.ledger.unmapped.entry(name).or_default() += n,
@@ -3098,6 +3368,19 @@ impl Conflict {
                     before.saturating_sub(after)
                 )
             });
+        // News of the raid (TALK.md §9.4, TK26), its outcome the severity. One that took nothing
+        // and lost nobody found nothing to raid (no district near, the industry off, a raid skipped
+        // as watched or cooling down): no news.
+        let outcome = if stolen > 0 || blocks > 0 {
+            Some(raid::PLUNDERED)
+        } else if after < before {
+            Some(raid::BEATEN)
+        } else {
+            None
+        };
+        if let Some(outcome) = outcome {
+            self.raid_news(w, p, outcome, aim, at);
+        }
         // Vengeance: what it took eases the feud it served (capped).
         if let Some(a) = self.parties[p].feud {
             let c = self.culture(f);
@@ -3136,7 +3419,7 @@ impl Conflict {
             );
             let t = Threat {
                 id,
-                source: ThreatSource::Bandit,
+                source: self.culture(f).def.source.threat(),
                 class,
                 count,
                 strength,
@@ -3189,13 +3472,13 @@ impl Conflict {
         (stolen_items, blocks)
     }
 
-    /// What party `p`'s living members carry between them, thousandths.
+    /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
+    /// crystal has it fight now (`unit_row`, MOWZIE.md ledger 9).
     fn carry_milli(&self, p: Handle<Party>) -> Amount {
         let x = &self.parties[p];
-        let c = self.culture(x.faction);
         x.units
             .iter()
-            .map(|&(u, n)| i64::from(n) * i64::from(c.unit(u).carry))
+            .map(|&(u, n)| i64::from(n) * i64::from(self.unit_row(x.faction, u).carry))
             .sum::<i64>()
             * MILLI
     }
@@ -3211,7 +3494,7 @@ impl Conflict {
         let classes: Vec<bool> = self.parties[p]
             .units
             .iter()
-            .map(|&(u, _)| class(self.culture(f).unit(u).class))
+            .map(|&(u, _)| class(self.unit_row(f, u).class))
             .collect();
         let x = &mut self.parties[p];
         for (k, e) in x.units.iter_mut().enumerate() {
@@ -3232,7 +3515,9 @@ impl Conflict {
     /// observed); the survivors carry off up to their carry and the culture's share of each line's
     /// surplus over its target, coins included, into the band's hold (`World::stock_to_held`),
     /// conservation exact. A band that could not carry off one whole item if nobody fell does not
-    /// fight at all (CL-D58, as the ports' PC72 and PC78).
+    /// fight at all (CL-D58, as the ports' PC72 and PC78). A culture whose loot is destroyed takes
+    /// it out of the world where it stands (`World::take_stocks`, MOWZIE.md ledger 10), from the
+    /// same capped shares. A lair defends as a haven does (MZB-59) and has no stock to take.
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
@@ -3266,7 +3551,7 @@ impl Conflict {
         let s = self.strength(p);
         let node = &w.nodes[i];
         let per = match node.kind {
-            NodeKind::Haven(_) => self.tun.haven_defence_per_pop,
+            NodeKind::Haven(_) | NodeKind::Lair => self.tun.haven_defence_per_pop,
             _ => self.tun.village_defence_per_pop,
         };
         let pop = w.settlements.get(node.settlement).map_or(0, |x| x.pop);
@@ -3285,10 +3570,18 @@ impl Conflict {
         // no time, so the market has not moved).
         let shares = apportion(self.carry_milli(p).min(reach), &caps);
         let want: BTreeMap<GoodId, Amount> = shares.into_iter().filter(|e| e.1 > 0).collect();
-        let got = w.stock_to_held(i, &want, at);
+        let got = if c.def.loot_destroyed {
+            w.take_stocks(i, &want, at)
+        } else {
+            w.stock_to_held(i, &want, at)
+        };
         let mut items = 0;
         for (g, a) in &got {
-            *self.parties[p].loot.entry(*g).or_default() += a;
+            if c.def.loot_destroyed {
+                add(&mut self.ledger.destroyed, *g, *a);
+            } else {
+                *self.parties[p].loot.entry(*g).or_default() += a;
+            }
             add(&mut self.ledger.from_villages, *g, *a);
             items += a / MILLI;
         }
@@ -3369,13 +3662,7 @@ impl Conflict {
         self.stats.recalls += 1;
         let x = &mut self.parties[p];
         if x.embodied && x.epoch == epoch {
-            let s = std::mem::take(&mut x.spawned);
-            for (u, n) in s {
-                match x.recalled.iter_mut().find(|e| e.0 == u) {
-                    Some(e) => e.1 += n,
-                    None => x.recalled.push((u, n)),
-                }
-            }
+            x.fold_spawned_into_recalled();
             x.embodied = false;
             x.seen_by = None;
         }
@@ -3442,6 +3729,17 @@ impl Conflict {
         {
             feud.party = None;
             feud.since = at;
+            self.plan_feud(f, a, at, false);
+        } else if let Some(a) = self.parties[p].feud
+            && self.culture(f).def.repeat_days.is_some()
+            && let Some(feud) = self.feud_mut(f, a)
+            && feud.party.is_none()
+            && feud.demand.is_none()
+            && PartyKind::of_step(feud.step) == Some(kind)
+        {
+            // A repeat counts from the arrival home (MZB-51): the rung it served starts again
+            // now, so a replan cannot book the repeat from the turn.
+            feud.since = feud.since.max(at);
             self.plan_feud(f, a, at, false);
         }
         if self.parties[p].loot.is_empty() {
@@ -3513,7 +3811,8 @@ impl Conflict {
                     NodeKind::Haven(_) => by_key.get(&n.key).is_some_and(|&o| {
                         c.hates(cultures.get(factions[o as usize].culture).name())
                     }),
-                    NodeKind::PlayerBase { .. } => false,
+                    // A lair has nothing to plunder (MOWZIE.md ledger 13).
+                    NodeKind::PlayerBase { .. } | NodeKind::Lair => false,
                 }
             });
         let Some((_, i)) = best else {
@@ -3776,46 +4075,192 @@ impl Conflict {
                 self.parties[p].start_units
             ),
         );
+        // News of the fight (TK26): a rout beat the band; one it left bored or done, not routed,
+        // the target held (what its mobs carried off comes later, as BAND_LOOTED, and is not
+        // counted). One it left because the world turned Peaceful is no raid.
+        let outcome = match reason {
+            boundary::RECALL_ROUTED => Some(raid::BEATEN),
+            boundary::RECALL_BORED | boundary::RECALL_DONE => Some(raid::HELD),
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            let frame = self.parties[p].frame;
+            self.raid_news(w, p, outcome, Pos::new(frame, x, z), at);
+        }
         self.go_home(w, p, reason, at);
     }
 
-    /// Villages that hate the faction hear that a player broke its band (C24: rescues count). A
-    /// rout is one report (K2-25, CL-D60): every village in range whose culture the faction hates
-    /// witnesses it, and the others hear it only as news. Knowledge dedups per report, so a report
-    /// per witness made each village count the rout once per witness. The report names whom the
-    /// band was after (the node it marched on, else the feud's actor unless that is the breaker,
-    /// else no one) and the place it broke.
+    /// A news report the camp makes (TALK.md §9.4, TK26): `who` the faction, witnessed first-hand
+    /// by its chief and heir and by `also`. A news kind has no sentiment delta, so witnessing it
+    /// only puts it on the board.
+    #[allow(clippy::too_many_arguments)]
+    fn camp_news(
+        &self,
+        w: &mut World,
+        f: u32,
+        kind: ReportKind,
+        whom: ActorId,
+        severity: u8,
+        place: Place,
+        also: &[ActorId],
+        at: Tick,
+    ) {
+        let x = &self.factions[f as usize];
+        let (who, chief, heir) = (x.actor, x.chief, x.heir);
+        let r = w.knowledge.record(Report {
+            who,
+            whom,
+            kind,
+            severity,
+            flags: 0,
+            at,
+            place,
+        });
+        for &h in [chief, heir].iter().chain(also) {
+            w.knowledge.witness(h, r, at);
+        }
+    }
+
+    /// Raid news for band `p` (TK26): whom it raided is the node it marched on, a village or a
+    /// rival camp's haven (which witnesses it too, and for a haven its camp's chief and heir, who
+    /// tell for the camp), else the player its feud is against; a band after nobody the lines can
+    /// name (the settlers, or a place with no feud) makes none.
+    fn raid_news(&self, w: &mut World, p: Handle<Party>, outcome: u8, at_pos: Pos, at: Tick) {
+        let x = &self.parties[p];
+        let mut also = Vec::new();
+        let whom = match x.target {
+            Target::Node(i) => {
+                let Some(n) = w.nodes.get(i) else {
+                    return;
+                };
+                also.push(n.actor);
+                if let Some(g) = self.faction_of_key(n.key) {
+                    let y = &self.factions[g as usize];
+                    also.extend([y.chief, y.heir]);
+                }
+                n.actor
+            }
+            _ => match x.feud.filter(|a| *a != self.settlers) {
+                Some(a) => a,
+                None => return,
+            },
+        };
+        let place = Place::new(at_pos.frame, at_pos.x, 64, at_pos.z);
+        self.camp_news(
+            w,
+            x.faction,
+            ReportKind::Raid,
+            whom,
+            outcome,
+            place,
+            &also,
+            at,
+        );
+    }
+
+    /// A rout is one rescue report (C24: rescues count; K2-25, CL-D60) that only its real
+    /// witnesses learn first-hand (CL-D61, PLAN.md §8.7). The witnesses are:
+    ///
+    /// - the village the band marched on, always (it was the one rescued);
+    /// - every village that hates the faction within `view_radius` of where the band broke, read
+    ///   as [`Conflict::watcher`] reads a player's view (the raw distance, the edge included);
+    /// - every player base within that radius of where it broke (CL-D61, "Base carries the
+    ///   news"), and, for a band that was Fighting at its target, the player's base it marched on
+    ///   whatever the distance: it is the market node the player's district or dwell place is.
+    ///   The engine has no link from a district to a base, so the base a district or position
+    ///   target names is the one within `view_radius` of it. A band routed on the road was not at
+    ///   its target: only a base in view of where it broke saw it. A base has no culture, so no
+    ///   hate test; an abandoned one (no player marks it) is no witness. It carries the news the
+    ///   way a caravan carries a rescue home.
+    ///
+    /// Every other village hears it later from a traveller, at hearsay weight, through the
+    /// knowledge layer's news: a base's board goes out in a packet with the next messenger on each
+    /// of its roads, as a village's does. The report names whom the band was after (the node it
+    /// marched on, else the feud's actor unless that is the breaker, else no one) and the place it
+    /// broke. A rout nobody witnessed records no report. Knowledge dedups per report, so a report
+    /// per witness made each village count the rout once per witness.
+    ///
+    /// Where the band broke is [`Conflict::break_point`]: where the breaker stands for a watched
+    /// fight, where the band is on the road otherwise. The band's target decides which base it
+    /// marched on and which village, not the distance from the break point.
     fn rescue_news(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
-        let camp = self.factions[f as usize].pos;
-        let r = f64::from(self.tun.rescue_news_blocks);
-        // The villages in news range: the node index's cells around the camp, in node order.
+        let (frame, target, feud, fighting) = {
+            let x = &self.parties[p];
+            (x.frame, x.target, x.feud, x.phase == Phase::Fighting)
+        };
+        let (bx, bz) = self.break_point(w, p, player, at);
+        let aim = self.target_pos(w, target);
+        // The rescued village: the node the band marched on, when it is a village. A feud's actor
+        // is a player or the shared settlers, never a village, so `whom` names one only here.
+        let rescued = match target {
+            Target::Node(i) => w
+                .nodes
+                .get(i)
+                .filter(|n| matches!(n.kind, NodeKind::Village(_)))
+                .map(|_| i),
+            _ => None,
+        };
+        // The nodes in view of the rout: the node index's cells around where it broke, in node
+        // order. The villages among them that hate the faction see it (a village that does not was
+        // not rescued, and one friendly to the band would be crediting the player for killing its
+        // friends); the player bases among them all do, if a player still marks them (an
+        // abandoned base keeps its node and roads for news already on them, but nobody is there).
         self.nodes.refresh(w);
         let topo = self.topo.clone();
-        let near = self.nodes.within(w, topo.of(camp.frame), camp, r);
-        let witnesses: Vec<ActorId> = near
-            .into_iter()
-            .filter_map(|i| {
-                let n = &w.nodes[i];
-                let NodeKind::Village(cu) = n.kind else {
-                    return None;
-                };
-                (c.hates(cu.name())
-                    && n.pos.frame == camp.frame
-                    && tdist(self.topo.of(camp.frame), pxz(n.pos), pxz(camp)) <= r)
-                    .then_some(n.actor)
-            })
-            .collect();
-        let mut heard = 0;
-        if !witnesses.is_empty() {
-            let x = &self.parties[p];
-            let whom = match x.target {
+        let view = f64::from(self.tun.view_radius);
+        let in_view = self
+            .nodes
+            .within(w, topo.of(frame), Pos::new(frame, bx, bz), view);
+        let mut villages: Vec<usize> = rescued.into_iter().collect();
+        let mut bases: BTreeSet<usize> = BTreeSet::new();
+        for i in in_view {
+            match w.nodes[i].kind {
+                NodeKind::Village(cu) if c.hates(cu.name()) && !villages.contains(&i) => {
+                    villages.push(i);
+                }
+                NodeKind::PlayerBase { .. } if w.base_active(i) => {
+                    bases.insert(i);
+                }
+                _ => {}
+            }
+        }
+        // The base the band marched on: the node itself, else the base at the district or place.
+        // Only a band that was Fighting there was at its target and met the player at it; one
+        // routed on the road was not, and a base far from where it broke saw nothing (the
+        // conservative reading of "a band broken at a player's base"). The village it marched on
+        // keeps its "always", on the road too.
+        if fighting {
+            match target {
+                Target::Node(i) => {
+                    if w.nodes
+                        .get(i)
+                        .is_some_and(|n| matches!(n.kind, NodeKind::PlayerBase { .. }))
+                        && w.base_active(i)
+                    {
+                        bases.insert(i);
+                    }
+                }
+                Target::District(..) | Target::Pos(_) => {
+                    for i in self.nodes.within(w, topo.of(aim.frame), aim, view) {
+                        if matches!(w.nodes[i].kind, NodeKind::PlayerBase { .. })
+                            && w.base_active(i)
+                        {
+                            bases.insert(i);
+                        }
+                    }
+                }
+            }
+        }
+        let (mut heard, mut told) = (0, 0);
+        let mut full = false;
+        let candidates = villages.len() + bases.len();
+        if candidates > 0 {
+            let whom = match target {
                 Target::Node(i) => w.nodes.get(i).map_or(ActorId::NULL, |n| n.actor),
-                _ => x.feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
+                _ => feud.filter(|a| *a != player).unwrap_or(ActorId::NULL),
             };
-            let frame = x.frame;
-            let (bx, bz) = self.party_pos(p, at);
             let rep = w.knowledge.record(Report {
                 who: player,
                 whom,
@@ -3825,9 +4270,21 @@ impl Conflict {
                 at,
                 place: Place::new(frame, bx, 64, bz),
             });
-            for va in witnesses {
-                if w.knowledge.witness(va, rep, at) {
-                    heard += 1;
+            // A full table that keeps nothing hands back NULL, which nobody can witness.
+            full = rep.is_null();
+            if !full {
+                // A node that saw it tells the next travellers at once: a village's feelings go
+                // out with the next commands and its news does not wait for its next market
+                // event, and a base has no market events to do it for it.
+                for i in villages {
+                    if w.node_witnesses(i, rep, at) {
+                        heard += 1;
+                    }
+                }
+                for i in bases {
+                    if w.node_witnesses(i, rep, at) {
+                        told += 1;
+                    }
                 }
             }
         }
@@ -3835,11 +4292,54 @@ impl Conflict {
             at,
             Some(f),
             "rescue",
-            format!(
-                "{heard} village(s) that hate the {} hear the band was broken",
-                c.name()
-            ),
+            if candidates == 0 {
+                format!("nobody saw the {} band broken: no rescue report", c.name())
+            } else if full {
+                format!(
+                    "the report table is full: the {} band's rout is not recorded",
+                    c.name()
+                )
+            } else if heard + told == 0 {
+                format!(
+                    "no witness took the report of the {} band's rout ({candidates} in view)",
+                    c.name()
+                )
+            } else {
+                format!(
+                    "{heard} village(s) and {told} base(s) saw the {} band broken (the rest hear it from travellers)",
+                    c.name()
+                )
+            },
         );
+    }
+
+    /// Where a band broke, for [`Conflict::rescue_news`]. A watched fight is centred on the
+    /// player who watches it (`start_fight`), who may stand up to `view_radius` from the band's
+    /// target, and the band's fighters are around them; so the breaker's latest report of their
+    /// position in the band's frame is where it broke, if that report is fresh enough for
+    /// [`Conflict::watcher`] to believe it and the player is within `view_radius` of the band
+    /// (the raw distance `watcher` reads). The breaker is the last player who killed any member,
+    /// and the rout can come later from a mob's kills or a chief felled by no player, with the
+    /// breaker gone anywhere: a player who has walked off did not see the band break, and the
+    /// band's own place is where it did. That place, [`Conflict::party_pos`], is also the answer
+    /// for a band on the road, a breaker not reported lately, or one in another frame. Nothing is
+    /// saved for this: the position is a read.
+    fn break_point(&self, w: &World, p: Handle<Party>, breaker: ActorId, at: Tick) -> (i32, i32) {
+        let x = &self.parties[p];
+        let band = self.party_pos(p, at);
+        if x.phase == Phase::Fighting
+            && let Some((pp, t)) = w.players.get(&breaker).and_then(|s| s.pos)
+            && pp.frame == x.frame
+            && at.0.saturating_sub(t.0) <= self.tun.player_stale_ticks
+            && tdist(
+                self.topo.of(x.frame),
+                pxz(pp),
+                (i64::from(band.0), i64::from(band.1)),
+            ) <= f64::from(self.tun.view_radius)
+        {
+            return (pp.x, pp.z);
+        }
+        band
     }
 
     // ---- seen on the march -----------------------------------------------------------------
@@ -3852,7 +4352,7 @@ impl Conflict {
         let x = &self.parties[p];
         if x.embodied
             || matches!(x.phase, Phase::Home | Phase::Mustering | Phase::Fighting)
-            || (self.peaceful && x.kind.is_war())
+            || (self.peaceful && (x.kind.is_war() || x.kind == PartyKind::Envoy))
         {
             return;
         }
@@ -3918,7 +4418,7 @@ impl Conflict {
                 boundary::DEMAND_TRIBUTE | boundary::DEMAND_STOP,
                 d.kind as u32,
                 item_of(d.good),
-                (d.tribute - d.paid).max(0) as i32,
+                (d.tribute - d.paid).clamp(0, i64::from(i32::MAX)) as i32,
                 d.deadline.0 as i64,
             ),
             None => (0, 0, 0, 0, 0),
@@ -4047,18 +4547,27 @@ impl Conflict {
     /// leaves), and the plugin hears every faction's territory again (docs/boundary.md §9.4).
     /// The kept notices go again later, from [`Conflict::resend_notices`], once the session's
     /// replay has caught up (MZB-31).
+    ///
+    /// The journal's replay follows, and it may hold what the last session's bodies did after the
+    /// pages were written: their casualties and their despawn. So the bodies the pages held in
+    /// Minecraft become a recalled stack of their epoch, beside the stacks already walking off,
+    /// for those records to count; whatever no record counted is dropped when the replay has
+    /// caught up ([`Conflict::replay_done`], MZB-138).
     pub fn session_start(&mut self) {
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             let x = &mut self.parties[p];
+            if x.embodied {
+                x.fold_spawned_into_recalled();
+            }
             x.embodied = false;
             x.seen_by = None;
             x.spawned.clear();
-            x.recalled.clear();
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
             }
         }
+        self.replaying = true;
         // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
         // again from what is kept, after the replay (`resend_notices`).
         self.outbox.retain(|c| {
@@ -4077,12 +4586,27 @@ impl Conflict {
         self.enforce_budget();
     }
 
+    /// The session's replay has caught up: the bodies no replayed record counted are gone with
+    /// the last session (nothing will report them), so the stacks the session start kept for the
+    /// replay are dropped, and their members count as alive, as they always did (MZB-138).
+    pub fn replay_done(&mut self) {
+        if !self.replaying {
+            return;
+        }
+        self.replaying = false;
+        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
+        for p in ids {
+            self.parties[p].recalled.clear();
+        }
+    }
+
     /// Every notice of a feud not played yet goes to the plugin again, once a session (MOWZIE.md
     /// §4.11). The host calls it after the session's replay has caught up, so a NOTICE_SHOWN
     /// journaled last session and not yet in the pages has cleared its notice first (MZB-31). A
     /// notice still queued (one a replayed record made again) is dropped first: what is kept is
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
+        self.replay_done();
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -4102,15 +4626,21 @@ impl Conflict {
     /// The world's difficulty (DIFFICULTY, MOWZIE.md §4.12). While it is Peaceful no war party
     /// leaves (`plan_feud` books no climb to a war rung, a muster's end stands down), and
     /// ambushes, raids and plunder do nothing; feuds keep their grievance and decay as usual.
+    /// No envoy leaves either, and none is in view (its stand-in cannot exist on Peaceful): the
+    /// climb to Envoy waits, an open demand's deadline is not booked, and an envoy that comes to
+    /// the end of its muster or its wait is held where it is (MZB-132). Scouts go on.
     ///
     /// On entering Peaceful every war party already out stops (MZB-15): one on its way or waiting
     /// at its target goes home, a watched fight ends, both with RECALL_SETTLED; one that has not
-    /// arrived steps its feud back a rung, as a muster that stands down does.
+    /// arrived steps its feud back a rung, as a muster that stands down does. An envoy in view
+    /// walks off (RECALL_PASSING) and stays where it is, abstract.
     ///
-    /// When it ends, a feud held below a war rung has its dwell clock paused over the Peaceful
-    /// span, then pushed back by a jitter of its own in [0, that rung's dwell) (MZB-16), and
-    /// every feud is planned again: the held climbs come one by one, never in one burst, and none
-    /// before its dwell. Applied at the engine's present; an unchanged value changes nothing.
+    /// When it ends, a feud held below a war rung or the Envoy has its dwell clock paused over
+    /// the Peaceful span, then pushed back by a jitter of its own in [0, that rung's dwell)
+    /// (MZB-16), every open demand's deadline moves by the span it lived through (a withdrawn
+    /// one's fresh envoy too), and every feud is planned again: the held climbs come one by one,
+    /// never in one burst, and none before its dwell. The envoys held go on to the moved
+    /// deadlines. Applied at the engine's present; an unchanged value changes nothing.
     pub fn set_difficulty(&mut self, w: &mut World, difficulty: u32) {
         let peaceful = difficulty == boundary::DIFFICULTY_PEACEFUL;
         if peaceful == self.peaceful {
@@ -4131,6 +4661,7 @@ impl Conflict {
         if peaceful {
             self.peaceful_since = at;
             self.stop_war_parties(w, at);
+            self.recall_envoys(at);
             return;
         }
         let since = self.peaceful_since;
@@ -4149,13 +4680,27 @@ impl Conflict {
                         .slot(a.to_bits())
                         .below(dwell)
                 };
+                // Held: a climb to a war rung or the Envoy (the culture's next rung up, MZB-50),
+                // or the repeat of the war rung it is on (MZB-51).
+                let (step, repeats) = {
+                    let x = self.feud(f, a).expect("listed");
+                    (x.step, self.culture(f).def.repeat_days.is_some())
+                };
+                let held_next = self.culture(f).next_up(step).is_some_and(peace_holds)
+                    || (repeats && matches!(step, Step::Raid | Step::Invasion));
                 let x = self.feud_mut(f, a).expect("listed");
-                let held = x.party.is_none()
-                    && x.demand.is_none()
-                    && x.step.up().is_some_and(Step::is_war);
-                if held {
+                let held = x.party.is_none() && x.demand.is_none() && held_next;
+                // A span of no time pauses nothing and jitters nothing (MZB-135).
+                if held && at > since {
                     let paused = x.since + at.since(x.since.max(since));
                     x.since = paused.max(Tick(at.0.saturating_sub(dwell))) + jitter;
+                }
+                // An open demand's deadline waits out the span its envoy could not come, and so
+                // does a withdrawn one's fresh envoy (MZB-132).
+                if let Some(d) = x.demand.as_mut() {
+                    d.deadline += at.since(d.made.max(since));
+                } else if x.holds_envoy() {
+                    x.wait_until += at.since(since);
                 }
                 self.plan_feud(f, a, at, false);
             }
@@ -4164,6 +4709,67 @@ impl Conflict {
             }
         }
         self.enforce_budget();
+        self.resume_envoys(w, at, since);
+    }
+
+    /// Entering Peaceful: embodied envoys walk off with RECALL_PASSING toward their next route
+    /// point, so that Java never holds an envoy for a deadline the engine has put off (MZB-132).
+    /// In handle order.
+    fn recall_envoys(&mut self, at: Tick) {
+        let out: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.kind == PartyKind::Envoy && x.embodied)
+            .map(|(h, _)| h)
+            .collect();
+        for p in out {
+            let x = &self.parties[p];
+            let (f, epoch) = (x.faction, x.epoch);
+            let next = x.route[(x.seg as usize + 1).min(x.route.len() - 1)];
+            self.recall(p, epoch, boundary::RECALL_PASSING, next);
+            self.note(
+                at,
+                Some(f),
+                "peaceful",
+                "the envoy walks off: the world is Peaceful".into(),
+            );
+        }
+    }
+
+    /// Leaving Peaceful, which began at `since`: the envoys held where they were go on. A muster's
+    /// end is booked again; a waiting envoy waits out its demand's deadline, moved by the span,
+    /// and its patience is moved by the part of the span it spent waiting: from the later of
+    /// `since` and its arrival (MZB-132, MZB-136). In handle order, after every feud's demand has
+    /// its new deadline.
+    fn resume_envoys(&mut self, w: &mut World, at: Tick, since: Tick) {
+        let held: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| {
+                x.kind == PartyKind::Envoy && matches!(x.phase, Phase::Mustering | Phase::Waiting)
+            })
+            .map(|(h, _)| h)
+            .collect();
+        for p in held {
+            if self.parties[p].phase == Phase::Mustering {
+                let until = self.parties[p].until;
+                let plan = self.bump(p);
+                self.schedule(until.max(at), Ev::Party { party: p, plan });
+                continue;
+            }
+            let (f, feud, until, arrived) = {
+                let x = &self.parties[p];
+                (x.faction, x.feud, x.until, x.times.last().copied())
+            };
+            let deadline = feud
+                .and_then(|a| self.feud(f, a))
+                .and_then(|x| x.demand)
+                .map_or(until + at.since(since), |d| d.deadline);
+            // It reached its target at the end of its route; only the time since is waiting.
+            let waited = at.since(arrived.map_or(since, |t| t.max(since)));
+            self.parties[p].bored_at += waited;
+            self.wait(w, p, deadline.max(at + 1), at);
+        }
     }
 
     /// Entering Peaceful: every war party out stops (MZB-15). In handle order.
@@ -4207,8 +4813,11 @@ impl Conflict {
                 .feud(f, a)
                 .is_some_and(|x| x.party == Some(p) && PartyKind::of_step(x.step) == Some(kind))
         {
-            let x = self.feud_mut(f, a).expect("checked");
-            x.step = x.step.down();
+            // Past empty rungs, as every step down (MZB-50).
+            let to = self
+                .culture(f)
+                .next_down(self.feud(f, a).expect("checked").step);
+            self.feud_mut(f, a).expect("checked").step = to;
         }
     }
 
@@ -4394,9 +5003,20 @@ impl Conflict {
                 }
             }
             Obs::Dematerialized(d) => {
-                let Some(p) = self.party_of(d.agent, d.epoch) else {
+                // By the party, not through `party_of`: a band recalled at one epoch and seen
+                // again at the next has its old epoch's despawn still to come (MZB-131).
+                let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
                     return;
                 };
+                let live = {
+                    let x = &self.parties[p];
+                    x.embodied && x.epoch == d.epoch
+                };
+                let entry = self.parties[p].recalled.iter().position(|e| e.0 == d.epoch);
+                if !live && entry.is_none() {
+                    // Nothing of that epoch is in Minecraft by the engine's books: stale.
+                    return;
+                }
                 let f = self.parties[p].faction;
                 let c = self.culture(f).clone();
                 let back_of =
@@ -4415,7 +5035,7 @@ impl Conflict {
                     .map(|&u| back_of(u, &self.java_dict, &self.cultures))
                     .collect();
                 let x = &mut self.parties[p];
-                if x.embodied {
+                if live {
                     // The plugin despawned it (its chunks unloaded): alive are those never
                     // spawned plus the survivors it counts.
                     for (k, e) in x.units.iter_mut().enumerate() {
@@ -4425,14 +5045,20 @@ impl Conflict {
                     x.spawned.clear();
                     x.embodied = false;
                     x.seen_by = None;
-                } else {
-                    // After the engine's recall: only those that died on the way out go.
+                } else if let Some(i) = entry {
+                    // After the engine's recall: only those that died on the way out go. The
+                    // band may be in view again at a newer epoch, spawned from the counts before
+                    // these deaths were known: its bodies are clamped to who is alive.
+                    let (_, recalled) = x.recalled.remove(i);
                     for (k, e) in x.units.iter_mut().enumerate() {
-                        let r = x.recalled.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
+                        let r = recalled.iter().find(|s| s.0 == e.0).map_or(0, |s| s.1);
                         e.1 = e.1.saturating_sub(r.saturating_sub(backs[k]));
                     }
+                    for s in &mut x.spawned {
+                        let alive = x.units.iter().find(|e| e.0 == s.0).map_or(0, |e| e.1);
+                        s.1 = s.1.min(alive);
+                    }
                 }
-                x.recalled.clear();
             }
             Obs::Casualties(cs) => self.casualties(w, cs, at),
             Obs::ChiefKilled(ck) => {
@@ -4447,8 +5073,14 @@ impl Conflict {
                 let Some(p) = self.party_of(a.agent, a.epoch) else {
                     return;
                 };
+                // Only an envoy has a guard to strike or a demand to refuse (MZB-144).
+                if self.parties[p].kind != PartyKind::Envoy {
+                    return;
+                }
                 let f = self.parties[p].faction;
-                let Some(actor) = self.parties[p].feud else {
+                // The actor its demand is to: its feud, or the demand that names it once it is
+                // going home.
+                let Some(actor) = self.parties[p].feud.or_else(|| self.demand_actor(f, p)) else {
                     return;
                 };
                 match a.answer {
@@ -4456,16 +5088,31 @@ impl Conflict {
                     boundary::ANSWER_ATTACKED => {
                         let insult = self.tun.envoy_insult_kills;
                         let attacker = self.actor_of_uuid(w, a.player);
+                        // The demand's own target: the blow is its refusal, and the insult counts
+                        // against its district as a killing of the envoy's members does
+                        // (`casualties`; the camp's own place would point the feud, and the
+                        // scouts the refusal sends, at the camp: MZB-133). Any other player's blow
+                        // is that player's insult alone (MZB-145): at the envoy's place, on their
+                        // own feud, against no district (the target's is not theirs), and it
+                        // refuses nothing: the demand is still to its target.
+                        let own = attacker == actor;
+                        let (x, z) = self.party_pos(p, at);
+                        let district = match self.parties[p].target {
+                            Target::District(d, _) if own => Some(d),
+                            _ => None,
+                        };
                         let sig = Signal {
                             faction: Some(self.factions[f as usize].key),
                             kind: SignalKind::Killing,
                             amount: insult,
                             actor: attacker,
-                            pos: self.factions[f as usize].pos,
-                            district: None,
+                            pos: Pos::new(self.parties[p].frame, x, z),
+                            district,
                         };
                         self.signal(w, sig, at);
-                        self.refuse(w, f, actor, at, insult);
+                        if own {
+                            self.refuse(w, f, actor, at, insult);
+                        }
                     }
                     _ => {}
                 }
@@ -4488,8 +5135,7 @@ impl Conflict {
                 // Items real mobs carried off from containers: they left the player's world.
                 let goods = self.goods_of(w, &l.items);
                 for (g, a) in goods {
-                    *self.parties[p].from_players.entry(g).or_default() += a;
-                    add(&mut self.ledger.from_players, g, a);
+                    self.took_from_players(p, g, a);
                 }
             }
         }
@@ -4516,7 +5162,13 @@ impl Conflict {
         let Some(p) = self.party_of(cs.agent, cs.epoch) else {
             return;
         };
-        if !self.parties[p].embodied {
+        // A casualty of bodies kept as a recalled stack of their epoch: the walk-off's deaths of a
+        // band the player left, and a replay's, whose session start kept the last session's
+        // bodies the same way (MZB-138). Both are counted off that stack, whether replaying or
+        // live (MZB-142). The despawn removes the stack, so a straggler after it is no death.
+        let replayed =
+            !self.parties[p].embodied && self.parties[p].recalled.iter().any(|e| e.0 == cs.epoch);
+        if !self.parties[p].embodied && !replayed {
             // After its DEMATERIALIZED the survivors were counted: a straggler is not a death.
             return;
         }
@@ -4534,7 +5186,15 @@ impl Conflict {
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
         let u = x.units[k].0;
-        if let Some(s) = x.spawned.iter_mut().find(|s| s.0 == u) {
+        let stacks = if replayed {
+            x.recalled
+                .iter_mut()
+                .find(|e| e.0 == cs.epoch)
+                .map(|e| &mut e.1)
+        } else {
+            Some(&mut x.spawned)
+        };
+        if let Some(s) = stacks.and_then(|v| v.iter_mut().find(|s| s.0 == u)) {
             s.1 = s.1.saturating_sub(t);
         }
         self.stats.casualties += u64::from(t);
@@ -4591,6 +5251,22 @@ impl Conflict {
                 }
                 self.go_home(w, p, boundary::RECALL_SETTLED, at);
             } else {
+                // A war band wiped out on the road is routed as one routed in a fight is: a
+                // rout, and a rescue report when a player broke it (CL-D61). It was counted
+                // nowhere before.
+                if self.parties[p].kind.is_war() {
+                    self.stats.routs += 1;
+                    if let Some(player) = self.parties[p].breaker {
+                        self.rescue_news(w, p, player, at);
+                    }
+                    // And a raid beaten off (TK26), as when its war chief is killed there. (A band
+                    // home with loot stays Waiting only at a haven with no storehouse: never.)
+                    if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
+                        let (x, z) = self.party_pos(p, at);
+                        let frame = self.parties[p].frame;
+                        self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
+                    }
+                }
                 self.go_home(w, p, boundary::RECALL_ROUTED, at);
             }
         }
@@ -4607,6 +5283,10 @@ impl Conflict {
         at: Tick,
     ) {
         let f = self.parties[p].faction;
+        // A chief already dead of age is succeeded first, whatever has asked for the chief yet
+        // (the lazy succession): the band's flag goes with it and this record, for the body of
+        // the old chief, is stale (MZB-146).
+        self.ensure_chief(w, f, at);
         if !self.parties[p].chief {
             return;
         }
@@ -4631,7 +5311,7 @@ impl Conflict {
             w.knowledge.witness(heir, r, at);
         }
         w.knowledge.die(chief, at);
-        self.succeed(w, f, at, killer);
+        self.succeed(w, f, at, killer, true);
         let bend = self.temper(f).bend(Trait::Bold, 1000, 50).max(1);
         let cowed = (days_to_ticks(self.culture(f).def.cowed_days) as f64 * 1000.0
             / f64::from(bend)) as u64;
@@ -4647,11 +5327,16 @@ impl Conflict {
             });
         if let Some(a) = self.parties[p].feud.or(killer) {
             let steps = self.tun.chief_rout_steps;
-            if let Some(feud) = self.feud_mut(f, a) {
+            if let Some(from) = self.feud(f, a).map(|x| x.step) {
+                // Each step down skips the rungs the culture has no party for (MOWZIE.md
+                // ledger 2).
+                let c = self.culture(f);
+                let mut to = from;
                 for _ in 0..steps {
-                    feud.step = feud.step.down();
+                    to = c.next_down(to);
                 }
-                feud.step = feud.step.max(Step::Notice);
+                let feud = self.feud_mut(f, a).expect("exists");
+                feud.step = to.max(Step::Notice);
                 feud.since = at;
             }
         }
@@ -4661,7 +5346,18 @@ impl Conflict {
         if self.parties[p].phase == Phase::Fighting {
             self.end_fight(w, p, boundary::RECALL_ROUTED, at);
         } else if self.parties[p].phase != Phase::Home {
+            // A band routed on the road is a rescue as much as one routed in a fight (CL-D61).
             self.stats.routs += 1;
+            if let Some(player) = self.parties[p].breaker {
+                self.rescue_news(w, p, player, at);
+            }
+            // And a raid beaten off (TK26): a band out on the road, or waiting at its target (a
+            // siege between rounds, a fight nobody watches any more); one still mustering at its
+            // camp had not set out on anyone.
+            if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
+                let frame = self.parties[p].frame;
+                self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
+            }
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
         }
         self.note(
@@ -4673,6 +5369,8 @@ impl Conflict {
                 cowed as f64 / TICKS_PER_DAY as f64
             ),
         );
+        // Every feud replans here, the one whose step just fell among them, also when the band
+        // was already walking home and neither `go_home` nor `end_fight` ran above.
         for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
@@ -4725,9 +5423,10 @@ impl Conflict {
         for (g, taken) in &self.ledger.from_villages {
             let landed = self.ledger.landed.get(g).copied().unwrap_or(0);
             let h = held.get(g).copied().unwrap_or(0);
-            if *taken != landed + h {
+            let gone = self.ledger.destroyed.get(g).copied().unwrap_or(0);
+            if *taken != landed + h + gone {
                 return Err(format!(
-                    "good {}: taken {taken}, landed {landed}, held {h}",
+                    "good {}: taken {taken}, landed {landed}, held {h}, destroyed {gone}",
                     g.0
                 ));
             }
@@ -4747,9 +5446,15 @@ impl Conflict {
         for (g, taken) in &self.ledger.from_players {
             let landed = self.ledger.landed_from_players.get(g).copied().unwrap_or(0);
             let c = carried.get(g).copied().unwrap_or(0);
-            if *taken != landed + c {
+            let gone = self
+                .ledger
+                .destroyed_from_players
+                .get(g)
+                .copied()
+                .unwrap_or(0);
+            if *taken != landed + c + gone {
                 return Err(format!(
-                    "good {}: from players {taken}, landed {landed}, carried {c}",
+                    "good {}: from players {taken}, landed {landed}, carried {c}, destroyed {gone}",
                     g.0
                 ));
             }

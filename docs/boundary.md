@@ -1537,9 +1537,25 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   culture's tolerated rate applies). While a district is unloaded, the composition sets the same
   source's rate from the industry engine's learned rate of the pollution good (choice K2-9).
 - **BAND_DEMATERIALIZED** after the engine's BAND_RECALL can only lower the counts: those that died
-  on the way out go; a despawn the plugin decided (chunks unloaded) sets them.
+  on the way out go; a despawn the plugin decided (chunks unloaded) sets them. It names its band by
+  agent and epoch, and the engine keeps the bodies of every epoch it recalled until that epoch's
+  despawn comes, so one that arrives while the band is in view again at a newer epoch still counts
+  its dead (MZB-131). Across a restart the bodies the pages held in Minecraft are kept the same way
+  until the journal's replay has caught up, so a BAND_CASUALTIES or a BAND_DEMATERIALIZED journaled
+  after the last page save is counted as the session that wrote it counted it; what the replay
+  did not count is dropped then, its members alive as before (MZB-138). The replay has caught up
+  when the engine's `Replay` has applied every record before the session's first live one, however
+  many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
+  counts off the bodies kept for its epoch live and replayed alike (MZB-142).
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
-  that player (P14). CHIEF_KILLED routs the band (§9.5). Casualties that leave an envoy party with
+  that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
+  flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
+  the heir taking over at home, so the band carries on without a chief body, a chief body already in
+  Minecraft stays there until the band despawns, and a CHIEF_KILLED for it is dropped (MZB-139,
+  MZB-146); the plugin still journals it when that body dies (nothing else comes of it on the Java
+  side: the death and its drops are the mob's own, and the in-world news is a no-op until it lands:
+  MZB-147).
+  Casualties that leave an envoy party with
   no member, none of the party's casualties or its chief's death having named a player, withdraw its
   demand (DEMAND_SETTLED 5, §9.4).
 - **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
@@ -1618,14 +1634,23 @@ the player's next entry. A plugin that plays
 nothing answers NOTICE_SHOWN at once.
 
 **Difficulty.** The plugin journals DIFFICULTY at every session start and on every change of the
-world's difficulty. On Peaceful the engine sends no war band and recalls the ones in the world
-(BAND_RECALL 6): the plugin needs no rule of its own.
+world's difficulty. On Peaceful the engine sends no war band and no envoy, and recalls the ones in
+the world: a war band with BAND_RECALL 6, an envoy in view with BAND_RECALL 4 (passing; it walks off
+and stays abstract, MZB-132): the plugin needs no rule of its own.
 
 **An envoy** is spawned as one group at (x, y, z) (SURFACE), peaceful, and walks to or waits at the
 target as BAND_STEER says. Interacting with it shows the demand: stop the signal, or pay `count`
 of the item before `deadlineTick`. Paying is a TRIBUTE_PAID with the envoy's agent (the items leave
 the player's inventory; an op id); refusing or attacking is an ENVOY_ANSWER. An envoy that is
-killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3).
+killed is a CASUALTIES record like any member's (and an insult: ENVOY_ANSWER 3). Any player's blow
+on the envoy or a guard lifts the guard. A blow from the player the demand is to (or from any
+player, for a demand to none) closes it on the plugin's side (the envoy takes nothing more) and is
+answered once with an ENVOY_ANSWER 3: the engine books the insult against that player's district
+and refuses the demand (DEMAND_SETTLED 4). A blow from another player is answered once per player
+with an ENVOY_ANSWER 3 naming them: the engine books it as their own insult, at the envoy's place
+and against no district, and refuses nothing; the demand stays open to its player and the plugin
+goes on taking that player's tribute (MZB-145). ENVOY_ANSWER is an envoy party's: the engine
+ignores it for any other party (MZB-144).
 
 **The raid director.** A war band that arrives where a player watches materializes in **waves**:
 each BAND_MATERIALIZE with an `arcRadius` spawns its members on the arc of that radius around
@@ -1680,18 +1705,32 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   on its return: conservation exact). A district raid's threats carry the band's own loads (its
   units' carry and blocks broken, `Threat::loads`, C2-1); threats without loads keep the industry
   engine's per-class tunables. **Watched**, the director above.
-- **Villages that hate a faction** hear when a player breaks one of its bands (a rescue report, C24),
-  and remember the raids on them (a robbery report against the faction).
+- **The real witnesses of a rout** hear when a player breaks one of a faction's bands (a rescue report,
+  C24; CL-D61): the village the band marched on, every village that hates the faction within the
+  view radius of where the band broke (where the breaker stands for a watched fight if within the
+  view radius of the band, else where the band is), and every player base within that radius that
+  a player still marks, plus the base a band that was fighting at its target marched on. A band
+  routed on the road records the rescue as one routed in a fight does, seen there by the village it
+  marched on and a base in view. Every other
+  village hears it from travellers. Villages that
+  hate a faction also remember the raids on them (a robbery report against the faction).
 - **Peaceful** (DIFFICULTY 0, MOWZIE.md §4.12). No war party (raid, invasion, siege, plunder) leaves:
   `plan_feud` books no climb to a war rung, and a war party mustering when Peaceful begins stands
   down at its muster's end (its warriors back in the pool, its feud a rung down, so that it climbs
   again later). When Peaceful begins, every war party already out stops at once (MZB-15): one on the
   road goes home, its feud a rung down (MZB-29); a watched fight ends; a siege waiting at its target
   goes home. Those in Minecraft get BAND_RECALL 6. No war body spawns while it is Peaceful, and an
-  ambush booked before never falls. Notices, envoys and scouts go on, and grievance keeps its curve.
-  When Peaceful ends every feud is planned again, its dwell clock paused over the Peaceful span and
-  shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so no burst
-  of raids follows. The flag and the span's start are saved (MZB-14 to MZB-17).
+  ambush booked before never falls. Notices and scouts go on, and grievance keeps its curve. No
+  envoy leaves either, its body being a stand-in that cannot exist on Peaceful (MZB-132): the climb
+  to Envoy waits like a war rung's, an envoy in view walks off (BAND_RECALL 4) and stays where it is,
+  abstract, and its muster's end or its wait is held; no demand is made or comes due, so a feud
+  holds at its notice with its grievance kept. A refusal that reaches the engine on Peaceful is
+  recorded, but its climb to a war rung waits for Normal (MZB-134). When Peaceful ends every feud is
+  planned again, its dwell clock paused over the Peaceful span (a span of no time moves nothing,
+  MZB-135) and shifted by a per-feud jitter in [0, dwell) from the faction and the player (MZB-16), so
+  no burst of raids follows; every open demand's deadline moves by the span it lived through, and the
+  envoys held go on to it, their patience moved by the part of the span they spent waiting
+  (MZB-132, MZB-136). The flag and the span's start are saved (MZB-14 to MZB-17).
 - **Kept notices** (ledger 14). A feud's last FACTION_NOTICE is kept in its row until a NOTICE_SHOWN
   for its serial, faction and player, or until the feud is forgotten; a later notice replaces it.
   Serials are engine-wide, so a forgotten and re-made feud never reuses one (MZB-28). Each session
@@ -2058,10 +2097,10 @@ for each level a subscriber is in, and none when nobody is subscribed.
   client draws it there itself (DHT33, DHT45). The REAL goes out as the entity joins (§12.2), not only at
   the sweep.
 
-## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70)
+## 13. Talking to NPCs: TALK_ASK, TALK_FACTS and TALKED (TALK.md §9; docs/choices-talk.md TK10, TK32 to TK59, TK60 to TK70, TK71 to TK84)
 
 What a talker tells a player who crouches and clicks on it. Java asks the engine what the holder
-(a village, a caravan, later a camp or a ship) knows; the engine answers with the holder's mood, its
+(a village, a caravan, a camp, later a ship) knows; the engine answers with the holder's mood, its
 market's shortest and fullest goods, its ports' state and up to four pieces of news, each naming who
 did what to whom and where. TALK.md §9 holds the reasons and the lines Java builds from them; this
 section is the wire. A ribbit's credited talk goes the other way, as TALKED (§13.7).
@@ -2093,14 +2132,20 @@ as every latest-wins kind is). Size 8 + 56n; each ask starts at 8 + 56i:
 | 28 | u32 | dimension (dictionary 1); the engine's frame is its id, so one above 65,535 is refused |
 | 32 | u64 | holder |
 | 40, 44 | i32 | the talker's x, z |
-| 48 | u32 | flags: 1 news, 2 faction facts |
+| 48 | u32 | flags: 1 NEWS, 2 FACTION |
 | 52 | u32 | reserved |
+
+Flag 1 asks for the news (as before). Flag 2 asks for a camp's faction block (§13.3); it means
+something only with holder kind 3, and the engine ignores it for any other holder (TK72). Java sets
+2 for kind 3 and nothing but 1 for the rest, so a village's, a caravan's and a ribbit's ask is the
+same bytes it was.
 
 ### 13.3 TALK_FACTS (0x8A00, aux = news n, at most 4; per session)
 
 The answer to one ask, one tick or more later. No op id, never kept, never resent after a restart:
 its sequence is the session's (`session_seq`), and Java drops an ask's wait when it lands or after
-20 ticks (TK5). Size 48 + 120n:
+20 ticks (TK5). Size 48 + 120n, or 48 + 120n + 48 with the faction block (flag 8); at most
+48 + 4 x 120 + 48 = 576 bytes:
 
 | Offset | Type | Field |
 |---|---|---|
@@ -2113,9 +2158,34 @@ its sequence is the session's (`session_seq`), and Java drops an ask's wait when
 | 40 | u32 | most glutted good (0 none) |
 | 44 | u32 | its stock per target, thousandths |
 | 48 | n x 120 | news, best first |
+| 48 + 120n | 48 | the faction block, only with flag 8 |
 
 Without HOLDER everything after the flags is zero and n is 0 (TK32, TK38). News comes only when the
-ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way.
+ask's flag 1 is set; PORT_CLOSED and BLOCKADED are facts about the holder and come either way. The
+`aux` is the news count only: the block is never counted in it. Flag 8 is set when, and only when, the
+block is there: the engine writes it for an ask with flag 2 about a camp it knows, both encoders set the flag
+exactly when they write the block, and both decoders refuse a record with flag 8 that is too short to hold it
+(TK72).
+
+The **faction block** (48 bytes, offsets from its start, slice 4). It is the camp's own state, and its
+feud against the player who asked (a player the camp has no feud with reads rung 0, signal none and
+grievance 0):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0 | u8 | rung: the feud's step at the asker (0 none, 1 notice, 2 envoy, 3 scouts, 4 raid, 5 invasion, 6 siege; TK77) |
+| 1 | u8 | mood flags: 1 COWED, 2 CHIEF_OUT, 4 NEW_CHIEF, 8 LEAN, 16 STRONG, 32 YOU_KILLED_CHIEF (reserved, never set; TK80) |
+| 2 | u16 | signal: the kind that holds most of the grievance (0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building, as FACTION_NOTICE's `kind`); 0xFFFF none |
+| 4 | f32 | grievance: the projected sum over every kind, at the engine's time |
+| 8 | u32 | cowed ticks left (0 when not cowed; saturating) |
+| 12 | u32 | plunders so far |
+| 16 | 32 | the chief's ref (a §13.3 ref; all zeros for now, reserved for the Mowzie plugin's name line, TK80) |
+
+The moods are worked out in the engine from the conflict's own rows (`rtsim_conflict::view::faction_facts`,
+TK74): COWED while the camp's cowed time is not over, CHIEF_OUT while its war chief is out with a band,
+NEW_CHIEF for ten game days after a succession and never before the first, and while the chief is dead and the heir answers (the succession is lazy, TK75), LEAN under a third of
+the culture's warrior cap and STRONG at the cap, within half a warrior (TK76). A fresh camp starts at its
+cap, so it reads STRONG until a raid costs it.
 
 A **news item** (120 bytes, offsets from its start): 0 u16 report kind, 2 u8 severity, 3 u8 the
 report's flags, 4 u32 talk flags (1 YOU_DID, 2 TO_YOU, 4 TO_US, 8 BY_US, 16 SEEN), 8 u32 ticks ago
@@ -2142,15 +2212,27 @@ when one is class 0 or DEAD, is TK36 and TK37.
   buffer that cannot hold the next answer keeps its ask for the next one.
 - **Read only:** it changes nothing in the world. With phase 1 off an ask is answered at once
   without HOLDER (TK32).
+- **A camp (holder kind 3, slice 4):** the holder is the camp's key, the same u64 as FACTION_FOUND's.
+  It is known while the conflict is on and has a faction of that key, and unknown (no HOLDER) otherwise
+  (TK71). A haven is not a knowledge holder, so the camp's news is its chief's board, else its heir's;
+  a camp with neither answers with HOLDER, sentiment 0 and no news, because it is known and has
+  nothing to tell (TK71). A report whose `whom` is the camp's own actor, its chief, its heir or its haven is
+  TO_US, and one whose `who` is any of them is BY_US (TK73). The conflict is read through `rtsim_conflict::view::faction_facts`
+  and nothing else (TK74).
 - **TALKED** is the one record that does change it, and is journaled: §13.7.
 
 ### 13.5 Test order 40: `TalkReport`
 
 TEST mode only (rtsim-host's fake Java keeps the TALK_FACTS records it is sent, `Java::talk_facts`,
-since slice 3, and the conflict and ports engines do not record news yet). Posts one report on a village's board: village u64, kind u16,
+since slice 3). The conflict records few reports on a camp's board so far (`chief_killed` puts a Killing, who the
+killer and whom the chief, on the chief's and the heir's; Robbery and Rescue go on villages' boards), so a test
+puts the rest there. Posts one report on a village's board: village u64, kind u16,
 severity u8, flags u8, who and whom as (class u8, a u64, b u64) in §13.3's classes, place x i32 and
 z i32 (each within the pack's range, -8,388,608 to 8,388,607), ago u32 ticks. Refusals, and what
-it does to the knowledge tables, are TK40.
+it does to the knowledge tables, are TK40. A `village` key that is no adopted village but is a camp's files
+the report on the camp's board, its chief's (else its heir's); a camp with neither is refused as an unadopted
+village. A key that is both an adopted village's id and a camp's goes to the village: the village lookup wins
+(TK79).
 
 ### 13.6 What the Java side does with them
 
@@ -2167,8 +2249,13 @@ it does to the knowledge tables, are TK40.
   dragon, lair or ship (the body entity id), dictionary 2 for the goods. The talk reads it as a
   `TalkAnswer`; a talker's candidates see only `api/TalkFacts` (no wire types).
 - **Holders.** A villager (not a child, TK16) of an adopted village asks as holder kind 1 with Java's village id; a wandering
-  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. Kinds 3 and 4 are
+  trader that is a live `human_caravan` group's member as kind 2 with the group's agent. A camp's talker (the
+  Mowzie plugin's) asks as kind 3 with the camp's key; the core sets ask flag 2 for it (`TalkRecords.askFlagsFor`),
+  decodes the block into `TalkRecords.Faction`, and `TalkMoods` reads it (§13.6 below, TK78). Kind 4 is
   not asked by Java yet (TK38).
+- **A camp's moods.** From the block: cowed 4, new chief 3, chief out 3, grudge 3 (the feud is at rung 1 or
+  more), lean 2, strong 1.5, none with an argument. A mood whose topic has no lines in the speaker's voice is
+  skipped, as for every mood; the camp's lines are the lang's (TK78).
 - **Test hooks.** `TalkReport` is `NativeEngine.talkReport(...)` (`NativeCodec.Orders.talkReport`), with
   `NativeEngine.TalkActor` for the (class, a, b) of an actor. `TalkAsks.mute` writes no ask, so the 20
   ticks' timeout closes it. `Refs.force` forces names or descriptions (TK52). The GameTests are

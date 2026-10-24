@@ -293,6 +293,24 @@ impl World {
         id
     }
 
+    /// Node `i` saw `report` first-hand and tells the next travellers (CL-D61): the report goes on
+    /// its board at the full delta, a ribbit village's feelings go out with the next commands and
+    /// the vanilla gossip is flushed (the steps of [`World::village_report`]), and the board goes
+    /// in a packet with the next messenger on each of its roads. A village would send with its
+    /// next market event; a player base has none of its own (it keeps no stock and no curves), so
+    /// a witnessing base must be told to send, and a village that saw the rout is told too, so it
+    /// does not wait for one. The node is the news' source: everyone else learns it from a
+    /// packet, at hearsay weight. False if the node already knew the report.
+    pub fn node_witnesses(&mut self, i: usize, report: ReportId, at: Tick) -> bool {
+        self.run_until(at);
+        let actor = self.nodes[i].actor;
+        let new = self.knowledge.witness(actor, report, at);
+        self.touch_sentiment(i);
+        self.flush_gossip();
+        self.emit(i, at, false);
+        new
+    }
+
     /// A player talked with one of the village's ribbits (TALKED): the village's sentiment toward
     /// them rises by [`TALK_CREDIT`]. Not a report: nothing happened that news could carry.
     pub fn village_talked(&mut self, i: usize, player: ActorId, at: Tick) {
