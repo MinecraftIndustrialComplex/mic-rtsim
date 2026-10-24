@@ -1264,10 +1264,17 @@ conservative option at its fork.
   `a_held_arrivals_refused_fight_is_fought_when_replayed` (`Run::refuse` turns the plugin's
   BAND_MATERIALIZED of the band's fight into a refusal, reason 1): replayed (Home, false, epoch 1,
   until 24020, watched 0, raids [55870]) against live (Home, false, epoch 2, until 61270, watched
-  1, no raid). A refused sighting inside the slack is read as the fight, the residual RP-48 named
-  for BAND_MATERIALIZED. Corrected by RP-56: BAND_SPAWN_REJECTED has no free bytes (24 agent, 32
-  epoch, 36 wave, 40 u64 cmdSeq, 48 bytes), so fixes4 item 2's echoed flag cannot go there; this
-  residual stays and needs a layout change. A replayed refusal of a newer epoch for a party not held
+  1, no raid). Corrected (fixes5 item 2): BAND_SPAWN_REJECTED has no free bytes (24 u64 agent, 32
+  u32 epoch, 36 u32 wave, 40 u64 cmdSeq, 48 bytes), so RP-56's echoed flag cannot go there, and no
+  layout changes on this branch. The residual, accepted by the coordinator: a sighting refused
+  inside a held fight's slack is read as the fight's refusal, so the hold ends early, at the
+  refusal, and the fight's own BAND_MATERIALIZED then finds no hold and is lost as RP-56 says (its
+  casualties and loot count against nothing). The books hold (one resolution); only live parity is
+  lost, and only for a sighting refused inside a held fight's slack. The option not taken, pending
+  the coordinator, who wants no wave-field change now: the refusal's `wave` is a u32 and
+  BAND_MATERIALIZE's a u16, so its high half (bytes 38 and 39) could carry the echoed flags; noted
+  in boundary.md's BAND_SPAWN_REJECTED row and §6.1 for whoever next changes that layout. A
+  replayed refusal of a newer epoch for a party not held
   raised no epoch floor, so the next decision after the replay could take the refused epoch again;
   closed by RP-57. The sims are unchanged.
 - **RP-55** (the replay window's growth, logged; §3.2; RP-49; fixes4 item 7): the engine logs a
@@ -1317,7 +1324,7 @@ conservative option at its fork.
   (raids, casualties, watched, loot, unheld) ([55870], 3, 0, 5000, 0) against ([55870], 0, 0, 0, 1),
   live ([], 3, 1, 5000). Case B and the control one tick inside passed before the fix (they guard
   against reading the flag the other way). The sims are unchanged but for the new stat. Not done: a
-  refused sighting inside the slack (RP-54's residual).
+  refused sighting inside the slack (RP-54's residual, accepted).
 - **RP-57** (every record that names an epoch raises the floor; §5.3; RP-7; RP-30; RP-37; fixes5
   item 1): while replaying, `Conflict::ingest` folds the record's party epoch (`Obs::party_epoch`)
   into the agent's floor first, before the op-id dedupe, the later kinds' return and any check that
