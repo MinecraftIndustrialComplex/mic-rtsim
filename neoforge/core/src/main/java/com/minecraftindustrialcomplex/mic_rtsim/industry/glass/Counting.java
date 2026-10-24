@@ -325,7 +325,7 @@ public final class Counting {
      * goes out under every (node at its mover's position that is no store, STORE node at its store's position)
      * pair: several nodes can sit at one block (a packager is two), the engine takes a key's counts once per
      * block (SC94) and skips the pairs it did not ask for. One entry per good; a key with no good counted yet
-     * has one entry with good NONE, for its {@code since}. Several records when the entries do not fit one.
+     * has one entry with good NONE, for its {@code since}. Several records when the entries do not fit one, each cut between (mover node, store node) pairs.
      */
     void sample(District d, Numbering num, int sweep, long now) {
         Held h = held.get(d.id);
@@ -333,12 +333,15 @@ public final class Counting {
             return;
         IntArrayList mover = new IntArrayList(), store = new IntArrayList(), good = new IntArrayList();
         LongArrayList since = new LongArrayList(), in = new LongArrayList(), out = new LongArrayList();
+        // where each (mover node, store node) pair's entries start: a record is cut only between pairs
+        IntArrayList starts = new IntArrayList();
         for (Key k : h.keys.values()) {
             if (k.snapSweep != sweep)
                 continue;
             int[] ms = num.moversAt(k.mover), ss = num.storesAt(k.store);
             for (int m : ms)
                 for (int s : ss) {
+                    starts.add(mover.size());
                     int goods = Math.max(1, k.snapGood.length);
                     for (int g = 0; g < goods; g++) {
                         boolean none = k.snapGood.length == 0;
@@ -353,11 +356,16 @@ public final class Counting {
         }
         int total = mover.size();
         int per = (GraphBuilder.MAX_RECORD - GlassRecords.CountSample.ENTRIES) / GlassRecords.CountSample.ENTRY;
-        for (int from = 0; from < total; from += per) {
-            int n = Math.min(per, total - from);
+        int[] cuts = cuts(starts.toIntArray(), total, per);
+        int from = 0;
+        for (int to : cuts) {
+            if (to <= from)
+                continue;
+            int n = to - from;
             int at = ind.latest(GlassRecords.IND_COUNT_SAMPLE, GlassRecords.CountSample.size(n), n);
             if (at < 0) {
                 samplesDropped++;
+                from = to;
                 continue;
             }
             ByteBuffer b = ind.open();
@@ -375,7 +383,38 @@ public final class Counting {
                 b.putLong(e + GlassRecords.CountSample.E_OUT, out.getLong(from + i));
             }
             samplesSent++;
+            from = to;
         }
+    }
+
+    /**
+     * Where a sample's entries are cut into records of at most {@code per} entries (the last cut is
+     * {@code total}): whole pairs each ({@code starts} are the entries' first index of each (mover node, store
+     * node) pair, ascending), so a record lost on a full outbound ring leaves a pair missing (the engine sees
+     * no cover for it and discards the sweep's unit) and never a pair with some of its goods (which would read
+     * as goods not moved). A single pair with more goods than one record holds (over a thousand goods at one
+     * (mover, store)) is split in {@code per} entries: that case alone can lose part of a pair, and is not
+     * reachable with a store's real contents.
+     */
+    static int[] cuts(int[] starts, int total, int per) {
+        int[] cuts = new int[starts.length + total / Math.max(1, per) + 2];
+        int n = 0, recStart = 0;
+        for (int g = 0; g < starts.length; g++) {
+            int gs = starts[g], ge = g + 1 < starts.length ? starts[g + 1] : total;
+            if (ge - gs > per) {
+                if (gs > recStart)
+                    cuts[n++] = gs;
+                int at = gs + per;
+                for (; at < ge; at += per)
+                    cuts[n++] = at;
+                recStart = at - per;
+            } else if (ge - recStart > per) {
+                cuts[n++] = gs;
+                recStart = gs;
+            }
+        }
+        cuts[n++] = total;
+        return Arrays.copyOf(cuts, n);
     }
 
     // ---- diagnostics (GameTests, /rtsim district perf) -------------------------------------------
