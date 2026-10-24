@@ -145,6 +145,9 @@ final class FarModelRenderer {
     private static long preparedFrame = -1, dhDrawnFrame = -1;
     private static int depthFunc, dhDrawFbo;
     private static int errors;
+    /** Models skipped for a placement that is not finite (DHT73), and how many were logged. */
+    static long badPlacements;
+    private static int badLogged;
 
     // What the last frame did, for the bench
     static final GpuTimer DH_GPU = new GpuTimer(), BAND_GPU = new GpuTimer();
@@ -257,6 +260,9 @@ final class FarModelRenderer {
             if (m.kind() != FarKind.CARRIAGE && m.kind() != FarKind.DRAGON || !dimension.equals(m.dimension()))
                 continue;
             m.segmentAt(clock, SEG);
+            // A carriage run longer than any carriage is a bad sample: not drawn (FarTrainView logs it; DHT73)
+            if (m.kind() == FarKind.CARRIAGE && FarTrainView.tooLong(SEG))
+                continue;
             double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
             double dx = x - cam.x, dy = y - cam.y, dz = z - cam.z;
             if (!(dx * dx + dz * dz <= radiusSq))
@@ -395,6 +401,9 @@ final class FarModelRenderer {
     /** DhApiBeforeGenericRenderCleanupEvent: fired twice a frame; draws the first time. */
     static void onDhCleanup(DhApiRenderParam p) {
         long frame = FarTrainView.frame();
+        if (BlackProbe.ENABLED)
+            BlackProbe.note("cleanup event, draw fbo " + org.lwjgl.opengl.GL11.glGetInteger(
+                    GL30.GL_DRAW_FRAMEBUFFER_BINDING) + (dhDrawnFrame == frame ? " (second)" : " (first)"));
         if (dhDrawnFrame == frame)
             return;
         dhDrawnFrame = frame;
@@ -455,9 +464,23 @@ final class FarModelRenderer {
             if (!frustum.testSphere(rx, ry, rz, it.model.radius))
                 continue;
             it.mv.set(mv).translate(rx, ry, rz).mul(it.model.local);
+            if (!placed(it))
+                continue;
             DRAWN.add(it);
         }
         lastDh = DRAWN.size();
+        if (BlackProbe.ENABLED) {
+            BlackProbe.note(String.format(Locale.ROOT, "models in DH's pass: %d drawn of %d placed; partial %.3f;"
+                    + " DH proj %s; DH mv %s", DRAWN.size(), ITEMS.size(), p.partialTicks, BlackProbe.m(proj),
+                    BlackProbe.m(mv)));
+            for (Item it : DRAWN) {
+                int parts = it.model.parts == null ? 0 : it.model.parts.size();
+                BlackProbe.note(String.format(Locale.ROOT, "  %s %s at %.1f %.1f %.1f from the camera, radius %.1f,"
+                        + " %d parts, live %b, body %b, local %s", it.mover.kind(), it.mover.key(), it.x - cam.x,
+                        it.y - cam.y, it.z - cam.z, it.model.radius, parts, it.drawLive, it.body != null,
+                        BlackProbe.m(it.model.local)));
+            }
+        }
         if (DRAWN.isEmpty())
             return;
 
@@ -499,6 +522,21 @@ final class FarModelRenderer {
             RenderSystem.setShaderFogEnd(fogEnd);
             SAVED.apply();
         }
+    }
+
+    /**
+     * True when the item's model-view matrix is finite; else it is not drawn, and counted, and the first few
+     * logged (DHT73).
+     */
+    private static boolean placed(Item it) {
+        if (it.mv.isFinite())
+            return true;
+        badPlacements++;
+        if (badLogged++ < 5)
+            MicRtsimDh.LOGGER.warn("mic_rtsim_dh: far model {} has a placement that is not finite; not drawn ({} so far)."
+                    + " Model {} at {} {} {}", it.mover.key(), badPlacements, BlackProbe.m(it.model.local), it.x, it.y,
+                    it.z);
+        return false;
     }
 
     /** The level's diffuse lights, as vanilla's entity pass sets them ({@code LevelRenderer.renderLevel}). */
@@ -570,6 +608,8 @@ final class FarModelRenderer {
                 continue;
             it.mv.set(mv).translate((float) (it.x - cam.x), (float) (it.y - cam.y), (float) (it.z - cam.z))
                     .mul(it.model.local);
+            if (!placed(it))
+                continue;
             DRAWN.add(it);
         }
         lastBand = DRAWN.size();
