@@ -3478,6 +3478,16 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     the spot carried, so an earlier epoch still counts). A Peaceful world never reaches the roll (its
     bands are home, so the pass is stale), and `ambush`'s own `peace_held` arm stays as it was for the
     on-the-way caller.
+  - Amendment (review B): the rtsim-jni protocol test
+    `a_pass_that_hits_robs_the_train_with_an_infrastructure_and_nothing_without_one` has the "with an
+    infrastructure" half back. A lurk is passed by 24 booked trains (1,280 of a declared good each) in a
+    session with the industry module on: 10 robberies, each of the party's carry (80, under a tenth of
+    1,280), 800 items in the industry's books, the engine's count and its TRAIN_ROBBED commands, and the
+    industry's cooldown on exactly the 10 trains robbed. The same passes in a session with the module off
+    are counted and rob nothing. With `with_infra` made to always hand `NoInfrastructure` the test fails at
+    "the roll hit on some of 24 passes, not all: 0". The good must be declared in Java's dictionary (an
+    undeclared one stalls the industry command queue, and the conflict queue behind it, so no
+    TRAIN_ROBBED goes out: found while writing the test).
 - **MZB-356** (ambush): `ambush` (3150) returns the items it took and takes the note's wording: "on the way"
   for the on-the-way caller, "by the track" for a lurk. Its Peaceful arm (`peace_held`) is unchanged.
   - Amendment (built, step 2): `ambush` is `pub(crate)` and takes the wording as `how: &str`; it returns 0
