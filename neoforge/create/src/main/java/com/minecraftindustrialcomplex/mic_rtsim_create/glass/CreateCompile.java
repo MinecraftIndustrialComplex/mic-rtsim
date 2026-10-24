@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
+import com.minecraftindustrialcomplex.mic_rtsim_create.PackageStores;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
 import com.simibubi.create.content.contraptions.actors.psi.PortableStorageInterfaceBlockEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
@@ -49,6 +50,8 @@ import com.simibubi.create.content.logistics.funnel.BeltFunnelBlock;
 import com.simibubi.create.content.logistics.funnel.FunnelBlock;
 import com.simibubi.create.content.logistics.funnel.FunnelBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
+import com.simibubi.create.content.logistics.packagePort.PackagePortTarget;
+import com.simibubi.create.content.logistics.packagePort.frogport.FrogportBlockEntity;
 import com.simibubi.create.content.logistics.packager.PackagerBlock;
 import com.simibubi.create.content.logistics.packager.PackagerBlockEntity;
 import com.simibubi.create.content.logistics.tunnel.BeltTunnelBlockEntity;
@@ -2107,19 +2110,32 @@ final class CreateCompile implements GlassExtractor.Compile {
     private void frogportEdges(Info i) {
         PackagePortBlockEntity port = (PackagePortBlockEntity) i.be;
         BlockPos p = port.getBlockPos();
+        BlockPos chain = port.target == null ? null : p.offset(port.target.relativePos);
+        // A package store's frogport (SECTIONS.md §2.5, slice S4a): its chain is the store's, owned by no
+        // district, and its inventory is the port. Packages from an adjacent packager go into the inventory,
+        // and an adjacent unpacking packager takes them from there; nothing crosses to the store's other
+        // frogports inside this district's graph.
+        boolean onStore = chain != null && port instanceof FrogportBlockEntity
+                && port.target instanceof PackagePortTarget.ChainConveyorFrogportTarget
+                && PackageStores.of(g.ind).compileStore(g.level, chain, p, g.district.id, storeWalks) != null;
+        int store = onStore ? g.storeAt(p) : NONE;
+        if (store != NONE) {
+            g.nodes().get(store).flag(GlassRecords.Node.CHAIN_PORT);
+            edge(GlassRecords.Edge.ADJACENCY, i.node.index, store);
+        }
+        int unpackFrom = store != NONE ? store : i.node.index;
         // Packages from an adjacent packager go out on the chain; packages for this port come off it
         // into an adjacent packager, which unpacks them (BOUNDED: addresses are not modelled).
         for (Direction d : Direction.values()) {
             BlockPos n = p.relative(d);
             int unpack = unpackAt.get(n.asLong());
             if (unpack != NONE)
-                edge(GlassRecords.Edge.ADJACENCY, i.node.index, unpack);
+                edge(GlassRecords.Edge.ADJACENCY, unpackFrom, unpack);
             if (blockAt(n) instanceof PackagerBlockEntity)
                 edge(GlassRecords.Edge.ADJACENCY, supplyItem.get(n.asLong()), i.node.index);
         }
-        if (port.target == null)
+        if (chain == null || onStore)
             return;
-        BlockPos chain = p.offset(port.target.relativePos);
         LongOpenHashSet network = chainNetwork(chain);
         for (BlockEntity be : all(K.FROGPORT)) {
             if (be == port || !(be instanceof PackagePortBlockEntity other) || other.target == null)
@@ -2131,6 +2147,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
         }
     }
+
+    /** The chain networks this compile walked for package stores, by conveyor. */
+    private final Long2ObjectOpenHashMap<PackageStores.Observed> storeWalks = new Long2ObjectOpenHashMap<>();
 
     private LongOpenHashSet chainNetwork(BlockPos start) {
         LongOpenHashSet seen = new LongOpenHashSet();

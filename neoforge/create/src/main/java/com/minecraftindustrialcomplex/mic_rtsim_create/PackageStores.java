@@ -13,6 +13,7 @@ import com.simibubi.create.content.logistics.packagePort.frogport.FrogportBlockE
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -81,6 +82,11 @@ public final class PackageStores {
     /** At most this many conveyors in one walk, as {@code CreateCompile.chainNetwork}. */
     static final int MAX_CONVEYORS = 4096;
     static final int UNKNOWN = IndRecords.PackageStore.UNKNOWN_HOPS;
+    /**
+     * TUNABLE: a network with more frogports is no store (it keeps the edges it had before S4), so its
+     * IND_PACKAGE_STORE stays under a record's 64 KiB (48 bytes a frogport and 2 a pair).
+     */
+    static final int MAX_PORTS = 200;
     /** At most this many stores split off one walk, then another walk (a later census) carries on. */
     private static final int MAX_DEPTH = 4;
 
@@ -312,7 +318,12 @@ public final class PackageStores {
         for (Port p : ports.values())
             owners.add(owner(dim, p.pos));
         long now = level.getGameTime();
-        if (owners.size() < 2) {
+        if (ports.size() > MAX_PORTS && !tooMany) {
+            tooMany = true;
+            MicRtsim.LOGGER.warn("[mic_rtsim] create: a chain network at {} has {} frogports, more than a package store takes ({}); it stays edges",
+                    conveyor, ports.size(), MAX_PORTS);
+        }
+        if (owners.size() < 2 || ports.size() > MAX_PORTS) {
             Long2LongOpenHashMap later = nextUnknownWalk.computeIfAbsent(dim, d -> new Long2LongOpenHashMap());
             for (Port p : ports.values())
                 later.put(p.pos.asLong(), now + UNKNOWN_WALK_TICKS);
@@ -368,6 +379,22 @@ public final class PackageStores {
                     observe(level, p.conveyor, compiling, depth + 1);
             }
         return new Observed(target, w);
+    }
+
+    /**
+     * For a district's compile: the store the frogport at {@code port}, serving {@code conveyor}, is a port of,
+     * or null. Each chain network is walked once per {@code cache} (one compile).
+     */
+    public Store compileStore(ServerLevel level, BlockPos conveyor, BlockPos port, long compiling, Long2ObjectOpenHashMap<Observed> cache) {
+        Observed o = cache.get(conveyor.asLong());
+        if (o == null) {
+            o = observe(level, conveyor, compiling);
+            cache.put(conveyor.asLong(), o);
+            for (int i = 0; i < o.walk().order.size(); i++)
+                cache.put(o.walk().order.getLong(i), o);
+        }
+        Store s = o.store();
+        return s != null && stores.get(s.id) == s && s.indexOf(port) >= 0 ? s : null;
     }
 
     /** Whether a walk touches a store: a frogport it found, or a conveyor of its last walk. */
@@ -566,7 +593,6 @@ public final class PackageStores {
         for (int a = 0; a < n; a++)
             for (int b = a + 1; b < n; b++)
                 r.putShort(IndRecords.PackageStore.hopAt(n, a, b), (short) s.hops(a, b));
-        int end = IndRecords.PackageStore.hopAt(n, 0, 0) + 2 * IndRecords.PackageStore.triangle(n) + 2;
         for (int z = IndRecords.PackageStore.FROGPORTS + IndRecords.PackageStore.FROGPORT * n + 2 * IndRecords.PackageStore.triangle(n);
                 z < IndRecords.PackageStore.size(n); z++)
             r.put(z, (byte) 0);
@@ -676,7 +702,7 @@ public final class PackageStores {
             District d = ind.districtAt(level, pos);
             District.Inventory inv = d == null ? null : d.inventoryAt(pos);
             String address = PackageItem.getAddress(box);
-            int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : IndRecords.NO_INVENTORY;
+            int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : index;
             Industry.GoodsCounter goods = ind.counter();
             ind.countStack(box, box.getCount(), goods);
             int[] ids = goods.nonZeroIds();
@@ -707,7 +733,7 @@ public final class PackageStores {
         }
     }
 
-    private static boolean warned;
+    private static boolean warned, tooMany;
 
     // ---- the census -----------------------------------------------------------------------------
 
