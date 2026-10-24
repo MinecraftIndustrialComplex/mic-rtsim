@@ -94,12 +94,11 @@ fn a_durable_wait_covers_a_reply_applied_after_the_save_step() {
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.idle();
     e.order(vec![transfer_order(4242, 3)]).unwrap();
-    e.order(vec![Order::SaveAtNextStep]).unwrap();
-    j.idle();
     save_durable(&e, &mut j);
     let s = e.stats_array();
-    assert!(s[5] >= s[4], "the pages hold every applied observation: {s:?}");
-    assert!(e.inspect().op_applied(4242), "the transfer's answer was applied");
+    assert!(s[4] >= 1, "Java's answer to the transfer was applied: {s:?}");
+    assert!(s[5] >= s[4], "and the pages hold it: {s:?}");
+    assert!(e.inspect().op_applied(4242), "the transfer was applied");
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
