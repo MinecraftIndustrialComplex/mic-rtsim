@@ -51,6 +51,11 @@ class GlassWireContractTest {
             return Long.parseLong(sym(k));
         }
 
+        /** A u32 index that reads {@code none} for NONE. */
+        int index(String k) {
+            return sym(k).equals("none") ? GlassRecords.NONE : (int) u32(k);
+        }
+
         long u64(String k) {
             return Long.parseUnsignedLong(sym(k));
         }
@@ -255,26 +260,40 @@ class GlassWireContractTest {
     @Test
     void graphDomain() {
         Fixture f = fx("IND_GRAPH_DOMAIN");
-        int nl = f.count("n_levels"), nm = f.count("n_members");
-        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, nm), nm);
+        int nl = f.count("n_levels"), ns = f.count("n_sources"), nm = f.count("n_members");
+        int nsl = 0;
+        for (int i = 0; i < ns; i++)
+            nsl += f.count("source" + i + ".n_levels");
+        ByteBuffer b = rec(GlassRecords.IND_GRAPH_DOMAIN, GlassRecords.Domain.size(nl, ns, nsl, nm), nm);
         headOf(b, f);
         b.putLong(GlassRecords.Domain.NETWORK, f.u64("network"));
         b.putInt(GlassRecords.Domain.N_LEVELS, nl);
-        b.putInt(GlassRecords.Domain.CURRENT, (int) f.u32("current"));
-        b.putInt(GlassRecords.Domain.DRIVER, (int) f.u32("driver"));
+        b.putInt(GlassRecords.Domain.CURRENT, f.index("current"));
         b.putInt(GlassRecords.Domain.FLAGS, (int) f.u32("flags"));
         b.putDouble(GlassRecords.Domain.LIVE_STRESS, f.f64("live_stress"));
         b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, f.f64("live_capacity"));
-        for (int i = 0; i < nl; i++) {
-            int e = GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL;
-            String p = "level" + i + ".";
-            b.putInt(e + GlassRecords.Domain.L_SELECTOR, (int) f.u32(p + "selector"));
-            b.putInt(e + GlassRecords.Domain.L_SPEED_NUM, f.i32(p + "speed_num"));
-            b.putInt(e + GlassRecords.Domain.L_SPEED_DEN, (int) f.u32(p + "speed_den"));
-            b.putDouble(e + GlassRecords.Domain.L_CAPACITY, f.f64(p + "capacity"));
+        b.putInt(GlassRecords.Domain.N_SOURCES, ns);
+        b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
+        b.putInt(GlassRecords.Domain.N_FOREIGN, (int) f.u32("n_foreign"));
+        for (int i = 0; i < nl; i++)
+            level(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, f, "level" + i + ".");
+        int first = 0;
+        for (int i = 0; i < ns; i++) {
+            int e = GlassRecords.Domain.sources(nl) + i * GlassRecords.Domain.SOURCE;
+            String p = "source" + i + ".";
+            int rows = f.count(p + "n_levels");
+            b.putInt(e + GlassRecords.Domain.S_DRIVER, f.index(p + "driver"));
+            b.putInt(e + GlassRecords.Domain.S_FIRST, first);
+            b.putInt(e + GlassRecords.Domain.S_ROWS, rows);
+            b.putInt(e + GlassRecords.Domain.S_CURRENT, f.index(p + "current"));
+            b.putInt(e + GlassRecords.Domain.S_RATIO_NUM, f.i32(p + "ratio_num"));
+            b.putInt(e + GlassRecords.Domain.S_RATIO_DEN, (int) f.u32(p + "ratio_den"));
+            b.putLong(e + GlassRecords.Domain.S_POS, f.i64(p + "pos"));
+            for (int j = 0; j < rows; j++)
+                level(b, GlassRecords.Domain.sourceLevels(nl, ns) + (first++) * GlassRecords.Domain.LEVEL, f, p + "level" + j + ".");
         }
         for (int i = 0; i < nm; i++) {
-            int e = GlassRecords.Domain.members(nl) + i * GlassRecords.Domain.MEMBER;
+            int e = GlassRecords.Domain.members(nl, ns, nsl) + i * GlassRecords.Domain.MEMBER;
             String p = "member" + i + ".";
             b.putInt(e + GlassRecords.Domain.M_NODE, f.sym(p + "node").equals("none") ? GlassRecords.NONE : (int) f.u32(p + "node"));
             b.putInt(e + GlassRecords.Domain.M_COUNT, (int) f.u32(p + "count"));
@@ -283,6 +302,14 @@ class GlassWireContractTest {
             b.putDouble(e + GlassRecords.Domain.M_IMPACT, f.f64(p + "impact"));
         }
         same("IND_GRAPH_DOMAIN", b, f.bytes());
+    }
+
+    /** A Level24 (a speed row or a source row) from the fixture's {@code prefix}selector, speed_num, speed_den, capacity. */
+    private static void level(ByteBuffer b, int at, Fixture f, String prefix) {
+        b.putInt(at + GlassRecords.Domain.L_SELECTOR, (int) f.u32(prefix + "selector"));
+        b.putInt(at + GlassRecords.Domain.L_SPEED_NUM, f.i32(prefix + "speed_num"));
+        b.putInt(at + GlassRecords.Domain.L_SPEED_DEN, (int) f.u32(prefix + "speed_den"));
+        b.putDouble(at + GlassRecords.Domain.L_CAPACITY, f.f64(prefix + "capacity"));
     }
 
     @Test
