@@ -260,6 +260,27 @@ public final class RtsimApi {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.territories();
     }
 
+    /**
+     * Whether the conflict engine is up for a plugin that reports rail passes ({@link #railPass}): a live
+     * session with the conflict module on (M7, MZB-320). The train sampler asks it before anything else.
+     */
+    public static boolean conflictUp() {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.up();
+    }
+
+    /**
+     * A plugin saw a train pass through {@code faction}'s territory (M7, MZB-325): RAIL_PASS, journaled at
+     * once. {@code train} is the plugin's stable id for it, {@code owner} its owner (null: none), the point a
+     * position on the track (the sample nearest the territory's centre) in {@code dimension}, and
+     * {@code entry} and {@code exit} game time. False with no live session or the conflict module off.
+     */
+    public static boolean railPass(long faction, long train, java.util.UUID owner,
+                                   net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> dimension, double x,
+                                   double y, double z, long entry, long exit) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.railPass(faction, train, owner, dimension,
+                x, y, z, entry, exit);
+    }
+
     // ---- TALK (TALK.md §2, §4) -----------------------------------------------------------------
 
     /**

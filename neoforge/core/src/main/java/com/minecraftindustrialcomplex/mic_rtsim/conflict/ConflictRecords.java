@@ -27,6 +27,11 @@ public final class ConflictRecords {
     public static final int GIFT_GIVEN = 0x080A;
     public static final int BAND_LOOTED = 0x080B;
     /**
+     * M7: a train's pass through a territory that minds the rail (MOWZIE.md §9; journaled, aux 0). Its point is a
+     * sampled position on the track, and its entry and exit are game time.
+     */
+    public static final int RAIL_PASS = 0x080C;
+    /**
      * M1: the world's difficulty, journaled at session start and on each change (MZB-17). 0x0093 is retired:
      * it was latest-wins, and journaling a latest-wins id throws.
      */
@@ -65,6 +70,8 @@ public final class ConflictRecords {
     /** Territory signals (TERRITORY_SIGNAL's aux, the bit numbers of TERRITORY's mask). */
     public static final int SIGNAL_SMOG = 0, SIGNAL_RADIATION = 1, SIGNAL_LOGGING = 2, SIGNAL_MINING = 3, SIGNAL_KILLING = 4,
             SIGNAL_BUILDING = 5;
+    /** M7: a train passing through the territory (RAIL_PASS is its record; TERRITORY's mask bit 6). */
+    public static final int SIGNAL_RAIL = 6;
 
     /** Who killed a member (BAND_CASUALTIES' and CHIEF_KILLED's aux). */
     public static final int BY_NONE = 0, BY_PLAYER = 1, BY_MOB = 2, BY_OTHER = 3;
@@ -107,6 +114,16 @@ public final class ConflictRecords {
         public static final int FLAG_LATE = 1;
         /** CENSUS flags: the chief is present; it holds its crystal. */
         public static final int CENSUS_CHIEF = 1, CENSUS_CRYSTAL = 2;
+    }
+
+    /**
+     * RAIL_PASS (M7, journaled, aux 0): the faction whose circle the train crossed, the train (CreateIds.of its
+     * UUID), its owner ((0, 0): none), the dimension (dictionary 1), and the sample nearest the circle's centre
+     * (a point on the track; the u32 at 60 is reserved, MZB-332), then the pass's entry and exit in game time.
+     */
+    public static final class RailPass {
+        public static final int FACTION = 24, TRAIN = 32, OWNER_MOST = 40, OWNER_LEAST = 48, DIM = 56, X = 64, Y = 72, Z = 80,
+                ENTRY = 88, EXIT = 96, SIZE = 104;
     }
 
     /** DIFFICULTY (M1, journaled, aux 0): Minecraft's difficulty id, u32. */
@@ -357,6 +374,7 @@ public final class ConflictRecords {
             case SIGNAL_MINING -> "mining";
             case SIGNAL_KILLING -> "killing";
             case SIGNAL_BUILDING -> "building";
+            case SIGNAL_RAIL -> "rail";
             default -> "signal " + signal;
         };
     }
