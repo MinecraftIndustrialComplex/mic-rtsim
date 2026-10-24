@@ -269,6 +269,31 @@ public final class ConflictKit {
         });
     }
 
+    /**
+     * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
+     * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
+     */
+    public static void owedHunt(long faction, long district, long op, long replaced, String dimension, int count,
+                                int centreX, int centreZ, int radius, int rest) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(ConflictRecords.OWED_HUNT, ConflictRecords.OwedHunt.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.OwedHunt.FACTION, faction);
+            b.putLong(at + ConflictRecords.OwedHunt.DISTRICT, district);
+            b.putLong(at + ConflictRecords.OwedHunt.OP_ID, op);
+            b.putLong(at + ConflictRecords.OwedHunt.REPLACED, replaced);
+            b.putInt(at + ConflictRecords.OwedHunt.DIM, dim);
+            b.putInt(at + ConflictRecords.OwedHunt.COUNT, count);
+            b.putInt(at + ConflictRecords.OwedHunt.CENTRE_X, centreX);
+            b.putInt(at + ConflictRecords.OwedHunt.CENTRE_Z, centreZ);
+            b.putInt(at + ConflictRecords.OwedHunt.RADIUS, radius);
+            b.putInt(at + ConflictRecords.OwedHunt.REST, rest);
+        });
+    }
+
     /** BAND_RECALL with a reason, a timeout in ticks (0: the default) and the way home. */
     public static void recall(long agent, int epoch, int reason, int timeout, double towardX, double towardZ) {
         script(out -> {

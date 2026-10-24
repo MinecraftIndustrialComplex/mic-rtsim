@@ -3788,6 +3788,97 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   followers have each hit something. The checks are `instanceof`, so a body made by `RaptorMaker` and one the jar
   made are the same. The order is Frostmaw, Umvuthi, raptor, then the base class.
 
+- **MZB-633** (the world GameTests, in one class; fills in MOWZIE.md section 7 tests 12, 13, 14, 16, 17 and 20):
+  `gametest/UmvuthanaWorldGameTests` in the mowziesmobs module holds the seven tests (17 is two), each with a batch
+  of its own (the bridge's counters are global and read as deltas) and a place of its own in the far base (`Far`,
+  which also turns Peaceful to Normal, since a hostile body is removed on Peaceful). Written and compiled, not run.
+  The common rules:
+  - Players are `FakePlayers` ones, never ticked, so a test that lets bodies strike one raises its health every tick
+    (`tough`: max health 4000, healed by `MowzieKit.everyTick`, which swallows exceptions, so a test records what it
+    saw in a list and asserts on the list afterwards).
+  - Every body a player strikes carries the jar's fear mask: only a mask with `canBlock` (fury) turns a blow aside.
+  - A wait is a `thenWaitUntil` of checks; the first-body lookups come after the "placed" wait, never before.
+  - The engine-only tests (13 and 16) start with the native-engine skip, as the camp tests do.
+- **MZB-634** (test 12, a masked player; fills in MOWZIE.md test 12): a band of three grove warriors and a raptor
+  (with its four followers), hostile and standing still (speed 0), with a masked player 12 blocks to one side and a
+  bare one 12 blocks to the other. The test asserts that a body is within 14 blocks of the masked player (so the
+  check is not vacuous), that no body or extra targets the masked player from the first tick to the bare player's
+  being targeted plus 100 ticks (a per-tick list, since `everyTick` swallows a thrown check), and that a body does
+  target the bare one. The masked player then strikes warrior 0 (landed) and 20 ticks later that warrior targets
+  it: the jar's hurt-by goal is not mask-filtered, which is what the jar does. The raptor's and followers' goals
+  are the mask-filtered ones; the minion's `UmvuthanaHurtByTargetAI` is in its target selector, theirs in the goal
+  selector. A recall ends the test.
+- **MZB-635** (test 13, trade and tribute at the camp; fills in MOWZIE.md test 13): native engine only. A real
+  grove (under `GROVE_STRUCTURE`, kind `GroveKind`) with its Umvuthi adopted and a masked payer:
+  - the Umvuthi's own desires paid through the jar's handler (`MowzieKit.payUmvuthi`) are exactly one CHIEF_PAID
+    with the chief's slot and generation, flags 0, the payer, the desires and a Java op id, and `Camps.chiefPaid`
+    +1. The engine's gift for it (the nuggets owed) is a command to Java that the test cannot see (MZB-601); it is
+    shown by test 16's effect, not here.
+  - a nugget trade (4 gold nuggets for sticks) with a stray grove warrior made by `MowzieKit.stray(.., finalize
+    false)`, so its trade store is empty and the set `Trade` survives: the test builds the jar's
+    `ContainerUmvuthanaTrade`, puts the input in slot 0, takes the result of slot 1 and calls `onTake`, the jar's
+    own path (which `GroveTrade`'s mixin hooks): exactly one TRADED with 4 nuggets and the payer, and
+    `Camps.traded` +1.
+  - a second Umvuthi 36 blocks off the centre (outside the 25-block footprint, in a forced chunk), paid the same
+    way, writes no CHIEF_PAID and does not move `Camps.chiefPaid`.
+- **MZB-636** (test 14, the envoy party of the jar's bodies; fills in MOWZIE.md test 14): the core's test 14
+  condensed to what differs for the Umvuthana: two parties (a player-bound demand of 6 emeralds with an envoy and
+  two warriors, a settlers' demand with an envoy and a warrior), a masked payer (so that a click the bridge did not
+  take would open the jar's trade window; the envoy is made to offer a trade and the test asserts it does) and an
+  unmasked bystander three blocks off. Asserted: the envoy is named by the speaker key and visible, guards are not
+  named, all target selectors empty while guarded, nothing targets anyone for 40 ticks, a golem's target, a
+  guard's target, a golem's blow, an owner-less arrow, a skeleton's arrow and a golem's blow on the envoy are all
+  refused (two blocked targets, four blocked hits, no damage, no ENVOY_ANSWER), two payments (3 emeralds from the
+  main hand, 1 from the off hand with the main hand empty) are two TRIBUTE_PAID with Java op ids, and the payer's
+  open menu stays the inventory menu after the paying clicks and an empty-hand click. There is no dirt-in-hand
+  click (it is an ordinary click the bridge leaves to the jar, which would open the window for a masked player and
+  is not a bug) and no talk-line assertion (the core's test makes that on its own bodies). A player's arrow on a
+  guard is one ENVOY_ANSWER ANSWER_ATTACKED and lifts the guard (the target goals come back); the settlers' guard
+  killed by `/kill` is a casualty with no killer and no answer, and the engine's SETTLED_WITHDRAWN takes its demand
+  and its name.
+- **MZB-637** (test 16, tribute in a grove's chest; fills in MOWZIE.md test 16): native engine only. The gift is
+  `GroveTrade.nuggets(desires)` (7 gold blocks, 567 nuggets, 9 stacks) and the test derives it from the desires
+  rather than assuming it. Steps: pay with no chest standing (the grove sends no HAVEN_CHEST: it was never told of
+  one); release the 5 x 5 (CAMP_OUT, the Umvuthi unloaded); load only the middle chunk and set a chest there (the
+  camp is still out); load the rest and bring the scan forward each tick (`GroveChests.scanNextTick`). Then the
+  first HAVEN_CHEST has the chest's place, the dimension's dictionary id and FREE 27, the COMMAND_RESULTs after it
+  in arrival order are APPLIED (at least one, none FAILED), the grove saw the chest take them
+  (`GroveChests.transfers`), the chest holds exactly the nuggets and stays so for 100 ticks, and the last
+  HAVEN_CHEST's free count is the chest's empty slots (18 for 9 stacks). The full-chest half fills the empty slots
+  with dirt, waits for FREE 0, has a second masked payer pay the Umvuthi (found again by its UUID) and for 100 ticks
+  asserts the chest took nothing, no transfer was answered into it and it is still told as full; clearing the dirt
+  (and a scan) lets the second gift land. The last check is that the total is more than the first gift, not exactly
+  twice, since the second gift is the engine's accounting (a recorded total, not an invariant of this module).
+- **MZB-638** (test 17 is two tests; fills in MOWZIE.md test 17): 17a, `raptorsHuntTheBasesAnimals`, is the embodied
+  half and runs the jar's own raptor unit (made by `RaptorMaker`) next to two cows and a sheep (no AI, persistent):
+  the raptor's hunting goal picks a target at random (about one evaluation in 200), so the test waits for the first
+  death and asks that the animal's last attacker be a raptor or a follower; it does not demand more than one. The
+  grove warrior (the minion) has no Animal goal, so a band of warriors would show nothing; that is the jar's, and is
+  why the unit is the raptor. 17b is the owed half (MZB-639).
+- **MZB-639** (test 17b, the owed hunt; fills in MOWZIE.md test 17): the circle is 30 blocks, not the brief's 48
+  (21 chunks instead of 69), by the same algorithm; 7 eligible animals (6 cows, a sheep) stand 3, 5, 7, 9, 11.3, 14
+  and 17 blocks from the middle, with a named cow, a tamed parrot (a wolf has an attack damage of 4 and is excluded
+  anyway; the parrot has an owner, since the save keeps a taming only through the owner) and a leashed sheep, all
+  nearer than most of the eligible. After a reload the test asserts the name, the taming and the leash held (a
+  fixture check, so a lost leash is not blamed on the hunt). The ladder: held with every chunk out; still held with
+  the middle 3 x 3 loaded (60 ticks, nobody dies); applied when the 5 x 5 loads (the five nearest die, the other
+  two and the ineligible three live, at least five drops lie on the ground, HUNT_APPLIED with the op and 5); the
+  same op again is ignored (no second record); a hunt that replaces the last applied one kills `rest` (1, the
+  14-block cow); a hunt that names a stale replaced op kills `count` (1, the 17-block cow); a hunt with nothing left
+  is answered with 0 killed. Each HUNT_APPLIED is looked up by op id.
+- **MZB-640** (test 20, fight strengths; fills in MOWZIE.md test 20 and ledger 19): the yard template is copied into
+  the mowziesmobs module (`data/mic_rtsim_mowziesmobs/structure/industry_yard.nbt`, the core's file) since a
+  template is looked up under the holder's namespace. In a district with a player-placed machine, for each body in
+  turn (the Umvuthi, a grove warrior, a raptor with four followers made as `RaptorMaker` does, the Frostmaw) a
+  player-created iron golem and the body stand in the machine's chunk; the body is hurt by the golem (1 damage) and
+  also targeted at it (the two engage routes, since the Frostmaw and the Umvuthi may turn a blow aside in an
+  animation), then both are discarded at once and the test waits for that fight's IND_FIGHT (all the mod's bodies
+  are untagged ground melee and share one fight per district, so they run one after another, each fight ended by
+  the 20-tick gap before the next). Asserted: attackers 1, 1, 5, 1 and strengths 5.0, 0.4, 2.6, 41.7 (within 0.01).
+- **MZB-641** (a test helper in the core; no engine change): `ConflictKit.owedHunt(faction, district, op, replaced,
+  dimension, count, centreX, centreZ, radius, rest)` scripts an OWED_HUNT command (the script field is private to
+  that class), with the dimension in the dictionary the core's tests use.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
