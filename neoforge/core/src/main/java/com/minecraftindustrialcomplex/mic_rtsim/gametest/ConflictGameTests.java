@@ -1162,6 +1162,9 @@ public final class ConflictGameTests {
      * (MZB-118), here two. The territory command adds and removes the faction's circle. The restart half
      * (the engine resends a kept notice at session start) is M1's rtsim-jni test: the GameTest server
      * has one bridge session, and the resent notice is the same FACTION_NOTICE this test sends (MZB-129).
+     * The waits on what crosses the boundary are paced ({@link RtsimTests#io}): the engine's steps run on its
+     * own thread while the server ticks on without waiting for them, and NOTICE_SHOWN, journaled at the play,
+     * is in the engine's received records only after its next step.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "conflict_notice", skyAccess = true)
     public static void aNoticeWaitsForThePlayersNextEntryAcrossALogout(GameTestHelper helper) {
@@ -1182,15 +1185,16 @@ public final class ConflictGameTests {
         });
         int serial = 0x5E41_0019;
         long[] played = {0}, posted = {0}, hearers = {0};
+        long[] atPlay = new long[3]; // the step after the play: game time, nanoTime, NOTICE_SHOWN records received then
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.territory(faction, dim, (1 << ConflictRecords.SIGNAL_MINING) | (1 << ConflictRecords.SIGNAL_KILLING), tx, tz, 100))
-                .thenWaitUntil(() -> check("the territory", bridge().territories().get(faction) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory", bridge().territories().get(faction) != null)))
                 .thenExecute(() -> {
                     played[0] = bridge().noticesPlayed;
                     posted[0] = ConflictNews.posted();
                     ConflictKit.notice(faction, player.getUUID(), dim, ConflictRecords.SIGNAL_MINING, tx, tz, 12f, 3, serial);
                 })
-                .thenWaitUntil(() -> check("kept", bridge().noticesKept() >= 1))
+                .thenWaitUntil(RtsimTests.io(() -> check("kept", bridge().noticesKept() >= 1)))
                 .thenIdle(ConflictBridge.NOTICE_CHECK * 3)
                 .thenExecute(() -> {
                     check("not played while the player is away", bridge().noticesPlayed == played[0] && bridge().noticesKept() >= 1);
@@ -1210,12 +1214,19 @@ public final class ConflictGameTests {
                 .thenExecute(() -> {
                     check("forgotten once played", bridge().noticesKept() == 0);
                     check("the news hook reached (MZB-101: it sends nothing)", ConflictNews.posted() > posted[0]);
+                    atPlay[0] = level.getGameTime();
+                    atPlay[1] = System.nanoTime();
+                    atPlay[2] = noticesShown(faction).size();
+                })
+                .thenWaitUntil(RtsimTests.io(() -> check("NOTICE_SHOWN reached the engine", !ConflictBridge.m1Records() || !noticesShown(faction).isEmpty())))
+                .thenExecute(() -> {
                     if (ConflictBridge.m1Records()) {
-                        List<ScriptedEngine.Received> shown = new ArrayList<>();
-                        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
-                            if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
-                                shown.add(r);
-                        check("NOTICE_SHOWN with the notice's serial", shown.size() == 1 && shown.get(0).aux() == serial
+                        record(test, "NOTICE_SHOWN", atPlay[2] + " received in the step after the play; " + noticesShown(faction).size() + " after "
+                                + (level.getGameTime() - atPlay[0]) + " ticks, " + (System.nanoTime() - atPlay[1]) / 1_000_000 + " ms");
+                        List<ScriptedEngine.Received> shown = noticesShown(faction);
+                        check("NOTICE_SHOWN with the notice's serial: " + shown.size() + " record(s), serials "
+                                        + shown.stream().map(r -> Integer.toHexString(r.aux())).toList(),
+                                shown.size() == 1 && shown.get(0).aux() == serial
                                 && player.getUUID().equals(ConflictKit.uuidAt(shown.get(0), ConflictRecords.NoticeShown.PLAYER_MOST)));
                     }
                     // To the settlers: every player in range, here two.
@@ -1223,7 +1234,7 @@ public final class ConflictGameTests {
                     hearers[0] = bridge().noticeHearers;
                     ConflictKit.notice(faction, null, dim, ConflictRecords.SIGNAL_KILLING, tx, tz, 20f, 1, serial + 1);
                 })
-                .thenWaitUntil(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0))
+                .thenWaitUntil(RtsimTests.io(() -> check("the settlers' notice played", bridge().noticesPlayed == played[0] + 2 && bridge().noticesKept() == 0)))
                 .thenExecute(() -> {
                     long heard = bridge().noticeHearers - hearers[0];
                     record(test, "notices", "kept while away, played on entry; the settlers' to " + heard + " players in range");
@@ -1232,8 +1243,17 @@ public final class ConflictGameTests {
                     FakePlayers.remove(second[0]);
                     ConflictKit.territoryRemoved(faction, dim);
                 })
-                .thenWaitUntil(() -> check("the territory removed", bridge().territories().get(faction) == null))
+                .thenWaitUntil(RtsimTests.io(() -> check("the territory removed", bridge().territories().get(faction) == null)))
                 .thenSucceed();
+    }
+
+    /** The engine's NOTICE_SHOWN records of one faction. */
+    private static List<ScriptedEngine.Received> noticesShown(long faction) {
+        List<ScriptedEngine.Received> shown = new ArrayList<>();
+        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.NOTICE_SHOWN))
+            if (r.view().getLong(ConflictRecords.NoticeShown.FACTION) == faction)
+                shown.add(r);
+        return shown;
     }
 
     // ---- territory signals and camps --------------------------------------------------------------
