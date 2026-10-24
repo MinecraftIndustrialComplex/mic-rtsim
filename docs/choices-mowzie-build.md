@@ -3197,6 +3197,16 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
 
   The 50-leg figure over the 24-leg one is 1.00. `sim mowzie` passes every check; only its
   check names and details changed.
+  - **Opus review C, P3-5** (the check missed a slow burst and a cut service): the 6.5 a day mean is now
+    checked on run 2 as well (the cut to 4 legs a day: 2.75 pops a day; stopped: 0.81, over its 90 days),
+    and a second check bounds the busiest single day: **at most 20 `Ev::Rail` pops (live and stale) in
+    one whole day, of any of the 8 seeds, for one meter**. A mean over 70 days hides a burst of a day or
+    two. Basis: the busiest whole day of the worst seed was 4, 10, 7 and 9 at 4, 12, 24 and 50 legs a day,
+    14 on the trunk, and 8 and 8 on run 2's cut and stopped services; 20 is 1.4 times the highest. The
+    tally is the engine's `rail_wakes + rail_stale` counter read at each whole-day hour in `drive`; day 0
+    is included. Runs with several meters (run 4's two dens, run 9's two owners) are not bounded by it,
+    since the counter is the sum of their meters; run 4's worst day is 20 for two meters. The check is
+    `sim mowzie` run 1 and 2's; results regenerated, the new checks added and nothing else changed.
 - **MZB-383** (note for Java review C, the sampler): a station inside the circle, or within the margin
   (MZB-390) and a sample past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is
   reported when the train leaves the circle plus margin, the arrival when it stops), so the pass is held

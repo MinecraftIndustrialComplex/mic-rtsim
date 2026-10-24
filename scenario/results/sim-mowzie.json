@@ -62,6 +62,11 @@
           "detail": "4 legs a day at 4 legs a day: 2.09 pops a day"
         },
         {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "4 legs a day: busiest day 4 pops"
+        },
+        {
           "name": "12 legs a day",
           "ok": true,
           "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 77d7229e29fa37c9"
@@ -75,6 +80,11 @@
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
           "ok": true,
           "detail": "12 legs a day at 12 legs a day: 5.46 pops a day"
+        },
+        {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "12 legs a day: busiest day 10 pops"
         },
         {
           "name": "24 legs a day",
@@ -92,6 +102,11 @@
           "detail": "24 legs a day at 24 legs a day: 5.24 pops a day"
         },
         {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "24 legs a day: busiest day 7 pops"
+        },
+        {
           "name": "50 legs a day",
           "ok": true,
           "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state c3b72e3e6348396f"
@@ -107,6 +122,11 @@
           "detail": "50 legs a day at 50 legs a day: 5.22 pops a day"
         },
         {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "50 legs a day: busiest day 9 pops"
+        },
+        {
           "name": "a meter's pops do not grow with the rate",
           "ok": true,
           "detail": "50 legs a day 5.22 pops a day, 24 legs a day 5.24: x1.00"
@@ -120,6 +140,11 @@
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
           "ok": true,
           "detail": "14 lines at 1.7 legs a day on one trunk (23.8): 5.79 pops a day"
+        },
+        {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): busiest day 14 pops"
         }
       ],
       "rungs": [
@@ -517,6 +542,16 @@
           "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state dffd4a7d543abd7f"
         },
         {
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "cut to 4 legs a day: 2.75 pops a day"
+        },
+        {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "cut to 4 legs a day: busiest day 8 pops"
+        },
+        {
           "name": "the repeat raid due on day 15.1 still comes",
           "ok": true,
           "detail": "cut to 4 legs a day: on day 15.2"
@@ -535,6 +570,16 @@
           "name": "stopped service: under 70, under 42, settles",
           "ok": true,
           "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state c63fc381c90bb2bd"
+        },
+        {
+          "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
+          "ok": true,
+          "detail": "stopped: 0.81 pops a day"
+        },
+        {
+          "name": "a meter takes at most 20 rail pops on its busiest day",
+          "ok": true,
+          "detail": "stopped: busiest day 8 pops"
         },
         {
           "name": "the repeat raid due on day 15.1 still comes",
