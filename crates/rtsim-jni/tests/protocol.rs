@@ -96,7 +96,10 @@ fn a_durable_wait_covers_a_reply_applied_after_the_save_step() {
     e.order(vec![transfer_order(4242, 3)]).unwrap();
     save_durable(&e, &mut j);
     let s = e.stats_array();
-    assert!(s[4] >= 1, "Java's answer to the transfer was applied: {s:?}");
+    assert!(
+        s[4] >= 1,
+        "Java's answer to the transfer was applied: {s:?}"
+    );
     assert!(s[5] >= s[4], "and the pages hold it: {s:?}");
     assert!(e.inspect().op_applied(4242), "the transfer was applied");
     e.close(true, Duration::from_secs(5)).unwrap();
