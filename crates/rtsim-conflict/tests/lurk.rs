@@ -513,6 +513,214 @@ fn a_fight_at_the_track_ends_its_lurk_once_whatever_ends_it() {
     }
 }
 
+// ---- the ends a recall is not, and the ends of a body left behind ---------------------------------
+
+/// The watching player leaves (ledger 8): the band's bodies are recalled and a fight turns back to
+/// waiting, but a recall alone does not end a lurk. No removal goes; the band still lurks, a pass
+/// still counts, and its one removal goes when its patience does.
+#[test]
+fn a_player_leaving_a_watched_lurk_recalls_it_without_ending_it() {
+    for (seed, fighting) in [(86, false), (87, true)] {
+        let mut l = Lurk::raid(seed);
+        let mut rails = Rails::new(&l.w, Some(3));
+        l.until_lurking();
+        let first = l.want(0);
+        l.embody();
+        if fighting {
+            l.c.parties[l.p].phase = Phase::Fighting;
+        }
+        l.said.clear();
+        let player = l.c.player(&mut l.w, PLAYER);
+        l.c.player_left(&mut l.w, player);
+        l.said.extend(l.c.take_commands());
+        let recalls: Vec<_> = l
+            .said
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Recall(r) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(recalls.len(), 1, "fighting: {fighting}: {:?}", l.said);
+        assert_eq!(recalls[0].reason, boundary::RECALL_PLAYER_LEFT);
+        assert!(l.spots().is_empty(), "a recall says no removal: {fighting}");
+        let x = &l.c.parties[l.p];
+        assert!(!x.embodied && x.seen_by.is_none(), "the bodies are gone");
+        assert_eq!(x.phase, Phase::Waiting, "fighting: {fighting}");
+        assert!(l.c.lurking(l.p), "fighting: {fighting}");
+        assert_eq!(l.c.stats.lurks_ended, 0);
+        // It lurks unwatched: a pass counts and rolls.
+        l.c.tun.ambush_milli = 1000;
+        l.pass(&mut rails, 7, 0, 10);
+        assert_eq!(l.c.stats.passes, 1, "fighting: {fighting}");
+        assert_eq!(l.robbed(), vec![7], "fighting: {fighting}");
+        // And ends once, when its patience does.
+        l.until_over();
+        l.run(l.c.now() + Tick::from_days(5).0);
+        assert_eq!(
+            l.spots(),
+            vec![AmbushSpot {
+                flags: AMBUSH_REMOVED,
+                ..first
+            }],
+            "fighting: {fighting}"
+        );
+        assert_eq!((l.c.stats.lurks, l.c.stats.lurks_ended), (1, 1));
+    }
+}
+
+/// A real sighting of a lurk (`Ev::Seen`, a player's area meeting the band's wait) bumps the
+/// band's epoch past the one its AMBUSH_SPOT carried. Java's lurk table still holds the spot's
+/// epoch, so the band's passes carry the old one, and the engine takes them (a pass is stale only
+/// when it is of a LATER epoch than the band's); the removal goes at the new epoch, so the plugin
+/// must drop a lurk by agent (MZB-355, the design's Traps list).
+#[test]
+fn a_seen_lurk_takes_passes_at_the_epoch_its_spot_carried() {
+    let mut l = Lurk::raid(88);
+    let mut rails = Rails::new(&l.w, Some(3));
+    l.until_lurking();
+    let first = l.want(0);
+    let now = l.c.now();
+    l.c.observe_player(&mut l.w, PLAYER, rail(), now);
+    l.run(now + 200);
+    assert_eq!(l.c.stats.seen, 1, "the player came upon the band");
+    let x = &l.c.parties[l.p];
+    assert!(x.embodied, "and it was materialized");
+    assert_eq!(x.epoch, first.epoch + 1, "a sighting bumps the epoch");
+    assert!(l.c.lurking(l.p), "a sighting is no end");
+    assert!(
+        l.spots().iter().all(|a| a.flags == 0),
+        "and says no removal"
+    );
+    l.c.tun.ambush_milli = 1000;
+    let stale = l.c.stats.stale;
+    // The pass Java made from its table: the old epoch.
+    let tp = |l: &Lurk, epoch: u32, train: u64| TrainPassed {
+        agent: Party::agent(l.p),
+        epoch,
+        flags: PASSED_WATCHED,
+        carriage: 0,
+        train,
+    };
+    let old = tp(&l, first.epoch, 7);
+    l.pass_of(&mut rails, old, 10);
+    assert_eq!(l.c.stats.passes, 1, "the spot's epoch still counts");
+    assert_eq!(l.c.stats.stale, stale);
+    assert_eq!(l.robbed(), vec![7]);
+    // The band's own epoch counts too.
+    let now_epoch = tp(&l, first.epoch + 1, 8);
+    l.pass_of(&mut rails, now_epoch, 10);
+    assert_eq!(l.c.stats.passes, 2);
+    // One of a later epoch than the band's is stale.
+    let later = tp(&l, first.epoch + 2, 9);
+    l.pass_of(&mut rails, later, 10);
+    assert_eq!(l.c.stats.passes, 2);
+    assert_eq!(l.c.stats.stale, stale + 1);
+    // The removal goes at the new epoch: the plugin drops the lurk by agent.
+    l.until_over();
+    let spots = l.spots();
+    let end = spots.last().expect("a removal");
+    assert_eq!(end.flags, AMBUSH_REMOVED);
+    assert_eq!(end.agent, first.agent);
+    assert_eq!(end.epoch, first.epoch + 1, "{spots:?}");
+    assert_eq!(l.removals(), 1);
+}
+
+/// A member of a band at its track dies at the camp (CAMP_DEATH, the body it left behind when the
+/// camp was out): the books free its slot and its unit falls. When the last unit falls the band
+/// ends through `go_home`, so the lurk ends there, once, and before the recall's walk.
+#[test]
+fn a_band_whose_bodies_die_at_the_camp_takes_its_lurk_down_once() {
+    use rtsim_conflict::engine::SlotState;
+    let mut r = synth::CampRun::new(89, "umvuthana", 9);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    let at = r.c.now();
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Raid, track_target(), None, at)
+            .expect("a band");
+    r.flush(at);
+    // The camp is out when the band sets out: its bodies are left behind (slots Left).
+    r.camp_out();
+    let mut t = r.c.now();
+    while !r.c.lurking(p) {
+        t = Tick(t.0 + 1_000);
+        assert!(t < Tick::from_days(20), "the band never got there");
+        r.run(t);
+    }
+    let spots = |r: &synth::CampRun| -> Vec<AmbushSpot> {
+        r.cmds
+            .iter()
+            .filter_map(|(_, c)| match c {
+                Cmd::AmbushSpot(a) => Some(*a),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(spots(&r).len(), 1, "one start: {:?}", spots(&r));
+    let first = spots(&r)[0];
+    assert_eq!(first.flags, 0);
+    // Its bodies stand in the camp, booked left; the player kills them one by one.
+    let left: Vec<_> = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| {
+            b.generation != 0
+                && r.c
+                    .camp(r.f)
+                    .unwrap()
+                    .slots
+                    .iter()
+                    .any(|s| s.generation == b.generation && s.state == SlotState::Left)
+        })
+        .copied()
+        .collect();
+    assert!(left.len() >= 2, "bodies left behind: {}", left.len());
+    let units = r.c.parties[p].alive() as usize;
+    assert_eq!(left.len(), units, "one body for each unit");
+    for (i, b) in left.iter().enumerate() {
+        assert!(r.c.lurking(p), "still lurking before kill {i}");
+        assert!(spots(&r).iter().all(|a| a.flags == 0), "no end yet");
+        let at = r.c.now() + 1;
+        r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, at);
+        let to = r.c.now() + 3;
+        r.run(to);
+    }
+    assert!(!r.c.lurking(p), "the last unit fell");
+    assert_eq!(
+        r.c.stats.camp_deaths, units as u64,
+        "each unit fell by CAMP_DEATH"
+    );
+    let sent = spots(&r);
+    assert_eq!(sent.len(), 2, "a start and one removal: {sent:?}");
+    assert_eq!(
+        sent[1],
+        AmbushSpot {
+            flags: AMBUSH_REMOVED,
+            ..first
+        }
+    );
+    let at_remove = r
+        .cmds
+        .iter()
+        .position(|(_, c)| matches!(c, Cmd::AmbushSpot(a) if a.flags & AMBUSH_REMOVED != 0))
+        .unwrap();
+    let at_recall = r
+        .cmds
+        .iter()
+        .position(|(_, c)| matches!(c, Cmd::Recall(x) if x.agent == Party::agent(p)));
+    if let Some(at_recall) = at_recall {
+        assert!(at_remove < at_recall, "the removal goes before any recall");
+    }
+    // Nothing ends it a second time (the walk home, its patience).
+    let to = r.c.now() + Tick::from_days(40).0;
+    r.run(to);
+    assert_eq!(spots(&r).len(), 2);
+    assert_eq!((r.c.stats.lurks, r.c.stats.lurks_ended), (1, 1));
+    assert!(r.failures.is_empty(), "{:#?}", r.failures);
+}
+
 // ---- trains that pass a lurk (M8, MZB-355, MZB-356) ----------------------------------------------
 
 /// An infrastructure for ambushes: an attack on a train loses `loot` of good 1 (`None` is an
