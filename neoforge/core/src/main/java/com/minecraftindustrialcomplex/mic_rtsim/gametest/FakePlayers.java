@@ -44,7 +44,8 @@ public final class FakePlayers {
 
     /**
      * A server player who records what it is sent: every chat line in {@link Hearer#heard} and every
-     * action-bar line in {@link Hearer#overlay}. Otherwise as {@link #add}.
+     * action-bar line in {@link Hearer#overlay}, and (M8, MZB-370) every sound packet in {@link Hearer#sounds}
+     * and every title, subtitle and action-bar packet in {@link Hearer#titles}. Otherwise as {@link #add}.
      */
     public static Hearer hearing(ServerLevel level, Vec3 at, String name) {
         GameProfile profile = new GameProfile(UUID.randomUUID(), name);
@@ -52,7 +53,7 @@ public final class FakePlayers {
         Hearer p = new Hearer(level.getServer(), level, profile, cookie.clientInformation());
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
         new EmbeddedChannel(connection);
-        new ServerGamePacketListenerImpl(level.getServer(), connection, p, cookie);
+        new Hearing(level.getServer(), connection, p, cookie);
         p.setGameMode(GameType.SURVIVAL);
         p.moveTo(at.x, at.y, at.z);
         level.players().add(p);
@@ -68,6 +69,10 @@ public final class FakePlayers {
         public final java.util.List<net.minecraft.network.chat.Component> heard = new java.util.ArrayList<>();
         public final java.util.List<net.minecraft.network.chat.Component> raw = new java.util.ArrayList<>();
         public final java.util.List<net.minecraft.network.chat.Component> overlay = new java.util.ArrayList<>();
+        /** Every sound packet sent to it (a train's roar, a notice's horn). */
+        public final java.util.List<net.minecraft.network.protocol.game.ClientboundSoundPacket> sounds = new java.util.ArrayList<>();
+        /** Every title, subtitle and action-bar text packet sent to it. */
+        public final java.util.List<net.minecraft.network.chat.Component> titles = new java.util.ArrayList<>();
 
         Hearer(net.minecraft.server.MinecraftServer server, ServerLevel level, GameProfile profile,
                net.minecraft.server.level.ClientInformation info) {
@@ -85,6 +90,31 @@ public final class FakePlayers {
                     heard.add(message);
             }
             super.sendSystemMessage(message, overlayBar);
+        }
+
+        void record(net.minecraft.network.protocol.Packet<?> packet) {
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundSoundPacket sound)
+                sounds.add(sound);
+            else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket title)
+                titles.add(title.text());
+            else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetSubtitleTextPacket subtitle)
+                titles.add(subtitle.text());
+            else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket bar)
+                titles.add(bar.text());
+        }
+    }
+
+    /** The listener of a {@link Hearer}: hands every packet to {@link Hearer#record} and sends it as any listener does. */
+    private static final class Hearing extends ServerGamePacketListenerImpl {
+        Hearing(net.minecraft.server.MinecraftServer server, Connection connection, Hearer player, CommonListenerCookie cookie) {
+            super(server, connection, player, cookie);
+        }
+
+        @Override
+        public void send(net.minecraft.network.protocol.Packet<?> packet) {
+            if (this.player instanceof Hearer h)
+                h.record(packet);
+            super.send(packet);
         }
     }
 

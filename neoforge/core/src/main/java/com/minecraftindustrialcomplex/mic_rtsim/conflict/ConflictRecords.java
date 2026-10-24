@@ -32,6 +32,11 @@ public final class ConflictRecords {
      */
     public static final int RAIL_PASS = 0x080C;
     /**
+     * M8: a train passed within a lurk's reach (MOWZIE.md §4.4; journaled, aux = flags, {@link TrainPassed#WATCHED}
+     * when a puppet of the lurk was in the world). The engine rolls the robbery.
+     */
+    public static final int TRAIN_PASSED = 0x080D;
+    /**
      * M1: the world's difficulty, journaled at session start and on each change (MZB-17). 0x0093 is retired:
      * it was latest-wins, and journaling a latest-wins id throws.
      */
@@ -45,6 +50,8 @@ public final class ConflictRecords {
     public static final int CAMP_BODIES = 0x0812;
     public static final int CAMP_OUT = 0x0813;
     public static final int CAMP_RECONCILE = 0x8808;
+    /** M8: a lurk robbed a train (the roar at the train's next station, MZB-366). */
+    public static final int TRAIN_ROBBED = 0x8809;
 
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
@@ -53,6 +60,8 @@ public final class ConflictRecords {
     public static final int BAND_STEER = 0x8804;
     public static final int BAND_RECALL = 0x8805;
     public static final int DEMAND_SETTLED = 0x8806;
+    /** M8: a war party lies in wait beside a track (aux = flags; {@link AmbushSpot#REMOVED}: it no longer does). */
+    public static final int AMBUSH_SPOT = 0x8807;
 
     public static boolean isConflictCommand(int kind) {
         return kind >= 0x8800 && kind <= 0x88FF;
@@ -124,6 +133,15 @@ public final class ConflictRecords {
     public static final class RailPass {
         public static final int FACTION = 24, TRAIN = 32, OWNER_MOST = 40, OWNER_LEAST = 48, DIM = 56, X = 64, Y = 72, Z = 80,
                 ENTRY = 88, EXIT = 96, SIZE = 104;
+    }
+
+    /**
+     * TRAIN_PASSED (M8, journaled, aux = flags): the lurk's agent and the epoch of the lurk table's entry, the
+     * carriage nearest the track point, and the train (CreateIds.of its UUID, as RAIL_PASS names it).
+     */
+    public static final class TrainPassed {
+        public static final int AGENT = 24, EPOCH = 32, CARRIAGE = 36, TRAIN = 40, SIZE = 48;
+        public static final int WATCHED = 1;
     }
 
     /** DIFFICULTY (M1, journaled, aux 0): Minecraft's difficulty id, u32. */
@@ -280,6 +298,22 @@ public final class ConflictRecords {
         public static final int FACTION = 16, AGENT = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIGNAL = 48, SIZE = 56;
     }
 
+    /**
+     * AMBUSH_SPOT (M8, aux = flags): the lurk of {@code AGENT} (a table entry by agent, latest wins; REMOVED drops
+     * it), its dimension (dictionary 1), faction, the track point a train must pass within {@code REACH} of, and
+     * the spot where the body stands (at the track's y).
+     */
+    public static final class AmbushSpot {
+        public static final int AGENT = 16, EPOCH = 24, DIM = 28, FACTION = 32, TRACK_X = 40, TRACK_Y = 48, TRACK_Z = 56,
+                SPOT_X = 64, SPOT_Y = 72, SPOT_Z = 80, REACH = 88, SIZE = 96;
+        public static final int REMOVED = 1;
+    }
+
+    /** TRAIN_ROBBED (M8): the faction whose lurk robbed {@code TRAIN} (the plugin's id for it). */
+    public static final class TrainRobbed {
+        public static final int FACTION = 16, TRAIN = 24, SIZE = 32;
+    }
+
     // ---- the camp reconciler (M5; docs/boundary.md §9) -------------------------------------------
 
     /** CAMP_DEATH's killer kind (aux): BY_* above, and a body carried off (Carry On). */
@@ -361,6 +395,8 @@ public final class ConflictRecords {
             case BAND_STEER -> Steer.SIZE;
             case BAND_RECALL -> Recall.SIZE;
             case DEMAND_SETTLED -> Settled.SIZE;
+            case AMBUSH_SPOT -> AmbushSpot.SIZE;
+            case TRAIN_ROBBED -> TrainRobbed.SIZE;
             default -> 16;
         };
     }
