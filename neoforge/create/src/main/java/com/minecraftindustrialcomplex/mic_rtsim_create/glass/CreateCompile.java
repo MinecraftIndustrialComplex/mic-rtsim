@@ -2137,8 +2137,12 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (chain == null || onStore)
             return;
         LongOpenHashSet network = chainNetwork(chain);
+        PackageStores stores = PackageStores.of(g.ind);
         for (BlockEntity be : all(K.FROGPORT)) {
             if (be == port || !(be instanceof PackagePortBlockEntity other) || other.target == null)
+                continue;
+            // A store's frogport is a port, never a chain edge's end (its store moves the packages).
+            if (stores.storeOfPort(g.level.dimension(), other.getBlockPos()) != null)
                 continue;
             if (network.contains(other.getBlockPos().offset(other.target.relativePos).asLong())) {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.CHAIN, i.node.index, acceptItem.get(other.getBlockPos().asLong()));

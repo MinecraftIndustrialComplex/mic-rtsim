@@ -32,8 +32,8 @@ use rtsim_kernel::conserve::Diffuser;
 use rtsim_kernel::journal::OpId;
 
 use crate::ids::{
-    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId, TrainId,
-    VecMap,
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodInfo, GoodVec, StationId, StoreId,
+    TrainId, VecMap,
 };
 
 /// Page tables of the industry engine (the kernel's `PageKey` top 16 bits). PLACEHOLDER numbers,

@@ -70,7 +70,8 @@ import java.util.function.IntUnaryOperator;
  *       frogport their address leads to from there, and each frogport's package in its arrival
  *       animation.</li>
  * </ul>
- * The stores persist in {@code IndustryData} under {@link #KEY} (format 3). Nothing here changes the world.
+ * The stores persist in {@code IndustryData} under {@link #KEY} (format 3). Nothing here changes the world: block
+ * entities are read with {@code EntityCreationType.CHECK} or through {@link Loaded}, never created.
  */
 public final class PackageStores {
     /** The key of the stores' state in {@code IndustryData}. */
@@ -235,7 +236,7 @@ public final class PackageStores {
                 w.complete = false;
                 continue;
             }
-            if (!(c.getBlockEntity(p, LevelChunk.EntityCreationType.IMMEDIATE) instanceof ChainConveyorBlockEntity cc))
+            if (!(c.getBlockEntity(p, LevelChunk.EntityCreationType.CHECK) instanceof ChainConveyorBlockEntity cc))
                 continue;
             w.index.put(p.asLong(), w.order.size());
             w.order.add(p.asLong());
@@ -295,10 +296,15 @@ public final class PackageStores {
      * whose frogports start or stop being a store's, but {@code compiling}'s, are compiled again.
      */
     public Observed observe(ServerLevel level, BlockPos conveyor, long compiling) {
-        return observe(level, conveyor, compiling, 0);
+        return observe(level, conveyor, compiling, 0, null);
     }
 
-    private Observed observe(ServerLevel level, BlockPos conveyor, long compiling, int depth) {
+    /**
+     * {@code leftFrom}: for frogports a parent walk's store just gave up (by position), that store's id, so a
+     * store they now form says where they came from and the engine moves what it held for them along.
+     */
+    private Observed observe(ServerLevel level, BlockPos conveyor, long compiling, int depth, Long2LongOpenHashMap leftFrom) {
+        long declaredBefore = declarations;
         Walk w = walk(level, conveyor);
         walks++;
         if (w.order.isEmpty())
@@ -309,10 +315,12 @@ public final class PackageStores {
             if (s.dim == dim && touches(s, w))
                 touched.add(s);
         TreeMap<BlockPos, Port> ports = new TreeMap<>(w.ports);
+        // A walk that stopped at a chunk that is not loaded cannot tell a frogport beyond it from one that left:
+        // it keeps every frogport the touched stores listed that still serves the conveyor they saw it on.
         if (!w.complete)
             for (Store s : touched)
                 for (Port p : s.ports)
-                    if (!ports.containsKey(p.pos) && unseen(level, p))
+                    if (!ports.containsKey(p.pos) && (unseen(level, p) || servesAsSeen(level, p)))
                         ports.put(p.pos, new Port(p.pos, p.conveyor, p.filter));
         LongOpenHashSet owners = new LongOpenHashSet();
         for (Port p : ports.values())
@@ -329,7 +337,8 @@ public final class PackageStores {
                 later.put(p.pos.asLong(), now + UNKNOWN_WALK_TICKS);
             for (Store s : touched)
                 shrink(level, s, ports, 0, compiling);
-            save();
+            if (declarations != declaredBefore)
+                save();
             return new Observed(null, w);
         }
         Store keep = null;
@@ -345,15 +354,21 @@ public final class PackageStores {
         long[] from = new long[list.size()];
         for (int i = 0; i < list.size(); i++) {
             Store old = storeOfPort(dim, list.get(i).pos);
-            from[i] = old != null && old != target ? old.id : 0;
+            long hint = leftFrom == null ? 0 : leftFrom.get(list.get(i).pos.asLong());
+            from[i] = old != null && old != target ? old.id : old == null && hint != target.id ? hint : 0;
         }
         int[] hops = hops(w, list, touched);
         target.ports.clear();
         target.ports.addAll(list);
         target.hops = hops;
-        target.conveyors.clear();
+        LongOpenHashSet conveyors = new LongOpenHashSet(w.order.size());
         for (int i = 0; i < w.order.size(); i++)
-            target.conveyors.add(w.order.getLong(i));
+            conveyors.add(w.order.getLong(i));
+        boolean conveyorsChanged = !conveyors.equals(target.conveyors);
+        if (conveyorsChanged) {
+            target.conveyors.clear();
+            target.conveyors.addAll(conveyors);
+        }
         if (keep == null) {
             stores.put(target.id, target);
             target.nextCensus = now + CENSUS_TICKS;
@@ -370,14 +385,19 @@ public final class PackageStores {
         for (Store s : touched)
             if (s != target)
                 shrink(level, s, ports, target.id, compiling);
-        save();
-        if (depth < MAX_DEPTH)
+        if (keep == null || conveyorsChanged || declarations != declaredBefore)
+            save();
+        if (depth < MAX_DEPTH && !left.isEmpty()) {
+            Long2LongOpenHashMap gaveUp = new Long2LongOpenHashMap();
+            for (Port p : left)
+                gaveUp.put(p.pos.asLong(), target.id);
             for (Port p : left) {
                 Store now2 = storeOfPort(dim, p.pos);
                 if ((now2 == null || now2 == target) && p.conveyor != null && Loaded.at(level, p.conveyor) && Loaded.at(level, p.pos)
                         && !target.conveyors.contains(p.conveyor.asLong()))
-                    observe(level, p.conveyor, compiling, depth + 1);
+                    observe(level, p.conveyor, compiling, depth + 1, gaveUp);
             }
+        }
         return new Observed(target, w);
     }
 
@@ -420,6 +440,11 @@ public final class PackageStores {
             return false;
         return Loaded.blockEntity(level, p.pos) instanceof FrogportBlockEntity f
                 && f.target instanceof PackagePortTarget.ChainConveyorFrogportTarget;
+    }
+
+    /** Whether a frogport in a loaded chunk still serves the conveyor its store saw it on (read only). */
+    private static boolean servesAsSeen(ServerLevel level, Port p) {
+        return Loaded.blockEntity(level, p.pos) instanceof FrogportBlockEntity f && p.conveyor.equals(conveyorOf(f));
     }
 
     /** A frogport's owner: its district's id, 0 for none (a chunk of no district). */
@@ -891,8 +916,11 @@ public final class PackageStores {
                         pt.contains("filter") ? pt.getString("filter") : null));
             }
             s.hops = st.getIntArray("hops");
-            if (s.hops.length != IndRecords.PackageStore.triangle(s.ports.size()))
-                continue;
+            if (s.hops.length != IndRecords.PackageStore.triangle(s.ports.size())) {
+                // Kept with its id (the engine has it), the hops unknown until the next walk.
+                s.hops = new int[IndRecords.PackageStore.triangle(s.ports.size())];
+                Arrays.fill(s.hops, UNKNOWN);
+            }
             for (long c : st.getLongArray("conveyors"))
                 s.conveyors.add(c);
             stores.put(s.id, s);
