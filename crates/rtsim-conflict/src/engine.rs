@@ -5176,6 +5176,11 @@ impl Conflict {
                     .collect();
                 // A boss's chief is its band's one unit, yet Java's survivors never hold a chief
                 // (an extra body there, MZB-109): while the books have it alive, it is back.
+                // Keyed on the band's present flag, not on the stack it went out with: a boss band
+                // loses the flag only at its chief's death, which takes the unit too
+                // (`chief_unit_lost`), or by an age succession, which no boss reaches (the
+                // Frostmaw's `chief_lifespan_days` is 1e6). A boss with a mortal chief must key
+                // this on the materialized MEMBER_CHIEF stack instead (M6 re-review, P3-3).
                 if self.parties[p].chief
                     && self.culture(f).renewal.is_some_and(|r| r.boss)
                     && let Some(k) = self.parties[p].units.iter().position(|e| e.1 > 0)
