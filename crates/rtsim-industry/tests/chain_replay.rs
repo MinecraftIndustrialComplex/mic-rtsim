@@ -65,6 +65,7 @@ fn store() -> StoreDecl {
     StoreDecl {
         store: S,
         dim: 0,
+        epoch: 0,
         into: None,
         frogports: vec![port(MINE), port(MILL)],
         hops: vec![1],
@@ -83,6 +84,7 @@ fn chain(d: DistrictId, direction: ChainDirection, packages: u32, op: Option<u64
         packages,
         address: 0,
         op: op.map(rtsim_kernel::journal::OpId),
+        key: None,
         goods: GoodVec::from_pairs([(IRON, BATCH * i64::from(packages))]),
     })
 }
@@ -250,6 +252,7 @@ fn written(e: &mut Engine, at: u64, w: &WriteChain) {
             packages: w.count,
             address: 0,
             op: Some(w.op),
+            key: None,
             goods: GoodVec::from_pairs([(IRON, n)]),
         }),
     );
@@ -550,6 +553,7 @@ fn a_write_after_a_crash_is_taken_though_a_lost_record_is_later() {
         packages: 1,
         address: 0,
         op: Some(rtsim_kernel::journal::OpId((0x49 << 56) | 0xabc)),
+        key: None,
         goods: GoodVec::from_pairs([(IRON, BATCH)]),
     };
     send(&mut e, 23_000, Obs::ChainPackage(lost.clone()));
@@ -658,6 +662,7 @@ fn a_write_moved_to_another_store_before_its_drain_is_timed_there() {
         Obs::PackageStore(StoreDecl {
             store: S2,
             dim: 0,
+            epoch: 0,
             into: None,
             frogports: vec![StoreFrogport {
                 from: Some(S),
@@ -710,6 +715,7 @@ fn a_frogport_rebuilt_into_another_store_turns_its_old_record_away() {
         Obs::PackageStore(StoreDecl {
             store: S3,
             dim: 0,
+            epoch: 0,
             into: None,
             frogports: vec![mill],
             hops: vec![],
@@ -737,6 +743,7 @@ fn a_written_record_is_never_taken_in_another_dimension() {
         Obs::PackageStore(StoreDecl {
             store: S4,
             dim: 1,
+            epoch: 0,
             into: None,
             frogports: vec![StoreFrogport {
                 district: None,
@@ -805,6 +812,7 @@ fn a_pool_returns_to_the_store_that_lists_its_frogport_now() {
         Obs::PackageStore(StoreDecl {
             store: S2,
             dim: 0,
+            epoch: 0,
             into: None,
             frogports: vec![rtsim_industry::obs::StoreFrogport {
                 from: Some(S),
