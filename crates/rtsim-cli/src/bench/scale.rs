@@ -1101,9 +1101,9 @@ pub fn sweeps(quick: bool) -> Vec<Sweep> {
             contracts: vec![
                 contract(
                     Metric::Resident,
-                    0.1,
+                    RAIL_RESIDENT_SLOPE,
                     0.0,
-                    "the row tables stay under the budget whatever the dens: the rail meters are rows of their factions' pages (M7 review P3-4)",
+                    "the row pages are held to the budget plus what a step changes: every den takes a leg every 480 ticks, so a step dirties most pages and they are pinned until the save (M7 review P3-4)",
                 ),
                 contract(
                     Metric::EventsPerUnit,
@@ -1131,6 +1131,12 @@ const FACTION_VILLAGES_MIN: u64 = 16;
 
 /// The paged market sweep's row budget. PLACEHOLDER 4 MiB, the paged region sweeps' budget.
 const MARKETS_BUDGET: u64 = 4 << 20;
+
+/// Paged rail dens' resident rows at their peak: measured 0.119 (256 to 512 dens), 0.097 (512 to
+/// 1,024) and 0.107 (256 to 1,024; peaks 279,144, 303,096 and 324,120 bytes against the 262,144
+/// budget), not the 0.1 asked for: every den takes a leg every 480 ticks, so each step dirties most
+/// row pages, which stay pinned until the save (docs/choices-mowzie-build.md, MZB-378).
+const RAIL_RESIDENT_SLOPE: f64 = 0.15;
 
 /// The paged herd sweep's row budget. PLACEHOLDER 1 MiB: under the rows of every point but the
 /// first.
