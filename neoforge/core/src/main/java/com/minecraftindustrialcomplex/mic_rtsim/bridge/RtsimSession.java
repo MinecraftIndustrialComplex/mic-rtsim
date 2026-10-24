@@ -891,17 +891,34 @@ public final class RtsimSession {
         dropPendingWhenAcked(holder, last);
     }
 
-    /** The same for a chunk: its pending records are COMMAND_RESULTs of transfers applied into it. */
+    /**
+     * The same for a chunk: its pending records are COMMAND_RESULTs of engine ops applied into it, each
+     * with the records Java journaled for it just before (IND_WRITE_CHAIN's CHAIN_IN). An op's records are
+     * dropped together once the last of them is acknowledged.
+     */
     public void reassert(net.minecraft.world.level.chunk.LevelChunk chunk) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
-        for (byte[] record : p.records()) {
-            long seq = boundary.recommit(record);
-            long op = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID);
-            dropFromChunkWhenAcked(chunk, op, seq);
-        }
+        java.util.Map<Long, Long> last = new java.util.LinkedHashMap<>();
+        for (byte[] record : p.records())
+            last.put(pendingOp(record), boundary.recommit(record));
+        for (java.util.Map.Entry<Long, Long> e : last.entrySet())
+            dropFromChunkWhenAcked(chunk, e.getKey(), e.getValue());
         reasserted += p.records().size();
+    }
+
+    /**
+     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, or the engine op of an
+     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5).
+     */
+    public static long pendingOp(byte[] record) {
+        ByteBuffer b = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER);
+        int kind = Short.toUnsignedInt(b.getShort(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.R_KIND));
+        if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_CHAIN_PACKAGE
+                && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID + 8)
+            return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID);
+        return record.length >= Obs.CommandResult.OP_ID + 8 ? b.getLong(Obs.CommandResult.OP_ID) : 0;
     }
 
     /** The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one. */
@@ -910,7 +927,7 @@ public final class RtsimSession {
         if (p == null)
             return false;
         for (byte[] r : p.records())
-            if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) == opId)
+            if (pendingOp(r) == opId)
                 return true;
         return false;
     }
@@ -936,7 +953,7 @@ public final class RtsimSession {
                 return;
             java.util.List<byte[]> keep = new java.util.ArrayList<>();
             for (byte[] r : p.records())
-                if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) != opId)
+                if (pendingOp(r) != opId)
                     keep.add(r);
             if (keep.isEmpty())
                 c.removeData(RtsimAttachments.PENDING);
