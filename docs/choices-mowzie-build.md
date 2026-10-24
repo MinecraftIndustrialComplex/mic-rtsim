@@ -3637,11 +3637,25 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - **The share.** `ambush_milli` rolls on every pass, but the industry's per-train cooldown
       (`cooldown_ticks` 24,000) turns a hit into `attacks_skipped` when the train was robbed in the last
       day. So the share is judged on the first pass of a train in each day of a wait that the cooldown
-      leaves open (no robbery of that train by a lurk in the day before, and not skipped), pooled over the
-      two trains and both lines and 8 seeds; the roll's own rate over every counted pass is checked against
-      the same band as a second figure, and reported per line. The rig sees a robbery by a lurk only (a
-      band robbing a train on its march, 16 of the 112 ambushes of the 24-a-day line, books the
-      cooldown too), so such a train's next pass can look open to it and bias the share a little down.
+      leaves open (not skipped, and the industry's own cooldown on the train over when the pass came: the
+      rig reads it with `Engine::train_cooldown_until(train)`, the latest of the train's per-class
+      cooldowns, so a robbery on a band's march, 16 of the 112 ambushes of the 24-a-day line, closes it
+      too), pooled over the two trains and both lines and 8 seeds; the roll's own rate over every counted
+      pass is checked against the same band as a second figure, and reported per line.
+    - **The roll's independence.** The rate of the roll on the counted pass that follows a miss of the same
+      lurk and train, and on the one that follows a hit, are each held to the same band (12 legs a day: 53%
+      of 325 after a miss, 51% of 363 after a hit; 24: 49% of 437, 53% of 450). Mutated to a roll keyed by
+      the train alone (`slot(train)` for `slot(train ^ at.rotate_left(32))` in the engine's roll), it fails
+      at 0% of 254 after a miss and 100% of 434 after a hit at 12 legs a day, 0% of 297 and 100% of 590 at
+      24; the share check fails too then (64%), but only by chance before.
+    - **The legs.** The detail line says what the trains made: 11.9 legs a day on the 12-a-day line and
+      23.9 on the 24-a-day line, so the two trains with a 600-tick dwell do keep the named rate (a
+      line's lap is well under 1,800 ticks in the rig's scene).
+    - **The three counts of a robbery.** The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands the
+      rig heard (the train and the tick of each) and the industry's own `books.stolen` delta for each pass
+      must agree pass for pass: the same trains at the same ticks, and the items the engine counted for a
+      pass equal the ones the industry booked. (The check was the engine's counter against the rig's count
+      of the engine's own command, one site: it could not disagree.)
 - **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
   meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
   - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
@@ -3902,13 +3916,16 @@ each at its own far base, scripted engine):
   - Every Raid on a track sends AMBUSH_SPOT at its arrival and REMOVED when it ends.
   - At most 64 items are robbed per train per day, and at most 256 over a middling 2-day wait with two
     trains.
-  - The share of each train's first open pass of a day of the wait (the cooldown clear) that robs is
-    between 35% and 65% (`ambush_milli` 500), pooled over the trains and seeds; the roll's rate over every
-    counted pass is held to the same band.
+  - Each robbery takes `min(64, cargo / 10)` of its train (cargo 1280 and 320: 64 and 32).
+  - The share of each train's first open pass of a day of the wait (the industry's cooldown on the train
+    clear) that robs is between 35% and 65% (`ambush_milli` 500), pooled over the trains and seeds; the
+    roll's rate over every counted pass is held to the same band, and so is its rate on the pass after a
+    miss and the one after a hit (independence).
   - The robbed goods are in the ledger's destroyed share (ledger 10), and the industry's `books.stolen`
-    equals them. `stats.lurk_robberies` equals the TRAIN_ROBBED count (review A, P3: `stats.ambushes` also
-    counts the on-the-way ambushes, which send no roar, so it is the larger).
-  - No TRAIN_PASSED is stale except after a lurk ended.
+    equals them. The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands heard and the industry's
+    books per pass agree (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send
+    no roar, so it is the larger).
+  - No TRAIN_PASSED is stale except in the `LAG` ticks after a lurk ended.
 - **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points, each blob and paged,
   against the control; then the session restarts at each. The fourth, a reconcile in flight, is M4's.
 
