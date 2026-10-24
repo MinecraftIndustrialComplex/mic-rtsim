@@ -409,6 +409,11 @@ fn resend_notices_if_due(st: &mut State) {
     take_commands(st);
 }
 
+/// The session's replay end (docs/replay-gate.md §3.2): the kept notices go.
+pub(super) fn replay_end(st: &mut State) {
+    resend_notices_if_due(st);
+}
+
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
 /// positions go to the shared interest areas (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {

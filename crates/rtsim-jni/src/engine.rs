@@ -313,6 +313,12 @@ pub struct Stats {
     pub archive_pending_bytes: AtomicU64,
     /// The view tap's counters (`tap.rs`). Not in Java's array.
     pub tap: tap::Counters,
+    /// The session's journal replay (docs/replay-gate.md §3.2): the replay ends this engine ran
+    /// (one a session), and the last replay's hand-overs and records applied. Not in Java's
+    /// array.
+    pub replays_ended: AtomicU64,
+    pub replay_handovers: AtomicU64,
+    pub replay_records: AtomicU64,
 }
 
 pub const STATS_LEN: usize = 16;
@@ -347,6 +353,8 @@ struct State {
     /// applied, for the replay end's log line and the stats. Not saved.
     replay_handovers: u64,
     replay_records: u64,
+    /// The replay ends run, one a session.
+    replays_ended: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
     /// A test's rewound command sequence (`REWIND_CMD_SEQ`): the next commands take sequences
@@ -408,6 +416,7 @@ impl State {
             replay_clock: Tick::ZERO,
             replay_handovers: 0,
             replay_records: 0,
+            replays_ended: 0,
             pages_obs_seq: 0,
             last_applied_cmd: 0,
             rewind: None,
@@ -1255,6 +1264,10 @@ impl Engine {
         // while h - 1 is still in its last lines: wait for them (microseconds), lending this pool
         // thread's slot meanwhile. Never a game thread: they take this lock only outside steps.
         let mut st = rt::blocking(|| lock(&self.state));
+        // A hand-over of the session's replay (docs/replay-gate.md §2.2).
+        if st.replaying {
+            st.replay_handovers += 1;
+        }
         // The paged modules' saves that came back since the last step (PF13).
         paging::drain(&mut st);
         // 1. Observations: published (acquire), read, consumed (release).
@@ -1277,6 +1290,9 @@ impl Engine {
         // Every module measures through the levels' topologies (a module a load or a switch
         // replaced gets them here).
         topology::sync(&mut st);
+        // A replay whose last record was this hand-over's last ends before anything runs
+        // (docs/replay-gate.md §2.2, trigger 2).
+        shared::replay_end_if_due(&mut st);
         industry::simulate(&mut st);
         dragons::simulate(&mut st);
         ships::simulate(&mut st);
@@ -1353,6 +1369,10 @@ impl Engine {
         for (a, v) in s.phase1.iter().zip(st.phase1.stats) {
             a.store(v, Ordering::Release);
         }
+        s.replays_ended.store(st.replays_ended, Ordering::Release);
+        s.replay_handovers
+            .store(st.replay_handovers, Ordering::Release);
+        s.replay_records.store(st.replay_records, Ordering::Release);
     }
 
     fn publish_inspect(&self, st: &State) {
@@ -1461,6 +1481,15 @@ impl Engine {
                 let last_applied = wire::u64_at(b, obs::session_start::LAST_APPLIED_CMD_SEQ);
                 let journal_first = wire::u64_at(b, obs::session_start::JOURNAL_FIRST_OBS_SEQ);
                 let world_next = wire::u64_at(b, obs::session_start::WORLD_NEXT_OBS_SEQ);
+                // The session's replay starts before any module resets, so that a reset inside
+                // the arm never reads the last session's `false`, and no record of this session
+                // is a copy (docs/replay-gate.md §2.1, RP-1, RP-8). The clock is held at the
+                // world's present until the replayed records move it (§3.6).
+                st.replaying = true;
+                st.applying_copy = None;
+                st.replay_clock = st.phase1.world.now();
+                st.replay_handovers = 0;
+                st.replay_records = 0;
                 st.world.session_start();
                 st.world.module_mask = wire::u32_at(b, obs::session_start::MODULE_MASK);
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
@@ -1504,6 +1533,12 @@ impl Engine {
                     )),
                 }
                 st.session_first = world_next.max(st.pages_obs_seq + 1);
+                // Nothing to replay, the pages' or Java's journal's (RP-29): the replay ends here.
+                // Else this hand-over is its first.
+                shared::replay_end_at_session_start(st, jf);
+                if st.replaying {
+                    st.replay_handovers = 1;
+                }
                 Self::log_received(st, h, rec, 0, false);
             }
             k if obs::is_journaled(k) => self.journaled(st, h, rec),
@@ -1549,6 +1584,9 @@ impl Engine {
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
             self.save_now(st, false);
         }
+        // The first record of this session ends the replay before it is admitted
+        // (docs/replay-gate.md §2.2, trigger 1).
+        shared::replay_end_before(st, seq);
         let op = op_of(rec);
         let mut verdict = st.replay.admit(ObsSeq(seq), op);
         if let Verdict::Gap { expected, got } = verdict {
@@ -1564,6 +1602,9 @@ impl Engine {
         }
         let skipped = verdict == Verdict::AlreadyApplied;
         Self::log_received(st, h, rec, seq, skipped);
+        if st.replaying && verdict == Verdict::Apply {
+            st.replay_records += 1;
+        }
         match verdict {
             Verdict::Apply if industry::claims(rec) => industry::journaled(st, rec),
             Verdict::Apply if dragons::claims(rec) => dragons::journaled(st, rec),

@@ -275,6 +275,10 @@ fn define_items(st: &mut State, ids: &[u32]) {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
+/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
+/// SESSION_START (`session_start`), until slice D moves that work into its engine's `replay_done`.
+pub(super) fn replay_end(_st: &mut State) {}
+
 /// SESSION_START: every dragon the engine thought embodied is abstract again where it was last
 /// seen (puppets never outlive a session; the reset runs as soon as the dragons run, now or when
 /// switched on), and Java forgot the engine's dictionary.

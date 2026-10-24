@@ -270,6 +270,10 @@ fn name_of(st: &State, q: &Queued, kind: u32, id: u32) -> Option<String> {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
+/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
+/// SESSION_START (`session_start`), until slice S moves that work into its engine's `replay_done`.
+pub(super) fn replay_end(_st: &mut State) {}
+
 /// SESSION_START: Java forgot the engine's dictionary; the ships' bodies are gone (their reset
 /// runs as soon as the ships run, now or when switched on).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
