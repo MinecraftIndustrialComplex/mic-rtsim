@@ -43,6 +43,8 @@ pub const CAMP_BODIES: u16 = 0x0812;
 pub const CAMP_OUT: u16 = 0x0813;
 pub const CHIEF_PAID: u16 = 0x0814;
 pub const DIFFICULTY: u16 = 0x0815;
+/// An owed hunt was applied (MZB-425): the animals the raiding raptors would have hunted, killed.
+pub const HUNT_APPLIED: u16 = 0x0816;
 
 pub const TERRITORY: u16 = 0x8800;
 pub const FACTION_NOTICE: u16 = 0x8801;
@@ -56,6 +58,9 @@ pub const CAMP_RECONCILE: u16 = 0x8808;
 pub const TRAIN_ROBBED: u16 = 0x8809;
 pub const CHIEF_BODY: u16 = 0x880A;
 pub const BAND_MARCH: u16 = 0x880B;
+/// The animals a raid on an unwatched district leaves hunted (MZB-425), latest wins for each
+/// faction and district.
+pub const OWED_HUNT: u16 = 0x880C;
 
 /// The agent namespace byte ("C"; dragons 0x44, ships 0x53, herds 0x48, industry 0x49).
 pub const AGENT_NAMESPACE: u64 = 0x43;
@@ -480,6 +485,15 @@ pub struct ChiefPaid {
     pub items: Vec<Item>,
 }
 
+/// An owed hunt was applied, whatever it killed (MZB-425, MZB-426): the hunt is spent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HuntApplied {
+    pub faction: u64,
+    pub district: u64,
+    pub op: u64,
+    pub killed: u32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Obs {
     State(BandState),
@@ -507,6 +521,7 @@ pub enum Obs {
     CampBodies(CampBodies),
     CampOut(CampOut),
     ChiefPaid(ChiefPaid),
+    HuntApplied(HuntApplied),
 }
 
 impl Obs {
@@ -524,6 +539,7 @@ impl Obs {
             Obs::CampBodies(_) => CAMP_BODIES,
             Obs::CampOut(_) => CAMP_OUT,
             Obs::ChiefPaid(_) => CHIEF_PAID,
+            Obs::HuntApplied(_) => HUNT_APPLIED,
             Obs::State(_) => BAND_STATE,
             Obs::FactionFound(_) => FACTION_FOUND,
             Obs::Signal(_) => TERRITORY_SIGNAL,
@@ -555,6 +571,7 @@ impl Obs {
             Obs::Looted(l) => Some(l.op),
             Obs::Traded(t) => Some(t.op),
             Obs::ChiefPaid(c) => Some(c.op),
+            Obs::HuntApplied(h) => Some(h.op),
             _ => None,
         }
     }
@@ -711,6 +728,22 @@ pub struct TrainRobbed {
     pub train: u64,
 }
 
+/// The hunt a raid left owed in a district (MZB-424, MZB-425): up to `count` animals within
+/// `radius` blocks of the centre die when its chunks tick. One is in flight for each faction and
+/// district, resent at each session start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwedHunt {
+    pub faction: u64,
+    pub district: u64,
+    /// Booked once: the hunt's own id (the engine allocator's byte, the camp's hash).
+    pub op: u64,
+    pub dimension: u32,
+    pub count: u32,
+    /// The district's centre, in blocks.
+    pub centre: (i32, i32),
+    pub radius: u32,
+}
+
 /// A chief's health, crystal and trade memory, ahead of a stack, spawn line or hand-back.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChiefBody {
@@ -763,6 +796,7 @@ pub enum Cmd {
     TrainRobbed(TrainRobbed),
     ChiefBody(ChiefBody),
     March(BandMarch),
+    OwedHunt(OwedHunt),
 }
 
 impl Cmd {
@@ -773,6 +807,7 @@ impl Cmd {
             Cmd::TrainRobbed(_) => TRAIN_ROBBED,
             Cmd::ChiefBody(_) => CHIEF_BODY,
             Cmd::March(_) => BAND_MARCH,
+            Cmd::OwedHunt(_) => OWED_HUNT,
             Cmd::Territory(_) => TERRITORY,
             Cmd::Notice(_) => FACTION_NOTICE,
             Cmd::Envoy(_) => ENVOY_MATERIALIZE,
@@ -797,6 +832,7 @@ impl Cmd {
             Cmd::TrainRobbed(_) => "TRAIN_ROBBED",
             Cmd::ChiefBody(_) => "CHIEF_BODY",
             Cmd::March(_) => "BAND_MARCH",
+            Cmd::OwedHunt(_) => "OWED_HUNT",
         }
     }
 
@@ -1202,6 +1238,13 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u64(32, c.epoch);
             w.finish(CAMP_OUT, 0, 40);
         }
+        Obs::HuntApplied(h) => {
+            w.u64(24, h.faction);
+            w.u64(32, h.district);
+            w.u64(40, h.op);
+            w.u32(48, h.killed);
+            w.finish(HUNT_APPLIED, 0, 56);
+        }
         Obs::ChiefPaid(c) => {
             w.u64(24, c.faction);
             w.u32(32, c.slot);
@@ -1441,6 +1484,12 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             faction: r.u64(24)?,
             epoch: r.u64(32)?,
         }),
+        HUNT_APPLIED => Obs::HuntApplied(HuntApplied {
+            faction: r.u64(24)?,
+            district: r.u64(32)?,
+            op: r.u64(40)?,
+            killed: r.u32(48)?,
+        }),
         CHIEF_PAID => Obs::ChiefPaid(ChiefPaid {
             faction: r.u64(24)?,
             slot: r.u32(32)?,
@@ -1598,6 +1647,17 @@ pub fn encode_cmd(seq: u64, c: &Cmd, buf: &mut Vec<u8>) {
                 w.uuid(48 + 16 * k, *u);
             }
             w.finish(CHIEF_BODY, traded.len() as u32, 48 + 16 * traded.len());
+        }
+        Cmd::OwedHunt(h) => {
+            w.u64(16, h.faction);
+            w.u64(24, h.district);
+            w.u64(32, h.op);
+            w.u32(40, h.dimension);
+            w.u32(44, h.count);
+            w.i32(48, h.centre.0);
+            w.i32(52, h.centre.1);
+            w.u32(56, h.radius);
+            w.finish(OWED_HUNT, 0, 64);
         }
         Cmd::March(m) => {
             w.u64(16, m.agent);
@@ -1773,6 +1833,15 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
             traded: (0..count(aux)?)
                 .map(|k| r.uuid(48 + 16 * k))
                 .collect::<Result<Vec<_>, CodecError>>()?,
+        }),
+        OWED_HUNT => Cmd::OwedHunt(OwedHunt {
+            faction: r.u64(16)?,
+            district: r.u64(24)?,
+            op: r.u64(32)?,
+            dimension: r.u32(40)?,
+            count: r.u32(44)?,
+            centre: (r.i32(48)?, r.i32(52)?),
+            radius: r.u32(56)?,
         }),
         BAND_MARCH => {
             let k = count(r.u32(64)?)?;
@@ -2025,6 +2094,12 @@ mod tests {
                 op: 1 << 63 | 11,
                 items,
             }),
+            Obs::HuntApplied(HuntApplied {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 31,
+                killed: 3,
+            }),
         ]
     }
 
@@ -2173,6 +2248,15 @@ mod tests {
                 flags: CHIEF_CRYSTAL,
                 traded: vec![(11, 22), (33, 44), (55, 66)],
             }),
+            Cmd::OwedHunt(OwedHunt {
+                faction: 77,
+                district: 9_000_000_017,
+                op: AGENT_NAMESPACE << 56 | 31,
+                dimension: 1,
+                count: 6,
+                centre: (-1200, 3400),
+                radius: 48,
+            }),
             Cmd::March(BandMarch {
                 agent: 5,
                 revision: 4,
@@ -2218,6 +2302,7 @@ mod tests {
             CAMP_BODIES => 48 + 16 * n,
             CAMP_OUT => 40,
             CHIEF_PAID => 72 + 16 * n,
+            HUNT_APPLIED => 56,
             TERRITORY => 48,
             FACTION_NOTICE => 64,
             ENVOY_MATERIALIZE => 104 + 8 * n,
@@ -2228,6 +2313,7 @@ mod tests {
             AMBUSH_SPOT => 96,
             CAMP_RECONCILE => 72 + 32 * n,
             TRAIN_ROBBED => 32,
+            OWED_HUNT => 64,
             CHIEF_BODY => 48 + 16 * n,
             BAND_MARCH => 72 + 8 * u32_at(64) + 16 * n,
             k => panic!("kind {k:#06x} has no documented size"),
@@ -2253,8 +2339,8 @@ mod tests {
             assert_eq!(usize::from(u16::from_le_bytes([b[2], b[3]])), b.len());
             seen.insert(kind);
         }
-        // Every kind of docs/boundary.md §9 has a sample: 13 + 12 observations, 7 + 5 commands.
-        assert_eq!(seen.len(), 37);
+        // Every kind of docs/boundary.md §9 has a sample (the hunt pair among them, MZB-425).
+        assert_eq!(seen.len(), 39);
         // BAND_MARCH: 72 + 8 a body kind + 16 a waypoint (MOWZIE.md §4.16): 408 for 20
         // waypoints and two body kinds.
         let mut b = Vec::new();
