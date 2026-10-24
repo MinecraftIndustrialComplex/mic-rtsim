@@ -97,6 +97,7 @@ own age) changes size once".
 | DHT68 | **A new dragon body is held back for 5 of its ticks while its animation settles, and the far model drawn instead** (`DragonArrivals` in mic_rtsim_iceandfire, `FarLook.holds`, `FarHide`). For a body that joins the client's level and that a far dragon of the feed names: from its first frame, vanilla's render of its model is cancelled through GeckoLib's cancelable `GeoRenderEvent.Entity.Pre` (posted on NeoForge's bus; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so NeoForge's own RenderLivingEvent never fires for a dragon; no mixin); its renderer runs once a frame into nothing, so its animation goes through its opening transition unseen; and `FarHide` counts the body as not there, so the far model goes on where it was (DH's pass or the band) and no copy of the body is drawn (DHT47). After 5 ticks of the body's own clock from its first such render, and at most 1 s of wall time from its arrival (a paused or frozen game), vanilla draws it. Only while the far view runs (the hold is decided in the looks' frame and forgotten at the frame's end), and never again once vanilla has drawn the body (a render that goes through ends its hold for good, so a body is never hidden after it was seen). Never held: a lightning dragon while it breathes (`DragonLook.copies`), a dragon with riders (Ice and Fire draws them inside the dragon's render and cancels their own, so they would vanish with it), and a body whose render throws. What the event does not cover is still drawn while held: a leash and its shadow within 16 blocks, each where the far model is (the name tag is held too since DHT72). Uninstall effect: none; client only, nothing saved, nothing sent; it hides a vanilla entity for 0.25 s on the client. | Ice and Fire's controllers start a body's animation with a 2-tick transition from the model's rest pose at their speed of 0.4, 5 ticks: a new body unfolded its wings and neck from that pose where the far model had been flying a frame before. The coordinator chose (a), holding the far model, over (b), priming GeckoLib with a made-up partial tick, and (c), leaving it, to be kept only if the stills showed no unfold and no double draw. They showed neither: in all 8 arrivals with the hold, at 114 and 149 blocks, zoomed and not, the far model flies up to the swap and the body flies from its first frame, one dragon in every frame, where every arrival without it showed the rest pose (the code review and a visual review, both Opus; "Round two" under Measured). What is left is the wings jumping to another point of their beat at the swap: the body's loop always starts wings up and the far model's is wherever its own clock has it. The warm render is the body's own, into nothing, never added anywhere (D3). |
 | DHT69 | **In the band the dragons, models and boxes together, keep to the tier's count** (8, 24 or 64), nearest first by horizontal distance, counted after the hand-over and before the frustum (`FarBandRenderer`, as `FarModelRenderer` counts the band's models with the dragons still drawn as boxes in their places). The carriages' boxes in the band are not counted. The bench logs the dragons counted and those the count left out. | Weak PCs (D1): the band's boxes had no count, so a flock over the loaded chunks drew every dragon on the lowest tier too. The same order as DH's pass and the band's models, so a dragon is drawn by one of them or by neither. Carriages are bounded by the feed's object budget already (DHT63). |
 | DHT70 | **A far feed RESET frees what no mover asks for again within 2 s** (`FarLook.reset`, `FarLooks.resetAll`, called by `FarFeedReceiver` before it applies the RESET's records; `FarLookReset`): the carriages' meshes and the dragons' pose sets, live stand-ins and asks that no mover drew or asked for since the RESET go at the first frame 2 s after it; what the movers sent again asked for stays. What the prewarm loaded (Create's bogeys, the dragon probes and their render sizes), the headings last seen and the looks that would not bake stay too. A look with no reset of its own clears. Leaving the world still frees everything at once. | The server sends a RESET on every subscription: when the client's far radius, detail or kinds change, on a new dimension and on a resubscribe, as well as after a server or sim restart; every mover it still chooses comes again with it. Freeing at once blanked every far model and baked them all again, about 27 ms of bakes a dragon set, 2 ms a frame, so seconds of boxes after an options change (the code review); a mesh kept by hash past a RESET was right but held GPU memory for a minute after its movers were gone. Two seconds is the models' own grace for a mover whose model is not baked yet. Round three measured it and the coordinator kept it: in two RESETs with 12 far dragons, every set was asked for again 0.8 to 1.2 ms after the RESET was applied, in the same frame, as the RESET carries the INTRO of every mover the server still chooses, and the grace freed none of the 12 when it ran out at 1.99 s. So a shorter grace would free sooner only what nothing asks for any more, a little memory, and would bake again a mover the server chooses a sweep later (the sweeps are 1 s apart); a longer one would help only across a server or sim restart, when movers come back over several sweeps. |
+| DHT73 | **A far carriage with a bad shape is not drawn as one** (`FarTrainView.tooLong` and `oddRun`, `FarModelRenderer.placed`, `FarBandRenderer`, `CarriageLook.outside`, `BogeyMeshes`): a run between its bogey points that is not finite or is longer than 160 blocks is skipped by the boxes, the models and the band; a model whose placement is not finite is skipped; a baked carriage mesh with a vertex past its own blocks (3 blocks of slack, 5.5 about each bogey) or not finite stays a box; a Create bogey with a vertex more than 5 blocks from its block is left out of the far meshes. Each is counted, the first few logged. | Black slabs across the sky in Ben's client (2026-10-24) looked like a far carriage drawn with one vertex far off. They were not ours: they came with the far view OFF as well (see "The black slabs in the sky"). Create builds no carriage longer than 128 blocks by default, so 160 leaves room. The checks cost a bound test when a mesh is baked and a finite test a model a frame, and turn such a mesh of ours, should one ever come, into a log line instead of a sliver across the sky. |
 
 ## Round three
 
@@ -431,6 +432,72 @@ vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-ro
   as before the change (`stills/s2_reset_before.png`, `s2_reset_0.5s_after.png`, `s2_reset_5s_after.png`; the
   blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
   rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
+
+### The black slabs in the sky (DHT73)
+
+Ben's client showed black shapes in the sky on 2026-10-24, of two kinds: a long straight slab with parallel edges,
+slanted, rising from a building or the ground across the sky; and the sky gone black beyond a storm cloud's edge,
+a wedge. Run on 2026-10-24 in a private headless sway at 1920x1080 with the pack's mods, Ben's Mesa 26.2.2 and his
+10 GB heap, one client at a time; each arm a flight with slow pans, recorded and scanned for near-black sky (luma
+under 20 over at least 1% of the frame's top 30%), with a dev-only probe in our DH module that read the frame back
+each frame (not landed). Two worlds: a copy of Ben's save, where it showed, and our own fresh world, "MIC storm
+test", with tornadoes and their storm cells started by `/pa tornado spawn`. The copy is a third-party world, so its
+stills and clips stay local and none is cited here; the stills below are our world's only. Every arm ran on a fresh
+DH database (the save's `DistantHorizons.sqlite` deleted first), so DH built its LODs during the flight, and in
+daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stills/` is our world; `raw/` and
+`vid/` hold the copy's as well and stay local).
+
+- **Not ours.** In the copy, clear weather showed none (two flights, our far view at MEDIUM). Storms showed it
+  within 2 to 10 minutes in every storm run: four times in 12 minutes with our far view on, at 93 s with it OFF
+  (`detail = "OFF"` in `mic_rtsim_dh-client.toml`, so we draw nothing), and at 562 s
+  with C2ME removed. Removing SimpleClouds and Project Atmosphere together could not be run: the client stopped at
+  load (watut: `Invalid shaders/core/particle.json`).
+- **Storm fog clears it.** With SimpleClouds' storm fog off (`renderStormFog = false`) the copy ran 22 minutes of
+  storms without one black frame. The shapes did not all go: the same straight slanted bands and wedges came white
+  instead of black. Turning storm fog off hides the black, not the shapes.
+- **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
+  fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
+  96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
+  fog and lightning after DH's frame; with DH drawing nothing only its high wisps (drawn after the sky) showed, so
+  its storm fog was most likely not drawn either. `/pa tornado list` just after: no active tornadoes. So the black
+  needs neither DH's LODs nor a tornado, and what draws the shapes is not DH, not SimpleClouds' cloud mesh and not
+  ours. Their colour (black here and with storm fog on, white with storm fog off and DH on) may be GL state left
+  bound by whatever drew before them, as in the DH bug below; a guess, not shown.
+- **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
+  tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
+  bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
+  funnel from the cloud base to the ground under grey rain shafts, and where the funnel stands behind nearer
+  terrain it is drawn over that terrain in grey shards (`stills/ours_storm-fog-on_funnel_865-blocks.png`, about 865
+  blocks off; `ours_storm-fog-on_shafts-and-funnel.png`, `ours_storm-fog-on_shafts.png`). With it off we could not
+  pick out a funnel, white or other: the flat white walls in those stills are clouds at the camera's height, and
+  they come with and without a tornado (`stills/ours_storm-fog-off_cloud-walls.png`, `ours_storm-fog-off_clouds.png`).
+  So the white bands are seen in the copy only, and that they are tornadoes is not shown.
+- **What the jars say (read, not tested).** With DH present SimpleClouds draws through its `DhSupportPipeline`,
+  after DH's frame: the clouds, then the storm fog (blended into the main target, its alpha the fog's density),
+  then lightning. Project Atmosphere's tornado mixins hook only SimpleClouds' `DefaultPipeline.afterSky` and
+  `ShaderSupportPipeline.afterLevel`; `DhSupportPipeline` is neither, so with DH the tornado would come only through
+  the cloud mesh it carves. Veil also fails to compile two of Project Atmosphere's shaders at every start
+  (`projectatmosphere:cloud_atmosphere_volume`: "syntax error, unexpected IDENTIFIER";
+  `projectatmosphere:shaders/core/tornado_round.fsh`: "Couldn't load vanilla shader ... skipping").
+- **A DH bug found on the way (DH 3.3.3, decompiled).** `GlBlockTextureAtlas.tryCreateOrResize` binds the new atlas
+  on whatever texture unit is active, unit 0, which DH's box shader reads as its lightmap, and leaves it there. It
+  runs on DH's first frame and whenever the atlas outgrows its tiles (4,096, then doubling), that is while LODs are
+  being built. For that frame DH's generic boxes, ours included, sample the atlas as their light at
+  (block light, sky light), which in the open (sky light 15) lands in the atlas's empty rows, with alpha forced to
+  1: the boxes draw black for one frame. LODs read their light at (0.97, 0.03), a filled tile, and are only tinted.
+  Not what Ben saw (that came with our far view off); noted here, not worked around and not reported.
+- **The guard (DHT73) stays.** It was written while a far carriage with a vertex flung off was the suspect, and
+  costs a bound test when a mesh is baked and a finite test a model a frame.
+- **The keys**, in the instance's `config/` (the pack ships none of these files; the values are those of Ben's
+  instance, which the copy took): `simpleclouds-client.toml` `[performance]` `renderStormFog = true` (false
+  clears the black; `stormFogLightningFlashes = true` beside it); `simpleclouds-server.toml` `cloudMode = "DEFAULT"`;
+  `projectatmosphere-common.toml` `[display]` `cloudMode = "FULL"`, `[storms]` `enableTornadoes = true`,
+  `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
+  `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
+  `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`. The arms changed only the copy's
+  instance; nothing in the pack or Ben's instances.
+- Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
+  dev build's. Nothing was filed upstream.
 
 ### Not measured or not exercised
 

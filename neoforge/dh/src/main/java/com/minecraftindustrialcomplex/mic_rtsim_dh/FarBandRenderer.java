@@ -167,6 +167,9 @@ final class FarBandRenderer {
                 if (c == FarModelRenderer.Cover.WAIT || c == FarModelRenderer.Cover.MODEL && m.kind() != FarKind.DRAGON)
                     continue;
                 m.segmentAt(clock, SEG);
+                // A carriage run longer than any carriage is a bad sample: not drawn (FarTrainView logs it; DHT73)
+                if (m.kind() == FarKind.CARRIAGE && FarTrainView.tooLong(SEG))
+                    continue;
                 double x = (SEG[0] + SEG[3]) / 2.0, y = (SEG[1] + SEG[4]) / 2.0, z = (SEG[2] + SEG[5]) / 2.0;
                 if (!FarHide.bandDraws(m, level, x, y, z, cam))
                     continue;

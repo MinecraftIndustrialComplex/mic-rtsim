@@ -60,6 +60,8 @@ public final class Industry {
     final Threats threats;
     /** The glass box's compiler (GLASSBOX.md §1.4, G1 read only). */
     final com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler glass;
+    /** Counting at the movers (SECTIONS.md §4.2): the pairs the engine named and what moved through them. */
+    private final com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting;
     private final Map<String, Integer> goodIds = new HashMap<>();
     private long ticks;
     private boolean started;
@@ -84,6 +86,8 @@ public final class Industry {
         this.data = IndustryData.get(server);
         this.goods = new Goods(data, server.registryAccess());
         this.districts = new Districts(this);
+        if (com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.takeReadopt(server))
+            districts.planReadopt(); // UR-1: before anything looks at a chunk
         this.sampler = new Sampler(this);
         this.reconciler = new Reconciler(this);
         this.ports = new PlayerPorts(this);
@@ -91,6 +95,17 @@ public final class Industry {
         this.conditions = new Conditions(this);
         this.threats = new Threats(this);
         this.glass = new com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassCompiler(this);
+        this.counting = new com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting(this);
+    }
+
+    /** The session ends: nothing is counted any more (the count points' static pointer is cleared). */
+    public void close() {
+        counting.clear();
+    }
+
+    /** Counting at the movers (SEC-1 S3). */
+    public com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting() {
+        return counting;
     }
 
     /** The industry module switch (C25): off restores vanilla, nothing is observed or applied. */
@@ -142,6 +157,7 @@ public final class Industry {
                 started = false;
                 wasOff = true;
             }
+            counting.clear();
             TickGate.releaseAll();
             return;
         }
@@ -151,7 +167,9 @@ public final class Industry {
             firstStart = false;
             if (lost)
                 MicRtsim.LOGGER.warn("[mic_rtsim] industry: the engine's pages lack observations the journal no longer holds"
-                        + " (a sim reset?): {} districts are announced again", districts.all().size());
+                        + " ({}): {} districts are announced again",
+                        com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard.reset(server) != null ? "the reinstall reset" : "a sim reset?",
+                        districts.all().size());
             boolean again = wasOff || lost;
             wasOff = false;
             if (again)
@@ -210,6 +228,13 @@ public final class Industry {
             }
             case com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords.IND_PROBE_SET -> {
                 glass.probeSet(b, at, size, aux);
+                return true;
+            }
+            case com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords.IND_COUNT_SET -> {
+                // No op id and no command result: a set is taken or ignored, and the engine names it again on change.
+                // Only the server's own session counts: the count points are static, and GameTests run private sessions.
+                if (RtsimSession.current() == session)
+                    glass.countSet(b, at, size, aux);
                 return true;
             }
             case IndRecords.IND_DEPOSIT_DELTA -> {
@@ -279,6 +304,11 @@ public final class Industry {
     /** True when Java already applied this engine op id and the engine may not know yet. */
     public boolean opApplied(long opId) {
         return boundary.journal().commandOpApplied(opId);
+    }
+
+    /** The session's engine life (RG13): what applied reconcile epochs are stamped with. */
+    public long engineLife() {
+        return session.engineLife();
     }
 
     /** Runs {@code then} once the engine acknowledges sequence {@code seq} in this session. */
@@ -409,7 +439,7 @@ public final class Industry {
         long seq = boundary.commit(r);
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old =
                 chunk.getData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
-        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(java.util.List.of(r.array().clone())));
+        chunk.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, old.plus(engineLife(), java.util.List.of(r.array().clone())));
         chunk.setUnsaved(true);
         journalDependsOn(chunk);
         ResourceKey<Level> dim = chunk.getLevel().dimension();
@@ -430,8 +460,7 @@ public final class Industry {
             if (keep.isEmpty())
                 c.removeData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING);
             else
-                c.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING,
-                        new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+                c.setData(com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.PENDING, p.with(keep));
             c.setUnsaved(true);
         });
     }
