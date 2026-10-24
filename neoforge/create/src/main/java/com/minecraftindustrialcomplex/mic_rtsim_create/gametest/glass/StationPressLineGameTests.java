@@ -442,8 +442,9 @@ public final class StationPressLineGameTests {
 
     /**
      * The negative control: once the district has recompiled with the chest among its inventories, a loaded call
-     * whose ports name the vault (the press line's unit) and the chest (no unit's) must discard the press line's
-     * window.
+     * whose ports name the vault (the press line's unit) and the chest (no unit's) must take the STATION discard
+     * path (its counter goes up). The chest's revision makes the units new, so they may still be warming up and
+     * have no window to drop: the counter, not a dropped window, is what this proves.
      */
     static void control(Run run) {
         if (run.stageTicks % 20 != 0)
@@ -462,6 +463,9 @@ public final class StationPressLineGameTests {
                 return;
             }
             run.mine.put("controlChest", chest.index());
+            // the vault's index at this revision (inventories sort by position, so it is the same one here)
+            District.Inventory vault = d.inventoryAt(Districts.canonicalInventory(level, run.sinkVault));
+            run.mine.put("controlVault", vault == null ? -1 : vault.index());
             info(run, "control: recompiled", SectionsFx.describe(fr) + "; chest inventory " + chest.index());
             Train t = StationCargoGameTests.syntheticTrain(level, run.helper.absolutePos(new BlockPos(5, 1, 5)));
             run.mine.put("controlTrain", t);
@@ -478,7 +482,7 @@ public final class StationPressLineGameTests {
             for (int i = 0; i < IndustryKit.aux(p); i++)
                 got.add(p.getInt(IndRecords.StationPorts.INVENTORIES + 4 * i));
         }
-        Set<Integer> want = Set.of(run.sinkIdx, (Integer) run.mine.get("controlChest"));
+        Set<Integer> want = Set.of((Integer) run.mine.get("controlVault"), (Integer) run.mine.get("controlChest"));
         GlassReport fr = GlassExitKit_report(run);
         long discards = fr == null ? -1 : fr.checksum().discards(STATION_CARGO);
         long before = (Long) run.mine.get("controlDiscards0");
@@ -489,7 +493,7 @@ public final class StationPressLineGameTests {
             return;
         }
         info(run, "control: ports", got + ", " + discards + " station cargo discards (" + before + " before)");
-        check(run, "the negative control: ports naming a unit's inventory and one of no unit discard that unit's window", true, run.last);
+        check(run, "the negative control: cargo with ports naming a unit's inventory and one of no unit takes the STATION discard", true, run.last);
         IndustryKit.record(run.test, run.failures.isEmpty() ? "PASS" : "FAIL", run.failures.isEmpty()
                 ? "the cargo booked on the press line's section, and the control discarded" : run.failures);
         run.stage(Stage.DONE);

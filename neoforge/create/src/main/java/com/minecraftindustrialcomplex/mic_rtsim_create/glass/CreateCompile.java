@@ -335,11 +335,14 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (be instanceof AbstractFurnaceBlockEntity)
             return K.FURNACE;
         // A station's interface exposes a docked train's storage, whose change is the station's cargo, booked
-        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node, so the movers
-        // beside it have no supply in the graph; left to the residual, it was a black box that left every
-        // station-fed unit unbounded (choice SC95)
+        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node when its conveying
+        // walk reaches a district inventory, so the movers beside it have no supply in the graph; left to the
+        // residual, it was a black box that left every station-fed unit unbounded (choice SC95). One that reaches
+        // none (an interface onto a belt into a machine) stays residual: its cargo is booked nowhere, and a
+        // black box keeps what it feeds from failing every window
         if (be instanceof PortableStorageInterfaceBlockEntity)
-            return K.INTERFACE;
+            return com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch.reachesAnInventory(level, g.district, be.getBlockPos())
+                    ? K.INTERFACE : null;
         if (be instanceof KineticBlockEntity)
             return K.KINETIC;
         if (BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE) != null)
