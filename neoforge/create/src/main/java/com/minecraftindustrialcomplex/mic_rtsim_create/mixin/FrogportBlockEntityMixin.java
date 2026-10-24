@@ -26,13 +26,14 @@ public abstract class FrogportBlockEntityMixin {
     @WrapOperation(method = "tryPushingToAdjacentInventories", at = @At(value = "INVOKE",
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countPush(IItemHandler handler, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(handler, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate) {
+        if (seen != null) {
             FrogportBlockEntity self = (FrogportBlockEntity) (Object) this;
             if (c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), stack, before - remainder.getCount(), true);
+                c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), seen, before - remainder.getCount(), true);
         }
         return remainder;
     }

@@ -29,13 +29,14 @@ public abstract class DefaultUnpackingHandlerMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countUnpack(IItemHandler inventory, ItemStack stack, boolean simulate, Operation<ItemStack> original,
             @Local(argsOnly = true) Level level, @Local(argsOnly = true) BlockPos pos, @Local(argsOnly = true) Direction side) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(inventory, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate) {
+        if (seen != null) {
             BlockPos packager = pos.relative(side);
             if (c.isMover(level, packager))
-                c.moved(level, packager, pos, stack, before - remainder.getCount(), true);
+                c.moved(level, packager, pos, seen, before - remainder.getCount(), true);
         }
         return remainder;
     }

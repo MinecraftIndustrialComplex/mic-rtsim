@@ -830,16 +830,23 @@ public final class GlassCompiler {
      * IND_COUNT_SET from the engine: the (mover node, store node) pairs of the compile it names that Java
      * counts the moves of. Resolved to block positions with that compile's node numbers and handed to
      * {@link Counting}, which keeps a pair it already holds (its counters and {@code since}) and drops the
-     * ones no longer named; an empty set drops the district's counters. Ignored (counted) when the compile is
-     * not Java's latest complete one, or sits on a moving frame, whose positions are not the world's.
+     * ones no longer named; an empty set drops the district's counters. Ignored (counted, and the counters
+     * left as they are) when the compile is not Java's latest complete one, or sits on a moving frame, whose
+     * positions are not the world's, or the set is malformed (shorter than its count says, none of its nodes
+     * in the compile).
      */
     public void countSet(ByteBuffer b, int at, int size, int aux) {
         Counting counting = ind.counting();
-        if (size < GlassRecords.CountSet.PAIRS)
+        // A set that is not what it says (too short for its header or for its count of pairs, a negative count)
+        // is a malformed one: counted as ignored, and the district's counters are left as they are.
+        if (size < GlassRecords.CountSet.PAIRS || aux < 0
+                || (long) aux * GlassRecords.CountSet.PAIR > size - GlassRecords.CountSet.PAIRS) {
+            counting.setsIgnored++;
             return;
+        }
         long district = b.getLong(at + GlassRecords.CountSet.DISTRICT);
         int compile = b.getInt(at + GlassRecords.CountSet.COMPILE);
-        int n = Math.max(0, Math.min(aux, (size - GlassRecords.CountSet.PAIRS) / GlassRecords.CountSet.PAIR));
+        int n = aux;
         State st = states.get(district);
         District d = ind.district(district);
         if (n == 0) {
@@ -862,6 +869,10 @@ public final class GlassCompiler {
             movers[k] = num.pos[m];
             stores[k] = num.pos[s];
             k++;
+        }
+        if (k == 0) {
+            counting.setsIgnored++; // none of the nodes is in the compile: not the set of this compile
+            return;
         }
         counting.apply(district, d.dim, movers, stores, k, ind.gameTime());
     }

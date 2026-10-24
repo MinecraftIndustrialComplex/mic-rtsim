@@ -45,13 +45,14 @@ public abstract class InvManipulationBehaviourMixin {
     @WrapOperation(method = "insert", at = @At(value = "INVOKE",
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countInsert(IItemHandler inventory, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
+        Counting c = Counting.active();
+        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
         int before = stack.getCount();
         ItemStack remainder = original.call(inventory, stack, simulate);
-        Counting c = Counting.active();
-        if (c != null && !simulate) {
+        if (seen != null) {
             InvManipulationBehaviour self = (InvManipulationBehaviour) (Object) this;
             if (c.isMover(self.getWorld(), self.getPos()))
-                c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), stack, before - remainder.getCount(), true);
+                c.moved(self.getWorld(), self.getPos(), self.getTarget().getConnectedPos(), seen, before - remainder.getCount(), true);
         }
         return remainder;
     }
