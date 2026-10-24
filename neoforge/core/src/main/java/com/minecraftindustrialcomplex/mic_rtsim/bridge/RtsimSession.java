@@ -249,6 +249,23 @@ public final class RtsimSession {
         carry(holder, records, lastSeq);
     }
 
+    /**
+     * The tag of a {@code minecraft:marker} that only holds records (MOWZIE.md §4.9): it is discarded once
+     * the engine has acknowledged what it holds. Saved in the marker's vanilla {@code Tags}, so a world
+     * without rtsim keeps an inert marker (no tick, never sent to a client).
+     */
+    public static final String RECORD_MARKER_TAG = "mic_rtsim.record";
+
+    /**
+     * A camp record rides on a body or a marker (MOWZIE.md §4.9): carried as {@link #carryOnEntity}, and the
+     * journal's next file waits for the holder's entity chunk (ledger 22).
+     */
+    public void carryOnCampHolder(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        carry(holder, records, lastSeq);
+        if (holder.level() instanceof ServerLevel level)
+            journalData.chunks().dependsOnEntities(level, holder.chunkPosition());
+    }
+
     public Engine engine() {
         return engine;
     }
@@ -864,14 +881,38 @@ public final class RtsimSession {
         dropPendingWhenAcked(holder, lastSeq);
     }
 
+    /**
+     * Once {@code lastSeq} is acknowledged, drops the records the holder carries now (each journaled at or
+     * before it), by identity: a record carried later, under a newer sequence, stays until its own
+     * acknowledgement (MZB-212). A record marker left with none is discarded.
+     */
     private void dropPendingWhenAcked(Entity holder, long lastSeq) {
         ResourceKey<Level> dim = holder.level().dimension();
         UUID id = holder.getUUID();
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords now = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
+        java.util.Set<byte[]> acked = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (now != null)
+            acked.addAll(now.records());
         whenAcked(lastSeq, () -> {
             ServerLevel level = server.getLevel(dim);
             Entity e = level == null ? null : level.getEntity(id);
-            if (e != null)
-                e.removeData(RtsimAttachments.PENDING);
+            if (e == null)
+                return; // unloaded: journaled again when it loads
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = e.getExistingDataOrNull(RtsimAttachments.PENDING);
+            if (p != null) {
+                java.util.List<byte[]> keep = new java.util.ArrayList<>();
+                for (byte[] r : p.records())
+                    if (!acked.contains(r))
+                        keep.add(r);
+                if (keep.isEmpty())
+                    e.removeData(RtsimAttachments.PENDING);
+                else if (keep.size() != p.records().size())
+                    e.setData(RtsimAttachments.PENDING, new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+                if (!keep.isEmpty())
+                    return;
+            }
+            if (e instanceof net.minecraft.world.entity.Marker && e.getTags().contains(RECORD_MARKER_TAG))
+                e.discard();
         });
     }
 
