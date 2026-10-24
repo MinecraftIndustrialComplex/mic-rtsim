@@ -410,15 +410,17 @@ fn a_commit_at_a_step_the_tap_stood_down_carries_the_states_time() {
     write_lease(&dir, std::process::id(), Vec::new());
     let from = j.game_time;
     // Every hand-over holds two TICK records, so every leased step stands down; the next lease
-    // stat (at most STAT_EVERY steps on) starts the epoch, and its first step commits.
-    let mut steps = 0;
+    // stat (at most STAT_EVERY steps on) starts the epoch, and its first step commits. If the IO
+    // pool is busy then (it is the process's, shared with the other tests running beside this one),
+    // the commit is deferred to the first step a period later: real time, which a bound in steps
+    // missed (600 steps in under one PERIOD), so the bound is a deadline.
+    let deadline = Instant::now() + 5 * tap::PERIOD + Duration::from_secs(10);
     while stat(&e, "commits") == 0 {
-        assert!(steps < 3 * tap::STAT_EVERY, "{:?}", e.stats.tap.snapshot());
+        assert!(Instant::now() < deadline, "{:?}", e.stats.tap.snapshot());
         j.apply_commands();
         assert!(j.preamble());
         j.game_time += 1;
         j.flush();
-        steps += 1;
     }
     // The counter moves once the commit is on disk.
     let (_, h, _) = store(&dir);
