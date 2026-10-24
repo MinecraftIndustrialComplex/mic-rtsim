@@ -2716,7 +2716,449 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
 
 ## M8 Lying in wait
 
-(none yet)
+M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md §9: ledger 8; tests 8 and
+9; run 1's ambushes and run 8). It needs M7. Engine line numbers are at 761f5d0f, before M7 moves them.
+
+- **MZB-350** (the branch): `feat/mowzie-m8` from `feat/mowzie-m7`. M8 changes no page format (MZB-357).
+- **MZB-351** (lying in wait): in `arrive`'s Track arm (MZB-317), before the wait, `lurk_start(p, at)`
+  sends AMBUSH_SPOT. Its fields:
+  - `agent: Party::agent(p)`, the party's `epoch`, flags 0;
+  - `dimension` the party's frame, `faction` the faction's key;
+  - `track` (x + 0.5, y, z + 0.5) of the Track's point, and `spot` (x + 0.5, y, z + 0.5) of its spot at
+    the track's y (Java finds the floor, MZB-360);
+  - `reach` 8.0 (PLACEHOLDER, §4.4: the swipe's 6.5 plus half a carriage).
+
+  It also counts `stats.lurks` and notes "lies in wait by the track at (x, z)". `fn lurking(&self, p:
+  Handle<Party>) -> bool` is true for a war party (`kind.is_war()`) with a Track target in `Phase::Waiting`
+  or `Phase::Fighting`. A player who comes on the lurk starts a watched fight there (`start_fight`, 3928,
+  sets Fighting), and the lurk goes on through it: a train may pass mid-fight.
+- **MZB-352** (ending a lurk): the same record with `AMBUSH_REMOVED`, sent first in `go_home` (3710) when
+  `lurking(p)`, before it changes the phase or the target. Every end of a lurk passes through `go_home`, so
+  that is the one place:
+  - patience out (`wait_over`, 3375);
+  - a watched fight's end, routed, bored or withdrawn (`end_fight`, 4172), the chief's fall among them;
+  - wiped out unwatched (5285);
+  - Peaceful (`stop_war_parties`: Waiting goes to `go_home`, Fighting to `end_fight`).
+  - A recall alone (`recall`, 3753; `player_left`, 5736) does not end the lurk. Each turns Fighting back
+    to Waiting, the puppet goes, and the lurk goes on unwatched (ledger 8).
+  - `stats.lurks_ended`.
+- **MZB-353** (resend): `resend_lurks()`, called from `resend_notices` (4625) after `replay_done`. It sends
+  one AMBUSH_SPOT (flags 0) for each lurking party, in handle order. `session_start` drops agent commands,
+  and Java's lurk table lives for one session, so a restart sends each lurk exactly once more.
+- **MZB-354** (home): `home()`'s kept-row branch (about 3842) rewrites a Track target to `Pos(track)`, so a
+  row kept after its party is home never reads as a lurk.
+- **MZB-355** (TRAIN_PASSED): TrainPassed leaves `Conflict::later` for `train_passed(w, infra, tp, at)`.
+  - The party is `Party::of_agent(tp.agent)`. It must exist, be `lurking`, and have `tp.epoch <=
+    party.epoch`; otherwise `stats.stale`.
+  - `stats.passes` counts each pass, and `stats.passes_watched` those with `PASSED_WATCHED`. Watched or not,
+    the roll is the same, so a watched line loses what an unwatched one would (P28).
+  - The roll is `StreamKey::new(seed, SYS_AMBUSH, p.to_bits()).slot(tp.train ^ at.0.rotate_left(32))
+    .below(1000) < ambush_milli` (500).
+  - A hit calls `ambush` for `tp.train`. That is I24's attack (source Boss, strength 41.7, carry 64, cap
+    10%, the industry's cooldown of 24,000 ticks per train per class, the loot destroyed).
+  - When it took more than 0 items, the engine sends `Cmd::TrainRobbed { faction: key, train }`.
+- **MZB-356** (ambush): `ambush` (3150) returns the items it took and takes the note's wording: "on the way"
+  for the on-the-way caller, "by the track" for a lurk. Its Peaceful arm (`peace_held`) is unchanged.
+- **MZB-357** (persistence): nothing new. A lurk is derived from the party's phase, kind and target, and
+  Track has been persisted since M7. The pages stay at M7's format.
+- **MZB-358** (news): an ambush makes no news. An unwatched one has no witness (CL-D61). A watched one is
+  seen in the world by its watcher, and the engine books no first-hand report for it, as it books none for
+  a puppet's blows. The owner learns from the short train and the roar (MZB-366). A rout of a lurking party
+  goes through `rescue_news` as any rout, with M7's Track arm.
+- **MZB-359** (the lurk table, core): `ConflictBridge` keeps `Long2ObjectMap<Lurk>` by agent, with
+  `Lurk(long agent, int epoch, long faction, ResourceKey<Level> dimension, Vec3 track, Vec3 spot, float
+  reach)`.
+  - A new AMBUSH_SPOT replaces the agent's lurk (latest wins). REMOVED drops it and releases a live puppet
+    (MZB-361).
+  - The table is cleared at session end.
+  - The create plugin reads it through `RtsimApi.lurks()` (an unmodifiable view) and
+    `RtsimApi.lurkBody(long agent)` (the live puppet, or null).
+- **MZB-360** (placement): a stack of a lurking agent's BAND_MATERIALIZE is placed at the spot, not on the
+  arc.
+  - Its y comes from a scan from track y + 4 down to track y - 8 for a block with a sturdy top face
+    (`isFaceSturdy(level, pos, Direction.UP)`) and the body's box free above it
+    (`level.noCollision(type.getSpawnAABB(x, y, z))`). If none, `getHeight(MOTION_BLOCKING_NO_LEAVES, x,
+    z)`.
+  - Then `restrictTo(spot, 2)` and the hold (MZB-361). A puppet already live when AMBUSH_SPOT comes is held
+    at once and walks to the spot.
+- **MZB-361** (Lurker): a new core interface, registered per entity type id with
+  `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
+  takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
+  it up by `BuiltInRegistries.ENTITY_TYPE.getKey(mob.getType())`:
+  ```java
+  public interface Lurker {
+      void hold(Mob mob, Vec3 spot);      // each server tick while it lurks
+      boolean strike(Mob mob, Vec3 at);   // start a strike at a carriage point; false if busy
+      void release(Mob mob);              // the lurk ended or the body left it
+      void roar(Mob mob);                 // a train it robbed is gone
+  }
+  ```
+  - The core calls `hold` on `ServerTickEvent.Post`, after every level ticked, for each live lurk puppet,
+    and `release` when the lurk ends or the puppet is recalled. A type with no Lurker gets the core's
+    default: the restriction and the path rule below, no strike, no roar.
+  - The Mowzie plugin's `FrostmawLurker`, `hold`:
+    - `setAlwaysActive(true)` and the restriction once;
+    - beyond 1.5 blocks of the spot and in `NO_ANIMATION`, `getNavigation().moveTo(spot.x, spot.y, spot.z,
+      1.0)`; within 1.5, `getNavigation().stop()`;
+    - while a strike's swing runs (`getAnimation() == SWIPE_ANIMATION` and `getAnimationTick() <= 9`), it
+      sets `yBodyRot`, `yRot` and `yHeadRot` to the strike's bearing.
+  - `strike`: only in `NO_ANIMATION`. It records the bearing, turns the body, and calls
+    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`.
+  - `release`: `setAlwaysActive(false)` and `clearRestriction()`.
+  - `roar`: in `NO_ANIMATION`, `sendAnimationMessage(frostmaw, EntityFrostmaw.ROAR_ANIMATION)`. The jar
+    plays its own roar sound in that animation.
+  - Calling the jar's own animation is what MOWZIE.md §4.4 asks; the hold is new because the restriction
+    does not hold an awake Frostmaw with a target (see the jar facts).
+- **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
+  picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
+  `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
+- **MZB-363** (TRAIN_PASSED from the sampler): at each sample, for each lurk in the train's dimension, the
+  segment's distance to the track point at or within `reach` sends TRAIN_PASSED.
+  - It is sent once per approach, and armed again when the train is beyond 64 blocks of the point.
+  - `RtsimApi.trainPassed(long agent, int epoch, boolean watched, int carriage, long train)` writes it with
+    `beginJournaled`, carrying the table's epoch.
+- **MZB-364** (watched): `PASSED_WATCHED` when `lurkBody(agent)` is live. `carriage` is the index of the
+  carriage whose leading point is nearest the track point, computed only when sending.
+- **MZB-365** (near a puppet): a train whose last sample is within 64 blocks of a live lurk puppet joins a
+  near set, rebuilt at each of its 20-tick samples, and is read every tick.
+  - Each carriage's leading and trailing points are read. A point within 6.5 blocks (horizontal) of the
+    puppet calls `RtsimApi.strike(agent, point)` once per carriage per approach.
+  - The swipe moves no cargo: the cargo comes from the TRAIN_PASSED roll. It is real for riders, since the
+    jar's area attack strikes living entities in its arc.
+- **MZB-366** (the roar at a station):
+  - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
+    with the oldest dropped.
+  - `TrainMixin`'s existing TAIL injection on `arriveAt` (`mic_rtsim$arrived`) also calls
+    `TrainSampler.arrived(train, station)`, after `TrainWatch.arrived`, which returns early without an
+    industry or district. No new injection.
+  - `TrainSampler.arrived` calls `RtsimApi.trainCalled(long train, ServerLevel level, BlockPos station)`,
+    which returns at once for a train not pending.
+  - For a pending train, every player within 64 blocks (PLACEHOLDER) of the station hears the camp's sound,
+    placed as `play`'s notices: from 32 blocks toward the den (`NOTICE_DISTANCE`), at `NOTICE_VOLUME`.
+    `play` is split so both use one `playToward(faction, dimension, x, z, player)`.
+  - The entry is dropped only once a player heard it, so an arrival with nobody near keeps it for the next.
+  - No chat, action-bar or title line.
+- **MZB-367** (the den's sound): `DenKind.sound()` returns `MMSounds.ENTITY_FROSTMAW_ROAR`. So a den's
+  notices roar too, instead of the raid horn: both are in-world sounds.
+- **MZB-368** (the puppet roars): on TRAIN_ROBBED, a live lurk puppet of that faction is told `roar`.
+- **MZB-369** (UR-1 and D1): puppets are never saved (M3), and the lurk table and the pending roars are per
+  session, so nothing stays in the world. The sampler's lurk work is a list scan per sample over the lurks
+  (at most one per lurking party). The every-tick reads are for trains within 64 blocks of a live puppet
+  only, and the hold is one call per live puppet a tick.
+- **MZB-370** (test choices):
+  - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
+    (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.
+    It is never a goal target (`players()` only), so the test sets the Frostmaw's target. The fallback is
+    M6's `FakePlayers.addSeen`.
+  - Test 9's struck rider is a seated zombie: living, in the entity manager, seated as a player is.
+  - Both tests script the engine side: AMBUSH_SPOT, BAND_MATERIALIZE, TRAIN_ROBBED and IND_CARRIAGE_DELTA.
+    The roll and the cooldown are Rust-tested.
+  - `FakePlayers.Hearer` gains `sounds` (each `ClientboundSoundPacket`) and `titles` (title, subtitle and
+    action-bar packets). `hearing` builds its `ServerGamePacketListenerImpl` as a subclass whose
+    `send(Packet<?>)` records them.
+- **MZB-371** (run 1's ambush half):
+  - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
+    `raid_train` finds the leg and its cargo.
+  - Its Java emulation keeps the lurk table from AMBUSH_SPOT. It sends TRAIN_PASSED when a train of a line
+    passes within 8 blocks of a lurk's track point, at the tick its timetable puts it there.
+- **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
+  meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
+  - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
+    feud's grievance by `to_bits` must be identical.
+  - A session restart at each point sends exactly one more AMBUSH_SPOT per lurking party, and the next
+    census orders the reconcile's lines again (M4).
+- **MZB-373** (what M8 needs):
+  - From M7: `Target::Track` and the arrival's Track arm, the sampler with its per-train state, and
+    RAIL_PASS live.
+  - From M6: `frostmaw.json`, the chief paths (a lurking chief can fall), and the plugin's mixin config.
+  - From M3 and M5: the puppet machinery (BAND_MATERIALIZE, `Party`, the puppets never saved),
+    `CampKind.sound()`, `DenKind`, and `FakePlayers.hearing`.
+  - M6 adds no `alwaysActive` and no lurk restriction, so M8 adds `Lurker`.
+- **MZB-374** (boundary.md): TRAIN_PASSED is live (the "come later" list, boundary.md:1752). AMBUSH_SPOT's
+  spot y is the track's, with Java finding the floor. TRAIN_ROBBED's roar is a sound only.
+
+### M8 design for the implementer
+
+**Where it stands.** Design only, on `design/mowzie-m7` with M7's (from 761f5d0f). Nothing of M8 is
+written. Open questions for Ben: none.
+
+**Jar facts** (Mowzie's Mobs 1.8.2 with cfr in `target/m7-cfr/mowzie`, `EntityMagicEffect` in
+`target/m7-cfr-magic/out`; Create 6.0.10 in `target/m7-cfr/create`; vanilla from the NeoForm sources jar in
+`target/m7-vanilla`):
+- The swipe:
+  - `EntityFrostmaw` registers `new AnimationAreaAttackAI<EntityFrostmaw>(this, this, SWIPE_ANIMATION, null,
+    null, 2.0f, 6.5f, 6.0f, 135.0f, 1.0f, 9)` (212): range 6.5, height 6, arc 135 degrees, damage frame 9.
+  - `AnimationAreaAttackAI.hitEntities()` (57) reads `this.entity.getEntityLivingBaseNearby(this.range,
+    this.height, this.range, this.range)`, a `List<LivingEntity>` (`MowzieEntity.getEntityLivingBaseNearby(double
+    distanceX, double distanceY, double distanceZ, double radius)`, 441). It keeps those within the arc
+    about `yBodyRot` and the range less half their width.
+  - So the swipe can never strike a carriage: a contraption entity is no `LivingEntity`, `isPickable()` is
+    false and `hurt` returns false (AbstractContraptionEntity.java:798, 802). Riders in the arc are struck.
+  - Before frame 9, `AnimationAreaAttackAI.tick()` calls `entity.lookAt(entityTarget, 30, 30)`, where
+    `AnimationAttackAI.start()` set `entityTarget = this.entity.getTarget()` (50). So the swing turns toward
+    its target, not toward a carriage, unless the hold keeps the bearing.
+- Animations: `SWIPE_ANIMATION = Animation.create(28)` (156) and `ROAR_ANIMATION = Animation.create(76)`
+  (155). The jar calls `public <T extends Entity> void sendAnimationMessage(T entity, Animation animation)`
+  (llibrary `AnimationHandler`, 27) itself (567, 314). The roar animation plays `MMSounds.ENTITY_FROSTMAW_ROAR`
+  at volume 4 (377-379), and that sound is a `DeferredHolder<SoundEvent, SoundEvent>` (MMSounds.java:107).
+- alwaysActive: `public void setAlwaysActive(boolean isAlwaysActive)` (950); while it is set, `tick()` calls
+  `setActive(true)` (361-362). It is saved as "alwaysActive" (974) and read back (966).
+- The restriction does not hold an awake Frostmaw with a target:
+  - `tick()` (350) runs `super.tick()` (356) first, so the goals run there.
+  - Then, with a target beyond 5.5 blocks (unless an ice breath runs within 7.5), it calls
+    `this.getNavigation().moveTo((Entity)this.getTarget(), 1.0)` every tick (550-552).
+  - `MoveTowardsRestrictionGoal` sets its path only when it starts, so the Frostmaw's own path replaces it
+    the same tick.
+  - Vanilla `Mob.serverAiStep()` (773) runs the selectors (782-792), then `navigation.tick()` (797) and
+    `moveControl.tick()` (804). So a path set after the entity's tick, on `ServerTickEvent.Post`, is the one
+    followed the next tick.
+- The ice ball:
+  - It is thrown at `targetDistance >= 14.5`, in `NO_ANIMATION`, with `iceBallCooldown` at 0 (then set to
+    200), the crystal, and the Frostmaw on the ground (575-577). The breath is within 13.5 (569-573,
+    cooldown 260).
+  - `EntityIceBall.tick()` hits `getEntitiesNearby(2.0)` (60). That is `level().getEntitiesOfClass(Entity.class,
+    box, ...)` (EntityMagicEffect, 149-155), so it reads the entity manager. A hit takes
+    `hurt(freeze, 3 × multiplier)` and, for a living entity, `addFreezeProgress(1.0f)` (62-63). The ball
+    bursts on `!level().noCollision(this, box.inflate(0.15))` (66).
+  - `EntityMagicEffect.getPistonPushReaction()` returns IGNORE (83), so Create's `canCollideWith` refuses
+    the ball. A contraption entity does not override `canBeCollidedWith`, so it is no collision shape for
+    `noCollision`. The ball should fly through a carriage's blocks; that is read from the jar, and test 8
+    confirms it.
+- The freeze:
+  - `FrozenData.onFreeze(LivingEntity entity)` (185-221) adds a new `EntityFrozenController`
+    (`mowziesmobs:frozen_controller`, EntityHandler.java:118) at the entity and calls
+    `entity.startRiding((Entity)this.frozenController, true)` (199). For a Mob it also calls
+    `setNoAi(true)`.
+  - `onUnfreeze` (223-235) calls `stopRiding()`, then `teleportTo` the old position, and discards the
+    controller.
+- The dismount:
+  - Vanilla `Entity.startRiding(Entity vehicle, boolean force)` (2102) asks NeoForge's
+    `EventHooks.canMountEntity(this, vehicle, true)` (2114), then runs `if (this.isPassenger())
+    this.stopRiding()` (2116-2118).
+  - Create's only mount listener is `CouplingHandler.preventEntitiesFromMoutingOccupiedCart(EntityMountEvent)`
+    (51), which is for minecart couplings. So no Create code vetoes leaving a carriage seat. Another pack
+    mod could; test 8 settles it in the running game.
+- Seats: `AbstractContraptionEntity.addSittingPassenger(Entity passenger, int seatIndex)` (207);
+  `Contraption.getSeatMapping()` (1234) is a `Map<UUID, Integer>`.
+- `Mob.restrictTo(BlockPos, int)` (1308), `clearRestriction()` (1321), `isWithinRestriction()` (1300);
+  `GameTestHelper.makeMockPlayer(GameType)` (269).
+
+**Layout.**
+- Engine:
+  - `crates/rtsim-conflict/src/engine/rail.rs` (`lurk_start`, `lurk_end`, `lurking`, `resend_lurks`,
+    `train_passed`).
+  - `src/engine.rs` (`arrive`'s Track arm, `go_home`, the wiped-out path, `home`'s kept row, `ambush`,
+    `resend_notices`, `later`, `ingest`, stats).
+  - `crates/rtsim-cli/src/sim/mowzie.rs` and its synth (MZB-371, 372).
+  - `crates/rtsim-conflict/tests/lurk.rs` (new).
+  - rtsim-jni's protocol test.
+- Core Java (`neoforge/core/.../mic_rtsim/`):
+  - `conflict/Lurker.java` (new), `conflict/ConflictBridge.java` (the lurk table, placement, the hold
+    tick, strikes, pending roars, `playToward`, `trainCalled`, `trainPassed`), `conflict/ConflictRecords.java`.
+  - `api/RtsimApi.java` (`registerLurker`, `lurks`, `lurkBody`, `strike`, `trainPassed`, `trainCalled`).
+  - `gametest/ConflictKit.java` (`ambushSpot`, `ambushRemoved`, `trainRobbed`, `trainsPassed(agent)`,
+    `lurkStrikes()`) and `gametest/FakePlayers.java` (MZB-370).
+- Create plugin: `TrainSampler.java` (lurks, near set, strikes, `arrived`), `mixin/TrainMixin.java` (one
+  call added to `mic_rtsim$arrived`), `gametest/RailFrostmawGameTests.java` (tests 8 and 9).
+- Mowzie plugin: `FrostmawLurker.java` (new), `MicRtsimMowziesMobs.java` (its registration), `DenKind.java`
+  (`sound()`).
+- Docs: `docs/boundary.md` (MZB-374).
+
+**Engine.**
+- `train_passed`:
+  ```rust
+  pub fn train_passed(
+      &mut self,
+      w: &mut World,
+      infra: &mut dyn Infrastructure,
+      tp: &TrainPassed,
+      at: Tick,
+  ) {
+      let Some(p) = Party::of_agent(tp.agent).filter(|p| self.parties.contains(*p)) else {
+          self.stats.stale += 1;
+          return;
+      };
+      if !self.lurking(p) || tp.epoch > self.parties[p].epoch {
+          self.stats.stale += 1;
+          return;
+      }
+      self.stats.passes += 1;
+      if tp.flags & boundary::PASSED_WATCHED != 0 {
+          self.stats.passes_watched += 1;
+      }
+      let roll = StreamKey::new(self.seed, SYS_AMBUSH, p.to_bits())
+          .slot(tp.train ^ at.0.rotate_left(32))
+          .below(1000);
+      if (roll as u32) >= self.tun.ambush_milli {
+          return;
+      }
+      let got = self.ambush(infra, p, tp.train, at, w, "by the track");
+      if got > 0 {
+          let faction = self.factions[self.parties[p].faction as usize].key;
+          self.outbox.push(Cmd::TrainRobbed(TrainRobbed { faction, train: tp.train }));
+      }
+  }
+  ```
+- `lurk_start(p, at)` and `lurk_end(p)` build the one AMBUSH_SPOT (`lurk_end` with `AMBUSH_REMOVED`) from the
+  party's Track target. `go_home` calls `lurk_end` before it changes the phase or target. `resend_lurks`
+  walks the parties in handle order.
+- The engine's `ingest` (4923) already has the infrastructure: its match calls `train_passed(w, infra, tp,
+  at)`. In rtsim-jni, a record that leaves `Conflict::later` no longer takes the deferred path
+  (conflict.rs:561-570, which counts `deferred` and ingests at the engine's present without a catch-up). It
+  goes through `shared::catch_up` and `ingest` (592), which passes the infrastructure through `with_infra`
+  (596, 606). No rtsim-jni code changes beyond the protocol test.
+- Stats appended: `lurks`, `lurks_ended`, `passes`, `passes_watched`.
+
+**Java.**
+- `ConflictBridge.accept` (641, its switch at 651) gains AMBUSH_SPOT (the table, and the hold of a live puppet or its
+  release) and TRAIN_ROBBED (the pending map, and the roar of a live puppet).
+- The hold tick on `ServerTickEvent.Post`: for each lurk with a live puppet, call `lurker.hold(mob, spot)`,
+  and every 20 ticks the target rule (MZB-362). A puppet that died or was recalled is released and dropped
+  from the hold list (the lurk stays).
+- `RtsimApi.strike(long agent, Vec3 at)`: the live puppet's Lurker `strike`. A true answer counts in the
+  bridge's `lurkStrikes` (read by test 9).
+- The sampler's lurk pass, after the territory test of each sample (MZB-363 to 365):
+  ```java
+  for (Lurk l : RtsimApi.lurks().values()) {
+      if (!l.dimension().equals(dim)) continue;
+      double d = segmentDistance(l.track(), x0, z0, x1, z1);
+      Approach a = approaches.get(trainId, l.agent());
+      if (d <= l.reach() && a.armed) { a.armed = false; send(l, t, RtsimApi.lurkBody(l.agent()) != null); }
+      else if (d > 64) a.armed = true;
+      if (RtsimApi.lurkBody(l.agent()) != null && d <= 64) near.add(t);
+  }
+  ```
+- `TrainMixin` keeps its three injections. `mic_rtsim$arrived` becomes `TrainWatch.arrived(...);
+  TrainSampler.arrived(...)`.
+- `FrostmawLurker` (Mowzie plugin) as MZB-361, registered in the plugin's constructor with
+  `RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker())`, beside the stand-ins and camp
+  kinds (MicRtsimMowziesMobs.java:43-48).
+- D4: `Lurker` and every call that reaches it are vanilla types in core. The Frostmaw code is only in the
+  Mowzie plugin, and the Create code only in the create plugin. D3: no new entity; the swipe and the roar
+  are the jar's own animations. D1 and UR-1: MZB-369.
+
+**GameTests to write** (`RailFrostmawGameTests`, create project with `-PwithMowzie`, registered as MZB-329,
+each at its own far base, scripted engine):
+1. `anIceBallUnseatsARiderFromACarriage` (§7 test 8, batch `rail_frostmaw_ice`):
+   - Static form: a train assembled at a station and stopped. The rider (MZB-370) is seated on its seat
+     block. A Frostmaw stands 20 blocks off: awake, with its crystal, `restrictTo` its place with radius 2,
+     and its target set to the rider. The hold is not used.
+   - Within 400 ticks, a `mowziesmobs:ice_ball` was in the level, and the rider's vehicle is
+     `mowziesmobs:frozen_controller`. The carriage's seat mapping no longer holds the rider's UUID, and the
+     carriage entity's passengers do not include it.
+   - Within 60 ticks of the freeze ending, the rider has no vehicle.
+   - The test fails if the rider is ever on two vehicles.
+   - Moving form: the train held at 0.5, 1.0, 1.4 and 2.0 blocks a tick, with 4 passes each, the Frostmaw
+     18 blocks off the track. Log `[gametest] ice ball v=<v>: <hits>/4`. The rates are a measurement, not a
+     gate; the test fails only on a double vehicle.
+2. `aLurkingFrostmawStandsOffTheRailAndSwipesAPassingCarriage` (§7 test 9, batch `rail_frostmaw_lurk`):
+   - Setup: a 96-block straight with two stations and an assembled train, a seated zombie in it. A scripted
+     AMBUSH_SPOT for a new agent: the track point at the straight's middle, the spot 5 blocks off. Then a
+     scripted BAND_MATERIALIZE of one FROSTMAW stack for that agent, and a `FakePlayers.add` player 30
+     blocks from the spot. The player has a target and walks away: that tests the hold.
+   - For 200 ticks, the puppet stays within 2 blocks (horizontal) of the spot, and its near edge (its
+     distance to the rail less 2) stays at least 1.5 blocks clear.
+   - `saveWithoutId(new CompoundTag()).getBoolean("alwaysActive")` is true.
+   - The train passes at 1.0 blocks a tick:
+     - exactly one TRAIN_PASSED for the agent, with `PASSED_WATCHED` and a carriage index in range;
+     - `lurkStrikes()` at 1 or more;
+     - at the swing's frame 9, `yBodyRot` within 30 degrees of the bearing to the struck point;
+     - the zombie hurt (its health down);
+     - the contraption's block count unchanged and the train not derailed.
+   - A scripted IND_CARRIAGE_DELTA for the train lands in `Carriage.storage` (`IndustryKit.received`).
+   - A scripted TRAIN_ROBBED, then the train's next arrival at a station with a Hearer within 64 blocks:
+     the Hearer's `sounds` gains one packet with the roar's sound. Its `raw`, `overlay` and `titles` gain
+     nothing. A second arrival with nobody near plays nothing, and the entry stays (`pendingRoars()`).
+   - A scripted REMOVED: `alwaysActive` is false, `hasRestriction()` is false, and the agent is gone from
+     `RtsimApi.lurks()`.
+
+**Rust tests** (`crates/rtsim-conflict/tests/lurk.rs`):
+- The lurk's life: `a_raid_on_a_track_sends_its_ambush_spot`,
+  `every_way_a_lurk_ends_sends_removed` (bored, a watched fight routed or bored, wiped out, the chief's
+  fall, Peaceful while Waiting and while Fighting), `a_recall_does_not_end_a_lurk`,
+  `a_lurk_goes_on_through_a_watched_fight`, `a_session_restart_resends_each_lurk_once`,
+  `a_kept_home_row_has_no_track_target`.
+- Passes and robberies: `a_train_passed_rolls_and_robs` (a hit raids the train and sends TRAIN_ROBBED; a
+  miss sends nothing), `a_robbery_of_nothing_sends_no_train_robbed`, `a_stale_train_passed_is_counted`
+  (no party, not lurking, a later epoch), `a_watched_pass_rolls_as_an_unwatched_one`,
+  `the_cooldown_bounds_a_train_to_one_robbery_a_day` (a FakeWorld industry).
+- News and persistence: `an_ambush_makes_no_news`, `a_lurk_survives_a_save_mid_wait` (blob and paged),
+  `the_on_the_way_note_keeps_its_wording`.
+- rtsim-jni's protocol test: TRAIN_PASSED is live, not deferred, and reaches the engine with an
+  infrastructure.
+
+**Sim runs** (`rtsim-cli sim mowzie`, MZB-330's seeds and tolerances):
+- **Run 1, the ambushes** (RUNS row 1's "ambushes M8"; MZB-371): the 12- and 24-a-day lines, each with two
+  trains.
+  - Every Raid on a track sends AMBUSH_SPOT at its arrival and REMOVED when it ends.
+  - At most 64 items are robbed per train per day, and at most 256 over a middling 2-day wait with two
+    trains.
+  - The share of each train's first daily pass that robs is between 35% and 65% over the 8 seeds
+    (`ambush_milli` 500).
+  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.ambushes` equals the
+    TRAIN_ROBBED count.
+  - No TRAIN_PASSED is stale except after a lurk ended.
+- **Run 8, save and restore** (MZB-372): the four points, each blob and paged, against the control; then
+  the session restarts at each.
+
+**Work split** (in order; each step's tests green and committed before the next):
+0. Branch (MZB-350).
+1. `lurking`, `lurk_start`, `lurk_end` and their calls (`arrive`, `go_home`, the wiped-out path),
+   `resend_lurks`, `home`'s kept row; the lurk-life tests.
+2. `ambush`'s return and wording, `train_passed`, `later` and `ingest`, the stats; the pass tests.
+   **Opus review A**: the engine against §4.4 and ledger 8 (every end sends REMOVED; nothing ends a lurk
+   twice).
+3. rtsim-jni: the protocol test only (TRAIN_PASSED live: it reaches `ingest` after the catch-up, and
+   `deferred` does not count it).
+4. The synth's industry and lurk emulation, run 1's ambush half, run 8. **Opus review B**: the runs against
+   §4.4's bounds and the control comparison.
+5. Core Java: `Lurker`, `registerLurker`, the lurk table, placement, the hold tick and target rule,
+   `strike`, `trainPassed`, the pending roars, `playToward`, `trainCalled`; `ConflictKit` and `FakePlayers`
+   (MZB-370); compile.
+6. Create: the sampler's lurk pass, the near set and strikes, `TrainSampler.arrived` and the mixin's added
+   call; compile.
+7. Mowzie plugin: `FrostmawLurker`, its registration, `DenKind.sound()`; compile.
+8. `RailFrostmawGameTests` 8 and 9. **Opus review C** before the GameTest round, then the GameTests (the
+   create project with `-PwithMowzie`).
+9. `boundary.md` (MZB-374).
+
+**What M8 changes in M7.** The engine's `arrive` Track arm (it now sends AMBUSH_SPOT), `go_home`, `home`,
+`ambush` and `resend_notices`; the sampler (the lurk pass and the near set); `TrainMixin`'s arrival body;
+`RailFrostmawGameTests`. Not changed: the meter, the focus, the target rules, the page format.
+
+**Where the jar or the engine differs from MOWZIE.md.**
+- §4.4 leaves open which entities the swipe strikes (test 9). The jar settles it: only living entities in
+  the arc, never a carriage, which is no `LivingEntity` and refuses `hurt`. The cargo comes only from the
+  roll, as §4.4 says.
+- §4.4 has the restriction hold the Frostmaw at its spot. An awake Frostmaw with a target re-paths to it
+  every tick after its goals run, so the hold re-paths it after the entity ticks (MZB-361).
+- The restriction gates targeting (M6's MZB-279), so the core sets the target (MZB-362).
+- The swing turns toward the Frostmaw's target before it lands, so the hold keeps the strike's bearing
+  through it.
+- §4.4's inferred steps, as far as the jar goes: no Create code vetoes the dismount (only
+  `CouplingHandler`'s minecart veto exists), and the ice ball ignores the carriage (IGNORE push reaction,
+  no collision shape). Test 8 settles both in the game, and the moving form gives the hit rates.
+- §4.4's "within view, a puppet with alwaysActive": the jar has no restriction-free way to keep it at the
+  spot, which is why `Lurker` exists.
+- MOWZIE.md's `engine.rs:2869-2878` ("finds nothing to raid") is 3409-3421 at 761f5d0f.
+
+**Traps.**
+- A `FakePlayers.add` player is invisible to the ice ball (`getEntitiesOfClass`) and to the swipe
+  (`getEntityLivingBaseNearby`): use the mock player or a mob as the struck rider (MZB-370).
+- The swipe cannot hit a contraption: a test that waits for carriage damage waits forever.
+- `session_start` drops agent commands: AMBUSH_SPOT must be resent after the replay (MZB-353), or a
+  restart leaves Java with no lurks.
+- An unwatched lurk's 20-tick segments can miss the reach of 8 on curves under about 24 blocks of radius
+  (M7's traps): place test 9's lurk on a straight.
+- A restricted Frostmaw never targets on its own: a test that expects it to turn on a player must set the
+  target, or run the hold's target rule.
+- `TrainWatch.arrived` returns early without an industry or district: call `TrainSampler.arrived` beside
+  it, not inside it.
+- A lurking party can be in `Phase::Fighting` (a player came on it). A `lurking` test on Waiting alone
+  loses the REMOVED of every lurk a watched fight ends, and Java keeps a lurk for a party gone home.
+- `start_fight` and `seen` bump the party's epoch, so the lurk table's epoch is older than the party's
+  after a watch: TRAIN_PASSED is stale only on a later epoch (`<=`), never on an unequal one
+  (`party_of`'s filter).
 
 ## M9 Umvuthana
 
