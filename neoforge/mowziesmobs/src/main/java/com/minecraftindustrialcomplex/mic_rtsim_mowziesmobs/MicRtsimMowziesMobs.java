@@ -7,6 +7,7 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -32,6 +33,8 @@ public final class MicRtsimMowziesMobs {
     public static final String WARRIOR = "mic_rtsim:conflict/umvuthana/warrior";
     public static final String RAPTOR = "mic_rtsim:conflict/umvuthana/raptor";
     public static final String ENVOY = "mic_rtsim:conflict/umvuthana/envoy";
+    /** The grove's chief (MZB-401, MZB-434): the jar's Umvuthi, the camp's chief slot. */
+    public static final String UMVUTHI = "mic_rtsim:conflict/umvuthana/umvuthi";
 
     /** The jar's camp structures (its worldgen/structure ids). */
     public static final String DEN_STRUCTURE = "mowziesmobs:frostmaw_spawn";
@@ -46,9 +49,11 @@ public final class MicRtsimMowziesMobs {
         BodyKinds.registerStandIn(WARRIOR, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
+        BodyKinds.registerStandIn(UMVUTHI, "mowziesmobs:umvuthi");
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
         IEventBus bus = NeoForge.EVENT_BUS;
+        bus.addListener(LivingDamageEvent.Post.class, FightWatch::onDamage);
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
         bus.addListener(ServerTickEvent.Post.class, e -> MowzieCamps.drain());
         bus.addListener(ServerStoppedEvent.class, e -> MowzieCamps.clear());

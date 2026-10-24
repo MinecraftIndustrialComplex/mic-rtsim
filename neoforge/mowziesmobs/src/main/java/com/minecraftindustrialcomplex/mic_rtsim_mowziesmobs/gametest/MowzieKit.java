@@ -75,6 +75,7 @@ public final class MowzieKit {
     public static final String TEST_GROVE = "mic_rtsim_mowziesmobs:test_grove";
     public static final String FROSTMAW = MicRtsimMowziesMobs.FROSTMAW;
     public static final String WARRIOR = MicRtsimMowziesMobs.WARRIOR;
+    public static final String UMVUTHI = MicRtsimMowziesMobs.UMVUTHI;
     public static final String RAPTOR = MicRtsimMowziesMobs.RAPTOR;
 
     // ---- the end of every tick ------------------------------------------------------------------
