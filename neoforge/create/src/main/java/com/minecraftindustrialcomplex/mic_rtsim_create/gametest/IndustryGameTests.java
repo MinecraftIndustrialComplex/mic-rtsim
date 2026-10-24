@@ -295,7 +295,10 @@ public final class IndustryGameTests {
     /**
      * A chest and a Create vault (two chunks, one district) and a postbox holding a package: a sweep
      * reports every boundary inventory, the package by its contents, ends with IND_SWEEP_END whose record
-     * count matches, and is live. With an unloaded chunk in the district the next sweep is not live.
+     * count matches, and is live. With an unloaded chunk in the district the next sweep is not live. The two
+     * waits on the engine's records are paced ({@link IndustryKit#paced}): the engine takes a sweep in on its
+     * own thread, and an unthrottled server under load ran the test's 600 ticks in about a second before the
+     * partial sweep reached it.
      */
     @GameTest(template = YARD, batch = "industry_03", timeoutTicks = 600)
     public static void aSweepReportsBoundaryStockAndTheLiveFlag(GameTestHelper helper) {
@@ -333,7 +336,7 @@ public final class IndustryGameTests {
                     check("the postbox is a postbox inventory", (d.inventoryAt(postPos).kind() & IndRecords.Inventory.KIND_POSTBOX) != 0);
                     id[0] = d.id;
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     // A live sweep of the three inventories that began after they were filled.
                     String last = "no live sweep of the three inventories after they were filled";
                     for (ByteBuffer end : received(IndRecords.IND_SWEEP_END, IndRecords.SweepEnd.DISTRICT, id[0])) {
@@ -369,13 +372,13 @@ public final class IndustryGameTests {
                     }
                     throw new net.minecraft.gametest.framework.GameTestAssertException(last
                             + " (wanted: records = samples, iron 10, gold 5, cobblestone 64 in the vault, 7 diamonds from the package, no package good)");
-                })
+                }))
                 .thenExecute(() -> {
                     // An unloaded member chunk far away: every later sweep is partial, not live.
                     District d = ind().district(id[0]);
                     ind().districts().addSeededChunkForTest(d, ChunkPos.asLong((bx >> 4) + 4000, (z >> 4) + 4000));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     boolean partial = false;
                     for (ByteBuffer end : received(IndRecords.IND_SWEEP_END, IndRecords.SweepEnd.DISTRICT, id[0]))
                         if (end.getInt(IndRecords.SweepEnd.SWEEP) > liveSweep[0] + 1 && (aux(end) & IndRecords.SweepEnd.FLAG_LIVE) == 0)
@@ -388,7 +391,7 @@ public final class IndustryGameTests {
                     // No player on a GameTest server: the district is never watched, and says so (F22).
                     List<ByteBuffer> watched = received(IndRecords.IND_WATCHED, IndRecords.DistrictState.DISTRICT, id[0]);
                     check("IND_WATCHED went out, not watched", !watched.isEmpty() && watched.stream().allMatch(r -> aux(r) == 0));
-                })
+                }))
                 .thenSucceed();
     }
 
