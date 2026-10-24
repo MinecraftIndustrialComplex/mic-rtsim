@@ -5578,7 +5578,7 @@ mod conflict {
             x.units = vec![(u, 26)];
             x.start_units = 26;
         });
-        assert_eq!(books(&e, p).2, false, "not seen yet");
+        assert!(!books(&e, p).2, "not seen yet");
         save(&e, &mut j);
         advance_until(&mut j, 100, 3 * DAY, "the invasion out and in view", |j| {
             party(&j.e, p) == Some((Phase::Out, true))
