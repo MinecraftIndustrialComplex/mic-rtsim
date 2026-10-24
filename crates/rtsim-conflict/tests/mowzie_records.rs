@@ -3817,3 +3817,102 @@ fn a_chief_felled_by_no_player_after_a_player_struck_the_band_is_still_that_play
     assert_eq!((rep.who, rep.whom), (r.p, ashby), "the striker's rescue");
     assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
 }
+
+// ---- MZB-589 across a paged save (the M6 re-review's probe) ----
+
+fn paged_store(tag: &str) -> std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>> {
+    let d = std::env::temp_dir().join(format!("rtsim-mzb589-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::sync::Arc::new(std::sync::RwLock::new(
+        rtsim_kernel::page::PageStore::open(&d, rtsim_kernel::page::Durability::NoSync).unwrap(),
+    ))
+}
+
+fn paged_save(
+    c: &mut Conflict,
+    s: &std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>>,
+) {
+    let mut b = rtsim_kernel::page::SaveBatch::new();
+    let t = c.save_paged(&mut b, rtsim_conflict::scenario::META_KEY);
+    s.write().unwrap().commit(b, 0).unwrap();
+    c.saved(t);
+}
+
+fn paged_open(
+    r: &Run,
+    s: &std::sync::Arc<std::sync::RwLock<rtsim_kernel::page::PageStore>>,
+) -> Conflict {
+    Conflict::open_paged(
+        s.clone(),
+        1 << 20,
+        rtsim_conflict::scenario::META_KEY,
+        r.c.tun.clone(),
+        r.c.cultures.clone(),
+    )
+    .unwrap()
+    .unwrap()
+}
+
+/// MZB-589: the slot is free at a paged save (the old party ended); after open_paged the next
+/// party takes it under the bumped generation, and the old agent's copy does nothing.
+#[test]
+fn a_casualty_copy_of_an_ended_party_does_nothing_across_a_paged_save() {
+    let mut r = Run::new(36, quiet_goblins());
+    let s = paged_store("slot");
+    paged_save(&mut r.c, &s); // the first paged save, full
+    let old = raid_band(&mut r);
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[old].units[0].0).body)
+    };
+    {
+        let x = &mut r.c.parties[old];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    let op = next_op();
+    let cs = Obs::Casualties(killed(old, 0, body, 1, op));
+    r.ingest(cs.clone(), Tick(40));
+    paged_save(&mut r.c, &s); // incremental: the party page with the op
+    let mut mid = paged_open(&r, &s);
+    assert_eq!(
+        mid.parties[old].casualty_ops,
+        vec![op],
+        "the op survives an incremental paged save"
+    );
+    mid.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(mid.stats.casualties, 1);
+    r.c.parties.remove(old);
+    paged_save(&mut r.c, &s); // incremental: the slot freed, the free list grown
+    let mut c = paged_open(&r, &s);
+    assert!(!c.parties.contains(old));
+    let new = c
+        .order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(40),
+        )
+        .unwrap();
+    assert_eq!(
+        new.index(),
+        old.index(),
+        "the slot is reused after the reopen"
+    );
+    assert_eq!(new.generation(), old.generation() + 1);
+    {
+        let x = &mut c.parties[new];
+        x.embodied = true;
+        x.spawned = x.units.clone();
+    }
+    let units = c.parties[new].units.clone();
+    let cas = c.stats.casualties;
+    c.ingest(&mut r.w, &mut NoInfrastructure, &cs, Tick(40));
+    assert_eq!(
+        c.parties[new].units, units,
+        "the old agent's copy does nothing"
+    );
+    assert_eq!(c.stats.casualties, cas);
+}

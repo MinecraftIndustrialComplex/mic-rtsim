@@ -2086,8 +2086,10 @@ The tests:
   `addFreshEntity` is in the entity manager but not in `level.players()`, which `NearestAttackableTargetGoal`
   reads, so every "the Frostmaw sleeps on" of test 3 held for a reason a real player does not share.
   `addSeen` joins a `ServerPlayer` with `level.addNewPlayer`, so it is in both; `MowzieKit.thief` now makes
-  that, sets its game mode and makes it invulnerable (a target the Frostmaw may strike for 100 ticks without
-  ending the test), gives it the invisibility effect and `setInvisible(true)` when asked, and removes it with
+  that, sets its game mode and keeps it alive with Resistance V and a health top-up each tick (a target the
+  Frostmaw may strike without ending the test; not invulnerable, because vanilla's `canBeSeenAsEnemy` is false
+  for an invulnerable entity, so no targeting goal would take it and the jar's wake, which needs a target,
+  could never fire: so the M6 re-review found), gives it the invisibility effect and `setInvisible(true)` when asked, and removes it with
   `FakePlayers.removeSeen` at the end (it loads chunks round itself, so the robbed-Frostmaw test removes it
   before it releases the den). The jar's own rules (the 1.8.2 sources): a visible target within 8 blocks wakes a
   sleeper, an invisible one is dropped from the target each asleep tick, a spectator is no target

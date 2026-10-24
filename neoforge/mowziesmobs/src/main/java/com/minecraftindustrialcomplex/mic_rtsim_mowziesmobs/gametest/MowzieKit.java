@@ -480,8 +480,11 @@ public final class MowzieKit {
         Vec3 at = crystalPoint(f);
         ServerPlayer p = FakePlayers.addSeen(level, at, "mowzie-thief");
         p.setGameMode(mode);
-        // A target the Frostmaw may strike for 100 ticks, not a casualty whose death cuts the test short.
-        p.setInvulnerable(true);
+        // A target the Frostmaw may strike, not a casualty whose death cuts the test short. Not invulnerable:
+        // vanilla's canBeSeenAsEnemy is false for an invulnerable entity, so no targeting goal would take it
+        // and the jar's wake (which needs a target) could never fire. Resistance V takes every hit that does
+        // not bypass resistance, and the health is topped up each tick for the rest.
+        p.addEffect(new MobEffectInstance(MobEffects.DAMAGE_RESISTANCE, MobEffectInstance.INFINITE_DURATION, 4, false, false));
         if (fullInventory)
             for (int i = 0; i < 36; i++)
                 p.getInventory().setItem(i, new ItemStack(Items.DIRT));
@@ -490,6 +493,8 @@ public final class MowzieKit {
             p.setInvisible(true);
         }
         everyTick(helper, () -> {
+            if (!p.isRemoved() && p.getHealth() < p.getMaxHealth())
+                p.setHealth(p.getMaxHealth());
             if (!p.isRemoved() && !f.isRemoved() && f.getHasCrystal()) {
                 Vec3 c = crystalPoint(f);
                 p.moveTo(c.x, c.y, c.z);
