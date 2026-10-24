@@ -4028,19 +4028,24 @@ impl Conflict {
         let mut room = self.tun.spawn_quota.saturating_sub(in_mc);
         let mut stacks = Vec::new();
         let mut add_spawned = Vec::new();
+        let boss = c.renewal.is_some_and(|r| r.boss);
         for &(u, n) in &x.units {
             let already = x.spawned.iter().find(|e| e.0 == u).map_or(0, |e| e.1);
             let t = n.saturating_sub(already).min(room);
             if t > 0 {
                 room -= t;
+                let chief = x.chief && stacks.is_empty() && x.wave == 0;
+                let bare = c.bare[usize::from(u)] != u && !self.factions[f as usize].crystal;
                 stacks.push(boundary::Stack {
                     body: body_id(&self.cultures, &c.unit(u).body),
-                    count: t,
-                    flags: if x.chief && stacks.is_empty() && x.wave == 0 {
-                        boundary::MEMBER_CHIEF
-                    } else {
-                        0
-                    },
+                    // A boss is its band's one unit, so its chief is that unit's body: Java makes
+                    // the chief of a stack as an extra body (MZB-109), which for a boss must be
+                    // the whole stack, not one body more (MZB-127's chief alone).
+                    count: if chief && boss { t - 1 } else { t },
+                    flags: (if chief { boundary::MEMBER_CHIEF } else { 0 })
+                        // A unit that fights as its bare row has no crystal on it: Java makes
+                        // the body without one (review C; a fresh Frostmaw comes with its own).
+                        | (if bare { boundary::MEMBER_BARE } else { 0 }),
                 });
                 add_spawned.push((u, t));
             }
@@ -5157,10 +5162,18 @@ impl Conflict {
                             .sum()
                     };
                 let units: Vec<u8> = self.parties[p].units.iter().map(|e| e.0).collect();
-                let backs: Vec<u32> = units
+                let mut backs: Vec<u32> = units
                     .iter()
                     .map(|&u| back_of(u, &self.java_dict, &self.cultures))
                     .collect();
+                // A boss's chief is its band's one unit, yet Java's survivors never hold a chief
+                // (an extra body there, MZB-109): while the books have it alive, it is back.
+                if self.parties[p].chief
+                    && self.culture(f).renewal.is_some_and(|r| r.boss)
+                    && let Some(k) = self.parties[p].units.iter().position(|e| e.1 > 0)
+                {
+                    backs[k] += 1;
+                }
                 let before = self.parties[p].alive();
                 let x = &mut self.parties[p];
                 if live {

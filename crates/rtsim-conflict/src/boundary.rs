@@ -80,6 +80,8 @@ pub const BAND_CHIEF: u8 = 2;
 pub const BAND_SURFACE: u8 = 4;
 /// BAND_MATERIALIZE member flags.
 pub const MEMBER_CHIEF: u32 = 1;
+/// The stack's units have no crystal on them (the unit fights as its `without_crystal` row).
+pub const MEMBER_BARE: u32 = 2;
 /// BAND_STEER flags.
 pub const STEER_ATTACK: u32 = 1;
 
@@ -125,6 +127,8 @@ pub const CENSUS_THRONE: u32 = 4;
 pub const BODY_STRAY: u32 = 1;
 pub const BODY_ELSEWHERE: u32 = 2;
 pub const BODY_CHIEF: u32 = 4;
+/// The crystal is on this body (a chief body only; MZB-269, amended at review C).
+pub const BODY_CRYSTAL: u32 = 8;
 /// CAMP_BODIES outcomes, per line.
 pub const LINE_DONE: u8 = 1;
 pub const LINE_NOTHING: u8 = 2;
@@ -387,7 +391,7 @@ pub struct CampDeath {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CensusBody {
     pub body: u32,
-    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`.
+    /// `BODY_STRAY`, `BODY_ELSEWHERE`, `BODY_CHIEF`, `BODY_CRYSTAL`.
     pub flags: u32,
     pub slot: u32,
     pub generation: u32,
@@ -2080,7 +2084,7 @@ mod tests {
                     Stack {
                         body: 1,
                         count: 8,
-                        flags: MEMBER_CHIEF,
+                        flags: MEMBER_CHIEF | MEMBER_BARE,
                     },
                     Stack {
                         body: 2,

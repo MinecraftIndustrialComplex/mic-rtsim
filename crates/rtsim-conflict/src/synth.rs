@@ -243,8 +243,12 @@ pub struct Fight {
 struct Body {
     epoch: u32,
     faction: u64,
+    /// The units standing, by body id: what a recall's DEMATERIALIZED names as survivors.
     members: BTreeMap<u32, u32>,
-    chief: bool,
+    /// The war chief's body, if one stands: an extra body of its stack's kind that is no unit of
+    /// the band (MZB-109), so it is never a survivor, and its death is a CHIEF_KILLED alone. Its
+    /// value is the body id.
+    chief: Option<u32>,
 }
 
 /// A body in a camp's world: the jar's own entity, tagged with its slot and generation, or a stray
@@ -507,7 +511,7 @@ impl FakeConflict {
                         epoch: e.epoch,
                         faction: e.faction,
                         members: e.members.iter().copied().collect(),
-                        chief: false,
+                        chief: None,
                     },
                 );
                 self.push(
@@ -561,17 +565,31 @@ impl FakeConflict {
                     epoch: m.epoch,
                     faction: m.faction,
                     members: BTreeMap::new(),
-                    chief: false,
+                    chief: None,
                 });
                 if b.epoch != m.epoch {
                     b.epoch = m.epoch;
                     b.members.clear();
-                    b.chief = false;
+                    b.chief = None;
                 }
+                // As Java makes a stack: its count in units, and for the band's chief stack one
+                // body more, the chief (MZB-109; a count of 0 is the chief alone, MZB-127).
                 for s in &m.members {
-                    *b.members.entry(s.body).or_default() += s.count;
+                    if s.count > 0 {
+                        *b.members.entry(s.body).or_default() += s.count;
+                    }
+                    if m.flags & boundary::BAND_CHIEF != 0 && s.flags & boundary::MEMBER_CHIEF != 0
+                    {
+                        b.chief = Some(s.body);
+                    }
                 }
-                b.chief |= m.flags & boundary::BAND_CHIEF != 0;
+                let spawned = m.members.iter().map(|s| s.count).sum::<u32>()
+                    + u32::from(
+                        m.flags & boundary::BAND_CHIEF != 0
+                            && m.members
+                                .iter()
+                                .any(|s| s.flags & boundary::MEMBER_CHIEF != 0),
+                    );
                 self.push(
                     at + 1,
                     Obs::Materialized(boundary::BandMaterialized {
@@ -579,7 +597,7 @@ impl FakeConflict {
                         epoch: m.epoch,
                         dimension: m.dimension,
                         wave: u32::from(m.wave),
-                        spawned: m.members.iter().map(|s| s.count).sum(),
+                        spawned,
                     }),
                 );
                 if let Some(f) = self.fight.filter(|f| {
@@ -606,14 +624,16 @@ impl FakeConflict {
                             );
                         }
                     }
-                    if f.kill_chief && m.flags & boundary::BAND_CHIEF != 0 && m.wave == 0 {
-                        // The chief's body dies with it: one unit of the first stack, which is no
-                        // survivor when the band leaves (MZB-272).
-                        if let Some(b) = self.bodies.get_mut(&m.agent)
-                            && let Some(n) = b.members.values_mut().next()
-                        {
-                            *n = n.saturating_sub(1);
-                        }
+                    // The chief's body dies: an extra body, no unit of the band (MZB-109), so no
+                    // survivor is lost with it; Java sends CHIEF_KILLED alone (MZB-272).
+                    if f.kill_chief
+                        && m.flags & boundary::BAND_CHIEF != 0
+                        && m.wave == 0
+                        && self
+                            .bodies
+                            .get_mut(&m.agent)
+                            .is_some_and(|b| b.chief.take().is_some())
+                    {
                         let op = self.op();
                         self.push(
                             at + f.after + 20,
@@ -634,6 +654,7 @@ impl FakeConflict {
                 {
                     // Some die on the way out: the first stacks lose them first.
                     let mut dead = self.walk_off_deaths;
+                    // Java's survivors name only bodies with a living member, and never the chief.
                     let survivors = b
                         .members
                         .iter()
@@ -642,6 +663,7 @@ impl FakeConflict {
                             dead -= lost;
                             (k, v - lost)
                         })
+                        .filter(|e| e.1 > 0)
                         .collect();
                     self.push(
                         at + self.leave_ticks,
@@ -738,7 +760,8 @@ impl FakeConflict {
         let epoch = self.op();
         let camp = self.camp_world(faction);
         camp.epoch = epoch;
-        // The chief at home says whether its crystal is on it (MZB-269).
+        // The first chief body says whether its crystal is on it, as Java's census byte does (the
+        // body nearest the spot, MZB-269); each body carries its own bit too (review C).
         let flags = flags
             | camp.bodies.iter().find(|b| b.chief).map_or(0, |b| {
                 boundary::CENSUS_CHIEF
@@ -764,7 +787,12 @@ impl FakeConflict {
                     boundary::BODY_ELSEWHERE
                 } else {
                     0
-                }) | (if b.chief { boundary::BODY_CHIEF } else { 0 }),
+                }) | (if b.chief { boundary::BODY_CHIEF } else { 0 })
+                    | (if b.chief && b.crystal {
+                        boundary::BODY_CRYSTAL
+                    } else {
+                        0
+                    }),
             })
             .collect();
         self.push(
