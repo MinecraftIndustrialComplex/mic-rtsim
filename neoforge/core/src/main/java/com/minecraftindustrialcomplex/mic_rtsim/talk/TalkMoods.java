@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
+import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Faction;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Facts;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.News;
 
@@ -8,8 +9,8 @@ import java.util.List;
 import java.util.function.IntPredicate;
 
 /**
- * The engine-side mood (TALK.md §5.2) read from an answer: pure, so the thresholds are unit tests. What
- * each mood's argument is, is {@link Arg}; the caller turns it into text.
+ * The engine-side mood (TALK.md §5.2) read from an answer, a camp's from its faction block too: pure, so the
+ * thresholds are unit tests. What each mood's argument is, is {@link Arg}; the caller turns it into text.
  */
 public final class TalkMoods {
     private TalkMoods() {}
@@ -74,6 +75,24 @@ public final class TalkMoods {
             out.add(new Mood("mood.port_closed", TalkTuning.MOOD_PORT, Arg.NONE, null));
         if (f.blockaded())
             out.add(new Mood("mood.blockade", TalkTuning.MOOD_PORT, Arg.NONE, null));
+
+        // A camp (slice 4, TK78): the faction block's moods, none of them with an argument. The player's own
+        // standing with the camp is the grudge: its feud has reached the first rung.
+        Faction camp = f.faction();
+        if (camp != null) {
+            if (camp.has(TalkRecords.MOOD_COWED))
+                out.add(new Mood("mood.cowed", TalkTuning.MOOD_COWED, Arg.NONE, null));
+            if (camp.has(TalkRecords.MOOD_NEW_CHIEF))
+                out.add(new Mood("mood.new_chief", TalkTuning.MOOD_NEW_CHIEF, Arg.NONE, null));
+            if (camp.has(TalkRecords.MOOD_CHIEF_OUT))
+                out.add(new Mood("mood.chief_out", TalkTuning.MOOD_CHIEF_OUT, Arg.NONE, null));
+            if (camp.has(TalkRecords.MOOD_LEAN))
+                out.add(new Mood("mood.lean", TalkTuning.MOOD_LEAN, Arg.NONE, null));
+            if (camp.has(TalkRecords.MOOD_STRONG))
+                out.add(new Mood("mood.strong", TalkTuning.MOOD_STRONG, Arg.NONE, null));
+            if (camp.rung() >= 1)
+                out.add(new Mood("mood.grudge", TalkTuning.MOOD_GRUDGE, Arg.NONE, null));
+        }
         return out;
     }
 }
