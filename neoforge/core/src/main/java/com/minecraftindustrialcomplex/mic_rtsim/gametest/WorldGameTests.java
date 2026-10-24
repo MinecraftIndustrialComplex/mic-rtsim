@@ -267,6 +267,9 @@ public final class WorldGameTests {
      * A house goes only on a free plot (C7, PLAN.md §8.8): not over a block a player placed, not over a
      * block entity, not next to another building; on a free plot it is placed whole from the template, its
      * jigsaw block replaced by its final state, and HOUSE_PLACED names the resident slot the jigsaw marked.
+     * The answers come back through the engine's steps, which run on its own thread while the server ticks
+     * on without waiting for them: the waits are paced ({@link RtsimTests#io}), so the 400 ticks are at
+     * least 2 s of the engine's time.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 400, batch = "mic_rtsim_p1_house")
     public static void aHouseIsPlacedOnlyOnAFreePlot(GameTestHelper helper) {
@@ -293,7 +296,7 @@ public final class WorldGameTests {
         stub.placeHouse(opC, v.id, dim, "mic_rtsim:hut", null, c.getX(), c.getY(), c.getZ(), 0, 0, 0, 0, 3, 0);
 
         helper.startSequence()
-                .thenWaitUntil(() -> check("three answers", result(stub, opA) != null && result(stub, opB) != null && result(stub, opC) != null))
+                .thenWaitUntil(RtsimTests.io(() -> check("three answers", result(stub, opA) != null && result(stub, opB) != null && result(stub, opC) != null)))
                 .thenExecute(() -> {
                     check("not over the player's block", result(stub, opA).aux() == Obs.CommandResult.NOT_FREE);
                     check("the player's block is still there", level.getBlockState(placed).is(Blocks.SNOW));
@@ -317,7 +320,7 @@ public final class WorldGameTests {
                     // And B again, as a rolled-back engine would resend it.
                     stub.placeHouse(opB, v.id, dim, "mic_rtsim:hut", null, b.getX(), b.getY(), b.getZ(), 0, 0, 0, 0, 2, 0);
                 })
-                .thenWaitUntil(() -> check("D answered, B answered again", result(stub, opD) != null && results(stub, opB).size() == 2))
+                .thenWaitUntil(RtsimTests.io(() -> check("D answered, B answered again", result(stub, opD) != null && results(stub, opB).size() == 2)))
                 .thenExecute(() -> {
                     check("not next to another building", result(stub, opD).aux() == Obs.CommandResult.NOT_FREE);
                     check("the resent house is a duplicate", result(stub, opB).aux() == Obs.CommandResult.DUPLICATE_OP);
