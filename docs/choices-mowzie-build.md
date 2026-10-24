@@ -3832,8 +3832,15 @@ each at its own far base, scripted engine):
   `the_cooldown_bounds_a_train_to_one_robbery_a_day` (a FakeWorld industry).
 - News and persistence: `an_ambush_makes_no_news`, `a_lurk_survives_a_save_mid_wait` (blob and paged),
   `the_on_the_way_note_keeps_its_wording`.
-- rtsim-jni's protocol test: TRAIN_PASSED is live, not deferred, and reaches the engine with an
-  infrastructure.
+- rtsim-jni's protocol tests (`crates/rtsim-jni/tests/protocol.rs`, module `conflict`):
+  `a_train_passed_is_live_and_meets_the_lurk_of_its_own_time` (TRAIN_PASSED is live, `deferred` does not
+  count it; a pass stamped inside the wait meets a live lurk although the hand-over is past the patience, one
+  stamped after the end is stale; the lurk's start and removal reach the plugin once each, in Java's
+  dictionary) and `a_lurk_goes_to_the_plugin_once_after_each_session_start` (a lurk a replayed record made
+  goes once after a crash restart, not twice; the clean restart resends it once; fails with two spots when
+  the `retain` of MZB-353's amendment does not drop the queued AMBUSH_SPOT). The host's own catch-up
+  (`shared::catch_up`) is for the other modules: `Conflict::ingest` runs the conflict to the record's time
+  itself, so mutating the catch-up out changes neither test.
 
 **Sim runs** (`rtsim-cli sim mowzie`, MZB-330's seeds and tolerances):
 - **Run 1, the ambushes** (RUNS row 1's "ambushes M8"; MZB-371): the 12- and 24-a-day lines, each with two
