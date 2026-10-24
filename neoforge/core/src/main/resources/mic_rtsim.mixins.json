@@ -16,6 +16,7 @@
     "PlayerListAccessor",
     "MerchantOfferAccessor",
     "MerchantResultSlotMixin",
+    "MobAccessor",
     "RegionFileStorageAccessor",
     "ServerLevelAccessor",
     "StructureManagerMixin",
