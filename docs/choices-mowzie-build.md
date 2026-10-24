@@ -2883,11 +2883,27 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     owed. When that is the stack decided before the crash (one payment, then the chest), the op and the
     amount are the same and the plugin's DUPLICATE_OP answer books what it put down. When a second
     payment, journaled after the first stack went, is owed too, the amount differs (60 against 30) and so
-    does the op: the plugin puts the new stack down, and the chest holds the first stack too, a gift of at
-    most one stack per crash and never a loss. With the counter alone the same op would have been answered
+    does the op: the plugin puts the new stack down, and the chest holds the first stack too, a gift and
+    never a loss (the bound is the re-check's below: not one stack, every stack answered since the save).
+    With the counter alone the same op would have been answered
     DUPLICATE_OP for 60 nuggets when 30 were in the chest. What is left of the window: a stack decided
     again from different state is put down twice, the first in the chest by Java's save and the second by
     the replay, since the pages lack the first's answer.
+  - Amended at the re-check, R4: the bound above is wrong, and the mechanism stays. The ordering: the chest
+    is named, then 30, 50 and 40 are paid, each stack put down and answered, so the chest holds 120; the
+    chest's chunk is saved after those stacks but the pages are not; the server dies. The replay books the
+    three payments and the chest, places nothing (the camp is out), and the census decides stacks of 64 and
+    56 from the 120 owed, under new ops (the amount is in the op), which the plugin puts down: 240 nuggets
+    in the chest for 120 paid. The real bound, in the ordering where the chest's chunk was saved after the
+    stacks and the pages were not, is that the gift is every stack answered since the last save. Nothing is
+    ever lost, and the books stay right (nothing is owed afterwards). The lead accepts this as the
+    journal-ahead-of-world class: a replayed CHIEF_PAID after a player's inventory rolled back gifts the
+    same way, and the engine cannot tell a rolled-back world from a kept one. The coordinator's reasoning,
+    so that nobody reopens it: a player cannot crash a server process on purpose without a separate crash
+    bug, and in single player killing the process is no worse than the cheats already open there. The
+    test is `a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing` (the re-check's
+    repro, renamed for what it asserts now: nothing lost, and the gift equals the stacks answered since
+    the save).
   - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
     each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
     MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
