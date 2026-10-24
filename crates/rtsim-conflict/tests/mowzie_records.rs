@@ -1883,6 +1883,67 @@ fn the_replay_keeps_the_bodies_and_its_end_makes_them_abstract() {
     assert_eq!(back.parties[band], after);
 }
 
+/// A replayed BAND_MATERIALIZED for `band` at `epoch`, `wave`, with `spawned` placed at once.
+fn materialized(band: Handle<Party>, epoch: u32, wave: u32, spawned: u32) -> Obs {
+    Obs::Materialized(boundary::BandMaterialized {
+        agent: Party::agent(band),
+        epoch,
+        dimension: 0,
+        wave,
+        spawned,
+    })
+}
+
+/// The first BAND_MATERIALIZE of `band` the engine sends while the player watches its target:
+/// runs the engine and the plugin up to four days.
+fn first_materialize(r: &mut Run, band: Handle<Party>) -> Option<boundary::BandMaterialize> {
+    r.watch = true;
+    let agent = Party::agent(band);
+    let from = r.cmds.len();
+    let limit = r.c.now() + 4 * TICKS_PER_DAY;
+    while r.c.now() < limit {
+        r.run(r.c.now() + 600);
+        let got = r.cmds[from..].iter().find_map(|(_, c)| match c {
+            Cmd::Materialize(m) if m.agent == agent => Some(m.clone()),
+            _ => None,
+        });
+        if got.is_some() {
+            return got;
+        }
+    }
+    None
+}
+
+/// docs/replay-gate.md §5.3 (RP-7, RP-30): a fresh engine (not from its pages, RP-31) replays a
+/// BAND_MATERIALIZED at epoch 4 of a party at epoch 0. It does not embody, nor raise the epoch
+/// while replaying (a body at an older epoch would lose its records); the floor holds 4. At the
+/// replay end the floor becomes the epoch, and the next body takes 5. Control: no such record,
+/// the next body takes 1.
+#[test]
+fn a_fresh_engines_replayed_materialize_raises_the_epoch_floor_only() {
+    let next_body = |record: bool| {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        assert_eq!(r.c.parties[band].epoch, 0);
+        r.c.begin_replay(false);
+        if record {
+            let at = r.c.now() + 1;
+            r.ingest(materialized(band, 4, 0, 6), at);
+            let x = &r.c.parties[band];
+            assert!(!x.embodied, "a fresh engine's record embodies nothing");
+            assert!(x.spawned.is_empty());
+            assert_eq!(x.epoch, 0, "the floor, not the epoch");
+        }
+        r.c.replay_done();
+        let after = r.c.parties[band].epoch;
+        let m = first_materialize(&mut r, band).expect("the band came into view");
+        (after, m.epoch)
+    };
+    assert_eq!(next_body(false), (0, 1), "control");
+    assert_eq!(next_body(true), (4, 5));
+}
+
 /// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
 /// and before its despawn, counts the same live as in a replay. The live run used to return at
 /// once (the band is not embodied), so the replay of the same record counted a death, a signal

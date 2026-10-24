@@ -683,6 +683,12 @@ pub struct Conflict {
     /// only then is a replayed BAND_MATERIALIZED the last session's answer to this engine's
     /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
     pub(crate) replay_from_pages: bool,
+    /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
+    /// engine has seen for it that its party's own `epoch` does not hold (a replayed
+    /// BAND_MATERIALIZED not honoured, a copy). A party's next body takes an epoch above both.
+    /// Not the epoch itself: a party embodied at an older epoch keeps it, so that its records
+    /// still find it. Folded into the epochs at the replay end; in memory only.
+    pub(crate) floors: BTreeMap<u64, u32>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -766,6 +772,7 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             replay_from_pages: false,
+            floors: BTreeMap::new(),
         }
     }
 
@@ -3878,12 +3885,13 @@ impl Conflict {
         let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
+        let epoch = self.next_epoch(p);
         {
             let x = &mut self.parties[p];
             x.phase = Phase::Fighting;
             x.until = ends;
             x.fight_strength = strength;
-            x.epoch += 1;
+            x.epoch = epoch;
             x.embodied = true;
             x.seen_by = Some(player);
             x.wave = 0;
@@ -4394,9 +4402,10 @@ impl Conflict {
         }
         self.stats.seen += 1;
         let f = x.faction;
+        let epoch = self.next_epoch(p);
         {
             let x = &mut self.parties[p];
-            x.epoch += 1;
+            x.epoch = epoch;
             x.embodied = true;
             x.seen_by = Some(player);
             x.spawned.clear();
@@ -4479,6 +4488,24 @@ impl Conflict {
             members,
         }));
         self.stats.materialized += 1;
+    }
+
+    /// The epoch of a party's next body (docs/replay-gate.md §5.3, RP-7, RP-30): above its own
+    /// and above its floor, which it spends.
+    fn next_epoch(&mut self, p: Handle<Party>) -> u32 {
+        let floor = self.floors.remove(&Party::agent(p)).unwrap_or(0);
+        self.parties[p].epoch.max(floor) + 1
+    }
+
+    /// An epoch the engine has seen for `agent` that its party may not hold (§5.3).
+    fn raise_floor(&mut self, agent: u64, epoch: u32) {
+        let held = Party::of_agent(agent)
+            .and_then(|p| self.parties.get(p))
+            .is_some_and(|x| x.epoch >= epoch);
+        if !held {
+            let f = self.floors.entry(agent).or_insert(0);
+            *f = (*f).max(epoch);
+        }
     }
 
     fn unseen(&mut self, p: Handle<Party>, epoch: u32, at: Tick) {
@@ -4633,6 +4660,13 @@ impl Conflict {
             x.recalled.clear();
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
+            }
+        }
+        // Every party is abstract now: the floors become the epochs, for the pages (§5.3).
+        for (agent, floor) in std::mem::take(&mut self.floors) {
+            if let Some(p) = Party::of_agent(agent).filter(|p| self.parties.contains(*p)) {
+                let x = &mut self.parties[p];
+                x.epoch = x.epoch.max(floor);
             }
         }
         self.presence.every_player_left();
@@ -4961,7 +4995,8 @@ impl Conflict {
             return;
         }
         match o {
-            Obs::State(_) | Obs::Materialized(_) => {}
+            Obs::State(_) => {}
+            Obs::Materialized(m) => self.materialized(m),
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
             Obs::ChiefState(_)
@@ -5178,6 +5213,20 @@ impl Conflict {
                     self.took_from_players(p, g, a);
                 }
             }
+        }
+    }
+
+    /// A BAND_MATERIALIZED (docs/replay-gate.md §5.2, §5.3). Live, Java's answer to a command of
+    /// this session, which embodied the party when it was decided: nothing to do. While
+    /// replaying, Java's answer to a decision of the last session: on an engine that came back
+    /// from its pages it is honoured (§5.2); on a fresh engine (RP-31) its epoch only raises the
+    /// party's floor.
+    fn materialized(&mut self, m: &boundary::BandMaterialized) {
+        if !self.outbox.replaying() {
+            return;
+        }
+        if !self.replay_from_pages {
+            self.raise_floor(m.agent, m.epoch);
         }
     }
 
