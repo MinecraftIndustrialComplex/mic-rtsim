@@ -466,6 +466,12 @@ public final class ConflictBridge implements SessionPlugin {
     private final Map<Long, Party> byAgent = new LinkedHashMap<>();
     private final Map<UUID, Slot> byUuid = new HashMap<>();
     private final Territories territories = new Territories();
+    /**
+     * The camp kin whose killing signal was counted in the tick {@link #killedAt}, by UUID (P2-6): the jar's Umvuthi
+     * posts LivingDeathEvent twice for one death, and one kill is one signal. Reset when the tick moves on.
+     */
+    private final Set<UUID> killedThisTick = new HashSet<>();
+    private long killedAt = Long.MIN_VALUE;
     /** Kept across sessions: a plugin reports a camp when it finds it. Cleared when the server stops. */
     private final Map<Long, Camp> camps = new HashMap<>();
     private final Map<NoticeKey, Notice> notices = new LinkedHashMap<>();
@@ -1696,6 +1702,12 @@ public final class ConflictBridge implements SessionPlugin {
         for (Territories.Territory t : territories.containing(level.dimension(), x, z)) {
             Camp c = camps.get(t.faction());
             if (c != null && c.kin() != null && t.minds(ConflictRecords.SIGNAL_KILLING) && c.kin().test(dead)) {
+                if (killedAt != now) {
+                    killedAt = now;
+                    killedThisTick.clear();
+                }
+                if (!killedThisTick.add(dead.getUUID()))
+                    return; // the same death posted again in this tick
                 count(ConflictRecords.SIGNAL_KILLING, t.faction(), actor(pl), level.dimension(), dead.blockPosition(), t, now);
                 return;
             }
