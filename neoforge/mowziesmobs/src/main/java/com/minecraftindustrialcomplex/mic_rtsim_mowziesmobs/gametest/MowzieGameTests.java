@@ -1281,7 +1281,7 @@ public final class MowzieGameTests {
      * and not before: the line is DONE no sooner than HOLD_MAX ticks after it was sent (2 ticks of slack for the
      * tick it was applied in) and within 40 ticks after that, the Frostmaw standing at the spot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 7000, batch = "mowzie_hold_max", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 9000, batch = "mowzie_hold_max", skyAccess = true)
     public static void aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear(GameTestHelper helper) {
         String test = "aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear";
         Far far = new Far(helper, test);

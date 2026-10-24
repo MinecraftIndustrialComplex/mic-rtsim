@@ -234,9 +234,10 @@ public final class MowzieKit {
             return RtsimTests.io(() -> {
                 for (long c : forced) {
                     int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking",
-                            level.hasChunk(cx, cz) && level.areEntitiesLoaded(c)
-                                    && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8)));
+                    boolean chunk = level.hasChunk(cx, cz), entities = level.areEntitiesLoaded(c);
+                    boolean ticking = chunk && entities && RtsimSession.entitiesTickAt(level, new BlockPos(cx * 16 + 8, 64, cz * 16 + 8));
+                    check("chunk (" + cx + ", " + cz + ") is loaded with its entities, ticking (chunk " + chunk + ", entities " + entities
+                            + ", ticking " + ticking + ")", ticking);
                 }
             });
         }
