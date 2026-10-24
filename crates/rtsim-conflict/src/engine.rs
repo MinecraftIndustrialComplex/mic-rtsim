@@ -3709,16 +3709,17 @@ impl Conflict {
         let op = boundary::AGENT_NAMESPACE << 56
             | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
         let x = &mut self.factions[f as usize];
-        let (count, op) = match x.hunts.iter_mut().find(|h| h.district == d) {
+        let (count, op, added) = match x.hunts.iter_mut().find(|h| h.district == d) {
             Some(h) => {
                 // The hunt in flight is the one replaced; the one it had replaced is forgotten
                 // (a third hunt inside the flight of two applied ones overpays by the oldest,
                 // bounded by the cap).
+                let before = h.count;
                 h.replaced = Some((h.op, h.count));
                 h.count = h.count.saturating_add(count).min(cap);
                 h.op = op;
                 h.pos = pos;
-                (h.count, h.op)
+                (h.count, h.op, h.count - before)
             }
             None => {
                 let count = count.min(cap);
@@ -3729,10 +3730,11 @@ impl Conflict {
                     op,
                     replaced: None,
                 });
-                (count, op)
+                (count, op, count)
             }
         };
-        self.stats.hunts_owed += u64::from(count);
+        // What the raid adds to the books after the cap, not the whole sum again (re-check R3).
+        self.stats.hunts_owed += u64::from(added);
         // TEMPORARY (fix/replay-push): a replay re-derives the raids of the last session, whose
         // OWED_HUNTs the plugin already had; the host moves every command out of the outbox after
         // each ingest, so a push here reaches the next session's plugin, which forgot what it

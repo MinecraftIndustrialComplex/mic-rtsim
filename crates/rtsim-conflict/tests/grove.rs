@@ -1689,6 +1689,21 @@ fn a_late_copy_of_a_booked_hunts_answer_leaves_the_hunt_now_held_alone() {
     ok(&mut r);
 }
 
+/// `stats.hunts_owed` counts what a raid adds after the cap, not a replacement's whole sum
+/// again: 5 then 3 more are 8 animals owed, not 13; 6 then 6 more add the 2 the cap leaves.
+#[test]
+fn recheck_hunts_owed_counts_a_replacement_once() {
+    let mut r = grove(38, 9);
+    owe(&mut r, 5, 5);
+    owe(&mut r, 5, 3);
+    assert_eq!(hunts(&r).len(), 1);
+    assert_eq!(r.c.stats.hunts_owed, 8, "5 and 3");
+    let mut q = grove(38, 9);
+    owe(&mut q, 5, 6);
+    owe(&mut q, 5, 6);
+    assert_eq!(q.c.stats.hunts_owed, 8, "6, then the 2 the cap leaves");
+}
+
 /// MZB-424 (what owes none): nothing is owed on Peaceful, nor by a culture with no `hunt_cap`.
 #[test]
 fn nothing_is_owed_on_peaceful_or_by_a_culture_without_a_cap() {
