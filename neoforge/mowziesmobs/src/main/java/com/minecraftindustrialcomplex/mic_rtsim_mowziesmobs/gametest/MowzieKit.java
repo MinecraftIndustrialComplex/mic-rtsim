@@ -18,7 +18,9 @@ import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MowzieCamps;
 import com.mojang.logging.LogUtils;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
@@ -273,6 +275,65 @@ public final class MowzieKit {
         return s;
     }
 
+    // ---- a sequence that reports an unexpected exception as a failure ------------------------------
+
+    /**
+     * {@code helper.startSequence()} whose steps turn any exception that is no assertion into a failed assertion
+     * (MZB-599). Vanilla's sequence catches only {@code GameTestAssertException} from a step: any other
+     * exception (a null spot, an index out of range, a state a test did not expect) reaches the server's tick
+     * loop and crashes the whole GameTest server, so every test after it goes unrun. Here the exception is
+     * logged (the stack once per site) and fails that test with its type and message, as a wait's last
+     * assertion does when it times out.
+     */
+    public static Seq seq(GameTestHelper helper) {
+        return new Seq(helper.startSequence());
+    }
+
+    /** The steps a Mowzie test uses, each guarded (MZB-599). */
+    public static final class Seq {
+        private final GameTestSequence s;
+
+        private Seq(GameTestSequence s) {
+            this.s = s;
+        }
+
+        public Seq thenExecute(Runnable step) {
+            s.thenExecute(guard(step));
+            return this;
+        }
+
+        public Seq thenWaitUntil(Runnable step) {
+            s.thenWaitUntil(guard(step));
+            return this;
+        }
+
+        public Seq thenIdle(int ticks) {
+            s.thenIdle(ticks);
+            return this;
+        }
+
+        public void thenSucceed() {
+            s.thenSucceed();
+        }
+    }
+
+    private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+
+    private static Runnable guard(Runnable step) {
+        return () -> {
+            try {
+                step.run();
+            } catch (GameTestAssertException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                StackTraceElement[] t = e.getStackTrace();
+                if (REPORTED.add(e.getClass().getName() + "@" + (t.length == 0 ? "" : t[0].toString())))
+                    LogUtils.getLogger().error("[gametest] a step threw {}", e.toString(), e);
+                throw new GameTestAssertException("unexpected " + e);
+            }
+        };
+    }
+
     /** A grove at the middle of a chunk (MZB-218's round 25 blocks, 21 footprint chunks), declared with no fire pit piece. */
     public static final class Grove {
         public final Far far;
@@ -320,8 +381,10 @@ public final class MowzieKit {
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
+        /** 64 blocks square round the centre; it does not read {@code spot}, so it works before the grove is declared. */
         public AABB area() {
-            return new AABB(spot.x - 32, far.level.getMinBuildHeight(), spot.z - 32, spot.x + 32, far.level.getMaxBuildHeight(), spot.z + 32);
+            double x = cx * 16 + 8.5, z = cz * 16 + 8.5;
+            return new AABB(x - 32, far.level.getMinBuildHeight(), z - 32, x + 32, far.level.getMaxBuildHeight(), z + 32);
         }
     }
 

@@ -1567,6 +1567,16 @@ under its own heading.
   - `MowzieCamps.dropped` is an `AtomicInteger` (`dropped.get()` in the GameTest): `onChunkLoad` increments it
     where the queue beside it, already concurrent, is filled, and a chunk load is not promised to be on the
     server thread under every chunk system; the other counters are the drain's, on the server thread.
+  - The first GameTest round (`target/m5-gt1.log`) crashed the Mowzie server in the
+    fifth test: `aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt` read `Grove.area()` before the grove
+    was declared, and `area()` read the not yet set `spot` (a NullPointerException). Vanilla's sequence catches
+    only `GameTestAssertException` from a step, so any other exception reaches the tick loop and takes down
+    the whole GameTest server, and 21 tests went unrun. Two fixes in the kit: `Grove.area()` reads the chunk
+    centre (the same point the spot is declared at) and no longer needs `spot`; and `MowzieKit.seq(helper)`
+    replaces `helper.startSequence()` in every Mowzie test, guarding each step so that an exception that is no
+    assertion is logged (its stack once per site) and fails that test as `unexpected <exception>`, the way a
+    wait's last assertion is reported when it times out. A GameTest-only helper in the plugin (D4); the other
+    projects' tests are untouched.
   - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
     and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
   - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
