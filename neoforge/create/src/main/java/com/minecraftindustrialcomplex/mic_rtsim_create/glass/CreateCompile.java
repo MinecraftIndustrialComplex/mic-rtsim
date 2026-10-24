@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
+import com.simibubi.create.content.contraptions.actors.psi.PortableStorageInterfaceBlockEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
 import com.simibubi.create.content.fluids.drain.ItemDrainBlockEntity;
 import com.simibubi.create.content.fluids.pump.PumpBlock;
@@ -130,7 +131,9 @@ final class CreateCompile implements GlassExtractor.Compile {
     enum K {
         MILLSTONE, CRUSHER, PRESS, MIXER, SAW, DEPLOYER, FAN, CRAFTER, SPOUT, DRAIN, BASIN, BELT, FUNNEL, TUNNEL,
         ARM, DEPOT, CHUTE, PUMP, BOILER, ENGINE, BURNER, SWITCH, PACKAGER, FROGPORT, CHAIN, HOPPER, FURNACE,
-        CRATE, CREATIVE_TANK, PIPE, KINETIC
+        CRATE, CREATIVE_TANK, PIPE, KINETIC,
+        /** A portable storage interface: claimed with no node (SECTIONS.md §4.4, choice SC95). */
+        INTERFACE
     }
 
     /** How a node's goods change on the way through it (the reach propagation, step 5). */
@@ -331,6 +334,12 @@ final class CreateCompile implements GlassExtractor.Compile {
             return K.HOPPER;
         if (be instanceof AbstractFurnaceBlockEntity)
             return K.FURNACE;
+        // A station's interface exposes a docked train's storage, whose change is the station's cargo, booked
+        // on the inventories IND_STATION_PORTS names (SECTIONS.md §4.4). Claimed with no node, so the movers
+        // beside it have no supply in the graph; left to the residual, it was a black box that left every
+        // station-fed unit unbounded (choice SC95)
+        if (be instanceof PortableStorageInterfaceBlockEntity)
+            return K.INTERFACE;
         if (be instanceof KineticBlockEntity)
             return K.KINETIC;
         if (BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE) != null)

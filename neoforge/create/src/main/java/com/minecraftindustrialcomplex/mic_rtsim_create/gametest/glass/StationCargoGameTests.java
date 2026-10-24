@@ -118,14 +118,18 @@ public final class StationCargoGameTests {
                 Rotation.NONE, maxTicks, 0L, true, false, 1, 1, true, h -> start(h, f)));
     }
 
-    enum Stage { LOAD, DISTRICT, RUN, UNLOAD, AWAY, RELOAD, SETTLE, DONE }
+    /** CONTROL: a fixture's own steps after its verdict (SEC-1's {@code StationPressLineGameTests}). */
+    enum Stage { LOAD, DISTRICT, RUN, UNLOAD, AWAY, RELOAD, SETTLE, CONTROL, DONE }
 
     static final class Run {
         final GameTestHelper helper;
         final GlassReplayGameTests.Far far;
         final CorpusFactory f;
         final String test;
-        /** The fixture's own verdict at the end of the settle (null: this test's). SEC-1's {@code StationPressLineGameTests}. */
+        /**
+         * The fixture's own verdict at the end of the settle (null: this test's). SEC-1's {@code StationPressLineGameTests}.
+         * It may go on to a stage of its own; else the run is done.
+         */
         java.util.function.Consumer<Run> verdict;
         /** What the fixture keeps between ticks. */
         final Map<String, Object> mine = new java.util.HashMap<>();
@@ -599,10 +603,13 @@ public final class StationCargoGameTests {
                 fail(run, "the far site never settled (" + run.last + ")");
             return;
         }
-        if (run.verdict != null)
+        if (run.verdict != null) {
             run.verdict.accept(run);
-        else
-            judge(run);
+            if (run.stage == Stage.SETTLE)
+                run.stage(Stage.DONE);
+            return;
+        }
+        judge(run);
         run.stage(Stage.DONE);
     }
 
