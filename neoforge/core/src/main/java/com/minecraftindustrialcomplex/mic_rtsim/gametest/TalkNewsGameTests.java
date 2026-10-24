@@ -2,6 +2,10 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.api.TalkHolder;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictTalker;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine.TalkActor;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Naming;
@@ -9,6 +13,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.talk.Names;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Refs;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Talk;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkAsks;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import net.minecraft.core.BlockPos;
@@ -20,7 +25,10 @@ import net.minecraft.gametest.framework.GameTestRunner;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.npc.Villager;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -129,21 +137,21 @@ public final class TalkNewsGameTests {
         }
     }
 
-    /** Talks to a villager every {@link TalkGameTests#WINDOW} ticks until a line whose key has the marker is heard. */
+    /** Talks to a talker every {@link TalkGameTests#WINDOW} ticks until a line whose key has the marker is heard. */
     private static final class Hunt {
         final ServerLevel level;
         final FakePlayers.Hearer listener;
-        final Villager villager;
+        final Entity talker;
         final String marker;
         final List<String> keys = new ArrayList<>();
         int talks, seen;
         long next;
         Said found;
 
-        Hunt(ServerLevel level, FakePlayers.Hearer listener, Villager villager, String marker) {
+        Hunt(ServerLevel level, FakePlayers.Hearer listener, Entity talker, String marker) {
             this.level = level;
             this.listener = listener;
-            this.villager = villager;
+            this.talker = talker;
             this.marker = marker;
         }
 
@@ -160,7 +168,7 @@ public final class TalkNewsGameTests {
             long now = level.getGameTime();
             if (now >= next) {
                 check("a " + marker + " line within " + MAX_TALKS + " talks, heard " + keys, talks < MAX_TALKS);
-                click(listener, villager, true);
+                click(listener, talker, true);
                 talks++;
                 next = now + WINDOW;
             }
@@ -274,6 +282,115 @@ public final class TalkNewsGameTests {
                     check("it lies to the east: " + who, who.contains("east"));
                     record("talk described", "line", said.key() + " = " + english(said));
                     record("talk described", "the ref", who);
+                })
+                .thenSucceed();
+    }
+
+    /** A structure the goblin culture claims (rtsim-conflict's goblin.json): the engine founds a camp on it. */
+    private static final String GOBLIN_CAMP = "mic_rtsim:conflict/goblin_camp";
+    /** A goblin warrior, which stands in as a vindicator (MZB-102). */
+    private static final String GOBLIN_WARRIOR = "mic_rtsim:conflict/goblin/warrior";
+    /** rtsim-knowledge's ReportKind::Raid and report::raid::PLUNDERED. */
+    private static final int RAID = 13, PLUNDERED = 3;
+
+    /**
+     * A camp's member tells its camp's news and mood (TALK slice 4, TK71 to TK79): a goblin camp the
+     * engine founds (FACTION_FOUND on a structure the goblin culture claims) has a raid it made on its
+     * chief's board (TALK_REPORT on the camp's key, TK79); a scouting band of that camp, which has no
+     * quarrel with the player, stands by. The member chats (MZB-130), asks about its camp (holder kind
+     * 3, the faction block asked for), and tells the raid from its camp's side ({@code by_us}) in the
+     * goblin voice, and a camp mood from the faction block, which only the engine's answer can give.
+     * The camp itself is founded in the far area ({@link ConflictKit#farBase}): its territory (radius 400
+     * for goblins) would otherwise lie over other tests' arenas, and every block they break in it would
+     * count as a signal against it too. The camp stays in the reused world when the test ends (the engine
+     * keeps a faction it founded); farBase's slots are 1,024 blocks apart and picked at random, so a camp
+     * left from an earlier run almost never lies in another test's slot.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = BATCH + "camp", skyAccess = true)
+    public static void talkTellsTheCampNewsAndMood(GameTestHelper helper) {
+        NativeEngine e = live(helper, "talk camp");
+        if (e == null)
+            return;
+        ServerLevel level = helper.getLevel();
+        String dim = RtsimTests.dimension(helper);
+        Vec3 c = RtsimTests.centre(helper);
+        BlockPos meet = BlockPos.containing(c);
+        List<FakePlayers.Hearer> players = new ArrayList<>();
+        arm(helper, players, List.of());
+        long agent = ConflictKit.newAgent();
+        long[] faction = new long[1];
+        Entity[] member = new Entity[1];
+        Hunt[] hunt = new Hunt[2];
+        FakePlayers.Hearer[] ben = new FakePlayers.Hearer[1];
+        long[] answered = new long[1]; // TalkAsks' answers before the member is first asked
+        ConflictKit.onEnd(helper, () -> {
+            ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, c.x, c.z);
+            for (Mob m : ConflictKit.bridge().bodies(agent))
+                m.discard();
+        });
+
+        helper.startSequence()
+                .thenExecute(() -> {
+                    int[] far = ConflictKit.farBase();
+                    BlockPos campAt = new BlockPos(far[0] + 8, 64, far[1] + 8);
+                    faction[0] = ConflictKit.bridge().reportCamp(level, GOBLIN_CAMP, campAt, x -> false, null, false, 0, 0);
+                    check("a faction key", faction[0] != 0L);
+                })
+                .thenWaitUntil(() -> check("the engine founded the camp (its TERRITORY came back)",
+                        ConflictKit.bridge().territories().get(faction[0]) != null))
+                .thenExecute(() -> {
+                    e.talkReport(faction[0], RAID, PLUNDERED, 0, new TalkActor(TalkRecords.C_CAMP, faction[0], 0), TalkActor.NONE,
+                            held(meet.getX() + 60), held(meet.getZ()), AGO);
+                    // Scouts, not hostile, standing still by the arena's centre.
+                    ConflictKit.Band band = ConflictKit.band(agent, faction[0], dim);
+                    band.purpose = ConflictRecords.PURPOSE_SCOUTS;
+                    band.flags = 0;
+                    band.arcX = c.x + 2.5;
+                    band.arcZ = c.z;
+                    band.targetX = c.x + 100;
+                    band.targetY = c.y;
+                    band.targetZ = c.z;
+                    band.speed = 0f;
+                    ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(GOBLIN_WARRIOR, 1, false)));
+                })
+                .thenWaitUntil(() -> {
+                    ConflictBridge.Party p = ConflictKit.party(agent);
+                    check("one stack", p.stacks().size() == 1);
+                    check("placed", p.stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                })
+                .thenExecute(() -> {
+                    member[0] = ConflictKit.party(agent).stacks().get(0).slots().get(0).entity();
+                    ben[0] = FakePlayers.hearing(level, c.add(-1.5, 0, 0), "talk_camp_ben");
+                    players.add(ben[0]);
+                    // Creative: a stand-in vindicator finds no target in it.
+                    ben[0].setGameMode(GameType.CREATIVE);
+                    check("the conflict talker speaks for the member", Talkers.find(member[0], ben[0]) instanceof ConflictTalker);
+                    check("it chats with a player its camp has no quarrel with", Talkers.find(member[0], ben[0]).chats(member[0], ben[0]));
+                    TalkHolder h = Talkers.find(member[0], ben[0]).holder(member[0]);
+                    check("its holder is the camp: " + h, h != null && h.kind() == TalkHolder.FACTION && h.id() == faction[0]);
+                    answered[0] = TalkAsks.INSTANCE.answered;
+                    hunt[0] = new Hunt(level, ben[0], member[0], ".news.raid.");
+                })
+                .thenIdle(SETTLE)
+                .thenWaitUntil(() -> hunt[0].step())
+                .thenExecute(() -> {
+                    Said said = hunt[0].found;
+                    check("the camp's raid, told from its side in the goblin voice: " + said.key(),
+                            said.key().startsWith("mic_rtsim.talk.goblin.news.raid.by_us."));
+                    check("the line is the server's English, not its key: " + english(said), !english(said).contains("mic_rtsim."));
+                    record("talk camp", "news line", said.key() + " = " + english(said));
+                    record("talk camp", "talks until it came up", hunt[0].talks);
+                    // The goblin voice has only the faction block's moods (TK78): one heard is the engine's answer.
+                    hunt[1] = new Hunt(level, ben[0], member[0], ".goblin.mood.");
+                    hunt[1].seen = hunt[0].seen; // only the lines after the news
+                    hunt[1].next = level.getGameTime() + WINDOW;
+                })
+                .thenWaitUntil(() -> hunt[1].step())
+                .thenExecute(() -> {
+                    Said said = hunt[1].found;
+                    record("talk camp", "mood line", said.key() + " = " + english(said));
+                    record("talk camp", "lines heard", hunt[0].keys + " then " + hunt[1].keys);
+                    check("the engine answered the member's asks", TalkAsks.INSTANCE.answered > answered[0]);
                 })
                 .thenSucceed();
     }
