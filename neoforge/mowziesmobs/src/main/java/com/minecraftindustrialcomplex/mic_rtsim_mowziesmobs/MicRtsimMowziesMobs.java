@@ -39,10 +39,12 @@ public final class MicRtsimMowziesMobs {
 
     public MicRtsimMowziesMobs(IEventBus modBus, ModContainer container) {
         // Each culture body is the jar's own entity (MZB-216): the grove's warrior and envoy are its
-        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion), a raptor pack its raptor.
+        // grove warrior (mowziesmobs:umvuthana, EntityUmvuthanaMinion). The raptor is the same warrior until M9
+        // (MZB-594): the jar's raptor adds 4 or 5 untagged followers in its finalizeSpawn, which a party's bodies
+        // may not bring.
         BodyKinds.registerStandIn(FROSTMAW, "mowziesmobs:frostmaw");
         BodyKinds.registerStandIn(WARRIOR, "mowziesmobs:umvuthana");
-        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana_raptor");
+        BodyKinds.registerStandIn(RAPTOR, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);

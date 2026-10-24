@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.talk;
 
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Ask;
+import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Faction;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Facts;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.News;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.TalkRecords.Ref;
@@ -37,6 +38,11 @@ class TalkRecordsTest {
                     + "f6ffffff05000000000000000000000000000000000000000000000000000000"
                     + "0000000000000000";
 
+    /** talk_wire.rs PINNED_FACTION_BLOCK: the 48 bytes after the (here, absent) news of {@link #pinnedBlock()}. */
+    static final String PINNED_FACTION_BLOCK =
+            "0409040000004841201c0000030000000600000004000000bbaa000000000000"
+                    + "63000000000000000000000000000000";
+
     /** talk_wire.rs PINNED_TALKED. */
     static final String PINNED_TALKED =
             "000a400000000000341200000000000040e201000000000011100f0e0d0c0b0a"
@@ -63,6 +69,16 @@ class TalkRecordsTest {
         Ref camp = new Ref(TalkRecords.C_CAMP, TalkRecords.REF_POS, 4, 99, 0, 280, -50);
         return new Facts(7, TalkRecords.F_HOLDER | TalkRecords.F_PORT_CLOSED, -30, 2, 400, 5, 3500,
                 List.of(new News(13, 150, 1, TalkRecords.TO_US | TalkRecords.SEEN, 24_000, 300, -40, camp, village, Ref.NONE)));
+    }
+
+    /** Cowed and lean, at the raid rung, over killing, with a chief ref (reserved on the wire for now). */
+    private static Faction pinnedBlock() {
+        return new Faction(4, TalkRecords.MOOD_COWED | TalkRecords.MOOD_LEAN, 4, 12.5f, 7200, 3,
+                new Ref(TalkRecords.C_CHIEF, 0, 4, 0xAABB, 99, 0, 0));
+    }
+
+    private static Facts campFacts(List<News> news, Faction block) {
+        return new Facts(9, TalkRecords.F_HOLDER, 0, 0, 0, 0, 0, news, block);
     }
 
     @Test
@@ -198,9 +214,102 @@ class TalkRecordsTest {
         assertEquals(32, Ref.SIZE);
         assertEquals(48, TalkRecords.factsRecordSize(0));
         assertEquals(528, TalkRecords.factsRecordSize(4));
+        assertEquals(48, Faction.SIZE);
+        assertEquals(96, TalkRecords.factsRecordSize(0, true));
+        assertEquals(576, TalkRecords.factsRecordSize(4, true));
+        assertEquals(TalkRecords.factsRecordSize(2), TalkRecords.factsRecordSize(2, false));
+        assertEquals(Faction.SIZE, Faction.CHIEF + Ref.SIZE);
         assertEquals(News.SIZE, News.NEAR + Ref.SIZE);
         for (int n = 0; n <= 4; n++)
             assertEquals(0, TalkRecords.factsRecordSize(n) % 8);
+    }
+
+    @Test
+    void theFactionBlockBytesArePinned() {
+        byte[] rec = TalkRecords.encodeFacts(campFacts(List.of(), pinnedBlock()), 5);
+        assertEquals(96, rec.length);
+        assertEquals(PINNED_FACTION_BLOCK, hex(java.util.Arrays.copyOfRange(rec, 48, 96)));
+        Facts back = TalkRecords.decodeFacts(rec);
+        assertNotNull(back);
+        assertEquals(pinnedBlock(), back.faction());
+        assertEquals(TalkRecords.F_HOLDER | TalkRecords.F_FACTION, back.flags());
+    }
+
+    @Test
+    void theFactionBlockDecodesFromTheLiteralOffsets() {
+        // The block as docs/boundary.md section 13.3 lays it out, built by hand after two news items.
+        byte[] rec = new byte[48 + 2 * 120 + 48];
+        ByteBuffer w = le(rec);
+        w.putShort(0, (short) TalkRecords.TALK_FACTS).putShort(2, (short) rec.length).putInt(4, 2);
+        w.putLong(16, 9).putInt(24, 1 | 8);
+        int at = 48 + 2 * 120;
+        w.put(at, (byte) 5).put(at + 1, (byte) (4 | 16)).putShort(at + 2, (short) 0xFFFF).putFloat(at + 4, 0.25f);
+        w.putInt(at + 8, -1).putInt(at + 12, 70_000);
+        w.put(at + 16, (byte) TalkRecords.C_CHIEF);
+        Facts f = TalkRecords.decodeFacts(le(rec), 0, rec.length, 2);
+        assertNotNull(f);
+        assertEquals(2, f.news().size());
+        Faction x = f.faction();
+        assertNotNull(x);
+        assertEquals(5, x.rung());
+        assertTrue(x.has(TalkRecords.MOOD_NEW_CHIEF) && x.has(TalkRecords.MOOD_STRONG) && !x.has(TalkRecords.MOOD_COWED));
+        assertEquals(TalkRecords.NO_SIGNAL, x.signal(), "the signal is unsigned");
+        assertEquals(0.25f, x.grievance());
+        assertEquals(0xFFFF_FFFFL, x.cowedTicks(), "the ticks are unsigned");
+        assertEquals(70_000, x.plunders());
+        assertEquals(TalkRecords.C_CHIEF, x.chief().cls());
+    }
+
+    @Test
+    void aRoundTripKeepsTheNewsAndTheBlockAndWritesTheFlagItself() {
+        List<News> news = pinnedFacts().news();
+        Facts with = campFacts(news, pinnedBlock());
+        byte[] rec = TalkRecords.encodeFacts(with, 1);
+        assertEquals(TalkRecords.factsRecordSize(1, true), rec.length);
+        assertEquals(48 + 120 + 48, rec.length);
+        assertEquals(1, le(rec).getInt(4), "aux counts the news only");
+        Facts back = TalkRecords.decodeFacts(rec);
+        assertEquals(news, back.news());
+        assertEquals(pinnedBlock(), back.faction());
+        // The encoder owns the flag: a block with the flag clear still sets it, no block clears it.
+        assertEquals(TalkRecords.F_HOLDER | TalkRecords.F_FACTION, back.flags());
+        Facts stale = new Facts(9, TalkRecords.F_HOLDER | TalkRecords.F_FACTION, 0, 0, 0, 0, 0, news, null);
+        byte[] plain = TalkRecords.encodeFacts(stale, 1);
+        assertEquals(TalkRecords.factsRecordSize(1), plain.length);
+        Facts plainBack = TalkRecords.decodeFacts(plain);
+        assertNull(plainBack.faction());
+        assertEquals(TalkRecords.F_HOLDER, plainBack.flags());
+    }
+
+    @Test
+    void aFactionFlagWithNoRoomForTheBlockIsRefusedAndTheOtherFlagsNeedNone() {
+        byte[] rec = TalkRecords.encodeFacts(campFacts(List.of(), pinnedBlock()), 1);
+        // Every length short of the block is refused, whole header or not.
+        for (int len : new int[]{0, 47, 48, 60, 95})
+            assertNull(TalkRecords.decodeFacts(java.util.Arrays.copyOf(rec, len)), "length " + len);
+        // With the flag clear the same short record is a plain answer.
+        byte[] plain = java.util.Arrays.copyOf(rec, 48);
+        le(plain).putShort(2, (short) 48).putInt(24, TalkRecords.F_HOLDER);
+        Facts f = TalkRecords.decodeFacts(plain);
+        assertNotNull(f);
+        assertNull(f.faction());
+        // A block after four news items still fits the 576-byte ceiling and no more.
+        News n = pinnedFacts().news().get(0);
+        byte[] big = TalkRecords.encodeFacts(campFacts(List.of(n, n, n, n, n, n), pinnedBlock()), 1);
+        assertEquals(576, big.length);
+        assertEquals(4, TalkRecords.decodeFacts(big).news().size());
+        assertEquals(pinnedBlock(), TalkRecords.decodeFacts(big).faction());
+        assertNull(TalkRecords.decodeFacts(java.util.Arrays.copyOf(big, 575)));
+    }
+
+    @Test
+    void aCampIsAskedForItsFactionBlockAndEveryoneElseForNewsOnly() {
+        assertEquals(TalkRecords.ASK_NEWS | TalkRecords.ASK_FACTION, TalkRecords.askFlagsFor(TalkRecords.HOLDER_FACTION));
+        assertEquals(TalkRecords.ASK_NEWS, TalkRecords.askFlagsFor(TalkRecords.HOLDER_VILLAGE));
+        assertEquals(TalkRecords.ASK_NEWS, TalkRecords.askFlagsFor(TalkRecords.HOLDER_CARAVAN));
+        assertEquals(TalkRecords.ASK_NEWS, TalkRecords.askFlagsFor(TalkRecords.HOLDER_SHIP));
+        assertEquals(3, TalkRecords.askFlagsFor(3));
+        assertEquals(2, TalkRecords.ASK_FACTION);
     }
 
     @Test

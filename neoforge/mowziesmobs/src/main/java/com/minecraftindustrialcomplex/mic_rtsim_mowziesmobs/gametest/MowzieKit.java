@@ -40,6 +40,7 @@ import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
+import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.util.ArrayList;
@@ -67,6 +68,7 @@ public final class MowzieKit {
     public static final String TEST_GROVE = "mic_rtsim_mowziesmobs:test_grove";
     public static final String FROSTMAW = MicRtsimMowziesMobs.FROSTMAW;
     public static final String WARRIOR = MicRtsimMowziesMobs.WARRIOR;
+    public static final String RAPTOR = MicRtsimMowziesMobs.RAPTOR;
 
     // ---- the end of every tick ------------------------------------------------------------------
 
@@ -127,6 +129,36 @@ public final class MowzieKit {
         LEAVES.put(e.getUUID(), n);
         ConflictKit.onEnd(helper, () -> LEAVES.remove(e.getUUID()));
         return n;
+    }
+
+    // ---- the ticket event ---------------------------------------------------------------------
+
+    private record TicketWatch(ServerLevel level, Set<Long> chunks, int[] count) {}
+
+    private static final List<TicketWatch> TICKET_WATCHES = new CopyOnWriteArrayList<>();
+
+    static {
+        // Registered once; costs a list walk per event only while a test watches (the list is empty otherwise).
+        NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, false, ChunkTicketLevelUpdatedEvent.class, e -> {
+            for (TicketWatch w : TICKET_WATCHES)
+                if (w.level() == e.getLevel() && w.chunks().contains(e.getChunkPos()))
+                    w.count()[0]++;
+        });
+    }
+
+    /**
+     * Counts the {@code ChunkTicketLevelUpdatedEvent}s of the given chunks from now on (until the test ends):
+     * zero where the chunk system never posts it (C2ME, MZB-249), which a test that asserts what the event
+     * path alone shows (a camp seen waiting) uses to know whether it can.
+     */
+    public static int[] watchTicketEvents(GameTestHelper helper, Iterable<ChunkPos> chunks) {
+        Set<Long> set = new LinkedHashSet<>();
+        for (ChunkPos p : chunks)
+            set.add(p.toLong());
+        TicketWatch w = new TicketWatch(helper.getLevel(), set, new int[1]);
+        TICKET_WATCHES.add(w);
+        ConflictKit.onEnd(helper, () -> TICKET_WATCHES.remove(w));
+        return w.count();
     }
 
     // ---- a test's far place ---------------------------------------------------------------------

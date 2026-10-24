@@ -6,8 +6,9 @@
 //! - **TALK_ASK** (0x00C0, Java to the engine, latest wins, `aux` = n): Java's open questions,
 //!   `n` asks of [`ask::SIZE`] bytes from offset 8, sent each tick until answered.
 //! - **TALK_FACTS** (0x8A00, engine to Java, `aux` = news n): one answer, per session, with no op
-//!   id: 48 bytes of facts and then `n` news items of [`news::SIZE`] bytes, each with three refs of
-//!   [`reference::SIZE`] bytes (TK30).
+//!   id: 48 bytes of facts, then `n` news items of [`news::SIZE`] bytes, each with three refs of
+//!   [`reference::SIZE`] bytes (TK30), then, when the facts' flag [`facts::FACTION`] is set, the
+//!   camp's [`facts::faction`] block of 48 bytes (slice 4, TK72).
 //! - **TALKED** (0x0A00, Java to the engine, journaled): a talk the village credits, 64 bytes
 //!   ([`talked`]), exactly once by its op id (docs/boundary.md §13.7).
 //!
@@ -101,15 +102,59 @@ pub mod facts {
     pub const HOLDER: u32 = 1;
     pub const PORT_CLOSED: u32 = 2;
     pub const BLOCKADED: u32 = 4;
-    /// A faction block follows (slice 4; never set yet).
+    /// A faction block follows the news (slice 4): set only for an ask of holder kind 3 that
+    /// asked for it, and only when the engine knows the camp.
     pub const FACTION: u32 = 8;
 
     /// News items in one answer, at most (TK20).
     pub const MAX_NEWS: usize = 4;
 
-    /// The size of a whole TALK_FACTS record of `n` news items.
-    pub const fn record_size(n: usize) -> usize {
-        NEWS + n * super::news::SIZE
+    /// The size of a whole TALK_FACTS record of `n` news items, with the faction block or not.
+    pub const fn record_size(n: usize, faction: bool) -> usize {
+        NEWS + n * super::news::SIZE + if faction { faction::SIZE } else { 0 }
+    }
+
+    /// The faction block (slice 4, TALK.md §9.2): what a camp looks like to the player who asked,
+    /// at `NEWS + n * news::SIZE`, 48 bytes, present when [`FACTION`] is set. Offsets are from the
+    /// block's start.
+    pub mod faction {
+        /// u8: the camp's feud against this player, as its step on the ladder: 0 none, 1 notice,
+        /// 2 envoy, 3 scouts, 4 raid, 5 invasion, 6 siege.
+        pub const RUNG: usize = 0;
+        /// u8: [`mood`] flags.
+        pub const MOOD: usize = 1;
+        /// u16: the strongest grievance kind at this player, in FACTION_NOTICE's signal codes
+        /// (0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building); [`NO_SIGNAL`] none.
+        pub const SIGNAL: usize = 2;
+        /// f32: the grievance at this player (the projected sum over every kind).
+        pub const GRIEVANCE: usize = 4;
+        /// u32: ticks the camp stays cowed, saturating; 0 when it is not cowed.
+        pub const COWED_TICKS: usize = 8;
+        /// u32: plunders by the camp so far.
+        pub const PLUNDERS: usize = 12;
+        /// A 32-byte ref ([`super::super::reference`]): the chief. Reserved for the Mowzie plugin's
+        /// name line (M9): all zeros, class 0, in this slice.
+        pub const CHIEF: usize = 16;
+        pub const SIZE: usize = 48;
+
+        /// The signal code when no kind holds any grievance.
+        pub const NO_SIGNAL: u16 = 0xFFFF;
+
+        /// The mood flags of the block.
+        pub mod mood {
+            /// The camp is cowed (its chief was killed lately and it keeps its head down).
+            pub const COWED: u8 = 1;
+            /// The war chief is out with a band.
+            pub const CHIEF_OUT: u8 = 2;
+            /// The chief is new: it changed lately.
+            pub const NEW_CHIEF: u8 = 4;
+            /// Warriors are few: under a third of the culture's cap.
+            pub const LEAN: u8 = 8;
+            /// The camp is at its full strength.
+            pub const STRONG: u8 = 16;
+            /// The player killed the chief. Reserved for Mowzie's M9: never set in slice 4.
+            pub const YOU_KILLED_CHIEF: u8 = 32;
+        }
     }
 }
 
@@ -468,9 +513,55 @@ impl News {
     }
 }
 
+/// A faction block, decoded: see [`facts::faction`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Faction {
+    pub rung: u8,
+    pub mood: u8,
+    pub signal: u16,
+    pub grievance: f32,
+    pub cowed_ticks: u32,
+    pub plunders: u32,
+    pub chief: Ref,
+}
+
+impl Faction {
+    /// A block with no grievance: the signal is [`facts::faction::NO_SIGNAL`], not 0 (which is
+    /// smog).
+    pub fn calm() -> Faction {
+        Faction {
+            signal: facts::faction::NO_SIGNAL,
+            ..Faction::default()
+        }
+    }
+
+    pub fn decode(b: &[u8]) -> Faction {
+        Faction {
+            rung: b[facts::faction::RUNG],
+            mood: b[facts::faction::MOOD],
+            signal: wire::u16_at(b, facts::faction::SIGNAL),
+            grievance: wire::f32_at(b, facts::faction::GRIEVANCE),
+            cowed_ticks: wire::u32_at(b, facts::faction::COWED_TICKS),
+            plunders: wire::u32_at(b, facts::faction::PLUNDERS),
+            chief: Ref::decode(&b[facts::faction::CHIEF..]),
+        }
+    }
+
+    pub fn encode(&self, b: &mut [u8]) {
+        b[facts::faction::RUNG] = self.rung;
+        b[facts::faction::MOOD] = self.mood;
+        put_u16(b, facts::faction::SIGNAL, self.signal);
+        wire::put_f32(b, facts::faction::GRIEVANCE, self.grievance);
+        put_u32(b, facts::faction::COWED_TICKS, self.cowed_ticks);
+        put_u32(b, facts::faction::PLUNDERS, self.plunders);
+        self.chief.encode(&mut b[facts::faction::CHIEF..]);
+    }
+}
+
 /// An answer, decoded. The good ids and every ref's `what` are the engine's dictionary ids of
-/// this session.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// this session. With a [`Faction`] block the flag [`facts::FACTION`] is the encoder's to set
+/// (and to clear without one), so the flag and the block cannot disagree on the wire.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Facts {
     pub ask_id: u64,
     pub flags: u32,
@@ -480,26 +571,33 @@ pub struct Facts {
     pub glutted: u32,
     pub glutted_ratio: u32,
     pub news: Vec<News>,
+    /// The faction block after the news (slice 4): `None` writes none and clears the flag.
+    pub faction: Option<Faction>,
 }
 
 impl Facts {
     /// The size of the record this answer encodes to.
     pub fn size(&self) -> usize {
-        facts::record_size(self.news.len().min(facts::MAX_NEWS))
+        facts::record_size(self.news.len().min(facts::MAX_NEWS), self.faction.is_some())
     }
 
     /// The whole TALK_FACTS record with command sequence `seq`. At most [`facts::MAX_NEWS`] news
     /// items are written.
     pub fn encode(&self, seq: u64) -> Vec<u8> {
         let n = self.news.len().min(facts::MAX_NEWS);
-        let mut rec = vec![0u8; facts::record_size(n)];
+        let mut rec = vec![0u8; self.size()];
         put_u16(&mut rec, wire::R_KIND, TALK_FACTS);
         let size = rec.len() as u16;
         put_u16(&mut rec, wire::R_SIZE, size);
         put_u32(&mut rec, wire::R_AUX, n as u32);
         put_u64(&mut rec, facts::CMD_SEQ, seq);
         put_u64(&mut rec, facts::ASK_ID, self.ask_id);
-        put_u32(&mut rec, facts::FLAGS, self.flags);
+        let flags = if self.faction.is_some() {
+            self.flags | facts::FACTION
+        } else {
+            self.flags & !facts::FACTION
+        };
+        put_u32(&mut rec, facts::FLAGS, flags);
         put_i32(&mut rec, facts::SENTIMENT, self.sentiment);
         put_u32(&mut rec, facts::SCARCEST, self.scarcest);
         put_u32(&mut rec, facts::SCARCEST_RATIO, self.scarcest_ratio);
@@ -507,6 +605,9 @@ impl Facts {
         put_u32(&mut rec, facts::GLUTTED_RATIO, self.glutted_ratio);
         for (i, n) in self.news.iter().take(n).enumerate() {
             n.encode(&mut rec[facts::NEWS + i * news::SIZE..]);
+        }
+        if let Some(f) = &self.faction {
+            f.encode(&mut rec[facts::record_size(n, false)..]);
         }
         rec
     }
@@ -525,15 +626,24 @@ impl Facts {
         if n > facts::MAX_NEWS {
             return Err(format!("{n} news items (at most {})", facts::MAX_NEWS));
         }
-        if rec.len() < facts::record_size(n) {
+        if rec.len() < facts::record_size(n, false) {
             return Err(format!(
                 "a TALK_FACTS of {} bytes holds fewer items than its n = {n}",
                 rec.len()
             ));
         }
+        let flags = wire::u32_at(rec, facts::FLAGS);
+        let with_block = flags & facts::FACTION != 0;
+        if with_block && rec.len() < facts::record_size(n, true) {
+            return Err(format!(
+                "a TALK_FACTS of {} bytes has the faction flag but no room for its block ({} needed)",
+                rec.len(),
+                facts::record_size(n, true)
+            ));
+        }
         let f = Facts {
             ask_id: wire::u64_at(rec, facts::ASK_ID),
-            flags: wire::u32_at(rec, facts::FLAGS),
+            flags,
             sentiment: wire::i32_at(rec, facts::SENTIMENT),
             scarcest: wire::u32_at(rec, facts::SCARCEST),
             scarcest_ratio: wire::u32_at(rec, facts::SCARCEST_RATIO),
@@ -542,6 +652,7 @@ impl Facts {
             news: (0..n)
                 .map(|i| News::decode(&rec[facts::NEWS + i * news::SIZE..]))
                 .collect(),
+            faction: with_block.then(|| Faction::decode(&rec[facts::record_size(n, false)..])),
         };
         Ok((wire::u64_at(rec, facts::CMD_SEQ), f))
     }
@@ -642,6 +753,7 @@ mod tests {
                 whom: village,
                 near: Ref::default(),
             }],
+            faction: None,
         };
         let rec = f.encode(0x1234);
         assert_eq!(rec.len(), 48 + 120);
@@ -815,12 +927,21 @@ mod tests {
         assert_eq!(ask::record_size(1), 64);
         assert_eq!(news::SIZE, 120);
         assert_eq!(reference::SIZE, 32);
-        assert_eq!(facts::record_size(0), 48);
-        assert_eq!(facts::record_size(4), 528);
+        assert_eq!(facts::record_size(0, false), 48);
+        assert_eq!(facts::record_size(4, false), 528);
+        assert_eq!(facts::record_size(0, true), 96);
+        assert_eq!(facts::record_size(4, true), 576);
+        assert_eq!(facts::faction::SIZE, 48);
+        assert_eq!(
+            facts::faction::CHIEF + reference::SIZE,
+            facts::faction::SIZE
+        );
         assert_eq!(news::NEAR + reference::SIZE, news::SIZE);
         // Every record size is a multiple of the record alignment.
         for n in 0..=4 {
-            assert_eq!(facts::record_size(n) % wire::RECORD_ALIGN, 0);
+            for block in [false, true] {
+                assert_eq!(facts::record_size(n, block) % wire::RECORD_ALIGN, 0);
+            }
         }
     }
 
@@ -831,7 +952,117 @@ mod tests {
             ..Facts::default()
         };
         let rec = f.encode(1);
-        assert_eq!(rec.len(), facts::record_size(4));
+        assert_eq!(rec.len(), facts::record_size(4, false));
         assert_eq!(Facts::decode(&rec).unwrap().1.news.len(), 4);
+        // With the block, the block still follows the fourth item.
+        let with = Facts {
+            faction: Some(Faction::calm()),
+            ..f
+        };
+        assert_eq!(with.encode(1).len(), facts::record_size(4, true));
+    }
+
+    /// The faction block at the literal offsets of TALK.md §9.2 (not through this file's
+    /// constants): rung 4 (raid), moods COWED and LEAN, signal 4 (killing), grievance 12.5, 7,200
+    /// ticks of cowing left, 3 plunders, and a chief ref of class 6.
+    #[test]
+    fn the_faction_block_sits_after_the_news_at_the_literal_offsets() {
+        let chief = Ref {
+            class: reference::class::CHIEF,
+            flags: 0,
+            what: 4,
+            a: 0xAABB,
+            b: 99,
+            dx: 0,
+            dz: 0,
+        };
+        let block = Faction {
+            rung: 4,
+            mood: facts::faction::mood::COWED | facts::faction::mood::LEAN,
+            signal: 4,
+            grievance: 12.5,
+            cowed_ticks: 7200,
+            plunders: 3,
+            chief,
+        };
+        let f = Facts {
+            ask_id: 9,
+            flags: facts::HOLDER,
+            news: vec![News::default(); 2],
+            faction: Some(block),
+            ..Facts::default()
+        };
+        let rec = f.encode(5);
+        assert_eq!(rec.len(), 48 + 2 * 120 + 48);
+        assert_eq!(f.size(), rec.len());
+        assert_eq!(wire::u16_at(&rec, wire::R_SIZE) as usize, rec.len());
+        assert_eq!(
+            wire::u32_at(&rec, wire::R_AUX),
+            2,
+            "aux counts the news only"
+        );
+        assert_eq!(
+            wire::u32_at(&rec, 24),
+            facts::HOLDER | facts::FACTION,
+            "the flag is set for the block"
+        );
+        let b = 48 + 2 * 120;
+        assert_eq!(rec[b], 4);
+        assert_eq!(rec[b + 1], 1 | 8);
+        assert_eq!(wire::u16_at(&rec, b + 2), 4);
+        assert_eq!(wire::f32_at(&rec, b + 4), 12.5);
+        assert_eq!(wire::u32_at(&rec, b + 8), 7200);
+        assert_eq!(wire::u32_at(&rec, b + 12), 3);
+        assert_eq!(rec[b + 16], 6, "the chief ref's class");
+        assert_eq!(wire::u32_at(&rec, b + 16 + 4), 4);
+        assert_eq!(wire::u64_at(&rec, b + 16 + 8), 0xAABB);
+        assert_eq!(wire::u64_at(&rec, b + 16 + 16), 99);
+        let (seq, back) = Facts::decode(&rec).unwrap();
+        assert_eq!(seq, 5);
+        assert_eq!(back.faction, Some(block));
+        assert_eq!(back.flags, facts::HOLDER | facts::FACTION);
+        assert_eq!(back.news.len(), 2);
+        // Java's `TalkRecordsTest` pins the same 48 bytes.
+        let bare = Facts { news: vec![], ..f }.encode(5);
+        assert_eq!(bare.len(), 96);
+        assert_eq!(
+            hex(&bare[48..]),
+            PINNED_FACTION_BLOCK.replace(char::is_whitespace, ""),
+            "the pinned faction block"
+        );
+    }
+
+    /// The hex of the faction block [`the_faction_block_sits_after_the_news_at_the_literal_offsets`]
+    /// writes, for the Java side's test to copy.
+    const PINNED_FACTION_BLOCK: &str = "\
+        0409040000004841201c0000030000000600000004000000bbaa000000000000\
+        63000000000000000000000000000000";
+
+    #[test]
+    fn the_flag_and_the_block_cannot_disagree_on_the_wire() {
+        // Flag set, no block: the encoder clears it.
+        let f = Facts {
+            flags: facts::HOLDER | facts::FACTION,
+            ..Facts::default()
+        };
+        let rec = f.encode(1);
+        assert_eq!(rec.len(), 48);
+        assert_eq!(wire::u32_at(&rec, facts::FLAGS), facts::HOLDER);
+        assert_eq!(Facts::decode(&rec).unwrap().1.faction, None);
+        // A record with the flag and no room for the block is refused, with 0 and with 3 news.
+        for n in [0usize, 3] {
+            let mut rec = Facts {
+                news: vec![News::default(); n],
+                faction: Some(Faction::calm()),
+                ..Facts::default()
+            }
+            .encode(1);
+            rec.truncate(facts::record_size(n, false));
+            let size = rec.len() as u16;
+            put_u16(&mut rec, wire::R_SIZE, size);
+            assert!(Facts::decode(&rec).is_err(), "n = {n}");
+        }
+        // The calm block has no signal (0 would be smog).
+        assert_eq!(Faction::calm().signal, 0xFFFF);
     }
 }

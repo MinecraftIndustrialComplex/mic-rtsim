@@ -35,6 +35,7 @@ use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::renewal::LossCause;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_knowledge::report::{fell, raid};
 use rtsim_knowledge::{
     ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
 };
@@ -1281,6 +1282,7 @@ impl Conflict {
     fn succeed(&mut self, w: &mut World, f: u32, at: Tick, killer: Option<ActorId>, killed: bool) {
         let key = self.factions[f as usize].key;
         let node = self.factions[f as usize].node;
+        let fallen = self.factions[f as usize].chief;
         let home = w.nodes[node].actor;
         let lifespan = self.culture(f).def.chief_lifespan_days * TICKS_PER_DAY;
         let (heir, heir_seed) = {
@@ -1318,6 +1320,14 @@ impl Conflict {
             .collect();
         for p in led {
             self.parties[p].chief = false;
+        }
+        // News of the fall (TALK.md §9.4, TK26), witnessed by the new chief and heir, so the camp
+        // tells its own loss (its chief's Killing names the dead chief, who has left the camp).
+        if !fallen.is_null() {
+            let pos = self.factions[f as usize].pos;
+            let place = Place::new(pos.frame, pos.x, 64, pos.z);
+            let severity = if killed { fell::KILLED } else { fell::DIED };
+            self.camp_news(w, f, ReportKind::Fell, fallen, severity, place, &[], at);
         }
         self.stats.successions += 1;
         // The grudges the new chief inherited become grievance against those players (C24).
@@ -2024,6 +2034,12 @@ impl Conflict {
                 to.index() as i64,
             )
             .text(|| format!("{} ({} first, grievance {g:.1})", to.name(), kind.name()));
+        // News of the rung (TALK.md §9.4, TK26): the camp has sworn against `a`. Not against the
+        // settlers, whom no line can name.
+        if a != self.settlers {
+            let place = Place::new(pos.frame, pos.x, 64, pos.z);
+            self.camp_news(w, f, ReportKind::Feud, a, to.index() as u8, place, &[], at);
+        }
         if to == Step::Notice {
             let player = self.uuid_of(w, a);
             self.notice_serial = self.notice_serial.wrapping_add(1).max(1);
@@ -3448,6 +3464,19 @@ impl Conflict {
                     before.saturating_sub(after)
                 )
             });
+        // News of the raid (TALK.md §9.4, TK26), its outcome the severity. One that took nothing
+        // and lost nobody found nothing to raid (no district near, the industry off, a raid skipped
+        // as watched or cooling down): no news.
+        let outcome = if stolen > 0 || blocks > 0 {
+            Some(raid::PLUNDERED)
+        } else if after < before {
+            Some(raid::BEATEN)
+        } else {
+            None
+        };
+        if let Some(outcome) = outcome {
+            self.raid_news(w, p, outcome, aim, at);
+        }
         // Vengeance: what it took eases the feud it served (capped).
         if let Some(a) = self.parties[p].feud {
             let c = self.culture(f);
@@ -4169,7 +4198,87 @@ impl Conflict {
                 self.parties[p].start_units
             ),
         );
+        // News of the fight (TK26): a rout beat the band; one it left bored or done, not routed,
+        // the target held (what its mobs carried off comes later, as BAND_LOOTED, and is not
+        // counted). One it left because the world turned Peaceful is no raid.
+        let outcome = match reason {
+            boundary::RECALL_ROUTED => Some(raid::BEATEN),
+            boundary::RECALL_BORED | boundary::RECALL_DONE => Some(raid::HELD),
+            _ => None,
+        };
+        if let Some(outcome) = outcome {
+            let frame = self.parties[p].frame;
+            self.raid_news(w, p, outcome, Pos::new(frame, x, z), at);
+        }
         self.go_home(w, p, reason, at);
+    }
+
+    /// A news report the camp makes (TALK.md §9.4, TK26): `who` the faction, witnessed first-hand
+    /// by its chief and heir and by `also`. A news kind has no sentiment delta, so witnessing it
+    /// only puts it on the board.
+    #[allow(clippy::too_many_arguments)]
+    fn camp_news(
+        &self,
+        w: &mut World,
+        f: u32,
+        kind: ReportKind,
+        whom: ActorId,
+        severity: u8,
+        place: Place,
+        also: &[ActorId],
+        at: Tick,
+    ) {
+        let x = &self.factions[f as usize];
+        let (who, chief, heir) = (x.actor, x.chief, x.heir);
+        let r = w.knowledge.record(Report {
+            who,
+            whom,
+            kind,
+            severity,
+            flags: 0,
+            at,
+            place,
+        });
+        for &h in [chief, heir].iter().chain(also) {
+            w.knowledge.witness(h, r, at);
+        }
+    }
+
+    /// Raid news for band `p` (TK26): whom it raided is the node it marched on, a village or a
+    /// rival camp's haven (which witnesses it too, and for a haven its camp's chief and heir, who
+    /// tell for the camp), else the player its feud is against; a band after nobody the lines can
+    /// name (the settlers, or a place with no feud) makes none.
+    fn raid_news(&self, w: &mut World, p: Handle<Party>, outcome: u8, at_pos: Pos, at: Tick) {
+        let x = &self.parties[p];
+        let mut also = Vec::new();
+        let whom = match x.target {
+            Target::Node(i) => {
+                let Some(n) = w.nodes.get(i) else {
+                    return;
+                };
+                also.push(n.actor);
+                if let Some(g) = self.faction_of_key(n.key) {
+                    let y = &self.factions[g as usize];
+                    also.extend([y.chief, y.heir]);
+                }
+                n.actor
+            }
+            _ => match x.feud.filter(|a| *a != self.settlers) {
+                Some(a) => a,
+                None => return,
+            },
+        };
+        let place = Place::new(at_pos.frame, at_pos.x, 64, at_pos.z);
+        self.camp_news(
+            w,
+            x.faction,
+            ReportKind::Raid,
+            whom,
+            outcome,
+            place,
+            &also,
+            at,
+        );
     }
 
     /// A rout is one rescue report (C24: rescues count; K2-25, CL-D60) that only its real
@@ -5281,6 +5390,13 @@ impl Conflict {
                     if let Some(player) = self.parties[p].breaker {
                         self.rescue_news(w, p, player, at);
                     }
+                    // And a raid beaten off (TK26), as when its war chief is killed there. (A band
+                    // home with loot stays Waiting only at a haven with no storehouse: never.)
+                    if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
+                        let (x, z) = self.party_pos(p, at);
+                        let frame = self.parties[p].frame;
+                        self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
+                    }
                 }
                 self.go_home(w, p, boundary::RECALL_ROUTED, at);
             }
@@ -5346,6 +5462,13 @@ impl Conflict {
             self.stats.routs += 1;
             if let Some(player) = self.parties[p].breaker {
                 self.rescue_news(w, p, player, at);
+            }
+            // And a raid beaten off (TK26): a band out on the road, or waiting at its target (a
+            // siege between rounds, a fight nobody watches any more); one still mustering at its
+            // camp had not set out on anyone.
+            if matches!(self.parties[p].phase, Phase::Out | Phase::Waiting) {
+                let frame = self.parties[p].frame;
+                self.raid_news(w, p, raid::BEATEN, Pos::new(frame, x, z), at);
             }
             self.go_home(w, p, boundary::RECALL_ROUTED, at);
         }

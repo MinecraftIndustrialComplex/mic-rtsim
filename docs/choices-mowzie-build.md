@@ -1203,19 +1203,26 @@ under its own heading.
 - **MZB-214** (where a grove warrior spawns): 20 blocks from the centre on the side away from the nearest
   non-spectator player within 256 blocks; with none, 2 to 11 blocks out at a random angle, as the fire pit
   places its own. On the MOTION_BLOCKING_NO_LEAVES surface, at the block's centre.
-- **MZB-215** (Peaceful; reworded by the review, the rule is MZB-234): on Peaceful no new body appears, so a
-  SPAWN is answered STALE and the next census orders it again. The first reason given here, that the engine
-  would otherwise keep a body Peaceful despawns, was false for the Frostmaw: it inherits `Mob`'s
-  `shouldDespawnInPeaceful()`, which is false (`MowzieEntity.checkDespawn`, `295`, asks it), and it has no
-  `discard()` of its own on Peaceful; it only deactivates and cannot wake (`EntityFrostmaw.java:582`, `600`).
-  Amended at M6 (jar 1.8.2, cfr): the same does not hold for every Mowzie mob. The Umvuthana raptor and its
-  follower, the foliaath, the naga, the bluff, and the elokosa howler and its follower `discard()` themselves
-  in `tick` on Peaceful, and `EntityElokosa` overrides `shouldDespawnInPeaceful()` to true. The grove's
-  warriors and envoys (`EntityUmvuthanaMinion`) and the Umvuthi do neither, as the Frostmaw does not. A
-  returning body still comes home (HAND_BACK proceeds) and the bodies already standing stay.
+- **MZB-215** (Peaceful; reworded by the review and again by the re-review, the rule is MZB-234): on Peaceful
+  no new body appears, so a SPAWN is answered STALE and the next census orders it again. The first reason
+  given here, that the engine would otherwise keep a body Peaceful despawns, and the sentence that
+  `shouldDespawnInPeaceful()` is false for every Mowzie entity, were wrong; Peaceful is per kind of
+  entity (from the re-review of d5b45b22, P3-5, not re-read in the jar by the builder). Bluff, Naga,
+  Foliaath, ElokosaHowler, the umvuthana raptor and its followers discard themselves on Peaceful, and the
+  Elokosa despawns. The Frostmaw deactivates and stays, and the umvuthana warrior only stops targeting. M5's
+  two bodies are the last two, so the rule below (a SPAWN is STALE, a HAND_BACK proceeds, bodies standing
+  stay) is right for them. **For M9:** a tagged raptor would discard itself on Peaceful and be booked
+  BY_NONE; M9 decides Peaceful for raptors itself (MZB-594).
+  Checked at M6 in the 1.8.2 jar (cfr): `shouldDespawnInPeaceful()` is `Mob`'s false for the Frostmaw, the
+  grove's warriors and envoys and the Umvuthi (`MowzieEntity.checkDespawn`, `295`, asks it); only
+  `EntityElokosa` overrides it, to true. The Frostmaw never calls `discard()` on Peaceful: it deactivates and
+  cannot be woken (`EntityFrostmaw.java:582`, `600`, and `616` skips the wake animation on a steal). The
+  raptor, its followers, the bluff, the naga, the foliaath and the elokosa howler and its followers discard
+  themselves in `tick`.
 - **MZB-216** (stand-ins): `conflict/frostmaw/frostmaw` is `mowziesmobs:frostmaw`; `conflict/umvuthana/warrior`
   and `conflict/umvuthana/envoy` are `mowziesmobs:umvuthana` (the grove warrior, `EntityUmvuthanaMinion`);
-  `conflict/umvuthana/raptor` is `mowziesmobs:umvuthana_raptor`.
+  `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor` and is, until M9, `mowziesmobs:umvuthana`
+  too (MZB-594).
 - **MZB-217** (den spot): the template box's floor centre, ((minX + maxX + 1) / 2, minY, (minZ + maxZ + 1) / 2).
   The template stands its Frostmaw at (3, 0, 3.5) of the unrotated [6, 5, 7] template, so under every
   rotation it is within about a block of the spot. A home Frostmaw is restricted round the spot's block.
@@ -1290,9 +1297,12 @@ under its own heading.
   asleep; against a template box grown by 1 it came to rest outside two times in three. The slack is a
   constant derived from the restriction constant so the two cannot drift apart. The GameTests force the
   3 by 3 chunks round a den, a superset of the 5.
-- **MZB-231** (the index keeps its bodies through a hidden chunk): `onLeave` keeps a tagged body's index
-  entry when the removal reason is null (the entity is still alive, its chunk only hidden or unloading) and
-  drops it on a real removal; the census adds every tagged body of its faction found inside, idempotently;
+- **MZB-231** (the index keeps its bodies through a hidden chunk; its premise corrected by MZB-590):
+  `onLeave` keeps a tagged body's index entry when the removal reason is null (the entity is still alive, its
+  chunk only hidden) and drops it on a real removal (discarded, changed dimension). The first wording said
+  the entry was dropped when the body unloaded with its chunk; that was false: vanilla posts the leave once,
+  when the chunk goes HIDDEN, with a null reason, and the unload that follows (`setRemoved(UNLOADED_TO_CHUNK)`
+  in `PersistentEntitySectionManager`) posts no leave at all, so the entry stays as a removed object (MZB-590); the census adds every tagged body of its faction found inside, idempotently;
   iterating `tagged()` prunes removed entries. Why: a footprint chunk can go TRACKED, HIDDEN and TRACKED
   within one tick, and the second promotion posts no join. A TAKE by tag after such a flicker is DONE.
 - **MZB-232** (the chief reads the index; strays within 64 blocks): `DenKind.chief` takes the footprint's
@@ -1305,9 +1315,11 @@ under its own heading.
   untagged Frostmaw that joins a level later within 64 blocks of a den with a free slot makes that den look
   again at its next census (`strayWatch`; a den that is in recounts), and is listed the same way; a den
   with no free slot leaves it alone, since it is the jar's and outside the books. The 64 is the lead's
-  figure (PLACEHOLDER). **The remaining gap, recorded and not closed:** a Frostmaw beyond 64 blocks of a
-  late den, or one not loaded at the den's first census, is not found, so the engine can SPAWN a second
-  Frostmaw for that den.
+  figure (PLACEHOLDER). **The remaining gap, recorded and not closed:** only a Frostmaw beyond 64 blocks of
+  a late den is not found, so the engine can SPAWN a second Frostmaw for that den. One that is not loaded at
+  the den's first census is no gap within 64 blocks: `strayJoined` catches it when it loads later (the den
+  looks again at its next census), as long as the den has a free slot. (Corrected from "or one not loaded at
+  the den's first census", which the stray watch already covered.)
 - **MZB-233** (a line is played only on a camp that is playable now): the session's order stays
   (`RtsimSession.endOfTick`, then the hand-over's commands, then `Camps.tick`), since other modules share
   it. `reconcile`, `resolveSetOuts` and `playHeld` each first check that every footprint chunk is still at
@@ -1317,12 +1329,18 @@ under its own heading.
   command is applied in that tick's `ServerTickEvent.Post`.
 - **MZB-234** (the Peaceful rule; rewords MZB-215): on Peaceful no new body appears, so a SPAWN is STALE
   and makes no body; a HAND_BACK proceeds, since the body is the one that returns (it is added, then its
-  puppet goes); bodies already standing stay, as the jar's do. Both halves are tested.
-- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"): at the arm, a holder
-  noted by UUID that `level.getEntity` does not return falls back to the chunk it was noted in at commit
-  time, and `holdersUnresolved` counts it. The lead's text skipped it as unloaded and so already written;
-  the fallback is the conservative option, since a holder in a chunk that is only being unloaded may not be
-  written yet, and one more noted chunk costs one more write.
+  puppet goes); bodies already standing stay. The "as the jar's do" this entry gave was too general (see
+  MZB-215): it holds for the Frostmaw and the grove warrior, M5's two bodies, which stay on Peaceful; a body
+  of a kind that discards itself on Peaceful (the raptor, M9) is not covered, and M9 decides it. Both halves
+  are tested.
+- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"; reworded by MZB-597):
+  at the arm, a holder noted by UUID that `level.getEntity` does not return is noted all the same, at the
+  chunk the entity object last stood in while a weak reference to it is alive (`holdersRemembered`), and only
+  when that reference is gone at the chunk it was noted in at commit time (`holdersUnresolved`). The lead's
+  text skipped it as unloaded and so already written; noting it is the conservative option, since a holder in
+  a chunk that is only being unloaded may not be written yet, and one more noted chunk costs one more write.
+  The first version always fell back to the commit-time chunk, which a body that had walked on before its
+  chunk was hidden had already left (MZB-597).
 - **MZB-236** (a hand-back adds the body first): `Camps.handBack` makes the body, `copy`s the puppet's state
   into it and adds it; only after the add succeeds does `bridge.handBack` despawn the puppet. One tick with
   both present is acceptable. If the add fails (another mod cancels the join), the puppet stays, nothing is
@@ -1337,7 +1355,8 @@ under its own heading.
 - **MZB-238** (the barrier notes a camp record's holder by UUID): `RtsimSession.carryOnCampHolder` notes the
   holder's level and UUID, not its chunk; when the barrier arms, each UUID is resolved to its entity's
   current chunk and that chunk's entity storage is the one ordered (MZB-235 for a holder not found).
-  Counters: `holdersResolved`, `holdersMoved` (it was in another chunk than at commit), `holdersUnresolved`.
+  Counters: `holdersResolved`, `holdersMoved` (it was in another chunk than at commit), `holdersRemembered`
+  and `holdersUnresolved` (MZB-597).
   Why: a holder that walks into the next chunk between the answer and the save carries the record with it.
 - **MZB-239** (reassert before the record is written): `Camps.answer` calls `ensureReasserted(holder)` before
   `bodiesRecord` commits the new CAMP_BODIES, so what the holder carried from disk reaches the engine under
@@ -1409,9 +1428,12 @@ under its own heading.
   mod 20, kept as 20 lists so a tick touches only its own slot) through `ChunkMapInvoker.getUpdatingChunkIfPresent`,
   null being `NO_HOLDER`, and a camp whose levels moved is looked at at the end of that tick, which is the
   same `look` the event feeds. A camp costs 5 to 21 lookups every 20 ticks. The event listener stays as an
-  early hint where it fires (vanilla, the GameTests); levels from both are clamped to `NO_HOLDER`, so the
-  event's value for an unloaded chunk and the poll's agree and the poll reports only real corrections. The
-  poll is correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
+  early hint where it fires (vanilla, the GameTests). The first wording said levels from both were clamped
+  to `NO_HOLDER` so that the two agree at an unload; they did not: the event posts 45 (`UNLOADED_LEVEL`,
+  MAX_LEVEL + 1) and the poll read a missing holder as 46, so the poll would have reported the unload
+  as a change after the event had already moved the camp, and C2ME's NEW status is 45 as well. Now both read
+  through `Camps.norm`, every level above `ChunkLevel.MAX_LEVEL` being `NO_HOLDER` (MZB-596). The poll is
+  correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
   under C2ME, and a line is not played on a stale level: `playable` (MZB-233) reads the levels afresh from the
   chunk map before it decides, since a line is played at once and cannot wait for the next poll (a camp it
   finds moved is also looked at at the end of the tick). Counters `polls` (camps polled) and `pollChanges`
@@ -1439,6 +1461,126 @@ under its own heading.
   server, and whether every test of the suite holds under the poll's up to 20 ticks of delay (tests that
   wait on a CAMP_OUT or a census do; a test that assumes the camp goes out in the tick after a release
   does not), are for the first run to show. The other plugins' projects have no such line.
+
+- **MZB-590** (the index is pruned of removed entities; from the re-review of d5b45b22, P1-A): a body whose
+  chunk unloads stayed in its faction's identity set as a removed object, so those objects piled up (a D1
+  leak) and `declare` called `kind.joined` on them. Now every reader of the index skips and drops removed
+  entries (`Camps.live(faction)`: `declare`, `freeSlots`, the census's loop over the camp's bodies, and
+  `tagged()` as before), `poll` prunes the polled camp's set (so a camp's set is clean within one poll
+  period of an unload), and `indexAdd` prunes the faction's set when it adds, which covers a faction no camp
+  declared. `Camps.held(faction)`, the GameTests' view, stays raw so the test can see what the poll pruned.
+  Test: `anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain` (batch `mowzie_index_unload`): an
+  adopted Frostmaw, the den released and unloaded, `POLL_PERIOD + 3` ticks, the raw index holds no removed
+  entity; forced again, it holds the Frostmaw the load made (another object, the same UUID), tagged. Which
+  tick the poll prunes in is not asserted (it is 1 in 20 that it prunes in the removal tick itself); the
+  log line records how many ticks the removed body stayed.
+
+- **MZB-591** (three tests had no player in view of the band; re-review P2-A): a DONE HAND_BACK starts the
+  party's recall, and `ConflictBridge.recallStep` despawns at once every placed puppet with no
+  non-spectator player within `OUT_OF_VIEW` (64) blocks of a living member. The homecoming, handback_cancelled
+  and peaceful tests had no player, so the band's other puppet was gone by the time they looked at it. Each now
+  adds a `FakePlayers` watcher 50 blocks east of the grove's centre (`MowzieGameTests.watcher`: inside the 64,
+  outside a warrior's sight, no ticket, removed when the test ends), before the band is made.
+
+- **MZB-592** (play_time is triggered on the holder's level; re-review P2-B): the test waited until the
+  camp's cached footprint level was above FULL, which under C2ME moves only in the poll inside `Camps.tick`,
+  where `look` takes the camp out in that same tick, so the camp was no longer "in" when the line landed.
+  The step now waits on the footprint holders' own levels, read through `ChunkMapInvoker.mic_rtsim$updating`
+  (a null holder is `NO_HOLDER`). The line then lands before `Camps.tick`, and `playable` reads the levels
+  afresh (MZB-290), so it is STALE under both chunk systems. A residual race remains under C2ME: C2ME's
+  holder level can change on its own threads, and a change that lands in the middle of a tick's Post, after
+  the step and before the poll, still lets the poll take the camp out first (a small window; the round will
+  show whether it ever bites).
+- **MZB-593** (cold's "seen waiting" is asserted only with the event live; re-review P2-C): the camp is seen
+  waiting for its entities when its levels move ahead of them, which the ticket event does (the level rises
+  in the level tick, the entities arrive later); under C2ME the poll reads levels that already carry the load,
+  so the camp may never be seen waiting. `MowzieKit.watchTicketEvents` counts the
+  `ChunkTicketLevelUpdatedEvent`s of the den's chunks from the release on; `sawWaiting` is asserted only when
+  the count is above zero, else the test records that it was not. "No census before every footprint chunk had
+  its entities" is asserted always.
+
+- **MZB-594** (the raptor stand-in is the grove warrior until M9; re-review P2-D; owner M9): the stand-in
+  for `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor`, and `ConflictBodies.create` calls
+  `finalizeSpawn(EVENT)`, whose raptor adds 4 or 5 `EntityUmvuthanaFollowerToRaptor` through
+  `addFreshEntity`. Every umvuthana party that materialized with a raptor unit would have brought untagged
+  hostile followers the engine does not know. Until M9 the raptor maps to `mowziesmobs:umvuthana`, a
+  placeholder. **M9 owns the raptor maker**: a raptor with exactly 4 followers, each tagged as the party's
+  member (or its followers made by the party as bodies of their own). Test:
+  `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (batch `mowzie_raptor_standin`): two raptor units
+  embodied, both the grove warrior, no `EntityUmvuthanaRaptor` and no `EntityUmvuthanaFollowerToRaptor` in the
+  area after 40 ticks.
+
+- **MZB-595** (a puppet is no stray, and only the stray-watching camps are walked; re-review P3-1):
+  `strayJoined` ran for every join of a Mob, including the engine's own puppets, and walked every camp.
+  A SET_OUT puppet of the den's Frostmaw joining beside the den, the chief's body handed to a puppet, would
+  have made the den look again. Now a tagged entity (`RtsimAttachments.isTagged`: a puppet carries the
+  bridge's agent tag, a body the camp tag) returns first, and `Camps` keeps, per dimension, the camps whose
+  kind has a stray radius above zero (`strayers`, filled in `declare`, cleared in `clear`), so a join walks
+  only those. Test: `aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount` (batch
+  `mowzie_puppet_stray`): a SET_OUT of an adopted Frostmaw's slot with a one-unit band materialized in the
+  same hand-over, DONE, the puppet standing, and 40 ticks later the stray watch has not moved, no second
+  census and no new epoch.
+- **MZB-596** (the event and the poll agree at an unload; re-review P3-2; corrects MZB-290): the event
+  posts `UNLOADED_LEVEL` (45) when the last ticket goes, the poll read a chunk with no holder as
+  `NO_HOLDER` (46), and C2ME's holder reads 45 for a chunk of status NEW. `Camps.norm` now maps every level
+  above `ChunkLevel.MAX_LEVEL` to `NO_HOLDER` in `declare`, `onTicket` and `refreshLevels`, so a chunk that
+  is gone is one value however it is reached and the poll reports only real corrections. Test:
+  `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect` (batch `mowzie_poll_agrees`): a den counted
+  and released, CAMP_OUT, then the chunks unloaded and a poll period passed: the poll has run on the den
+  (`polls` moved), `pollChanges` has not (only where the ticket event fired for the den's chunks, since
+  without it the poll is the one that finds the change, and the test records that), and every footprint level
+  reads `NO_HOLDER`. With the silent-event test (MZB-290) the two sides of the assertion discriminate:
+  event off, the poll moves `pollChanges`; event on, it does not.
+
+- **MZB-597** (the barrier notes a holder it cannot find where the object last stood; re-review P3-3;
+  rewords MZB-235): `ChunkWriteBarrier.dependsOnHolder` keeps, with the commit-time chunk, a
+  `WeakReference<Entity>` for each holder. At the arm a holder `level.getEntity` finds is noted where it stands
+  (`holdersResolved`); one it does not find (its chunk hidden, or the entity removed by the unload, which leaves
+  the Entity object with the position it had) is noted at the chunk of the object's own `chunkPosition()`
+  (`holdersRemembered`); the commit-time chunk is the fallback only when the reference is cleared
+  (`holdersUnresolved`). `holdersMoved` counts a holder noted in a chunk other than its commit-time one by
+  either path. The reference is weak, so it keeps no entity alive and no chunk loaded (D1). Why the earlier chunk
+  need not be noted (the lead's reading): a holder that leaves its record's chunk and is then unloaded is
+  saved with the chunk it unloads from, and its record lives on the entity, so the chunk it stood in at the
+  commit does not matter; a holder that is killed books through its death (CAMP_DEATH), not through the
+  record. A public
+  `forgetHolderReferences` clears every reference, for the GameTests only (the state a collected entity
+  leaves, which a test cannot reach by waiting for the collector). Tests (core): the existing
+  `aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave` now clears B's reference after
+  discarding it (found 2, moved 1, remembered 0, lost 1) and the new `aHolderRemovedAfterWalkingIsNotedWhereItWasLastSeen`
+  (batch `mic_rtsim_journal_barrier_remembered`) walks a holder into the second chunk and removes it
+  (found 0, moved 1, remembered 1, lost 0; the second chunk noted, the first not).
+
+- **MZB-598** (an adopted wide stray stays outside the footprint; a known gap; re-review P3-4; no code):
+  a stray found wide (MZB-232, beyond the cylinder, within 64 blocks) is adopted where it stands: it is
+  tagged and restricted to the spot but not moved, and it is the holder of the CAMP_BODIES record that
+  answers its ADOPT (it is the body there). So it stays outside the footprint, counted by later censuses only
+  through the index (BODY_ELSEWHERE) while it is loaded. A census journals first the records of the holders
+  in the footprint's columns (MZB-201) and not of one outside them. Once a crash has happened before that
+  record is acknowledged, the record reasserts when the stray's chunk loads, which can be after the next
+  session's census, so the engine can see the census before it sees the old ADOPT's record. Chosen: not
+  closed. It needs a crash inside the window between an ADOPT and its acknowledgement, with the adopted
+  stray left outside the footprint, and the effect is a repeated or late record the engine treats by op id and
+  epoch (the builder did not trace the engine's side again; the lead's re-review named the gap). If it
+  matters, the fix is for a census to also journal the holders of the camp's indexed bodies that stand
+  elsewhere, which is one loop over `live(faction)` before the census.
+- **MZB-599** (the minor items of the re-review; P3-6):
+  - `playHeld` checks Peaceful before it spends the line's budget (MZB-234), so a line held on a camp that
+    cannot make a body no longer burns its attempts.
+  - `DenKind.chief` excludes a Frostmaw tagged by another den (it reads the faction's index and the
+    footprint's Frostmaws, and a Frostmaw that walked in from another den is that den's chief, MZB-208's rule
+    for the census extended to the chief).
+  - `MowzieCamps.dropped` is an `AtomicInteger` (`dropped.get()` in the GameTest): `onChunkLoad` increments it
+    where the queue beside it, already concurrent, is filled, and a chunk load is not promised to be on the
+    server thread under every chunk system; the other counters are the drain's, on the server thread.
+  - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
+    and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
+  - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
+    and a reload of the same chunks inside one period is never seen: the levels read the same before and
+    after, no CAMP_OUT and no new epoch. This is benign: the bodies the unload hid or removed are indexed
+    again by their own join events (MZB-590), a body that left with its chunk comes back with it, and the
+    census that would have followed has nothing a later one does not carry. Not tested (a test would race the
+    period).
 
 ### M5 design for the implementer
 
@@ -2196,6 +2338,20 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
 ## M12 S9
 
 (none yet)
+
+## Backlog: conflict news gaps from TALK
+
+TALK left these five gaps in conflict news; they are the conflict owner's (the coordinator,
+2026-10-23), low priority, after M4 and M5 unless one is trivial while that code is open. TALK.md §9's
+Feud, Raid and Fell paragraphs describe them.
+1. `fell.you` is never told: a Fell's Who is the camp, so the killer hears only through the chief's
+   Killing.
+2. A fight that ends early (the watching player leaves, the session restarts) and then goes home bored or
+   done records nothing.
+3. After a restart, a fight broken at the rout share records nothing; only a full wipe-out is recorded.
+4. A Fell names the fallen chief as a dead notable ("someone important"), not as the chief: its actor is
+   gone when the lines are told.
+5. A siege routed after a round tells two reports, the round's and the rout's.
 
 ## Hand-off
 
