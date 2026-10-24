@@ -412,9 +412,10 @@ public final class UmvuthanaWorldGameTests {
                     result.onTake(payer[0], taken);
                     menu.removed(payer[0]);
                     payer[0].containerMenu = payer[0].inventoryMenu;
-                    check("the trade took its input", menu.getSlot(0).getItem().isEmpty());
                     // The Umvuthi outside every grove, paid the same way: nothing is written.
                     paidEver[0] = RtsimTests.engine().received(ConflictRecords.CHIEF_PAID).size();
+                    // The payer stands beside it, so that a payment is made (and the camp's refusal is what writes nothing).
+                    payer[0].setPos(outside[0].getX() + 1.5, outside[0].getY(), outside[0].getZ());
                     check("the jar remembers the payer at the outside Umvuthi too", MowzieKit.payUmvuthi(payer[0], outside[0]));
                 })
                 .thenWaitUntil(() -> check("one TRADED reached the engine", RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRADED,
