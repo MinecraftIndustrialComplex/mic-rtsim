@@ -6582,12 +6582,22 @@ mod conflict {
         kept: Kept,
     }
 
+    /// [`a_fight_and_a_crash`]'s first session, up to its crash: the world saves taken with the
+    /// pages (`before`) and at the crash, and the game time then.
+    struct Crashed {
+        dir: std::path::PathBuf,
+        p: Handle<Party>,
+        n: u32,
+        lost: u32,
+        kept: Kept,
+        before: WorldSave,
+        crashed: WorldSave,
+        gt: i64,
+    }
+
     /// A raid in view at a save (the pages, and a world save beside them), its fight's casualties
-    /// journaled after it, then a crash. `lost_tail`: the next session starts from the world save
-    /// taken with the pages, so the crash lost the casualties with the journal's tail and only a
-    /// holder's copy is left of them; else from the world save at the crash, whose replay counts
-    /// them. Returns the next session, its replay over.
-    fn a_fight_and_a_crash(name: &str, lost_tail: bool) -> Fought {
+    /// journaled after it, then a crash.
+    fn a_fight_then_a_crash(name: &str) -> Crashed {
         let (dir, e, mut j) = camp(name);
         j.conflict_plugin.fight = Some(synth::Fight {
             kill_share: 0.5,
@@ -6615,6 +6625,33 @@ mod conflict {
         assert!(!kept.records.is_empty(), "its casualties journaled");
         let gt = j.game_time;
         let crashed = j.crash();
+        Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            crashed,
+            gt,
+        }
+    }
+
+    /// [`a_fight_then_a_crash`] and the next session. `lost_tail`: it starts from the world save
+    /// taken with the pages, so the crash lost the casualties with the journal's tail and only a
+    /// holder's copy is left of them; else from the world save at the crash, whose replay counts
+    /// them. Returns the next session, its replay over.
+    fn a_fight_and_a_crash(name: &str, lost_tail: bool) -> Fought {
+        let Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            crashed,
+            gt,
+        } = a_fight_then_a_crash(name);
         let (e, j) = reopen(&dir, if lost_tail { before } else { crashed }, gt);
         let (alive, _, embodied, recalled, _) = books(&e, p);
         let want = if lost_tail { n } else { n - lost };
@@ -6686,6 +6723,14 @@ mod conflict {
     /// band's units fall once.
     #[test]
     fn a_copy_journaled_after_the_pages_is_counted_by_the_replay() {
+        let (e, j, ..) = a_copy_replayed("conflict-copy-in-the-replay");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// §2.5 test 2's sessions, its checks made. Returns the session that replayed the copy, the
+    /// band, its alive units and the records copied.
+    fn a_copy_replayed(name: &str) -> (std::sync::Arc<Engine>, Java, Handle<Party>, u32, Kept) {
         let Fought {
             dir,
             e,
@@ -6694,7 +6739,7 @@ mod conflict {
             n,
             lost,
             kept,
-        } = a_fight_and_a_crash("conflict-copy-in-the-replay", true);
+        } = a_fight_and_a_crash(name, true);
         save(&e, &mut j);
         let pages = e.durable_obs_seq();
         let k = kept.records.len() as u64;
@@ -6722,6 +6767,20 @@ mod conflict {
             (1, tail),
             "every record after the pages replayed, the copies among them"
         );
+        (e, j, p, n - lost, kept)
+    }
+
+    /// SEC-1's meeting-point review, item 7: a second live copy after a replayed copy. §2.5 test
+    /// 2's copy is replayed and counted once; then the holder loads again after the replay end
+    /// and journals the same copies live. The replay recorded them (`admit_copy`), so they are
+    /// not new: dropped, counting nothing.
+    #[test]
+    fn a_second_live_copy_after_a_replayed_copy_counts_nothing() {
+        let (e, mut j, p, alive, kept) = a_copy_replayed("conflict-copy-replayed-then-live");
+        let k = kept.records.len() as u64;
+        reassert_all(&mut j, &kept, kept.nonce);
+        assert_eq!(books(&e, p).0, alive, "the live copy counts nothing");
+        assert_eq!(copies(&e), (k, k), "dropped: the replay applied it");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -7318,6 +7377,167 @@ mod conflict {
             live,
             "the band's books as in the session that went on"
         );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// SEC-1's meeting-point review, item 7: a save due at a REASSERT (§2.2 trigger 1, §3.2,
+    /// RP-42). On main a session's first live record is its JOURNAL_GEN, so the REASSERT here is
+    /// the first record past the save Java asks for, right after the JOURNAL_GEN in the session's
+    /// first hand-over. S0's casualties are lost with the journal's tail (the next session opens
+    /// on the world save taken with the pages); S1's holder journals its copies before the first
+    /// hand-over, and Java asks for a save through the JOURNAL_GEN. The save is taken before the
+    /// first copy is admitted: the pages end at the JOURNAL_GEN, without the copies, which then
+    /// count once. A crash, and S2 replays the copies from those pages: counted once, not twice
+    /// and not lost.
+    #[test]
+    fn a_save_due_at_a_reassert_takes_the_pages_before_the_copy() {
+        const SAVES_DONE: usize = 9;
+        let Crashed {
+            dir,
+            p,
+            n,
+            lost,
+            kept,
+            before,
+            gt,
+            ..
+        } = a_fight_then_a_crash("conflict-save-at-a-copy");
+        let k = kept.records.len() as u64;
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), before);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let first = j.next_obs - 1;
+        assert_eq!(
+            j.journal
+                .back()
+                .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND))),
+            Some((first, obs::JOURNAL_GEN)),
+            "the session's first record"
+        );
+        let saves = e.stats_array()[SAVES_DONE];
+        e.request_save(first);
+        reassert_all(&mut j, &kept, kept.nonce);
+        let deadline = Instant::now() + DURABLE_WAIT;
+        while e.durable_obs_seq() < first {
+            assert!(Instant::now() < deadline, "the save never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            e.durable_obs_seq(),
+            first,
+            "the pages end at the JOURNAL_GEN, before the copies"
+        );
+        assert_eq!(e.stats_array()[SAVES_DONE], saves + 1, "one save");
+        assert_eq!(books(&e, p).0, n - lost, "the copies count once, live");
+        assert_eq!(copies(&e), (k, 0));
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(e.durable_obs_seq(), first, "the pages of that save");
+        assert_eq!(
+            books(&e, p).0,
+            n - lost,
+            "the replay counts the copies once"
+        );
+        assert_eq!(copies(&e), (k, 0), "applied from the replay");
+        assert_eq!(replay_counts(&e), (1, 1, k), "the copies, replayed");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// SEC-1's meeting-point review, item 7: a raid's arrival in the replayed window, held
+    /// (§6.1, RP-23), and its replayed fight. S0: the player at the target sees the band leave
+    /// the camp; a save while it is on its way; its arrival is a watched fight (a
+    /// BAND_MATERIALIZED at the next epoch), a quarter of the wave falls (BAND_CASUALTIES); a
+    /// crash. S1 replays both records from the pages taken before the arrival: the arrival is
+    /// held, the BAND_MATERIALIZED (inside the hold's slack, RP-48) is honoured as its fight, the
+    /// casualties count against that epoch's stack, and nothing is resolved abstractly. The
+    /// band's books, its epoch and the watched fights are S0's, and the fight is Waiting,
+    /// abstract, at the replay end.
+    #[test]
+    fn a_held_arrivals_replayed_fight_counts_its_casualties_once() {
+        let resolved = |e: &Engine| {
+            e.conflict_log(true)
+                .iter()
+                .filter(|l| l.what == "finds nothing to raid")
+                .count()
+        };
+        let (dir, e, mut j) = camp("conflict-held-fight");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, DAY, "the raid on its way, in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let durable = e.durable_obs_seq();
+        let (n, at_save) = (books(&e, p).0, books(&e, p).1);
+        let watched = e.conflict_stats().0.raids_watched;
+        let from = j.conflict.len();
+        advance_until(&mut j, 20, DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        advance_until(&mut j, 100, DAY, "its casualties journaled", |j| {
+            books(&j.e, p).0 < n
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        assert_eq!(materialized_epochs(&j, from, p), vec![at_save + 1]);
+        let replayed = |kind: u16| {
+            j.journal
+                .iter()
+                .filter(|(s, r)| *s > durable && wire::u16_at(r, wire::R_KIND) == kind)
+                .count()
+        };
+        let (m, c) = (
+            replayed(cb::BAND_MATERIALIZED),
+            replayed(cb::BAND_CASUALTIES),
+        );
+        assert!(
+            m >= 1 && c > 20,
+            "the fight's records after the pages: {m}, {c}"
+        );
+        let live = books(&e, p);
+        assert!(live.0 < n && live.1 == at_save + 1, "{live:?}");
+        assert_eq!(party(&e, p), Some((Phase::Fighting, true)));
+        assert_eq!(e.conflict_stats().0.raids_watched, watched + 1);
+        assert_eq!(resolved(&e), 0, "S0 resolved nothing");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            e.durable_obs_seq(),
+            durable,
+            "the pages from before the arrival"
+        );
+        assert_eq!(resolved(&e), 0, "the held arrival resolved nothing");
+        assert_eq!(
+            e.conflict_stats().0.raids_watched,
+            watched + 1,
+            "the replayed BAND_MATERIALIZED honoured as the arrival's fight"
+        );
+        let b = books(&e, p);
+        assert_eq!(
+            (b.0, b.1),
+            (live.0, live.1),
+            "the casualties counted once, at the fight's epoch"
+        );
+        assert_eq!(
+            party(&e, p),
+            Some((Phase::Waiting, false)),
+            "the fight Waiting, abstract, at the replay end"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
