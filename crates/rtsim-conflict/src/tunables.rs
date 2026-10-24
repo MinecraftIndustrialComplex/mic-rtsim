@@ -55,9 +55,6 @@ pub struct ConflictTunables {
     /// An heir's inherited sentiment toward a player becomes this much grievance per point below
     /// zero when it takes over. PLACEHOLDER 0.5.
     pub heir_grudge_factor: f64,
-    /// Villages within this many blocks that hate a faction hear when a player breaks one of its
-    /// bands (a rescue report, C24). PLACEHOLDER 2,000.
-    pub rescue_news_blocks: u32,
     /// Destroy pollution types to signals and the units per pollution point (I14). The type ids
     /// are Destroy's registry keys, UNVERIFIED (INDUSTRY.md names smog and radioactivity as chunk
     /// types, greenhouse, ozone depletion and acid rain as level types).
@@ -105,7 +102,6 @@ impl Default for ConflictTunables {
             envoy_insult_kills: 2.0,
             raid_grudge: -40,
             heir_grudge_factor: 0.5,
-            rescue_news_blocks: 2_000,
             pollution: vec![
                 ("destroy:smog".into(), SignalKind::Smog, 1.0),
                 ("destroy:radioactivity".into(), SignalKind::Radiation, 1.0),

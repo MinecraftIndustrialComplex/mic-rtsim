@@ -16,9 +16,9 @@ use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_knowledge::{ActorId, ReportKind, SEVERITY_UNIT};
-use rtsim_settle::NodeKind;
+use rtsim_settle::{NodeKind, Pos};
 use rtsim_trade::{GoodId, MILLI};
-use rtsim_world::World;
+use rtsim_world::{Command, World};
 
 fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
@@ -1040,53 +1040,108 @@ fn a_robbery_counts_at_the_base_delta() {
     );
 }
 
-/// A raid with its war chief, fighting the player (as the plugin's watched fight would have it),
-/// a day after the player killed 20 of the camp's members.
-fn chief_in_a_fight(seed: u64) -> (Run, Handle<Party>) {
-    let mut r = Run::new(seed, quiet_goblins());
+/// When the plugin's watched fight in these tests begins and the war chief falls.
+fn fight_at() -> Tick {
+    Tick::from_days(1) + 100
+}
+
+/// A raid on `aim` with its war chief, serving the player's feud (the player killed 20 of the
+/// camp's members), fighting the player at [`fight_at`] as the plugin's watched fight would have
+/// it. A fighting band stands where its march ends, at its target (`party_chart_pos`), wherever
+/// it was on the road when the plugin said the fight began.
+fn band_in_a_fight(seed: u64, aim: impl FnOnce(&Run) -> Target) -> (Run, Handle<Party>) {
+    band_in_a_fight_of(Run::new(seed, quiet_goblins()), aim)
+}
+
+/// [`band_in_a_fight`] in a run set up by the caller (a player base marked, say).
+fn band_in_a_fight_of(mut r: Run, aim: impl FnOnce(&Run) -> Target) -> (Run, Handle<Party>) {
     r.kill(20.0, Tick(10));
+    let target = aim(&r);
     let band =
         r.c.order_party(
             &mut r.w,
             synth::CAMP,
             PartyKind::Raid,
-            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            target,
             Some(r.p),
             Tick(20),
         )
         .unwrap();
     r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
     assert!(r.c.parties[band].chief);
-    r.c.run_until(&mut r.w, &mut NoInfrastructure, Tick::from_days(1) + 100);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, fight_at());
     r.c.parties[band].phase = Phase::Fighting;
     (r, band)
 }
 
-/// The villages that hate goblins (human and bandit) within the rescue news range of the camp.
-fn haters_in_range(r: &Run) -> Vec<ActorId> {
-    let camp = synth::CAMP_POS;
-    let range = f64::from(r.c.tun.rescue_news_blocks);
+/// A raid on a place of the player's, as `chief_in_a_fight`'s, but `at` blocks away: the player's
+/// refinery is 164 blocks from Ashby, just outside the 160 a rout is seen from.
+fn raid_in_a_fight_at(seed: u64, at: Pos) -> (Run, Handle<Party>) {
+    band_in_a_fight(seed, |_| Target::District(synth::REFINERY, at))
+}
+
+/// A raid on the refinery with its war chief, fighting the player a day after the player killed
+/// 20 of the camp's members.
+fn chief_in_a_fight(seed: u64) -> (Run, Handle<Party>) {
+    raid_in_a_fight_at(seed, synth::REFINERY_POS)
+}
+
+/// A raid on a clearing 86 blocks from Ashby, in its view.
+const BY_ASHBY: Pos = Pos::new(0, 650, 720);
+
+/// A raid on a clearing 50 blocks from Mirewater, a ribbit village goblins do not hate.
+const BY_MIREWATER: Pos = Pos::new(0, -480, -560);
+
+/// A village of the synthetic world by its key, with where it is.
+fn village(r: &Run, key: u64) -> (ActorId, Pos) {
+    let n = &r.w.nodes[r.w.node_of_key(key).expect("a village of that key")];
+    assert!(matches!(n.kind, NodeKind::Village(_)));
+    (n.actor, n.pos)
+}
+
+const OAKFORD: u64 = 2;
+const ASHBY: u64 = 4;
+const MIREWATER: u64 = 7;
+
+fn blocks_between(a: Pos, b: (i32, i32)) -> f64 {
+    (f64::from(a.x - b.0)).hypot(f64::from(a.z - b.1))
+}
+
+/// Every village of the world: its actor, its place, and whether goblins hate its culture.
+fn villages(r: &Run) -> Vec<(ActorId, Pos, bool)> {
     r.w.nodes
         .iter()
-        .filter(|n| match n.kind {
-            NodeKind::Village(cu) => ["human", "bandit"].contains(&cu.name()),
-            _ => false,
+        .filter_map(|n| match n.kind {
+            NodeKind::Village(cu) => {
+                Some((n.actor, n.pos, ["human", "bandit"].contains(&cu.name())))
+            }
+            _ => None,
         })
-        .filter(|n| {
-            let (dx, dz) = (f64::from(n.pos.x - camp.x), f64::from(n.pos.z - camp.z));
-            n.pos.frame == camp.frame && (dx * dx + dz * dz).sqrt() <= range - 1.0
+        .collect()
+}
+
+/// The rescue reports the knowledge layer holds.
+fn rescue_reports(r: &Run) -> Vec<rtsim_knowledge::ReportId> {
+    r.w.knowledge
+        .reports()
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| {
+            r.w.knowledge
+                .report(*id)
+                .is_some_and(|x| x.kind == ReportKind::Rescue)
         })
-        .map(|n| n.actor)
         .collect()
 }
 
 /// MZB-36: the heir who saw the player kill the war chief feels it at the killing's base delta
 /// (-125), so the grudge it takes over is about 60 grievance (`heir_grudge_factor` 0.5 a point),
-/// not 2.5. And the villages that hate the camp hear of the rescue at the rescue's +25.
+/// not 2.5. And the village that hates the camp and sees the rout (Ashby, as the band passes it)
+/// hears of the rescue at the rescue's +25.
 #[test]
 fn a_chief_killed_counts_at_the_base_delta() {
-    let (mut r, band) = chief_in_a_fight(9);
-    let at = Tick::from_days(1) + 100;
+    let (mut r, band) = raid_in_a_fight_at(9, BY_ASHBY);
+    let at = fight_at();
     let heir = r.c.factions[r.f as usize].heir;
     let killing = |r: &Run| {
         r.c.feud_view(synth::CAMP, r.p)
@@ -1097,15 +1152,13 @@ fn a_chief_killed_counts_at_the_base_delta() {
             .unwrap_or(0.0)
     };
     let before = killing(&r);
-    // The villages that hate goblins within the news range, and what they feel before.
-    let haters: Vec<(ActorId, i8)> = haters_in_range(&r)
-        .into_iter()
-        .map(|a| (a, r.w.knowledge.sentiment(a, r.p, at)))
-        .collect();
+    // The villages that hate goblins and see the rout, and what they feel before.
+    let (ashby, ashby_at) = village(&r, ASHBY);
     assert!(
-        !haters.is_empty(),
-        "a village that hates goblins is in range"
+        blocks_between(ashby_at, r.c.party_pos(band, at)) <= f64::from(r.c.tun.view_radius),
+        "the band breaks in view of Ashby"
     );
+    let haters: Vec<(ActorId, i8)> = vec![(ashby, r.w.knowledge.sentiment(ashby, r.p, at))];
     r.c.chief_killed(&mut r.w, band, Some(r.p), at);
     assert_eq!(
         r.c.factions[r.f as usize].chief, heir,
@@ -1131,47 +1184,44 @@ fn a_chief_killed_counts_at_the_base_delta() {
     assert_eq!(r.c.stats.routs, 1);
 }
 
-/// CL-D60 (K2-25: the villages witness "a rescue report"): one rout is one rescue report, however
-/// many hating villages are in range. Each of them witnesses it first-hand at the full +25; a
-/// village that does not hate goblins does not know it yet (it hears it later, as news). A report
-/// per witness made every village count one rout once per hating village.
+/// CL-D60 (K2-25: the villages witness "a rescue report") and CL-D61 (only real witnesses, PLAN.md
+/// §8.7): one rout is one rescue report, however many villages hate the camp. The villages that
+/// hate it and are in view of the rout (within `view_radius` of where the band broke) witness it
+/// first-hand at the full +25; every other village, a hating one 1,000 blocks off included, does
+/// not know it yet and hears it later, from travellers. A report per witness made every village
+/// count one rout once per hating village (CL-D60), and the range rule gave every hating village
+/// within 2,000 blocks of the camp the rout first-hand (CL-D61).
 #[test]
-fn a_rout_is_one_rescue_report_that_every_hater_in_range_witnesses() {
-    let (mut r, band) = chief_in_a_fight(9);
-    let at = Tick::from_days(1) + 100;
-    let rescues = |r: &Run| -> Vec<rtsim_knowledge::ReportId> {
-        r.w.knowledge
-            .reports()
-            .iter()
-            .map(|(id, _)| id)
-            .filter(|id| {
-                r.w.knowledge
-                    .report(*id)
-                    .is_some_and(|x| x.kind == ReportKind::Rescue)
-            })
-            .collect()
-    };
-    assert!(rescues(&r).is_empty(), "no rescue before the rout");
-    let haters = haters_in_range(&r);
+fn a_rout_is_one_rescue_report_that_only_the_villages_in_view_witness() {
+    let (mut r, band) = raid_in_a_fight_at(9, BY_ASHBY);
+    let at = fight_at();
+    assert!(rescue_reports(&r).is_empty(), "no rescue before the rout");
+    let view = f64::from(r.c.tun.view_radius);
+    let broke = r.c.party_pos(band, at);
+    let (mut seen, mut unseen) = (Vec::new(), Vec::new());
+    for (a, pos, hates) in villages(&r) {
+        let d = blocks_between(pos, broke);
+        if hates && d <= view {
+            seen.push((a, r.w.knowledge.sentiment(a, r.p, at)));
+        } else {
+            unseen.push((a, hates, d));
+        }
+    }
     assert!(
-        haters.len() >= 2,
-        "several hating villages in range ({})",
-        haters.len()
+        !seen.is_empty(),
+        "a village that hates goblins sees the rout"
     );
-    let others: Vec<ActorId> =
-        r.w.nodes
-            .iter()
-            .filter(|n| matches!(n.kind, NodeKind::Village(_)) && !haters.contains(&n.actor))
-            .map(|n| n.actor)
-            .collect();
-    assert!(!others.is_empty(), "a village that does not hate goblins");
-    let was: Vec<i8> = haters
-        .iter()
-        .map(|a| r.w.knowledge.sentiment(*a, r.p, at))
-        .collect();
+    assert!(
+        unseen.iter().any(|&(_, hates, d)| hates && d >= 1_000.0),
+        "a village that hates goblins 1,000 blocks from the rout"
+    );
+    assert!(
+        unseen.iter().any(|&(_, hates, _)| !hates),
+        "a village that does not hate goblins"
+    );
     r.c.chief_killed(&mut r.w, band, Some(r.p), at);
     assert_eq!(r.c.stats.routs, 1);
-    let reps = rescues(&r);
+    let reps = rescue_reports(&r);
     assert_eq!(
         reps.len(),
         1,
@@ -1185,21 +1235,178 @@ fn a_rout_is_one_rescue_report_that_every_hater_in_range_witnesses() {
         ActorId::NULL,
         "the band was after the rescuer himself, so it names no one rescued"
     );
-    for (a, was) in haters.iter().zip(was) {
+    assert_eq!(
+        (rep.place.frame, rep.place.x, rep.place.z),
+        (0, broke.0, broke.1),
+        "where the band broke"
+    );
+    for (a, was) in seen {
         assert!(
-            r.w.knowledge.knows(*a, reps[0]),
-            "a hating village in range witnesses it"
+            r.w.knowledge.knows(a, reps[0]),
+            "a hating village in view witnesses it"
         );
-        let now = r.w.knowledge.sentiment(*a, r.p, at);
+        let now = r.w.knowledge.sentiment(a, r.p, at);
         assert!(
             i32::from(now) >= i32::from(was) + 20,
             "first-hand, not hearsay: {was} to {now}"
         );
     }
-    for a in others {
+    for &(a, hates, d) in &unseen {
         assert!(
             !r.w.knowledge.knows(a, reps[0]),
-            "a village that does not hate goblins only hears it later"
+            "a village {d:.0} blocks off (hating the camp: {hates}) does not witness it"
+        );
+    }
+    // The rest hear it later, from travellers: some village that did not see it learns it.
+    r.w.run_until(at + 5 * TICKS_PER_DAY);
+    assert!(
+        unseen
+            .iter()
+            .any(|&(a, _, _)| r.w.knowledge.knows(a, reps[0])),
+        "travellers carry the rescue to a village that did not see it"
+    );
+}
+
+/// CL-D61: the village a band marched on witnesses its rescue, whatever its culture. Goblins do
+/// not hate ribbits, and a raid on Mirewater was after Mirewater all the same: the band breaks at
+/// its gate, Mirewater has the rescue first-hand at +25, and the report names it. (A hating
+/// village in view would witness too: this is the case where only the rule for the village the
+/// band marched on can put Mirewater among the witnesses.)
+#[test]
+fn a_rescued_village_witnesses_even_when_the_band_does_not_hate_its_culture() {
+    let (mut r, band) = band_in_a_fight(9, |r| Target::Node(r.w.node_of_key(MIREWATER).unwrap()));
+    let at = fight_at();
+    let (mirewater, _) = village(&r, MIREWATER);
+    assert!(
+        villages(&r)
+            .iter()
+            .any(|&(a, _, hates)| a == mirewater && !hates),
+        "goblins do not hate Mirewater's culture"
+    );
+    let was = r.w.knowledge.sentiment(mirewater, r.p, at);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    assert_eq!(
+        r.w.knowledge.report(reps[0]).unwrap().whom,
+        mirewater,
+        "the report names the village the band marched on"
+    );
+    assert!(
+        r.w.knowledge.knows(mirewater, reps[0]),
+        "Mirewater witnesses its own rescue"
+    );
+    let now = r.w.knowledge.sentiment(mirewater, r.p, at);
+    assert!(
+        i32::from(now) >= i32::from(was) + 20,
+        "first-hand, not hearsay: {was} to {now}"
+    );
+}
+
+/// CL-D61: the rescued village has no distance rule of its own. The engine cannot reach this
+/// state today (a fighting band stands at its target, so the village it marched on is at the
+/// rout), so the target is set by hand: a band that fights 800 blocks from Oakford with Oakford
+/// its target. Oakford witnesses at +25 and no village that hates the camp sees the rout.
+#[test]
+fn the_rescued_village_witnesses_wherever_the_rout_is() {
+    let (mut r, band) = chief_in_a_fight(9);
+    let at = fight_at();
+    let (oakford, oakford_at) = village(&r, OAKFORD);
+    r.c.parties[band].target = Target::Node(r.w.node_of_key(OAKFORD).unwrap());
+    let broke = r.c.party_pos(band, at);
+    let view = f64::from(r.c.tun.view_radius);
+    assert!(
+        blocks_between(oakford_at, broke) >= 700.0,
+        "the rout is far from Oakford"
+    );
+    assert!(
+        villages(&r)
+            .iter()
+            .all(|&(_, pos, _)| blocks_between(pos, broke) > view),
+        "no village sees the rout"
+    );
+    let was = r.w.knowledge.sentiment(oakford, r.p, at);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    assert!(
+        r.w.knowledge.knows(oakford, reps[0]),
+        "Oakford witnesses it"
+    );
+    let now = r.w.knowledge.sentiment(oakford, r.p, at);
+    assert!(
+        i32::from(now) >= i32::from(was) + 20,
+        "first-hand, not hearsay: {was} to {now}"
+    );
+    for (a, _, hates) in villages(&r) {
+        if a != oakford {
+            assert!(
+                !r.w.knowledge.knows(a, reps[0]),
+                "no other village (hating the camp: {hates}) witnesses it"
+            );
+        }
+    }
+}
+
+/// CL-D61: a village in view of the rout that does not hate the band did not witness a rescue
+/// (one friendly to the band would be crediting the player for killing its friends). A raid
+/// broken 50 blocks from Mirewater, marching on no village, has no witness: no report, and
+/// Mirewater does not think better of the player.
+#[test]
+fn a_village_in_view_that_does_not_hate_the_band_does_not_witness_the_rout() {
+    let (mut r, band) = raid_in_a_fight_at(9, BY_MIREWATER);
+    let at = fight_at();
+    let view = f64::from(r.c.tun.view_radius);
+    let broke = r.c.party_pos(band, at);
+    let (mirewater, mirewater_at) = village(&r, MIREWATER);
+    assert!(
+        blocks_between(mirewater_at, broke) <= view,
+        "Mirewater sees the rout"
+    );
+    assert!(
+        villages(&r)
+            .iter()
+            .all(|&(a, pos, hates)| a == mirewater || !hates || blocks_between(pos, broke) > view),
+        "no village that hates goblins sees it"
+    );
+    let was = r.w.knowledge.sentiment(mirewater, r.p, at);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    assert!(rescue_reports(&r).is_empty(), "no witness, no report");
+    assert_eq!(r.w.knowledge.sentiment(mirewater, r.p, at), was);
+}
+
+/// CL-D61: the edge of a rout's view is `view_radius` of the raw distance, as
+/// [`Conflict::watcher`] reads a player's: a hating village exactly that far from where the band
+/// broke witnesses it, one block farther does not. Along an axis (160 yes, 161 no) and on a
+/// diagonal, where a rounded distance would let 160.08 in: (100, 124) is 159.3 away, (100, 125)
+/// is 160.08.
+#[test]
+fn a_rout_is_seen_from_exactly_the_view_radius() {
+    let (_, ashby_at) = village(&Run::new(9, quiet_goblins()), ASHBY);
+    let view = Run::new(9, quiet_goblins()).c.tun.view_radius as i32;
+    for (dx, dz, seen) in [
+        (view, 0, true),
+        (view + 1, 0, false),
+        (100, 124, true),
+        (100, 125, false),
+    ] {
+        let (mut r, band) = raid_in_a_fight_at(9, Pos::new(0, ashby_at.x + dx, ashby_at.z + dz));
+        let at = fight_at();
+        // Where the band broke, before the distance is measured from it.
+        let broke = r.c.party_pos(band, at);
+        assert_eq!(
+            broke,
+            (ashby_at.x + dx, ashby_at.z + dz),
+            "a fighting band stands at its target"
+        );
+        let d = blocks_between(ashby_at, broke);
+        assert_eq!(d <= f64::from(view), seen, "{d:.2} blocks from Ashby");
+        r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+        assert_eq!(
+            rescue_reports(&r).len(),
+            usize::from(seen),
+            "a rout {d:.2} blocks from Ashby is seen from there: {seen}"
         );
     }
 }
@@ -1227,12 +1434,17 @@ fn pay_to(r: &mut Run, agent: u64, epoch: u32, count: i32, good: GoodId, op: u64
 
 /// ENVOY_ANSWER from the player at `e`.
 fn answer_to(r: &mut Run, e: &boundary::EnvoyMaterialize, answer: u32, at: Tick) {
+    answer_from(r, e.agent, e.epoch, answer, synth::PLAYER, at);
+}
+
+/// ENVOY_ANSWER from `player` at the party `agent`, `epoch`.
+fn answer_from(r: &mut Run, agent: u64, epoch: u32, answer: u32, player: boundary::Uuid, at: Tick) {
     r.ingest(
         Obs::EnvoyAnswer(boundary::EnvoyAnswer {
-            agent: e.agent,
-            epoch: e.epoch,
+            agent,
+            epoch,
             answer,
-            player: synth::PLAYER,
+            player,
         }),
         at,
     );
@@ -1357,6 +1569,89 @@ fn an_insult_answer_adds_the_insult_to_a_refusal() {
     assert!(
         insult > 1.9 * weight && insult <= 2.0 * weight + 1e-9,
         "the insult is envoy_insult_kills killings: {g_ref} to {g_att} (weight {weight})"
+    );
+}
+
+/// MZB-144 (re-review P3-1): ENVOY_ANSWER is an envoy's. For a war band that has a feud (a stale or
+/// misrouted record) it used to book the insult and refuse the feud's demand.
+#[test]
+fn an_attacked_answer_for_a_war_band_does_nothing() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let (agent, epoch) = (Party::agent(band), r.c.parties[band].epoch);
+    assert_eq!(
+        r.c.parties[band].feud,
+        Some(r.p),
+        "it serves the player's feud"
+    );
+    let lambda = r.c.cultures.get(0).lambda;
+    let at = r.c.now() + 5;
+    let g = |r: &Run| r.c.feud(r.f, r.p).unwrap().g.total_at(at + 100, lambda);
+    let before = g(&r);
+    answer_from(
+        &mut r,
+        agent,
+        epoch,
+        boundary::ANSWER_ATTACKED,
+        synth::PLAYER,
+        at,
+    );
+    assert_eq!(g(&r), before, "no insult booked");
+    assert!(settled(&r).is_empty(), "nothing refused");
+}
+
+/// MZB-145 (re-review P3-2): a second player's blow on an envoy that is not theirs is their own
+/// insult, at the envoy's place, on their own feud and against no district. It refuses nothing:
+/// the demand is still to its player, who can still pay it, and whose own blow refuses it as ever.
+/// The old rule used the envoy's feud as the actor, so a stranger's blow refused the player's demand
+/// and booked the insult at the player's district.
+#[test]
+fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
+    let stranger: boundary::Uuid = (0x2222_0000_0000_0002, 0x9999_0000_0000_0009);
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.answer = Answer::Ignore;
+    let e = envoy_met(&mut r);
+    let q = r.c.player(&mut r.w, stranger);
+    assert!(
+        r.c.feud(r.f, q).is_none(),
+        "the stranger has no quarrel yet"
+    );
+    let lambda = r.c.cultures.get(0).lambda;
+    let at = r.c.now() + 5;
+    let owner = |r: &Run| r.c.feud(r.f, r.p).unwrap().g.total_at(at + 100, lambda);
+    let before = owner(&r);
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_ATTACKED,
+        stranger,
+        at,
+    );
+    assert!(settled(&r).is_empty(), "the player's demand is not refused");
+    let d = r.c.feud(r.f, r.p).unwrap().demand.expect("still open");
+    assert_eq!(d.paid, 0);
+    assert_eq!(owner(&r), before, "nor does the insult land on the player");
+    let theirs = r.c.feud(r.f, q).expect("the stranger's own feud");
+    let g = theirs.g.total_at(at + 100, lambda);
+    assert!(g > 0.0, "the insult is held against the stranger: {g}");
+    let focus = theirs.focus.expect("a focus at the envoy's place");
+    assert_eq!(focus.district, None, "against no district");
+    assert_ne!(focus.pos, synth::CAMP_POS, "and not at the camp");
+    // The player's own blow refuses the demand, as it always did.
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_ATTACKED,
+        synth::PLAYER,
+        at + 5,
+    );
+    assert_eq!(settled(&r), vec![boundary::SETTLED_REFUSED]);
+    assert_eq!(
+        r.c.feud(r.f, r.p).unwrap().focus.unwrap().district,
+        Some(synth::REFINERY),
+        "at the demand's district"
     );
 }
 
@@ -1538,6 +1833,76 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
         alive - 2,
         "kept after the replay"
     );
+}
+
+/// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
+/// and before its despawn, counts the same live as in a replay. The live run used to return at
+/// once (the band is not embodied), so the replay of the same record counted a death, a signal
+/// and a breaker the session itself never did.
+#[test]
+fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    let epoch = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch
+    };
+    let alive = r.c.parties[band].alive();
+    assert!(alive >= 4, "a band to lose members from ({alive})");
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    let killing = Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_PLAYER,
+        body,
+        count: 2,
+        killer: synth::PLAYER,
+    });
+    // The restart that replays it: the bodies the pages held are a recalled stack.
+    let mut replayed = restarted(&r);
+    assert!(replayed.replaying);
+    // The session that went on: the player left, the band was recalled, its bodies walk off.
+    let mut live = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    {
+        let x = &mut live.parties[band];
+        x.recalled = vec![(epoch, std::mem::take(&mut x.spawned))];
+        x.embodied = false;
+    }
+    assert!(!live.replaying);
+    let at = r.c.now() + 1;
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at);
+    }
+    let grievance = |c: &Conflict| c.feud_view(synth::CAMP, r.p).unwrap().grievance;
+    assert_eq!(live.stats.casualties, 2, "the walk-off's dead are counted");
+    assert_eq!(replayed.stats.casualties, live.stats.casualties);
+    assert_eq!(live.parties[band].alive(), alive - 2);
+    assert_eq!(replayed.parties[band].alive(), live.parties[band].alive());
+    assert_eq!(live.parties[band].breaker, Some(r.p), "the killer is known");
+    assert_eq!(replayed.parties[band].breaker, live.parties[band].breaker);
+    assert!(
+        grievance(&live) > grievance(&r.c),
+        "and the killing is held against them"
+    );
+    assert_eq!(grievance(&replayed), grievance(&live));
+    // The despawn then counts only the dead nobody reported: no double count, live or replayed.
+    let despawn = despawn_with(&r, band, epoch, 3);
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at + 1);
+        assert_eq!(c.parties[band].alive(), alive - 3);
+        assert!(c.parties[band].recalled.is_empty());
+    }
+    // A straggler after the despawn is no death.
+    for c in [&mut live, &mut replayed] {
+        c.ingest(&mut r.w, &mut NoInfrastructure, &killing, at + 2);
+        assert_eq!(c.parties[band].alive(), alive - 3);
+    }
 }
 
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
@@ -1774,6 +2139,48 @@ fn a_late_tribute_to_an_envoy_does_not_settle_the_settlers_demand() {
     pay_to(&mut r, 0, 0, tribute as i32, d.good, 78, at);
     assert_eq!(r.c.stats.tributes, 1, "at the camp it is a tribute");
     assert_eq!(settled(&r).last(), Some(&boundary::SETTLED_PAID));
+}
+
+/// Goblins of a short patience that never plunder: an envoy gets bored a day after it arrives.
+fn impatient_goblins() -> Cultures {
+    let mut d: CultureDef = serde_json::from_str(GOBLIN_JSON).unwrap();
+    d.plunder_mean_days = None;
+    d.patience_days = 1.0;
+    Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
+}
+
+/// MZB-143 (re-review P2-3): a tribute paid to a bored envoy on its way home, its demand still
+/// open, settles that demand. `go_home` clears the envoy's `feud`, and the lookup MZB-137 added
+/// went through it, so the payment was a gift and the demand ran out and climbed.
+#[test]
+fn a_tribute_to_a_bored_envoy_on_its_way_home_settles_its_open_demand() {
+    let mut r = Run::new(36, impatient_goblins());
+    let e = envoy_met(&mut r);
+    let d = r.c.feud(r.f, r.p).unwrap().demand.unwrap();
+    let band = Party::of_agent(e.agent).unwrap();
+    // The player does not answer: the envoy gets bored and starts home with the demand open.
+    r.watch = false;
+    let limit = d.deadline;
+    while r.c.parties[band].phase != Phase::Home {
+        assert!(r.c.now() < limit, "the envoy never left");
+        r.run(r.c.now() + 600);
+    }
+    assert_eq!(r.c.parties[band].feud, None, "going home clears its feud");
+    let open =
+        r.c.feud(r.f, r.p)
+            .unwrap()
+            .demand
+            .expect("the demand is open");
+    assert_eq!(open.envoy, Some(band));
+    let before = d.deadline.since(r.c.now());
+    assert!(before > 1_000, "well before the deadline ({before} ticks)");
+    let (tributes, gifts) = (r.c.stats.tributes, r.c.stats.gifts);
+    let at = r.c.now() + 10;
+    pay_to(&mut r, e.agent, e.epoch, d.tribute as i32, d.good, 91, at);
+    assert_eq!(settled(&r), vec![boundary::SETTLED_PAID], "paid");
+    assert_eq!(r.c.stats.tributes, tributes + 1, "a tribute");
+    assert_eq!(r.c.stats.gifts, gifts, "not a gift");
+    assert!(r.c.feud(r.f, r.p).unwrap().demand.is_none());
 }
 
 fn tmpdir(tag: &str) -> std::path::PathBuf {
@@ -2057,6 +2464,59 @@ fn a_chief_dead_of_age_while_out_leaves_no_chief_flag_on_the_band() {
     assert_eq!(r.c.parties[band].phase, phase, "the band carries on");
 }
 
+/// MZB-146 (re-review P3-3): the chief died of age out with the band and nothing has asked for the
+/// chief since (no feud wake, no plunder), so the lazy succession has not run and the band still
+/// has the flag. A CHIEF_KILLED for it ran as a killing of the dead chief: a rout, a count and
+/// an heir who took over holding a grudge. The succession runs first, the flag goes, and the
+/// record is dropped.
+#[test]
+fn a_chief_killed_after_dying_of_age_before_any_wake_is_dropped() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    assert!(r.c.parties[band].chief, "the chief rides with the band");
+    // Past the events already due (the feud's wakes ask for the chief): the engine is quiet.
+    r.run(Tick(600));
+    assert!(
+        r.c.parties[band].chief,
+        "the chief still rides with the band"
+    );
+    let old = r.c.factions[r.f as usize].chief;
+    let at = r.c.now() + 1;
+    assert!(
+        r.c.next_due().is_none_or(|d| d > at),
+        "nothing due before the record"
+    );
+    r.w.knowledge.die(old, r.c.now());
+    let successions = r.c.stats.successions;
+    assert!(
+        r.c.parties[band].chief,
+        "nothing has found out yet: the band still has the flag"
+    );
+    r.ingest(chief_killed_by_mob(band, r.c.parties[band].epoch, 92), at);
+    assert_eq!(
+        r.c.stats.successions,
+        successions + 1,
+        "the heir took over, once"
+    );
+    assert_ne!(r.c.factions[r.f as usize].chief, old);
+    assert_eq!(r.c.stats.chiefs_killed, 0, "no chief fell");
+    assert_eq!(r.c.stats.routs, 0, "no rout");
+    assert!(!r.c.parties[band].chief, "the band's flag is gone");
+    let new = r.c.factions[r.f as usize].chief;
+    assert!(r.w.knowledge.notable(new).is_some(), "the new chief lives");
+}
+
 /// Control: with the chief alive, the same CHIEF_KILLED does kill him and the heir succeeds.
 #[test]
 fn a_chief_killed_with_his_band_still_falls_with_it() {
@@ -2249,4 +2709,785 @@ fn the_heirs_text_tells_a_death_of_age_from_a_killing() {
         "{player}"
     );
     assert!(!player.contains("age"), "{player}");
+}
+
+/// CL-D61 (the Opus review): a watched fight is centred on the watching player, who may stand up
+/// to `view_radius` from the band's target, so the rout is seen from where the breaker stands, not
+/// from where the band was headed. Ashby, a village that hates goblins, is the one witness here:
+/// the player 150 blocks from the target on Ashby's side (Ashby 200 from the target, 50 from the
+/// player) puts Ashby in view; the player 150 past the target (Ashby 110 from the target, 260
+/// from the player) puts it out of view. Without a position for the player (never reported, a
+/// report too old for [`Conflict::watcher`] to believe, or another frame) the band's target is
+/// the break point. The report says where the band broke.
+#[test]
+fn a_fight_breaks_where_the_breaker_stands_not_where_the_band_was_headed() {
+    let (_, ashby_at) = village(&Run::new(9, quiet_goblins()), ASHBY);
+    let stale = Run::new(9, quiet_goblins()).c.tun.player_stale_ticks;
+    let off = |dz: i32| Pos::new(0, ashby_at.x, ashby_at.z + dz);
+    // (target, where the player stands, how long ago that was reported, Ashby sees the rout)
+    let cases = [
+        (off(200), Some(off(50)), 0, true),
+        (off(110), Some(off(260)), 0, false),
+        (off(110), None, 0, true),
+        (off(200), None, 0, false),
+        // The same player, reported just inside the stale limit and just outside it.
+        (off(200), Some(off(50)), stale, true),
+        (off(200), Some(off(50)), stale + 1, false),
+        // The same place in another frame is not near the band at all.
+        (
+            off(200),
+            Some(Pos::new(1, ashby_at.x, ashby_at.z + 50)),
+            0,
+            false,
+        ),
+    ];
+    for (target, player, age, seen) in cases {
+        let (mut r, band) = raid_in_a_fight_at(9, target);
+        let at = fight_at();
+        if let Some(pp) = player {
+            assert!(
+                blocks_between(pp, (target.x, target.z)) <= 150.0,
+                "the player stands within 150 blocks of the target"
+            );
+            // Observed in the world's frame, then reported in the case's (the world knows one).
+            r.w.observe_area(synth::PLAYER, Pos::new(0, pp.x, pp.z), at, 160);
+            let st =
+                r.w.players
+                    .get_mut(&r.p)
+                    .expect("the player is known to the world");
+            st.pos = Some((pp, Tick(at.0 - age)));
+        }
+        let broke = match player {
+            Some(pp) if age <= stale && pp.frame == 0 => (pp.x, pp.z),
+            _ => (target.x, target.z),
+        };
+        r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(seen),
+            "player {player:?} ({age} ticks ago), target {target:?}: Ashby sees: {seen}"
+        );
+        if seen {
+            let rep = r.w.knowledge.report(reps[0]).unwrap();
+            assert_eq!(
+                (rep.place.frame, rep.place.x, rep.place.z),
+                (0, broke.0, broke.1),
+                "where the band broke"
+            );
+            let (ashby, _) = village(&r, ASHBY);
+            assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
+        }
+    }
+}
+
+/// CL-D61: a rout nobody witnessed records no report (it had six witnesses, every hating village
+/// within 2,000 blocks, before). The band breaks at the refinery, 164 blocks from Ashby, the
+/// nearest village, and it was marching on the player's refinery, not on a village.
+#[test]
+fn a_rout_nobody_witnessed_records_no_report() {
+    let (mut r, band) = chief_in_a_fight(9);
+    let at = fight_at();
+    let view = f64::from(r.c.tun.view_radius);
+    let broke = r.c.party_pos(band, at);
+    assert!(
+        villages(&r)
+            .iter()
+            .all(|&(_, pos, _)| blocks_between(pos, broke) > view),
+        "no village sees the rout"
+    );
+    let was: Vec<i8> = villages(&r)
+        .iter()
+        .map(|&(a, _, _)| r.w.knowledge.sentiment(a, r.p, at))
+        .collect();
+    r.c.log_enabled = true;
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    assert!(rescue_reports(&r).is_empty(), "no witness, no report");
+    assert_eq!(
+        rescue_notes(&r),
+        ["nobody saw the goblin band broken: no rescue report"]
+    );
+    for ((a, _, _), was) in villages(&r).into_iter().zip(was) {
+        assert_eq!(r.w.knowledge.sentiment(a, r.p, at), was);
+    }
+}
+
+/// The key of the player base the CL-D61 follow-up tests mark.
+const BASE: u64 = 0xBA5E_0001;
+
+/// A raid on the player's refinery with its war chief, fighting the player at [`fight_at`], in a
+/// world where the player's dwell counter has marked a base `base_at`: the base's node and actor.
+/// A fighting band stands at its target, so the base is as far from the rout as `base_at` is from
+/// the refinery.
+fn chief_with_a_base_at(seed: u64, base_at: Pos) -> (Run, Handle<Party>, usize, ActorId) {
+    let mut r = Run::new(seed, quiet_goblins());
+    let node = r.w.mark_base(BASE, base_at, r.p, Tick::ZERO);
+    assert!(
+        matches!(r.w.nodes[node].kind, NodeKind::PlayerBase { .. }),
+        "a player base"
+    );
+    let actor = r.w.nodes[node].actor;
+    let (mut r, band) = band_in_a_fight_of(r, |_| {
+        Target::District(synth::REFINERY, synth::REFINERY_POS)
+    });
+    r.c.log_enabled = true;
+    (r, band, node, actor)
+}
+
+/// The note log's rescue lines.
+fn rescue_notes(r: &Run) -> Vec<String> {
+    r.c.log
+        .iter()
+        .filter(|e| e.kind == "rescue")
+        .map(|e| e.what.clone())
+        .collect()
+}
+
+/// CL-D61 ("Base carries the news", Ben, 2026-10-23): a band broken at a player's base has that
+/// base as its witness, as a caravan has a rescue it saw (PLAN.md §8.7: "and its owner once it
+/// gets home"). One rout at the refinery, 164 blocks from the nearest village, with the player's
+/// base marked at the refinery: one rescue report, the base has it first-hand at the full +25,
+/// and no village does, though the report is now recorded.
+#[test]
+fn a_rout_at_a_players_base_is_witnessed_by_the_base_and_by_no_village() {
+    let (mut r, band, _, base) = chief_with_a_base_at(9, synth::REFINERY_POS);
+    let at = fight_at();
+    let view = f64::from(r.c.tun.view_radius);
+    let broke = r.c.party_pos(band, at);
+    assert!(
+        villages(&r)
+            .iter()
+            .all(|&(_, pos, _)| blocks_between(pos, broke) > view),
+        "no village sees the rout"
+    );
+    let was = r.w.knowledge.sentiment(base, r.p, at);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!(rep.who, r.p, "the rescuer");
+    assert_eq!(
+        (rep.place.frame, rep.place.x, rep.place.z),
+        (0, broke.0, broke.1),
+        "where the band broke"
+    );
+    assert!(r.w.knowledge.knows(base, reps[0]), "the base saw it");
+    let now = r.w.knowledge.sentiment(base, r.p, at);
+    assert!(
+        i32::from(now) >= i32::from(was) + 20,
+        "first-hand, not hearsay: {was} to {now}"
+    );
+    for (a, _, hates) in villages(&r) {
+        assert!(
+            !r.w.knowledge.knows(a, reps[0]),
+            "no village (hating the camp: {hates}) witnesses it"
+        );
+    }
+    assert_eq!(
+        rescue_notes(&r),
+        [
+            "0 village(s) and 1 base(s) saw the goblin band broken (the rest hear it from travellers)"
+        ]
+    );
+}
+
+/// CL-D61 ("Base carries the news"): the villages hear a rout at a base only second-hand. The
+/// base's news goes out with the next messenger on each of its roads (the real travel path, the
+/// world's packets and deliveries), so some village learns it days later, at hearsay weight
+/// (+12, half the first-hand +25), and no village ever has it first-hand: the base is the only
+/// witness, and nothing a traveller carries is first-hand to the one who hears it.
+#[test]
+fn a_village_hears_a_rout_at_a_base_later_from_travellers_at_hearsay_weight() {
+    let (mut r, band, node, base) = chief_with_a_base_at(9, synth::REFINERY_POS);
+    let at = fight_at();
+    assert!(
+        !r.w.nodes[node].out.is_empty(),
+        "the base is on the road network, so travellers leave it"
+    );
+    let delivered = r.w.stats.deliveries;
+    let was: Vec<(ActorId, i8)> = villages(&r)
+        .iter()
+        .map(|&(a, _, _)| (a, r.w.knowledge.sentiment(a, r.p, at)))
+        .collect();
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1);
+    assert!(r.w.knowledge.knows(base, reps[0]));
+    assert_eq!(
+        was.iter()
+            .filter(|(a, _)| r.w.knowledge.knows(*a, reps[0]))
+            .count(),
+        0,
+        "no village knows it when the band breaks"
+    );
+    // Watch the news go out, an hour of game time (1,000 ticks) at a time: a village is read the
+    // moment it first knows the report, before its feeling fades.
+    let mut heard: Vec<(ActorId, i8, i8, u64)> = Vec::new();
+    let mut t = at;
+    while t < at + 10 * TICKS_PER_DAY {
+        t += 1_000;
+        r.w.run_until(t);
+        for &(a, was) in &was {
+            if r.w.knowledge.knows(a, reps[0]) && !heard.iter().any(|h| h.0 == a) {
+                heard.push((a, was, r.w.knowledge.sentiment(a, r.p, t), t.0 - at.0));
+            }
+        }
+    }
+    assert!(
+        r.w.stats.deliveries > delivered,
+        "messengers arrived in the meantime"
+    );
+    assert!(
+        !heard.is_empty(),
+        "travellers carry the rescue from the base to a village"
+    );
+    for (_, was, now, after) in heard {
+        assert!(after > 0, "later, not at once");
+        assert!(
+            i32::from(now) >= i32::from(was) + 8 && i32::from(now) < i32::from(was) + 20,
+            "a village that heard it from a traveller thinks a little better, not as one who \
+             saw it: {was} to {now}"
+        );
+    }
+}
+
+/// CL-D61 ("Base carries the news"): the base sees the rout from `view_radius`, as a village
+/// does: a base exactly that far from where the band broke witnesses it, one block farther does
+/// not (and a rout no village and no base sees records nothing). The base is not the band's
+/// target, so this is the view rule alone and not the target rule: the band was after the
+/// refinery, the player stands 150 blocks east of it (where the band broke), and the base is
+/// 160 or 161 blocks east of the player, 310 and 311 from the refinery.
+#[test]
+fn a_base_sees_a_rout_from_exactly_the_view_radius() {
+    let view = Run::new(9, quiet_goblins()).c.tun.view_radius as i32;
+    let target = synth::REFINERY_POS;
+    let player_at = Pos::new(0, target.x + 150, target.z);
+    for (dx, seen) in [(view, true), (view + 1, false)] {
+        let base_at = Pos::new(0, player_at.x + dx, player_at.z);
+        let (mut r, band, base) = base_and_a_player_off_the_target(base_at, player_at);
+        assert!(
+            blocks_between(base_at, (target.x, target.z)) > f64::from(view),
+            "the base is not the band's target"
+        );
+        r.c.chief_killed(&mut r.w, band, Some(r.p), fight_at());
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(seen),
+            "a base {dx} blocks from the rout sees it: {seen}"
+        );
+        assert_eq!(reps.iter().any(|id| r.w.knowledge.knows(base, *id)), seen);
+        if seen {
+            let rep = r.w.knowledge.report(reps[0]).unwrap();
+            assert_eq!(
+                (rep.place.x, rep.place.z),
+                (player_at.x, player_at.z),
+                "the rout is where the player stands"
+            );
+        }
+    }
+}
+
+/// CL-D61 ("Base carries the news"): a rout the villages and a base both see is still one report:
+/// the village that hates the camp and the base each have it first-hand, the rest hear it later.
+/// The base is 86 blocks from the rout, and Ashby is too.
+#[test]
+fn a_base_and_a_village_in_view_of_one_rout_are_both_witnesses_of_one_report() {
+    let mut r = Run::new(9, quiet_goblins());
+    let node = r.w.mark_base(BASE, BY_ASHBY, r.p, Tick::ZERO);
+    let base = r.w.nodes[node].actor;
+    let (mut r, band) = band_in_a_fight_of(r, |_| Target::District(synth::REFINERY, BY_ASHBY));
+    r.c.log_enabled = true;
+    let (ashby, _) = village(&r, ASHBY);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), fight_at());
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    assert!(r.w.knowledge.knows(base, reps[0]), "the base saw it");
+    assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby saw it");
+    for (a, _, _) in villages(&r) {
+        if a != ashby {
+            assert!(!r.w.knowledge.knows(a, reps[0]), "the rest have not heard");
+        }
+    }
+    assert_eq!(
+        rescue_notes(&r),
+        [
+            "1 village(s) and 1 base(s) saw the goblin band broken (the rest hear it from travellers)"
+        ]
+    );
+}
+
+/// A base on the road network at `base_at`, a raid on the refinery serving the player's feud, and
+/// the player standing at `player_at`, reported at [`fight_at`]: the band fights the player there
+/// (`start_fight` centres the fight on the watching player) while its target is the refinery.
+fn base_and_a_player_off_the_target(base_at: Pos, player_at: Pos) -> (Run, Handle<Party>, ActorId) {
+    let (mut r, band, _, base) = chief_with_a_base_at(9, base_at);
+    r.w.observe_area(synth::PLAYER, player_at, fight_at(), 160);
+    (r, band, base)
+}
+
+/// CL-D61 (the Opus review): where the rout happens and what the band marched on both bring a
+/// base in. The refinery is the band's target and the player stands 150 blocks east of it, so the
+/// rout is the player's place. A base 100 blocks west of the refinery is the base the band was
+/// after (250 blocks from the rout): it witnesses with the player off the target. A base 300
+/// blocks east of the refinery is neither the band's target nor within reach of it, but it is 150
+/// from where the player stands: the rout happened at it. A base 400 blocks north of the
+/// refinery is neither, and sees nothing.
+#[test]
+fn a_base_witnesses_the_rout_it_was_marched_on_or_that_happened_at_it() {
+    let target = synth::REFINERY_POS;
+    let player_at = Pos::new(0, target.x + 150, target.z);
+    let cases = [
+        (
+            Pos::new(0, target.x - 100, target.z),
+            true,
+            "the base the band marched on",
+        ),
+        (
+            Pos::new(0, target.x + 300, target.z),
+            true,
+            "the base the rout happened at",
+        ),
+        (
+            Pos::new(0, target.x, target.z - 400),
+            false,
+            "a base that is neither",
+        ),
+    ];
+    for (base_at, seen, what) in cases {
+        let (mut r, band, base) = base_and_a_player_off_the_target(base_at, player_at);
+        let at = fight_at();
+        assert_eq!(r.c.party_pos(band, at), (target.x, target.z));
+        assert!(
+            villages(&r)
+                .iter()
+                .all(|&(_, pos, _)| blocks_between(pos, (player_at.x, player_at.z)) > 160.0),
+            "no village sees the rout where the player stands"
+        );
+        r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+        let reps = rescue_reports(&r);
+        assert_eq!(reps.len(), usize::from(seen), "{what}: {seen}");
+        assert_eq!(
+            reps.iter().any(|id| r.w.knowledge.knows(base, *id)),
+            seen,
+            "{what}: the base has the report first-hand: {seen}"
+        );
+        if let Some(&id) = reps.first() {
+            let rep = r.w.knowledge.report(id).unwrap();
+            assert_eq!(
+                (rep.place.x, rep.place.z),
+                (player_at.x, player_at.z),
+                "the rout is where the player stands"
+            );
+        }
+    }
+}
+
+/// A raid on Ashby (a village that hates goblins) with its war chief, serving the player's feud,
+/// still on the road at [`fight_at`] (it is a day's march and more from the camp). Returns it with
+/// the village.
+fn band_on_the_road_to_ashby(seed: u64) -> (Run, Handle<Party>, ActorId) {
+    let mut r = Run::new(seed, quiet_goblins());
+    r.kill(20.0, Tick(10));
+    let ashby_node = r.w.node_of_key(ASHBY).unwrap();
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Raid,
+            Target::Node(ashby_node),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, fight_at());
+    let x = &r.c.parties[band];
+    assert!(
+        x.chief && x.phase == Phase::Out,
+        "on the road: {:?}",
+        x.phase
+    );
+    r.c.log_enabled = true;
+    let (ashby, _) = village(&r, ASHBY);
+    (r, band, ashby)
+}
+
+/// CL-D61 (the Opus review): a rout on the road is a rescue like a rout in a fight (C24: rescues
+/// count). The war chief falls to the player while the band is on the march: one rout counted,
+/// one rescue report where the band was on the road, the village it marched on witnesses it at
+/// the full +25.
+#[test]
+fn a_chief_killed_on_the_road_records_the_rescue() {
+    let (mut r, band, ashby) = band_on_the_road_to_ashby(9);
+    let at = fight_at();
+    let broke = r.c.party_pos(band, at);
+    // The player stands 100 blocks off, reported just now: a band on the march is seen where it
+    // walks, and the player's place does not move where it broke (only a watched fight is
+    // centred on the player).
+    let near = Pos::new(0, broke.0 + 100, broke.1);
+    r.w.observe_area(synth::PLAYER, near, at, 160);
+    let was = r.w.knowledge.sentiment(ashby, r.p, at);
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert_eq!(r.c.stats.routs, 1);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!(rep.who, r.p, "the rescuer");
+    assert_eq!(rep.whom, ashby, "the village the band marched on");
+    assert_eq!(
+        (rep.place.x, rep.place.z),
+        broke,
+        "where the band was on the road"
+    );
+    assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
+    let now = r.w.knowledge.sentiment(ashby, r.p, at);
+    assert!(
+        i32::from(now) >= i32::from(was) + 20,
+        "first-hand, not hearsay: {was} to {now}"
+    );
+    assert_eq!(
+        rescue_notes(&r),
+        [
+            "1 village(s) and 0 base(s) saw the goblin band broken (the rest hear it from travellers)"
+        ]
+    );
+}
+
+/// CL-D61 (the Opus review): a chief felled by nobody a player is no rescue, on the road as in a
+/// fight: the rout is counted, no report is made.
+#[test]
+fn a_chief_killed_on_the_road_by_no_player_is_no_rescue() {
+    let (mut r, band, _) = band_on_the_road_to_ashby(9);
+    r.c.chief_killed(&mut r.w, band, None, fight_at());
+    assert_eq!(r.c.stats.routs, 1);
+    assert!(rescue_reports(&r).is_empty(), "no player broke it");
+    assert!(rescue_notes(&r).is_empty());
+}
+
+/// CL-D61 (the Opus review): a war band the player wipes out on the road, unit by unit, is routed
+/// as the chief's fall routs it: counted in `routs` (it was counted nowhere) and one rescue report
+/// for the player who broke it, witnessed by the village it marched on.
+#[test]
+fn a_war_band_wiped_out_on_the_road_records_the_rescue() {
+    let (mut r, band, ashby) = band_on_the_road_to_ashby(9);
+    let at = fight_at();
+    let broke = r.c.party_pos(band, at);
+    // The player stands 100 blocks off, as in the chief's fall on the road: not the place.
+    r.w.observe_area(synth::PLAYER, Pos::new(0, broke.0 + 100, broke.1), at, 160);
+    // The plugin has it in view: embodied, near a player, and the player kills every member.
+    r.c.parties[band].embodied = true;
+    let epoch = r.c.parties[band].epoch;
+    let units = r.c.parties[band].units.clone();
+    let c =
+        r.c.cultures
+            .get(r.c.cultures.index_of("goblin").unwrap())
+            .clone();
+    assert_eq!(r.c.stats.routs, 0);
+    for (u, count) in units {
+        r.ingest(
+            Obs::Casualties(boundary::BandCasualties {
+                agent: Party::agent(band),
+                epoch,
+                by: boundary::BY_PLAYER,
+                body: rtsim_conflict::engine::body_id(&r.c.cultures, &c.unit(u).body),
+                count,
+                killer: synth::PLAYER,
+            }),
+            at,
+        );
+    }
+    assert_eq!(r.c.parties[band].alive(), 0);
+    assert_eq!(r.c.parties[band].phase, Phase::Home, "it goes home");
+    assert_eq!(r.c.stats.routs, 1, "a rout");
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!((rep.who, rep.whom), (r.p, ashby));
+    assert_eq!((rep.place.x, rep.place.z), broke);
+    assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
+}
+
+/// A raid on `target` in a watched fight, then the casualties the plugin would report: `by` kills
+/// one goblin of the band's first unit (`all` false) or every member still standing (`all`).
+fn strike(r: &mut Run, band: Handle<Party>, by: u32, all: bool, at: Tick) {
+    r.c.parties[band].embodied = true;
+    let epoch = r.c.parties[band].epoch;
+    let units = r.c.parties[band].units.clone();
+    let goblins = r.c.cultures.index_of("goblin").unwrap();
+    let c = r.c.cultures.get(goblins).clone();
+    let killer = if by == boundary::BY_PLAYER {
+        synth::PLAYER
+    } else {
+        (0, 0)
+    };
+    for (u, count) in units {
+        let count = if all { count } else { 1 };
+        r.ingest(
+            Obs::Casualties(boundary::BandCasualties {
+                agent: Party::agent(band),
+                epoch,
+                by,
+                body: rtsim_conflict::engine::body_id(&r.c.cultures, &c.unit(u).body),
+                count,
+                killer,
+            }),
+            at,
+        );
+        if !all {
+            break;
+        }
+    }
+}
+
+/// CL-D61 (the second review): the breaker is the last player who killed any member, and the rout
+/// can come later, from a mob's kills, with the breaker walked off. A player who stands a long way
+/// from the band when it breaks did not see it break, so the band's own place is where it broke,
+/// and a village near the player does not witness it (it took the rout first-hand from 1,386
+/// blocks away). The breaker's position counts only within `view_radius` of the band, the raw
+/// distance `Conflict::watcher` reads, the edge included.
+#[test]
+fn a_breaker_who_has_walked_off_did_not_see_the_band_break() {
+    let (_, ashby_at) = village(&Run::new(9, quiet_goblins()), ASHBY);
+    let (_, oakford_at) = village(&Run::new(9, quiet_goblins()), OAKFORD);
+    let view = Run::new(9, quiet_goblins()).c.tun.view_radius as i32;
+    let off = |dz: i32| Pos::new(0, ashby_at.x, ashby_at.z + dz);
+    // (band's target, where the breaker stands, which village witnesses: none or the one at the
+    // player's feet)
+    let cases = [
+        // Near: Ashby is 50 from the player, 200 from the band; the player's place is the rout's.
+        (off(200), off(50), true),
+        // The edge: the player at Ashby's gate, exactly 160 from the band, and one block more.
+        (off(view), off(0), true),
+        (off(view + 1), off(0), false),
+        // Far: the player at Oakford, nearly 800 blocks from the band, and nothing else in sight.
+        (synth::REFINERY_POS, oakford_at, false),
+    ];
+    for (target, player_at, seen) in cases {
+        let (mut r, band) = raid_in_a_fight_at(9, target);
+        let at = fight_at();
+        r.c.log_enabled = true;
+        // A fight the plugin began: it runs for days yet (a hand-set phase has no end booked, and
+        // the first loss would book the end at once).
+        r.c.parties[band].until = at + 5 * TICKS_PER_DAY;
+        r.c.parties[band].bored_at = at + 5 * TICKS_PER_DAY;
+        // The breaker kills one member; the player is where they stand, reported just now.
+        strike(&mut r, band, boundary::BY_PLAYER, false, at);
+        assert_eq!(r.c.parties[band].breaker, Some(r.p));
+        r.w.observe_area(synth::PLAYER, player_at, at, 160);
+        let d = blocks_between(player_at, (target.x, target.z));
+        // A mob finishes the band: no player struck the blow that broke it.
+        strike(&mut r, band, boundary::BY_MOB, true, at);
+        assert_eq!(r.c.stats.routs, 1, "the band routs ({d:.0} blocks off)");
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(seen),
+            "the player {d:.0} blocks from the band: the rout is seen: {seen}"
+        );
+        if seen {
+            let rep = r.w.knowledge.report(reps[0]).unwrap();
+            assert_eq!(
+                (rep.place.x, rep.place.z),
+                (player_at.x, player_at.z),
+                "the rout is where the player stands"
+            );
+        }
+        for (a, pos, _) in villages(&r) {
+            let at_player = blocks_between(pos, (player_at.x, player_at.z)) <= f64::from(view);
+            assert_eq!(
+                reps.iter().any(|id| r.w.knowledge.knows(a, *id)),
+                seen && at_player,
+                "a village {:.0} blocks from the player ({d:.0} from the band)",
+                blocks_between(pos, (player_at.x, player_at.z))
+            );
+        }
+    }
+}
+
+/// The band of [`band_on_the_road_to_ashby`], on the road at [`fight_at`], with a player base
+/// marked `offset` blocks east of where it is, and, when `aimed`, the base the band's target (a
+/// district at the base, as a raid on the player's works there would be). Returns the run, the
+/// band, the base's actor and where the band is.
+fn road_band_near_a_base(offset: i32, aimed: bool) -> (Run, Handle<Party>, ActorId, (i32, i32)) {
+    let (mut r, band, _) = band_on_the_road_to_ashby(9);
+    let at = fight_at();
+    let broke = r.c.party_pos(band, at);
+    let base_at = Pos::new(0, broke.0 + offset, broke.1);
+    let node = r.w.mark_base(BASE, base_at, r.p, at);
+    if aimed {
+        r.c.parties[band].target = Target::District(synth::REFINERY, base_at);
+    }
+    let base = r.w.nodes[node].actor;
+    (r, band, base, broke)
+}
+
+/// CL-D61 (the second review): a band routed on the road was not at its target, so the base it
+/// marched on does not witness from any distance: "a band broken at a player's base" is a band
+/// that was fighting at it. On the road a base witnesses only if it is within `view_radius` of
+/// where the band broke, the raw distance, the edge included, whatever the band was after. A road
+/// rout 297 blocks from the base the band marched on is seen by no one: no report, so no village
+/// ever hears it, from travellers or otherwise. The same rout within view of the base is a
+/// report that base has first-hand.
+#[test]
+fn a_road_rout_is_seen_only_by_a_base_in_view_not_by_the_one_the_band_marched_on() {
+    let view = f64::from(Run::new(9, quiet_goblins()).c.tun.view_radius);
+    // (blocks from the band to the base, the base is the band's target, the base saw it). A band
+    // that is not aimed at the base is still after Ashby, so Ashby, the rescued village, always
+    // witnesses and there is a report whether or not the base saw it.
+    let cases = [
+        (297, true, false),
+        (297, false, false),
+        (100, true, true),
+        (100, false, true),
+        (160, true, true),
+        (161, true, false),
+    ];
+    for (offset, aimed, seen) in cases {
+        let (mut r, band, base, broke) = road_band_near_a_base(offset, aimed);
+        let at = fight_at();
+        assert!(
+            villages(&r)
+                .iter()
+                .all(|&(_, pos, _)| blocks_between(pos, broke) > view),
+            "no village is in view of the band on the road"
+        );
+        assert_eq!(r.c.parties[band].phase, Phase::Out);
+        r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+        assert_eq!(r.c.stats.routs, 1);
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(seen || !aimed),
+            "a road rout {offset} blocks from the base (the band's target: {aimed}): recorded"
+        );
+        assert_eq!(
+            reps.iter().any(|id| r.w.knowledge.knows(base, *id)),
+            seen,
+            "the base {offset} blocks off (the band's target: {aimed}) has it first-hand: {seen}"
+        );
+        // A rout nobody saw is heard of by nobody, at once or later.
+        r.w.run_until(at + 5 * TICKS_PER_DAY);
+        if reps.is_empty() {
+            for (a, _, _) in villages(&r) {
+                assert!(
+                    !rescue_reports(&r)
+                        .iter()
+                        .any(|id| r.w.knowledge.knows(a, *id)),
+                    "a village hears a rout nobody saw"
+                );
+            }
+        }
+    }
+}
+
+/// CL-D61 (the second review): a village that saw the rout tells at once, as a base does, rather
+/// than with its next market event. Ashby (human) witnesses a rout in its view: its vanilla
+/// gossip is flushed with the commands and a packet is made for the next messenger on its roads.
+/// Mirewater (a ribbit village, the village the band marched on) has its feelings out with the
+/// next commands: its sorcerers read them to leave out or favour players.
+#[test]
+fn a_village_that_saw_the_rout_tells_the_travellers_and_the_bridge_at_once() {
+    // Ashby, in view of the rout.
+    let (mut r, band) = raid_in_a_fight_at(9, BY_ASHBY);
+    let at = fight_at();
+    let (ashby, _) = village(&r, ASHBY);
+    r.w.take_commands();
+    let sent = r.w.stats.packets_sent;
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1);
+    assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnessed it");
+    assert!(
+        r.w.stats.packets_sent > sent,
+        "Ashby's news is in a packet for the next messengers ({sent} before)"
+    );
+    let cmds = r.w.take_commands();
+    assert!(
+        cmds.iter().any(|c| matches!(c,
+            Command::VanillaGossip(g) if g.village == ashby && g.report == reps[0] && g.first_hand)),
+        "Ashby's vanilla gossip is written with the commands: {cmds:?}"
+    );
+
+    // Mirewater, the village the band marched on.
+    let (mut r, band) = band_in_a_fight(9, |r| Target::Node(r.w.node_of_key(MIREWATER).unwrap()));
+    let at = fight_at();
+    let mirewater = r.w.node_of_key(MIREWATER).unwrap();
+    let key = r.w.nodes[mirewater].key;
+    r.w.take_commands();
+    let sent = r.w.stats.packets_sent;
+    r.c.chief_killed(&mut r.w, band, Some(r.p), at);
+    assert!(
+        r.w.stats.packets_sent > sent,
+        "Mirewater's news is in a packet"
+    );
+    let cmds = r.w.take_commands();
+    let mine = cmds.iter().find_map(|c| match c {
+        Command::Sentiment(s) if s.village == key => Some(s.clone()),
+        _ => None,
+    });
+    let mine = mine.expect("Mirewater's feelings go out with the commands");
+    assert!(
+        mine.entries
+            .iter()
+            .any(|&(m, l, v)| (m, l) == synth::PLAYER && v > 0),
+        "it thinks well of the player who saved it: {:?}",
+        mine.entries
+    );
+}
+
+/// CL-D61 (the second review): a base no player marks any more keeps its node and roads (news on
+/// them may still be arriving) but nobody is there: it neither witnesses nor tells, as
+/// `band_may_visit` and the road stops already read it. The same rout at the same base is seen
+/// while a player marks it and not once the mark is gone, and it was the only candidate.
+#[test]
+fn an_abandoned_base_is_no_witness() {
+    for marked in [true, false] {
+        let (mut r, band, node, base) = chief_with_a_base_at(9, synth::REFINERY_POS);
+        if !marked {
+            r.w.unmark_base(BASE, r.p);
+        }
+        assert_eq!(r.w.base_active(node), marked);
+        r.c.chief_killed(&mut r.w, band, Some(r.p), fight_at());
+        let reps = rescue_reports(&r);
+        assert_eq!(
+            reps.len(),
+            usize::from(marked),
+            "a rout at the refinery base (marked: {marked}) is seen: {marked}"
+        );
+        assert_eq!(reps.iter().any(|id| r.w.knowledge.knows(base, *id)), marked);
+        assert_eq!(
+            rescue_notes(&r),
+            [if marked {
+                "0 village(s) and 1 base(s) saw the goblin band broken (the rest hear it from travellers)"
+            } else {
+                "nobody saw the goblin band broken: no rescue report"
+            }]
+        );
+    }
+}
+
+/// CL-D61 (the second review): the breaker is the last player who killed any member, and a rout
+/// that comes later by no player's hand keeps him. A player strikes one goblin of a band on the
+/// road and walks off; the war chief then dies to a mob (`killer` None). The rule gives the
+/// player the rescue, as it does for a fight a mob finishes after his kills
+/// (`a_breaker_who_has_walked_off_did_not_see_the_band_break`): he did the breaking that counts,
+/// he is credited, and the village the band marched on witnesses. With no earlier strike by a
+/// player there is no breaker and no rescue (`a_chief_killed_on_the_road_by_no_player_is_no_rescue`).
+#[test]
+fn a_chief_felled_by_no_player_after_a_player_struck_the_band_is_still_that_players_rescue() {
+    let (mut r, band, ashby) = band_on_the_road_to_ashby(9);
+    let at = fight_at();
+    strike(&mut r, band, boundary::BY_PLAYER, false, at);
+    assert_eq!(r.c.parties[band].breaker, Some(r.p));
+    r.c.parties[band].embodied = false;
+    r.c.chief_killed(&mut r.w, band, None, at);
+    assert_eq!(r.c.stats.routs, 1);
+    let reps = rescue_reports(&r);
+    assert_eq!(reps.len(), 1, "one rout, one rescue report");
+    let rep = r.w.knowledge.report(reps[0]).unwrap();
+    assert_eq!((rep.who, rep.whom), (r.p, ashby), "the striker's rescue");
+    assert!(r.w.knowledge.knows(ashby, reps[0]), "Ashby witnesses it");
 }
