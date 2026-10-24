@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Graph, carries_goods, term_amount};
 use super::q::Q;
 use super::records::{
-    DomainSource, EdgeKind, GraphDomain, NodeKind, edge_flags, heat as heat_level, model,
-    node_flags, recipe_type, rule, term_flags,
+    DomainLevel, DomainSource, EdgeKind, GraphDomain, NodeKind, edge_flags, heat as heat_level,
+    model, node_flags, recipe_type, rule, term_flags,
 };
 use super::report::why;
 use crate::ids::Good;
@@ -53,7 +53,18 @@ pub fn domain_stress(dom: &GraphDomain, speed: f64) -> f64 {
     stress
 }
 
-/// A driven source's row at boiler level `level`: the largest selector at or below it.
+/// A driven source's row while its boiler is passive (choice SC154): its row with selector
+/// [`DomainLevel::PASSIVE`], else its row at level 0.
+pub fn passive_row(src: &DomainSource) -> Option<u32> {
+    src.levels
+        .iter()
+        .position(|l| l.selector == DomainLevel::PASSIVE)
+        .map(|i| i as u32)
+        .or_else(|| source_row(src, 0))
+}
+
+/// A driven source's row at boiler level `level`: the largest selector at or below it (the
+/// passive row's selector is above every level).
 pub fn source_row(src: &DomainSource, level: i64) -> Option<u32> {
     let mut best: Option<(u32, u32)> = None;
     for (i, l) in src.levels.iter().enumerate() {
@@ -2031,11 +2042,15 @@ impl<'a> Solver<'a> {
             return;
         };
         let duty = std::mem::take(&mut self.duty);
-        let level = self.boiler_level(v, w, &duty, false);
+        let (level, passive) = self.boiler_state(v, w, &duty, false);
         self.duty = duty;
         for (i, src) in g.sources_of(d).zip(&g.domains[d as usize].sources) {
             if src.driver == Some(v) {
-                self.src_next[i] = source_row(src, level);
+                self.src_next[i] = if passive {
+                    passive_row(src)
+                } else {
+                    source_row(src, level)
+                };
             }
         }
         self.dom_next[d as usize] = domain_state(g, d, &self.src_next, self.rg.net.get(&d)).0;
@@ -2052,8 +2067,17 @@ impl<'a> Solver<'a> {
     /// `min(activeHeat, min(18, ceil(w) / 10), min(18, tankBlocks / 4))`, activeHeat summing the
     /// Heat edges of lit heaters (L: at duty 1; `upper`: any duty above 0).
     pub fn boiler_level(&self, v: u32, water: Q, duty: &[Q], upper: bool) -> i64 {
+        self.boiler_state(v, water, duty, upper).0
+    }
+
+    /// The boiler's level ([`Self::boiler_level`]) and whether it is passive (choice SC154): no
+    /// active heat, a heater under it that is out (a blaze burner smoulders: Create's
+    /// `BoilerHeaters.blazeBurner` gives passive heat for anything below FADING), and water and
+    /// size enough for a level (`BoilerData.isPassive`).
+    pub fn boiler_state(&self, v: u32, water: Q, duty: &[Q], upper: bool) -> (i64, bool) {
         let g = self.g;
         let mut heat = 0i64;
+        let mut out = false;
         for &e in g.heat_in.of(v) {
             let ed = g.edge(e);
             let h = ed.from as usize;
@@ -2068,6 +2092,8 @@ impl<'a> Solver<'a> {
             };
             if lit {
                 heat += ed.param.max(1);
+            } else {
+                out = true;
             }
         }
         let water_level = if water.is_inf() {
@@ -2080,7 +2106,8 @@ impl<'a> Solver<'a> {
         };
         let tank = g.node(v).params[0];
         let size_level = if tank > 0 { (tank / 4).min(18) } else { 18 };
-        heat.min(water_level).min(size_level).max(0)
+        let level = heat.min(water_level).min(size_level).max(0);
+        (level, heat == 0 && out && water_level > 0 && size_level > 0)
     }
 
     /// Runs the rounds to the fixed point (or the cap).

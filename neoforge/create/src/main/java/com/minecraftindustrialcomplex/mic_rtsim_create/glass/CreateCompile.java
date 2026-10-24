@@ -795,21 +795,24 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /**
      * An engine's shaft on a boiler (SEC-1 S5-1): a row per boiler level 0 to 18 with the speed and capacity the
-     * engines give there (G-B5, §9.3 "Boiler"); the boiler node becomes its driver in step 1.
+     * engines give there (G-B5, §9.3 "Boiler"), then the passive row (choice SC154: passive heat and no active
+     * heat, as under a burner that has gone out, runs the engines at an eighth of their efficiency); the boiler
+     * node becomes its driver in step 1.
      */
     private GraphBuilder.Source drivenSource(PoweredShaftBlockEntity shaft, FluidTankBlockEntity tank, Rat ratio) {
         GraphBuilder.Source out = new GraphBuilder.Source(shaft.getBlockPos().asLong());
         out.ratio = ratio;
         int engines = tank.boiler.attachedEngines;
         double perRpm = com.simibubi.create.api.stress.BlockStressValues.getCapacity(shaft.capacityKey);
-        for (int l = 0; l <= 18; l++) {
-            float eff = Cycles.boilerEfficiency(l, engines, false);
+        for (int l = 0; l <= 19; l++) {
+            boolean passive = l == GlassRecords.Domain.PASSIVE_SELECTOR;
+            float eff = Cycles.boilerEfficiency(passive ? 0 : l, engines, passive);
             // Create's getGeneratedSpeed: no speed without capacity (a capacity of 0 in the config too)
             float sp = (float) (eff * perRpm) > 0 ? shaft.movementDirection * Cycles.engineSpeed(eff) : 0;
             out.levels.add(new GraphBuilder.Level(l, Rat.ofFloat(sp), Cycles.engineCapacityPerRpm(eff, perRpm) * Math.abs(sp)));
         }
         int level = Cycles.boilerLevel(tank.boiler.activeHeat, tank.getTotalTankSize(), tank.boiler.waterSupply);
-        out.current = Math.max(0, Math.min(18, level));
+        out.current = tank.boiler.isPassive(tank.getTotalTankSize()) ? GlassRecords.Domain.PASSIVE_SELECTOR : Math.max(0, Math.min(18, level));
         return out;
     }
 

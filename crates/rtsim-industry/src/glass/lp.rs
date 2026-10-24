@@ -166,7 +166,11 @@ fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
                 Some(max) => src
                     .levels
                     .iter()
-                    .filter(|l| i64::from(l.selector) <= max)
+                    // A passive row (choice SC154) may run whenever a heater can be out.
+                    .filter(|l| {
+                        i64::from(l.selector) <= max
+                            || l.selector == super::records::DomainLevel::PASSIVE
+                    })
                     .map(to_ref)
                     .collect(),
                 None => src

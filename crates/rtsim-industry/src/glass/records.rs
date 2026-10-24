@@ -359,8 +359,8 @@ pub struct GraphRecipe {
 /// One row (Level24). A domain's speed row is a speed of its reference (the frame of its
 /// members' ratios) that its sources can give, with `selector` and `capacity` 0. A source's row
 /// is one of its states: `selector` the boiler level that selects it (0 to 18) for a driven
-/// source, 0 for a fixed one; `speed` its own generated speed, signed; `capacity` its capacity in
-/// SU at that speed.
+/// source, or [`DomainLevel::PASSIVE`] for its passive row, 0 for a fixed one; `speed` its own
+/// generated speed, signed; `capacity` its capacity in SU at that speed.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct DomainLevel {
     pub selector: u32,
@@ -370,6 +370,11 @@ pub struct DomainLevel {
 }
 
 impl DomainLevel {
+    /// The selector of a driven source's passive row: its boiler has passive heat and no active
+    /// heat, and water and size enough for a level (Create's `BoilerData.isPassive`: the engines
+    /// run at an eighth of their efficiency; choice SC154).
+    pub const PASSIVE: u32 = 19;
+
     pub fn speed(&self) -> f64 {
         f64::from(self.speed_num) / f64::from(self.speed_den.max(1))
     }

@@ -1118,7 +1118,7 @@ public final class SectionsChunkLoadGameTests {
                         record(t, which + ": the engine shaft's source, speed rows, current", engineShaft + "; " + d.levels() + "; " + d.current());
                         check(which + ": the engine's shaft is a source: " + d.sources(), engineShaft != null);
                         if (i == 0) {
-                            check(which + ": the shaft has a row for each boiler level: " + engineShaft.rows().size(), engineShaft.rows().size() == 19);
+                            check(which + ": the shaft has a row for each boiler level and the passive row: " + engineShaft.rows().size(), engineShaft.rows().size() == 20);
                             check(which + ": and the boiler as its driver: " + d.sources(), !d.driven().isEmpty() && engineShaft.driver() != GlassRecords.NONE);
                             check(which + ": more than one speed row: " + d.levels(), d.levels().size() > 1);
                         } else {
