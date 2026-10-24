@@ -1033,6 +1033,8 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.rail_stale,
         s.lurks,
         s.lurks_ended,
+        s.passes,
+        s.passes_watched,
     ]);
     v
 }
@@ -1100,6 +1102,8 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.rail_stale = n();
     s.lurks = n();
     s.lurks_ended = n();
+    s.passes = n();
+    s.passes_watched = n();
     s
 }
 
