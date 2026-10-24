@@ -1165,7 +1165,7 @@ fn put_held(w: &mut Writer, h: &Held) {
 fn get_held(r: &mut Reader<'_>) -> codec::Result<Held> {
     Ok(Held {
         faction: get_u32(r)?,
-        actor: get_opt(r, |r| handle(r))?,
+        actor: get_opt(r, handle)?,
         exit: Tick(r.u64()?),
         point: get_pos(r)?,
         y: get_i32(r)?,

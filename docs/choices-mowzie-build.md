@@ -2944,6 +2944,67 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
   site would replace the track focus and the next Raid would raid nothing.
 - The arrival clears the industry's `last_departure`: capture it before `l.ingest` (MZB-312).
 
+### M7 build choices (engine half, steps 1 to 9)
+
+Where the design left a gap the build took the conservative option; each is undoable. Code is in
+`crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
+
+- **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
+  only if its exit is not before the line's reference time. A pass reported late still counts (adds are
+  exact in any order: `a_late_pass_counts_as_if_on_time`) but leaves the point where the later pass put
+  it, so the Raid's track point is the freshest one.
+- **MZB-335** (held passes): a pass's age is counted from its exit, not from when it was held, and it is
+  let go after a day. Eviction by the caps (64 a train, 4,096 in all) is a let-go like any other
+  (`rail_let_go`). An ownerless pass let go counts against the presence top over its own chunk, read at
+  the present (the tick of the call that lets it go), not at its exit, so a player who arrived since
+  counts; a pass nobody stands near counts against nobody.
+- **MZB-336** (unknown, self-edge): a pass for a faction the engine does not know, or whose culture
+  weights no rail, counts `rail_unknown` and makes no meter; `rail_passes` counts only accepted passes.
+  An arrival whose two stations are one (a self-edge) is treated as no line (the held passes are let
+  go), as rtsim-jni sends it.
+- **MZB-337** (the band's edge): the push gate's band test has a tolerance of 1e-9, so a wake booked at
+  the first tick the closed form crosses the band's edge is not booked again a tick later by a float a
+  hair on the near side.
+- **MZB-338** (retirement and stale wakes): a push that takes the pushed rate to 0.01 a day or less
+  retires the meter on the spot (the source is cleared first). A wake already booked for a retired meter
+  finds none and counts stale. If the meter is made again its stamp restarts at 0, so a stale wake of
+  the old one can fire early on the new one; that costs one extra gate evaluation and nothing else, so
+  it is accepted rather than carried in the page.
+- **MZB-339** (MIDDLING): the chief seed of the sim's runs is 20,376,233, the smallest of 13 seeds below
+  2^28 whose `Temperament` is (128, 128, 128). `the_middling_seed_is_middling` asserts it
+  (`crates/rtsim-conflict/tests/rail.rs`, `synth::MIDDLING`).
+- **MZB-340** (sim geometry): the synthetic line is a straight north-south track 150 blocks east of the
+  den's centre (radius 200), trains run at 1.4 blocks a tick (Create's top speed), the sampler sees them
+  every 20 ticks, a pass is the sample nearest the den reported when the train leaves the circle, and
+  the arrival lands at the leg's end. The clock moves an hour at a time with every pass and arrival at
+  its own tick (`synth::rail_events`, `rtsim-cli/src/sim/mowzie/rail.rs`).
+- **MZB-341** (the Invasion's day): the design's table has the Invasion a Raid dwell (4 days) after the
+  Raid rung's start (17.6, 17.5, 7.5 days for 24 a day, the trunk and 50 a day). The engine restarts the
+  rung's dwell when a band comes home (`feud.since`, MZB-51: it anchors the repeat), so the Invasion comes
+  a dwell after the last Raid's return, or when the grievance reaches the rung's threshold if that is
+  later: 21.6, 21.6 and 11.2 days. The ladder is M2's and the repeat rule is tested (`a band comes again
+  4 days after the last one is home`), so it is not changed. The sim asserts the engine's rule for every
+  seed (the Invasion's day is the 140 crossing's or a Raid's return day plus 4.0, within 0.25) and
+  prints the design's day beside it. The disagreement is in the design's model, not the rail meter: the
+  Notice, Raid and 140 columns and the settled levels all match. Fixing it would need a field decoupling
+  the repeat's anchor from the climb's dwell; that is a ladder change and is left to Ben.
+- **MZB-342** (sim windows): runs 2 and 3 run 90 days, not 60, because the grievance is still coming down
+  from its peak of about 122 (day 13) at day 60. A cut to 4 a day settles at 17.3 on a window of days 60
+  to 90 (one seed's own reading wanders by about 1.5, so a long window); a stopped service reads
+  under 0.5 over days 75 to 90 (it is 0.56 on days 60 to 90). Every other row reads days 50 to 70.
+- **MZB-343** (an owned pass's meter): an owned pass is counted at ingest and credited to its line at the
+  arrival only if the meter still exists then (a meter retired in between has no line to credit). The
+  held table keeps `held_n` (a derived counter, not saved) and `held_oldest`, one entry a train.
+- **MZB-344** (formats): RTC8 and META 7 are the next after this branch's RTC7 and META 6 (M6). A merge
+  that finds another slice has taken them moves M7's one past (MZB-302). The held passes' entry time is
+  not used by the engine and is not saved.
+- **MZB-345** (rtsim-jni): `rail_call` does not run the wheel (the jni `catch_up` does, so a wake due
+  before the arrival has fired first). The line comes from the industry's `last_departure_of`, read
+  before `l.ingest` (MZB-312); an unwatched train, an arrival with no departure and a self-edge give
+  `line: None`. The call is made only if the conflict is running and holds the train. A pass's entry and
+  exit are translated with `phase1::world_tick` (offset 0 in the tests, so the translation is not
+  checked by equality there).
+
 ## M8 Lying in wait
 
 M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md §9: ledger 8; tests 8 and
