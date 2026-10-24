@@ -248,9 +248,10 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     }
     j.idle();
     j.idle();
-    // The world saved with its journal at 10; ten more arrive in the same hand-over.
+    // The world saved with its journal at 11 (the session's JOURNAL_GEN, then ten transfers);
+    // ten more arrive in the same hand-over.
     let through = j.next_obs - 1;
-    assert_eq!(through, 10);
+    assert_eq!(through, 11);
     e.request_save(through);
     for i in 0..10 {
         j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
@@ -268,7 +269,7 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     );
     assert_eq!(
         j.journal.front().map(|(s, _)| *s),
-        Some(11),
+        Some(12),
         "trimmed to the acknowledgement"
     );
     e.close(true, Duration::from_secs(5)).unwrap();

@@ -1583,7 +1583,12 @@ impl Engine {
 
     /// `admit` (a [`Replay`] admission of `seq`), going on past a gap: what the gap held is lost
     /// (a journal trimmed past the pages).
-    fn admitted(&self, st: &mut State, seq: u64, admit: impl Fn(&mut Replay) -> Verdict) -> Verdict {
+    fn admitted(
+        &self,
+        st: &mut State,
+        seq: u64,
+        admit: impl Fn(&mut Replay) -> Verdict,
+    ) -> Verdict {
         let verdict = admit(&mut st.replay);
         let Verdict::Gap { expected, got } = verdict else {
             return verdict;
@@ -2070,7 +2075,7 @@ fn reasserted_record(b: &[u8]) -> Option<&[u8]> {
     }
     let kind = wire::u16_at(inner, wire::R_KIND);
     let size = wire::u16_at(inner, wire::R_SIZE) as usize;
-    let fits = size >= obs::BODY && size <= inner.len() && size % wire::RECORD_ALIGN == 0;
+    let fits = size >= obs::BODY && size <= inner.len() && size.is_multiple_of(wire::RECORD_ALIGN);
     let journaled = obs::is_journaled(kind) && kind != obs::REASSERT && kind != obs::JOURNAL_GEN;
     (fits && journaled).then(|| &inner[..size])
 }
@@ -2083,7 +2088,11 @@ fn gen_blocks(st: &mut State) -> Vec<(PageKey, Vec<u8>)> {
     if closed == st.gens_written && !failed {
         return Vec::new();
     }
-    let from = if failed { 0 } else { st.gens_written / GEN_BLOCK };
+    let from = if failed {
+        0
+    } else {
+        st.gens_written / GEN_BLOCK
+    };
     let out = (from..closed.div_ceil(GEN_BLOCK))
         .map(|k| (gen_key(k), st.replay.closed_block(k)))
         .collect();
@@ -2099,7 +2108,9 @@ fn load_gens(store: &mut PageStore, replay: &mut Replay) -> Result<(), String> {
         let b = store
             .get(gen_key(k))
             .map_err(|e| format!("cannot read the journal's generations, block {k}: {e}"))?
-            .ok_or_else(|| format!("the journal's generations: block {k} of {n} generations is missing"))?;
+            .ok_or_else(|| {
+                format!("the journal's generations: block {k} of {n} generations is missing")
+            })?;
         replay
             .load_closed_block(&b)
             .map_err(|e| format!("the journal's generations, block {k}: {e}"))?;
@@ -2351,7 +2362,10 @@ mod tests {
         assert_eq!(r, replay);
         assert_eq!(o, outbox);
         assert!(!r.copy_is_new(7, ObsSeq(3)), "the open generation's copies");
-        assert!(!r.copy_is_new(100, ObsSeq(6)), "the first closed generation");
+        assert!(
+            !r.copy_is_new(100, ObsSeq(6)),
+            "the first closed generation"
+        );
         assert!(!r.copy_is_new(100, ObsSeq(7)), "its last");
         assert!(r.copy_is_new(100, ObsSeq(8)), "past its last");
     }
@@ -2361,7 +2375,8 @@ mod tests {
         let (_tx, rx) = std::sync::mpsc::channel();
         let mut st = State::new(rx, None);
         assert!(gen_blocks(&mut st).is_empty(), "none closed");
-        for g in 0..GEN_BLOCK as u64 + 1 {
+        // The first opens a generation and each later one closes the one before: a block and one.
+        for g in 0..GEN_BLOCK as u64 + 2 {
             let at = st.replay.applied_through().0 + 1;
             st.replay.admit_gen(ObsSeq(at), 1 + g);
         }
@@ -2370,7 +2385,11 @@ mod tests {
         assert!(gen_blocks(&mut st).is_empty(), "nothing new");
         let at = st.replay.applied_through().0 + 1;
         st.replay.admit_gen(ObsSeq(at), 9999);
-        assert_eq!(keys(gen_blocks(&mut st)), vec![gen_key(1)], "only the block that grew");
+        assert_eq!(
+            keys(gen_blocks(&mut st)),
+            vec![gen_key(1)],
+            "only the block that grew"
+        );
         st.paging.failures_seen += 1;
         assert_eq!(
             keys(gen_blocks(&mut st)),
