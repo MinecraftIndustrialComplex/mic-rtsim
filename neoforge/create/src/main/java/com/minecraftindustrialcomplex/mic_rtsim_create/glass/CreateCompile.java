@@ -485,7 +485,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (net != null)
                 networks.put(id.longValue(), net);
         }
-        // Boilers drive their engines' shafts (choice S5-1): a claimed tank is a boiler node, and the shaft of each of
+        // Boilers drive their engines' shafts (SEC-1 S5-1): a claimed tank is a boiler node, and the shaft of each of
         // its engines is a driven source of the shaft's network. A shaft is driven by the engine Create powers it from.
         LongOpenHashSet boilerTanks = new LongOpenHashSet();
         for (BlockEntity be : all(K.BOILER))
@@ -652,7 +652,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         }
     }
 
-    /** A source that gives the speed it has now and nothing else (choice S5-1): one row, capacity as Create sums it. */
+    /** A source that gives the speed it has now and nothing else (SEC-1 S5-1): one row, capacity as Create sums it. */
     private GraphBuilder.Source fixedSource(com.simibubi.create.content.kinetics.KineticNetwork net, KineticBlockEntity s, Rat ratio) {
         GraphBuilder.Source out = new GraphBuilder.Source(s.getBlockPos().asLong());
         out.ratio = ratio;
@@ -663,7 +663,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     /**
-     * An engine's shaft on a boiler (choice S5-1): a row per boiler level 0 to 18 with the speed and capacity the
+     * An engine's shaft on a boiler (SEC-1 S5-1): a row per boiler level 0 to 18 with the speed and capacity the
      * engines give there (G-B5, §9.3 "Boiler"); the boiler node becomes its driver in step 1.
      */
     private GraphBuilder.Source drivenSource(PoweredShaftBlockEntity shaft, FluidTankBlockEntity tank, Rat ratio) {
