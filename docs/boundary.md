@@ -1768,7 +1768,8 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **The grove's records** (slice M9, MZB-400 to MZB-449). CHIEF_PAID and TRADED book a payment at the
   grove's price (an unpriced tribute good is worth `1 / tribute_per_coin`, MZB-447) and, for a payer
   to the live chief's body, the chief's trade memory. A tribute the grove took in (CHIEF_PAID,
-  TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, the engine takes
+  TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, at each new
+  payment, chest record and CAMP_CENSUS while the camp is in, the engine takes
   one stack (64 items at most, the tribute good only) out of the faction's stock and writes it as a
   TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
   saved counter, the good and the amount (the same decision re-derived after a crash is the same op,

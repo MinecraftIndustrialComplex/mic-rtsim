@@ -1086,6 +1086,36 @@ fn restart_and_replay(r: &mut CampRun, tail: &[(Tick, Obs)]) {
     r.run(to);
 }
 
+/// MZB-446 (review P3-4): a chest the plugin named while the camp was out holds its stack until the
+/// camp is in, and the census that brings it in places it: the tribute does not wait for another
+/// chest record or payment.
+#[test]
+fn the_census_places_the_tribute_a_chest_named_while_the_camp_was_out_waited_for() {
+    let (mut r, _) = tribute_run(26);
+    r.camp_out();
+    let to = r.c.now() + 5;
+    r.run(to);
+    chest(&mut r, 27);
+    assert_eq!(
+        r.c.camp(r.f).unwrap().chest.map(|c| c.free),
+        Some(27),
+        "the chest is kept"
+    );
+    assert_eq!(r.c.placings().count(), 0, "the camp is out");
+    assert_eq!(owed(&r), 567);
+    r.camp_in();
+    let to = r.c.now() + 5;
+    r.run(to);
+    let (_, p) = r.c.placings().next().expect("placed at the census");
+    assert_eq!(p.amount, 64 * MILLI);
+    assert_eq!(
+        r.c.camp(r.f).unwrap().chest.map(|c| c.free),
+        Some(26),
+        "a slot less for the stack"
+    );
+    ok(&mut r);
+}
+
 /// MZB-446 (review P3-3): HAVEN_CHEST is journaled, so a crash that loses the tail of the session
 /// (a payment, the chest, the stack the engine decided at the chest) replays both records, and
 /// the stack decided again is the same op with the same amount: the plugin's DUPLICATE_OP answer
@@ -1116,11 +1146,10 @@ fn a_stack_decided_again_after_a_crash_is_the_same_op_and_amount() {
         Some(27),
         "the replayed record names the chest"
     );
-    // The camp comes in, and the plugin's session-start chest record places the stack.
+    // The camp comes in: its census places the stack, to the chest the replay named.
     b.camp_in();
     let to = b.c.now() + 10;
     b.run(to);
-    chest(&mut b, 27);
     let (again, q) = b.c.placings().next().expect("the stack again");
     assert_eq!((again, q.amount, q.good), (op, p.amount, p.good));
     let at = b.c.now();
@@ -1152,7 +1181,6 @@ fn a_stack_decided_again_from_more_is_another_op() {
     assert_eq!(p.amount, 30 * MILLI, "decided before the second payment");
     assert_eq!(owed(&a), 60);
     restart_and_replay(&mut b, &tail);
-    chest(&mut b, 27);
     let (again, q) = b.c.placings().next().expect("the stack again");
     assert_eq!(q.amount, 60 * MILLI, "the replay owes both");
     assert_ne!(again, op, "another decision, another op");
