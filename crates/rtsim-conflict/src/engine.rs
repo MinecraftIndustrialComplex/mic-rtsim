@@ -4938,7 +4938,7 @@ impl Conflict {
                 if let Some(f) = self.add_faction(w, ff.faction, &cname, pos, at)
                     && !known
                 {
-                    self.camp_found(f, ff.home_bodies, at);
+                    self.camp_found(f, ff.home_bodies, ff.census, at);
                 }
             }
             Obs::Signal(s) => {
