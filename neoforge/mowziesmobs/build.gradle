@@ -77,6 +77,10 @@ dependencies {
     runtimeOnly project(':core').micNativeFiles
     compileOnly mowzieJars
     runtimeOnly mowzieJars
+    // -Pc2me: the GameTest server loads C2ME too (the pack's jar), as core's does (docs/choices-mowzie-build.md
+    // MZB-249: the camp reconciler's level poll is what C2ME leaves it, no ticket event). Off by default.
+    if (project.hasProperty('c2me'))
+        runtimeOnly files("${packMods}/${c2me_jar}")
 }
 
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
