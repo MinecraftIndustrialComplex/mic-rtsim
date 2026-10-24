@@ -1639,6 +1639,10 @@ under its own heading.
     reset (RG5), so op ids never repeat across lives, and a CAMP_RECONCILE of an earlier life matches no live
     `Site.epoch` and is answered STALE (the stale-line test). The old engine's own pending orders sit in its pages,
     which the reset moved aside (RG6), so none is replayed.
+    What the world does store is a body's `CampMember` (faction, slot, generation), engine identity. A new life's
+    slots take generations from `derive_gen` (camp.rs), which hashes the camp, the slot and the tick the member was
+    recruited or adopted, so they do not repeat an old life's and a body tagged by the old engine is not mistaken
+    for a member of the new engine's slot (a one in 2^32 collision aside).
   - RG14 (pending records carry the engine life): every holder M5 adds takes part. A body or marker takes records
     only through `RtsimSession.carry` and `carryOnCampHolder`, which stamp `engineLife` with `PendingRecords.plus`;
     `Camps.takeRecords` and `answer` call `ensureReasserted` first, so records of another life are dropped
@@ -1652,11 +1656,13 @@ under its own heading.
     `camp_records_of_a_camp_this_engine_never_founded_book_nothing` feeds a census, an answer, a death and an out
     for a stranger and checks the stats, the camp's ledger and the orders unchanged. A replayed census only marks its camp out
     (`a_replayed_census_only_marks_its_camp_out`) and a superseded epoch's answer books nothing, as before.
-  - Left as it is, on purpose: a record marker whose records were all of another life stays in the world, empty and
-    inert (a vanilla `Marker`, tagged `mic_rtsim.record`). Discarding it inside the entity's join event is unsafe
-    (the manager has not set the entity's callback yet), a deferred discard is more code than the case is worth (a
-    marker lives only until its records are acknowledged, so only those alive at a sim reset), and an admin can
-    clear them with `/kill @e[type=minecraft:marker,tag=mic_rtsim.record]`. The GameTest discards its own.
+  - Left as it is: a record marker whose records were all of another life stays in the world, empty (a vanilla
+    `Marker` tagged `mic_rtsim.record`). A discard would be safe where it would be made: `reassert(Entity)` never runs
+    inside the join event (`BridgeEvents` queues loaded holders and drains them at `ServerTickEvent.Post`). The marker
+    is kept because it does not tick and is never sent to a client, it saves small and nothing reads it, and its
+    number is bounded by the record markers alive at a reset. A later discard would be
+    `dropPendingWhenAcked(holder, 0)` after `removeData` in the stale branch of `reassert(Entity)`; not taken. An
+    admin can clear them with `/kill @e[type=minecraft:marker,tag=mic_rtsim.record]`. The GameTest discards its own.
 
 ### M5 design for the implementer
 
