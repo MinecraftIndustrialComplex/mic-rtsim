@@ -581,18 +581,25 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if st.applying_copy == Some(0) && matches!(o, Obs::Casualties(_)) {
         // A copy of generation 0 is new each time it comes (S4p's `copy_is_new`), and a
         // casualty has no op id to stop a repeat: refused, so that no member dies twice; one may
-        // live on (docs/replay-gate.md §2.3, RP-21).
+        // live on (docs/replay-gate.md §2.3, RP-21). Its epoch still reaches the floor (RP-57).
         st.conflict.copies_refused += 1;
+        st.conflict.engine.fold_epoch(&o);
         return;
     }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
-        // it, as `Replay` spent it (MZB-23).
+        // it, as `Replay` spent it (MZB-23); a copy as a copy, so that its epoch reaches the
+        // floor live too (RP-57).
         st.conflict.deferred += 1;
+        let copy = st.applying_copy.is_some();
         with_infra(st, |c, w, infra| {
             let now = c.now();
-            c.ingest(w, infra, &o, now);
+            if copy {
+                c.ingest_copy(w, infra, &o, now);
+            } else {
+                c.ingest(w, infra, &o, now);
+            }
         });
         return;
     }

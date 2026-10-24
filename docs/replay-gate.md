@@ -710,8 +710,14 @@ agent's epoch floor (§5.3).
 
 ### 5.3 Epochs are never reused (RP-7, RP-30)
 
-An agent's next epoch is above every epoch the engine has seen for it: the pages', a replayed
-*_MATERIALIZED's (§5.2), and a copy's (conflict's casualty copies raise it, §5.7). Each module's
+An agent's next epoch is above every epoch the engine has seen for it: the pages', and those of
+every replayed record and every copy that names one, whatever its kind and whatever the record does
+after (RP-57): a *_MATERIALIZED (§5.2), and as much a refusal, a despawn, a loss, an answer or a
+loot, for an agent held or not, embodied or not, in the pages or not yet. Conflict folds them at the
+top of `ingest` while replaying and of `ingest_copy` always (`Obs::party_epoch` lists every kind),
+and rtsim-jni folds a copy it refuses (RP-21). The rule is the same for dragons, herds and ships,
+whose slices (§9.2, §9.4, §9.5) build their floors: every kind of theirs that names an epoch, not
+only the *_MATERIALIZED. Each module's
 `epoch + 1` becomes `max(epoch, floor) + 1` (conflict: `seen` and `start_fight`; dragons, herds and
 ships at their materialize). The floor is an in-memory map per engine, agent to the highest epoch
 seen that the agent's own `epoch` does not hold (RP-30). Not the epoch itself: raising a party's
@@ -782,7 +788,8 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   about L5052 to L5058) (RP-25). Without the cap the death is undone at the next despawn: a raid of
   6 all placed, a copied death (units 5, `spawned` still 6), then Java's 6 survivors give
   `5.saturating_sub(6) + min(6, 6)` = 6. With it, `5 - 5 + min(6, 5)` = 5. CHIEF_KILLED: as `ingest`
-  (by party). BAND_MATERIALIZED: the floor only. Every other kind: as `ingest`.
+  (by party). BAND_MATERIALIZED: the floor only. Every other kind: as `ingest`. Every copy that
+  names an epoch raises the floor to it first, live or replayed (RP-57).
 - **Herds:** HERD_KILLED and HERD_TAKEN go by member key and op id already; a copied
   HERD_MATERIALIZED raises the floor only.
 - **Dragons, ships:** nothing is carried; a copied *_MATERIALIZED would raise the floor only.

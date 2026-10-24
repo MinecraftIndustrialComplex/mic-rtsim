@@ -1987,6 +1987,171 @@ fn a_fresh_engines_replayed_materialize_raises_the_epoch_floor_only() {
     assert_eq!(next_body(true), (4, 5));
 }
 
+/// fixes5 item 1 (RP-57): a replayed BAND_SPAWN_REJECTED of epoch 1 (the last session's sighting
+/// of the band on its road, which Java refused) for a raid at epoch 0 that is not held, on an
+/// engine from its pages. No epoch is used twice (§5.3): after the replay end the band's next
+/// body takes 2. The replay used to leave no floor, so it took 1 again. Control: no record, 1.
+#[test]
+fn a_replayed_refusal_for_a_party_not_held_raises_its_epoch_floor() {
+    let next_body = |record: bool| {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        while r.c.parties[band].phase != Phase::Out {
+            assert!(r.c.now() < day(4.0), "the raid sets out");
+            r.run(r.c.now() + 600);
+        }
+        r.c = restarted(&r);
+        let x = &r.c.parties[band];
+        assert!(x.phase == Phase::Out && !x.embodied && x.epoch == 0);
+        assert!(
+            r.c.now() + 1 < *x.times.last().unwrap(),
+            "on its road: not held"
+        );
+        if record {
+            let at = r.c.now() + 1;
+            r.ingest(refusal(band, 1, 0), at);
+            assert_eq!(
+                r.c.parties[band].epoch, 0,
+                "not held: the floor, not the epoch"
+            );
+        }
+        r.c.replay_done();
+        first_materialize(&mut r, band)
+            .expect("the band came into view")
+            .epoch
+    };
+    assert_eq!(next_body(false), 1, "control");
+    assert_eq!(next_body(true), 2);
+}
+
+/// BAND_SPAWN_REJECTED for `band` at `epoch`, `wave` (1, not ticking).
+fn refusal(band: Handle<Party>, epoch: u32, wave: u32) -> Obs {
+    Obs::SpawnRejected(boundary::BandSpawnRejected {
+        agent: Party::agent(band),
+        epoch,
+        wave,
+        reason: 1,
+        cmd_seq: 0,
+    })
+}
+
+/// How a record reaches the engine in [`every_record_naming_an_epoch_raises_its_floor`].
+#[derive(Clone, Copy, Debug)]
+enum Reached {
+    /// Replayed on an engine from its pages.
+    Pages,
+    /// Replayed on a fresh engine (RP-31).
+    Fresh,
+    /// A copy (REASSERT) replayed on an engine from its pages.
+    Copy,
+}
+
+/// fixes5 item 1's sweep (RP-57): every record kind that names a party's epoch, at epoch 4 for a
+/// raid at epoch 0 that is not held, replayed on an engine from its pages, on a fresh engine and
+/// as a copy. After the replay end the band holds epoch 4 at least, so its next body takes 5 or
+/// more (`next_epoch`): none of them can be used again. The camp records (CAMP_CENSUS,
+/// CAMP_BODIES, CAMP_OUT) carry a camp's epoch, Java's op id, which the engine never allocates.
+#[test]
+fn every_record_naming_an_epoch_raises_its_floor() {
+    let player = (1, 2);
+    let records = |band: Handle<Party>| {
+        let agent = Party::agent(band);
+        vec![
+            Obs::State(boundary::BandState {
+                agent,
+                epoch: 4,
+                flags: 0,
+                dimension: 0,
+                present: 0,
+                pos: (0.0, 0.0, 0.0),
+            }),
+            materialized(band, 4, 0, 6),
+            fought(band, 4, 0, 6),
+            refusal(band, 4, 0),
+            refusal(band, 4, 1),
+            Obs::Dematerialized(boundary::BandDematerialized {
+                agent,
+                epoch: 4,
+                reason: 1,
+                survivors: Vec::new(),
+            }),
+            Obs::Casualties(boundary::BandCasualties {
+                agent,
+                epoch: 4,
+                by: boundary::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }),
+            Obs::ChiefKilled(boundary::ChiefKilled {
+                agent,
+                epoch: 4,
+                by: boundary::BY_MOB,
+                killer: (0, 0),
+                op: 901,
+            }),
+            Obs::EnvoyAnswer(boundary::EnvoyAnswer {
+                agent,
+                epoch: 4,
+                answer: boundary::ANSWER_REFUSED,
+                player,
+            }),
+            Obs::TributePaid(boundary::TributePaid {
+                faction: synth::CAMP,
+                agent,
+                epoch: 4,
+                player,
+                op: 902,
+                items: Vec::new(),
+            }),
+            Obs::Looted(boundary::BandLooted {
+                agent,
+                epoch: 4,
+                op: 903,
+                items: Vec::new(),
+            }),
+            Obs::TrainPassed(boundary::TrainPassed {
+                agent,
+                epoch: 4,
+                flags: 0,
+                carriage: 0,
+                train: 7,
+            }),
+        ]
+    };
+    let mut missed = Vec::new();
+    for reached in [Reached::Pages, Reached::Fresh, Reached::Copy] {
+        let mut r = Run::new(36, quiet_goblins());
+        let band = raid_band(&mut r);
+        r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+        for o in records(band) {
+            assert_eq!(o.party_epoch(), Some((Party::agent(band), 4)), "{o:?}");
+            let mut c = match reached {
+                Reached::Fresh => {
+                    let mut c =
+                        Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+                    c.begin_replay(false);
+                    c
+                }
+                Reached::Pages | Reached::Copy => restarted(&r),
+            };
+            let mut w = world_from(36, &r.w.save());
+            let at = c.now() + 1;
+            match reached {
+                Reached::Copy => c.ingest_copy(&mut w, &mut NoInfrastructure, &o, at),
+                Reached::Pages | Reached::Fresh => c.ingest(&mut w, &mut NoInfrastructure, &o, at),
+            }
+            c.replay_done();
+            let epoch = c.parties.get(band).map(|x| x.epoch);
+            if epoch < Some(4) {
+                missed.push(format!("{reached:?} {:#06x}: {epoch:?}", o.kind()));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 /// A raid band of 26 members of its first unit's body, abstract at epoch 0.
 fn band_of_26(r: &mut Run) -> (Handle<Party>, u32) {
     let band = raid_band(r);
@@ -2393,7 +2558,8 @@ fn a_copied_casualty_is_not_undone_by_the_next_despawn() {
 /// band that is abstract (no stack to take from, and its epoch floor rises to the record's, so the
 /// replay end leaves the band at epoch 3), and against one embodied again at a newer epoch, whose
 /// stack is untouched (3 placed of 5 alive). Control: the same record through `ingest` is a
-/// straggler both times (the band's epoch is not the record's and no recalled stack has it).
+/// straggler both times (the band's epoch is not the record's and no recalled stack has it),
+/// whose epoch still reaches the floor (RP-57).
 #[test]
 fn a_copied_casualty_counts_against_an_abstract_band_once() {
     let mut r = Run::new(36, quiet_goblins());
@@ -2421,7 +2587,7 @@ fn a_copied_casualty_counts_against_an_abstract_band_once() {
         back.replay_done();
         let x = &back.parties[band];
         assert_eq!(x.alive(), if copy { 5 } else { 6 }, "counted once");
-        assert_eq!(x.epoch, if copy { 3 } else { 0 }, "the copy's floor");
+        assert_eq!(x.epoch, 3, "the record's floor, copy {copy}");
     }
     {
         let x = &mut r.c.parties[band];
