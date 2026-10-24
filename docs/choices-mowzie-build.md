@@ -3778,6 +3778,15 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   server has not got). `transferToContainer` now reads the dimension and position before the duplicate test so the hook
   has them, which changes no answer. `GroveChests` is the only user. Dragon tribute transfers call it too and are
   ignored, since it matches by the dimension and position it told the engine of.
+- **MZB-632** (MowzieStrength; fills in MZB-435): one `IndustryPlugin` for the whole mod (the Frostmaw, which is M6's
+  row, shares the table), registered in `MicRtsimMowziesMobs`, giving IND_FIGHT's attacker strength by the entity's
+  class: `EntityFrostmaw` 41.7, `EntityUmvuthi` 5.0, `EntityUmvuthanaRaptor` 1.0, any other `EntityUmvuthana` 0.4
+  (a grove warrior, a raptor's follower, a player's follower, a crane; the Umvuthi is a `MowzieGeckoEntity`, not an
+  `EntityUmvuthana`, so it is tested by its own class), and NaN for anything else, which leaves the core's 1 and the
+  tag `mic_rtsim:threat/ignored` for the foliaath. Raptor 1.0 plus four followers at 0.4 is 2.6; the sum is the
+  core's (each attacker joins a fight once, `Threats.join`), not this class's, so a pack counts 2.6 only once its
+  followers have each hit something. The checks are `instanceof`, so a body made by `RaptorMaker` and one the jar
+  made are the same. The order is Frostmaw, Umvuthi, raptor, then the base class.
 
 ## M10 March
 
