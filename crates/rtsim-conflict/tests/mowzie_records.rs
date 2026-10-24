@@ -2408,10 +2408,12 @@ fn a_copied_casualty_counts_against_an_abstract_band_once() {
 }
 
 /// The abstract district raids an infrastructure was asked for (`Infrastructure::raid`): one
-/// tick per raid, whatever its classes.
+/// tick per raid, whatever its classes. With `rout`, every raider is held at the walls (none
+/// survive); otherwise the raid has no outcome.
 #[derive(Default)]
 struct Walls {
     raids: std::collections::BTreeSet<Tick>,
+    rout: bool,
 }
 
 impl rtsim_ecology::infra::Infrastructure for Walls {
@@ -2429,7 +2431,15 @@ impl rtsim_ecology::infra::Infrastructure for Walls {
         t: &rtsim_industry::threat::Threat,
     ) -> Option<rtsim_ecology::infra::RaidOutcome> {
         self.raids.insert(t.at);
-        None
+        self.rout.then(|| rtsim_ecology::infra::RaidOutcome {
+            survived: 0.0,
+            floor: None,
+            untested: false,
+            stolen: rtsim_industry::ids::GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
     }
     fn good_name(&self, _: rtsim_industry::ids::Good) -> Option<String> {
         None
@@ -3171,6 +3181,79 @@ fn a_sighting_of_a_siege_waiting_after_a_held_arrival_is_no_fight() {
         assert_eq!(live.raids, vec![arrival], "{then:?}: {live:?}");
         a_siege_held_then(false, then, true).0.assert_as(&live);
     }
+}
+
+/// fixes4 item 3 (RP-52): a siege round, nobody near, that kills the last of the band (every
+/// raider held at the walls, all of them falling), the round before the band's boredom and the
+/// hold's slack after it; the pages from the band waiting for it. The session that went on
+/// sends the band home done, as of the round. The replay holds the round and resolves it at the
+/// slack, and used to label the walk home by the slack's poll, past the boredom: bored.
+#[test]
+fn a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done() {
+    let mut r = Run::new(36, patient_goblins());
+    r.c.tun.abstract_loss_share = 1.0;
+    r.kill(2.0, Tick(10));
+    let band =
+        r.c.order_party(
+            &mut r.w,
+            synth::CAMP,
+            PartyKind::Siege,
+            Target::District(synth::REFINERY, synth::REFINERY_POS),
+            Some(r.p),
+            Tick(20),
+        )
+        .unwrap();
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Siege;
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    let mut to = r.c.now();
+    while r.c.parties[band].phase != Phase::Waiting {
+        to += 600;
+        assert!(to < day(6.0), "the siege waits at its target");
+        run_journaled(&mut r, &mut walls, to, &mut journal);
+    }
+    let round = r.c.parties[band].until;
+    r.c.parties[band].bored_at = round + REPLAY_HOLD_SLACK_TICKS / 2;
+    let saved_at = r.c.now();
+    let (pages, world) = (r.c.save(), r.w.save());
+    let bored = r.c.stats.bored;
+    let read = |c: &Conflict, walls: &Walls| {
+        let x = &c.parties[band];
+        let raids: Vec<Tick> = walls.raids.range(saved_at + 1..).copied().collect();
+        (x.phase, x.alive(), c.stats.bored - bored, raids)
+    };
+    walls.rout = true;
+    journal.clear();
+    let end = round + 2 * REPLAY_HOLD_SLACK_TICKS;
+    run_journaled(&mut r, &mut walls, end, &mut journal);
+    let live = read(&r.c, &walls);
+    assert_eq!(
+        live,
+        (Phase::Home, 0, 0, vec![round]),
+        "done, as of the round"
+    );
+    journal.push((end, fillers_casualty()));
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let mut back = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    assert!(back.replaying());
+    let (phase, alive, bored, raids) = read(&back, &walls);
+    assert_eq!(
+        raids,
+        vec![round + REPLAY_HOLD_SLACK_TICKS],
+        "resolved at the slack"
+    );
+    assert_eq!((phase, alive, bored), (live.0, live.1, live.2), "as live");
 }
 
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
