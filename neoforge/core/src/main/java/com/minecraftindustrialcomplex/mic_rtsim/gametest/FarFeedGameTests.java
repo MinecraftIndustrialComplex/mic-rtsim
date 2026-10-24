@@ -201,9 +201,11 @@ public final class FarFeedGameTests {
 
             // 2. Embodied: the engine says BODY, a stale FLY would lose too, and the body's samples win on the same handle
             leg(session, dim, agent, FarState.BODY, py + 2, px + 2, pz + 2, px + 2, pz + 2, now, now, 0);
+            // The body's own age, as DragonFeedSource sends it: the leg's (DH-7), so its looks do not change
             Vec3 b0 = body.position();
             src.item = new FarItem(agent, FarKind.DRAGON, STYLE, VARIANT, STAGE, RGB, FarState.FLY,
-                    new double[]{b0.x + 0.5, b0.y + 1, b0.z, b0.x - 0.5, b0.y + 1, b0.z}, null, body.getId(), 10);
+                    new double[]{b0.x + 0.5, b0.y + 1, b0.z, b0.x - 0.5, b0.y + 1, b0.z}, null, body.getId(), 10, null,
+                    AGE_DAYS);
             FarWire.Message m2 = sweep(helper, sent);
             List<FarWire.Rec> r2 = of(m2, handle);
             check("embodied, it is sampled on the same handle with its entity id, and no new intro: " + r2,
@@ -214,7 +216,8 @@ public final class FarFeedGameTests {
 
             // 3. The body moves: only its sample goes out
             src.item = new FarItem(agent, FarKind.DRAGON, STYLE, VARIANT, STAGE, RGB, FarState.FLY,
-                    new double[]{b0.x + 2.5, b0.y + 1, b0.z, b0.x + 1.5, b0.y + 1, b0.z}, null, body.getId(), 10);
+                    new double[]{b0.x + 2.5, b0.y + 1, b0.z, b0.x + 1.5, b0.y + 1, b0.z}, null, body.getId(), 10, null,
+                    AGE_DAYS);
             List<FarWire.Rec> r3 = of(sweep(helper, sent), handle);
             check("a moving body sends only its sample: " + r3, r3.size() == 1 && r3.get(0) instanceof FarWire.Sample);
 
