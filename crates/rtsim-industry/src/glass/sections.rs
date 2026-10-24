@@ -902,20 +902,17 @@ fn edge_record(g: &Graph, i: usize) -> Vec<u8> {
     e.0
 }
 
-/// A domain as the section sees it: its stress setting, its levels' selectors (not the network's
-/// capacity or its other members, so a machine added elsewhere on it leaves the section alone), and
-/// the section's own members, each with its speed at each level (its ratio times the level's speed:
-/// Create's root, which loaded chunks choose, moves both and not their product).
+/// A domain as the section sees it: its stress setting, whether a boiler drives it and its speed
+/// rows' count (not the network's capacity, sources or other members, so a machine added elsewhere
+/// on it leaves the section alone; the domain check weighs those, §3.6), and the section's own
+/// members, each with its speed at each row (its ratio times the row's speed: Create's root, which
+/// loaded chunks choose, moves both and not their product).
 fn domain_record(g: &Graph, d: u32, nodes: &[u32]) -> Vec<u8> {
     let dm = &g.domains[d as usize];
     let mut e = Enc::tag(3);
     e.u32(dm.flags & domain_flags::STRESS_DISABLED);
-    let mut selectors: Vec<u32> = dm.levels.iter().map(|l| l.selector).collect();
-    selectors.sort_unstable();
-    e.u32(selectors.len() as u32);
-    for x in selectors {
-        e.u32(x);
-    }
+    e.u8(u8::from(dm.driven()));
+    e.u32(dm.levels.len() as u32);
     let mut own: Vec<Vec<u8>> = dm
         .members
         .iter()
@@ -990,8 +987,8 @@ fn fingerprint_in(g: &Graph, ctx: &Ctx, nodes: &[u32], stores: &[u32], domains: 
 mod tests {
     use super::*;
     use crate::glass::records::{
-        DomainLevel, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphRecipe, Member,
-        RateEntry, Term,
+        DomainLevel, DomainSource, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead,
+        GraphRecipe, Member, RateEntry, Term,
     };
     use crate::ids::{DistrictId, Good};
 
@@ -1128,7 +1125,9 @@ mod tests {
                 for m in d.members.iter_mut() {
                     m.node = m.node.map(|v| new_of[v as usize]);
                 }
-                d.driver = d.driver.map(|v| new_of[v as usize]);
+                for src in d.sources.iter_mut() {
+                    src.driver = src.driver.map(|v| new_of[v as usize]);
+                }
                 d.members.reverse();
                 b.domains.push(d);
             }
@@ -1398,17 +1397,16 @@ mod tests {
         b.domains.push(GraphDomain {
             head: head(i),
             network: 99,
-            current: 0,
-            driver,
+            current: Some(0),
             flags: 0,
             live_stress: 0.0,
             live_capacity: 0.0,
-            levels: vec![DomainLevel {
-                selector: 0,
-                speed_num: 64,
-                speed_den: 1,
-                capacity: 1024.0,
+            levels: vec![DomainLevel::speed_row(64)],
+            sources: vec![match driver {
+                Some(v) => DomainSource::driven(v, 0, &[(0, 64, 1024.0)], 0),
+                None => DomainSource::fixed(0, 64, 1024.0),
             }],
+            foreign: 0,
             members: members
                 .iter()
                 .map(|&(v, r)| Member {

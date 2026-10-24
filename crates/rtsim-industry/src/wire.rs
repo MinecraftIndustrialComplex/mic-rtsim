@@ -2488,7 +2488,12 @@ mod tests {
                     G::Node(n) => 112 + 24 * n.rates.len(),
                     G::Edge(e) => pad8(72 + 4 * e.filter.len()),
                     G::Recipe(r) => 56 + 24 * (r.inputs.len() + r.outputs.len()),
-                    G::Domain(d) => 72 + 24 * d.levels.len() + 24 * d.members.len(),
+                    G::Domain(d) => {
+                        88 + 24 * d.levels.len()
+                            + 32 * d.sources.len()
+                            + 24 * d.sources.iter().map(|s| s.levels.len()).sum::<usize>()
+                            + 24 * d.members.len()
+                    }
                     G::End(_) => 80,
                     G::ProbeSample(p) => 40 + 16 * p.goods.len(),
                     G::CountSample(c) => 32 + 40 * c.counts.len(),
