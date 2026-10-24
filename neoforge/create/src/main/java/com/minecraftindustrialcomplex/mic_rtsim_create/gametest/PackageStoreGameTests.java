@@ -654,9 +654,10 @@ public final class PackageStoreGameTests {
         Set<Long> serials = new HashSet<>();
         GameTestSequence s = build(helper, y, false, List.of(fa, fb))
                 .thenWaitUntil(() -> checkStore(level, List.of(fa, fb), new long[] {y.da(), y.db()}, store))
+                // Create's routing tables spread a hop at a time (under load, after the store is declared).
+                .thenWaitUntil(() -> check("CA routes east to CB", toB.equals(conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)))))
                 .thenExecute(() -> {
                     at[0] = indexIn(declaration(store[0]), fb.pos);
-                    check("CA routes east to CB", conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)).equals(toB));
                     // A stays forced (level 31): the chunk between ticks (32), B is FULL and does not tick (33).
                     level.setChunkForced(y.ax + 1, y.az, false);
                     level.setChunkForced(y.bx, y.az, false);
