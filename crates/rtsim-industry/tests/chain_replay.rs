@@ -625,6 +625,133 @@ fn a_written_record_journaled_again_after_a_redeclare_is_taken_once() {
     assert_eq!(owed(&e), o);
 }
 
+/// A write made inside an ingest whose frogport moves to another store in the same batch is timed
+/// in that store when it is handed on: its answer lost, the engine writes there again.
+#[test]
+fn a_write_moved_to_another_store_before_its_drain_is_timed_there() {
+    let tun = Tunables::default();
+    let period = tun.replay.chain_write_ticks;
+    let mut e = pair(tun);
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(20_100), x.op);
+    }
+    live(&mut e, MINE, 20_100);
+    // Any record at 20_400 wakes the store's writes inside the ingest.
+    send(
+        &mut e,
+        20_400,
+        Obs::StockSample {
+            district: MINE,
+            inventory: 0,
+            sweep: 9,
+            goods: GoodVec::from_pairs([(IRON, 500)]),
+        },
+    );
+    const S2: StoreId = StoreId(6);
+    let mut whole = store();
+    let mill = whole.frogports.pop().expect("mill");
+    send(
+        &mut e,
+        20_400,
+        Obs::PackageStore(StoreDecl {
+            store: S2,
+            dim: 0,
+            into: None,
+            frogports: vec![StoreFrogport {
+                from: Some(S),
+                ..mill
+            }],
+            hops: vec![],
+        }),
+    );
+    whole.hops = vec![];
+    send(&mut e, 20_400, Obs::PackageStore(whole));
+    assert!(!writes(&mut e).is_empty());
+    let moved = &e.stores()[&S2].writing[&frog(MILL)];
+    assert!(moved.iter().all(|w| w.at.is_some()), "{moved:?}");
+    // Its answer is lost: past the answer's wait the engine writes there again.
+    live(&mut e, MILL, 20_401);
+    let mut n = 0;
+    let mut t = 20_401;
+    while t < 20_401 + 30 * period {
+        t += period;
+        e.advance_to(Tick(t));
+        n += writes(&mut e).len();
+    }
+    assert!(n > 0, "the frogport is written again");
+}
+
+/// A frogport broken and rebuilt into another store leaves its mark in the old one, which still
+/// turns away the record its chunk journals again.
+#[test]
+fn a_frogport_rebuilt_into_another_store_turns_its_old_record_away() {
+    let mut e = pair(Tunables::default());
+    away(&mut e, MINE, 100);
+    e.advance_to(Tick(20_100));
+    for x in writes(&mut e) {
+        e.command_failed(Tick(20_100), x.op);
+    }
+    live(&mut e, MINE, 20_100);
+    e.advance_to(Tick(20_400));
+    let w = writes(&mut e);
+    assert_eq!(w.len(), 1, "{w:?}");
+    written(&mut e, 20_400, &w[0]);
+    let ports = e.district(MILL).expect("mill").ports.get(IRON);
+    const S3: StoreId = StoreId(7);
+    let mut d = store();
+    let mill = d.frogports.pop().expect("mill");
+    d.hops = vec![];
+    send(&mut e, 25_000, Obs::PackageStore(d));
+    send(
+        &mut e,
+        25_000,
+        Obs::PackageStore(StoreDecl {
+            store: S3,
+            dim: 0,
+            into: None,
+            frogports: vec![mill],
+            hops: vec![],
+        }),
+    );
+    written(&mut e, 20_400, &w[0]);
+    assert_eq!(e.stats.chain_writes_again, 1);
+    assert_eq!(e.stores()[&S3].counts.written, 0);
+    assert_eq!(e.district(MILL).expect("mill").ports.get(IRON), ports);
+}
+
+/// A written record whose store no longer lists its frogport is taken in its own store, never in
+/// a store of another dimension that has a frogport at the same position.
+#[test]
+fn a_written_record_is_never_taken_in_another_dimension() {
+    let mut e = pair(Tunables::default());
+    const S4: StoreId = StoreId(8);
+    let mut d = store();
+    let mill = d.frogports.pop().expect("mill");
+    d.hops = vec![];
+    send(&mut e, 100, Obs::PackageStore(d));
+    send(
+        &mut e,
+        100,
+        Obs::PackageStore(StoreDecl {
+            store: S4,
+            dim: 1,
+            into: None,
+            frogports: vec![StoreFrogport {
+                district: None,
+                inventory: None,
+                ..mill
+            }],
+            hops: vec![],
+        }),
+    );
+    let before = e.stores()[&S].counts.written;
+    send(&mut e, 200, chain(MILL, ChainDirection::In, 2, Some(999)));
+    assert_eq!(e.stores()[&S4].counts.written, 0);
+    assert_eq!(e.stores()[&S].counts.written, before + 2);
+}
+
 /// A frogport's mark and its unanswered writes are saved with the store: after a restore the record
 /// journaled again is dropped, and the answer to the write in flight is taken.
 #[test]
