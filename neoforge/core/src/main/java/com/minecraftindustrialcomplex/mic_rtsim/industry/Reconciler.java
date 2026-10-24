@@ -82,7 +82,7 @@ public final class Reconciler {
         this.ind = ind;
     }
 
-    /** Commands answered DUPLICATE_OP, and epoch entries of an earlier engine life dropped at loads (RG13). */
+    /** Commands answered DUPLICATE_OP. */
     public long duplicates() {
         return duplicates;
     }
