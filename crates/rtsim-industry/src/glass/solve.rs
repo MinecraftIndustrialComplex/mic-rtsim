@@ -68,6 +68,21 @@ pub fn source_row(src: &DomainSource, level: i64) -> Option<u32> {
 /// rows from the same rationals, so only rounding parts them.
 const SPEED_ROW_TOLERANCE: f64 = 1e-6;
 
+/// The speed row of driven domain `dom` at reference speed `v` (nonzero): the nearest of `v`'s
+/// sign within rounding. `Graph::new` refuses a driven domain where a source's speed has none
+/// (Java builds the rows from the sources' own speeds), so a solve always finds one.
+pub(super) fn speed_row_at(dom: &GraphDomain, v: f64) -> Option<u32> {
+    let tol = SPEED_ROW_TOLERANCE * v.abs().max(1.0);
+    let mut best: Option<(f64, u32)> = None;
+    for (i, l) in dom.levels.iter().enumerate() {
+        let off = (l.speed() - v).abs();
+        if l.speed() * v > 0.0 && off <= tol && best.is_none_or(|b| off < b.0) {
+            best = Some((off, i as u32));
+        }
+    }
+    best.map(|b| b.1)
+}
+
 /// Domain `d`'s state with its sources at `rows` (flat by `Graph::src_off`): its speed row, None
 /// when it is stopped or overstressed, and its capacity in SU (§9.3; SECTIONS.md §2.6). A domain
 /// no boiler drives runs at its one row. Otherwise, as Create's propagation has it, the fastest
@@ -106,20 +121,7 @@ pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f6
     } else if signs.0 && signs.1 || fastest == 0.0 {
         None
     } else {
-        // The row at that speed; were none (a compile Java did not build), the fastest one below it
-        // of the same sign, the safe side.
-        let tol = SPEED_ROW_TOLERANCE * fastest.abs().max(1.0);
-        let mut best: Option<(f64, u32)> = None;
-        for (i, l) in dom.levels.iter().enumerate() {
-            let sp = l.speed();
-            if sp * fastest > 0.0
-                && sp.abs() <= fastest.abs() + tol
-                && best.is_none_or(|b| sp.abs() > b.0)
-            {
-                best = Some((sp.abs(), i as u32));
-            }
-        }
-        best.map(|b| b.1)
+        speed_row_at(dom, fastest)
     };
     let Some(r) = row else {
         return (None, cap);
@@ -127,12 +129,8 @@ pub fn domain_state(g: &Graph, d: u32, rows: &[Option<u32>]) -> (Option<u32>, f6
     if dom.flags & super::records::domain_flags::STRESS_DISABLED != 0 {
         return (Some(r), cap);
     }
-    let speed = if dom.driven() {
-        fastest
-    } else {
-        dom.levels[r as usize].speed()
-    };
-    if cap < domain_stress(dom, speed) {
+    // The stress at the row's own speed, as the LP bound weighs it (`lp::possible_rows`).
+    if cap < domain_stress(dom, dom.levels[r as usize].speed()) {
         (None, cap)
     } else {
         (Some(r), cap)

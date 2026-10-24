@@ -745,7 +745,7 @@ fn two_tanks_on_one_shaft_run_at_the_faster_and_add_their_capacities() {
 /// water stopped, B gives no speed and A runs the network alone.
 #[test]
 fn sources_turning_against_each_other_stop_the_network() {
-    let (g, rg, ps) = two_tanks([40, 40], (-1, 1), &[16, 32], 4);
+    let (g, rg, ps) = two_tanks([40, 40], (-1, 1), &[-16, 16, -32, 32], 4);
     let s = run(&g, &rg);
     assert_eq!(s.src_row, vec![Some(2), Some(2)]);
     assert_eq!(s.dom_level, vec![None]);
@@ -754,9 +754,28 @@ fn sources_turning_against_each_other_stop_the_network() {
     rg.gate_off[ps[1] as usize] = true;
     let s = run(&g, &rg);
     assert_eq!(s.src_row, vec![Some(2), Some(0)]);
-    assert_eq!(s.dom_level, vec![Some(1)]);
+    assert_eq!(s.dom_level, vec![Some(3)]);
     assert_eq!(s.dom_cap, vec![4096.0]);
     assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 10));
+}
+
+/// A driven domain needs a speed row for each speed its sources give (Java builds them so): one
+/// missing is refused, not run at a row it does not have.
+#[test]
+fn a_driven_domain_missing_a_sources_speed_row_is_refused() {
+    let (g, _, _) = two_tanks([40, 40], (2, 1), &[8, 16, 32], 4);
+    // B's 8 RPM row goes, and the press's rate there
+    let mut domains = g.domains.clone();
+    domains[0].levels.remove(0);
+    let mut nodes = g.nodes.clone();
+    for n in &mut nodes {
+        n.rates.retain(|r| r.level != 0);
+        for r in &mut n.rates {
+            r.level -= 1;
+        }
+    }
+    let built = Graph::build(g.end, nodes, g.edges.clone(), g.recipes.clone(), domains);
+    assert_eq!(built.err(), Some(super::graph::Invalid::Level(0)));
 }
 
 /// A load only both tanks carry: 4,352 SU at 32 RPM, past A's 4,096 alone. B's 1,000 at 16 RPM

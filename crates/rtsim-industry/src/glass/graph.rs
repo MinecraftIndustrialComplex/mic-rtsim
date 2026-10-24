@@ -195,6 +195,23 @@ impl Graph {
                 }
             }
         }
+        // A driven domain has a speed row for each speed a source gives, in the reference's frame
+        // (Java builds the rows from those speeds), so a solve always finds the row it runs at.
+        for (di, d) in domains.iter().enumerate() {
+            if !d.driven() {
+                continue;
+            }
+            for s in &d.sources {
+                let Some(r) = s.ratio().filter(|&r| r != 0.0) else {
+                    continue;
+                };
+                if s.levels.iter().any(|l| {
+                    l.speed() != 0.0 && super::solve::speed_row_at(d, l.speed() / r).is_none()
+                }) {
+                    return Err(Invalid::Level(di as u32));
+                }
+            }
+        }
         let mut src_off = Vec::with_capacity(domains.len() + 1);
         let mut total = 0u32;
         for d in &domains {

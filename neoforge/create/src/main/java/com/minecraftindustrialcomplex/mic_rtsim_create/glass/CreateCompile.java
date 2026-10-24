@@ -406,6 +406,18 @@ final class CreateCompile implements GlassExtractor.Compile {
         return c != null && blockAt(c) instanceof FluidTankBlockEntity x ? x : null;
     }
 
+    /** An engine's shaft as {@code getShaft} finds it, through {@link #blockAt} ({@code getShaft} reads the level). */
+    private PoweredShaftBlockEntity engineShaft(SteamEngineBlockEntity e) {
+        Direction facing = com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock.getFacing(e.getBlockState());
+        return blockAt(e.getBlockPos().relative(facing, 2)) instanceof PoweredShaftBlockEntity ps && ps.canBePoweredBy(e.getBlockPos()) ? ps : null;
+    }
+
+    /** An engine's tank controller as {@code getTank} finds it, through {@link #blockAt} and {@link #tankController}. */
+    private FluidTankBlockEntity engineTank(SteamEngineBlockEntity e) {
+        Direction facing = com.simibubi.create.content.kinetics.steamEngine.SteamEngineBlock.getFacing(e.getBlockState());
+        return blockAt(e.getBlockPos().relative(facing.getOpposite())) instanceof FluidTankBlockEntity t ? tankController(t) : null;
+    }
+
     /** {@code Level.getBlockState} where the chunk is loaded; null (a stop, counted) where it is not. */
     private BlockState stateAt(BlockPos p) {
         BlockState s = Loaded.state(level, p);
@@ -495,8 +507,8 @@ final class CreateCompile implements GlassExtractor.Compile {
         Long2ObjectOpenHashMap<LongOpenHashSet> tankNetworks = new Long2ObjectOpenHashMap<>();
         for (BlockEntity be : all(K.ENGINE)) {
             SteamEngineBlockEntity e = (SteamEngineBlockEntity) be;
-            PoweredShaftBlockEntity shaft = e.getShaft();
-            FluidTankBlockEntity tank = e.getTank();
+            PoweredShaftBlockEntity shaft = engineShaft(e);
+            FluidTankBlockEntity tank = engineTank(e);
             if (shaft == null || tank == null || !boilerTanks.contains(tank.getBlockPos().asLong()))
                 continue;
             long sp = shaft.getBlockPos().asLong();
@@ -561,6 +573,13 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (!stressEnabled)
                 d.flags |= GlassRecords.Domain.STRESS_DISABLED;
             sources.sort(Comparator.comparingLong(x -> x.getBlockPos().asLong()));
+            // one source per position: inside a deferred join the network lists the kept old object and the new
+            // one at the same place (Loaded.keptFor); the one there now is the source
+            for (int i = sources.size() - 1; i > 0; i--) {
+                KineticBlockEntity a = sources.get(i - 1), b = sources.get(i);
+                if (a.getBlockPos().equals(b.getBlockPos()))
+                    sources.remove(blockAt(b.getBlockPos()) == b ? i - 1 : i);
+            }
             boolean unstable = crossing || splitNetworks.contains(id);
             Rat reference = Rat.ofFloat(rootSpeed);
             Rat[] ratios = new Rat[sources.size()];
@@ -569,8 +588,12 @@ final class CreateCompile implements GlassExtractor.Compile {
             for (int i = 0; i < ratios.length; i++) {
                 KineticBlockEntity s = sources.get(i);
                 ratios[i] = sourceRatio(s, reference, rootSpeed);
-                if (s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null)
+                if (s instanceof PoweredShaftBlockEntity ps && ps.capacityKey != null) {
                     tanks[i] = tankOfShaft.get(s.getBlockPos().asLong());
+                    // an engine's shaft whose tank or engine this district does not model (outside it, or not
+                    // loaded): its speed follows a boiler the solve cannot see
+                    unstable |= tanks[i] == null;
+                }
                 // a driven source whose speed is not related to the reference cannot be tabulated
                 unstable |= tanks[i] != null && ratios[i] == null;
                 float generated = s.getGeneratedSpeed();
@@ -673,7 +696,8 @@ final class CreateCompile implements GlassExtractor.Compile {
         double perRpm = com.simibubi.create.api.stress.BlockStressValues.getCapacity(shaft.capacityKey);
         for (int l = 0; l <= 18; l++) {
             float eff = Cycles.boilerEfficiency(l, engines, false);
-            float sp = eff > 0 ? shaft.movementDirection * Cycles.engineSpeed(eff) : 0;
+            // Create's getGeneratedSpeed: no speed without capacity (a capacity of 0 in the config too)
+            float sp = (float) (eff * perRpm) > 0 ? shaft.movementDirection * Cycles.engineSpeed(eff) : 0;
             out.levels.add(new GraphBuilder.Level(l, Rat.ofFloat(sp), Cycles.engineCapacityPerRpm(eff, perRpm) * Math.abs(sp)));
         }
         int level = Cycles.boilerLevel(tank.boiler.activeHeat, tank.getTotalTankSize(), tank.boiler.waterSupply);
@@ -2924,8 +2948,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
             Info arm = takers.get(0);
             i.handOff = l -> {
-                float rpm = arm.domain == NONE ? arm.rpmNow
-                        : rpmAt(arm, arm.domain == i.domain ? l : Math.max(0, g.domains().get(arm.domain).current));
+                int row = arm.domain == NONE ? NONE : arm.domain == i.domain ? l : g.domains().get(arm.domain).current;
+                // no row: the arm's domain is stopped (or at a speed no source gives), so no hand-off rate
+                float rpm = arm.domain == NONE ? arm.rpmNow : row == NONE ? 0 : rpmAt(arm, row);
                 if (!(rpm > 0))
                     return null;
                 Cycles.Ratio h = Cycles.chuteHandOff(motion, Cycles.armMoveTicks(rpm), false);

@@ -137,7 +137,9 @@ fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
     use super::records::domain_flags::STRESS_DISABLED;
     let g = s.g;
     let dom = &g.domains[d as usize];
-    let tol = |v: f64| 1e-6 * v.abs().max(1.0);
+    // Twice the solve's rounding (`solve::speed_row_at`): a source within it of a row there is
+    // within this of the row here, so the bound keeps every row the solve reaches.
+    let tol = |v: f64| 2e-6 * v.abs().max(1.0);
     // Per source: its allowed rows as (speed in the reference's frame, capacity); a speed of 0
     // when it gives none.
     let allowed: Vec<Vec<(f64, f64)>> = dom

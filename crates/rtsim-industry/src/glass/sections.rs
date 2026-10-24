@@ -903,10 +903,12 @@ fn edge_record(g: &Graph, i: usize) -> Vec<u8> {
 }
 
 /// A domain as the section sees it: its stress setting, whether a boiler drives it and its speed
-/// rows' count (not the network's capacity, sources or other members, so a machine added elsewhere
-/// on it leaves the section alone; the domain check weighs those, §3.6), and the section's own
-/// members, each with its speed at each row (its ratio times the row's speed: Create's root, which
-/// loaded chunks choose, moves both and not their product).
+/// rows' count, and the section's own members, each with its speed at each row (its ratio times
+/// the row's speed: Create's root, which loaded chunks choose, moves both and not their product).
+/// Not the network's capacity or other members, so a machine added elsewhere on it leaves the
+/// section alone (the domain check weighs those, §3.6). The rows follow the sources' speeds: a
+/// source added at a speed the domain has no row for adds one and changes the section; one at a
+/// speed it has leaves it alone.
 fn domain_record(g: &Graph, d: u32, nodes: &[u32]) -> Vec<u8> {
     let dm = &g.domains[d as usize];
     let mut e = Enc::tag(3);
@@ -1586,14 +1588,18 @@ mod tests {
         });
         let d = domain(&mut b, &[(press, 2)], Some(boiler));
         let base = Sections::compute(&b.graph(), 64).fingerprints();
-        // Another root: every ratio doubles and the level's speed halves.
+        // Another root: every ratio doubles (the source's too) and the row's speed halves.
+        let root = |b: &mut B, ratio: i32, speed: i32| {
+            b.domains[d as usize].sources[0].ratio_num = ratio;
+            b.domains[d as usize].levels[0].speed_num = speed;
+        };
         b.domains[d as usize].members[0].ratio_num = 4;
-        b.domains[d as usize].levels[0].speed_num = 32;
+        root(&mut b, 2, 32);
         assert_eq!(Sections::compute(&b.graph(), 64).fingerprints(), base);
         // The speed itself is build.
-        b.domains[d as usize].levels[0].speed_num = 64;
+        root(&mut b, 1, 64);
         assert_ne!(Sections::compute(&b.graph(), 64).fingerprints(), base);
-        b.domains[d as usize].levels[0].speed_num = 32;
+        root(&mut b, 2, 32);
         // A boiler's active heat and water supply are state; its tank is build.
         b.nodes[boiler as usize].params[2] = 18;
         b.nodes[boiler as usize].params[3] = 1200;
