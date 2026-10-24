@@ -262,7 +262,8 @@ pub struct CampBody {
     pub chief: bool,
     /// The chief body's crystal is on it: a steal takes it.
     pub crystal: bool,
-    /// A player stands near it: a MASK does not take it (it takes the one farthest away).
+    /// A player stands near it: a MASK takes the warrior farthest from every player, so a body
+    /// with none near goes first, and one near a player only when every warrior at home is.
     pub near: bool,
 }
 
@@ -273,6 +274,24 @@ pub struct CampBody {
 pub struct CampWorld {
     pub epoch: u64,
     pub bodies: Vec<CampBody>,
+    /// A non-spectator player stands within 160 blocks of the throne: a chief SPAWN or SEAT_HEIR
+    /// waits (`holdSpawn`, MZB-433). Set it with [`FakeConflict::watch_throne`], which lets the
+    /// held lines go at once when the player leaves.
+    pub watched: bool,
+}
+
+/// How long a chief SPAWN or SEAT_HEIR waits on a player near the throne (`HOLD_MAX`, MZB-433).
+pub const HOLD_MAX: u64 = 6_000;
+
+/// The lines of a reconcile the plugin holds on `holdSpawn`, with the reconcile they belong to and
+/// the tick they arrived.
+#[derive(Clone, Debug)]
+struct HeldLines {
+    faction: u64,
+    epoch: u64,
+    op: u64,
+    since: Tick,
+    lines: Vec<(u32, boundary::ReconcileLine)>,
 }
 
 /// One line the plugin applied.
@@ -358,6 +377,25 @@ pub struct FakeConflict {
     /// Members that die on the way out of a recall: taken off the survivors BAND_DEMATERIALIZED
     /// counts, at the recall, first stacks first (0: none; MZB-131).
     pub walk_off_deaths: u32,
+    /// The chief lines waiting on a player near the throne (`holdSpawn`): applied when the player
+    /// leaves ([`FakeConflict::watch_throne`]) or `HOLD_MAX` ticks after they arrived, answered
+    /// stale at the camp's out.
+    held: Vec<HeldLines>,
+}
+
+/// A warrior a MASK may take: tagged, not the chief, in the footprint.
+fn warrior_at_home(b: &CampBody) -> bool {
+    b.generation != 0 && !b.chief && !b.elsewhere
+}
+
+/// A line that waits on `holdSpawn` (MZB-433): a chief's SPAWN, the heir's SEAT_HEIR and the MASK
+/// that goes with it, which Java does after the heir is made.
+fn waits_on_throne(l: &boundary::ReconcileLine) -> bool {
+    match l.action {
+        boundary::ACTION_SEAT_HEIR | boundary::ACTION_MASK => true,
+        boundary::ACTION_SPAWN => l.flags & boundary::LINE_CHIEF != 0,
+        _ => false,
+    }
 }
 
 const SYS_FAKE: SystemId = SystemId::named("conflict.fake_plugin");
@@ -393,6 +431,7 @@ impl FakeConflict {
             hunt_kills: None,
             uuids: 0,
             walk_off_deaths: 0,
+            held: Vec::new(),
         }
     }
 
@@ -416,11 +455,13 @@ impl FakeConflict {
     }
 
     pub fn next_due(&self) -> Option<Tick> {
-        self.queue.iter().map(|e| e.0).min()
+        let held = self.held.iter().map(|h| h.since + HOLD_MAX);
+        self.queue.iter().map(|e| e.0).chain(held).min()
     }
 
     /// Observations due by `to`, in time then push order, each through the codec.
     pub fn due(&mut self, to: Tick) -> Vec<(Tick, Obs)> {
+        self.release_held(to);
         let mut take: Vec<(Tick, u64, Obs)> = Vec::new();
         let mut keep = Vec::new();
         for e in self.queue.drain(..) {
@@ -836,6 +877,52 @@ impl FakeConflict {
         }
         let epoch = std::mem::take(&mut camp.epoch);
         self.push(at, Obs::CampOut(boundary::CampOut { faction, epoch }));
+        // An epoch's end answers the lines still held stale (MZB-433).
+        for h in self.take_held(Some(faction)) {
+            self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, at);
+        }
+    }
+
+    /// A player comes within 160 blocks of the throne, or leaves it: the chief lines held on it
+    /// go at `at` when the player leaves (MZB-433's `holdSpawn`).
+    pub fn watch_throne(&mut self, faction: u64, watched: bool, at: Tick) {
+        self.camp_world(faction).watched = watched;
+        if !watched {
+            for h in self.take_held(Some(faction)) {
+                self.apply_held(h, at);
+            }
+        }
+    }
+
+    /// The held lines of `faction` (every camp's with `None`), taken out of the plugin.
+    fn take_held(&mut self, faction: Option<u64>) -> Vec<HeldLines> {
+        let (taken, kept) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|h| faction.is_none_or(|f| f == h.faction));
+        self.held = kept;
+        taken
+    }
+
+    /// The lines whose `HOLD_MAX` is up by `to` go, each at its own deadline.
+    fn release_held(&mut self, to: Tick) {
+        let (mut over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|h| h.since + HOLD_MAX <= to);
+        self.held = kept;
+        over.sort_by_key(|h| h.since);
+        for h in over {
+            let at = h.since + HOLD_MAX;
+            self.apply_held(h, at);
+        }
+    }
+
+    /// Held lines go: applied if the camp is still in at their epoch, else answered stale.
+    fn apply_held(&mut self, h: HeldLines, at: Tick) {
+        let live = self
+            .camps
+            .get(&h.faction)
+            .is_some_and(|c| c.epoch != 0 && c.epoch == h.epoch);
+        self.apply_lines(h.faction, h.epoch, h.op, live, h.lines, at);
     }
 
     /// Whether the camp is in.
@@ -935,18 +1022,52 @@ impl FakeConflict {
 
     /// One CAMP_RECONCILE: applied while the camp is in at its epoch, every line in the tick it
     /// arrives, else every line answered stale and nothing applied; answered with CAMP_BODIES
-    /// (§4.9, *Orders and answers*).
+    /// (§4.9, *Orders and answers*). With a player near the throne the chief's SPAWN and the heir's
+    /// pair wait (`holdSpawn`, MZB-433) and are answered when they go.
     fn reconcile(&mut self, r: &boundary::CampReconcile, at: Tick) {
         let live = self
             .camps
             .get(&r.faction)
             .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
-        // The heir's pair is one unit (MZB-408): if either line cannot be done, both are stale and
-        // nothing changes. The warrior to mask must be at home, and the heir's body not stand yet.
-        let pair = r.lines.iter().any(|l| l.action == boundary::ACTION_MASK);
-        let pair_ok = !pair || (live && self.pair_possible(r.faction, &r.lines));
-        let mut lines = Vec::new();
-        for (i, l) in r.lines.iter().enumerate() {
+        let watched = live && self.camps.get(&r.faction).is_some_and(|c| c.watched);
+        let (later, now): (Vec<_>, Vec<_>) = r
+            .lines
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, l)| (i as u32, l))
+            .partition(|(_, l)| watched && waits_on_throne(l));
+        if !later.is_empty() {
+            self.held.push(HeldLines {
+                faction: r.faction,
+                epoch: r.epoch,
+                op: r.op,
+                since: at,
+                lines: later,
+            });
+        }
+        self.apply_lines(r.faction, r.epoch, r.op, live, now, at);
+    }
+
+    /// Lines of one reconcile applied now (`live`) or answered stale, and answered. The heir's pair
+    /// is one unit (MZB-408): if either line cannot be done, both are stale and nothing changes.
+    fn apply_lines(
+        &mut self,
+        faction: u64,
+        epoch: u64,
+        op: u64,
+        live: bool,
+        lines: Vec<(u32, boundary::ReconcileLine)>,
+        at: Tick,
+    ) {
+        if lines.is_empty() {
+            return;
+        }
+        // The warrior to mask must be at home, and the heir's body not stand yet.
+        let pair = lines.iter().any(|(_, l)| l.action == boundary::ACTION_MASK);
+        let pair_ok = !pair || (live && self.pair_possible(faction, &lines));
+        let mut answers = Vec::new();
+        for (index, l) in &lines {
             let mut taken = None;
             let outcome = if !live
                 || (!pair_ok
@@ -954,24 +1075,24 @@ impl FakeConflict {
             {
                 boundary::LINE_STALE
             } else if l.action == boundary::ACTION_MASK {
-                let (outcome, slot, generation) = self.mask(r.faction);
+                let (outcome, slot, generation) = self.mask(faction);
                 taken = Some((slot, generation));
                 outcome
             } else {
-                self.apply_line(r.faction, l)
+                self.apply_line(faction, l)
             };
             self.applied.push(AppliedLine {
                 at,
-                faction: r.faction,
-                op: r.op,
-                index: i as u32,
+                faction,
+                op,
+                index: *index,
                 line: *l,
                 outcome,
             });
             // A MASK names the warrior the plugin took, not the line's own (zero) slot.
             let (slot, generation) = taken.unwrap_or((l.slot, l.generation));
             let answer = boundary::LineAnswer {
-                line: i as u32,
+                line: *index,
                 slot,
                 generation,
                 action: l.action,
@@ -980,19 +1101,19 @@ impl FakeConflict {
             if outcome == boundary::LINE_DONE {
                 // A change leaves its record where it was made; one that changed nothing does not.
                 self.holders.push(Holder {
-                    faction: r.faction,
-                    epoch: r.epoch,
-                    op: r.op,
+                    faction,
+                    epoch,
+                    op,
                     line: answer,
                 });
             }
-            lines.push(answer);
+            answers.push(answer);
         }
         if self.lose_answers > 0 {
             self.lose_answers -= 1;
             return;
         }
-        for answer in self.records(r.faction, r.epoch, r.op, lines) {
+        for answer in self.records(faction, epoch, op, answers) {
             if self.replay_answers {
                 self.push(at + self.answer_ticks, answer.clone());
             }
@@ -1062,14 +1183,12 @@ impl FakeConflict {
 
     /// Whether the heir's pair in `lines` can be done whole: a warrior to mask, and no body of the
     /// seat's slot and generation standing already.
-    fn pair_possible(&mut self, faction: u64, lines: &[boundary::ReconcileLine]) -> bool {
+    fn pair_possible(&mut self, faction: u64, lines: &[(u32, boundary::ReconcileLine)]) -> bool {
         let camp = self.camp_world(faction);
-        let warrior = camp
-            .bodies
-            .iter()
-            .any(|b| b.generation != 0 && !b.chief && !b.elsewhere && !b.near);
+        let warrior = camp.bodies.iter().any(warrior_at_home);
         let standing = lines
             .iter()
+            .map(|(_, l)| l)
             .filter(|l| l.action == boundary::ACTION_SEAT_HEIR)
             .any(|l| {
                 camp.bodies
@@ -1079,15 +1198,20 @@ impl FakeConflict {
         warrior && !standing
     }
 
-    /// MASK: the plugin takes the warrior at home farthest from every player (here, the last one
-    /// tagged and not near a player), for the heir (MZB-408). Its outcome, slot and generation;
-    /// no warrior to take is LINE_NOTHING with a zero generation.
+    /// MASK: the plugin takes the warrior at home farthest from every player, for the heir
+    /// (MZB-408). The emulator has no distances: the last one tagged that no player stands near,
+    /// else (every warrior at home has a player near) the last one tagged, as Java takes the
+    /// farthest all the same and answers STALE only with none at home. No warrior here has a line
+    /// in flight or held: a line is applied the tick it arrives, and a held line is a chief's.
+    /// Its outcome, slot and generation; no warrior to take is LINE_NOTHING with a zero
+    /// generation.
     fn mask(&mut self, faction: u64) -> (u8, u32, u32) {
         let camp = self.camp_world(faction);
         let Some(i) = camp
             .bodies
             .iter()
-            .rposition(|b| b.generation != 0 && !b.chief && !b.elsewhere && !b.near)
+            .rposition(|b| warrior_at_home(b) && !b.near)
+            .or_else(|| camp.bodies.iter().rposition(warrior_at_home))
         else {
             return (boundary::LINE_NOTHING, 0, 0);
         };
@@ -1613,6 +1737,8 @@ impl CampRun {
         let at = self.c.now();
         // The journal's tail is lost; what the holders carry is not.
         self.plugin.drop_queued();
+        // What the plugin held is in its memory, which a session's end clears.
+        self.plugin.take_held(None);
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }

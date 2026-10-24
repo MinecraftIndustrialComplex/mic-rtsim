@@ -297,7 +297,10 @@ fn an_heir_due_while_no_warrior_is_home_comes_once_one_is() {
     ok(&mut r);
 }
 
-/// The same stall from a pair answered stale while the grove stays in (review P2-1).
+/// With no warrior at home to mask (every one outside the footprint) Java answers the pair STALE.
+/// The pair goes out once, not once for each answer: the next is an hour on (`HEIR_RETRY`), and
+/// the grove that stays in is ordered it again once a warrior is home. (Review P2-1; the bodies
+/// were `near` a player before review P3-7: Java takes the farthest warrior all the same.)
 #[test]
 fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
     let mut r = grove(6, 9);
@@ -305,7 +308,7 @@ fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
     let due = heir_due(&r);
     r.run(Tick(due.0 - 50));
     for b in &mut r.plugin.camp_world(r.key).bodies {
-        b.near = true;
+        b.elsewhere = true;
     }
     r.run(due + 100);
     assert_eq!(chief(&r), None, "the pair went out and was answered stale");
@@ -316,13 +319,143 @@ fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
         "the pair went out"
     );
     for b in &mut r.plugin.camp_world(r.key).bodies {
-        b.near = false;
+        b.elsewhere = false;
     }
     r.run(due + days(30.0));
     assert!(
         chief(&r).is_some(),
         "the heir is ordered again while the grove stays in"
     );
+    ok(&mut r);
+}
+
+/// Review P3-7: Java takes the warrior farthest from every player, so with a player near all but
+/// one it is that one, and with a player near every warrior it takes one all the same, never a
+/// STALE answer for the pair.
+#[test]
+fn an_heir_takes_the_warrior_farthest_from_the_players_and_one_near_a_player_if_none_is_far() {
+    let ids = |r: &CampRun| -> Vec<(u32, u32)> {
+        r.plugin.camps[&r.key]
+            .bodies
+            .iter()
+            .filter(|b| b.slot != CHIEF_SLOT)
+            .map(|b| (b.slot, b.generation))
+            .collect()
+    };
+    for all_near in [false, true] {
+        let mut r = grove(6, 9);
+        come_in(&mut r);
+        let due = heir_due(&r);
+        r.run(Tick(due.0 - 50));
+        let before = ids(&r);
+        let far = before[0];
+        for b in r.plugin.camp_world(r.key).bodies.iter_mut().skip(1) {
+            b.near = true;
+        }
+        if all_near {
+            r.plugin.camp_world(r.key).bodies[0].near = true;
+        }
+        r.run(due + 100);
+        assert!(
+            chief(&r).is_some(),
+            "the pair was done (all near: {all_near})"
+        );
+        assert_eq!(chief_bodies(&r).len(), 1, "the heir stands");
+        let after = ids(&r);
+        assert_eq!(after.len(), before.len() - 1, "one warrior was taken");
+        assert_eq!(
+            !after.contains(&far),
+            !all_near,
+            "the warrior no player stood near goes first (all near: {all_near})"
+        );
+        ok(&mut r);
+    }
+}
+
+/// Review P3-7, MZB-433's `holdSpawn`: with a player near the throne the heir's pair waits, the
+/// books keep it in flight and the world changes nothing, until the player leaves.
+#[test]
+fn the_heirs_pair_waits_while_a_player_is_at_the_throne_and_goes_when_the_player_leaves() {
+    let mut r = grove(6, 9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - 50));
+    let at = r.c.now();
+    r.plugin.watch_throne(r.key, true, at);
+    let standing = warriors(&r);
+    r.run(due + 3_000);
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_SEAT_HEIR),
+        1,
+        "the pair went out"
+    );
+    assert_eq!(chief(&r), None, "and waits");
+    assert!(chief_bodies(&r).is_empty());
+    assert_eq!(warriors(&r), standing, "no warrior was taken");
+    assert!(
+        r.c.camp(r.f).unwrap().in_flight() > 0,
+        "the books keep it in flight"
+    );
+    ok(&mut r);
+    let at = r.c.now();
+    r.plugin.watch_throne(r.key, false, at);
+    r.run(at + 20);
+    assert!(chief(&r).is_some(), "the player left, the pair was done");
+    assert_eq!(warriors(&r), standing - 1);
+    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 0);
+    ok(&mut r);
+}
+
+/// The same with the player staying: the pair goes `HOLD_MAX` ticks after it arrived, not before.
+#[test]
+fn the_heirs_pair_goes_after_hold_max_with_the_player_still_at_the_throne() {
+    let mut r = grove(6, 9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - 50));
+    let at = r.c.now();
+    r.plugin.watch_throne(r.key, true, at);
+    r.run(due + (synth::HOLD_MAX - 5));
+    assert_eq!(chief(&r), None, "still waiting");
+    r.run(due + synth::HOLD_MAX + 20);
+    assert!(chief(&r).is_some(), "HOLD_MAX is up");
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_SEAT_HEIR),
+        1,
+        "one pair, ordered once"
+    );
+    ok(&mut r);
+}
+
+/// A camp that goes out while its pair waits ends the epoch: both lines are answered STALE and the
+/// world is unchanged. The grove is ordered the pair again when it is back and the player gone.
+#[test]
+fn a_pair_held_at_the_throne_is_answered_stale_when_the_camp_goes_out() {
+    let mut r = grove(6, 9);
+    come_in(&mut r);
+    let due = heir_due(&r);
+    r.run(Tick(due.0 - 50));
+    let at = r.c.now();
+    r.plugin.watch_throne(r.key, true, at);
+    let standing = warriors(&r);
+    r.run(due + 100);
+    assert_eq!(chief(&r), None, "waiting");
+    r.camp_out();
+    r.run(r.c.now() + 10);
+    let stale = r
+        .plugin
+        .applied
+        .iter()
+        .filter(|a| a.outcome == boundary::LINE_STALE)
+        .count();
+    assert_eq!(stale, 2, "both lines were answered stale");
+    assert_eq!(warriors(&r), standing);
+    assert!(chief_bodies(&r).is_empty());
+    let at = r.c.now();
+    r.plugin.watch_throne(r.key, false, at);
+    r.camp_in();
+    r.run(r.c.now() + 200);
+    assert!(chief(&r).is_some(), "ordered again once it is back");
     ok(&mut r);
 }
 
