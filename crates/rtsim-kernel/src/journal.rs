@@ -245,10 +245,11 @@ impl Replay {
     /// recorded (so a later copy of the same record is not new), then its operation id is checked
     /// as [`Replay::admit`] would.
     pub fn admit_copy(&mut self, nonce: u64, of: ObsSeq, at: ObsSeq, op: Option<OpId>) -> Verdict {
-        if nonce != 0 && self.copied.insert((nonce, of)) {
-            if let Some(g) = &mut self.open {
-                g.copies.push((nonce, of));
-            }
+        if nonce != 0
+            && self.copied.insert((nonce, of))
+            && let Some(g) = &mut self.open
+        {
+            g.copies.push((nonce, of));
         }
         if let Some(op) = op {
             if self.op_index.contains_key(&op) {
@@ -286,7 +287,7 @@ impl Replay {
 
     /// Loads the next block of closed generations (block `closed_len() / GEN_BLOCK`).
     pub fn load_closed_block(&mut self, b: &[u8]) -> codec::Result<()> {
-        if self.closed.len() % GEN_BLOCK != 0 {
+        if !self.closed.len().is_multiple_of(GEN_BLOCK) {
             return Err(codec::CodecError::Invalid(
                 "a block of closed generations after a partial one".into(),
             ));
@@ -699,8 +700,14 @@ mod tests {
         assert_eq!(r.admit_gen(ObsSeq(1), a), Verdict::AlreadyApplied);
         r.admit(ObsSeq(2), None);
         r.admit(ObsSeq(3), Some(OpId::bridge(1)));
-        assert_eq!(r.open_gen().map(|g| (g.nonce, g.last)), Some((a, ObsSeq(3))));
-        assert!(!r.copy_is_new(a, ObsSeq(2)), "admitted in the open generation");
+        assert_eq!(
+            r.open_gen().map(|g| (g.nonce, g.last)),
+            Some((a, ObsSeq(3)))
+        );
+        assert!(
+            !r.copy_is_new(a, ObsSeq(2)),
+            "admitted in the open generation"
+        );
         assert!(r.copy_is_new(a, ObsSeq(4)), "not yet");
         // A crash lost 4 and 5 of a; the next session takes them again as b's.
         assert_eq!(r.admit_gen(ObsSeq(4), b), Verdict::Apply);
@@ -733,7 +740,17 @@ mod tests {
         // All of it survives a save, the open generation's copies included.
         let back = reloaded(&r);
         assert_eq!(back, r);
-        for (n, q) in [(a, 3), (a, 4), (a, 5), (b, 5), (b, 10), (c, 9), (c, 10), (c, 11), (0, 2)] {
+        for (n, q) in [
+            (a, 3),
+            (a, 4),
+            (a, 5),
+            (b, 5),
+            (b, 10),
+            (c, 9),
+            (c, 10),
+            (c, 11),
+            (0, 2),
+        ] {
             assert_eq!(
                 back.copy_is_new(n, ObsSeq(q)),
                 r.copy_is_new(n, ObsSeq(q)),
@@ -763,8 +780,14 @@ mod tests {
         let bytes: usize = (0..r.closed_len().div_ceil(GEN_BLOCK))
             .map(|k| r.closed_block(k).len())
             .sum();
-        assert!(bytes < 16 * sessions as usize, "{bytes} bytes for {sessions} sessions");
-        assert!(r.to_bytes().len() < 64, "the meta part does not grow with them");
+        assert!(
+            bytes < 16 * sessions as usize,
+            "{bytes} bytes for {sessions} sessions"
+        );
+        assert!(
+            r.to_bytes().len() < 64,
+            "the meta part does not grow with them"
+        );
     }
 
     #[test]

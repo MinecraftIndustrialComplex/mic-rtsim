@@ -362,7 +362,8 @@ impl Host {
         cfg.durability = opts.durability;
         cfg.exec = Exec::Host;
         let e = Engine::open(cfg)?;
-        let mut j = Java::try_open(e.clone(), journal.save)?;
+        let nonce = java::nonce_of(&journal.save);
+        let mut j = Java::try_open_as(e.clone(), journal.save, nonce)?;
         j.policy = Policy::Refuse;
         j.module_mask = mask;
         // The phase 1 world's clock is the last step's game time; a level.dat behind it (a crash
