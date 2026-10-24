@@ -358,9 +358,13 @@ struct State {
     dict_sent: HashSet<(u32, u32)>,
     /// The first observation sequence of this session; anything below is a replay.
     session_first: u64,
-    /// The session's journal replay is running (docs/replay-gate.md §1.1, RP-1): the latched
-    /// answer of `applied_through + 1 < session_first`, set at SESSION_START and cleared once a
-    /// session by `shared::replay_end`. Not saved.
+    /// The session's journal replay is running (docs/replay-gate.md §1.1, RP-1): set at
+    /// SESSION_START and cleared once a session, by the first of the three triggers to run
+    /// `shared::replay_end`: `replay_end_before` (a record whose sequence is at or past
+    /// `session_first`), `replay_end_if_due` (the step's top, `applied_through + 1 >=
+    /// session_first`) and `replay_end_at_session_start` (the arm's end, Java's journal start
+    /// counted, RP-29). It follows `applied_through + 1 < session_first` without being it: RP-29
+    /// can clear it first. Not saved.
     replaying: bool,
     /// The generation nonce of the copy (REASSERT) being dispatched, `None` otherwise (RP-8).
     /// Set by `reasserted()` around its dispatch (on the copy's Apply, RP-50), cleared after.

@@ -830,6 +830,11 @@ conservative option at its fork.
   `replay_done`. Not a second definition: the same predicate, latched so that every module reads one
   answer and the end runs once. Not saved. Rejected: a parameter on every engine call (dozens of
   signatures, and a test can pass the wrong value).
+  Amended (SEC-1's meeting-point review, item 5): "the same predicate, latched" overstated it. The
+  flag is set at SESSION_START and cleared by the first of the three triggers (§1.1, §2.2): the top
+  of `journaled()` on a record's sequence at or past `session_first`, the step's top on
+  `applied_through + 1 >= session_first`, and the arm's end with RP-29's journal check, which can
+  clear it while `applied_through + 1 < session_first`.
 - **RP-2** (one replay end for all four modules; §2.2, §3.2): `shared::replay_end` runs at the top of
   `journaled()` for the first record at or past `session_first`, at the step's top when the replay's
   last record was the hand-over's last, and at the SESSION_START arm's end when there is nothing to
