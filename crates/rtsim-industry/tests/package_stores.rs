@@ -109,6 +109,8 @@ fn chain(
         inventory: district.map(|_| 3),
         direction,
         frogport,
+        // The frogports in their usual order (the record's position matters only for writes).
+        pos: pos(10 * (frogport as i32 + 1)),
         destination,
         packages,
         address: 0,

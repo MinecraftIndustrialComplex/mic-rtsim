@@ -151,28 +151,35 @@ pub struct PackageStore {
     /// One package's contents toward each frogport (by position), from the last `CHAIN_OUT` routed
     /// there: the replay's room and the engine's writes count packages of it.
     pub batch: BTreeMap<BlockPos, GoodVec>,
-    /// The engine's writes toward each frogport (by position) that Java has not answered: no
-    /// other write is sent there until each is answered (a `CHAIN_IN` with its op, or FAILED) or
-    /// its answer is taken as lost.
-    pub writing: BTreeMap<BlockPos, Writing>,
-    /// The last written `CHAIN_IN` taken toward each frogport (by position): a record no later
-    /// than it was taken already (choice SC113).
+    /// The engine's writes toward each frogport (by position) that Java has not answered, oldest
+    /// first: no other write is sent there while one is young (choice SC113), and a written
+    /// `CHAIN_IN` of one of them is that write's answer, taken at the frogport the write named.
+    pub writing: BTreeMap<BlockPos, Vec<Sent>>,
+    /// The last written `CHAIN_IN` taken toward each frogport (by position): a record of no write
+    /// the engine still waits for, no later than the mark, was taken already (choice SC113).
     pub marks: BTreeMap<BlockPos, WriteMark>,
 }
 
-/// The engine's writes toward one frogport that Java has not answered yet (choice SC113).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Writing {
-    /// When the last of them was sent.
-    pub at: Tick,
-    pub ops: Vec<OpId>,
+/// One write the engine sent toward a frogport that Java has not answered yet (choice SC113).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sent {
+    pub op: OpId,
+    /// When the engine handed it on (`Engine::drain_commands`); None while it waits in the
+    /// engine's own outbox, so one long step never takes its answer as lost.
+    pub at: Option<Tick>,
 }
+
+/// The unanswered writes kept toward one frogport: past it the oldest is taken as lost.
+pub const WRITES_KEPT: usize = 8;
 
 /// The last written `CHAIN_IN` the engine took toward one frogport (choice SC113): its record's
 /// own game time and the op ids taken at that time. A frogport's chunk carries such a record until
 /// the engine acknowledges it; one that unloads first is saved with it and journals it again at its
 /// next load, after the op id may be forgotten (WORLD_SAVED). Writes into one frogport are answered
 /// in order, so a record no later than the mark, of an op the mark holds when as late, is that one.
+/// A record of a write the engine still waits for is never one: after a crash the world's clock
+/// goes back to its last save, and Java's next writes are recorded before a mark that a record
+/// from the lost stretch set.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriteMark {
     pub at: Tick,
@@ -306,47 +313,95 @@ impl PackageStore {
         }
     }
 
-    fn add_writing(&mut self, pos: BlockPos, w: &Writing) {
+    fn add_writing(&mut self, pos: BlockPos, w: &[Sent]) {
         let e = self.writing.entry(pos).or_default();
-        e.at = e.at.max(w.at);
-        for &op in &w.ops {
-            if !e.ops.contains(&op) {
-                e.ops.push(op);
+        for s in w {
+            if !e.iter().any(|x| x.op == s.op) {
+                e.push(*s);
             }
         }
+        let over = e.len().saturating_sub(WRITES_KEPT);
+        e.drain(..over);
     }
 
-    /// A written `CHAIN_IN` at `recorded` of `op` toward `pos` that the engine took already.
+    /// A written `CHAIN_IN` at `recorded` of `op` toward `pos`, of no write the engine still
+    /// waits for, that the engine took already.
     pub fn written_again(&self, pos: BlockPos, recorded: Tick, op: OpId) -> bool {
         self.marks.get(&pos).is_some_and(|m| m.covers(recorded, op))
     }
 
-    /// The engine sent writes `ops` toward `pos` at `at`.
-    pub fn sent_writes(&mut self, pos: BlockPos, at: Tick, ops: Vec<OpId>) {
-        self.writing.insert(pos, Writing { at, ops });
+    /// The engine wrote `op` toward `pos`; it waits in the engine's outbox. Returns how many older
+    /// unanswered writes it pushed out (taken as lost, past [`WRITES_KEPT`]).
+    pub fn sent_write(&mut self, pos: BlockPos, op: OpId) -> u64 {
+        let e = self.writing.entry(pos).or_default();
+        e.push(Sent { op, at: None });
+        let over = e.len().saturating_sub(WRITES_KEPT);
+        e.drain(..over);
+        over as u64
     }
 
-    /// Whether a write toward `pos` is still unanswered at `at`, its answer not yet taken as lost
-    /// after `lost` ticks.
+    /// The engine handed write `op` on at `at`. True when this store sent it.
+    pub fn write_drained(&mut self, op: OpId, at: Tick) -> bool {
+        match self
+            .writing
+            .values_mut()
+            .flat_map(|w| w.iter_mut())
+            .find(|s| s.op == op)
+        {
+            Some(s) => {
+                s.at.get_or_insert(at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a write toward `pos` still holds the next at `at`: one in the engine's outbox, or
+    /// one handed on less than `lost` ticks ago and not answered.
     pub fn write_pending(&self, pos: BlockPos, at: Tick, lost: u64) -> bool {
         self.writing
             .get(&pos)
-            .is_some_and(|w| !w.ops.is_empty() && at < w.at + lost)
+            .is_some_and(|w| w.iter().any(|s| s.at.is_none_or(|t| at < t + lost)))
+    }
+
+    /// Whether a write toward `pos` was handed on `forget` ticks or more before `at`.
+    pub fn writes_to_forget(&self, pos: BlockPos, at: Tick, forget: u64) -> bool {
+        self.writing
+            .get(&pos)
+            .is_some_and(|w| w.iter().any(|s| s.at.is_some_and(|t| at >= t + forget)))
+    }
+
+    /// Takes as lost the writes toward `pos` handed on `forget` ticks or more before `at`; returns
+    /// how many.
+    pub fn forget_writes(&mut self, pos: BlockPos, at: Tick, forget: u64) -> u64 {
+        let Some(w) = self.writing.get_mut(&pos) else {
+            return 0;
+        };
+        let before = w.len();
+        w.retain(|s| s.at.is_none_or(|t| at < t + forget));
+        let gone = (before - w.len()) as u64;
+        if w.is_empty() {
+            self.writing.remove(&pos);
+        }
+        gone
+    }
+
+    /// The frogport (by position) of the unanswered write `op`, when this store sent it.
+    pub fn writing_at(&self, op: OpId) -> Option<BlockPos> {
+        self.writing
+            .iter()
+            .find(|(_, w)| w.iter().any(|s| s.op == op))
+            .map(|(p, _)| *p)
     }
 
     /// Java answered write `op` (toward any frogport). True when this store sent it.
     pub fn write_answered(&mut self, op: OpId) -> bool {
-        let Some(pos) = self
-            .writing
-            .iter()
-            .find(|(_, w)| w.ops.contains(&op))
-            .map(|(p, _)| *p)
-        else {
+        let Some(pos) = self.writing_at(op) else {
             return false;
         };
         let w = self.writing.get_mut(&pos).expect("found");
-        w.ops.retain(|&o| o != op);
-        if w.ops.is_empty() {
+        w.retain(|s| s.op != op);
+        if w.is_empty() {
             self.writing.remove(&pos);
         }
         true
@@ -547,7 +602,7 @@ struct Taken {
     pool: Pool,
     owed: GoodVec,
     batch: Option<GoodVec>,
-    writing: Option<Writing>,
+    writing: Option<Vec<Sent>>,
     mark: Option<WriteMark>,
 }
 
@@ -657,7 +712,7 @@ persist_struct!(StoreCounts {
     in_census,
     written
 });
-persist_struct!(Writing { at, ops });
+persist_struct!(Sent { op, at });
 persist_struct!(WriteMark { at, ops });
 persist_struct!(PackageStore {
     id,

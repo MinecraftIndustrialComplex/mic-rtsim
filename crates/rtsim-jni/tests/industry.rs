@@ -1481,6 +1481,7 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
             inventory: None,
             direction: ChainDirection::In,
             frogport: 1,
+            pos: BlockPos::new(9_020, 64, 0),
             destination: Some(1),
             packages: 2,
             address: 0,

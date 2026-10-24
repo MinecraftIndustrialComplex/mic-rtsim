@@ -427,7 +427,8 @@ public final class IndRecords {
     /**
      * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
      * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents. The frogport is an
-     * index into the store's last IND_PACKAGE_STORE; the destination too ({@code CHAIN_OUT} only).
+     * index into the store's last IND_PACKAGE_STORE, and its position too; the destination is an index
+     * ({@code CHAIN_OUT} only).
      */
     public static final class ChainPackage {
         public static final int STORE = 24;       // u64
@@ -439,8 +440,11 @@ public final class IndRecords {
         public static final int PACKAGES = 56;    // u32
         public static final int ADDRESS = 60;     // u32 (NAME)
         public static final int OP_ID = 64;       // u64, 0 none
-        // 72: u64 zero
-        public static final int ENTRIES = 80;
+        public static final int X = 72;           // i32, the frogport's position (choice SC113)
+        public static final int Y = 76;           // i32
+        public static final int Z = 80;           // i32
+        // 84: u32 zero
+        public static final int ENTRIES = 88;
 
         public static int size(int n) {
             return ENTRIES + n * ENTRY16;

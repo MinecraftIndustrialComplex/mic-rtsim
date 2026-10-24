@@ -821,7 +821,8 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(p.packages);
             w.put_u32(p.address);
             w.put_u64(op_or_none(p.op));
-            w.zero(8);
+            w.pos3(p.pos);
+            w.zero(4);
             w.goods(&p.goods);
             w.finish()
         }
@@ -1255,7 +1256,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             })
         }
         IND_CHAIN_PACKAGE => {
-            check(kind, size, sized(80, n, 16))?;
+            check(kind, size, sized(88, n, 16))?;
             let d = r.get_u64(32);
             Obs::ChainPackage(ChainPackage {
                 store: StoreId(r.get_u64(24)),
@@ -1267,7 +1268,8 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 packages: r.get_u32(56),
                 address: r.get_u32(60),
                 op: none_if_zero(r.get_u64(64)),
-                goods: r.goods(80, n),
+                pos: r.pos3(72),
+                goods: r.goods(88, n),
             })
         }
         IND_STORE_CENSUS => {
@@ -2011,6 +2013,7 @@ mod tests {
                 inventory: Some(4),
                 direction: ChainDirection::Out,
                 frogport: 0,
+                pos: BlockPos::new(-12, 64, 30),
                 destination: Some(2),
                 packages: 1,
                 address: 57,
@@ -2023,6 +2026,7 @@ mod tests {
                 inventory: None,
                 direction: ChainDirection::In,
                 frogport: 1,
+                pos: BlockPos::new(5, -3, -7),
                 destination: None,
                 packages: 2,
                 address: 0,
@@ -2390,7 +2394,7 @@ mod tests {
                 let n = d.frogports.len();
                 (48 + 48 * n + 2 * (n * n.saturating_sub(1) / 2)).div_ceil(8) * 8
             }
-            Obs::ChainPackage(p) => 80 + 16 * p.goods.len(),
+            Obs::ChainPackage(p) => 88 + 16 * p.goods.len(),
             Obs::StoreCensus(c) => 32 + 8 * c.packages.len() + 16 * c.goods.len(),
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
