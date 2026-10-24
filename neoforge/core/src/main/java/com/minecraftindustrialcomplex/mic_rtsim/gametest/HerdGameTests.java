@@ -425,8 +425,9 @@ public final class HerdGameTests {
      * and keeps a taken (now ordinary) animal; copies of a puppet built from its NBT, under a new UUID or
      * an older epoch, never join; the group still has its one body per member.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "herd_save", skyAccess = true)
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "herd_save", skyAccess = true)
     public static void aSaveAndReloadDuplicatesNothing(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 600);
         String test = "aSaveAndReloadDuplicatesNothing";
         long agent = HerdKit.newAgent();
         int[] c = HerdKit.abs(helper, 5, 5);
@@ -442,13 +443,13 @@ public final class HerdGameTests {
         long[] staleBefore = new long[1];
 
         helper.startSequence()
-                .thenWaitUntil(() -> HerdKit.bodies(agent, 3))
+                .thenWaitUntil(waits.logic(() -> HerdKit.bodies(agent, 3)))
                 .thenExecute(() -> {
                     player[0] = FakePlayers.add(helper.getLevel(), RtsimTests.centre(helper), "herd_saver");
                     taken[0] = byMember(agent, 3);
                     ((net.minecraft.world.entity.Leashable) taken[0]).setLeashedTo(player[0], true);
                 })
-                .thenWaitUntil(() -> check("the led sheep is taken", !HerdKit.about(HerdRecords.HERD_TAKEN, agent).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("the led sheep is taken", !HerdKit.about(HerdRecords.HERD_TAKEN, agent).isEmpty())))
                 .thenExecute(() -> {
                     for (Entity e : HerdKit.bodies(agent, 2))
                         puppets.add(e.getUUID());
@@ -460,7 +461,7 @@ public final class HerdGameTests {
                             chunks.add(new ChunkPos(p.offset(dx * 8, 0, dz * 8)));
                     read[0] = PuppetSaveGameTests.saveAndReadBack(helper.getLevel(), chunks.toArray(new ChunkPos[0]));
                 })
-                .thenWaitUntil(() -> check("the entity chunks were read back", read[0] != null && read[0].isDone()))
+                .thenWaitUntil(waits.chunks(() -> check("the entity chunks were read back", read[0] != null && read[0].isDone())))
                 .thenExecute(() -> {
                     List<Entity> loaded = read[0].join();
                     int puppetsSaved = 0;
@@ -506,7 +507,7 @@ public final class HerdGameTests {
                     taken[0].discard();
                     HerdKit.despawn(agent, 2, HerdKit.SHEEP);
                 })
-                .thenWaitUntil(() -> check("captured", bridge().group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("captured", bridge().group(agent) == null)))
                 .thenSucceed();
     }
 
