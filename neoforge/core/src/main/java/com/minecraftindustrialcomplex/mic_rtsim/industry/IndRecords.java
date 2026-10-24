@@ -427,17 +427,19 @@ public final class IndRecords {
     /**
      * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
      * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents, or a package the
-     * frontier holds on a boundary conveyor ({@code CHAIN_HELD}, SECTIONS.md §2.5). The frogport is an
+     * frontier holds on a boundary conveyor ({@code CHAIN_HELD}, SECTIONS.md §2.5) or no longer holds
+     * ({@code CHAIN_RELEASED}: no frogport, no destination, no packages, only the key). The frogport is an
      * index into the store's last IND_PACKAGE_STORE, and its position too; the destination is an index
      * ({@code CHAIN_OUT}, and {@code CHAIN_HELD}, whose frogport is its destination and whose position is
      * the boundary conveyor's). A held package's key (the frontier's epoch and a serial, choice SC136) is in
-     * {@code CHAIN_HELD} and in a {@code CHAIN_IN} of a package Java still holds keyed; epoch 0 is no key.
+     * {@code CHAIN_HELD}, in {@code CHAIN_RELEASED} and in a {@code CHAIN_IN} of a package Java still holds
+     * keyed; epoch 0 is no key.
      */
     public static final class ChainPackage {
         public static final int STORE = 24;       // u64
         public static final int DISTRICT = 32;    // u64, 0 none
         public static final int INVENTORY = 40;   // u32, NO_INVENTORY none
-        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN
+        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN, CHAIN_HELD, CHAIN_RELEASED
         public static final int FROGPORT = 48;    // u32
         public static final int DESTINATION = 52; // u32, NO_INVENTORY none (no route)
         public static final int PACKAGES = 56;    // u32
@@ -459,6 +461,8 @@ public final class IndRecords {
         public static final int CHAIN_IN = 4;
         /** The frontier holds the package on a boundary conveyor, refused at its hand-off (§2.5). */
         public static final int CHAIN_HELD = 5;
+        /** The key left the world or Java no longer holds it: struck wherever the engine holds it (choice SC137). */
+        public static final int CHAIN_RELEASED = 6;
     }
 
     /**

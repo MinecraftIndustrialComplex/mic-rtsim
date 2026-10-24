@@ -3717,6 +3717,21 @@ impl Engine {
         }
     }
 
+    /// The store that holds the frontier's `key` (choice SC137): `first` when it does, else the
+    /// first of the others. A key moves with its frogport between stores, so a record may name
+    /// another store than the one holding it.
+    fn store_holding(&self, key: crate::obs::HeldKey, first: Option<StoreId>) -> Option<StoreId> {
+        if let Some(id) = first
+            && self.stores.get(&id).is_some_and(|s| s.holds(key))
+        {
+            return Some(id);
+        }
+        self.stores
+            .iter()
+            .find(|(_, s)| s.holds(key))
+            .map(|(id, _)| *id)
+    }
+
     /// Packages across a package store's frogport (IND_CHAIN_PACKAGE, SECTIONS.md §2.5): booked
     /// into the store, and a port of the frogport's district when it has one. While that district
     /// is loaded, the chain's own packages are learned as its links (choice SC108): out toward the
@@ -3739,13 +3754,30 @@ impl Engine {
         };
         let engine_wrote = p.op.is_some() && p.direction == ChainDirection::In;
         // The frontier's hold (slice S4c): booked with the store only, no port; its `CHAIN_OUT`
-        // was the exporter's port.
+        // was the exporter's port. A key another store holds moves here (choice SC137).
         if p.direction == ChainDirection::Held {
-            match self.stores.get_mut(&p.store) {
-                Some(s) => {
-                    s.chain(p, recorded);
-                }
-                None => self.stats.store_records_unknown += 1,
+            if !self.stores.contains_key(&p.store) {
+                self.stats.store_records_unknown += 1;
+                return;
+            }
+            let moved = p
+                .key
+                .and_then(|key| Some((key, self.store_holding(key, Some(p.store))?)))
+                .filter(|&(_, other)| other != p.store)
+                .and_then(|(key, other)| self.stores.get_mut(&other)?.strike(key));
+            if let Some(s) = self.stores.get_mut(&p.store) {
+                s.hold(p, recorded, moved);
+            }
+            return;
+        }
+        // A key Java no longer holds: struck wherever it is (choice SC137). No port, no pool.
+        if p.direction == ChainDirection::Released {
+            if let Some(key) = p.key
+                && let Some(id) = self.store_holding(key, Some(p.store))
+                && let Some(s) = self.stores.get_mut(&id)
+                && let Some(h) = s.strike(key)
+            {
+                s.counts.held_released += h.packages;
             }
             return;
         }
@@ -3753,19 +3785,11 @@ impl Engine {
         // moved its key (choice SC137).
         if p.direction == ChainDirection::In
             && let Some(key) = p.key
+            && let Some(id) = self.store_holding(key, Some(p.store))
+            && let Some(s) = self.stores.get_mut(&id)
         {
-            let holder = if self.stores.get(&p.store).is_some_and(|s| s.holds(key)) {
-                Some(p.store)
-            } else {
-                self.stores
-                    .iter()
-                    .find(|(_, s)| s.holds(key))
-                    .map(|(id, _)| *id)
-            };
-            if let Some(s) = holder.and_then(|id| self.stores.get_mut(&id)) {
-                s.strike(key);
-                s.counts.held_landed += u64::from(p.packages);
-            }
+            s.strike(key);
+            s.counts.held_landed += u64::from(p.packages);
         }
         let mut to = None;
         match self.stores.get_mut(&p.store) {
@@ -3774,7 +3798,7 @@ impl Engine {
                 let at_port = match p.direction {
                     ChainDirection::Out => p.destination,
                     ChainDirection::In => Some(p.frogport),
-                    ChainDirection::Held => None,
+                    ChainDirection::Held | ChainDirection::Released => None,
                 };
                 to = at_port
                     .and_then(|j| s.frogports.get(j as usize))
@@ -3816,7 +3840,9 @@ impl Engine {
             inventory,
             direction: match p.direction {
                 ChainDirection::Out => Direction::Out,
-                ChainDirection::In | ChainDirection::Held => Direction::In,
+                ChainDirection::In | ChainDirection::Held | ChainDirection::Released => {
+                    Direction::In
+                }
             },
             address: p.address,
             packages: p.packages,

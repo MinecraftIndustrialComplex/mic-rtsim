@@ -590,6 +590,24 @@ fn held(store: StoreId, destination: u32, k: HeldKey, goods: &[(Good, i64)]) -> 
     })
 }
 
+/// A `CHAIN_RELEASED` of key `k`, naming `store`.
+fn released(store: StoreId, k: HeldKey) -> Obs {
+    Obs::ChainPackage(ChainPackage {
+        store,
+        district: None,
+        inventory: None,
+        direction: ChainDirection::Released,
+        frogport: u32::MAX,
+        pos: pos(15),
+        destination: None,
+        packages: 0,
+        address: 0,
+        op: None,
+        key: Some(k),
+        goods: GoodVec::new(),
+    })
+}
+
 fn with_key(o: Obs, k: HeldKey) -> Obs {
     match o {
         Obs::ChainPackage(mut p) => {
@@ -614,8 +632,9 @@ fn on_hold(e: &Engine, s: StoreId, f: StoreFrogport) -> Vec<HeldKey> {
 }
 
 /// A held package is booked toward its destination with its key, once, and leaves the pools as
-/// they were (its `CHAIN_OUT` booked it); its keyed `CHAIN_IN` strikes it and takes it from the
-/// pool as any landing does. The held packages are paged with the store.
+/// they were (its `CHAIN_OUT` booked it); a key told again stays one package, in its place, and
+/// moves with a new destination; its keyed `CHAIN_IN` strikes it and takes it from the pool as any
+/// landing does. The held packages are paged with the store.
 #[test]
 fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
     let mut e = engine();
@@ -640,13 +659,21 @@ fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
     );
     send(&mut e, 40, held(S, 1, key(1, 7), &[(IRON, 64)]));
     send(&mut e, 41, held(S, 1, key(1, 8), &[(IRON, 64)]));
-    // Seen again (it circles): one record each, Java keys a package once; the engine turns away
-    // a second record of a key all the same.
+    // Told again (a new session tells each held key once): still one package, in its place.
     send(&mut e, 90, held(S, 1, key(1, 7), &[(IRON, 64)]));
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 7), key(1, 8)]);
     let s = &e.stores()[&S];
     assert_eq!(s.pools[1], pool(2, &[(IRON, 128)]));
-    assert_eq!((s.counts.held, s.counts.held_stale), (2, 1));
+    assert_eq!(
+        (s.counts.held, s.counts.held_again, s.counts.held_stale),
+        (2, 1, 0)
+    );
+    // Toward another destination (its route changed): it moves there.
+    send(&mut e, 91, held(S, 2, key(1, 8), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 7)]);
+    assert_eq!(on_hold(&e, S, c()), vec![key(1, 8)]);
+    send(&mut e, 92, held(S, 1, key(1, 8), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 7), key(1, 8)]);
     // No port and no link: the district's books are as the `CHAIN_OUT` left them.
     let mut disk = Disk::new();
     save(&mut e, &mut disk);
@@ -681,12 +708,12 @@ fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 8)]);
 }
 
-/// Nothing is held while all of a store ticks: a census clears the held packages, and a hold
-/// recorded no later than it is turned away. A declaration of another epoch (Java's epochs start
-/// anywhere, so a lower one too) drops the keys of the one before, and a hold of any epoch but the
+/// A census leaves the held packages (they are on the chain; Java releases the keys it did not
+/// find), and a release strikes one. A declaration of another epoch (Java's epochs start anywhere,
+/// so a lower one too) drops the keys of the one before, and a hold of any epoch but the
 /// declaration's is turned away.
 #[test]
-fn a_census_and_another_epoch_clear_the_held() {
+fn a_release_and_another_epoch_clear_the_held() {
     let mut e = engine();
     send(
         &mut e,
@@ -705,10 +732,20 @@ fn a_census_and_another_epoch_clear_the_held() {
             goods: vec![(Some(1), IRON, 64)],
         }),
     );
-    assert!(e.stores()[&S].on_hold.is_empty());
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
+    assert_eq!(on_hold(&e, S, a()), vec![key(1, 2)]);
     send(&mut e, 200, held(S, 1, key(1, 3), &[(IRON, 64)]));
-    assert!(e.stores()[&S].on_hold.is_empty());
-    send(&mut e, 201, held(S, 1, key(1, 4), &[(IRON, 64)]));
+    send(&mut e, 201, released(S, key(1, 1)));
+    send(&mut e, 202, released(S, key(1, 2)));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 3)]);
+    assert!(on_hold(&e, S, a()).is_empty());
+    let s = &e.stores()[&S];
+    assert_eq!(s.counts.held_released, 2);
+    // A release of a key no store holds changes nothing.
+    send(&mut e, 203, released(S, key(1, 1)));
+    assert_eq!(e.stores()[&S].counts.held_released, 2);
+    send(&mut e, 204, released(S, key(1, 3)));
+    send(&mut e, 205, held(S, 1, key(1, 4), &[(IRON, 64)]));
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 4)]);
     // Java's epoch moves on (an engine reset, a re-enable): it declares every store again.
     send(
@@ -734,7 +771,7 @@ fn a_census_and_another_epoch_clear_the_held() {
     assert!(e.stores()[&S].on_hold.is_empty());
     send(&mut e, 401, held(S, 0, key(1, 8), &[(GOLD, 3)]));
     assert_eq!(on_hold(&e, S, a()), vec![key(1, 8)]);
-    assert_eq!(e.stores()[&S].counts.held_stale, 3);
+    assert_eq!(e.stores()[&S].counts.held_stale, 2);
 }
 
 /// Held packages follow their frogport into another store (a split), and into the store a
@@ -769,4 +806,21 @@ fn held_packages_follow_their_frogport() {
     );
     send(&mut e, 30, Obs::PackageStore(removal(U, Some(S))));
     assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
+    // A record naming another store than the one holding the key: a hold moves it there, a
+    // release or a keyed landing strikes it where it is.
+    send(
+        &mut e,
+        40,
+        Obs::PackageStore(epoch(decl(U, vec![from(c(), S)]), 1)),
+    );
+    send(&mut e, 41, held(U, 0, key(1, 1), &[(IRON, 64)]));
+    assert!(e.stores()[&S].on_hold.is_empty());
+    assert_eq!(on_hold(&e, U, c()), vec![key(1, 1)]);
+    assert_eq!(
+        (e.stores()[&U].counts.held, e.stores()[&U].counts.held_again),
+        (0, 1)
+    );
+    send(&mut e, 42, released(S, key(1, 1)));
+    assert!(e.stores()[&U].on_hold.is_empty());
+    assert_eq!(e.stores()[&U].counts.held_released, 1);
 }

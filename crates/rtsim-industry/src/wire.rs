@@ -233,12 +233,13 @@ codes!(direction_code, direction_from, Direction, "direction",
     1 => Direction::In,
     2 => Direction::Out);
 
-// IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 is the frontier's
-// `CHAIN_HELD` (slice S4c).
+// IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 and 6 are the
+// frontier's `CHAIN_HELD` and `CHAIN_RELEASED` (slice S4c).
 codes!(chain_direction_code, chain_direction_from, ChainDirection, "chain_direction",
     3 => ChainDirection::Out,
     4 => ChainDirection::In,
-    5 => ChainDirection::Held);
+    5 => ChainDirection::Held,
+    6 => ChainDirection::Released);
 
 codes!(class_code, class_from, ThreatClass, "threat_class",
     0 => ThreatClass::GroundMelee,
@@ -2047,6 +2048,23 @@ mod tests {
                     serial: 0x1_0000_0002,
                 }),
                 goods: goods3(),
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: None,
+                inventory: None,
+                direction: ChainDirection::Released,
+                frogport: u32::MAX,
+                pos: BlockPos::new(30, 70, -2),
+                destination: None,
+                packages: 0,
+                address: 0,
+                op: None,
+                key: Some(HeldKey {
+                    epoch: 3,
+                    serial: 0x1_0000_0002,
+                }),
+                goods: GoodVec::new(),
             }),
             Obs::ChainPackage(ChainPackage {
                 store: StoreId(9),

@@ -330,7 +330,13 @@ pub enum ChainDirection {
     In,
     /// The frontier holds the package on a boundary conveyor, its hand-off toward a frogport whose
     /// chunk does not tick refused (SECTIONS.md §2.5, slice S4c). No port: its `Out` was booked.
+    /// A key held already is told again: it moved to another store or destination, or a new
+    /// session tells it once (choice SC137).
     Held,
+    /// The key left the world or Java no longer holds it (a player took the package, its conveyor
+    /// went, it landed with no `CHAIN_IN` to carry the key, a census did not find it): struck
+    /// wherever it is held. No port, no pool (choice SC137).
+    Released,
 }
 
 /// The key the frontier writes into a package it holds (choice SC136): Java's epoch, which every
@@ -361,7 +367,8 @@ pub struct ChainPackage {
     /// NAME dictionary entry of the package's address.
     pub address: u32,
     pub op: Option<OpId>,
-    /// `Held`: the key Java wrote into the package; `In`: the key of a package Java held keyed.
+    /// `Held`: the key Java wrote into the package; `In`: the key of a package Java held keyed;
+    /// `Released`: the key struck.
     pub key: Option<HeldKey>,
     pub goods: GoodVec,
 }

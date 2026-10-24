@@ -447,6 +447,7 @@ fn code_tables(out: &mut String) {
         ChainDirection::Out,
         ChainDirection::In,
         ChainDirection::Held,
+        ChainDirection::Released,
     ]
     .into_iter()
     .map(|direction| {
