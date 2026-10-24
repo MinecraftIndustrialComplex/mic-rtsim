@@ -14,6 +14,7 @@ use rtsim_space::topology::record::{self, Source};
 
 use crate::java::WorldSave;
 use crate::nbt::{self, Tag};
+use rtsim_jni::wire;
 
 /// The engine's pages, under the world folder.
 pub const PAGES: &str = "rtsim";
@@ -118,6 +119,13 @@ impl Journal {
                 names.len()
             ));
         }
+        let pinned_gen = match data.get("pinnedGen") {
+            Some(Tag::ByteArray(b)) if b.len() >= wire::obs::BODY => {
+                Some((wire::u64_at(b, wire::obs::OBS_SEQ), b.clone()))
+            }
+            None => None,
+            Some(_) => return Err("pinnedGen is not a journaled record".into()),
+        };
         let data_version = root
             .get("DataVersion")
             .and_then(Tag::as_i64)
@@ -129,6 +137,7 @@ impl Journal {
                     .map(|s| s as u64)
                     .zip(records)
                     .collect::<VecDeque<_>>(),
+                pinned_gen,
                 next_obs,
                 last_applied_cmd,
                 dict: kinds.into_iter().map(|k| k as u32).zip(names).collect(),
@@ -140,7 +149,7 @@ impl Journal {
     /// The file's bytes, as `JournalSavedData.save` writes them.
     pub fn to_bytes(&self) -> Vec<u8> {
         let s = &self.save;
-        let data = Tag::Compound(vec![
+        let mut data = Tag::Compound(vec![
             (
                 b"lastAppliedCmdSeq".to_vec(),
                 Tag::Long(s.last_applied_cmd as i64),
@@ -172,6 +181,9 @@ impl Journal {
                 ),
             ),
         ]);
+        if let Some((_, r)) = &s.pinned_gen {
+            data.put("pinnedGen", Tag::ByteArray(r.clone()));
+        }
         let mut root = Tag::Compound(vec![(b"data".to_vec(), data)]);
         if let Some(v) = self.data_version {
             root.put("DataVersion", Tag::Int(v));
@@ -374,12 +386,16 @@ mod tests {
         j.save.next_obs = 12;
         j.save.journal.push_back((10, vec![1; 24]));
         j.save.journal.push_back((11, vec![2; 32]));
+        let mut g = vec![0; 32];
+        wire::put_u64(&mut g, wire::obs::OBS_SEQ, 4);
+        j.save.pinned_gen = Some((4, g));
         j.save.dict = vec![(1, "minecraft:overworld".into()), (3, "x:y".into())];
         j.write(&d).unwrap();
         let back = Journal::read(&d).unwrap();
         assert_eq!(back.save.last_applied_cmd, 41);
         assert_eq!(back.save.next_obs, 12);
         assert_eq!(back.save.journal, j.save.journal);
+        assert_eq!(back.save.pinned_gen, j.save.pinned_gen);
         assert_eq!(back.save.dict, j.save.dict);
         assert_eq!(back.data_version, Some(3955));
         assert_eq!(back.first_obs(), 10);

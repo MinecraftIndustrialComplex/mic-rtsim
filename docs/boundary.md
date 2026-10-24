@@ -409,14 +409,24 @@ that gained one, or all of them after a failed save. Nothing falls off: a holder
 sessions is still judged by its own generation, at about 14 bytes a session on disk, plus 12 for each
 applied copy (copies apply only after a crash or a reset).
 
+**The journal keeps its newest acknowledged JOURNAL_GEN.** A trim drops the entries the engine
+acknowledged, except the newest JOURNAL_GEN among them (`Journal.pinnedGen`, saved with the journal
+as `pinnedGen`), which is sent first at each session start like an entry; pages that include it skip
+it. The entries after it are that generation's. Without it, pages older than the journal's first
+entry (restored from a backup, say) would admit those entries under the pages' own open generation,
+and a copy of one of them would find its generation unknown and apply a second time. It is not an
+entry: the journal's first sequence (`SESSION_START`'s `JOURNAL_FIRST_OBS_SEQ`) is the first entry
+after it.
+
 **Known limit.** When the pages are older than the journal's first entry (a journal trimmed past the
-pages, §3), the engine skips the gap and admits the rest, so the open generation's last sequence moves
-past the lost stretch, and a copy of a record from that stretch is dropped. It is part of what that
-case loses anyway; the bridge announces again what it remembers (`BoundarySession.observationsLost`).
+pages, §3), the engine skips the gaps and admits the rest: the kept JOURNAL_GEN opens its generation,
+and the entries after it move that generation's last sequence past the trimmed stretch, so a copy of
+a record from that stretch is dropped. It is part of what that case loses anyway; the bridge announces
+again what it remembers (`BoundarySession.observationsLost`).
 
 **After a reset** (the reinstall guard's choice RG14): an engine that started over took its state
 from the world. The guard drops the old engine's records in Java before they are journaled; without
-it, a copy of an unknown generation applies.
+it, a copy applies unless the generation the journal kept admitted a later sequence.
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
