@@ -3283,10 +3283,10 @@ Two fixes for M6:
   - Merge `main` too if M7 or another slice has landed there. After the merges, delete every project's
     `run-gametest/world`: pages from a newer build stop older builds starting.
   - This design read these heads; line numbers below are those copies':
-    - `feat/mowzie-m9` at 7521375d to 65e780ee. It is still moving, so re-check every line number;
+    - `feat/mowzie-m9` at 7521375d to 6125fcce. It is still moving, so re-check every line number;
     - `feat/mowzie-m6` at c803fc14;
     - `main` at 65f90ee9.
-  - Ids: MZB-450 to MZB-499, of which this slice uses MZB-450 to MZB-483.
+  - Ids: MZB-450 to MZB-499, of which this slice uses MZB-450 to MZB-484.
 - **MZB-451** (BAND_MARCH goes when what it says changes; ledger 23):
   - A new `Conflict::march_changed(p)` sets the party's saved `march_due` flag. If the flag was clear, it
     also pushes `p` onto `Conflict.march_due: Vec<Handle<Party>>`, which is unsaved and rebuilt from the
@@ -3492,7 +3492,8 @@ Two fixes for M6:
     `pcx + s - 1`: blocks `16 * (pcx - s + 1)` to `16 * (pcx + s) - 1`, and the same in z.
   - The player is the nearest non-spectator player in the band's level to the stack's place, within 256
     blocks of the head (`MarchPath.at(now)`). With none, neither the walk-in nor the clamp runs.
-  - Walk-in, in M3's once-a-tick pass over pending stacks. A pending stack of a stopped band whose place lies
+  - Walk-in, in M3's pass over pending stacks, on the stop's beat: the tick a record puts the band in the
+    stop, then every 20 ticks (PLACEHOLDER, the clamp's). A pending stack of a stopped band whose place lies
     outside the square:
     1. On the segment from its place to the head, the first point inside the square is its new anchor. If
        the segment never enters the square, the anchor is the head clamped into it.
@@ -3586,6 +3587,32 @@ Two fixes for M6:
   - The note at the BAND_MARCH layout says when the record goes (MZB-451).
 - **MZB-483** (the M3 interim rule ends): M3's "until M10, a stack is placed at BAND_MATERIALIZE's position,
   not in a column" is replaced by MZB-469 to MZB-472.
+- **MZB-484** (no M10 push while the session's replay catches up): under rtsim-jni, `take_commands` moves the
+  whole outbox into the JNI queue after every ingest, so the engine's `outbox.retain` filters never see a
+  command pushed while `replaying`. Each M10 push is therefore gated where it is made:
+  - **BAND_MARCH.** `take_commands` builds no march record while `self.replaying`. It leaves `march_due` and
+    the flags as they are. `home` pushes its ENDED record only when not replaying, though the flag and the
+    row go either way.
+    - `session_start` marked every party, so the first take after `replay_done` sends each one once.
+    - Java's map (cleared at the session start) never holds a party's mid-replay state, and it never hears of
+      a party that ended during the replay.
+  - **Embodied branches.** Each M10 branch that acts on an embodied party adds `!self.replaying` to its test,
+    and while replaying falls back to today's path:
+    - go_home's walk (MZB-456), and so steer_segment's steer home;
+    - start_fight's walk-in (MZB-461);
+    - the re-binds in `unseen`, `player_left` and `arrive` (MZB-458 to MZB-460).
+  - **seen.** `seen` skips a Home party while replaying, as it skips every Home party today (MZB-457).
+  - **Why the gates are needed for now.** While replaying, a party is embodied only through main's `seen()`,
+    which has no `replaying` gate (an audit found it; the coordinator is fixing it, and M10 does not). The
+    gates keep M10 from adding pushes to that hole, and they do nothing once it is fixed.
+  - **Ungated, by design.**
+    - `march_bearing` changes a field of BAND_MATERIALIZE's existing push, so it adds no push.
+    - `lose_units`' clamp (MZB-462) pushes nothing, and it keeps the books true whatever made the party
+      embodied.
+    - Java's walk-in, clamp, trim and pending stacks send nothing to the engine.
+  - **Tests.** M10's tests keep every live player out of a band's view until `replay_done`, so they do not
+    hit main's `seen()`.
+  - **boundary.md.** Its BAND_MARCH note says that none goes until the session's replay has caught up.
 
 ## M11 Aloft
 
