@@ -421,6 +421,72 @@ vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-ro
   blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
   rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
 
+### The black slabs in the sky (DHT73)
+
+Ben's client showed black shapes in the sky on 2026-10-24, of two kinds: a long straight slab with parallel edges,
+slanted, rising from a building or the ground across the sky; and the sky gone black beyond a storm cloud's edge,
+a wedge. Run on 2026-10-24 in a private headless sway at 1920x1080 with the pack's mods, Ben's Mesa 26.2.2 and his
+10 GB heap, one client at a time; each arm a flight with slow pans, recorded and scanned for near-black sky (luma
+under 20 over at least 1% of the frame's top 30%), with a dev-only probe in our DH module that read the frame back
+each frame (not landed). Two worlds: a copy of Ben's save, where it showed, and our own fresh world, "MIC storm
+test", with tornadoes and their storm cells started by `/pa tornado spawn`. The copy is a third-party world, so its
+stills and clips stay local and none is cited here; the stills below are our world's only. Every arm ran on a fresh
+DH database (the save's `DistantHorizons.sqlite` deleted first), so DH built its LODs during the flight, and in
+daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stills/` is our world; `raw/` and
+`vid/` hold the copy's as well and stay local).
+
+- **Not ours.** In the copy, clear weather showed none (two flights, our far view at MEDIUM). Storms showed it
+  within 2 to 10 minutes in every storm run: four times in 12 minutes with our far view on, at 93 s with it OFF
+  (`detail = "OFF"` in `mic_rtsim_dh-client.toml`, so we draw nothing), and at 562 s
+  with C2ME removed. Removing SimpleClouds and Project Atmosphere together could not be run: the client stopped at
+  load (watut: `Invalid shaders/core/particle.json`).
+- **Storm fog clears it.** With SimpleClouds' storm fog off (`renderStormFog = false`) the copy ran 22 minutes of
+  storms without one black frame. The shapes did not all go: the same straight slanted bands and wedges came white
+  instead of black. Turning storm fog off hides the black, not the shapes.
+- **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
+  fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
+  96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
+  fog and lightning after DH's frame; with DH drawing nothing only its high wisps (drawn after the sky) showed, so
+  its storm fog was most likely not drawn either. `/pa tornado list` just after: no active tornadoes. So the black
+  needs neither DH's LODs nor a tornado, and what draws the shapes is not DH, not SimpleClouds' cloud mesh and not
+  ours. Their colour (black here and with storm fog on, white with storm fog off and DH on) may be GL state left
+  bound by whatever drew before them, as in the DH bug below; a guess, not shown.
+- **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
+  tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
+  bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
+  funnel from the cloud base to the ground under grey rain shafts, and where the funnel stands behind nearer
+  terrain it is drawn over that terrain in grey shards (`stills/ours_storm-fog-on_funnel_865-blocks.png`, about 865
+  blocks off; `ours_storm-fog-on_shafts-and-funnel.png`, `ours_storm-fog-on_shafts.png`). With it off we could not
+  pick out a funnel, white or other: the flat white walls in those stills are clouds at the camera's height, and
+  they come with and without a tornado (`stills/ours_storm-fog-off_cloud-walls.png`, `ours_storm-fog-off_clouds.png`).
+  So the white bands are seen in the copy only, and that they are tornadoes is not shown.
+- **What the jars say (read, not tested).** With DH present SimpleClouds draws through its `DhSupportPipeline`,
+  after DH's frame: the clouds, then the storm fog (blended into the main target, its alpha the fog's density),
+  then lightning. Project Atmosphere's tornado mixins hook only SimpleClouds' `DefaultPipeline.afterSky` and
+  `ShaderSupportPipeline.afterLevel`; `DhSupportPipeline` is neither, so with DH the tornado would come only through
+  the cloud mesh it carves. Veil also fails to compile two of Project Atmosphere's shaders at every start
+  (`projectatmosphere:cloud_atmosphere_volume`: "syntax error, unexpected IDENTIFIER";
+  `projectatmosphere:shaders/core/tornado_round.fsh`: "Couldn't load vanilla shader ... skipping").
+- **A DH bug found on the way (DH 3.3.3, decompiled).** `GlBlockTextureAtlas.tryCreateOrResize` binds the new atlas
+  on whatever texture unit is active, unit 0, which DH's box shader reads as its lightmap, and leaves it there. It
+  runs on DH's first frame and whenever the atlas outgrows its tiles (4,096, then doubling), that is while LODs are
+  being built. For that frame DH's generic boxes, ours included, sample the atlas as their light at
+  (block light, sky light), which in the open (sky light 15) lands in the atlas's empty rows, with alpha forced to
+  1: the boxes draw black for one frame. LODs read their light at (0.97, 0.03), a filled tile, and are only tinted.
+  Not what Ben saw (that came with our far view off); noted here, not worked around and not reported.
+- **The guard (DHT73) stays.** It was written while a far carriage with a vertex flung off was the suspect, and
+  costs a bound test when a mesh is baked and a finite test a model a frame.
+- **The keys**, in the instance's `config/` (the pack ships none of these files; the values are those of Ben's
+  instance, which the copy took): `simpleclouds-client.toml` `[performance]` `renderStormFog = true` (false
+  clears the black; `stormFogLightningFlashes = true` beside it); `simpleclouds-server.toml` `cloudMode = "DEFAULT"`;
+  `projectatmosphere-common.toml` `[display]` `cloudMode = "FULL"`, `[storms]` `enableTornadoes = true`,
+  `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
+  `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
+  `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`. The arms changed only the copy's
+  instance; nothing in the pack or Ben's instances.
+- Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
+  dev build's. Nothing was filed upstream.
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
