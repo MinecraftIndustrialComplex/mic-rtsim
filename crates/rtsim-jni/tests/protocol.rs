@@ -2457,11 +2457,15 @@ mod ships {
                 m.role == sb::Role::Merchant && !m.cargo.is_empty() && m.times[3] > now + 400
             })
         };
-        let mut ticks = 0;
-        j.run_until("a merchant with a hold in view", |j| {
-            ticks += 1;
+        // In lockstep: "most of its voyage ahead" is the engine's clock, and the fight and the loot
+        // below land at Java's. Ticking on the wall clock (`run_until`) let Java run ahead of a
+        // loaded engine, so the loot landed after the merchant had docked and sold its hold: no
+        // loot booked.
+        let t0 = j.game_time;
+        flush_until(&mut j, "a merchant with a hold in view", 12_000, |j| {
             laden(j, &j.e.clone()).is_some()
         });
+        let ticks = j.game_time - t0;
         let m = laden(&j, &e).expect("found");
         assert_eq!(m.agent >> 56, 0x53, "a ship's agent id");
         assert_eq!(m.dimension, dim, "the dimension in Java's dictionary");
@@ -3328,7 +3332,9 @@ mod herds {
 
         // The player is back: the same sheep, the sheared one still sheared, no dead one.
         j.players = vec![(PLAYER, dim, pos)];
-        flush_until(&mut j, "the group again", 1_000, |j| materializations(j).len() >= 2);
+        flush_until(&mut j, "the group again", 1_000, |j| {
+            materializations(j).len() >= 2
+        });
         j.idle();
         let regrow = e.with_herds(|h, _| h.tun.sheared_ticks) as i64;
         assert!(
