@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassExtractor;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Rat;
+import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
 import com.simibubi.create.content.fluids.FluidTransportBehaviour;
 import com.simibubi.create.content.fluids.drain.ItemDrainBlockEntity;
@@ -309,7 +310,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (be instanceof CreativeFluidTankBlockEntity)
             return K.CREATIVE_TANK;
         if (be instanceof FluidTankBlockEntity t) {
-            FluidTankBlockEntity c = t.getControllerBE();
+            FluidTankBlockEntity c = tankController(t);
             return c != null && c.boiler != null && c.boiler.attachedEngines > 0 ? K.BOILER : null;
         }
         if (be instanceof SteamEngineBlockEntity)
@@ -356,12 +357,72 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /** A position a press, deployer or spout above can work on: a belt segment or a depot. */
     private boolean isHost(BlockPos p) {
-        BlockEntity be = level.getBlockEntity(p);
+        BlockEntity be = blockAt(p);
         return be instanceof BeltBlockEntity || be instanceof DepotBlockEntity;
     }
 
     private List<BlockEntity> all(K k) {
         return byKind.getOrDefault(k, List.of());
+    }
+
+    // ---- reads that never load a chunk (SECTIONS.md §2.8, slice S1; choice SC10) ----------------
+    // The district's own chunks block-tick (GlassCompiler compiles only then), so their eight
+    // neighbours are FULL; but a walk (pipes, chains, dust, fan reach), a network's root and a
+    // multiblock's controller can lie further out. Every world read here asks getChunkNow first and
+    // reads a chunk that is not loaded as nothing; each such stop is counted in g.unloadedStops.
+
+    /** {@code Level.getBlockEntity} where the chunk is loaded; null (a stop, counted) where it is not. */
+    private BlockEntity blockAt(BlockPos p) {
+        if (level.isOutsideBuildHeight(p))
+            return null;
+        net.minecraft.world.level.chunk.LevelChunk c = Loaded.chunk(level, p);
+        if (c == null) {
+            g.unloadedStops++;
+            return null;
+        }
+        return c.getBlockEntity(p, net.minecraft.world.level.chunk.LevelChunk.EntityCreationType.IMMEDIATE);
+    }
+
+    /** A tank's controller through {@link #blockAt} ({@code getControllerBE} reads the level); null where it is not loaded. */
+    private FluidTankBlockEntity tankController(FluidTankBlockEntity t) {
+        if (t.isController())
+            return t;
+        BlockPos c = t.getController();
+        return c != null && blockAt(c) instanceof FluidTankBlockEntity x ? x : null;
+    }
+
+    /** {@code Level.getBlockState} where the chunk is loaded; null (a stop, counted) where it is not. */
+    private BlockState stateAt(BlockPos p) {
+        BlockState s = Loaded.state(level, p);
+        if (s == null)
+            g.unloadedStops++;
+        return s;
+    }
+
+    /** {@code BlockEntityBehaviour.get(level, p, type)} where the chunk is loaded; null where it is not. */
+    private <T extends BlockEntityBehaviour> T behaviourAt(BlockPos p, com.simibubi.create.foundation.blockEntity.behaviour.BehaviourType<T> type) {
+        BlockEntity be = blockAt(p);
+        return be == null ? null : BlockEntityBehaviour.get(be, type);
+    }
+
+    /** {@code Level.getCapability(cap, p, context)} where the chunk (and a multiblock's controller) is loaded ({@link Loaded#capability}). */
+    private <T, C> T capAt(net.neoforged.neoforge.capabilities.BlockCapability<T, C> cap, BlockPos p, C context) {
+        if (!level.isOutsideBuildHeight(p) && !Loaded.at(level, p)) {
+            g.unloadedStops++;
+            return null;
+        }
+        return Loaded.capability(level, cap, p, context);
+    }
+
+    /** Whether every chunk within {@code r} blocks of {@code p} (horizontally) is loaded: a read that looks around {@code p}. */
+    private boolean loadedAround(BlockPos p, int r) {
+        for (int dx = -r; dx <= r; dx += r == 0 ? 1 : r)
+            for (int dz = -r; dz <= r; dz += r == 0 ? 1 : r)
+                if (!Loaded.at(level, p.offset(dx, 0, dz))) {
+                    g.unloadedStops++;
+                    return false;
+                }
+        return true;
     }
 
     // =============================================================================================
@@ -423,25 +484,41 @@ final class CreateCompile implements GlassExtractor.Compile {
             var net = networks.get(id);
             GraphBuilder.Domain d = g.domain(id);
             domainByNetwork.put(id, d.index);
-            BlockEntity rootBe = level.getBlockEntity(BlockPos.of(id));
+            BlockPos rootPos = BlockPos.of(id);
+            BlockEntity rootBe = blockAt(rootPos);
             KineticBlockEntity root = rootBe instanceof KineticBlockEntity rk ? rk : null;
-            float rootSpeed = root == null ? 0 : root.getGeneratedSpeed();
+            if (root == null && !Loaded.at(level, rootPos))
+                for (KineticBlockEntity s : net.sources.keySet())
+                    if (s.getBlockPos().equals(rootPos))
+                        root = s; // the root's chunk is not loaded: the network keeps it as Create last saw it
+            float rootSpeed = root == null ? referenceSpeed(net) : root.getGeneratedSpeed();
             if (rootSpeed == 0 && root != null)
                 rootSpeed = root.getTheoreticalSpeed();
             boolean overstressed = false;
+            // a network whose members lie outside the district's chunks (another district's, or no
+            // district's): until SEC-1's slice S5 models shared networks, an unstable domain here and in
+            // every other district on it (choice SC11), the boiler's district included. Members whose chunk
+            // has not loaded this session are not listed, so the test is structural (choice SC44): a listed
+            // member outside, or a link out of the district from a listed member inside (reachesOut)
+            boolean crossing = false;
             float capacity = 0, stress = 0;
             for (var e : net.sources.entrySet()) {
                 KineticBlockEntity s = e.getKey();
-                if (s.getLevel() != null && s.getLevel().getBlockEntity(s.getBlockPos()) == s)
+                if (listed(net, s)) {
                     capacity += e.getValue() * Math.abs(s.getGeneratedSpeed());
+                    crossing |= outside(s);
+                }
             }
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
-                if (m.getLevel() != null && m.getLevel().getBlockEntity(m.getBlockPos()) == m) {
+                if (listed(net, m)) {
                     stress += e.getValue() * Math.abs(m.getTheoreticalSpeed());
                     overstressed |= m.isOverStressed();
+                    crossing |= outside(m);
                 }
             }
+            if (!crossing)
+                crossing = reachesOut(id, net);
             d.liveCapacity = capacity;
             d.liveStress = stress;
             if (overstressed)
@@ -451,7 +528,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             List<Rat> speeds = new ArrayList<>();
             List<SteamEngineBlockEntity> engines = enginesByNet.get(id);
             FluidTankBlockEntity boiler = engines == null ? null : singleBoiler(engines);
-            if (boiler != null && root instanceof PoweredShaftBlockEntity rootShaft && rootShaft.capacityKey != null) {
+            if (!crossing && boiler != null && root instanceof PoweredShaftBlockEntity rootShaft && rootShaft.capacityKey != null) {
                 // A boiler drives the domain: tabulate every level 0..18 (G-B5, §9.3 "Boiler").
                 int engineCount = boiler.boiler.attachedEngines;
                 double otherCapacity = 0;
@@ -483,13 +560,15 @@ final class CreateCompile implements GlassExtractor.Compile {
                 d.levels.add(new GraphBuilder.Level(0, speed, capacity));
                 d.current = 0;
                 speeds.add(speed);
-                if (engines != null && boiler == null)
-                    unstableDomains.add(d.index); // engines of several boilers: the current level only
+                if ((engines != null && boiler == null) || crossing)
+                    unstableDomains.add(d.index); // engines of several boilers, or a shared network: the current level only
             }
             levelSpeeds.add(speeds);
             domainRoot.put(d.index, rootSpeed);
             for (var e : net.members.entrySet()) {
                 KineticBlockEntity m = e.getKey();
+                if (!listed(net, m))
+                    continue; // replaced in a loaded chunk by a part that joined, or by another block: Create's next recount drops it
                 float sp = m.getTheoreticalSpeed();
                 // a stopped network (a cold boiler) gives every member speed 0: the ratio is unknown then
                 boolean known = rootSpeed != 0 && sp != 0;
@@ -499,6 +578,102 @@ final class CreateCompile implements GlassExtractor.Compile {
             }
         }
         walk();
+    }
+
+    /**
+     * Whether a network still lists {@code k} as Create's guarded recount does (PATCHES.md row 53): its
+     * chunk is not loaded (kept as Create last saw it), it is the block entity there now, or the one there now
+     * is a new object of the same network that has not joined yet ({@link Loaded#keptFor}).
+     */
+    private boolean listed(com.simibubi.create.content.kinetics.KineticNetwork net, KineticBlockEntity k) {
+        BlockPos p = k.getBlockPos();
+        if (!Loaded.at(level, p))
+            return true;
+        BlockEntity found = Loaded.blockEntity(level, p);
+        return found == k || Loaded.keptFor(net, k, found);
+    }
+
+    /**
+     * The speed a domain's ratios are relative to when its root is neither loaded nor listed (its chunk has
+     * not loaded this session, so Create holds no block entity for it, choice SC44): the theoretical speed
+     * of the listed member in a loaded chunk with the lowest position that turns, else 0 (the ratios are
+     * then unknown and the members bounded).
+     */
+    private float referenceSpeed(com.simibubi.create.content.kinetics.KineticNetwork net) {
+        long best = Long.MAX_VALUE;
+        float speed = 0;
+        for (KineticBlockEntity m : net.members.keySet()) {
+            BlockPos p = m.getBlockPos();
+            if (!Loaded.at(level, p) || !listed(net, m) || m.getTheoreticalSpeed() == 0)
+                continue;
+            if (p.asLong() < best) {
+                best = p.asLong();
+                speed = m.getTheoreticalSpeed();
+            }
+        }
+        return speed;
+    }
+
+    /**
+     * Whether a listed member of {@code net} inside the district links to a chunk outside it (choice SC44):
+     * through a face across the district's border or one of its own additions ({@code addPropagationLocations}:
+     * a chain conveyor's connections, a large cog's diagonals), to a position whose chunk is not loaded (it
+     * may hold members that never loaded this session) or to a kinetic block entity of the same network.
+     * Reads only loaded chunks.
+     */
+    private boolean reachesOut(long id, com.simibubi.create.content.kinetics.KineticNetwork net) {
+        for (KineticBlockEntity m : net.members.keySet()) {
+            if (!listed(net, m) || outside(m) || !Loaded.at(level, m.getBlockPos()))
+                continue;
+            BlockPos p = m.getBlockPos();
+            BlockState state = m.getBlockState();
+            IRotate block = state.getBlock() instanceof IRotate r ? r : null;
+            for (Direction f : Direction.values())
+                if (f.getAxis() != Direction.Axis.Y && linksOutTo(id, p.relative(f), block != null && connects(block, p, state, f)))
+                    return true;
+            if (block != null)
+                for (BlockPos n : m.addPropagationLocations(block, state, new ArrayList<>()))
+                    if (linksOutTo(id, n, true))
+                        return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether position {@code n} outside the district holds, or may hold, a member of network {@code id}:
+     * a kinetic block entity of the network, or a chunk that is not loaded where {@code mayConnect} (the
+     * member links that way at all).
+     */
+    private boolean linksOutTo(long id, BlockPos n, boolean mayConnect) {
+        if (!g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(n.getX() >> 4, n.getZ() >> 4)))
+            return (mayConnect && !Loaded.at(level, n))
+                    || (Loaded.blockEntity(level, n) instanceof KineticBlockEntity o && o.network != null && o.network == id);
+        return false;
+    }
+
+    /**
+     * Whether a kinetic block may turn its neighbour across face {@code f}. Create's own shaft and cog
+     * (those classes exactly) do only through a shaft end that way or, for a cog, in its plane; any other
+     * block may (a chain drive links across its sides, which no shaft end says, and an addon's shaft may
+     * link sideways), so it counts, on the safe side. Reads the block's own state only.
+     */
+    private boolean connects(IRotate block, BlockPos p, BlockState state, Direction f) {
+        // Create's own shaft and cog only: an addon's subclass may link sideways
+        Class<?> c = block.getClass();
+        if (c != com.simibubi.create.content.kinetics.simpleRelays.ShaftBlock.class
+                && c != com.simibubi.create.content.kinetics.simpleRelays.CogWheelBlock.class)
+            return true;
+        if (block.hasShaftTowards(level, p, state, f))
+            return true;
+        return (com.simibubi.create.content.kinetics.simpleRelays.ICogWheel.isSmallCog(state)
+                || com.simibubi.create.content.kinetics.simpleRelays.ICogWheel.isLargeCog(state))
+                && block.getRotationAxis(state) != f.getAxis();
+    }
+
+    /** Whether a block entity lies outside the district's chunks. */
+    private boolean outside(BlockEntity be) {
+        BlockPos p = be.getBlockPos();
+        return !g.district.chunks.contains(net.minecraft.world.level.ChunkPos.asLong(p.getX() >> 4, p.getZ() >> 4));
     }
 
     /** Positions a modelled switch powers (its neighbours but its target, and along dust). */
@@ -536,7 +711,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 long qp = q.asLong();
                 if (!claimedPos.contains(qp) || kin.containsKey(qp))
                     continue;
-                if (!(level.getBlockEntity(q) instanceof KineticBlockEntity n) || n.isRemoved() || n.getGeneratedSpeed() != 0
+                if (!(blockAt(q) instanceof KineticBlockEntity n) || n.isRemoved() || n.getGeneratedSpeed() != 0
                         || n instanceof com.simibubi.create.content.kinetics.speedController.SpeedControllerBlockEntity)
                     continue;
                 float m = KineticWalk.modifier(k, src, n, switchDriven::contains);
@@ -584,7 +759,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 long qp = q.asLong();
                 if ((k == clutch && q.equals(upstream)) || !claimedPos.contains(qp) || seen.contains(qp))
                     continue;
-                if (!(level.getBlockEntity(q) instanceof KineticBlockEntity n) || n.isRemoved())
+                if (!(blockAt(q) instanceof KineticBlockEntity n) || n.isRemoved())
                     continue;
                 float m = KineticWalk.modifier(k, srcOf.get(k.getBlockPos().asLong()), n, switchDriven::contains);
                 if (m == 0 || Float.isNaN(m))
@@ -683,7 +858,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             i.pass = Pass.MACHINE;
             for (Direction d : Direction.Plane.HORIZONTAL) {
                 BlockPos w = be.getBlockPos().relative(d);
-                if (level.getBlockEntity(w) instanceof CrushingWheelBlockEntity) {
+                if (blockAt(w) instanceof CrushingWheelBlockEntity) {
                     attachKinetic(i, w);
                     break;
                 }
@@ -810,7 +985,7 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     private void basinNode(BasinBlockEntity basin) {
         BlockPos p = basin.getBlockPos();
-        BlockEntity op = level.getBlockEntity(p.above(2));
+        BlockEntity op = blockAt(p.above(2));
         boolean mixer = op instanceof MechanicalMixerBlockEntity && claimedPos.contains(op.getBlockPos().asLong());
         boolean press = op instanceof MechanicalPressBlockEntity && claimedPos.contains(op.getBlockPos().asLong());
         Info i;
@@ -917,7 +1092,8 @@ final class CreateCompile implements GlassExtractor.Compile {
      * tick behind a change and starts true on a smart chute placed without a player (its default state).
      */
     private boolean redstonePowered(BlockPos p) {
-        return !switchDriven.contains(p.asLong()) && level.hasNeighborSignal(p);
+        // hasNeighborSignal reads the six neighbours and theirs: within two blocks of p
+        return !switchDriven.contains(p.asLong()) && loadedAround(p, 2) && level.hasNeighborSignal(p);
     }
 
     private void chuteNode(ChuteBlockEntity c) {
@@ -951,7 +1127,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             FanProcessingType segType = air.typeAt((float) (d - 1));
             for (int off = 0; off <= 1; off++) {
                 BlockPos p = start.relative(air.direction, d).below(off);
-                if (BlockEntityBehaviour.get(level, p, TransportedItemStackHandlerBehaviour.TYPE) != null) {
+                if (behaviourAt(p, TransportedItemStackHandlerBehaviour.TYPE) != null) {
                     FanProcessingType t = FanProcessingType.getAt(level, p);
                     BlockPos catalyst = t != null ? p : air.catalystAt((float) (d - 1));
                     if (t == null)
@@ -962,7 +1138,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                     // needs heat and a HEAT edge from the burner gates it (GB44); the smoking regime of
                     // a burner out of fuel is not modelled (UNVERIFIED)
                     BlockPos burner = catalyst != null && claimedPos.contains(catalyst.asLong())
-                            && level.getBlockEntity(catalyst) instanceof BlazeBurnerBlockEntity ? catalyst : null;
+                            && blockAt(catalyst) instanceof BlazeBurnerBlockEntity ? catalyst : null;
                     if (burner != null)
                         t = AllFanProcessingTypes.BLASTING;
                     if (t != null)
@@ -972,6 +1148,34 @@ final class CreateCompile implements GlassExtractor.Compile {
                     break;
             }
         }
+    }
+
+    /**
+     * Whether Create's walk of {@code c}'s crafter grid ({@code RecipeGridHandler.getAllCraftersOfChainIf},
+     * which looks each crafter's six neighbours up through {@code Level.getBlockEntity}) stays in loaded
+     * chunks: every face-connected crafter's neighbours are. Not, and the grid is not modelled (as one
+     * Create's walk finds empty).
+     */
+    private boolean crafterGridLoaded(MechanicalCrafterBlockEntity c) {
+        LongOpenHashSet seen = new LongOpenHashSet();
+        java.util.ArrayDeque<BlockPos> q = new java.util.ArrayDeque<>();
+        q.add(c.getBlockPos());
+        seen.add(c.getBlockPos().asLong());
+        while (!q.isEmpty() && seen.size() < 4096) {
+            BlockPos p = q.poll();
+            for (Direction d : Direction.values()) {
+                BlockPos n = p.relative(d);
+                if (level.isOutsideBuildHeight(n))
+                    continue;
+                if (!Loaded.at(level, n)) {
+                    g.unloadedStops++;
+                    return false;
+                }
+                if (seen.add(n.asLong()) && Loaded.blockEntity(level, n) instanceof MechanicalCrafterBlockEntity)
+                    q.add(n);
+            }
+        }
+        return q.isEmpty();
     }
 
     private static int fanRecipeType(FanProcessingType t) {
@@ -992,7 +1196,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         LongOpenHashSet done = new LongOpenHashSet();
         for (BlockEntity be : all(K.CRAFTER)) {
             MechanicalCrafterBlockEntity c = (MechanicalCrafterBlockEntity) be;
-            if (done.contains(c.getBlockPos().asLong()))
+            if (done.contains(c.getBlockPos().asLong()) || !crafterGridLoaded(c))
                 continue;
             List<MechanicalCrafterBlockEntity> chain = RecipeGridHandler.getAllCraftersOfChainIf(c, x -> true, true);
             if (chain == null || chain.isEmpty())
@@ -1086,8 +1290,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (!(e instanceof Sheep sh) || sh.isBaby())
                 continue;
             BlockPos feet = sh.blockPosition();
-            boolean shortGrass = level.getBlockState(feet).is(Blocks.SHORT_GRASS);
-            boolean grassBlock = level.getBlockState(feet.below()).is(Blocks.GRASS_BLOCK);
+            BlockState atFeet = stateAt(feet), underFeet = stateAt(feet.below());
+            boolean shortGrass = atFeet != null && atFeet.is(Blocks.SHORT_GRASS);
+            boolean grassBlock = underFeet != null && underFeet.is(Blocks.GRASS_BLOCK);
             if (!shortGrass && !grassBlock)
                 continue;
             onGrassBlock |= grassBlock || shortGrass;
@@ -1265,7 +1470,7 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /** The station working on host {@code host} (a press, deployer or spout two above), or NONE. */
     private int station(BlockPos host, Belt belt) {
-        BlockEntity be = level.getBlockEntity(host.above(2));
+        BlockEntity be = blockAt(host.above(2));
         if (be == null || !claimedPos.contains(be.getBlockPos().asLong()) || operatorAtBasin.contains(be.getBlockPos().asLong()))
             return NONE;
         boolean bulk = AllConfigs.server().recipes.bulkPressing.get();
@@ -1410,7 +1615,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     }
 
     private BlockPos canonical(BlockPos p) {
-        BlockEntity be = level.getBlockEntity(p);
+        BlockEntity be = blockAt(p);
         return be instanceof IMultiBlockEntityContainer m && m.getController() != null ? m.getController() : p;
     }
 
@@ -1428,16 +1633,16 @@ final class CreateCompile implements GlassExtractor.Compile {
             int c = collector(p);
             if (c != NONE)
                 return c;
-            BlockState s = level.getBlockState(p);
-            if (!s.getCollisionShape(level, p).isEmpty())
-                return sink();
+            BlockState s = stateAt(p);
+            if (s == null || !s.getCollisionShape(level, p).isEmpty())
+                return sink(); // a chunk that is not loaded: the item leaves the district
         }
         return sink();
     }
 
     /** A block that picks up item entities that land in or on it. */
     private int collector(BlockPos p) {
-        BlockEntity be = level.getBlockEntity(p);
+        BlockEntity be = blockAt(p);
         if (be == null)
             return NONE;
         Belt b = beltBySegment.get(p.asLong());
@@ -1461,7 +1666,7 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /** Where a machine at {@code from} puts an output toward {@code target}: a belt-input there, else a drop. */
     private int outputTo(BlockPos target) {
-        if (BlockEntityBehaviour.get(level, target, DirectBeltInputBehaviour.TYPE) != null)
+        if (behaviourAt(target, DirectBeltInputBehaviour.TYPE) != null)
             return acceptAt(target);
         return dropAt(target);
     }
@@ -1495,7 +1700,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 case CRAFTER -> {
                     MechanicalCrafterBlockEntity end = (MechanicalCrafterBlockEntity) i.be;
                     BlockPos target = end.getBlockPos().relative(MechanicalCrafterBlock.getTargetDirection(end.getBlockState()));
-                    int to = BlockEntityBehaviour.get(level, target, DirectBeltInputBehaviour.TYPE) != null || level.getCapability(Capabilities.ItemHandler.BLOCK, target, null) != null
+                    int to = behaviourAt(target, DirectBeltInputBehaviour.TYPE) != null || capAt(Capabilities.ItemHandler.BLOCK, target, null) != null
                             ? acceptAt(target) : dropAt(target);
                     edge(GlassRecords.Edge.ADJACENCY, i.node.index, to);
                 }
@@ -1539,7 +1744,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     private record TunnelFront(BrassTunnelBlockEntity brass, Direction front) {}
 
     private int supplyAtNotChute(BlockPos p) {
-        return level.getBlockEntity(p) instanceof ChuteBlockEntity ? NONE : supplyAt(p);
+        return blockAt(p) instanceof ChuteBlockEntity ? NONE : supplyAt(p);
     }
 
     private void basinEdges(Info i, BasinBlockEntity basin) {
@@ -1548,11 +1753,11 @@ final class CreateCompile implements GlassExtractor.Compile {
         if (facing != Direction.DOWN) {
             BlockPos t = p.below().relative(facing);
             edge(GlassRecords.Edge.ADJACENCY, i.node.index, acceptAt(t));
-            fluidEdge(i.node.index, acceptFluid.containsKey(t.asLong()) || level.getCapability(Capabilities.FluidHandler.BLOCK, t, null) != null ? acceptFluidAt(t) : NONE);
+            fluidEdge(i.node.index, acceptFluid.containsKey(t.asLong()) || capAt(Capabilities.FluidHandler.BLOCK, t, null) != null ? acceptFluidAt(t) : NONE);
         }
         if (i.kind == K.BASIN)
             return;
-        BlockEntity below = level.getBlockEntity(p.below());
+        BlockEntity below = blockAt(p.below());
         if (below instanceof BlazeBurnerBlockEntity) {
             int h = acceptItem.get(below.getBlockPos().asLong());
             Info hi = infos.get(h);
@@ -1567,7 +1772,7 @@ final class CreateCompile implements GlassExtractor.Compile {
     /** A burner's heat edges into a boiler above it (a basin's come from basinEdges). */
     private void heatEdges(Info i) {
         BlockPos above = i.be.getBlockPos().above();
-        if (level.getBlockEntity(above) instanceof FluidTankBlockEntity t && t.getControllerBE() != null) {
+        if (blockAt(above) instanceof FluidTankBlockEntity t && tankController(t) != null) {
             int b = acceptFluid.get(t.getController().asLong());
             if (b != NONE && infos.get(b) != null && infos.get(b).kind == K.BOILER) {
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.HEAT, i.node.index, b);
@@ -1617,7 +1822,9 @@ final class CreateCompile implements GlassExtractor.Compile {
             return false;
         if (com.simibubi.create.content.logistics.chute.AbstractChuteBlock.getChuteFacing(c.getBlockState()).getAxis().isHorizontal())
             return false;
-        BlockState bs = level.getBlockState(below);
+        BlockState bs = stateAt(below);
+        if (bs == null)
+            return true; // the floor is in a chunk that is not loaded: nothing holds the item (a drop to the sink)
         if (bs.getBlock() instanceof AbstractFunnelBlock && AbstractFunnelBlock.getFunnelFacing(bs) == Direction.DOWN)
             return false;
         return !net.minecraft.world.level.block.Block.canSupportRigidBlock(level, below);
@@ -1635,15 +1842,15 @@ final class CreateCompile implements GlassExtractor.Compile {
         int ticks;
         if (motion < 0) {
             // down: pulls from the inventory above (not a chute), passes to the inventory or chute below, or drops
-            BlockEntity above = level.getBlockEntity(p.above());
+            BlockEntity above = blockAt(p.above());
             boolean top = !(above instanceof ChuteBlockEntity);
             if (top && above != null)
                 edge(GlassRecords.Edge.CHUTE, supplyAt(p.above()), i.node.index, test);
-            BlockEntity below = level.getBlockEntity(p.below());
+            BlockEntity below = blockAt(p.below());
             if (below instanceof ChuteBlockEntity)
                 edge(GlassRecords.Edge.CHUTE, i.node.index, acceptItem.get(p.below().asLong()));
-            else if (below != null && (level.getCapability(Capabilities.ItemHandler.BLOCK, p.below(), Direction.UP) != null
-                    || BlockEntityBehaviour.get(level, p.below(), DirectBeltInputBehaviour.TYPE) != null))
+            else if (below != null && (capAt(Capabilities.ItemHandler.BLOCK, p.below(), Direction.UP) != null
+                    || behaviourAt(p.below(), DirectBeltInputBehaviour.TYPE) != null))
                 edge(GlassRecords.Edge.CHUTE, i.node.index, acceptAt(p.below()));
             else if (dropsBelow(c))
                 edge(GlassRecords.Edge.DROP, i.node.index, dropAt(p.below()));
@@ -1654,10 +1861,10 @@ final class CreateCompile implements GlassExtractor.Compile {
             // or chute above; the period is Cycles' upward re-enactment, a starting estimate (CALIBRATED).
             // It once called the downward one, which threw and left a whole district not compilable
             // (docs/deploy-rehearsal-omegasrv.md: the main base of a live world had an upward chute)
-            BlockEntity below = level.getBlockEntity(p.below());
+            BlockEntity below = blockAt(p.below());
             if (!(below instanceof ChuteBlockEntity) && below != null)
                 edge(GlassRecords.Edge.CHUTE, supplyAt(p.below()), i.node.index, test);
-            BlockEntity above = level.getBlockEntity(p.above());
+            BlockEntity above = blockAt(p.above());
             if (above != null)
                 edge(GlassRecords.Edge.CHUTE, i.node.index, above instanceof ChuteBlockEntity ? acceptItem.get(p.above().asLong()) : acceptAt(p.above()));
             ticks = Cycles.chuteGrabPeriod(motion);
@@ -1687,7 +1894,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (e != null) {
                 e.order(order++);
                 // a funnel point inserts through the funnel: its filter limits what the arm hands it
-                if (level.getBlockEntity(pt.getPos()) instanceof FunnelBlockEntity fb) {
+                if (blockAt(pt.getPos()) instanceof FunnelBlockEntity fb) {
                     FilteringBehaviour ff = BlockEntityBehaviour.get(fb, FilteringBehaviour.TYPE);
                     if (ff != null && !ff.getFilter().isEmpty())
                         edgeTests.put(e, new EdgeTest(ff::test, null));
@@ -1729,14 +1936,14 @@ final class CreateCompile implements GlassExtractor.Compile {
             b.add(k, taker);
             return taker;
         }
-        if (level.getBlockEntity(p) instanceof FunnelBlockEntity)
+        if (blockAt(p) instanceof FunnelBlockEntity)
             return NONE;
         return supplyAt(p);
     }
 
     private int armPointAccept(ArmInteractionPoint pt) {
         BlockPos p = pt.getPos();
-        BlockEntity be = level.getBlockEntity(p);
+        BlockEntity be = blockAt(p);
         if (be instanceof FunnelBlockEntity) {
             Direction f = AbstractFunnelBlock.getFunnelFacing(be.getBlockState());
             return f == null ? NONE : acceptAt(p.relative(f.getOpposite()));
@@ -1748,8 +1955,10 @@ final class CreateCompile implements GlassExtractor.Compile {
         PumpBlockEntity pump = (PumpBlockEntity) i.be;
         Direction front = pump.getBlockState().getValue(PumpBlock.FACING);
         List<Integer> sources = new ArrayList<>(), targets = new ArrayList<>();
-        pipeEnds(pump.getBlockPos(), front.getOpposite(), true, sources);
-        pipeEnds(pump.getBlockPos(), front, false, targets);
+        boolean whole = pipeEnds(pump.getBlockPos(), front.getOpposite(), true, sources);
+        whole &= pipeEnds(pump.getBlockPos(), front, false, targets);
+        if (!whole)
+            bounded(i.node); // its pipes run into a chunk that is not loaded: the ends there are not known (SC43)
         for (int s : sources)
             fluidEdge(s, i.node.index);
         for (int t : targets)
@@ -1762,8 +1971,11 @@ final class CreateCompile implements GlassExtractor.Compile {
         };
     }
 
-    /** The fluid endpoints a pipe network reaches from {@code from} through side {@code side}. */
-    private void pipeEnds(BlockPos from, Direction side, boolean supply, List<Integer> out) {
+    /**
+     * The fluid endpoints a pipe network reaches from {@code from} through side {@code side}. False when the
+     * walk met a chunk that is not loaded and stopped there (never a spill: SC43).
+     */
+    private boolean pipeEnds(BlockPos from, Direction side, boolean supply, List<Integer> out) {
         java.util.ArrayDeque<BlockPos> q = new java.util.ArrayDeque<>();
         LongOpenHashSet seen = new LongOpenHashSet();
         seen.add(from.asLong());
@@ -1773,9 +1985,15 @@ final class CreateCompile implements GlassExtractor.Compile {
         java.util.Map<BlockPos, Direction> via = new java.util.HashMap<>();
         via.put(first, side);
         int budget = 4096;
+        boolean whole = true;
         while (!q.isEmpty() && budget-- > 0) {
             BlockPos p = q.poll();
-            BlockEntity be = level.getBlockEntity(p);
+            if (!level.isOutsideBuildHeight(p) && !Loaded.at(level, p)) {
+                g.unloadedStops++;
+                whole = false;
+                continue;
+            }
+            BlockEntity be = blockAt(p);
             FluidTransportBehaviour pipe = be == null ? null : BlockEntityBehaviour.get(be, FluidTransportBehaviour.TYPE);
             if (pipe != null && !(be instanceof PumpBlockEntity)) {
                 BlockState st = be.getBlockState();
@@ -1795,7 +2013,8 @@ final class CreateCompile implements GlassExtractor.Compile {
             int n = supply ? supplyFluidAt(p) : acceptFluidAt(p);
             if (n == NONE && be == null) {
                 // an open end: a water source block feeds it; else it spills
-                if (supply && level.getFluidState(p).isSource() && level.getFluidState(p).is(net.minecraft.tags.FluidTags.WATER))
+                net.minecraft.world.level.material.FluidState fluid = Loaded.fluid(level, p);
+                if (supply && fluid.isSource() && fluid.is(net.minecraft.tags.FluidTags.WATER))
                     n = waterSource(p);
                 else if (!supply)
                     n = sink();
@@ -1803,6 +2022,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             if (n != NONE && !out.contains(n))
                 out.add(n);
         }
+        return whole;
     }
 
     private int waterSource(BlockPos p) {
@@ -1827,7 +2047,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             Belt b = beltBySegment.get(n.asLong());
             if (b != null && b.next().equals(p))
                 continue;
-            if (BlockEntityBehaviour.get(level, n, DirectBeltInputBehaviour.TYPE) != null)
+            if (behaviourAt(n, DirectBeltInputBehaviour.TYPE) != null)
                 outs.add(acceptAt(n));
         }
         for (int o : outs)
@@ -1856,7 +2076,7 @@ final class CreateCompile implements GlassExtractor.Compile {
             int unpack = unpackAt.get(n.asLong());
             if (unpack != NONE)
                 edge(GlassRecords.Edge.ADJACENCY, i.node.index, unpack);
-            if (level.getBlockEntity(n) instanceof PackagerBlockEntity)
+            if (blockAt(n) instanceof PackagerBlockEntity)
                 edge(GlassRecords.Edge.ADJACENCY, supplyItem.get(n.asLong()), i.node.index);
         }
         if (port.target == null)
@@ -1881,7 +2101,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         seen.add(start.asLong());
         while (!q.isEmpty() && seen.size() < 4096) {
             BlockPos p = q.poll();
-            if (!(level.getBlockEntity(p) instanceof ChainConveyorBlockEntity c))
+            if (!(blockAt(p) instanceof ChainConveyorBlockEntity c))
                 continue;
             for (BlockPos rel : c.connections) {
                 BlockPos n = p.offset(rel);
@@ -1936,8 +2156,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         // kinetic block entity is on its far side, the same set whether it is on or off at compile.
         LongOpenHashSet turned = new LongOpenHashSet();
         for (long p : powered)
-            if (level.isLoaded(BlockPos.of(p))
-                    && level.getBlockEntity(BlockPos.of(p)) instanceof com.simibubi.create.content.kinetics.transmission.ClutchBlockEntity c)
+            if (Loaded.blockEntity(level, BlockPos.of(p)) instanceof com.simibubi.create.content.kinetics.transmission.ClutchBlockEntity c)
                 turned.addAll(turnedBy(c));
         if (!turned.isEmpty())
             for (Info i : infos.values()) {
@@ -1960,7 +2179,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 continue;
             BlockPos n = at.relative(d);
             powered.add(n.asLong());
-            if (level.getBlockState(n).getBlock() instanceof RedStoneWireBlock && seenDust.add(n.asLong()))
+            if (stateAt(n) instanceof BlockState s && s.getBlock() instanceof RedStoneWireBlock && seenDust.add(n.asLong()))
                 dust.add(n);
         }
         int steps = 0;
@@ -1969,14 +2188,15 @@ final class CreateCompile implements GlassExtractor.Compile {
             for (Direction d : Direction.values()) {
                 BlockPos n = w.relative(d);
                 powered.add(n.asLong());
-                if (!level.getBlockState(n).isAir() && level.getBlockState(n).isRedstoneConductor(level, n))
+                BlockState s = stateAt(n);
+                if (s != null && !s.isAir() && s.isRedstoneConductor(level, n))
                     for (Direction d2 : Direction.values())
                         powered.add(n.relative(d2).asLong());
             }
             for (Direction d : Direction.Plane.HORIZONTAL)
                 for (int dy = -1; dy <= 1; dy++) {
                     BlockPos n = w.relative(d).above(dy);
-                    if (level.getBlockState(n).getBlock() instanceof RedStoneWireBlock && seenDust.add(n.asLong()))
+                    if (stateAt(n) instanceof BlockState s && s.getBlock() instanceof RedStoneWireBlock && seenDust.add(n.asLong()))
                         dust.add(n);
                 }
         }
@@ -1987,17 +2207,17 @@ final class CreateCompile implements GlassExtractor.Compile {
     private void beltOutlets(Belt b) {
         for (int k = 0; k < b.segments.size(); k++) {
             BlockPos above = b.segments.get(k).above();
-            BlockEntity be = level.getBlockEntity(above);
+            BlockEntity be = blockAt(above);
             if (be instanceof BeltTunnelBlockEntity t && claimedPos.contains(above.asLong()))
                 tunnel(b, k, t);
         }
         BlockPos next = b.next();
-        if (BlockEntityBehaviour.get(level, next, DirectBeltInputBehaviour.TYPE) != null) {
+        if (behaviourAt(next, DirectBeltInputBehaviour.TYPE) != null) {
             b.endKind = GlassRecords.Edge.BELT;
             b.endTarget = acceptAt(next);
         } else {
-            BlockState s = level.getBlockState(next);
-            if (!s.isFaceSturdy(level, next, b.movementFacing().getOpposite())) {
+            BlockState s = stateAt(next);
+            if (s == null || !s.isFaceSturdy(level, next, b.movementFacing().getOpposite())) {
                 b.endKind = GlassRecords.Edge.DROP;
                 b.endTarget = dropAt(next);
             }
@@ -2079,7 +2299,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (d.getAxis() == movement.getAxis() || !t.sides.contains(d))
                     continue;
                 BlockPos out = seg.relative(d);
-                if (BlockEntityBehaviour.get(level, out, DirectBeltInputBehaviour.TYPE) == null)
+                if (behaviourAt(out, DirectBeltInputBehaviour.TYPE) == null)
                     continue;
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.ADJACENCY, m, acceptAt(out));
                 if (e != null) {
@@ -2103,7 +2323,7 @@ final class CreateCompile implements GlassExtractor.Compile {
                 if (d.getAxis() == movement.getAxis() || !t.flaps.containsKey(d))
                     continue;
                 BlockPos out = seg.relative(d);
-                if (BlockEntityBehaviour.get(level, out, DirectBeltInputBehaviour.TYPE) == null)
+                if (behaviourAt(out, DirectBeltInputBehaviour.TYPE) == null)
                     continue;
                 GraphBuilder.Edge e = edge(GlassRecords.Edge.ADJACENCY, m, acceptAt(out));
                 if (e != null)
@@ -2132,7 +2352,7 @@ final class CreateCompile implements GlassExtractor.Compile {
         BlockEntity be = i == null ? null : i.be;
         if (be == null)
             return;
-        IItemHandler items = level.getCapability(Capabilities.ItemHandler.BLOCK, be.getBlockPos(), null);
+        IItemHandler items = capAt(Capabilities.ItemHandler.BLOCK, be.getBlockPos(), null);
         if (items != null)
             for (int s = 0; s < Math.min(items.getSlots(), 256); s++) {
                 ItemStack st = items.getStackInSlot(s);
@@ -2421,16 +2641,16 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     private void storeContents(GraphBuilder.Node node, IntOpenHashSet into) {
         BlockPos p = node.pos();
-        if (!level.isLoaded(p))
+        if (!Loaded.at(level, p))
             return; // a capability read would load the chunk (and keep it loaded while compiles repeat)
-        IItemHandler items = level.getCapability(Capabilities.ItemHandler.BLOCK, p, null);
+        IItemHandler items = capAt(Capabilities.ItemHandler.BLOCK, p, null);
         if (items != null)
             for (int s = 0; s < items.getSlots(); s++) {
                 ItemStack st = items.getStackInSlot(s);
                 if (!st.isEmpty())
                     into.add(good(st));
             }
-        IFluidHandler fluids = level.getCapability(Capabilities.FluidHandler.BLOCK, p, null);
+        IFluidHandler fluids = capAt(Capabilities.FluidHandler.BLOCK, p, null);
         if (fluids != null)
             for (int s = 0; s < fluids.getTanks(); s++) {
                 FluidStack fs = fluids.getFluidInTank(s);
@@ -2999,7 +3219,7 @@ final class CreateCompile implements GlassExtractor.Compile {
 
     /** A blaze burner under the basin a basin machine works. */
     boolean hasHeater(Info i) {
-        return i.extra instanceof BasinBlockEntity basin && level.getBlockEntity(basin.getBlockPos().below()) instanceof BlazeBurnerBlockEntity;
+        return i.extra instanceof BasinBlockEntity basin && blockAt(basin.getBlockPos().below()) instanceof BlazeBurnerBlockEntity;
     }
 
     int boundedNodes() {

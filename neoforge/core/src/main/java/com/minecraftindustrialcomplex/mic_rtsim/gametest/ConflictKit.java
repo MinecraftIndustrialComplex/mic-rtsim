@@ -443,6 +443,15 @@ public final class ConflictKit {
         return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.FACTION, faction);
     }
 
+    /** CHIEF_STATE records of one faction (the faction at offset 8), in the order received (MZB-273). */
+    public static List<ScriptedEngine.Received> chiefStates(long faction) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : RtsimTests.engine().received(ConflictRecords.CHIEF_STATE))
+            if (!r.skipped() && r.view().getLong(ConflictRecords.ChiefState.FACTION) == faction)
+                out.add(r);
+        return out;
+    }
+
     /** A census's bodies: body id, flags, slot, generation and UUID. */
     public record CensusBody(int body, int flags, int slot, int generation, UUID uuid) {}
 

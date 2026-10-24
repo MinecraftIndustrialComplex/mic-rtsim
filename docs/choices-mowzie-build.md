@@ -767,7 +767,392 @@ under its own heading.
 
 ## M4 Camp reconciler, engine
 
-(none yet)
+- **MZB-150** (the five camp records got their engine half): CAMP_CENSUS (0x080F), CAMP_OUT
+  (0x0813), CAMP_RECONCILE (0x8808), CAMP_BODIES (0x0812) and CAMP_DEATH (0x080E) are ingested,
+  booked and (the reconcile) sent by `crates/rtsim-conflict/src/engine/camp.rs`, and are off
+  `Conflict::later`; each later slice takes its own kinds off that list (MZB-23). No record's layout
+  changed, so `boundary.rs`, `docs/boundary.md` and rtsim-jni's decoder are as M1 left them.
+  `tests/mowzie_records.rs`'s deferred-record test spends an op id on CHIEF_PAID instead, and cites
+  this choice. A fork (reported): the lead's brief said to change a layout only if the plan
+  demanded it, and nothing did.
+- **MZB-151** (`camp_bodies`, a culture flag, gates the ledger): the plan keeps a ledger for a camp
+  "whose bodies a census counts"; a culture says so with `camp_bodies: true` in its JSON, which
+  `frostmaw.json` and `umvuthana.json` set. Every other culture has no ledger and reads no camp
+  record, but the pool's room (MZB-171) applies to it too, which moved `sim conflict`'s state
+  hashes. Amended (review of 408d4a07): M4 first said every other culture was untouched. A fork
+  (reported): the plan does not say how a culture opts in.
+- **MZB-152** (where a ledger starts): at FACTION_FOUND (`camp_found`: the pool is the census's
+  home bodies bounded by the culture's `pool_cap`, the camp's cap that count, one at least, bounded
+  by the same, every slot owed for the first census's strays to fill), or lazily (`camp_create`, from
+  the books as they are) for a faction found some other way. A den found empty gets cap 1 and pool 0
+  and refills at the culture's rate (1 a 6 days) until M6's arrival renewal; a grove found with 4 of
+  its 9 bodies has cap 4, so a grove cannot recruit past what was found. So a grove found empty or
+  part-cleared, as every grove of an existing world may be, has the cap of the bodies it was found
+  with (one at least) and raids only when its room fits a party (MZB-171): an empty one, cap 1, does
+  not raid until M6's and M9's arrival renewal grows it. A fork (reported): the plan gives the cap as
+  the culture's and says nothing of a camp found part-empty; keeping the cap at the found count is the
+  choice that cannot field a body the world never had, and M6 and M9 own the arrival that grows it.
+- **MZB-153** (slots, generations, ops): a slot takes the lowest free number; its generation is
+  `derive_gen(key, slot, tick, last retired)`, never 0 (0 names a stray) and never the generation the
+  slot last retired. The engine's allocator byte for a camp's ops is 0x43; a CAMP_RECONCILE's op is
+  `derive_op(key, epoch, seq)`, so a decision made again after a restart has the same op. An answer
+  line is booked once by (op, line) (MZB-169) and a CAMP_DEATH by its slot and generation (MZB-170);
+  neither op goes into `applied_ops`, which first held them and grew with every death of a farmed
+  grove.
+- **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` stays a closed
+  form, so a feud, the bench and a save cost what they did, but its refill now stops at the cap less
+  the members away for every culture (MZB-171; M4 first said it was unchanged). A change of the
+  slots (`camp_sync`, called by every ledger entry point that changes them, and by `camp_bodies`
+  after its epoch gate, MZB-172) first adds one owed slot for each whole member the pool gained
+  since the last, each with a generation from the tick it became whole (`whole_at`). A camp that is
+  in books `Ev::Refill` (wheel tag 7) with a stamp for its next whole member; one that is out books
+  none, and its next census spawns what it gained. A state hash must sync first; `camp_audit` is
+  `&self` and adds nothing, so it reads the books as they are, and the slots at home may be fewer
+  than the whole warriors the pool holds (MZB-172). Reason: a per-tick or per-refill loop over every
+  camp would break D1, and the closed form already says when a member is whole.
+- **MZB-155** (waiting for whole bodies counts the slots a draw may take): M2's quorum for a
+  party that must muster whole (`ceil(size / 2)`, MZB-52) is unchanged, but it is now measured in
+  the slots a draw may take (home, no line in flight). A feud with fewer waits on `BLOCKED`
+  (`u64::MAX / 2`), which books no event; `unblock` (an answer, a void, a CAMP_OUT, a return to the
+  pool) wakes the waiting feuds and plans a refill, so a busy line wakes a feud a handful of times,
+  never once a tick (`sim mowzie` run 10 asserts `feud_wakes`). Reason: a member whose body is
+  being spawned or taken cannot be drawn, and the old closed-form wait did not know it.
+- **MZB-156** (the draw order and `misses`): found bodies (misses 0) first, then missed, then owed,
+  by slot number within each, never a slot with a line in flight, and never more than the smaller of
+  `floor(pool)` and the slots it may take (the chaos run checks every draw). A slot drawn keeps its
+  `misses` and `missed_at`: a body missed at a census and drawn is I3-unverified until its set-out
+  answer or the next census, and a member that comes home is written off on the clock it was on.
+- **MZB-157** (the write-off): `WRITE_OFF_MISSES` 3 censuses that miss a home body, the third at
+  least `WRITE_OFF_DAYS` 2 days after the first (both PLACEHOLDER, as §8's row says); the slot is
+  freed, the pool loses the member, and its generation is retired as "not died", so a body found
+  later is a stray and is adopted or removed like any other. A generation retired at a death is
+  retired as died: a body of it found later is removed.
+- **MZB-158** (the census's table): Body found keeps its slot; Body missed counts a miss; Owed found
+  becomes Body; Left found with its party out is taken, with its party mustering stays; Left absent
+  becomes Gone; Gone found becomes Left (and is taken or kept by its party's phase); Dead found is
+  removed, Dead absent is freed. Strays and tagged bodies no slot holds fill owed slots, then new
+  slots while the pool and the members away are under the cap, and are removed above it; a body of
+  a generation retired at a death is removed. A census never ends a party (§4.16).
+- **MZB-159** (a replayed census): a census ingested while `Conflict::replaying` is set (M3's window,
+  from `session_start` to `replay_done`, MZB-138 and MZB-141; before the merge rtsim-jni set it around
+  each record whose `OBS_SEQ` was before the session's first, MZB-178) only marks its camp out:
+  the session that took it is over, its epoch is not the plugin's, and it orders nothing. The
+  records that follow it (answers, deaths) are booked as usual (an answer by the action it carries,
+  MZB-168), and the census still names its epoch as the camp's latest (MZB-169). Not a fork: this is
+  the plan's own wording (MOWZIE.md §4.9: "A CAMP_CENSUS replayed from an earlier session only marks
+  its camp out"). The reason, for the record: a census has no state to skip by op id, and booking one
+  against a camp that is out would adopt strays on a dead epoch.
+- **MZB-160** (lines are void, never resent): at CAMP_OUT, and at a session start for every camp, a
+  camp's lines in flight are voided and nothing is sent again; at most one line is in flight per
+  slot (`send_lines` guards it as well as its callers, which makes the guard defence only); orders
+  go only to a camp that is in; a CAMP_OUT for an epoch that is not the camp's ends nothing.
+- **MZB-161** (an answer with no line in flight): replaced by MZB-168. M4 first booked it by the
+  action the slot's state implies (Owed a spawn, Left or Dead a take, Body and Gone nothing), which
+  was a guess; the review of 408d4a07 showed it lose members.
+- **MZB-162** (a death books the member wherever the books have it): a CAMP_DEATH for a slot and
+  generation the books hold frees it: at home the pool loses a member (the generation retired as
+  died), away the party loses that unit in any phase (`member_died`) and a party left with none ends
+  through its own `home` (`go_home`, or `end_fight` when fighting), so the pool takes back its
+  survivors and `away` falls in one place; dead, left, the slot is freed. A stray's death books
+  nothing, and a death for a generation the slot no longer holds books nothing. A fork (reported):
+  the plan's table gives each row; an emptied party's end is the choice, `casualties`' own.
+- **MZB-163** (the hand-back): `camp_home` turns Left into Body and Gone into Owed; an embodied party
+  with puppets at a camp that is in gets a hand-back line for each Gone slot, else spawn lines. No M4
+  flow reaches it (the embodied walk home is M10's), so one test forges an embodied party and the
+  scenario's run 10 names the case "forged state". A fork (reported).
+- **MZB-164** (what M4 leaves for the slices that own it): a chief killed at the camp and the den's
+  arrival (M6), the Umvuthi's slot, heir, seat, Rule U and throne lines (M9 to M11), BAND_MARCH and
+  the walk home in bodies (M10), AMBUSH_SPOT's removed flag (M8). A held line (Rule U, the
+  Frostmaw's spawn wait) is Java's (M5) and is not emulated: the fake plugin applies every line in
+  the tick it arrives, and answers it after `answer_ticks`. One more is M10's: a CAMP_DEATH for a
+  slot left behind (its body still in the camp while the party musters or is out) whose party is
+  embodied makes `member_died` take one unit off the party's books, but the puppet of that unit
+  stays in the world, since the body that died is the camp's and not the puppet; the books and the
+  world then disagree by one puppet until the party is recalled. No `debug_assert` fits: the chaos
+  run reaches it (counted at this commit: 15 times over its 48 camps, 14 for a left slot and 1 for a
+  gone one, with the player watching a fight), so it is a known state and not a bug in M4's flows. M10, which owns the embodied walk, ends that puppet with its party's recall.
+- **MZB-165** (pages): the conflict page magic is RTC6 and the meta page's version is 5, after the
+  merge with M3 (M3 took RTC5 and meta 4 for the recalled stacks kept per epoch, MZB-131; this
+  branch's own format change comes after it): a camp's ledger (slots, retired generations, throne,
+  refill stamp) is saved with its faction, and the stats grew six camp counters; a camp's page also
+  holds the latest epoch a census named and the (op, line) answers booked in it, each with its
+  record's journal sequence (MZB-169, MZB-177). No migration (no backward compatibility before
+  release). This changes a page format, so the rtsim-view fixtures and hashes tests and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` fail until the fixtures are regenerated
+  from fresh GameTest worlds of the merged build, which the landing does.
+- **MZB-166** (the emulated plugin and runs 8 and 10): `synth::FakeConflict`'s camp worlds apply a
+  reconcile in the tick it arrives if the epoch is the camp's, else answer it stale; answers can be
+  late, lost (`lose_answers`, one per order), replayed, dropped at a restart (`drop_queued`) or split
+  over several records (`split_answers`, that many lines to a record, as holders in several chunks
+  answer). Holders are emulated as MOWZIE.md §4.9 has them: a line applied and done, and a death,
+  leaves its record on a holder (`holders`, `death_holders`) until the engine has it, and with
+  `holders_again` the restart and each camp-in, before its census, journal those records again
+  (`journal_holders`, MZB-175), which the engine books by the action each carries and skips by
+  (op, line). `CampRun` drives an engine against one,
+  with `decide` and `census_held` for crash tests, `track` and `settle` for the ghosts (MZB-167),
+  and `check`: I1 and I2 by the engine's own audit, I4 by counting each (op, line) the plugin
+  applied, I3 and I5 against the world; I6 is by construction, the engine never sees the world. Run
+  10 is the scripted cases on worlds of fixed seeds (they check exact slot counts, which a raid's
+  follow-up party changes from world to world) and chaos over 64 camps from `--seed`, whose
+  plugin follows the seed (a lost record stays lost; holders journal it again; holders journal it
+  again one line to a record), settled at the end and asserting that the engine's write-offs are
+  exactly the ghosts, and none where holders journal again (MZB-167, MZB-175); run 8's part saves and restarts with lines in flight three ways.
+  Both are printing checks that must pass (`sim mowzie` exits 1 otherwise, and a test runs it).
+  Where run 10 still falls short of MOWZIE.md §7: no line is held (Rule U's holds, the Frostmaw's
+  spawn wait: Java's, deferred by MZB-164, so the fake plugin applies every line in the tick it
+  arrives) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
+  waits for M6 and M9; what it does reach is camps in and out with a player at the edge, musters,
+  homecomings with hand-backs, refills, deaths at home, left behind and of strays, answers lost,
+  late, replayed and stale, restarts and saves, with the invariants checked after every event.
+
+- **MZB-167** (what a lost answer costs: the ghosts, counted exactly): an applied take or set-out
+  whose answer never reaches the engine (lost, or in the journal's tail at a restart) once left a
+  slot Left though the body was gone; if the party then came home the slot became Body, three
+  censuses missed it and it was written off. M4 first called that a loss of the emulation and not
+  of the plugin, because the real plugin journals the answer again from the marker the body left
+  (§4.9). That premise was wrong: the marker's record, booked by the state its slot has by then
+  (Body), booked nothing, so the real plugin lost the member too. MZB-168 fixes it: the record
+  carries its action and is booked by it, so Body with a set-out done is owed and spawned. With the
+  holders' records journaled again at the restart (the real plugin's), the four members of a raid
+  whose set-out answer was in the journal's tail are owed, spawned at the next census, and none is
+  lost; with the record lost for good (`holders_again` off), a party that gets home before the next
+  census leaves four ghosts, and four members are written off. A ghost is a slot that is a body at
+  home with no body in the world and no record on its way to the engine; three censuses over two
+  days write it off, and a draw first rescues it (its set-out finds nothing to do and books the body
+  gone). A record only a holder has is cover where the plugin journals holders again
+  (`holders_again`, MZB-175): the emulated holders journal at a session start and at each
+  camp-in, before the census, as the real ones do when their chunks load and as MZB-174 makes the
+  census wait for. A footprint holder's record that arrives at camp-in, before the new census,
+  still carries the latest epoch and books (MZB-169); one that arrives after a census of a later
+  epoch is of an older epoch and books nothing, and for it the table is what counts. An answer
+  lost with no restart after it, which the chaos run does, is repaired at the next camp-in by the
+  holders. The chaos run ends with `settle` and asserts that the
+  engine's write-offs are exactly the ghosts the run made and that none is left (`CampRun::track`
+  finds them by effect after each step of a run), and (MZB-175) that nothing is written off where
+  holders journal again; `lost_members`, which the assertion used, was an upper bound that any
+  loss passed, and is gone. Tests:
+  `a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none` (four against none, each
+  equal to its ghosts), `a_body_whose_death_is_on_its_way_is_no_ghost`,
+  `answers_split_into_records_leave_the_books_as_whole_ones_do` and
+  `the_check_names_an_order_applied_twice`.
+
+- **MZB-168** (CAMP_BODIES' lines carry their action; replaces MZB-161): a line's answer is
+  `u32 line, u32 slot, u32 generation, u8 action, u8 outcome, u16 reserved`, 16 bytes as before (so
+  the record's size is unchanged), with the action of the CAMP_RECONCILE line it answers
+  (`ACTION_*`), and the engine books the world fact by that action: not by the slot's state, which
+  was MZB-161's guess, and not by the line in flight, which a CAMP_OUT or a session start voids
+  while Java still answers it. The reviewer's case: a grove of 9 raids, Java applies the four
+  set-outs, the answer waits in a journal tail past CAMP_OUT, the party gets home abstractly (Left
+  becomes Body), and the answer then books nothing for a Body slot; four censuses miss four bodies
+  and write four members off. By its action the answer says "set out, done": the Body slot is owed
+  and the next census spawns it. The outcome constants are `u8` now. Layout changed in
+  `boundary.rs` (encode, decode, fixture, generator), docs/boundary.md's row 0x0812 and
+  MOWZIE.md's record table; rtsim-jni uses the same codec, so its decoder follows. A fork
+  (reported): the lead's decision after the review, not the plan's wording; the main session
+  accepted it on 2026-10-23. MOWZIE.md's §4.9 prose,
+  ledger 7 and crash table rows 2 to 4 say so now (MZB-174).
+- **MZB-169** (an answer line is booked once by (op, line), and only in the latest census's
+  epoch): one op has several CAMP_BODIES records, since a holder's record is journaled again at load
+  and held lines are answered later, so the skip is per line, not per op (a four-line set-out
+  answered as two records of two lines lost the second under the op-only skip). A camp keeps the
+  latest epoch a census named (`seen`, replayed censuses too) and the (op, line) answers booked in
+  it (`answered`, sorted, saved with the ledger), emptied at each census of a new epoch; an answer
+  of any other epoch books nothing, since a later census read the world after Java applied the
+  lines, and the fact the answer reports is older than the books. That is the prune by epoch: the
+  set holds one epoch's lines (a few dozen a day at a raided camp) and cannot grow without bound.
+  Answers booked by action need the skip: a copy of a set-out answer, delivered after the party is
+  home and the bodies are back, would turn a living body's slot owed and spawn a second body.
+- **MZB-170** (camp records keep no op id): CAMP_DEATH is idempotent by its slot and generation
+  (the first frees the slot, a copy finds none), and CAMP_BODIES by (op, line), so neither goes into
+  `applied_ops`. `Obs::op()` no longer returns the death's op and rtsim-jni's `conflict::op_of` no
+  longer gives it to `Replay`, which kept it for the session. The op stays in the record, as
+  Java's name for it. The engine acknowledges by sequence (`ackedObsSeq`, docs/boundary.md §1), not
+  by op id, so Java's dropping of a marker's record is unaffected. A fork (reported): the lead's
+  decision; a death replayed after a slot was freed and made again under a new generation is
+  absorbed by the generation, which `derive_gen` never repeats for the slot's last life.
+
+- **MZB-171** (the pool's room is every culture's): MOWZIE.md ledger 6 says `pool_at`'s refill
+  stops at the cap less the members away, "at every camp", and the code does so for every culture,
+  ledger or not: a camp's cap is its culture's `pool_cap` (set at `add_faction`, bounded by a census
+  that finds fewer) and `away` is kept for all. `pool_at` is the refilled pool bounded by that room
+  and never below the smaller of the stored pool and the room, so a pool above the room is clamped
+  to it (the code comment said it stayed; fixed); `pool_add` clamps to the room, and `pool_ready`
+  is `BLOCKED` for a party larger than the room, which only a return can end (`unblock`). MZB-151
+  and MZB-154 said other cultures were untouched and `pool_at` unchanged; both were wrong. What
+  moved: M2's refill went to `pool_cap` from the moment a party left, so a goblin camp of 60 that
+  sent a raid of 12 had the pool back to 60 within 6 days while the band was out (72 members
+  fielded), and the survivors were clamped off the pool when they came home. Now the pool and the
+  members away never pass the cap, and survivors come home to room. A second war party waits for a
+  first one's return only when the room is short of it, which no default culture's numbers do but
+  the two with a ledger (a den's cap is 1; a grove found with 4 of 9 bodies has cap 4); for a
+  goblin the difference is the pool's value. In `sim conflict`'s JSON only the state hashes
+  moved (the three variants and the restore line): the checks, logs, event counts, wire bytes and
+  archive rows are M2's. The page format moved them too (MZB-165), so the room alone was measured,
+  as M2's refill on M4's format against M4's: ignore e5d0d1d99fbe97d5 against e271b3b7af114664,
+  tribute e7a65dc23ea5e53e against 788cce5224a8bb3f, converter 699a30ab49314569 against
+  8f4a3f1dafeb5a7c. At day 24 the goblin camp's pool is 57.92 in the tribute and converter runs
+  (60 less the two warriors lost) where M2's refill left 60.00, and 48.65 against 51.96 in the
+  ignore run, where a plunder party of 8 is still out. Test:
+  `every_cultures_pool_refills_only_to_its_cap_less_the_members_away` (a goblin camp of cap 20 with
+  raids of 12 out for 6 days: pool plus away never passes 20 in 60 days, where M2's formula reached
+  8.08 + 12 on the first day out). A fork (reported): the lead's decision to keep the room for every
+  culture, as the plan's ledger 6 words it, over a flag that would keep M2's pool for a culture
+  with no ledger; the main session accepted it on 2026-10-23.
+
+- **MZB-172** (the review's smaller fixes): four things the review of 408d4a07 found, each with a
+  test that fails without it. (1) An adoption answered "nothing to do" (the stray died before the
+  order was applied) leaves the slot owed with no body there; a camp that is in now sends it a
+  spawn line, as it does for a body found gone, where it used to wait for the next census (test:
+  `an_adoption_with_nothing_to_adopt_is_followed_by_a_spawn`). (2) Every change of a ledger's slots
+  follows a sync: `camp_bodies` syncs first (it freed a dead slot with the pool's gained members
+  not yet added, so the lowest free number a later sync takes depended on whether anything had
+  synced in between), and `camp_audit` is `&self` and adds nothing (the slots at home must be no
+  more than the pool's whole warriors; a gain not yet added is the books as they should be). An
+  audited run is now the run not audited: the chaos run's state hash is the same with its audit
+  after every event and without (`auditing_after_every_event_changes_nothing`, a guard: it did not
+  tell the old syncing audit from this one in 32 seeds, so the teeth are in
+  `the_audit_leaves_the_slots_the_pool_gained_unadded` and
+  `a_refill_while_the_camp_is_out_is_spawned_at_the_next_census`; the answer's sync is
+  `an_answer_syncs_the_books_before_it_frees_a_slot`). Two tests that read the slots after an audit
+  read the pool instead, since the audit no longer adds them. (3) Two guards no flow reaches, a
+  slot left or gone whose party is not in the books (a party leaves the books through `home`,
+  which settles its slots first), have a `debug_assert!` at the census and at the answer; the
+  release arms stay as they were (two `should_panic` tests, debug builds only). (4) A war party is
+  never drawn larger than the slots at home with no line in flight: every unit kind keeps one at
+  least, so a make-up of two kinds from a camp with one warrior at home was two units on one slot
+  and `away` one too many; the last kinds now give theirs up, so a party can have fewer kinds than
+  its make-up when the camp is that short, and `send_party` sends nothing when `have` is 0
+  (`a_party_is_never_drawn_larger_than_the_slots_at_home`). The member-died puppet is noted in
+  MZB-164. A fork (reported) for (4): the plan says a party takes at least half its make-up and
+  does not say which kinds go first.
+
+- **MZB-173** (what M4 costs `bench scale`'s factions sweeps): measured once, M2's head (4b07ea84)
+  against M4 as first built (408d4a07's engine; the review's fixes came after and were not measured
+  again: they add a clamp to `pool_at` and an (op, line) lookup per camp answer, which the bench's
+  cultures never send),
+  `bench scale --full`, one run of each in turn. The machine was loaded (load average 32.7, 31.3 and
+  28.7 on 24 threads, other sessions' builds and runs), so a few percent either way is noise, and
+  every cpu figure of one run is inflated together.
+
+  | sweep | factions | cpu ms/day M2 | cpu ms/day M4 | save KiB M2 | save KiB M4 | heap MiB M2 | heap MiB M4 |
+  |---|---|---|---|---|---|---|---|
+  | closed | 16 | 0.12 | 0.16 | 8.6 | 8.6 | 0.5 | 0.5 |
+  | closed | 64 | 0.81 | 0.86 | 31.3 | 31.5 | 1.7 | 1.7 |
+  | closed | 256 | 5.10 | 5.25 | 125.7 | 126.4 | 8.1 | 8.1 |
+  | closed | 1,000 | 19.82 | 20.06 | 511.7 | 514.7 | 35.2 | 35.2 |
+  | paged | 1,000 | 35.11 | 36.93 | 511.7 | 514.7 | 34.3 | 34.2 |
+  | paged | 2,000 | 112.74 | 117.64 | 1027.2 | 1033.2 | 69.9 | 69.9 |
+  | paged | 4,000 | 145.54 | 151.38 | 2058.6 | 2070.7 | 141.6 | 141.6 |
+
+  The cpu is 1 to 6% above M2's from 64 factions up (the 16-faction row is 0.04 ms a day, below what
+  the load moves), the save at most 0.6% larger (the cause was not traced), the heap the same. Two
+  verdict lines differ and neither is M4's: `factions-paged resident` fails its slope on both
+  (0.920 on M2, 0.921 on M4), and `factions closed cpuperunit` fails on M2 (0.234 against a declared
+  0.20) and passes on M4 (0.178), which is the load, not a speed-up. Slots a day and conservation
+  are as before (0, ok). The bench builds goblins, bandits and raiders (`synth::many`), none with
+  `camp_bodies`, so this is the cost of the pool's room and the page's new fields, not of a ledger.
+
+- **MZB-174** (the contract that makes the epoch gate safe, an M5 obligation): MZB-169's gate books
+  an answer line only while its epoch is the latest a census of the camp named, so a holder's record
+  that reaches the engine after a census of a later epoch books nothing. The review (P2-1) found
+  that gate drops a late holder record, and the decision is a contract and no engine change:
+  **Java sends a camp's census only after every holder in its footprint has journaled its record
+  again.** A footprint holder loads with the camp's chunks, so M5's census (sent when every
+  footprint chunk is FULL with its entities in) waits for those records, and they reach the engine
+  carrying the epoch that is still the latest, before the new census; the books take them by the
+  action each carries. MOWZIE.md §4.9 (the CAMP_BODIES bullet, the journal-again sentence, crash
+  table rows 2 to 4) and ledger 7 say so, in the reviewer's words. The cost that remains and is
+  known: a holder outside the footprint whose record arrives after a census of a later epoch is
+  not booked. That census books the missing body by its table (a body left becomes gone), and a
+  body at home is missed and written off at the third miss over two days, so one member is lost.
+  This happens only after a crash, and the camp refills the member at its rate (`pool_at`). The
+  engine cannot tell that holder's record from one of a superseded census, which is why it books
+  nothing rather than guess (MZB-169). For M5: wait for the holders in the census's footprint;
+  a holder outside it is not waited for, and is the cost above.
+
+- **MZB-175** (run 10's exact ghost count had no teeth; the fake plugin follows MZB-174): the review
+  (P2-2) found that putting the engine back to booking by state (MZB-168) or skipping by op
+  (MZB-169) left `sim mowzie` at exit 0: holders journaled only at a restart, so in the chaos run a
+  lost answer was a ghost the exact count simply counted, whatever the engine did with the records.
+  Four changes. (1) With `holders_again` the emulated footprint holders journal their records again
+  at each camp-in, before the census (`journal_holders_of`, at the census's own tick, the records
+  queued first), as MZB-174 says the census waits for; the restart still journals them all. (2)
+  `CampRun::track` counts a record a holder still has (a line, or a death) as cover where holders
+  journal again: the member is no ghost, since the next camp-in or restart books it. (3) The chaos
+  run, in the camp tests and in run 10, asserts `camp_written_off == 0` where `holders_again` is on,
+  and keeps the equality with the ghosts gone for the seeds where it is off. (4) Run 10 gains three
+  scripted cases with exact outcomes, the grove of nine whose raid's four set-out answers are lost:
+  the records land after the party is home (whole, and one line to a record), and the records are
+  journaled again at the next camp-in with no restart; each ends with no member written off. Tests:
+  `holders_journal_their_records_as_the_camp_comes_in_before_its_census` and
+  `a_death_only_a_marker_carries_is_no_ghost_where_holders_journal_again`. What each guard catches,
+  measured by putting it back (one run of the camp tests and of `sim mowzie` each): booking by state
+  (408d4a07's rule): 5 camp tests (the chaos test at seed 7: 3 written off, the late set-out answer,
+  the camp-in case, a superseded epoch, one `should_panic`) and `sim mowzie` exit 1 on the three
+  scripted cases (4 written off each); skipping by op (a record of an op already seen books
+  nothing): 3 camp tests (both split-answer tests and the chaos test) and `sim mowzie` exit 1 on the
+  one-line-to-a-record case and on the chaos (6 camps, the first three with 3, 3 and 1 members
+  written off); the fake without camp-in journaling: 3 camp tests and `sim mowzie` exit 1 on the
+  camp-in case (4 written off); the fake without the cover rule: one camp test, and `sim mowzie`
+  exit 0, since its chaos seeds meet no death only a marker carries. The sim's chaos camps alone (64
+  from `--seed`) do not meet the by-state case, which the reviewer's own 44 holders-on runs did (9
+  written off by state, 17 by op, 0 with the fix): the scripted cases are what make `sim mowzie`
+  fail for it. A fork (reported): none; this is the reviewer's plan.
+
+- **MZB-176** (the audit's I2 has its lower bound back): MZB-172 made `camp_audit` read-only, which
+  left I2 with only its upper bound (the slots at home are no more than the pool's whole warriors
+  now). The lower bound is the pool's stored value: it is what the pool held when it was last moved,
+  and every move of the pool follows a sync and moves the slots with it (`pool_return`, a draw's
+  `pool_shift`, a death), so at least `floor(pool)` slots are at home, the refill since being the
+  gain the next sync adds. A slot taken from home with the pool left as it was is now named (`I2:
+  ... the pool held N when it was last moved`). It holds over every camp test, the chaos runs and
+  `sim mowzie` (its chaos checks every event). Tests:
+  `the_audit_names_a_pool_the_slots_at_home_fall_short_of` (a home slot made Dead by hand; and a
+  pool that refilled for 30 days with the slots unadded, which is no shortfall). A fork (reported):
+  the review said "at the camp's last sync"; the pool's stamp (`pool_at`) is that moment, since a
+  sync comes before every move and the books hold no other mark of it.
+
+- **MZB-177** (a camp forgets the answers a durable world save covers): the (op, line) answers
+  booked in a camp's latest epoch (`Camp::answered`, MZB-169) grew with every answer until the next
+  census, and a grove can stay in one epoch for months. Each answer is now kept with the journal
+  sequence of the latest record that carried it (`Answered { op, line, seq }`; a holder's copy that
+  is skipped raises it, so a copy keeps the answer until the copy is durable too). The host reports
+  the highest durable sequence at WORLD_SAVED (`Conflict::durable_obs_seq`, set where
+  `Replay::forget_ops_through` is called, which is the rule docs/boundary.md §2.3 gives for op ids)
+  and `Conflict::obs_seq` carries the record being ingested. A camp forgets the answers at or below
+  the durable sequence when it next books an answer, so only the camp that grows is touched: no scan
+  of the faction table (its pages would load and dirty), and the set stays at what the last save has
+  not covered. A host with no sequences (the simulations, whose records carry 0) keeps its answers
+  to the end of the epoch. The camp page gains each answer's sequence (a varint); the layout change
+  goes with group E's RTC6 bump (unreleased, no migration, MZB-165's rule). Cost, accepted as
+  TAKEN's is (docs/boundary.md §2.3: by state after the op id is forgotten): a holder's copy
+  journaled after the save but before Java has processed the engine's acknowledgement and dropped
+  the record (an unloaded and reloaded holder chunk in that gap) is booked a second time, by its
+  slot's state. A spawn answer or an answer for a slot the action cannot move changes nothing; a
+  take answer for a slot spawned again since turns it owed once more, and the next order or census
+  sets it right (Java's spawn does nothing where a body with that slot and generation is loaded).
+  Tests: `a_booked_answer_is_forgotten_once_its_record_is_durable` (the sequence kept and raised by
+  a copy, the bound exactly at the save, the cost, and the set bounded over 300 answers), the page
+  round trip in `rich_ledger`, and rtsim-jni's
+  `a_durable_world_save_lets_the_camp_forget_the_answers_it_covers` (both host hooks). A fork
+  (reported): the trigger is WORLD_SAVED, the signal `Replay` already uses, not the engine's own
+  `ackedObsSeq`, which the IO lane writes after the pages are on disk and which would need the camp
+  ledger touched from that thread.
+
+- **MZB-178** (the merge with M3, group E): the conflict pages are RTC6 with meta version 5
+  (MZB-165). M3's `Conflict::replaying` window (set by `session_start`, ended by `replay_done` from
+  `resend_notices`, which rtsim-jni calls once the journal has caught up, MZB-141) is the one replay
+  window; the lines rtsim-jni set and cleared around each record are gone, and it only sets
+  `obs_seq`. A camp's census inside the window only marks its camp out (MZB-159). `CampRun::restart`
+  ends the replay at once (`replay_done`), and `restart_to_replay` leaves it open for the camp tests
+  that replay the last session's journal, whose `replay` helper closes it. Fixed in the merge:
+  `party_lost` stays in the despawn's tail (the dead the stack less its survivors; M3's
+  `recalled.clear()` there is gone, an entry being removed per epoch) and in `casualties`, which M3
+  now counts off a recalled stack live (MZB-142). A death is counted once by whichever record finds
+  it, since a casualty takes the member off the stack the despawn compares against:
+  `a_member_lost_on_a_walk_off_books_once_in_the_camp` (a casualty and a despawn death on a raid's
+  walk-off: two slots freed as died, none written off, the camp refilled to its cap), and it fails
+  without either `party_lost`.
 
 ## M5 Camp reconciler, Java
 
@@ -818,14 +1203,26 @@ under its own heading.
 - **MZB-214** (where a grove warrior spawns): 20 blocks from the centre on the side away from the nearest
   non-spectator player within 256 blocks; with none, 2 to 11 blocks out at a random angle, as the fire pit
   places its own. On the MOTION_BLOCKING_NO_LEAVES surface, at the block's centre.
-- **MZB-215** (Peaceful; reworded by the review, the rule is MZB-234): on Peaceful no new body appears, so a
-  SPAWN is answered STALE and the next census orders it again. The first reason given here, that the engine
-  would otherwise keep a body Peaceful despawns, was false: `shouldDespawnInPeaceful()` is false for every
-  Mowzie entity, so the jar keeps its own mobs on Peaceful. A returning body still comes home (HAND_BACK
-  proceeds) and the bodies already standing stay.
+- **MZB-215** (Peaceful; reworded by the review and again by the re-review, the rule is MZB-234): on Peaceful
+  no new body appears, so a SPAWN is answered STALE and the next census orders it again. The first reason
+  given here, that the engine would otherwise keep a body Peaceful despawns, and the sentence that
+  `shouldDespawnInPeaceful()` is false for every Mowzie entity, were wrong; Peaceful is per kind of
+  entity (from the re-review of d5b45b22, P3-5, not re-read in the jar by the builder). Bluff, Naga,
+  Foliaath, ElokosaHowler, the umvuthana raptor and its followers discard themselves on Peaceful, and the
+  Elokosa despawns. The Frostmaw deactivates and stays, and the umvuthana warrior only stops targeting. M5's
+  two bodies are the last two, so the rule below (a SPAWN is STALE, a HAND_BACK proceeds, bodies standing
+  stay) is right for them. **For M9:** a tagged raptor would discard itself on Peaceful and be booked
+  BY_NONE; M9 decides Peaceful for raptors itself (MZB-594).
+  Checked at M6 in the 1.8.2 jar (cfr): `shouldDespawnInPeaceful()` is `Mob`'s false for the Frostmaw, the
+  grove's warriors and envoys and the Umvuthi (`MowzieEntity.checkDespawn`, `295`, asks it); only
+  `EntityElokosa` overrides it, to true. The Frostmaw never calls `discard()` on Peaceful: it deactivates and
+  cannot be woken (`EntityFrostmaw.java:582`, `600`, and `616` skips the wake animation on a steal). The
+  raptor, its followers, the bluff, the naga, the foliaath and the elokosa howler and its followers discard
+  themselves in `tick`.
 - **MZB-216** (stand-ins): `conflict/frostmaw/frostmaw` is `mowziesmobs:frostmaw`; `conflict/umvuthana/warrior`
   and `conflict/umvuthana/envoy` are `mowziesmobs:umvuthana` (the grove warrior, `EntityUmvuthanaMinion`);
-  `conflict/umvuthana/raptor` is `mowziesmobs:umvuthana_raptor`.
+  `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor` and is, until M9, `mowziesmobs:umvuthana`
+  too (MZB-594).
 - **MZB-217** (den spot): the template box's floor centre, ((minX + maxX + 1) / 2, minY, (minZ + maxZ + 1) / 2).
   The template stands its Frostmaw at (3, 0, 3.5) of the unrotated [6, 5, 7] template, so under every
   rotation it is within about a block of the spot. A home Frostmaw is restricted round the spot's block.
@@ -900,9 +1297,12 @@ under its own heading.
   asleep; against a template box grown by 1 it came to rest outside two times in three. The slack is a
   constant derived from the restriction constant so the two cannot drift apart. The GameTests force the
   3 by 3 chunks round a den, a superset of the 5.
-- **MZB-231** (the index keeps its bodies through a hidden chunk): `onLeave` keeps a tagged body's index
-  entry when the removal reason is null (the entity is still alive, its chunk only hidden or unloading) and
-  drops it on a real removal; the census adds every tagged body of its faction found inside, idempotently;
+- **MZB-231** (the index keeps its bodies through a hidden chunk; its premise corrected by MZB-590):
+  `onLeave` keeps a tagged body's index entry when the removal reason is null (the entity is still alive, its
+  chunk only hidden) and drops it on a real removal (discarded, changed dimension). The first wording said
+  the entry was dropped when the body unloaded with its chunk; that was false: vanilla posts the leave once,
+  when the chunk goes HIDDEN, with a null reason, and the unload that follows (`setRemoved(UNLOADED_TO_CHUNK)`
+  in `PersistentEntitySectionManager`) posts no leave at all, so the entry stays as a removed object (MZB-590); the census adds every tagged body of its faction found inside, idempotently;
   iterating `tagged()` prunes removed entries. Why: a footprint chunk can go TRACKED, HIDDEN and TRACKED
   within one tick, and the second promotion posts no join. A TAKE by tag after such a flicker is DONE.
 - **MZB-232** (the chief reads the index; strays within 64 blocks): `DenKind.chief` takes the footprint's
@@ -915,9 +1315,11 @@ under its own heading.
   untagged Frostmaw that joins a level later within 64 blocks of a den with a free slot makes that den look
   again at its next census (`strayWatch`; a den that is in recounts), and is listed the same way; a den
   with no free slot leaves it alone, since it is the jar's and outside the books. The 64 is the lead's
-  figure (PLACEHOLDER). **The remaining gap, recorded and not closed:** a Frostmaw beyond 64 blocks of a
-  late den, or one not loaded at the den's first census, is not found, so the engine can SPAWN a second
-  Frostmaw for that den.
+  figure (PLACEHOLDER). **The remaining gap, recorded and not closed:** only a Frostmaw beyond 64 blocks of
+  a late den is not found, so the engine can SPAWN a second Frostmaw for that den. One that is not loaded at
+  the den's first census is no gap within 64 blocks: `strayJoined` catches it when it loads later (the den
+  looks again at its next census), as long as the den has a free slot. (Corrected from "or one not loaded at
+  the den's first census", which the stray watch already covered.)
 - **MZB-233** (a line is played only on a camp that is playable now): the session's order stays
   (`RtsimSession.endOfTick`, then the hand-over's commands, then `Camps.tick`), since other modules share
   it. `reconcile`, `resolveSetOuts` and `playHeld` each first check that every footprint chunk is still at
@@ -927,12 +1329,18 @@ under its own heading.
   command is applied in that tick's `ServerTickEvent.Post`.
 - **MZB-234** (the Peaceful rule; rewords MZB-215): on Peaceful no new body appears, so a SPAWN is STALE
   and makes no body; a HAND_BACK proceeds, since the body is the one that returns (it is added, then its
-  puppet goes); bodies already standing stay, as the jar's do. Both halves are tested.
-- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"): at the arm, a holder
-  noted by UUID that `level.getEntity` does not return falls back to the chunk it was noted in at commit
-  time, and `holdersUnresolved` counts it. The lead's text skipped it as unloaded and so already written;
-  the fallback is the conservative option, since a holder in a chunk that is only being unloaded may not be
-  written yet, and one more noted chunk costs one more write.
+  puppet goes); bodies already standing stay. The "as the jar's do" this entry gave was too general (see
+  MZB-215): it holds for the Frostmaw and the grove warrior, M5's two bodies, which stay on Peaceful; a body
+  of a kind that discards itself on Peaceful (the raptor, M9) is not covered, and M9 decides it. Both halves
+  are tested.
+- **MZB-235** (a holder the barrier cannot find; a departure from the lead's "skipped"; reworded by MZB-597):
+  at the arm, a holder noted by UUID that `level.getEntity` does not return is noted all the same, at the
+  chunk the entity object last stood in while a weak reference to it is alive (`holdersRemembered`), and only
+  when that reference is gone at the chunk it was noted in at commit time (`holdersUnresolved`). The lead's
+  text skipped it as unloaded and so already written; noting it is the conservative option, since a holder in
+  a chunk that is only being unloaded may not be written yet, and one more noted chunk costs one more write.
+  The first version always fell back to the commit-time chunk, which a body that had walked on before its
+  chunk was hidden had already left (MZB-597).
 - **MZB-236** (a hand-back adds the body first): `Camps.handBack` makes the body, `copy`s the puppet's state
   into it and adds it; only after the add succeeds does `bridge.handBack` despawn the puppet. One tick with
   both present is acceptable. If the add fails (another mod cancels the join), the puppet stays, nothing is
@@ -947,7 +1355,8 @@ under its own heading.
 - **MZB-238** (the barrier notes a camp record's holder by UUID): `RtsimSession.carryOnCampHolder` notes the
   holder's level and UUID, not its chunk; when the barrier arms, each UUID is resolved to its entity's
   current chunk and that chunk's entity storage is the one ordered (MZB-235 for a holder not found).
-  Counters: `holdersResolved`, `holdersMoved` (it was in another chunk than at commit), `holdersUnresolved`.
+  Counters: `holdersResolved`, `holdersMoved` (it was in another chunk than at commit), `holdersRemembered`
+  and `holdersUnresolved` (MZB-597).
   Why: a holder that walks into the next chunk between the answer and the save carries the record with it.
 - **MZB-239** (reassert before the record is written): `Camps.answer` calls `ensureReasserted(holder)` before
   `bodiesRecord` commits the new CAMP_BODIES, so what the holder carried from disk reaches the engine under
@@ -1019,9 +1428,12 @@ under its own heading.
   mod 20, kept as 20 lists so a tick touches only its own slot) through `ChunkMapInvoker.getUpdatingChunkIfPresent`,
   null being `NO_HOLDER`, and a camp whose levels moved is looked at at the end of that tick, which is the
   same `look` the event feeds. A camp costs 5 to 21 lookups every 20 ticks. The event listener stays as an
-  early hint where it fires (vanilla, the GameTests); levels from both are clamped to `NO_HOLDER`, so the
-  event's value for an unloaded chunk and the poll's agree and the poll reports only real corrections. The
-  poll is correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
+  early hint where it fires (vanilla, the GameTests). The first wording said levels from both were clamped
+  to `NO_HOLDER` so that the two agree at an unload; they did not: the event posts 45 (`UNLOADED_LEVEL`,
+  MAX_LEVEL + 1) and the poll read a missing holder as 46, so the poll would have reported the unload
+  as a change after the event had already moved the camp, and C2ME's NEW status is 45 as well. Now both read
+  through `Camps.norm`, every level above `ChunkLevel.MAX_LEVEL` being `NO_HOLDER` (MZB-596). The poll is
+  correct with the listener off. Two more consequences: an out camp is noticed at most 20 ticks late
   under C2ME, and a line is not played on a stale level: `playable` (MZB-233) reads the levels afresh from the
   chunk map before it decides, since a line is played at once and cannot wait for the next poll (a camp it
   finds moved is also looked at at the end of the tick). Counters `polls` (camps polled) and `pollChanges`
@@ -1049,6 +1461,126 @@ under its own heading.
   server, and whether every test of the suite holds under the poll's up to 20 ticks of delay (tests that
   wait on a CAMP_OUT or a census do; a test that assumes the camp goes out in the tick after a release
   does not), are for the first run to show. The other plugins' projects have no such line.
+
+- **MZB-590** (the index is pruned of removed entities; from the re-review of d5b45b22, P1-A): a body whose
+  chunk unloads stayed in its faction's identity set as a removed object, so those objects piled up (a D1
+  leak) and `declare` called `kind.joined` on them. Now every reader of the index skips and drops removed
+  entries (`Camps.live(faction)`: `declare`, `freeSlots`, the census's loop over the camp's bodies, and
+  `tagged()` as before), `poll` prunes the polled camp's set (so a camp's set is clean within one poll
+  period of an unload), and `indexAdd` prunes the faction's set when it adds, which covers a faction no camp
+  declared. `Camps.held(faction)`, the GameTests' view, stays raw so the test can see what the poll pruned.
+  Test: `anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain` (batch `mowzie_index_unload`): an
+  adopted Frostmaw, the den released and unloaded, `POLL_PERIOD + 3` ticks, the raw index holds no removed
+  entity; forced again, it holds the Frostmaw the load made (another object, the same UUID), tagged. Which
+  tick the poll prunes in is not asserted (it is 1 in 20 that it prunes in the removal tick itself); the
+  log line records how many ticks the removed body stayed.
+
+- **MZB-591** (three tests had no player in view of the band; re-review P2-A): a DONE HAND_BACK starts the
+  party's recall, and `ConflictBridge.recallStep` despawns at once every placed puppet with no
+  non-spectator player within `OUT_OF_VIEW` (64) blocks of a living member. The homecoming, handback_cancelled
+  and peaceful tests had no player, so the band's other puppet was gone by the time they looked at it. Each now
+  adds a `FakePlayers` watcher 50 blocks east of the grove's centre (`MowzieGameTests.watcher`: inside the 64,
+  outside a warrior's sight, no ticket, removed when the test ends), before the band is made.
+
+- **MZB-592** (play_time is triggered on the holder's level; re-review P2-B): the test waited until the
+  camp's cached footprint level was above FULL, which under C2ME moves only in the poll inside `Camps.tick`,
+  where `look` takes the camp out in that same tick, so the camp was no longer "in" when the line landed.
+  The step now waits on the footprint holders' own levels, read through `ChunkMapInvoker.mic_rtsim$updating`
+  (a null holder is `NO_HOLDER`). The line then lands before `Camps.tick`, and `playable` reads the levels
+  afresh (MZB-290), so it is STALE under both chunk systems. A residual race remains under C2ME: C2ME's
+  holder level can change on its own threads, and a change that lands in the middle of a tick's Post, after
+  the step and before the poll, still lets the poll take the camp out first (a small window; the round will
+  show whether it ever bites).
+- **MZB-593** (cold's "seen waiting" is asserted only with the event live; re-review P2-C): the camp is seen
+  waiting for its entities when its levels move ahead of them, which the ticket event does (the level rises
+  in the level tick, the entities arrive later); under C2ME the poll reads levels that already carry the load,
+  so the camp may never be seen waiting. `MowzieKit.watchTicketEvents` counts the
+  `ChunkTicketLevelUpdatedEvent`s of the den's chunks from the release on; `sawWaiting` is asserted only when
+  the count is above zero, else the test records that it was not. "No census before every footprint chunk had
+  its entities" is asserted always.
+
+- **MZB-594** (the raptor stand-in is the grove warrior until M9; re-review P2-D; owner M9): the stand-in
+  for `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor`, and `ConflictBodies.create` calls
+  `finalizeSpawn(EVENT)`, whose raptor adds 4 or 5 `EntityUmvuthanaFollowerToRaptor` through
+  `addFreshEntity`. Every umvuthana party that materialized with a raptor unit would have brought untagged
+  hostile followers the engine does not know. Until M9 the raptor maps to `mowziesmobs:umvuthana`, a
+  placeholder. **M9 owns the raptor maker**: a raptor with exactly 4 followers, each tagged as the party's
+  member (or its followers made by the party as bodies of their own). Test:
+  `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (batch `mowzie_raptor_standin`): two raptor units
+  embodied, both the grove warrior, no `EntityUmvuthanaRaptor` and no `EntityUmvuthanaFollowerToRaptor` in the
+  area after 40 ticks.
+
+- **MZB-595** (a puppet is no stray, and only the stray-watching camps are walked; re-review P3-1):
+  `strayJoined` ran for every join of a Mob, including the engine's own puppets, and walked every camp.
+  A SET_OUT puppet of the den's Frostmaw joining beside the den, the chief's body handed to a puppet, would
+  have made the den look again. Now a tagged entity (`RtsimAttachments.isTagged`: a puppet carries the
+  bridge's agent tag, a body the camp tag) returns first, and `Camps` keeps, per dimension, the camps whose
+  kind has a stray radius above zero (`strayers`, filled in `declare`, cleared in `clear`), so a join walks
+  only those. Test: `aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount` (batch
+  `mowzie_puppet_stray`): a SET_OUT of an adopted Frostmaw's slot with a one-unit band materialized in the
+  same hand-over, DONE, the puppet standing, and 40 ticks later the stray watch has not moved, no second
+  census and no new epoch.
+- **MZB-596** (the event and the poll agree at an unload; re-review P3-2; corrects MZB-290): the event
+  posts `UNLOADED_LEVEL` (45) when the last ticket goes, the poll read a chunk with no holder as
+  `NO_HOLDER` (46), and C2ME's holder reads 45 for a chunk of status NEW. `Camps.norm` now maps every level
+  above `ChunkLevel.MAX_LEVEL` to `NO_HOLDER` in `declare`, `onTicket` and `refreshLevels`, so a chunk that
+  is gone is one value however it is reached and the poll reports only real corrections. Test:
+  `withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect` (batch `mowzie_poll_agrees`): a den counted
+  and released, CAMP_OUT, then the chunks unloaded and a poll period passed: the poll has run on the den
+  (`polls` moved), `pollChanges` has not (only where the ticket event fired for the den's chunks, since
+  without it the poll is the one that finds the change, and the test records that), and every footprint level
+  reads `NO_HOLDER`. With the silent-event test (MZB-290) the two sides of the assertion discriminate:
+  event off, the poll moves `pollChanges`; event on, it does not.
+
+- **MZB-597** (the barrier notes a holder it cannot find where the object last stood; re-review P3-3;
+  rewords MZB-235): `ChunkWriteBarrier.dependsOnHolder` keeps, with the commit-time chunk, a
+  `WeakReference<Entity>` for each holder. At the arm a holder `level.getEntity` finds is noted where it stands
+  (`holdersResolved`); one it does not find (its chunk hidden, or the entity removed by the unload, which leaves
+  the Entity object with the position it had) is noted at the chunk of the object's own `chunkPosition()`
+  (`holdersRemembered`); the commit-time chunk is the fallback only when the reference is cleared
+  (`holdersUnresolved`). `holdersMoved` counts a holder noted in a chunk other than its commit-time one by
+  either path. The reference is weak, so it keeps no entity alive and no chunk loaded (D1). Why the earlier chunk
+  need not be noted (the lead's reading): a holder that leaves its record's chunk and is then unloaded is
+  saved with the chunk it unloads from, and its record lives on the entity, so the chunk it stood in at the
+  commit does not matter; a holder that is killed books through its death (CAMP_DEATH), not through the
+  record. A public
+  `forgetHolderReferences` clears every reference, for the GameTests only (the state a collected entity
+  leaves, which a test cannot reach by waiting for the collector). Tests (core): the existing
+  `aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave` now clears B's reference after
+  discarding it (found 2, moved 1, remembered 0, lost 1) and the new `aHolderRemovedAfterWalkingIsNotedWhereItWasLastSeen`
+  (batch `mic_rtsim_journal_barrier_remembered`) walks a holder into the second chunk and removes it
+  (found 0, moved 1, remembered 1, lost 0; the second chunk noted, the first not).
+
+- **MZB-598** (an adopted wide stray stays outside the footprint; a known gap; re-review P3-4; no code):
+  a stray found wide (MZB-232, beyond the cylinder, within 64 blocks) is adopted where it stands: it is
+  tagged and restricted to the spot but not moved, and it is the holder of the CAMP_BODIES record that
+  answers its ADOPT (it is the body there). So it stays outside the footprint, counted by later censuses only
+  through the index (BODY_ELSEWHERE) while it is loaded. A census journals first the records of the holders
+  in the footprint's columns (MZB-201) and not of one outside them. Once a crash has happened before that
+  record is acknowledged, the record reasserts when the stray's chunk loads, which can be after the next
+  session's census, so the engine can see the census before it sees the old ADOPT's record. Chosen: not
+  closed. It needs a crash inside the window between an ADOPT and its acknowledgement, with the adopted
+  stray left outside the footprint, and the effect is a repeated or late record the engine treats by op id and
+  epoch (the builder did not trace the engine's side again; the lead's re-review named the gap). If it
+  matters, the fix is for a census to also journal the holders of the camp's indexed bodies that stand
+  elsewhere, which is one loop over `live(faction)` before the census.
+- **MZB-599** (the minor items of the re-review; P3-6):
+  - `playHeld` checks Peaceful before it spends the line's budget (MZB-234), so a line held on a camp that
+    cannot make a body no longer burns its attempts.
+  - `DenKind.chief` excludes a Frostmaw tagged by another den (it reads the faction's index and the
+    footprint's Frostmaws, and a Frostmaw that walked in from another den is that den's chief, MZB-208's rule
+    for the census extended to the chief).
+  - `MowzieCamps.dropped` is an `AtomicInteger` (`dropped.get()` in the GameTest): `onChunkLoad` increments it
+    where the queue beside it, already concurrent, is filled, and a chunk load is not promised to be on the
+    server thread under every chunk system; the other counters are the drain's, on the server thread.
+  - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
+    and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
+  - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
+    and a reload of the same chunks inside one period is never seen: the levels read the same before and
+    after, no CAMP_OUT and no new epoch. This is benign: the bodies the unload hid or removed are indexed
+    again by their own join events (MZB-590), a body that left with its chunk comes back with it, and the
+    census that would have followed has nothing a later one does not carry. Not tested (a test would race the
+    period).
 
 ### M5 design for the implementer
 
@@ -1286,7 +1818,574 @@ The tests:
 
 ## M6 Frostmaw
 
-(none yet)
+- **MZB-250** (the base): `feat/mowzie-m6` starts from `feat/mowzie-m5` with the review fixes (MZB-230 to
+  249 and 290 to 292; read at d5b45b22) and merges `feat/mowzie-m4` (2b239fe2) into it. M5 branched from M3,
+  so it has none of M4's engine; the two merge without a conflict (`git merge-tree` at d5b45b22 and
+  2b239fe2). After the merge delete `neoforge/*/run-gametest/world` (the page format moves, MZB-271). This
+  design was written on `design/mowzie-m6`, fast-forwarded to d5b45b22.
+- **MZB-251** (a culture's renewal): `CultureDef` gains `#[serde(default)] renewal: Option<RenewalDef>`,
+  with `RenewalDef { base_days: f32, cap_days: f32, half_life_days: f32, #[serde(default)] boss: bool }`.
+  `Culture::resolve` turns it into `Culture.renewal: Option<Renewal { rule: RenewalRule, boss: bool }>`
+  (`rtsim-kernel::renewal::RenewalRule`). Validation, each its own error: every number finite,
+  `base_days > 0`, `cap_days >= base_days`, `half_life_days > 0`, and a culture with a renewal must have
+  `recruits_per_day == 0` and `camp_bodies` true. A culture without one refills by its rate as M4 built.
+- **MZB-252** (the Frostmaw's numbers): `frostmaw.json` gets
+  `"renewal": {"base_days": 6.0, "cap_days": 192.0, "half_life_days": 96.0, "boss": true}` and
+  `recruits_per_day` 0.0 (EQ-4 (b), MOWZIE.md "The body"). `umvuthana.json` is unchanged: the grove's
+  renewal is M9's.
+- **MZB-253** (the boss flag, not the camp source): an unclaimed death bumps a culture's pressure only when
+  its renewal says `boss`. `CampSource::Boss` cannot carry this, because both Mowzie cultures have it and
+  the grove's warriors are not bosses (EQUILIBRIUM.md §2.2: "an unclaimed death of a boss kind").
+- **MZB-254** (the den's wait in its camp): `Camp` gains `pressure: Pressure` (8 bytes), `arrival: u32` (a
+  stamp, as `refill` is) and `arrival_at: Option<Tick>`. Kept in the camp, the engine's own site row
+  (the kernel's rule: "the fields live in each engine's own site rows"). A renewal faction with no camp
+  ledger (only engine tests make one) never refills.
+- **MZB-255** (when a wait is booked): `plan_arrival(f, at)`, for a renewal culture only, runs at the end
+  of `unblock` (after `plan_refill`) and at the end of `camp_found`. The den is short when
+  `floor(pool_at) + away < cap`. Short with no wait booked: book `Ev::Arrival { faction, stamp }` at
+  `at + rule.delay_ticks(pressure, day).max(1)`, `day = at / TICKS_PER_DAY`. Not short with a wait booked:
+  cancel it (stamp + 1, `arrival_at` None). Booked whether the camp is in or out. A running wait is never
+  read again, so later losses do not push it out (the kernel's rule). `plan_refill` books nothing for a
+  den, since a rate of 0 makes `pool_ready` BLOCKED.
+- **MZB-256** (the arrival): `camp_arrival(f, stamp, at)`: a stale stamp counts `stats.stale` and ends;
+  else `arrival_at` None, `pool_add(f, 1.0, at)`, then `camp_sync` (one Owed slot), crystal true (MZ-4 (a):
+  a new Frostmaw holds its crystal), `stats.arrivals` + 1 and a note; if the camp is in, `spawn_lines` and
+  `send_lines` at once (EQUILIBRIUM item 8: a camp that never unloads gets its arrival when the wait
+  ends); last `unblock`. An out den gets its SPAWN from its next census, as any Owed slot does.
+  Amended at review: the crystal is set true only at a chief camp (`chief_camp(f)`: the home unit has a row
+  without the crystal, `bare[u] != u`); a renewal culture without such a row leaves `crystal` as the books
+  have it (test `an_arrival_gives_a_crystal_only_to_a_chief_camp`; it fails with the gate removed).
+- **MZB-257** (a den found empty waits the cap): `camp_found(f, bodies, census, at)` takes FACTION_FOUND's
+  census byte. With `CENSUS_CHIEF` it sets the faction's crystal from `CENSUS_CRYSTAL`. For a renewal
+  culture the pressure starts at `Pressure::at_cap(rule, day)` when `bodies == 0` (EQUILIBRIUM item 6:
+  "at the cap wait when the site ledger has no row for it"; there is no site ledger before S9, M12) and at
+  zero otherwise. Then `plan_arrival`. So a den found empty gets its migrant 192 days later, and one found
+  with its Frostmaw (strays within 64 included, MZB-232) books nothing.
+- **MZB-258** (which losses are a player's): `renewal_cause(f, by) -> LossCause`: BY_PLAYER and BY_TAKEN
+  are `Player`; BY_NONE and BY_OTHER are `Player` for a boss and `Other` otherwise; BY_MOB is
+  `Predator`. Only `Player` bumps (kernel). `renewal_bump(f, n, at)` adds `n / cap` on the faction's
+  camp's pressure, with `cap` the faction's cap (1 for a den), at the loss's day.
+- **MZB-259** (where a loss bumps): `camp_death` (any slot but Dead, before the state match); the away
+  path of a chief kill (`chief_killed_by`, below); the census's write-off of missing home bodies (counted in
+  the loop, bumped on the camp once it is put back, before its `send_lines` and `unblock`; EQUILIBRIUM item
+  11: missing is a player's loss); and the units lost in `raid_district`, a player's district, whose
+  defences are the player's. Not `raid_node` (a village's or a rival haven's residents: `Faction`), nor
+  `party_lost`, BAND_DEMATERIALIZED or BAND_CASUALTIES: in M6 only the Frostmaw renews, and its one unit is
+  its chief, whose death comes as CHIEF_KILLED or CAMP_DEATH.
+- **MZB-260** (what a write-off cannot tell): EQUILIBRIUM item 11 exempts a body missing while rtsim was
+  absent. M6 cannot see an absence (no site ledger), so every write-off bumps. The cost is one longer wait
+  after an uninstall gap; the absence rule is S9's (M12).
+- **MZB-261** (kill credit in Java): `ConflictBridge.credit(LivingEntity dead, DamageSource src)` returns
+  the killer kind and player. It starts from `byKind(src.getEntity())`; when that is not BY_PLAYER and
+  `dead.getKillCredit()` is a `Player` that is not a NeoForge `FakePlayer`, the kill is BY_PLAYER by that
+  player. Vanilla's `getKillCredit` is `lastHurtByPlayer` (a player's hit, or a tame `TamableAnimal`'s
+  owner, for 100 ticks) or else `lastHurtByMob`, so a pet's kill, and a death within 5 s of a player's hit,
+  are the player's (EQUILIBRIUM item 9: "vanilla's kill credit or the killer's owner"). Used by
+  `Camps.onDeath` and by `ConflictBridge.onDeath` for a chief puppet (CHIEF_KILLED). BAND_CASUALTIES keep
+  M3's `byKind`, since nothing of M6 reads them. Built as a package-private `record Credit(int by, UUID
+  killer)`; the killer is null (a zero UUID in the record) unless the credit is a player. A machine
+  (`FakePlayer`) that deals the blow is BY_OTHER by `byKind` (MZB-111), and the vanilla fallback then still
+  names a real player whose hit came within the 100 ticks: the credit goes to the player, not to the machine.
+  `Camps.onDeath` takes the credit when the death event fires, so a hit after that moment changes nothing.
+- **MZB-262** (one fall for every chief death): M4's `chief_killed` is split. `chief_falls(w, f, killer,
+  fall: At, at)` does what both paths share: `stats.chiefs_killed`, the Killing report witnessed by the old
+  chief and the heir when there is a killer, `die`, `succeed(killer, true)`, the cowed time and the tape
+  event. `step_down(f, a, at)` steps a feud down `chief_rout_steps` rungs (each `next_down`) and floors it at
+  Notice, but only when it stands above Notice; a feud at None or Notice is left as it is, and so is its
+  `since`. M4 set `to.max(Notice)` unconditionally, so a chief kill raised a None feud to Notice.
+- **MZB-263** (a chief killed away): `chief_killed_by(w, p, killer, by, at)` keeps M4's away path through
+  `chief_falls` and steps the party's feud, or the killer's when the party has none, and adds
+  `renewal_bump(f, 1, at)` when `renewal_cause` is Player. The public `chief_killed(w, p, killer, at)`
+  stays for its callers and passes BY_PLAYER with a killer, BY_NONE without; the CHIEF_KILLED ingest
+  passes `ck.by`.
+  Amended at review: `a_chief_killed_away_bumps_the_pressure_unless_a_mob` also checks the wait that is
+  booked (12 days after a player's kill, 6 after a mob's) and that the unit leaves the band (the band gone or
+  empty, `away` 0, the slot counts `[0, 0, 0, 0, 1]`). The unit's removal is MZB-295's.
+- **MZB-264** (a chief killed at the camp): `chief_killed_at_camp(w, f, killer, at)`: `ensure_chief`; the
+  parties carrying the chief flag are collected first (`succeed` clears the flag, MZB-139); the fall at the
+  faction's position; only the killer's own feud steps down (MOWZIE.md "Kills": a third player's kill at the
+  camp steps no one else's); each collected party routs (Fighting: `end_fight` ROUTED; otherwise
+  `stats.routs` + 1 and `go_home` ROUTED), with no breaker and no rescue news, since no band broke; a
+  note; every feud replans, as the away path does. The camp's pressure is bumped by `camp_death` (MZB-259).
+- **MZB-265** (CAMP_DEATH of a chief): with `DEATH_CHIEF`, a Body, Owed, Left or Gone slot runs
+  `chief_killed_at_camp` after the slot is freed (for Left and Gone, before `member_died`, so the party
+  that loses its chief unit routs as a chief's band). The killer is `self.player(w, d.killer)` for BY_PLAYER
+  and BY_TAKEN, else none. A Dead slot's body is no second fall.
+- **MZB-266** (a boss wiped out abstractly loses its chief): `lose_units` gains `w`. When the party carries
+  the chief, its culture's renewal is a boss's, the loss was more than 0 and it leaves no unit alive,
+  `chief_falls` runs with no killer and the party's feud steps down, before `party_lost`. M4 kept the
+  chief alive through an abstract wipe-out, so a Frostmaw killed by a district's defence came back as the
+  same chief.
+- **MZB-267** (what does not fall a chief): a write-off (the missing Frostmaw is gone, but its chief actor
+  stays for the migrant, MZB-259 bumps the pressure); a reset (the pressure is lost with the engine's
+  state, S9, M12); a Frostmaw lured off or unloaded away from its den (M12).
+- **MZB-268** (CHIEF_STATE in the engine): removed from `Conflict::later` and from the no-op arm of
+  `ingest`; `Obs::ChiefState(c) => self.chief_state(c)` sets the faction's crystal from `CHIEF_CRYSTAL`
+  and notes it. The health is not stored (nothing of M6 reads it; the census carries it). A record for an
+  unknown faction is ignored.
+- **MZB-269** (the census corrects the crystal): `camp_census`, when it is not a replay and has
+  `CENSUS_CHIEF`, sets the crystal from `CENSUS_CRYSTAL` before `let flags = self.line_flags(f)`, so the
+  lines of that census already ask for the right body. This also mends a CHIEF_STATE lost in a crash: it is
+  latest-wins, not journaled.
+  Amended at review: the byte is applied after the slots are matched, and only when the census holds a body
+  flagged `BODY_CHIEF` that the books keep (a matched Body or Left slot, or an adopted stray). Java's
+  `DenKind.chief()` takes any chief-kind body in the footprint, including the leftover body of a Dead slot,
+  and M6's first form let that body (a robbed Frostmaw that set out while its den was out and died away)
+  flip a new Frostmaw's crystal off before the SPAWN went out, so it was made robbed for good. With no kept
+  chief body in the census the crystal stays as the books have it; the `LINE_CHIEF` lines of that census
+  (generation not 0) are given the flags again once it is known. The synth's census bodies carry
+  `BODY_CHIEF` for a chief body, as Java's `isChief` does. Test
+  `a_new_frostmaw_keeps_its_crystal_when_a_dead_slots_robbed_body_still_stands`: the scenario above, ending
+  with one REMOVE for the leftover and one SPAWN with `LINE_CHIEF | LINE_CRYSTAL` (it fails with the old
+  rule); it is also the census-after-an-arrival-with-a-Dead-body-standing test. Residual: with two chief
+  bodies standing at once (a leftover and the fresh Frostmaw, for the one census that removes the leftover)
+  the byte is the one Java found first, and the engine cannot tell which body it came from.
+- **MZB-270** (CHIEF_STATE in rtsim-jni): `observe_state` decodes `Obs::ChiefState`, counts
+  `ConflictLinkStats::chief_states`, and gives it to the conflict's ingest at the conflict's own time
+  (`c.now()`, so no module catches up for it), through the same `with_infra` hand-over as the journaled
+  path. The protocol test's deferred count for it becomes the live count.
+- **MZB-271** (the page format): `put_camp` and `get_camp` append the pressure (`Pressure::parts`, f32 and
+  u32), `arrival` (var) and `arrival_at` (optional u64). The wheel's tag 8 is `Ev::Arrival` (7 is Refill).
+  The conflict's page tag RTC6 becomes RTC7 and META 5 becomes 6. No migration (no backward compatibility
+  before release): the fixtures are made again at landing (rtsim-view's data and hashes, rtsim-host's
+  `gametest_worlds`).
+  Amended at review: each camp slot also writes its chief (`Slot.chief`, 8 bytes after the slot's line, the
+  slots' `len_prefix` 25 to 33), MZB-296. Still RTC7 and META 6, since M6's bump has not landed.
+- **MZB-272** (the synth, the emulated plugin): `kill_chief` takes one unit off the chief's stack in
+  `Body.members` (the first stack's body), so the dead chief no longer comes back as a survivor; `camp_kill`
+  sets `DEATH_CHIEF` for a body made from a `LINE_CHIEF` line; `CampBody` gains `chief` and `crystal`; a
+  killer variant of the camp kill; a `steal` that pushes CHIEF_STATE with flags 0 and clears the body's
+  crystal. Run 10's den timings move with MZB-252 (expected).
+- **MZB-273** (CHIEF_STATE in Java): `ConflictRecords.CHIEF_STATE = 0x0091` and `ConflictRecords.ChiefState`
+  with `FACTION = 8`, `HEALTH = 16`, `SIZE = 24`, `CRYSTAL = 1` (aux), matching `boundary.md`'s row.
+- **MZB-274** (the plugin reports a steal): `RtsimApi.chiefState(LivingEntity body, int flags)` calls
+  `Camps.chiefState`, which finds the faction of a camp body by its `CampMember` and of a chief puppet by
+  `bridge.live(e)` (its stack's `chief`, then its party's faction). Anything else is ignored. The record
+  goes into a queue keyed by faction (latest wins: flags and health), flushed at the start of `Camps.tick`
+  before `poll`, so it precedes any CAMP_DEATH settled in the same tick. Each is written with
+  `boundary().direct(CHIEF_STATE, 24, flags, now)`, the faction at 8 and the health at 16, kept for the
+  next tick while `direct` returns less than 0, and dropped with the session (`Camps.clear`). A Peaceful
+  world sends it too: the steal happens there. Built with three differences: the queue is also flushed in
+  `sessionStopping` and in `switchedOff` (before `off = true`, while the camps still count as live), so a
+  state queued in the last tick of a session is not lost; it is cleared at `sessionStarted`,
+  `sessionFailed` and `clear`; and the camp-body check is `kind.isChief(body)` on the site's kind (or the
+  kind that claims the body when the site is gone), so a camp's non-chief body reports nothing.
+  `ConflictBridge.chiefPuppetFaction(Entity)` answers for a chief puppet. The counters are `chiefStatesQueued`
+  (every call that queued, a replaced entry counted again) and `chiefStates` (records written), both
+  public for the GameTests; `ConflictKit.chiefStates(faction)` reads the records by faction.
+- **MZB-275** (a chief's camp death is news): `Camps.death` posts `ConflictNews` CHIEF_KILLED for
+  FLAG_CHIEF, as `ConflictBridge.journalLoss` does for a puppet. No chat, action-bar or title line comes of
+  it; NOTICE_SHOWN keeps only the roar and the gong.
+- **MZB-276** (the steal mixin): `EntityFrostmawMixin` in the plugin injects into `EntityFrostmaw.tick()V`
+  after its one call of `setHasCrystal(Z)V` (the steal, `EntityFrostmaw.java:615`), not on the setter,
+  which loading NBT also calls (`readAdditionalSaveData`, 963). Server side only. A camp body
+  (`RtsimApi.isCampBody`) gets `setPersistenceRequired()`, and any body or puppet of a camp reports
+  CHIEF_STATE with flags 0 (MZB-274). Why the persistence: the crystal is the jar's only reason to keep a
+  Frostmaw (`requiresCustomPersistence()` is `getHasCrystal()`), so a robbed one despawns, and a robbed den
+  Frostmaw must stay disarmed in its den (MOWZIE.md "Robbed Frostmaw": stealing then walking off would
+  farm a crystal at every refill). The steal is not a loss and starts no wait (EQUILIBRIUM item 5).
+- **MZB-277** (what the mixin leaves alone): an untagged robbed Frostmaw stays the jar's (no persistence,
+  no record); a robbed puppet gets no persistence (puppets are not saved, M5); a Frostmaw loaded from NBT
+  passes through the setter only. A crystal-less Frostmaw adopted already robbed keeps MZB-210 and MZB-245
+  (it can despawn, booked BY_NONE, and as a boss that bumps, MZB-258).
+- **MZB-278** (UR-1 and D1 for the mixin): after an uninstall a robbed den Frostmaw keeps
+  `PersistenceRequired`, which the jar reads as any persistent mob; it stays in its den, harmless. Without
+  the plugin (rtsim alone) a robbed den body despawns and is booked BY_NONE. The mixin runs once per steal,
+  a call that happens a few times a world; the queue holds one small entry per robbed faction.
+- **MZB-279** (the footprint and the restriction stay as M5 has them): the cylinder of 11 (MZB-230) and
+  `restrictTo(spot, 8)` on each join (MZB-223) fit M6; M6 needs neither changed. A jar fact the M5
+  review did not use: the restriction also gates targeting. `TargetGoal.canAttack` accepts only a target
+  whose block is inside the restriction (a sphere, `distSqr < 64`), so a den Frostmaw notices a player
+  near its spot, not one near itself 5 to 8 blocks off; a chase is not bound (`canContinueToUse` does not
+  check it), and with no target `MoveTowardsRestrictionGoal` (priority 5) walks it home before it sleeps.
+  A den Frostmaw is thus a little harder to wake than a wild one; struck, it wakes and targets as the
+  jar's does. Recorded, not changed: the 8 is a PLACEHOLDER (MZB-223).
+- **MZB-280** (the arrival's spawn is M5's held spawn): the arrival's SPAWN waits while a non-spectator
+  player is within 160 blocks of the spot, for at most `Camps.HOLD_MAX` = 6,000 ticks (MZB-224), as MOWZIE.md
+  "The body" says ("once no player is within 160 blocks or after 6,000 ticks", EQ-4 (b), Ben). That
+  supersedes EQUILIBRIUM item 8's 128 blocks and the kernel's `Arrival::OnLoad` doc, which say never into
+  a watched site. On Peaceful the SPAWN is STALE (MZB-234) and the next census orders it again. A SPAWN
+  without `LINE_CRYSTAL` is made persistent by the core (MZB-210).
+- **MZB-281** (the thief in a GameTest): the steal reads `getPlayersNearby`, which is
+  `level.getEntities(this, box)`: the entity manager, not `level.players()`. A `FakePlayers.add` player is
+  only in `players()`, so the jar never sees it. The thief is `helper.makeMockPlayer(GameType)` (a plain
+  `Player`, not a `ServerPlayer`) added with `level.addFreshEntity`: it holds no chunk ticket, is never
+  a target (`NearestAttackableTargetGoal` reads `players()`), ticks its effects, and the jar handles a
+  non-server player (`if (!(player instanceof ServerPlayer)) break`). It is made invisible by the
+  invisibility effect, since a ticking entity's first `tickEffects` clears a bare `setInvisible(true)`
+  (`effectsDirty` starts true). UNVERIFIED: that a mock `Player` joins and ticks in a server level without
+  trouble. The fallback is `FakePlayers.addSeen(level, at, name)`, built as `add` but joined with
+  `level.addNewPlayer(p)`, given the effect and `setInvisible(true)` (its effects never tick), removed with
+  `removePlayerImmediately` before any release (it loads chunks round itself). The implementer records
+  which one ran. Built (M6 step 10, compiled and not run: the lead keeps the GameTest flock for another
+  round): the mock `Player`, as `MowzieKit.thief(helper, frostmaw, mode, invisible, fullInventory)`; no
+  `addSeen` exists. I read the paths a plain `Player` takes on a server: `Player.tick` posts
+  `PlayerTickEvent.Pre/Post` (Mowzie's handler only uses attachments and the inventory, with no cast), the
+  rtsim join hooks ignore anything that is not a `Mob` or an `ItemEntity`, the jar's steal breaks out
+  before its `ServerPlayer` advancement when the thief is none, and the mixin's injection point (right
+  after `setHasCrystal(false)`) comes before that break. Still UNVERIFIED on a running server: whether a mock `Player` ticks in the entity
+  list without trouble. The thief moves to the crystal's point (`MowzieKit.crystalPoint`) at the end of
+  every tick until the Frostmaw has lost its crystal; the spectator thief is also invisible, so that only
+  the jar's no-spectator filter can explain a robbery that does not happen; the full-inventory thief holds
+  one dirt in each of the 36 main slots. Test 3 puts its five Frostmaws 48 blocks apart, not 40, so that
+  each has its own 3 x 3 forced chunks.
+- **MZB-282** (test 6 without TaCZ): the Mowzie GameTest run holds only rtsim, Mowzie's Mobs and GeckoLib
+  (D4), so the bullet is a Snowball, a `Projectile` that is not an `AbstractArrow`; TaCZ's
+  `EntityKineticBullet extends Projectile` takes the same branch (cfr). The jar's arrow branch catches
+  `source.getDirectEntity() instanceof AbstractArrow`, which a `ThrownTrident` is.
+  Built with the player 80 blocks from the Frostmaw, beyond its follow range of 50: a nearer survival player
+  in `level.players()` is picked as the target by `NearestAttackableTargetGoal` while it sleeps, which would
+  leave the arrow's `setTarget` (taken only when it has none) with nothing to show.
+- **MZB-283** (test 15's Umvuthi half is M9's): M6 tests the Frostmaw half only.
+- **MZB-284** (sim run 6, the den): checks and tolerances as in the design below. The farmed waits are
+  compared with the kernel's own `delay_days` on the run's days (exact), and with the whole-day closed form
+  within 3%; the 60-year rate within 5% of `96 / farmed(1, 2.0).1`.
+- **MZB-285** (sim run 7, the kills): the seven cases of the design below, run 1's tail moved here.
+- **MZB-286** (M4's rate tests keep a rate): engine tests that need the Frostmaw's refill by rate
+  (`a_pool_short_of_a_whole_warrior_waits_for_it` and any the suite shows failing) run on
+  `edited(FROSTMAW_JSON, |d| { d.renewal = None; d.recruits_per_day = 1.0 / 6.0; })`, so they keep testing
+  the refill path, which the grove still uses.
+- **MZB-287** (counters): engine `stats.arrivals` and `stats.renewal_losses` (bumps); the wheel's pending
+  name "arrival"; rtsim-jni `chief_states`; Java `Camps.chiefStates` (written) and `chiefStatesQueued`.
+- **MZB-288** (boundary.md): the Mowzie paragraph of §9 (CHIEF_STATE's engine half built in M6), the
+  CHIEF_STATE bullet (the steal sends flags 0; the census corrects a lost one), the "Deferred kinds" bullet
+  without CHIEF_STATE, and one line on the kill credit (MZB-261) under CAMP_DEATH and CHIEF_KILLED.
+- **MZB-289** (gaps left open): the pressure and a running wait are lost at a reset, and FACTION_FOUND
+  carries no site ledger row (S9, M12); a CHIEF_STATE lost in a crash leaves the engine's crystal wrong
+  until the den's next census (MZB-269), which matters only to a raid drawn from it in between; a Frostmaw
+  lured from or unloaded away from its den is M12's.
+- **MZB-293** (where the rate check sits, built): `RenewalDef::rule(culture, what)` holds the numbers of
+  MZB-251 (finite, `base_days > 0`, `cap_days >= base_days`, `half_life_days > 0`) and returns the kernel's
+  `RenewalRule`, so a second renewal (M9's `chief_renewal`) calls it with its own `what` and none of the
+  culture-level checks. The checks that `recruits_per_day == 0` and `camp_bodies` is true belong to the
+  `renewal` field alone, in `Culture::resolve`: a culture whose chief renews while its warriors still refill
+  by rate is legal, and the Frostmaw's rule does not have to be edited for it. The `rate_den_cultures`
+  helper of `synth` (MZB-286) and `CampRun::with_cultures` serve the engine tests that keep a rate.
+- **MZB-294** (the chief paths, built; MZB-262 to 266): `chief_falls` carries a `what` that opens the tape's
+  text, so the away path's tape line is the one M4 wrote ("the band routs; cowed for N days") and the den's
+  and the abstract wipe-out's are their own ("the chief's body falls", "the band is wiped out"). A body
+  taken (BY_TAKEN) names a killer only when the record's `killer` is not the null UUID: the emulated
+  plugin sends none for a carried-off body, and `player(w, (0, 0))` would mint an actor for it. Such a
+  chief falls with no killer, steps no feud down and still bumps the pressure (MZB-258). The killer's
+  actor is made only when the death is a chief's, so no other camp death changes the knowledge's actors.
+  This amends MZB-265.
+- **MZB-295** (the pressure's order in the away path, built): CHIEF_KILLED is what Java sends for a chief
+  puppet, never BAND_CASUALTIES, so `chief_killed_by` bumps the pressure right after `chief_falls` and the
+  loss reaches the books once. The DEMATERIALIZED that follows, with the chief missing from its survivors,
+  runs `party_lost`, whose `unblock` plans the wait from a pressure that already holds the bump. An
+  abstract wipe-out (`lose_units`) bumps before `party_lost` for the same reason; `camp_death` bumps
+  before its slot is freed. A boss whose chief fell away is not stepped down twice: `step_down` leaves a
+  feud at or below Notice alone.
+  Amended at review: CHIEF_KILLED also takes the unit off the band. `chief_killed_by` gained
+  `epoch: Option<u32>` (the record's epoch; `None` for the public `chief_killed`) and calls
+  `chief_unit_lost(p, epoch, at)` after `renewal_bump`. For a boss band only (`renewal.boss`; another
+  culture's chief is an extra body outside the units, MZB-109, so its unit count is not the chief's) it takes
+  the first unit with a count off `units`, off the `recalled` stack of that epoch when the band is not
+  embodied and holds it, else off `spawned`, then `stats.casualties` + 1 and `party_lost(p, 1, at)`, with no
+  second bump. The DEMATERIALIZED that follows cannot take the chief off twice: `units`, `spawned` and
+  `recalled` are all down, and one for a band already removed is ignored. Before this a crash between
+  CHIEF_KILLED and DEMATERIALIZED had `replay_done` count the dead body as never reported alive and bring the
+  Frostmaw home with no arrival booked (it dates from M4). Test
+  `a_chief_killed_away_stays_dead_across_a_crash_before_the_band_is_counted_out`: after `restart()` the band
+  has no Frostmaw, `away` is 0, the pressure is 1 and the arrival stands at the death plus 12 days.
+- **MZB-296** (a chief the books already buried, built): `chief_killed_at_camp` compares the faction's chief
+  before and after `ensure_chief`; a succession `ensure_chief` ran means the body that died was the old
+  chief's (dead of age), so the kill is stale and nothing falls, as the away path's stale rule has it
+  (MZB-146). The camp's pressure is still `camp_death`'s, since the body was a member lost. `camp_death`
+  runs the fall for a Body or Owed slot after it is freed, for a Left or Gone slot before `member_died`,
+  and never for a Dead slot.
+  Amended at review: the before/after comparison was order-dependent (when something else ran `ensure_chief`
+  first, the late kill of the old body felled the new chief). `Slot.chief` now holds the faction's chief
+  when `camp_alloc` made the slot, saved in RTC7 (MZB-271), `camp_death` reads it from the slot, and
+  `chief_killed_at_camp(w, f, body_of, killer, at)` runs `ensure_chief` and falls the chief only if
+  `factions[f].chief == body_of`; otherwise the body is only an ordinary member lost. Test
+  `a_late_kill_of_the_old_chiefs_body_leaves_the_new_chief_standing`: an age death and a succession by
+  another path, then the late kill of the old body, and the new chief stands (it fails with the stamp check
+  removed). Only the camp path needed this: the away path's stale rule is the party's `chief`
+  flag, which `succeed` clears (MZB-139).
+- **MZB-297** (the synth marks the chief, built; MZB-272): `CampRun::new` marks the first body of a camp
+  whose home unit has a row without its crystal (`bare[u] != u`) as the chief with its crystal on it, and
+  gives the FACTION_FOUND record `CENSUS_CHIEF | CENSUS_CRYSTAL` for it; a body the plugin spawns takes
+  `chief` and `crystal` from its line's flags. Only the Frostmaw has such a unit today, so the umvuthana
+  tests (M4) see no change; M9's `without_crystal` rows will mark theirs the same way. `CampRun.infra`
+  (none by default) lets a test put walls under a raid.
+- **MZB-298** (CHIEF_STATE, built; MZB-268 to 270): the engine's `chief_state` ignores a record for an unknown
+  faction or a culture with no camp bodies, and notes only a change of the crystal. The link counts every
+  CHIEF_STATE it decodes in `chief_states` whether or not the engine acts on it, and the protocol test of the
+  later slices' records now counts it apart from `deferred`. The synth's census carries the chief byte from
+  the world (a chief body in the camp, its crystal flag), `FakeConflict::steal` clears the body's crystal and
+  sends the record, and `CampRun::robbed` finds a den with its chief already robbed.
+- **MZB-299** (the heir's grudge is about 62.5, not 2.5; run 7 (b) and (c), built): `succeed()` hands the
+  heir grievance of -sentiment times `heir_grudge_factor` (0.5), and a witnessed Killing report is -125
+  (MZB-36), so the heir's grudge against a player who killed the chief is about 62.5, four times the
+  Frostmaw's Notice threshold (15.6), not the "about 2.5, under Notice" that MOWZIE.md and run 7 (b) of the
+  design said (the 2.5 dates from before MZB-36, when the report was -5). What keeps B's feud under Notice at
+  first is that the faction is cowed after the fall (`cowed_until`), not the size of the grudge. Ruled at
+  review: the engine's value is right. Run 7 (b) asserts it (62.5 within 2, above Notice's threshold, the
+  feud still at no step, the faction cowed) and then runs past `cowed_until` an hour at a time: B's feud
+  reaches Notice and no higher (one Notice climbed, none from Envoy up), and decays away about 6 days
+  after the window. Run 7 (c) does the same for C, who also gets the kill's report (Notice and no higher, gone
+  about 9 days after the window). MOWZIE.md is corrected at both places (the third player's kill, and the
+  walkthrough's "plus about 62.5"); CONFLICT-LIFE.md is left alone. The regenerated `sim-conflict.json` also
+  moved (survivors 20 to 19 and 8 to 7) because of MZB-272's synth fix: the dead chief is no longer counted a
+  survivor.
+
+### M6 design for the implementer
+
+**Where it stands.** Design only, on `design/mowzie-m6` (from d5b45b22). Nothing of M6 is written. The open
+questions for Ben: none. The two candidates are settled by Ben's own answers: the arrival's hold (160 blocks
+or 6,000 ticks, MOWZIE.md "The body", EQ-4 (b), MZB-280) and a den found empty (the cap wait, EQUILIBRIUM
+item 6, MZB-257).
+
+**Jar facts** (Mowzie's Mobs 1.8.2 with cfr in `target/m6-mowzie-cfr/src`; vanilla from the NeoForm sources
+jar in `target/m6-vanilla`):
+- The steal (`EntityFrostmaw.tick`, 608-623) is in the asleep branch (590-625, after `setActive(false)` at
+  580-588), so only a sleeping Frostmaw is robbed, and only when `stealableIceCrystal` (the pack's
+  `mowziesmobs-common.toml`: true), `getHasCrystal()`, `tickCount > 20` and `getAnimation() == NO_ANIMATION`.
+  The crystal is at `new Vec3(1.6, 0.4, 1.8).yRot(toRadians(-getYRot() - 90)).add(position())`. Each
+  player of `getPlayersNearby(8, 8, 8, 8)` is tried: it must be within 1.8 blocks of that point, creative or
+  invisible (`isCreative() || isInvisible()`), and not `isInventoryFull`, which is true when all 36 main
+  slots hold something, whatever room the stacks have. It gets `ItemHandler.ICE_CRYSTAL` by
+  `ItemHandlerHelper.giveItemToPlayer`, then `setHasCrystal(false)` (bytecode offset 3327, the method's only
+  call of it), then, off Peaceful, `ACTIVATE_NO_CRYSTAL_ANIMATION` and `setActive(true)`; a `ServerPlayer`
+  also gets the advancement. There is no client-side guard: the mixin returns on the client itself.
+- `MowzieEntity.getPlayersNearby` is `level().getEntities(this, getBoundingBox().inflate(...))` filtered to
+  players within `radius + width / 2`. `EntityGetter.getEntities(Entity, AABB)` filters with
+  `EntitySelector.NO_SPECTATORS`, so a spectator never steals. A creative player is no attackable entity
+  for the wake check (`getAttackableEntityLivingBaseNearby`), but the steal wakes the Frostmaw anyway.
+- The wake check (in the same branch, before the steal) needs an attackable entity within 8 and a target.
+  The target comes from `NearestAttackableTargetGoal(Player, 0, true, false)` (priority 1, reads
+  `level.players()`), and a target with the invisibility effect is dropped each asleep tick.
+- Goals: `FloatGoal` 0, two animation goals 2, `MoveTowardsRestrictionGoal(1.0)` 5,
+  `WaterAvoidingRandomStrollGoal` 7, look goals 8. Max health 250 (times the config's multiplier), follow
+  range 50.
+- `hurt(DamageSource, float)` (855-905): fall damage is refused; a direct `AbstractArrow` (arrows,
+  tridents) plays the "undamaged" sound, takes the attacker as target when it has none (not a creative
+  player, not a Frostmaw), wakes it off Peaceful and returns false; everything else goes to `super.hurt`,
+  then the same target and wake.
+- Death: `DIE_ANIMATION` runs 94 ticks and the body is removed 20 before its end, 74 ticks after death.
+- `requiresCustomPersistence()` is `getHasCrystal()`; `readAdditionalSaveData` calls `setHasCrystal` (963).
+- TaCZ's `EntityKineticBullet extends Projectile`.
+- Vanilla: `LivingEntity.getKillCredit()` (1814) is `lastHurtByPlayer` else `lastHurtByMob`;
+  `lastHurtByPlayer` is set in `hurt` (1210-1227) for a player's hit and for a tame `TamableAnimal`'s owner
+  (`getOwner()` reads `level.getPlayerByUUID`, so a `FakePlayers.add` owner counts), for 100 ticks.
+  `TargetGoal.canAttack` (101) returns false for a target outside `mob.isWithinRestriction` (1304: no
+  restriction, or `distSqr < r * r`). `Mob.canBeLeashed()` (1405) is false for an `Enemy`, so a Frostmaw
+  cannot be leashed. `DamageSources.thrown(Entity causingEntity, Entity directEntity)` has its parameter
+  names swapped: `Snowball` calls `thrown(this, getOwner())`, so pass the projectile first.
+- `ServerLevel.addFreshEntity` posts the join and adds to the entity manager; `addNewPlayer` does the same
+  for a `ServerPlayer` and its tracking start adds it to `players()` and to the chunk map (a player ticket).
+
+**Layout.**
+- Engine: `crates/rtsim-conflict/src/culture.rs` (MZB-251), `data/cultures/frostmaw.json` (MZB-252),
+  `src/engine/camp.rs` (fields, `plan_arrival`, `camp_arrival`, `camp_found`, `camp_death`, `camp_census`,
+  `renewal_cause`, `renewal_bump`), `src/engine.rs` (`Ev::Arrival` and its dispatch, `chief_falls`,
+  `step_down`, `chief_killed_by`, `chief_killed_at_camp`, `lose_units`, `raid_district`, `chief_state`,
+  `later`, `ingest`, stats), `src/persist.rs` (MZB-271), `crates/rtsim-jni/src/engine/conflict.rs`
+  (MZB-270) and its protocol test, `crates/rtsim-cli/src/sim/mowzie.rs` and its synth (MZB-272, runs 6
+  and 7), `crates/rtsim-conflict/tests/frostmaw.rs` (new).
+- Core Java (`neoforge/core/.../mic_rtsim/`): `conflict/ConflictRecords.java`, `conflict/Camps.java`,
+  `conflict/ConflictBridge.java`, `RtsimApi.java`, `gametest/ConflictKit.java` (`chiefStates(faction)`),
+  `gametest/FakePlayers.java` (only for the fallback of MZB-281).
+- Plugin (`neoforge/mowziesmobs/`): `mixin/EntityFrostmawMixin.java`, `mic_rtsim_mowziesmobs.mixins.json` in
+  `resources`, the `[[mixins]] config = "${mod_id}.mixins.json"` line in
+  `templates/META-INF/neoforge.mods.toml` (as ribbits),
+  `gametest/FrostmawGameTests.java` (new), `gametest/MowzieKit.java` (`thief`).
+- Docs: `docs/boundary.md` (MZB-288).
+
+**Engine.**
+- `Ev::Arrival { faction: u32, stamp: u32 }` dispatches to `camp_arrival`. Its wheel tag is 8.
+- `plan_arrival(f, at)`:
+  ```rust
+  let Some(r) = self.culture(f).renewal else { return };
+  let (away, cap) = (self.factions[f as usize].away, self.factions[f as usize].cap);
+  let short = self.pool_at(f, at).floor() as u32 + away < cap;
+  let day = (at.0 / TICKS_PER_DAY) as u32;
+  let Some(camp) = self.camp_mut(f) else { return }; // no ledger: never refills
+  match (short, camp.arrival_at) {
+      (true, None) => {
+          let t = at + r.rule.delay_ticks(camp.pressure, day).max(1);
+          camp.arrival = camp.arrival.wrapping_add(1);
+          camp.arrival_at = Some(t);
+          let stamp = camp.arrival;
+          self.schedule(t, Ev::Arrival { faction: f, stamp });
+      }
+      (false, Some(_)) => {
+          camp.arrival = camp.arrival.wrapping_add(1);
+          camp.arrival_at = None;
+      }
+      _ => {}
+  }
+  ```
+- `camp_arrival` as MZB-256. `pool_add` keeps I2 because `camp_sync` follows it at the same tick.
+- `renewal_bump(f, n, at)`: `camp.pressure.bump(day(at), n as f32 / cap as f32, r.rule.half_life_days)` and
+  `stats.renewal_losses += n`. Called with the `LossCause` of MZB-258; the callers are MZB-259's.
+- `camp_death`: compute `cause = renewal_cause(f, d.by)` once; unless the slot is Dead, `renewal_bump` for
+  Player; then the state match as M4 has it; with `DEATH_CHIEF`, `chief_killed_at_camp` as MZB-265; then
+  `unblock` (which runs `plan_arrival`).
+- Chief paths: `chief_falls`, `step_down`, `chief_killed_by`, `chief_killed_at_camp` as MZB-262 to 264.
+  `succeed` is unchanged. The away path still sets the breaker and the rescue news.
+- `lose_units(w, ...)`: MZB-266. `raid_district` bumps the camp by the units its `lose_units` took
+  (MZB-259); `raid_node` does not.
+- CHIEF_STATE and the census: MZB-268 and 269. `faction_found` passes `ff.census` to `camp_found`.
+- Persistence: MZB-271. `Pressure::from_parts` on load.
+
+**Java.**
+- `Camps.onDeath` uses `ConflictBridge.credit(dead, source)` for `by` and the killer's UUID (MZB-261).
+  `ConflictBridge.onDeath` uses it for a chief puppet's CHIEF_KILLED only.
+- `Camps.death` posts CHIEF_KILLED news for FLAG_CHIEF (MZB-275).
+- `Camps.chiefState(LivingEntity, int)`, the queue and its flush (MZB-274); `RtsimApi.chiefState` calls it.
+- The mixin (default priority 1000; no other mod targets this call in the pack):
+  ```java
+  @Mixin(EntityFrostmaw.class)
+  abstract class EntityFrostmawMixin {
+      @Inject(method = "tick()V", at = @At(value = "INVOKE",
+              target = "Lcom/bobmowzie/mowziesmobs/server/entity/frostmaw/EntityFrostmaw;setHasCrystal(Z)V",
+              shift = At.Shift.AFTER), allow = 1)
+      private void mic_rtsim_mowziesmobs$stolen(CallbackInfo ci) {
+          EntityFrostmaw self = (EntityFrostmaw) (Object) this;
+          if (self.level().isClientSide()) return;
+          if (RtsimApi.isCampBody(self)) self.setPersistenceRequired();
+          RtsimApi.chiefState(self, 0);
+      }
+  }
+  ```
+  The config: `required` true, `minVersion` "0.8", package
+  `com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.mixin`, `JAVA_21`, `injectors.defaultRequire` 1, no
+  refmap (Mojang names at run time), as `mic_rtsim_ribbits.mixins.json`.
+- Restriction and the held spawn: no change (MZB-279, MZB-280). UR-1 holds (MZB-278); D1 holds (one
+  injection on a rare call, a queue keyed by faction, no per-tick work).
+
+**GameTests to write** (`FrostmawGameTests`, `@GameTestHolder(MicRtsimMowziesMobs.MODID)`,
+`@PrefixGameTestTemplate(false)`, the arena template, one batch each, each its own far base, as MZB-247;
+stub engine first, then native):
+1. `aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack` (§7 test 2, batch `frostmaw_robbed`):
+   - A test den, its crystal Frostmaw adopted (persistence false). A thief (MZB-281, survival, invisible)
+     kept at the crystal's point each tick once the Frostmaw's `tickCount > 20`.
+   - The thief holds an ice crystal, `getHasCrystal()` is false, `isPersistenceRequired()` is true, one
+     CHIEF_STATE (aux 0, the den's faction, health within 1 of the Frostmaw's), the Frostmaw active. Remove
+     the thief.
+   - Release the den until its chunk is unloaded, then force it again: the Frostmaw that loads (same UUID,
+     tagged, slot 0, generation 1) is persistent and crystal-less, and the CHIEF_STATE count is still 1.
+     Census 2 has CHIEF without CRYSTAL, and no line restores a crystal.
+   - A second den: a scripted SPAWN with `LINE_CHIEF` only is DONE with a crystal-less persistent Frostmaw.
+2. `anArrowAndATridentDoNothingAndABulletHurtsAFrostmaw` (§7 test 6, batch `frostmaw_arrows`): an untagged
+   sleeping Frostmaw and a `FakePlayers.add` player. In this order (a hit that lands makes it invulnerable
+   for 10 ticks): `hurt(arrow(new Arrow(level, player, new ItemStack(ARROW), null), player), 10)` is false,
+   health unchanged, the target the player, active; `hurt(trident(new ThrownTrident(level, player,
+   new ItemStack(TRIDENT)), player), 10)` is false, health unchanged; last
+   `hurt(thrown(new Snowball(level, player), player), 10)` is true and the health falls (MZB-282).
+3. `anInvisiblePlayerStealsTheCrystalFromASleepingFrostmaw` (§7 test 7, batch `frostmaw_thieves`): five
+   untagged sleeping Frostmaws 40 blocks apart in forced chunks, a thief (MZB-281) at each crystal point:
+   - invisible survival: crystal in its inventory, the Frostmaw crystal-less and active, not persistent
+     (untagged, MZB-277), no CHIEF_STATE;
+   - visible creative: steals;
+   - invisible with all 36 main slots holding one dirt each: nothing, after 100 ticks;
+   - visible survival: nothing;
+   - spectator: nothing.
+4. `aChiefKilledAtTheCampIsReportedWithTheKiller` (§7 test 15, Frostmaw half, batch `frostmaw_kill`):
+   five dens with adopted Frostmaws and a `FakePlayers.hearing` player within 64 blocks of the first.
+   - `MowzieKit.kill(f, playerAttack(p))`: CAMP_DEATH with aux BY_PLAYER, p's UUID, FLAG_CHIEF, slot 0,
+     generation 1, the FROSTMAW body and an op id; a marker; the tag gone by the next tick; the body removed
+     70 to 80 ticks after the death; `ConflictNews.posted()` up by 1; the Hearer's `raw` and `overlay` hold
+     nothing from it.
+   - A wolf (`setTame(true, true)`, owner p's UUID) kills: BY_PLAYER with p.
+   - p hits for 10, and 40 ticks later `genericKill`: BY_PLAYER with p.
+   - A zombie's `mobAttack`: BY_MOB, no killer.
+   - `genericKill` with no hit before: BY_NONE.
+
+**Rust tests** (`crates/rtsim-conflict/tests/frostmaw.rs`, on the shipped cultures unless named):
+`a_den_killed_by_a_mob_comes_back_in_six_days`, `a_first_player_kill_makes_the_next_wait_twelve_days`,
+`a_farmed_den_follows_the_closed_form`, `a_den_found_empty_waits_the_cap`,
+`no_wait_while_the_frostmaw_is_out`, `an_adopted_stray_cancels_the_wait`,
+`the_arrival_is_owed_and_spawned_at_the_next_census`, `the_arrival_at_a_den_that_is_in_sends_its_spawn`,
+`chief_state_sets_the_crystal_and_the_census_corrects_it`, `faction_found_reads_the_crystal`,
+`a_chief_killed_at_the_camp_succeeds_cows_and_routs_its_party`,
+`only_the_killers_feud_steps_down_at_the_camp`,
+`a_chief_body_left_at_home_killed_routs_its_party`, `a_dead_slots_body_is_no_second_chief`,
+`a_chief_killed_away_bumps_the_pressure_unless_a_mob`, `a_boss_wiped_out_abstractly_loses_its_chief`,
+`a_write_off_bumps_the_pressure`, `the_den_saves_its_pressure_and_wait` (blob and paged, the arrival on the
+same tick after a round trip), `a_stolen_crystal_starts_no_wait`, `the_step_down_never_raises_a_feud` (a
+None feud stays None). In `culture.rs`: the renewal parses and each validation error of MZB-251 is its own.
+rtsim-jni's protocol test: CHIEF_STATE is counted live, not deferred, and a new `den(name)` helper drives a
+CHIEF_STATE that flips the crystal and a census that corrects it.
+
+**Sim runs** (`rtsim-cli sim mowzie`):
+- **Run 6, the den** (RUNS row 6: built "M6, the den", rest "the grove M9"):
+  - Killed BY_MOB: the next wait is 6.00 days. Killed by a player for the first time: 12.00.
+  - Farmed (each arrival killed by a player 2 days after it comes): every wait equals the kernel's
+    `delay_days` on the run's days, and the first five are within 3% of 12.0, 22.45, 36.4, 47.2 and 50.6
+    (the whole-day closed form; P settles at 3.109, a wait of 51.76 and a kill every 53.76 days).
+  - 60 game years farmed: arrivals per 96 days within 5% of 1.786 (about 108).
+  - A den found empty: its migrant comes after 192.00 days.
+  - A stolen crystal starts no wait, and the next arrival's line has `LINE_CRYSTAL`.
+  - BY_TAKEN and BY_NONE bump; BY_MOB does not.
+  - `stats.feud_wakes` grows by fewer than 10 over a wait with a busy line.
+  - The camp audit holds after every event; a save and load mid-wait arrives on the same tick.
+- **Run 7, the kills** (dispatched from `main`):
+  - (a) The feud's player kills the chief on a raid: Raid steps down to Notice.
+  - (b) A third player B kills it on A's raid: A's feud steps to Notice; B gets the Killing report, the heir
+    a witness, and B's feud stays under Notice while the faction is cowed, then gets one Notice and decays
+    (MOWZIE.md said about 2.5; built as about 62.5, MZB-299).
+  - (c) A player C with no feud kills it at the camp: A unchanged, C not raised by the step-down, one Notice
+    after the cowed window.
+  - (d) The feud's player kills it at the camp: A steps down.
+  - (e) A chief body Left at home is killed there: its party routs and the heir succeeds.
+  - (f) An abstract wipe-out on a district: the chief falls with no killer, the party's feud steps down and
+    the pressure is bumped.
+  - (g) Run 1's tail: cowed, the heir, the body 12 days after a first kill, `feud_wakes`. RUNS row 1's rest
+    becomes "the meter M7, ambushes M8" and its kill and body are run 7's.
+
+**Work split** (in order; each step its tests green before the next):
+0. Branch `feat/mowzie-m6` from the latest `feat/mowzie-m5`, merge `feat/mowzie-m4`, delete the
+   run-gametest worlds (MZB-250).
+1. `culture.rs`: `RenewalDef`, `Renewal`, resolve, validation, tests; `frostmaw.json`; the rate tests'
+   culture (MZB-286).
+2. `Camp` fields, `put_camp` and `get_camp`, RTC7 / META 6, `Ev::Arrival` and wheel tag 8 (MZB-271).
+3. `plan_arrival`, `camp_arrival`, `camp_found` with the census byte; the Rust tests from
+   `a_den_killed_by_a_mob_comes_back_in_six_days` to `the_arrival_at_a_den_that_is_in_sends_its_spawn`.
+4. `renewal_cause`, `renewal_bump` and their callers (MZB-258, 259).
+5. `chief_falls`, `step_down`, `chief_killed_by`, `chief_killed_at_camp`, `camp_death`'s chief arm,
+   `lose_units`. **Opus review A**: the engine, steps 1 to 5.
+6. CHIEF_STATE: `later`, `ingest`, `chief_state`, the census correction, rtsim-jni and its protocol test.
+7. The synth fixes, runs 6 and 7, run 10's new den timings. **Opus review B**: the runs against MOWZIE.md's
+   numbers.
+8. Java core: `ConflictRecords`, `credit`, `Camps.onDeath`, `Camps.death`'s news, `Camps.chiefState` and its
+   queue, `RtsimApi.chiefState`, `ConflictKit.chiefStates`.
+9. The plugin's mixin, its config and the toml line; compile.
+10. `FrostmawGameTests` 1 to 4 and `MowzieKit.thief`, on the stub, then native.
+11. `boundary.md` (MZB-288) and, at landing, the fixtures (MZB-271). **Opus review C** before the GameTest
+    round.
+
+**What M6 changes in M5.** `Camps.onDeath` (credit), `Camps.death` (news), `Camps.tick` (the flush first), a
+new `Camps.chiefState` and its queue, `ConflictBridge.credit` and `onDeath`'s chief arm,
+`RtsimApi.chiefState`, `ConflictRecords.CHIEF_STATE`, `ConflictKit.chiefStates`; the plugin's mixin, config
+and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` (MZB-279, 280).
+
+**Where the jar or the engine differs from MOWZIE.md.**
+- §4.7 and test 7 speak of an invisible thief. A creative player steals as well, a spectator never, a thief
+  with a full main inventory gets nothing, and only a sleeping Frostmaw outside an animation is robbed (so a
+  puppet is robbed only asleep).
+- The restriction also gates targeting (MZB-279), which §4.9 does not say.
+- The Frostmaw's body goes 74 ticks after its death.
+- M4's engine: `step_down` raised a None feud to Notice (MZB-262); an abstract boss wipe-out kept its chief
+  (MZB-266); the synth returned a killed chief as a survivor (MZB-272); a den found empty would have waited
+  6 days, not the cap (MZB-257).
+- CHIEF_STATE is latest-wins, so a crash can lose it; the census corrects it (MZB-269).
+
+**Traps.**
+- `feat/mowzie-m5` has no M4 engine: build M6 on the merge.
+- `git log -S'MZB-25'` matches MZB-25 itself as well as MZB-250 to 259; check this range with
+  `-G'MZB-2[5-8][0-9]'`.
+- A rate of 0 makes a ledger-less renewal faction never refill: M4's engine tests that build one need the
+  rate culture of MZB-286.
+- `DamageSources.thrown` takes the projectile first, despite its parameter names.
+- A `FakePlayers.add` player is invisible to `level.getEntities`, so the jar's `getPlayersNearby` misses it;
+  a `setInvisible(true)` on a ticking entity is undone at its first tick (MZB-281).
+- `CampSource::Boss` is shared by both Mowzie cultures: use the renewal's `boss` (MZB-253).
+- Pressure decays by whole days (`day.saturating_sub(at_day)`): compare waits with the whole-day form.
+- Test 6 must strike with the snowball last: a hit that lands makes the Frostmaw invulnerable for 10 ticks.
+- `isInventoryFull` ignores stack room: fill the 36 slots with one item each.
 
 ## M7 Rail
 
@@ -2066,6 +3165,20 @@ Two fixes for M6:
 ## M12 S9
 
 (none yet)
+
+## Backlog: conflict news gaps from TALK
+
+TALK left these five gaps in conflict news; they are the conflict owner's (the coordinator,
+2026-10-23), low priority, after M4 and M5 unless one is trivial while that code is open. TALK.md §9's
+Feud, Raid and Fell paragraphs describe them.
+1. `fell.you` is never told: a Fell's Who is the camp, so the killer hears only through the chief's
+   Killing.
+2. A fight that ends early (the watching player leaves, the session restarts) and then goes home bored or
+   done records nothing.
+3. After a restart, a fight broken at the rout share records nothing; only a full wipe-out is recorded.
+4. A Fell names the fallen chief as a dead notable ("someone important"), not as the chief: its actor is
+   gone when the lines are told.
+5. A siege routed after a round tells two reports, the round's and the rout's.
 
 ## Hand-off
 

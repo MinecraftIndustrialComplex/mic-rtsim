@@ -82,11 +82,11 @@ pub enum ReportKind {
     /// A camp broke a pact. `who` is the camp that broke it, `whom` its ally; a betrayal is a flag.
     /// News only.
     PactBroken = 12,
-    /// A camp raided a target. `who` is the camp, `whom` the target; severity is the outcome (held,
-    /// beaten, plundered) and a joint raid is a flag. News only.
+    /// A camp raided a target. `who` is the camp, `whom` the target; severity is the outcome
+    /// ([`raid`]: held, beaten, plundered) and a joint raid is a flag. News only.
     Raid = 13,
-    /// A camp's notable fell. `who` is the camp, `whom` the notable (the killer's actor for a
-    /// killing, the camp itself for old age or a fever). News only.
+    /// A camp's notable fell. `who` is the camp, `whom` the fallen chief; severity is how
+    /// ([`fell`]: died, killed). News only.
     Fell = 14,
     // 15 is a spare for conflict news (TK11); 21 to 31 are reserved. Neither is a kind.
     /// Pirates raided a port (the ports agent). `who` is the haven, `whom` the port village.
@@ -190,6 +190,22 @@ impl ReportKind {
 
 /// The first id of the news kinds (TALK.md §9.4).
 pub const FIRST_NEWS_KIND: u16 = 10;
+
+/// A [`ReportKind::Raid`]'s severity, the outcome (TK26): the target held (a watched fight the band
+/// left bored or done, not routed), the band was beaten (an unwatched raid that took nothing and
+/// lost warriors, or a rout), or it plundered (an unwatched raid that took anything).
+pub mod raid {
+    pub const HELD: u8 = 1;
+    pub const BEATEN: u8 = 2;
+    pub const PLUNDERED: u8 = 3;
+}
+
+/// A [`ReportKind::Fell`]'s severity (TK26): the chief died of age, or was killed in a fight (by a
+/// player or not).
+pub mod fell {
+    pub const DIED: u8 = 1;
+    pub const KILLED: u8 = 2;
+}
 
 /// What a rung weighs against the unit scale: 100 plus 25 a step to four, so a rung 1 outweighs a
 /// fair trade's 100, a rung 4 outweighs it by half, and none weighs less than the unit. The one
