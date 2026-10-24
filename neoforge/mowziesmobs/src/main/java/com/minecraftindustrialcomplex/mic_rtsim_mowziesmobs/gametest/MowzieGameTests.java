@@ -19,6 +19,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CensusBody;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
@@ -35,6 +36,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -583,6 +585,147 @@ public final class MowzieGameTests {
                     check("and made no census (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 2);
                     check("the second Frostmaw is the jar's own", MowzieKit.tag(f[1]) == null && f[1].isAlive());
                     record(test, "joiners", "a join with a free slot recounted; a join at a full den did not");
+                })
+                .thenSucceed();
+    }
+
+    // ---- review fixes: the index, the play-time check ---------------------------------------------
+
+    /**
+     * A den's Frostmaw, adopted, whose chunk's entities go hidden and are tracked again within the tick (the
+     * flicker: the leave is posted with no removal reason, and the re-promotion posts no join) keeps its place in
+     * the camp's index (MZB-231): a TAKE of its slot and generation, by tag, is DONE, the body goes and its record
+     * rides on a marker. The leave was seen with no removal reason and the body was never removed.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_flicker", skyAccess = true)
+    public static void aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken(GameTestHelper helper) {
+        String test = "aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2];
+        int[][] leaves = new int[1][];
+        Markers[] mk = new Markers[1];
+        long[] taken = new long[1], markers = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("held by the camp", MowzieKit.camps().held(den.faction).contains(f[0]));
+                    mk[0] = new Markers(helper, level, den.area());
+                    leaves[0] = MowzieKit.watchLeaves(helper, f[0]);
+                    taken[0] = MowzieKit.camps().taken;
+                    markers[0] = MowzieKit.camps().markers;
+                    // the flicker: hidden, then tracked and ticking again, in one tick
+                    var manager = ((ServerLevelAccessor) level).mic_rtsim$entityManager();
+                    ChunkPos cp = f[0].chunkPosition();
+                    manager.updateChunkStatus(cp, FullChunkStatus.INACCESSIBLE);
+                    check("the leave was posted with no removal reason (" + leaves[0][0] + ", " + leaves[0][1] + ")", leaves[0][0] == 1 && leaves[0][1] == 0);
+                    check("the Frostmaw is alive and not removed", f[0].isAlive() && !f[0].isRemoved());
+                    manager.updateChunkStatus(cp, FullChunkStatus.ENTITY_TICKING);
+                    check("and the camp still holds it", MowzieKit.camps().held(den.faction).contains(f[0]));
+                    check("no join came back for it (still one leave: " + leaves[0][0] + ")", leaves[0][0] == 1);
+                    op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("TAKE by tag", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    check("the Frostmaw is gone", f[0].isRemoved());
+                    check("one taken (" + (MowzieKit.camps().taken - taken[0]) + ")", MowzieKit.camps().taken == taken[0] + 1);
+                    check("a marker was made (" + (MowzieKit.camps().markers - markers[0]) + ")", MowzieKit.camps().markers == markers[0] + 1);
+                    check("the camp holds nothing", MowzieKit.held(den.faction).isEmpty());
+                    record(test, "flicker", "hidden then tracked in one tick: the leave carried no removal reason, the index kept the body, TAKE by tag was DONE");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A line that arrives in the tick its camp's footprint went down is answered STALE (MZB-233): the session
+     * runs the engine's commands before the camps are looked at, so the camp is still "in" when the line lands.
+     * The den's 3 x 3 chunks are released; the step that sees a footprint level above FULL sends a
+     * CAMP_RECONCILE with a TAKE of the adopted Frostmaw, a SPAWN and a SET_OUT in that same tick, and all
+     * three are STALE: the Frostmaw is still there and tagged, nothing was taken, spawned or set out, and no
+     * marker was made. Forced again, the next census lists the Frostmaw by its slot.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_play_time", skyAccess = true)
+    public static void aLineArrivingInTheTickACampGoesOutIsAnsweredStale(GameTestHelper helper) {
+        String test = "aLineArrivingInTheTickACampGoesOutIsAnsweredStale";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2];
+        long[] was = new long[6];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("the camp is in", den.site().in());
+                    den.release();
+                })
+                .thenWaitUntil(() -> {
+                    int top = 0;
+                    for (int l : den.site().levels())
+                        top = Math.max(top, l);
+                    check("a footprint chunk's level is above FULL (" + top + ")", top > Camps.FULL);
+                })
+                .thenExecute(() -> {
+                    // the same tick: the camp has not been looked at yet, so it is still in
+                    check("the camp is still in when the line lands", den.site().in());
+                    Camps c = MowzieKit.camps();
+                    was[0] = c.taken;
+                    was[1] = c.spawned;
+                    was[2] = c.handedOff;
+                    was[3] = c.markers;
+                    was[4] = c.staleLines;
+                    was[5] = c.removed;
+                    op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                            CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF),
+                            CampLine.of(1, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF),
+                            CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, 4242L, 1)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 3))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("a line in the tick the camp goes out", ConflictKit.outcomes(den.faction, op[1]), STALE);
+                    Camps c = MowzieKit.camps();
+                    check("nothing taken, spawned, removed or set out", c.taken == was[0] && c.spawned == was[1] && c.handedOff == was[2]
+                            && c.removed == was[5]);
+                    check("no marker made", c.markers == was[3]);
+                    check("three stale lines counted (" + (c.staleLines - was[4]) + ")", c.staleLines - was[4] == 3);
+                    check("the Frostmaw stands and is still tagged", f[0].isAlive() && !f[0].isRemoved() && MowzieKit.tagged(f[0], den.faction, 0, 1));
+                })
+                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
+                    CensusBody b = MowzieKit.bodyOf(c, f[0].getUUID());
+                    check("census 2 lists the Frostmaw", b != null);
+                    check("by its slot 0, generation 1, not as a stray (" + b.flags() + ")",
+                            b.slot() == 0 && b.generation() == 1 && (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0);
+                    record(test, "stale", "TAKE, SPAWN and SET_OUT in the tick the footprint went down were STALE; the Frostmaw stayed and was counted by slot");
                 })
                 .thenSucceed();
     }
