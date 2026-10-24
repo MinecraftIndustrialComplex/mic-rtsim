@@ -693,6 +693,12 @@ public final class HerdGameTests {
         long[] alive = {0};
         Map<Long, Integer> firstColours = new HashMap<>();
         long[] dead = {-1};
+        // The agent id is the engine's own, and an engine of another life (a reset earlier in the run) numbered
+        // its herds from the same first id: its records may still be in the received log, replayed from the
+        // journal into it. This herd's are those journaled after its founding.
+        long[] since = {0};
+        java.util.function.Supplier<List<ScriptedEngine.Received>> taken = () -> HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0])
+                .stream().filter(r -> r.obsSeq() >= since[0]).toList();
         waits.eachTick(() -> {
             if (reporting[0] && player[0] != null && RtsimTests.session().gameTime() % 20 == 0)
                 reportPlayer(player[0]);
@@ -704,6 +710,7 @@ public final class HerdGameTests {
                 .thenExecute(() -> {
                     int y = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
                     player[0] = FakePlayers.add(level, new Vec3(bx + 0.5, y, bz + 0.5), "herd_watcher");
+                    since[0] = RtsimTests.session().boundary().journal().nextObsSeq();
                     e.herdFound("GameTest flock", HerdKit.SHEEP, RtsimTests.session().dimId(level.dimension()), bx, bz, 12,
                             ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE));
                     reporting[0] = true;
@@ -741,10 +748,13 @@ public final class HerdGameTests {
                     reporting[0] = false; // the player leaves
                 })
                 .thenWaitUntil(waits.engine(() -> check("the engine took the group back", bridge().group(agent[0]) == null
-                        && !HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0]).isEmpty())))
+                        && !taken.get().isEmpty())))
                 .thenExecute(() -> {
-                    ScriptedEngine.Received d = HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0]).get(0);
-                    check("11 sheep captured with their states", d.view().getInt(HerdRecords.Dematerialized.COUNT) == 11);
+                    ScriptedEngine.Received d = taken.get().get(0);
+                    check("11 sheep captured with their states: " + d.view().getInt(HerdRecords.Dematerialized.COUNT) + " in epoch "
+                                    + d.view().getInt(HerdRecords.Dematerialized.EPOCH) + ", reason " + d.aux() + ", observation " + d.obsSeq()
+                                    + " (the founding after " + since[0] + ")",
+                            d.view().getInt(HerdRecords.Dematerialized.COUNT) == 11);
                     reporting[0] = true; // the player is back
                 })
                 .thenWaitUntil(waits.engine(() -> check("the group again", groupNear(bx, bz) != null && groupNear(bx, bz).agent == agent[0]
