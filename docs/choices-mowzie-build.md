@@ -1298,7 +1298,760 @@ The tests:
 
 ## M9 Umvuthana
 
-(none yet)
+- **MZB-300** (ids and base): M9 takes MZB-300 to 349, as its lead assigned. The header above gives M7 300 to
+  349 and M9 400 to 449, so M7 takes 400 to 449 instead (the header is outside this heading and is not
+  edited here). M5 has also written MZB-290 to 292, inside M6's range, so M6 starts after 292. The design
+  reads M4 at `feat/mowzie-m4` 2b239fe2 (the engine, as `target/m4-src`) and M5 at `feat/mowzie-m5`
+  d5b45b22 (the Java). They are separate branches, so M9's branch merges both before anything else.
+- **MZB-301** (the chief's slot): a culture with `chief_body: Option<String>` keeps its chief in one slot of
+  id `CHIEF_SLOT` = `u32::MAX` (-1 as a Java int). Umvuthana's is `mic_rtsim:conflict/umvuthana/umvuthi`, a
+  new body dictionary entry with stand-in `mowziesmobs:umvuthi`. The id sorts last, so `Camp::index`'s binary
+  search holds. The slot is outside the pool. These all skip it: `home_count`, `away_count`, `drawable`, the
+  draw order, `spawn_lines`, `party_lost`, the units, the pool and its refill, the audit sums (I1 to I6)
+  and the stray count. The den is untouched: its Frostmaw is its one unit (M6), and frostmaw's `chief_body`
+  is None.
+- **MZB-302** (the Umvuthi is a census body; replaces MZB-220):
+  - `GroveKind.isBody` takes `EntityUmvuthi` as well as the exact minion type, and `isChief` is true for it.
+  - The census lists it with BODY_CHIEF, its slot and generation, as well as in the chief fields (CHIEF,
+    THRONE, health, position, direction).
+  - An untagged Umvuthi in the footprint is a stray only while a grove found without its Umvuthi waits for
+    its heir (MZB-305). The engine then ADOPTs it with LINE_CHIEF. After a chief's death, a stray does not
+    cut the heir's wait.
+  - Any other untagged Umvuthi is left alone, as the jar's own. A tagged one of a retired generation is
+    REMOVEd under Rule U (MZB-333).
+  - Followers, cranes and raptors stay uncounted.
+- **MZB-303** (per-slot line flags; the mask in flight):
+  - Each line's flags come from `line_flags(f, slot)`: LINE_CHIEF for CHIEF_SLOT, and the den's crystal
+    flag as M4 sets it.
+  - CAMP_BODIES' answer lines carry no flags, so the engine knows the chief by its slot id alone.
+  - A MASK line names no slot (MZB-308), and `send_lines` marks a slot in flight only when its generation
+    is not 0. So the engine keeps the MASK in flight as `Camp.mask: Option<(u64, u32)>` (op, line), and
+    counts it in `in_flight`.
+- **MZB-304** (the throne):
+  - The engine keeps the throne from the grove's first census with CENSUS_THRONE (M4's `Camp.throne`).
+  - Every CAMP_RECONCILE to a grove sets FLAG_THRONE, with THRONE_X, Y and Z and DIRECTION.
+  - Java keeps the latest on the site (`Camps.Site.throne`, for that epoch).
+  - With none known (a grove found without its Umvuthi), FLAG_THRONE is clear. Java then uses the fire pit's
+    centre (MZB-218, MZB-242) and direction 1, as §7 test 30 says.
+- **MZB-305** (a grove found without its Umvuthi):
+  - The grove gets no chief slot, and `Camp.heir = Some(Heir { due, found_empty: true })` at
+    `Pressure::at_cap`, so its heir comes after the cap's wait of 192 days.
+  - MOWZIE.md states no wait. EQUILIBRIUM.md §2.3 takes a camp found empty as one farmed to the cap.
+  - An untagged Umvuthi seen in the footprint before then cancels the wait and is ADOPTed into a new chief
+    slot.
+  - M6 uses the same rule for a den found empty (its migrant), and whichever slice lands first writes
+    `Pressure::at_cap`.
+- **MZB-306** (a chief killed at the grove): this is CAMP_DEATH on the chief slot, while Body, or while Left
+  with its take still held (MOWZIE.md ledger 5). In order:
+  1. M6's `chief_killed_at_camp(w, f, killer, at)` runs: `ensure_chief`, the fall, only the killer's own
+     feud steps down, and every party not Home routs.
+  2. `Camp.pressure` steps up by 1, unless the killer kind is BY_MOB (another mob's kill is no player's
+     pressure).
+  3. The slot is freed with died true, and the trade memory is cleared.
+  4. `heir_due = max(cowed_until, at + wait)` is set, and `Ev::CampHeir { faction, stamp }` is booked for
+     then. It is wheel tag 9: M4's Refill is 7 and M6's Arrival is 8.
+- **MZB-307** (the heir's wait): a culture field `chief_renewal: Option<RenewalDef>`. Umvuthana's is
+  `{ base_days: 6, cap_days: 192, half_life_days: 96, boss: true }` (MZ-14 (a)). The wait is
+  `min(cap, base × 2^P)` days, with P decaying at the half-life, as in M6's den renewal.
+  - It reuses M6's `RenewalDef` type and resolution, but as a field of its own: M6 validates its `renewal`
+    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day.
+  - Nothing is ordered while no warrior is home (Body with no line). The heir then waits, and the camp is
+    looked at again at each census.
+- **MZB-308** (the heir takes a warrior): when the heir is due, one CAMP_RECONCILE carries two lines.
+  - The first is a new `ACTION_MASK` = 8: slot 0, generation 0, the warrior body. Java takes the camp's
+    warrior farthest from every non-spectator player that has no line in flight or held.
+  - The second is SEAT_HEIR: slot CHIEF_SLOT, a new generation, the umvuthi body and LINE_CHIEF. L_A is
+    the old generation when the chief slot is Dead, else 0.
+  - Java plays the two together: it makes the heir first, then removes the warrior (its record on a marker,
+    as a take). If either cannot be done, both are STALE and nothing changes.
+  - MASK is answered with the taken warrior's slot and generation.
+- **MZB-309** (booking the heir):
+  - MASK DONE frees that slot (died false) and calls `pool_shift(-1)`, since the warrior becomes the chief.
+  - SEAT_HEIR DONE makes the chief slot Body, and clears `Camp.heir` and the trade memory. NOTHING does the
+    same: the body already stands, tagged.
+  - STALE on either line orders the pair again at the next census.
+  - While the pair is in flight `camp_drawable` is 0, so no muster takes the warrior about to be masked.
+  - A MASK answer can name a slot whose own line is still in flight. The slot is freed all the same, and
+    that line's late answer finds a retired generation and is ignored.
+  - The SEAT_HEIR spawn waits under the chief's spawn hold (MZB-333), and MASK waits with it.
+- **MZB-310** (seated in place): this is SEAT_HEIR with L_A not 0, while the old generation's body stands
+  tagged in the footprint.
+  - Java waits while that body is in a fight: it has a player target, and a player hit it within 600
+    ticks (PLACEHOLDER). The plugin keeps the hits in a weak map.
+  - Then, in one tick, Java answers the old body's held lines STALE, removes it with no CAMP_DEATH, and
+    makes the heir where it stood: at full health, in its direction, with an empty trade memory.
+  - With the old body gone, it is a plain SEAT_HEIR at the throne.
+  - In M9 only scripted lines reach it (test 30), since a chief slot is Dead only after a death away
+    (MZB-312).
+- **MZB-311** (a chief written off): a chief slot missed 3 times over 2 days (camp.rs's write-off rule) is
+  booked as a death at the grove with BY_NONE.
+  - P steps up (EQUILIBRIUM.md §2.2 counts a missing home body), the memory clears and the heir waits.
+  - `chief_killed_at_camp` is not called: no one saw it die, so there is no report, no feud steps down and
+    no party routs.
+- **MZB-312** (a chief killed away, the engine half):
+  - A Left chief slot becomes Dead. The census REMOVEs its throne body under Rule U, or the heir is seated
+    over it (MZB-310).
+  - A Gone chief slot is freed with died true.
+  - Both step P up, clear the memory and set the heir.
+  - Nothing sends a chief's death away before M11 (BAND_CASUALTIES with the chief, ledger 24), so only Rust
+    tests reach it.
+- **MZB-313** (who leads, MOWZIE.md ledger 4): two culture fields.
+  - `chief_leads: Vec<PartyKind>`: the default is raid, invasion and siege (today's "any war party").
+    Umvuthana's is `["invasion"]`; frostmaw's is M6's.
+  - `chief_strength: f32`: umvuthana's is 5.0.
+
+  `chief_can_lead` holds when the chief slot exists, is Body or Owed, has no line in flight, and no heir
+  waits. A draw for a party the chief leads takes the chief too: Body becomes Left, Owed becomes Gone.
+  While it leads, `strength` and `strength_by_class` add `chief_strength` in the first unit's class, so a
+  full Invasion (6 warriors, 2 raptors) is 6 × 0.4 + 2 × 2.6 + 5.0 = 12.6.
+- **MZB-314** (no chief stack before M11):
+  - BAND_CHIEF and MEMBER_CHIEF are written only when `chief_stack(c)` holds, which is false for a culture
+    with `chief_body`. So MZB-109's stand-in chief never appears with a grove's band.
+  - The chief's SET_OUT line finds no puppet to claim it, so it is a take (MZB-222), held under Rule U
+    (MZB-333). The Umvuthi stays on its throne until no player is near, then goes.
+  - M11 turns `chief_stack` on, with the aloft puppet and CHIEF_BODY's travel.
+- **MZB-315** (coming home): a party with the chief ends Home.
+  - A Left chief slot becomes Body.
+  - A Gone one becomes Owed. The engine sends CHIEF_BODY (MZB-321), then a chief SPAWN, held as MZB-333
+    says.
+  - M9 sends no chief HAND_BACK, since there is no puppet.
+  - A held take can apply after the party is home. Its late DONE makes the slot Owed, and a SPAWN follows.
+    This is accepted: both wait until no player is near.
+- **MZB-316** (gifts at the grove's price, the rest of ledger 12):
+  - When the market has no price for the tribute good, `gift_value` prices it at `1 / tribute_per_coin`.
+    Today it uses `m.price(g) / PRICE_ONE`, which is 0 for an unpriced good, so every gift of gold was
+    worth nothing.
+  - So the Umvuthi's 7 gold blocks, 567 nuggets, are 63 coins.
+- **MZB-317** (TRADED):
+  - A masked trade with a grove's minion is worth `nuggets / tribute_per_coin` coins. It is booked through
+    `Conflict::traded`, once by op id.
+  - Java writes it only for a minion tagged by a grove or standing in a grove's footprint. The count is
+    the gold nuggets on either side of the trade, and a trade with no gold side writes nothing.
+  - A trade with a band's puppet writes nothing.
+- **MZB-318** (CHIEF_PAID):
+  - It calls `pay_tribute(w, faction, payer, None, goods, at)`. That settles the payer's open demand, else
+    the settlers', else it books a gift (MZB-316).
+  - The payer goes into the trade memory only when the slot and generation are the live chief's (Body).
+  - PAID_STRAY (flags 1) is a payment to an untagged Umvuthi standing in a grove's footprint. It is booked
+    as tribute, with no memory entry.
+  - A payment to an Umvuthi outside every grove writes nothing.
+- **MZB-319** (gold blocks and ingots):
+  - The Umvuthi wants gold blocks (the config's gold_block × 7), but the catalogue has only `gold_nugget`.
+  - So rtsim-jni's CHIEF_PAID translation maps items through `TRIBUTE_EQUIVALENTS` (gold_block 81 nuggets,
+    gold_ingot 9) before `own_items`, merging entries. The engine sees 567 gold_nugget.
+  - TRIBUTE_PAID (M3's) is untouched.
+- **MZB-320** (trade memory): `Camp.traded: Vec<(u64, u64)>`, sorted, of at most 1,024 players
+  (PLACEHOLDER, the census's own cap).
+  - Past the cap, a payment is still tribute but is not remembered.
+  - It is fed by CHIEF_PAID, and by the census's traded list when TRADED_SLOT and TRADED_GENERATION are the
+    live chief's. The two are unioned, so a payment the engine has and the body has not yet written stays.
+  - It is saved. It is cleared when the chief dies or is written off, and when an heir is seated.
+- **MZB-321** (CHIEF_BODY at home):
+  - It holds agent 0, the camp's epoch, health 0 (the body keeps its own), flags 0 and the memory.
+  - It is sent before every chief SPAWN, and whenever a census's traded list is shorter than the engine's.
+    It is never sent before SEAT_HEIR, since an heir's memory is empty.
+  - Java core keeps the latest for each faction for that epoch, and drops it at CAMP_OUT.
+  - Java writes it through a new `CampKind.chiefBody(Mob, ChiefBody)` (a default no-op): when the chief's
+    body is made, and at once onto a standing chief body of that slot and generation.
+  - GroveKind writes it with `setTradedPlayersCompound` (a ListTag of `NbtUtils.createUUID`), never with
+    `rememberTrade`, so nothing is journaled.
+  - Its puppet and travel use (agent not 0) are M11's.
+- **MZB-322** (HAVEN_CHEST):
+  - rtsim-jni decodes it in a new `observe_latest` arm, shared with M6's CHIEF_STATE. Today `observe_state`
+    drops latest-wins kinds.
+  - The engine keeps the chests by faction, unsaved, and forgets one at CAMP_OUT.
+  - The plugin's `GroveChests`, after Ice and Fire's `Lairs.java`, looks at each grove that is in every 200
+    ticks (PLACEHOLDER). It picks the chest or barrel (`ChestBlockEntity`, `BarrelBlockEntity`) in the
+    footprint nearest the centre that has room or a loot table not yet rolled.
+  - It sends HAVEN_CHEST when the choice or its free slots change, and one with 0 free slots when there is
+    none.
+- **MZB-323** (tribute into the chest):
+  - Each booked payment (CHIEF_PAID, the envoy's TRIBUTE_PAID, a gift) adds its goods to
+    `Camp.owed_tribute`.
+  - While the grove's chest is known with free slots and nothing is being placed, the engine takes one good
+    out of the books: the least of what is owed, the faction's stock and free × 64. It uses a new
+    `World::stock_to_players(i, goods, at)` (player_out).
+  - It sends TRANSFER_TO_CONTAINER through rtsim-jni's outbox with an op id, as the dragons do, and keeps it
+    as `Camp.placing: Option<Placing { op, good, amount }>` (saved).
+  - APPLIED or DUPLICATE_OP lowers what is owed by the amount. FAILED returns the goods through
+    `stock_from_players`.
+  - A grove whose chest is gone keeps owing.
+- **MZB-324** (owed hunts, ledger 11): a unit field `hunts: u32` (raptor 2, PLACEHOLDER) and a culture field
+  `hunt_cap: u32` (8, PLACEHOLDER).
+  - `raid_district` adds `survivors × hunts` for each class it did not skip, capped at `hunt_cap` per
+    district.
+  - A watched raid adds nothing, since there the jar's raptors hunt for themselves.
+  - The hunts are kept in `Faction.hunts: Vec<Hunt { district, count, op }>`, a small Vec, never a one-entry
+    BTreeMap.
+- **MZB-325** (the hunt records; the ids are provisional):
+  - OWED_HUNT (0x880C, engine to Java, latest-wins for each faction and district): faction, district,
+    dimension, centre x and z, radius 48 (PLACEHOLDER), count and op id.
+  - HUNT_APPLIED (0x0816, journaled): faction, district, op id and killed.
+  - They are the next free ids after today's DIFFICULTY 0x0815 and BAND_MARCH 0x880B. Another slice may
+    take them first, so they are settled at landing.
+  - One hunt is in flight for each district. It is resent at each session start and booked once by op id.
+    HUNT_APPLIED clears it whatever `killed` is.
+- **MZB-326** (applying a hunt): core `conflict/OwedHunts.java`, vanilla only.
+  - It keeps the latest command for each faction and district, unsaved.
+  - Once the circle's chunks tick entities, it kills up to `count` animals in it, nearest the centre first.
+    They must pass the jar's raptor test, rewritten in vanilla calls: no ATTACK_DAMAGE or less than 3, and
+    0.1 < width² × height < 6 (`EntityUmvuthana.registerHuntingTargetGoals`).
+  - It spares tamed, named and leashed animals (MZB-342), and kills with `kill()`, so their drops fall.
+  - It journals HUNT_APPLIED even when it killed none (the hunt is spent), with the circle's entity chunks
+    in M5's barrier.
+  - A crash between the kills and the save can apply one hunt twice, bounded by the cap.
+- **MZB-327** (plunder takes livestock goods, the rest of ledger 11):
+  - A culture field `plunder_goods: Vec<String>`. Umvuthana's is `["leather", "wool"]`; the catalogue has no
+    meat good.
+  - When it is not empty, `raid_node`'s plunder takes those goods only, and its cap counts those goods
+    only. It ignores the units' `carry`: raptors carry 0, so today their plunder takes nothing.
+  - The goods are eaten: taken out of the node's stock through `take_stocks` and booked to no one.
+  - Only witnesses learn of it first-hand (CL-D61); the rest learn by gossip.
+- **MZB-328** (body makers and extras):
+  - The new `ConflictBodies.registerMaker(String body, Maker)`, with
+    `Mob make(ServerLevel level, double x, double y, double z, float yaw, List<Mob> extras)`. ConflictBridge's
+    placing (`ConflictBodies.create` at ConflictBridge.java:1145) asks the maker first.
+  - Extras get the AGENT tag before they join and are kept in `Slot.extras`. They despawn with their slot
+    or stack, book nothing and are never saved.
+  - The leader's death is the unit's casualty. A follower's death is nothing, and a follower left with no
+    leader fights on until its stack despawns.
+  - The raptor maker:
+    1. the constructor, then `moveTo`;
+    2. no `finalizeSpawn`, which would add 4 or 5 untagged followers (MZB-216's stand-in leaks them today);
+    3. exactly 4 followers through `EntityUmvuthanaFollowerToRaptor(type, level, leader)`, on the jar's
+       0.1-block circle with its weapon roll (`random.nextInt(3) == 0 ? 1 : 0`).
+
+    With exactly 4 followers, a pack's strength is the unit's 2.6.
+  - M11's summons reuse the extras.
+- **MZB-329** (raptors on Peaceful; extends MZB-234):
+  - A raptor and its followers discard themselves on Peaceful (their own `tick`), so the maker returns null
+    on Peaceful and the stack stays pending.
+  - A pack that discards itself is a despawn, not a casualty.
+- **MZB-330** (the mixins): in the plugin's `mic_rtsim_mowziesmobs.mixins.json`, shared with M6 (see *Shared
+  with M6* below).
+  - `EntityUmvuthiMixin` at `rememberTrade` HEAD sends CHIEF_PAID:
+    - the items from `getDesires()`, which still names what `fulfillDesire` just took;
+    - the player from its game profile id;
+    - the slot and generation from the body's CampMember;
+    - PAID_STRAY when it is untagged in a footprint, and nothing outside a grove.
+  - `EntityUmvuthiMixin` also gives `die`'s `getEntitiesNearby` call an empty list for a second body
+    (MZB-331).
+  - `ContainerUmvuthanaTradeSlotResultMixin` at `onTake`'s `ItemStack.shrink` sends TRADED, server side
+    only.
+- **MZB-331** (a second body): a chief body whose REMOVE line is held, or whose member already died, is a
+  second body.
+  - Its LivingDropsEvent is cancelled.
+  - Its death journals nothing; `Camps.onDeath` skips it.
+  - Its `die` takes no warriors with it (MZB-330), and it is removed.
+- **MZB-332** (the killer, shared with M6): core's `Camps.killer(dead, source)` takes the first of:
+  1. the source's entity, when it is a player;
+  2. the player owner of an `OwnableEntity` source;
+  3. `dead.getKillCredit()`, when it is a player (vanilla keeps one 100 ticks);
+  4. any other source entity, as BY_MOB;
+  5. else BY_NONE.
+
+  It applies to Camps only. M11 adopts it for BAND_CASUALTIES.
+- **MZB-333** (Rule U's holds):
+  - The new `CampKind.holdRemoval(level, site, body)` defaults to false. GroveKind returns true for an
+    Umvuthi with a non-spectator player within 160 blocks or a player target.
+  - TAKE, REMOVE and SET_OUT-as-take lines on such a body are held with no time limit, and an epoch's end
+    answers them STALE.
+  - A chief SPAWN or SEAT_HEIR waits on `holdSpawn`: a player within 160 blocks of the throne, for at most
+    `HOLD_MAX` 6,000 ticks.
+- **MZB-334** (GroveKind's chief; supersedes MZB-209 and MZB-202):
+  - `chiefLines()` is true.
+  - `make` for the umvuthi body:
+    1. the constructor and `moveTo`;
+    2. `setDirection` before `addFreshEntity`, since the jar reads it only at tick 1;
+    3. `finalizeSpawn(STRUCTURE)` and `restrictTo(fire pit, -1)`, as worldgen does;
+    4. CHIEF_BODY's memory.
+  - `spawnAt` uses the site's throne (MZB-304), else the fire pit.
+  - `joined` restricts it again.
+  - The census writes TRADED t, TRADED_SLOT and TRADED_GENERATION from the chief body's
+    `getTradedPlayers()`.
+  - `sound()` returns `mowziesmobs:block.gong`, the grove's notice sound.
+- **MZB-335** (strength in observed fights, ledger 19, shared with M6): the plugin registers one
+  IndustryPlugin whose `fightStrength` gives:
+
+  | Body | Strength |
+  |---|---|
+  | Frostmaw (M6's) | 41.7 |
+  | Umvuthi | 5.0 |
+  | Any other `EntityUmvuthana` | 0.4 |
+  | Raptor | 1.0 |
+
+  So a pack of a raptor and 4 followers is 2.6.
+- **MZB-336** (the envoy):
+  - Its body is a grove minion. M3's guard is unchanged: it strips the jar's player and hurt-by goals while
+    the demand is open, and lifts them at an insult.
+  - The payment is taken at EntityInteract HIGHEST (MZB-110) and the event is cancelled, so the jar's trade
+    screen does not open.
+- **MZB-337** (the page format):
+  - RTC7 and META 6, shared with M6. The second slice to land bumps again.
+  - Camp gains `pressure` (M6's), `heir`, `traded`, `owed_tribute`, `placing` and `mask`.
+  - Faction gains `hunts`, and the wheel gains `Ev::CampHeir`.
+  - Fixtures are regenerated, with no migration.
+- **MZB-338** (rtsim-jni):
+  - CHIEF_PAID, TRADED and HAVEN_CHEST leave boundary.md §9.6's deferred list.
+  - CHIEF_BODY and OWED_HUNT get writers, and HUNT_APPLIED gets a decoder.
+  - The tribute's TRANSFER_TO_CONTAINER rides the existing `Outbox<TransferCmd>`, completed by
+    COMMAND_RESULT.
+- **MZB-339** (where the GameTests' camps come from):
+  - Tests 13, 15, 16 and 25's payment half declare their grove under `mowziesmobs:umvuthana_grove` at a far
+    base, so the native engine claims it as umvuthana's.
+  - Tests 27 and 30, and test 29's throne clauses, use scripted test camps (MZB-227).
+  - A GameTest cannot restart the session (MZB-228), so every restart case goes to the Rust protocol tests.
+- **MZB-340** (test 29's throne clauses are built in M9): its first three clauses are built in M9:
+  - the take and the removal held past 6,000 ticks;
+  - the spawn held for the player or 6,000 ticks;
+  - an epoch's end answering them STALE.
+
+  M11 adds the rest (the puppet, re-binding and the four exceptions). Its second-body clause needs a
+  puppet, so M11 builds it, on M9's MZB-331.
+- **MZB-341** (test 25 in three parts):
+  - a GameTest on a real grove for the payment;
+  - a scripted test camp for CHIEF_BODY's write;
+  - Rust protocol tests for the restart, the Invasion round trip, a dead slot's census and payment, and a
+    succession.
+
+  The puppet clauses are M11's.
+- **MZB-342** (an owed hunt spares tamed, named and leashed animals; the question for Ben, decided on the
+  recommendation): an owed hunt kills only stock that nobody has marked as theirs. Embodied raptors do what
+  the jar's AI does: its damage test already spares wolves (ATTACK_DAMAGE 4), but not a named cow.
+- **MZB-343** (the seams M9 leaves):
+  - M10 owns BAND_MARCH, the column and the walk-in. M9 touches none of them: a grove's band, with or
+    without its chief, marches as M10 makes any band march.
+  - M11 owns the aloft movement, CHIEF_BODY's travel (agent not 0, ledger 24), `chief_stack` for the grove
+    (its stack and puppet, MEMBER_CHIEF), the chief's HAND_BACK, the summons (a mixin at
+    `EntityUmvuthi.java:1050` adding to MZB-328's extras), the chief's death away through BAND_CASUALTIES
+    (MZB-312's engine half) and test 29's other clauses.
+
+### M9 design for the implementer
+
+**Where it stands.** Designed only; no code. Branch `design/mowzie-m9` (this doc). The implementation
+branch starts from `feat/mowzie-m5` with `feat/mowzie-m4` merged in (MZB-300). Compile as M5 does, in this
+worktree's own target dir; the Rust is `nice -n 10 nix develop .# -c cargo test -p rtsim-conflict -p
+rtsim-jni` from the repo root.
+
+**Jar facts** (Mowzie's Mobs 1.21.1-1.8.2, read with cfr in `target/m9-mowzie-cfr/src`, signatures checked
+with javap):
+
+*Registry and the Umvuthi*
+- `EntityHandler`: `UMVUTHI` (id `mowziesmobs:umvuthi`), `UMVUTHANA_MINION` (`mowziesmobs:umvuthana`),
+  `UMVUTHANA_RAPTOR` (`mowziesmobs:umvuthana_raptor`), `UMVUTHANA_FOLLOWER_TO_RAPTOR`
+  (`mowziesmobs:umvuthana_follower_raptor`), `UMVUTHANA_CRANE`.
+- `EntityUmvuthi`:
+  - `public boolean requiresCustomPersistence()` (393) returns true.
+  - `public void tick()` (438) reads `getDirectionData()` only when `this.tickCount == 1` (446), so
+    `public void setDirection(int direction)` (701) takes only before the first tick.
+  - `public ItemStack getDesires()` (725) is synched data, the config's `gold_block` × 7 (ConfigHandler
+    470 to 471).
+- Trade memory:
+  - `public void setTradedPlayersCompound(ListTag players)` (729) makes a new compound, so it syncs.
+  - `public Set<UUID> getTradedPlayers()` (735) reads list type 11 (int arrays).
+  - `public boolean fulfillDesire(Slot input)` (757) does `input.remove(desires.getCount())`.
+  - `public boolean hasTradedWith(Player player)` (766) keys on `player.getGameProfile().getId()`.
+  - `public void rememberTrade(Player player)` (770) appends `NbtUtils.createUUID(profile id)` to "players"
+    with no dedupe. Its only caller is `MessageUmvuthiTrade.handleServer` (61):
+    `if (!hasTradedWith && umvuthi.fulfillDesire(trade.getSlot(0))) umvuthi.rememberTrade(player)`. It runs
+    only when `umvuthi.getCustomer() == player` and `player.containerMenu instanceof ContainerUmvuthiTrade`;
+    a player who has traded already gets Sun's Blessing instead.
+- `public void die(DamageSource cause)` (859) calls `super.die(cause)` twice, so two LivingDeathEvents.
+  Between them it calls `this.getEntitiesNearby(EntityUmvuthana.class, 30.0, 20.0, 30.0, 30.0)` (861) and
+  sets `timeUntilDeath = random.nextInt(20)` on each that `isUmvuthiDevoted()`. That warrior then
+  `hurt(indirectMagic(this, null), health + 1)` itself, a source with no causing entity.
+  - The bytecode is invokespecial `MowzieGeckoEntity.die`, invokevirtual
+    `getEntitiesNearby:(Ljava/lang/Class;DDDD)Ljava/util/List;`, `isUmvuthiDevoted`, invokespecial
+    `MowzieGeckoEntity.die`.
+  - The second `die` finds `dead` already set, so it drops nothing. M5's `Camps.onDeath` books one death,
+    since its `dying.putIfAbsent` keys on the UUID.
+- `public SpawnGroupData finalizeSpawn(ServerLevelAccessor world, DifficultyInstance difficulty,
+  MobSpawnType reason, SpawnGroupData livingData)` (945).
+- Worldgen (`UmvuthanaGrovePieces` 278 to 287) does `new EntityUmvuthi(UMVUTHI.get(), level)`,
+  `setDirection(i)`, `finalizeSpawn(level, difficulty, STRUCTURE, null)`, then `restrictTo(firePitPos, -1)`.
+  The loot (the Sol Visage) is `LootTableHandler.UMVUTHI`.
+
+*Minion trades*
+- `ContainerUmvuthanaTrade` holds `private final EntityUmvuthanaMinion umvuthanaMinion`.
+- Its private inner `SlotResult extends Slot` has `public void onTake(Player player, ItemStack stack)` (106).
+  It calls `ItemStack.shrink:(I)V` once (113), and only after `getOfferingTrade()` and `Trade.getInput()`
+  match the input.
+- `Trade` is `record Trade(ItemStack input, ItemStack output, int weight)`.
+- The minion's default trades pay or take gold nuggets on one side, except flint for feathers and back.
+
+*Targeting*
+- `EntityUmvuthana.registerHuntingTargetGoals` (338 to 356):
+  - animals that have no ATTACK_DAMAGE or less than 3.0, with 0.1 < width² × height < 6.0;
+  - zombies, skeletons and zoglins;
+  - it avoids creepers;
+  - players, but never on Peaceful, and skipping one whose `armor.get(3)` (the head) is an `UmvuthanaMask`.
+- The raptor (88 to 89) and a leaderless follower (`setLeaderUUID(ABSENT_LEADER)`, 96) use it. The minion
+  does not hunt animals.
+- `EntityUmvuthanaMinion.registerTargetGoals` (131 to 147): `UmvuthanaHurtByTargetAI`, and a player goal
+  that skips masked players unless `target == getMisbehavedPlayer()`.
+
+*Raptors*
+- `EntityUmvuthanaRaptor.finalizeSpawn` (191 to 201):
+  - `size = random.nextInt(2) + 3`, `for (i = 0; i <= size; ++i)`: 4 or 5 followers.
+  - Each is `new EntityUmvuthanaFollowerToRaptor(UMVUTHANA_FOLLOWER_TO_RAPTOR.get(), level(), this)`, put
+    at 0.1 × (cos, sin)(theta × i), with `setWeapon(random.nextInt(3) == 0 ? 1 : 0)` and
+    `world.addFreshEntity`.
+- The follower's constructor is
+  `(EntityType<? extends EntityUmvuthanaFollowerToRaptor>, Level, EntityUmvuthanaRaptor leader)`.
+- `public void addPackMember(EntityUmvuthanaFollowerToRaptor)` (142).
+- The raptor's tick keeps its pack on a 3-block circle (it moves a follower more than 20 blocks off), and
+  at 117 to 118 does `if (!isClientSide && difficulty == PEACEFUL) this.discard();`. The follower's tick
+  (49 to 50) does the same.
+- `remove` in the first tick kills the pack, and `die` sets them leaderless.
+- ATTACK_DAMAGE 6 and MAX_HEALTH 10 (97 to 98).
+- `checkSpawnRules` (221) refuses Peaceful.
+- `ConfigHandler.SpawnConfig`'s constructor takes `heightMax` before `heightMin`, so the Umvuthana's
+  `-65, 60` is a minimum of 60 with no maximum.
+
+*Other*
+- `sounds.json` has `block.gong`, so the sound is `mowziesmobs:block.gong`.
+- The mixin target strings:
+  - `Lcom/bobmowzie/mowziesmobs/server/entity/umvuthana/EntityUmvuthi;getEntitiesNearby(Ljava/lang/Class;DDDD)Ljava/util/List;`
+  - `com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthanaTrade$SlotResult`
+- MixinExtras 0.5.3 is NeoForge's (`mixinextras-neoforge` in the Gradle cache), so `@WrapOperation` is
+  there.
+
+**Contradictions with MOWZIE.md and other slices:**
+1. **Peaceful.** MZB-215, MZB-234 and M6's draft say the jar keeps its own mobs on Peaceful. Raptors and
+   their followers discard themselves (MZB-329).
+2. **The raptor stand-in.** MZB-216 makes it through `finalizeSpawn`, which adds 4 or 5 untagged followers
+   per raptor, and they leak (MZB-328).
+3. **Pack size.** §4.13's 2.6 for a pack fits 4 followers; the jar makes 4 or 5. The maker makes 4.
+4. **The trade event.** Ledger 18 says "an event on minion trades". There is none, so a mixin is used at
+   `SlotResult.onTake`.
+5. **The set-out.** §4.5 hands the Umvuthi's slot at its set-out "to its puppet". There is no puppet before
+   M11, so it is a held take (MZB-314).
+6. **A grove found empty.** No wait is stated for a grove found without its Umvuthi. MZB-305 takes
+   EQUILIBRIUM.md's cap.
+7. **The census body.** MZB-220 kept the Umvuthi out of the census bodies, and MZB-302 replaces it.
+   MZB-202 and MZB-209 are superseded by MZB-320 and MZB-334.
+8. **The id range.** See MZB-300.
+
+**What M5 must provide** (it is built; keep these as they are): `Camps.onDeath`'s `putIfAbsent` by UUID
+(test 27 counts on it), `holdSpawn`, `HOLD_MAX`, `playerNear`, `playable` (MZB-233), the census writer's
+chief fields and traded fields, and `MowzieCamps.groveCentre` (MZB-242). M9 changes `GroveKind` (MZB-334),
+the line dispatch's `chiefLines` gate and the raptor stand-in (MZB-328).
+
+**Shared with M6** (each is built once, by whichever slice lands first; the other uses it):
+- `Camp.pressure: Pressure` with `Pressure::at_cap`, and the found-empty rule (MZB-305).
+- The `RenewalDef` type and its resolution (MZB-307 adds its own field).
+- `chief_killed_at_camp` (MZB-306).
+- The mixin config `mic_rtsim_mowziesmobs.mixins.json`: required true, minVersion 0.8, JAVA_21,
+  defaultRequire 1, no refmap. M6 adds `EntityFrostmawMixin`; M9 adds `EntityUmvuthiMixin`,
+  `ContainerUmvuthanaTradeSlotResultMixin` and `ContainerUmvuthanaTradeAccessor`.
+- rtsim-jni's `observe_latest` arm (CHIEF_STATE and HAVEN_CHEST).
+- `Camps.killer` (MZB-332).
+- The one `fightStrength` plugin (MZB-335).
+- The page bump (MZB-337).
+- The wheel tags: Arrival 8, CampHeir 9.
+
+Two fixes for M6:
+- its draft's Peaceful wording (item 1 above);
+- its `renewal` validation, which must not be read as the grove's (MZB-307).
+
+**Engine** (rtsim-conflict, rtsim-jni):
+- `culture.rs`:
+  - `CultureDef` and `Culture` gain `chief_body`, `chief_renewal`, `chief_leads`, `chief_strength`,
+    `plunder_goods` and `hunt_cap`; `UnitDef` gains `hunts`.
+  - Validation: `chief_body` names a dictionary body, `chief_renewal` needs `camp_bodies`, and every
+    `plunder_goods` entry is a catalogue good.
+  - `data/cultures/umvuthana.json`: chief_body umvuthi, chief_renewal {6, 192, 96, true}, chief_leads
+    [invasion], chief_strength 5.0, plunder_goods [leather, wool], hunt_cap 8, raptor hunts 2.
+- `engine/camp.rs`:
+  - `CHIEF_SLOT`, the exclusions (MZB-301), `Camp` fields `heir: Option<Heir>`,
+    `traded: Vec<(u64, u64)>`, `owed_tribute: Vec<(u32, i64)>` (good, milli), `placing: Option<Placing>`
+    and `mask: Option<(u64, u32)>`.
+  - `line_flags(f, slot)` (MZB-303).
+  - The census: the chief stray (MZB-302, MZB-305), the traded union (MZB-320), CHIEF_BODY when short
+    (MZB-321), and the chief's write-off (MZB-311).
+  - `chief_can_lead`, and `camp_draw` taking the chief (MZB-313).
+  - `camp_heir(w, f, at)`, which sends the pair (MZB-308) or waits. The booking of ACTION_MASK and
+    SEAT_HEIR answers (MZB-309), and of a Dead chief slot (MZB-312).
+- `engine.rs`:
+  - `strength` and `strength_by_class` (3098, 3120) add the leading chief.
+  - The `chief_stack(c)` gate at MEMBER_CHIEF (3976) and BAND_CHIEF (4022).
+  - The party's end at Home for the chief (MZB-315).
+  - CAMP_DEATH on CHIEF_SLOT runs MZB-306.
+  - `gift_value` (2508), MZB-316.
+  - TRADED to `traded` (2477), MZB-317; CHIEF_PAID to `pay_tribute` (2404), MZB-318.
+  - `owed_tribute` and `place_tribute(w, f, at)`, MZB-323.
+  - `raid_district` (3453) owes hunts and `raid_node` (3579) plunders, MZB-324 and MZB-327.
+  - `send_hunts(at)` at session start and on a new hunt; `hunt_applied`.
+- `rtsim-world`: `World::stock_to_players(i, goods, at)`, the mirror of `stock_from_players`.
+- `boundary.rs`: `ACTION_MASK` = 8, OWED_HUNT and HUNT_APPLIED (MZB-325), and the CHIEF_BODY writer. The
+  decoders of CHIEF_PAID, TRADED and HAVEN_CHEST are wired into `Conflict::observe`.
+- `persist.rs`: RTC7 and META 6 (MZB-337), `Ev::CampHeir` on tag 9.
+- rtsim-jni:
+  - `TRIBUTE_EQUIVALENTS` in the CHIEF_PAID translation (MZB-319).
+  - `observe_latest` (MZB-322).
+  - Writers for CHIEF_BODY and OWED_HUNT, and the HUNT_APPLIED decoder.
+  - `place_tribute`'s TRANSFER_TO_CONTAINER through `st.outbox.push_with_op`, with COMMAND_RESULT
+    completing it (engine.rs 1563 to 1568) and its outcome handed to the conflict as `placed(op, outcome)`.
+- `synth.rs` emulator, for run 10:
+  - `CampBody` gains `chief: bool` and `traded: Vec<Uuid>`;
+  - `CampWorld` gains `near: bool` (a player within 160 blocks);
+  - `apply_line` plays ACTION_MASK and SEAT_HEIR as the plugin does: the pair together, the farthest
+    warrior, the holds and seating in place.
+
+**Java, core** (`neoforge/core/.../mic_rtsim/`):
+- `ConflictRecords`:
+  - `CampReconcile.ACTION_MASK` = 8.
+  - Layouts for CHIEF_PAID (0x0814), TRADED (0x0810), HAVEN_CHEST (0x0092), CHIEF_BODY (0x880A),
+    OWED_HUNT and HUNT_APPLIED, matching boundary.md byte for byte.
+- `conflict/CampKind`: `default boolean holdRemoval(ServerLevel, Camps.Site, Mob body)` (false) and
+  `default void chiefBody(Mob body, ChiefBody memory)` (no-op).
+- `conflict/Camps`:
+  - FLAG_THRONE read into `Site.throne` (MZB-304).
+  - The dispatch plays chief lines when `chiefLines()` holds.
+  - ACTION_MASK with SEAT_HEIR as one unit, and the seating in place (MZB-308, MZB-310).
+  - `holdRemoval` holds with no limit, answered STALE at the epoch's end (MZB-333).
+  - The CHIEF_BODY store and its write (MZB-321).
+  - `killer(dead, source)` (MZB-332), replacing `byKind(source.getEntity())` in `onDeath` (1203).
+  - The second body: a weak set, a LivingDropsEvent cancel at LOWEST, and a skip in `onDeath` (MZB-331).
+- `conflict/ConflictBodies`: `registerMaker` and `Maker`. `ConflictBridge`: `Slot.extras`, the maker at
+  1145, and the extras' despawn on recall, dematerialize and failure (MZB-328).
+- `conflict/OwedHunts` (MZB-326).
+
+**Java, plugin** (`neoforge/mowziesmobs/.../mic_rtsim_mowziesmobs/`):
+- `GroveKind` (MZB-302, MZB-333, MZB-334), plus a `FightWatch` weak map of the last player hit on an
+  Umvuthi (LivingDamageEvent.Post, a player by `Camps.killer`'s rule) for MZB-310.
+- `RaptorMaker` (MZB-328, MZB-329), registered in `MicRtsimMowziesMobs` for `conflict/umvuthana/raptor`.
+- `GroveChests` (MZB-322).
+- `MowzieStrength implements IndustryPlugin` (MZB-335).
+- Mixins in `mixin/`:
+  - `@Mixin(EntityUmvuthi.class)`, with
+    `@Inject(method = "rememberTrade", at = @At("HEAD")) private void mic_rtsim_mowziesmobs$paid(Player player, CallbackInfo ci)`.
+    The same class has
+    `@WrapOperation(method = "die", at = @At(value = "INVOKE", target = "<the getEntitiesNearby string above>")) private List<?> mic_rtsim_mowziesmobs$devoted(EntityUmvuthi self, Class<?> c, double a, double b, double cc, double r, Operation<List<?>> op)`,
+    which returns `List.of()` for a second body and otherwise calls `op`.
+  - `@Mixin(targets = "com.bobmowzie.mowziesmobs.server.inventory.ContainerUmvuthanaTrade$SlotResult")`,
+    with `@Shadow @Final ContainerUmvuthanaTrade this$0;` and
+    `@Inject(method = "onTake", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/item/ItemStack;shrink(I)V")) private void mic_rtsim_mowziesmobs$traded(Player player, ItemStack stack, CallbackInfo ci)`.
+  - `@Mixin(ContainerUmvuthanaTrade.class) interface ContainerUmvuthanaTradeAccessor` with
+    `@Accessor("umvuthanaMinion") EntityUmvuthanaMinion mic_rtsim_mowziesmobs$minion();`.
+  - All at the default priority 1000. Whether another pack mod mixes into these methods is UNVERIFIED;
+    `defaultRequire 1` fails the boot loudly if one moves them.
+- No bespoke entity anywhere (D3). Everything Mowzie is in the plugin (D4); core gets only generic hooks.
+- UR-1: every body is the jar's own type, the memory is the jar's own field, and extras and owed hunts are
+  never saved. The mixins only observe, or empty a list for a body the reconciler made and removes.
+  Uninstalling leaves vanilla entities and items.
+- D1: GroveChests looks only at groves that are in, every 200 ticks. OwedHunts runs only while it holds a
+  command. The memory is at most 16 KiB a grove. No per-tick scan is added.
+
+**GameTests** (`MowzieGameTests` unless noted; one batch per test, each on its own far base, MZB-247):
+
+12. `aMaskedPlayerIsNotTargetedByTheBand`:
+    - Setup: BAND_MATERIALIZE a raid (3 warriors, 1 raptor through the maker) 12 blocks from two fake
+      players, one with an `UmvuthanaMask` on the head.
+    - Assert, after 100 ticks: no body or follower targets the masked player, and some target the bare one.
+    - The masked player strikes warrior 0. Assert that it targets that player within 20 ticks.
+13. `theUmvuthisTradeIsReportedAsTributeAtTheCamp` (native engine):
+    - Setup: a real grove; the census adopts its Umvuthi as the chief (ADOPT, LINE_CHIEF, CHIEF_SLOT).
+    - A masked fake player opens its trade and pays 7 gold blocks through `MowzieKit.payUmvuthi`
+      (`MessageUmvuthiTrade.handleServer`, with a test `IPayloadContext` that runs `enqueueWork` at once).
+    - Assert one CHIEF_PAID: the chief's slot and generation, gold_block 7, flags 0. The engine books a
+      63-coin gift (no demand is open).
+    - A second payment: Sun's Blessing and no record.
+    - A nugget trade with a grove minion: one TRADED with the trade's count.
+    - An Umvuthi outside every grove: no record.
+14. `anUmvuthanaEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment`: core's test 14 (M3) again,
+    with the jar's minions as the envoy and its guards.
+    - Assert that while the demand is open, no minion targets the unmasked fake player, whatever its own
+      player goal says.
+    - Paying opens no `ContainerUmvuthanaTrade`.
+    - The rest is M3's extended clauses: ownerless projectile, golem and skeleton no damage, a player's
+      arrow an insult, `/kill` withdraws.
+15. `aChiefKilledAtTheCampIsReportedWithTheKiller`, the Umvuthi half (M6 does the Frostmaw's):
+    - Setup: a real grove with its chief adopted.
+    - A fake player kills it. Assert one CAMP_DEATH on CHIEF_SLOT with BY_PLAYER and that player. The
+      engine books the Killing, `cowed_until`, P = 1 and the heir due at max(cowed, 12 days).
+    - Again with a tamed wolf of the player as the killer: BY_PLAYER, the owner.
+    - Again with the player's hit followed by a fall within 100 ticks: BY_PLAYER.
+16. `tributeLandsInAGroveChestWhenTheGroveLoads` (native engine):
+    - Setup: a real grove with no chest. Pay the Umvuthi as test 13 does. The engine owes the tribute.
+    - Release the grove, place a chest in its footprint, and force it again.
+    - Assert, in order: HAVEN_CHEST (27 free); TRANSFER_TO_CONTAINER; 567 gold nuggets in the chest;
+      COMMAND_RESULT APPLIED; owed 0.
+    - A full chest: nothing is sent until there is room.
+17. `raptorsHuntTheBasesAnimalsAndAnOwedHuntIsAppliedOnLoad`:
+    - Embodied: a raptor pack (the maker) beside cows and sheep at a test district kills them by the jar's
+      AI.
+    - Owed: a scripted OWED_HUNT (count 5, radius 48) on a far base that is not loaded, holding 4 cows, a
+      sheep, a tamed wolf, a named cow and a leashed sheep. Force it. Assert:
+      - Nothing dies before the chunks tick entities.
+      - Then the 5 eligible animals die, nearest first, with their drops on the ground.
+      - The tamed, named and leashed animals live.
+      - HUNT_APPLIED (killed 5) is journaled with the op id.
+      - The same op again kills nothing.
+    - A second hunt of 10 with none left: HUNT_APPLIED, killed 0.
+20. `eachMowzieBodysFightStrengthIsItsShare` (test 18's pattern, ConflictGameTests 986 to 1040):
+    - Setup: each body in turn (Umvuthi, minion, raptor pack, and M6's Frostmaw) attacks the industry yard.
+    - Assert that IND_FIGHT carries `Threats.strength` at 5.0, 0.4, 2.6 (summed over the pack) and 41.7,
+      within 0.01.
+25. `theTradeMemoryRoundTripsThroughTheEngine`, in three parts (MZB-341):
+    - Real grove, native engine: the adopt, then a masked payment. Assert CHIEF_PAID with the chief's slot
+      and generation, a settled demand or a gift, and no second record.
+    - Scripted test camp: CHIEF_BODY with two players, then a chief SPAWN. Assert `hasTradedWith` is true
+      for both, and that the write journals nothing.
+    - Rust protocol tests: see below.
+27. `killingTheUmvuthiKillsDevotedUmvuthanaWithin30Blocks`:
+    - Setup: a test camp; ADOPT an Umvuthi as the chief, and warriors 10, 25 and 35 blocks off. A
+      player-bound follower stands at 10 blocks.
+    - The fake player kills the Umvuthi. Assert one CAMP_DEATH for the chief, and one Sol Visage on the
+      ground.
+    - The warriors at 10 and 25 die within 20 ticks, each a CAMP_DEATH with BY_NONE. The 25-block one is
+      BY_PLAYER when the player hit it 40 ticks before.
+    - The warrior at 35 and the follower live.
+29. `theUmvuthisLinesWaitWhileAPlayerIsNear`, the first three clauses (MZB-340):
+    - A TAKE and a REMOVE on a test camp's chief wait 6,100 ticks with the fake player 150 blocks off. With
+      the player moved 170 blocks off and set as the Umvuthi's target each tick, they still wait. With
+      neither, they apply the next tick.
+    - A chief SPAWN waits for the player to leave, or for 6,000 ticks.
+    - Out and in: every held line is STALE.
+30. `anUmvuthiHeirTakesAWarrior`:
+    - The scripted pair on a test camp with three warriors, one with a held TAKE. Assert the warrior removed
+      is the farthest from the fake player and not the held one. The heir:
+      - stands at the throne line's spot, in its direction;
+      - was made by `finalizeSpawn(STRUCTURE)`;
+      - is restricted to the pit;
+      - has `getTradedPlayers()` empty.
+
+      MASK is answered with the warrior's slot and generation, and SEAT_HEIR DONE.
+    - With no warrior, both are STALE.
+    - With FLAG_THRONE clear: the fire pit, direction 1.
+    - Seated in place: L_A is the old generation, the old body is tagged, and its REMOVE is held by the
+      player at 150 blocks. The heir appears where the old body stood in one tick, at full health with an
+      empty memory, and the REMOVE is STALE.
+    - The old body targets the player and was hit by it 100 ticks ago: the seat waits. 600 ticks after that
+      hit, the seat is done.
+
+**Rust tests:**
+- `rtsim-conflict` unit tests:
+  - The chief slot is never drawn or counted.
+  - A grove found empty waits 192 days, and a stray cancels the wait.
+  - A chief killed at the grove: P, the heir's due time, and no order while no warrior is home.
+  - The pair's booking: DONE, NOTHING, STALE, a masked slot with a line in flight, and `drawable` 0.
+  - Seating over a Dead slot.
+  - The write-off.
+  - The away death, Left and Gone.
+  - The chief leads only an Invasion: 12.6, Body to Left, Owed to Gone, and no MEMBER_CHIEF.
+  - Home: Left to Body; Gone to CHIEF_BODY, then SPAWN.
+  - `gift_value`: 567 nuggets are 63.
+  - TRADED is booked once by op.
+  - CHIEF_PAID on a live slot, a dead slot and a stray.
+  - The memory: its cap, its union with the census, and its clearing.
+  - Hunts are owed by surviving raptors, capped, and nothing is owed for a watched raid.
+  - Plunder of leather and wool only, eaten.
+  - Placing: an amount, then APPLIED, DUPLICATE or FAILED.
+  - Save and load with every new field.
+- `rtsim-jni` protocol tests:
+  - The CHIEF_PAID gold equivalents.
+  - HAVEN_CHEST is latest-wins.
+  - A restart after a payment and before any CHIEF_BODY keeps the memory (test 25).
+  - The Invasion round trip (test 25): the chief Gone, home, CHIEF_BODY before SPAWN.
+  - A dead slot's census and a payment to it add nothing, and the payment is still tribute (test 25).
+  - A succession clears the memory (test 25).
+  - An owed hunt is resent at the session start and booked once.
+  - The tribute transfer through the outbox, across a restart.
+
+**Sim runs** (`rtsim-cli sim mowzie`; `RUNS` and `main`'s dispatch in `crates/rtsim-cli/src/sim/mowzie.rs`):
+- **Run 5, the rest** (`grove_ladder` grows), must show:
+  - plunder takes only leather and wool, eaten;
+  - an Invasion draws the chief and fights at 12.6;
+  - the grove in and out through `CampWorld`: raids leave and come home, no census books a living survivor
+    dead, and a refill while a band is out returns to the cap with each survivor's slot kept;
+  - hunts are never over the cap;
+  - gold gifts are worth nuggets / 9.
+- **Run 6, the grove** (a new `grove_renewal`), must show:
+  - an emptied grove refills to its cap of 9 at 2 a day, with the chief slot untouched;
+  - a grove found without its Umvuthi seats its heir at 192 days, or at once when a stray turns up.
+- **Run 10** (`camp_reconciler`) gains held lines and heirs in the emulator. After every event it checks
+  that no grove holds two live chief bodies, that the chief is in no pool count, and that each MASK DONE
+  has its SEAT_HEIR DONE in the same reconcile.
+- **Run 12** (a new `heir_farmed`): an Umvuthi killed by a player as soon as its body stands, for 60 game
+  years. It must show about 1.8 Sol Visages a game year at base 6 and about 1.0 at base 24, within 10%
+  (PLACEHOLDER) of EQUILIBRIUM.md's model, with each wait `min(192, base × 2^P)`.
+
+**Work split** (each sub-slice is committed and tested on its own):
+- **M9a, engine:**
+  1. Merge M4 into the M5 base.
+  2. The culture fields.
+  3. `CHIEF_SLOT` and its exclusions.
+  4. `line_flags` and the throne.
+  5. The census's chief stray and the found-empty heir.
+  6. `chief_can_lead`, the draw, strength and the `chief_stack` gate.
+  7. Home.
+  8. The death at the grove, the write-off and the away half.
+  9. `Ev::CampHeir`, `camp_heir` and the pair's booking.
+  10. `gift_value`, TRADED, CHIEF_PAID, the memory and CHIEF_BODY.
+  11. The chests, `stock_to_players` and `place_tribute`.
+  12. Hunts and plunder.
+  13. `boundary.rs` and `persist.rs` (RTC7), then the regenerated fixtures.
+  14. The rtsim-jni arms.
+  15. The Rust tests, and runs 5, 6, 10 and 12.
+
+  **Opus review here**, focused on the books: the pool and audit sums with the chief slot, and the pair's
+  booking under answers lost, late and replayed.
+- **M9b, Java camp and chief:**
+  1. The `ConflictRecords` layouts.
+  2. The `CampKind` hooks.
+  3. In `Camps`: the throne, the chief dispatch, the MASK and SEAT_HEIR pair, seating in place, the
+     `holdRemoval` holds, `killer`, the second body, and the CHIEF_BODY store.
+  4. In `GroveKind`: the chief body, `make`, `spawnAt`, `joined`, `holdRemoval`, `chiefBody`, the census's
+     TRADED list, the gong, and `FightWatch`.
+  5. The mixins and the accessor, in the shared config.
+  6. `MowzieKit.payUmvuthi`.
+  7. GameTests 15 (the Umvuthi half), 25 (the Java parts), 27, 29 (MZB-340) and 30.
+
+  **Opus review here**, focused on Rule U and the second body: no line applies in a player's sight, and no
+  path journals a second body's death.
+- **M9c, bands and the world:**
+  1. `registerMaker`, `Slot.extras` and `RaptorMaker`, with Peaceful.
+  2. `OwedHunts` and the hunt records.
+  3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer.
+  4. `MowzieStrength`.
+  5. GameTests 12, 13, 14, 16, 17 and 20.
+
+  **Opus review at the end**, of M9 whole against MOWZIE.md §4.5 and §4.9.
+
+**Question for Ben** (the design follows the recommendation, MZB-342):
+1. May an owed hunt (a raptor raid on a base nobody watched) kill tamed, named or leashed animals?
+   Recommended: no. It takes unmarked stock only, so a named pet never dies off-screen to a raid the player
+   could not see. Embodied raptors still do what the jar's AI does.
+
+**Traps.**
+- **Two death events.** `EntityUmvuthi.die` posts LivingDeathEvent twice. Key a death on the UUID, never on
+  the event.
+- **Direction.** `setDirection` is read only at tick 1: set it before `addFreshEntity`, never after.
+- **Gold gifts.** An unpriced good makes `gift_value` 0. Gold gifts were worth nothing until MZB-316.
+- **Latest-wins kinds.** `observe_state` drops them: HAVEN_CHEST and CHIEF_STATE need `observe_latest`.
+- **Gold blocks.** gold_block and gold_ingot are not in the catalogue. Translate them in rtsim-jni, never
+  in the engine.
+- **The base.** M4 and M5 are separate branches, so merge M4 in first.
+- **Answer flags.** CAMP_BODIES' answer lines carry no flags, and `send_lines` marks a slot in flight only
+  when its generation is not 0. Know the chief by its slot id, and track MASK apart.
+- **Raptor followers.** The raptor stand-in through `finalizeSpawn` leaks 4 or 5 untagged followers each.
+  A raptor removed in its first tick kills its pack.
+- **Raptor plunder.** With `carry` 0, plunder takes nothing unless `plunder_goods` is set.
+- **Spawn heights.** `SpawnConfig` takes `heightMax` before `heightMin`: the Umvuthana's `-65, 60` is
+  a minimum of 60.
+- **Duplicate payers.** `rememberTrade` does not dedupe. A union with the census must dedupe.
+- **The empty grove.** A grove found empty waits the full cap, 192 days, not 6.
+- **Trade-memory keys.** The jar keys trade memory on the game profile id. A fake player's profile id is
+  what counts, not its entity UUID.
+- **M6's renewal.** M6's `renewal` validation needs `recruits_per_day == 0`, so the grove needs its own
+  `chief_renewal` field.
+- **Wheel tags.** M6's Arrival takes wheel tag 8; CampHeir is 9.
+- **Peaceful.** M6's wording is false for raptors: they discard themselves.
+- **Ids in M6's range.** M5 took MZB-290 to 292 from M6's range.
+- **The minion's container.** `ContainerUmvuthanaTrade.umvuthanaMinion` is private, and `SlotResult` is a
+  private inner class. Use an accessor and `this$0`. Keep the accessor out of a GameTest holder's
+  signatures (nest it).
 
 ## M10 March
 
