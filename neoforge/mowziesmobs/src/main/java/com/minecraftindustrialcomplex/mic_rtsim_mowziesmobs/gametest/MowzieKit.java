@@ -249,7 +249,16 @@ public final class MowzieKit {
 
     /** A stone floor over the area at its highest surface, three blocks of air above; the stone's y (bodies stand at y + 1). */
     public static int platform(ServerLevel level, int x0, int x1, int z0, int z1) {
-        int top = level.getMinBuildHeight();
+        return platform(level, x0, x1, z0, z1, level.getMinBuildHeight());
+    }
+
+    /**
+     * As above, with the floor at {@code minTop} at the lowest. The jar's fire pit makes no warrior on ground at
+     * y 0 or below ({@code FirepitPiece.postProcess}: {@code bPos.getY() <= 0}), and the GameTest world's ground is
+     * at y -61, so a test that runs the real piece lays its floor higher.
+     */
+    public static int platform(ServerLevel level, int x0, int x1, int z0, int z1, int minTop) {
+        int top = minTop;
         for (int x = x0; x <= x1; x++)
             for (int z = z0; z <= z1; z++)
                 top = Math.max(top, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z));
@@ -260,6 +269,30 @@ public final class MowzieKit {
                     level.setBlock(new BlockPos(x, top + y, z), Blocks.AIR.defaultBlockState(), 2);
             }
         return top;
+    }
+
+    /**
+     * Has the engine save its pages at its next step, so the command header after it acknowledges what it holds and
+     * the holders drop their pending records (a record marker with none is discarded). A GameTest server never
+     * reaches the periodic save, and nothing else makes the engine acknowledge.
+     */
+    public static void acknowledge() {
+        ScriptedEngine engine = RtsimTests.engine();
+        engine.awaitIdle();
+        engine.requestSaveAtNextStep();
+    }
+
+    /**
+     * Inside {@code thenWaitUntil}: the chunk is unloaded (not just hidden: a hidden chunk forced again is
+     * promoted with no join), and none of the entities is in the level. After this a forced chunk reads its
+     * entities from disk, and each joins as a new object.
+     */
+    public static Runnable unloadedWithout(ServerLevel level, int cx, int cz, UUID... ids) {
+        return RtsimTests.io(() -> {
+            check("chunk (" + cx + ", " + cz + ") is unloaded", !level.hasChunk(cx, cz));
+            for (UUID id : ids)
+                check("entity " + id + " is unloaded", level.getEntity(id) == null);
+        });
     }
 
     // ---- test camps -----------------------------------------------------------------------------
@@ -359,6 +392,12 @@ public final class MowzieKit {
             return this;
         }
 
+        /** As {@link #lay()} with the floor at {@code minTop} at the lowest (the jar's fire pit needs ground above y 0). */
+        public Grove lay(int minTop) {
+            platform(far.level, cx * 16 + 8 - 30, cx * 16 + 8 + 30, cz * 16 + 8 - 30, cz * 16 + 8 + 30, minTop);
+            return this;
+        }
+
         public Grove declare() {
             ServerLevel level = far.level;
             int x = cx * 16 + 8, z = cz * 16 + 8;
@@ -377,7 +416,7 @@ public final class MowzieKit {
 
         /** A point {@code dx}, {@code dz} from the centre, at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8.5 : spot.x) + dx, z = (spot == null ? cz * 16 + 8.5 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 
@@ -456,9 +495,9 @@ public final class MowzieKit {
             return MowzieKit.site(faction);
         }
 
-        /** A point {@code dx}, {@code dz} from the spot, at standing height. */
+        /** A point {@code dx}, {@code dz} from the spot (the chunk's middle block before the den is declared), at standing height. */
         public Vec3 at(double dx, double dz) {
-            double x = spot.x + dx, z = spot.z + dz;
+            double x = (spot == null ? cx * 16 + 8 : spot.x) + dx, z = (spot == null ? cz * 16 + 8 : spot.z) + dz;
             return new Vec3(x, far.level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z)), z);
         }
 

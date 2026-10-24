@@ -259,7 +259,7 @@ public final class MowzieGameTests {
                 .thenExecute(g::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
-                    g.lay();
+                    g.lay(63); // the jar's fire pit makes no warrior on ground at y 0 or below, and the world's is at -61
                     Structure structure = level.registryAccess().registryOrThrow(Registries.STRUCTURE)
                             .get(ResourceLocation.parse(MicRtsimMowziesMobs.GROVE_STRUCTURE));
                     int px = g.cx * 16 + 8, pz = g.cz * 16 + 8;
@@ -730,7 +730,10 @@ public final class MowzieGameTests {
                             && c.removed == was[5]);
                     check("no marker made", c.markers == was[3]);
                     check("three stale lines counted (" + (c.staleLines - was[4]) + ")", c.staleLines - was[4] == 3);
-                    check("the Frostmaw stands and is still tagged", f[0].isAlive() && !f[0].isRemoved() && MowzieKit.tagged(f[0], den.faction, 0, 1));
+                    // The footprint is going down, so the Frostmaw may have unloaded since the line landed: it was not
+                    // taken (a take discards it) and it is still tagged.
+                    check("the Frostmaw was not taken (" + f[0].getRemovalReason() + ") and is still tagged", (f[0].getRemovalReason() == null
+                            || f[0].getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) && MowzieKit.tagged(f[0], den.faction, 0, 1));
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
                 .thenExecute(() -> den.force())
@@ -1022,8 +1025,9 @@ public final class MowzieGameTests {
                     den.force();
                 })
                 .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("the Nether chunk is loaded with its entities", nether.hasChunk(far.k, far.z0)
-                        && nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0))))
+                .thenWaitUntil(io(() -> check("the Nether chunk is loaded with its entities (chunk " + nether.hasChunk(far.k, far.z0)
+                        + ", entities " + nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0)) + ")", nether.hasChunk(far.k, far.z0)
+                        && nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0)))))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
@@ -1157,6 +1161,7 @@ public final class MowzieGameTests {
                     markerId[0] = m.id();
                     check("it is tagged mic_rtsim.record and carries mic_rtsim:pending", m.tagged() && m.carriesRecords());
                     record(test, "marker", "NBT tags " + m.nbt().getList("Tags", 8) + ", attachments " + m.nbt().getCompound("neoforge:attachments").getAllKeys());
+                    MowzieKit.acknowledge();
                 })
                 .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(markerId[0])))
                 .thenSucceed();
@@ -1713,10 +1718,9 @@ public final class MowzieGameTests {
                 .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, id[0]))))
-                .thenWaitUntil(() -> {
-                    MowzieKit.answered(den.faction, op[0], 1);
-                    check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING));
-                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(MowzieKit::acknowledge)
+                .thenWaitUntil(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING)))
                 .thenExecute(() -> {
                     byte[] adopt = ConflictKit.campBodies(den.faction, op[0]).get(0).bytes();
                     f[0].setData(RtsimAttachments.PENDING, new PendingRecords(List.of(adopt.clone())));
@@ -1730,8 +1734,9 @@ public final class MowzieGameTests {
                     den.release();
                 })
                 .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(gone(level, id[0], id[1]))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, id[0], id[1]))
                 .thenExecute(() -> {
+                    check("the old Frostmaw object is removed", f[0].isRemoved());
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
                     den.force();
                 })
@@ -1756,6 +1761,7 @@ public final class MowzieGameTests {
                     check("by slot 0, generation 1, as the chief and no stray (" + b.flags() + ")", b.slot() == 0 && b.generation() == 1
                             && (b.flags() & ConflictRecords.CampCensus.BODY_CHIEF) != 0 && (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0);
                     record(test, "reassert", r.size() + " CAMP_BODIES of the op, " + (r.size() - 1) + " journaled again between obsSeq " + out + " and " + c2.obsSeq());
+                    MowzieKit.acknowledge();
                 })
                 .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(id[1])))
                 .thenSucceed();
@@ -1927,8 +1933,11 @@ public final class MowzieGameTests {
                     check("the camp is in", grove.site().in());
                     far.release(outChunk, grove.cz);
                 })
-                .thenWaitUntil(gone(level, id[0]))
-                .thenExecute(() -> far.force(outChunk, grove.cz))
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, outChunk, grove.cz, id[0]))
+                .thenExecute(() -> {
+                    check("the old w0 object is removed", w[0].isRemoved());
+                    far.force(outChunk, grove.cz);
+                })
                 .thenWaitUntil(far.ready())
                 .thenWaitUntil(() -> check("a third census (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) > was[2]))
                 .thenExecute(() -> {
