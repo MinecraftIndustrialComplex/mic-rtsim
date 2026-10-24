@@ -54,5 +54,6 @@ pub mod view;
 pub use culture::{CultureDef, Cultures, SignalKind, Step, UnitClass};
 pub use engine::{Conflict, ConflictStats, FeudView, Purpose};
 pub use grievance::Grievance;
+pub use outbox::GateCounts;
 pub use persist::ConflictTickets;
 pub use tunables::ConflictTunables;

@@ -868,9 +868,9 @@ impl Conflict {
     }
 
     /// The replay gate's counts since this engine was built or loaded (docs/replay-gate.md
-    /// §4.3): (commands dropped while replaying, commands of a "never" kind decided while
-    /// replaying (a bug), the last such kind and its name).
-    pub fn replay_gate_counts(&self) -> (u64, u64, Option<(u16, &'static str)>) {
+    /// §4.3): commands dropped while replaying, commands of a "never" kind decided while
+    /// replaying (a bug) and the last such kind, and the decisions that embody deferred.
+    pub fn replay_gate_counts(&self) -> crate::GateCounts {
         self.outbox.counts()
     }
 
@@ -3849,6 +3849,11 @@ impl Conflict {
     /// A band arrives where a player watches: it materializes in waves on an arc at the edge of
     /// the entity-ticking area, on the side it came from, under the spawn quota.
     fn start_fight(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, at: Tick) {
+        // A backstop (docs/replay-gate.md §6, RP-28): reached only from the branches that ask
+        // `watcher`, which a replay holds (§6.1).
+        if self.outbox.defer() {
+            return;
+        }
         let f = self.parties[p].faction;
         self.stats.raids_watched += 1;
         let ppos = w.players.get(&player).and_then(|s| s.pos).map(|e| e.0);
@@ -3915,6 +3920,10 @@ impl Conflict {
         arc: Option<((i32, i32), f32)>,
         at: Tick,
     ) {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
+        if self.outbox.defer() {
+            return;
+        }
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let x = &self.parties[p];
@@ -4001,6 +4010,11 @@ impl Conflict {
     }
 
     fn wave(&mut self, w: &World, p: Handle<Party>, at: Tick) {
+        // A backstop (docs/replay-gate.md §6, RP-28): a kept band's next wave waits for nothing,
+        // and none is scheduled after it; its fight becomes Waiting at the replay end anyway.
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.parties[p];
         // On Peaceful no war body spawns (MZB-15).
         if x.phase != Phase::Fighting || (self.peaceful && x.kind.is_war()) {
@@ -4362,6 +4376,11 @@ impl Conflict {
     // ---- seen on the march -----------------------------------------------------------------
 
     fn seen(&mut self, w: &mut World, p: Handle<Party>, player: ActorId, m: Meeting, at: Tick) {
+        // Sightings wait for the replay end (docs/replay-gate.md §6, RP-11): a meeting the pages'
+        // wheel held is the last session's; the players are routed again after the replay.
+        if self.outbox.defer() {
+            return;
+        }
         if !w.legs.is_meeting_live(&m) || !self.parties.contains(p) {
             self.stats.stale += 1;
             return;
@@ -4416,6 +4435,10 @@ impl Conflict {
     }
 
     fn materialize_envoy(&mut self, w: &World, p: Handle<Party>, player: ActorId, at: Tick) {
+        // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
+        if self.outbox.defer() {
+            return;
+        }
         let x = &self.parties[p];
         let f = x.faction;
         let c = self.culture(f).clone();

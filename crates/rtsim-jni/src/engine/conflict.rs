@@ -427,11 +427,9 @@ pub(super) fn replay_end(st: &mut State) {
     take_commands(st);
 }
 
-/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3): (dropped,
-/// never).
-pub(super) fn gate_counts(st: &State) -> (u64, u64) {
-    let (dropped, never, _) = st.conflict.engine.replay_gate_counts();
-    (dropped, never)
+/// The replay gate's counts for the replay end's log line (docs/replay-gate.md §4.3).
+pub(super) fn gate_counts(st: &State) -> rtsim_conflict::GateCounts {
+    st.conflict.engine.replay_gate_counts()
 }
 
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
@@ -779,9 +777,10 @@ fn feed_districts(st: &mut State, at: Tick) {
 /// Takes what the conflict decided into the link's queue. A rise in the gate's "never" count is
 /// logged at once (docs/replay-gate.md §4.3): a kind that embodies decided while replaying.
 pub(super) fn take_commands(st: &mut State) {
-    let (_, never, kind) = st.conflict.engine.replay_gate_counts();
+    let counts = st.conflict.engine.replay_gate_counts();
+    let never = counts.never;
     if never > st.conflict.never_logged {
-        let (code, name) = kind.unwrap_or((0, "?"));
+        let (code, name) = counts.last_never.unwrap_or((0, "?"));
         log_error(&format!(
             "conflict decided a {name} ({code:#06x}) while replaying ({} since the last take): \
              skipped, a bug (docs/replay-gate.md §4)",
@@ -1106,9 +1105,11 @@ pub struct ConflictLinkStats {
     /// Sources the industry engine's districts set or changed.
     pub fed: u64,
     /// The replay gate's counts (docs/replay-gate.md §4.3, not saved): commands dropped while
-    /// replaying, and commands of a "never" kind decided while replaying (a bug).
+    /// replaying, commands of a "never" kind decided while replaying (a bug), and decisions that
+    /// embody deferred while replaying (§6).
     pub replay_dropped: u64,
     pub replay_never: u64,
+    pub replay_deferred: u64,
 }
 
 impl super::Engine {
@@ -1154,7 +1155,7 @@ impl super::Engine {
     pub fn conflict_stats(&self) -> (ConflictStats, ConflictLinkStats) {
         let st = super::lock(&self.state);
         let l = &st.conflict;
-        let (replay_dropped, replay_never, _) = l.engine.replay_gate_counts();
+        let g = l.engine.replay_gate_counts();
         (
             l.engine.stats,
             ConflictLinkStats {
@@ -1164,8 +1165,9 @@ impl super::Engine {
                 band_states: l.band_states,
                 deferred: l.deferred,
                 fed: l.fed,
-                replay_dropped,
-                replay_never,
+                replay_dropped: g.dropped,
+                replay_never: g.never,
+                replay_deferred: g.deferred,
             },
         )
     }
