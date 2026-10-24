@@ -258,6 +258,7 @@ public final class GlassFanLinkGameTests {
         ChunkPos a = new ChunkPos(ax, az), n = new ChunkPos(nx, az);
         BlockPos depot = new BlockPos(ax * 16 + 15, y, z), fan = new BlockPos(nx * 16 + 1, y, z);
         CreatePlugin plugin = new CreatePlugin();
+        BlockEntity[] oldFan = new BlockEntity[1];
         Supplier<List<BlockPos>> links = () -> {
             BlockEntity be = Loaded.blockEntity(level, depot);
             check("the depot's block entity", be != null);
@@ -277,10 +278,14 @@ public final class GlassFanLinkGameTests {
                     level.setBlock(fan, AllBlocks.ENCASED_FAN.getDefaultState().setValue(EncasedFanBlock.FACING, Direction.WEST), 3);
                     List<BlockPos> got = links.get();
                     check("both loaded, the depot finds the fan: " + got, got.equals(List.of(fan)));
+                    oldFan[0] = Loaded.blockEntity(level, fan);
                     level.setChunkForced(ax, az, false);
                     level.setChunkForced(nx, az, false);
                 })
-                .thenWaitUntil(paced(() -> check("N unloads (no chunk holder)", cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
+                // Unloaded, not only without a visible holder: a holder still in ChunkMap's pendingUnloads comes back
+                // FULL at a new ticket.
+                .thenWaitUntil(paced(() -> check("N unloads (the fan's block entity removed, no chunk holder)",
+                        oldFan[0].isRemoved() && cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
                 .thenExecute(() -> cache.addRegionTicket(FULL_ONLY, a, 0, a))
                 .thenWaitUntil(paced(() -> check("A loads", Loaded.blockEntity(level, depot) != null)))
                 .thenExecute(() -> {
