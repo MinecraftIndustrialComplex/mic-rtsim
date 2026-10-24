@@ -176,6 +176,11 @@ impl Graph {
             if d.sources.windows(2).any(|w| w[0].pos >= w[1].pos) {
                 return Err(Invalid::Source(di as u32));
             }
+            // The tail lies in no district's chunks, so no member of it is a node of the graph.
+            let tail = d.members.len() - d.foreign as usize;
+            if d.members[tail..].iter().any(|m| m.node.is_some()) {
+                return Err(Invalid::Member(di as u32));
+            }
             // Only a shared network's part lists foreign sources (no rows), a tail and peers
             // (ascending, never its own district).
             if !d.shared()

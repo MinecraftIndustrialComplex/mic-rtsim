@@ -930,8 +930,10 @@ impl Replay {
     /// The rows domain `d`'s sources give the rest of its shared network while the district
     /// replays (SEC-1 S5-2): a fixed source its one row; a driven one its row in the part holding
     /// its boiler, the least a cycle there runs at (choice SC151), and none while that boiler is
-    /// gated off (its unit does not replay, choice SC152). A boiler no part holds runs in the
-    /// world (a partly loaded district): its row is `live`'s (the check solve's), by source index.
+    /// gated off (its unit does not replay, choice SC152). A boiler the replay does not simulate
+    /// runs in the world (a partly loaded district): its row is `live`'s (the check solve's), by
+    /// source index. Every node is in some part (`partition`), so it is the simulated flag, not
+    /// the part, that tells the world's boiler from the replay's.
     pub fn published(&self, comp: &Compiled, d: u32, live: &[Option<u32>]) -> Vec<Option<u32>> {
         let g = &comp.graph;
         let Some(dom) = g.domains.get(d as usize) else {
@@ -948,11 +950,9 @@ impl Replay {
                 else {
                     return src.current;
                 };
-                let Some(p) = self
-                    .parts
-                    .iter()
-                    .find(|p| p.mine.get(b as usize) == Some(&true))
-                else {
+                let Some(p) = self.parts.iter().find(|p| {
+                    p.mine.get(b as usize) == Some(&true) && p.sim.get(b as usize) == Some(&true)
+                }) else {
                     return live.get(i).copied().flatten();
                 };
                 if p.gated.get(b as usize) == Some(&true) {

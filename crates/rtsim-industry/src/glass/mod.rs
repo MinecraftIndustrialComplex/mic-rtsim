@@ -880,13 +880,16 @@ impl Glass {
     /// `cluster_districts_max`. Then the domain check across districts (SECTIONS.md §3.6): a unit
     /// whose passed window ran a part at a capacity below its network's stress now goes stale.
     /// Returns the parts whose status changed, for the log, and the districts with units gone
-    /// stale.
+    /// stale. `restoring`: the registry comes back as it was saved, so it logs nothing and checks
+    /// no unit (the saved units are the run's: a check here would judge units that passed since
+    /// the run's last rebuild, which the run never did).
     pub fn rebuild_nets(
         &mut self,
         dim_of: &dyn Fn(DistrictId) -> Option<u32>,
         max: usize,
         at: Tick,
         tun: &GlassTunables,
+        restoring: bool,
     ) -> (Vec<(DistrictId, String)>, Vec<DistrictId>) {
         let mut parts = Vec::new();
         for (&d, dg) in self.districts.iter() {
@@ -904,6 +907,11 @@ impl Glass {
             }
         }
         let nets = net::Nets::build(&parts, max);
+        if restoring {
+            drop(parts);
+            self.nets = nets;
+            return (Vec::new(), Vec::new());
+        }
         let status = |n: &net::Nets, id| n.net_of(id).map(|x| (x.status, x.why));
         let mut notes = Vec::new();
         for (id, _, _) in &parts {
