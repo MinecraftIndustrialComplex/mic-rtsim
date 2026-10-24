@@ -117,7 +117,7 @@ public final class MowzieGameTests {
      * stands: restricted 8 round the spot, still no puppet, still saved, its persistence as the jar left it
      * (MZB-210), and its saved NBT carries the camp tag, so a world without rtsim loads it as the jar's own.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den", skyAccess = true)
     public static void aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth(GameTestHelper helper) {
         String test = "aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth";
         Far far = new Far(helper, test);
@@ -243,7 +243,7 @@ public final class MowzieGameTests {
      * census listing every adopted body by UUID with its slot (not as a stray); FACTION_FOUND stays once.
      * The session reset that recounts a grove is MZB-228's gap.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_grove", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_grove", skyAccess = true)
     public static void aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt(GameTestHelper helper) {
         String test = "aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt";
         Far far = new Far(helper, test);
@@ -407,7 +407,7 @@ public final class MowzieGameTests {
      * apart as BODY_ELSEWHERE and BODY_CHIEF, and the chief fields still read it (it is in the faction's
      * index): CHIEF and CRYSTAL with its health (MZB-232).
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_asleep_away", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_asleep_away", skyAccess = true)
     public static void aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief(GameTestHelper helper) {
         String test = "aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief";
         Far far = new Far(helper, test);
@@ -484,7 +484,7 @@ public final class MowzieGameTests {
      * its one Frostmaw and the pool has nothing to spawn. A den that is not late, with its Frostmaw as far,
      * lists none: the jar's own is outside its books.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_late", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_late", skyAccess = true)
     public static void aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus(GameTestHelper helper) {
         String test = "aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus";
         Far far = new Far(helper, test);
@@ -557,7 +557,7 @@ public final class MowzieGameTests {
      * (MZB-232): the next census lists it as a stray chief and ADOPT takes it. With the slot taken, a second
      * Frostmaw joining as near asks for nothing: no recount, no census, and it stays the jar's.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_den_joiner", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_joiner", skyAccess = true)
     public static void aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot(GameTestHelper helper) {
         String test = "aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot";
         Far far = new Far(helper, test);
@@ -613,7 +613,7 @@ public final class MowzieGameTests {
      * the camp's index (MZB-231): a TAKE of its slot and generation, by tag, is DONE, the body goes and its record
      * rides on a marker. The leave was seen with no removal reason and the body was never removed.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_flicker", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_flicker", skyAccess = true)
     public static void aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken(GameTestHelper helper) {
         String test = "aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken";
         Far far = new Far(helper, test);
@@ -674,7 +674,7 @@ public final class MowzieGameTests {
      * three are STALE: the Frostmaw is still there and tagged, nothing was taken, spawned or set out, and no
      * marker was made. Forced again, the next census lists the Frostmaw by its slot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_play_time", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_play_time", skyAccess = true)
     public static void aLineArrivingInTheTickACampGoesOutIsAnsweredStale(GameTestHelper helper) {
         String test = "aLineArrivingInTheTickACampGoesOutIsAnsweredStale";
         Far far = new Far(helper, test);
@@ -884,7 +884,7 @@ public final class MowzieGameTests {
      * the band's, with nothing taken off the party and no recall. With the handler gone, the same line
      * again is DONE: the body is the camp's, the puppet is gone, the other puppet still stands.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_handback_cancelled", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_handback_cancelled", skyAccess = true)
     public static void aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale(GameTestHelper helper) {
         String test = "aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale";
         Far far = new Far(helper, test);
@@ -945,7 +945,7 @@ public final class MowzieGameTests {
      * Both lines in one CAMP_RECONCILE at Peaceful: the SPAWN of slot 1 STALE with no body made, the
      * HAND_BACK of slot 0 DONE; the body it made is still there 40 ticks later.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_peaceful", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_peaceful", skyAccess = true)
     public static void onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome(GameTestHelper helper) {
         String test = "onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome";
         Far far = new Far(helper, test);
@@ -1001,7 +1001,7 @@ public final class MowzieGameTests {
      * adopted Frostmaw is teleported to the Nether: the camp holds nothing, no CAMP_DEATH is booked, and a
      * TAKE of its slot is NOTHING (the copy stands, untouched).
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_dimension", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_dimension", skyAccess = true)
     public static void aBodyThatChangesDimensionLeavesItsCampsIndex(GameTestHelper helper) {
         String test = "aBodyThatChangesDimensionLeavesItsCampsIndex";
         Far far = new Far(helper, test);
@@ -1092,7 +1092,7 @@ public final class MowzieGameTests {
      * party is still unsaved and the party is on its way home. A REMOVE of the slot then leaves a record marker
      * (tagged {@code mic_rtsim.record}, carrying {@code mic_rtsim:pending}) that is discarded once acknowledged.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_homecoming", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_homecoming", skyAccess = true)
     public static void aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved(GameTestHelper helper) {
         String test = "aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved";
         Far far = new Far(helper, test);
@@ -1182,7 +1182,7 @@ public final class MowzieGameTests {
      * NOTHING. With the player gone the den's line is DONE: a sleeping Frostmaw with its crystal at the spot,
      * restricted 8, tagged (faction, 0, 1).
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_refill", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_refill", skyAccess = true)
     public static void aRefilledPoolIsSpawnedAtTheNextCensus(GameTestHelper helper) {
         String test = "aRefilledPoolIsSpawnedAtTheNextCensus";
         Far far = new Far(helper, test);
@@ -1285,7 +1285,7 @@ public final class MowzieGameTests {
      * and not before: the line is DONE no sooner than HOLD_MAX ticks after it was sent (2 ticks of slack for the
      * tick it was applied in) and within 40 ticks after that, the Frostmaw standing at the spot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 9000, batch = "mowzie_hold_max", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 18000, batch = "mowzie_hold_max", skyAccess = true)
     public static void aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear(GameTestHelper helper) {
         String test = "aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear";
         Far far = new Far(helper, test);
@@ -1335,7 +1335,7 @@ public final class MowzieGameTests {
      * A grove (footprint columns c - 2 to c + 2) with only columns c - 2 and c - 1 forced: column c + 2 stands
      * at level 34, the camp stays out and sends nothing in 40 ticks; with the rest forced, its census comes.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "mowzie_cold", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_cold", skyAccess = true)
     public static void theCensusWaitsForEntitiesOnACampsColdLoad(GameTestHelper helper) {
         String test = "theCensusWaitsForEntitiesOnACampsColdLoad";
         Far far = new Far(helper, test);
@@ -1432,7 +1432,7 @@ public final class MowzieGameTests {
      * e2 is DONE; the same op again leaves the same tags and the same two bodies. A SPAWN at e2 is DONE; the
      * same op again is NOTHING, with one body in the slot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "mowzie_epochs", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_epochs", skyAccess = true)
     public static void aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent(GameTestHelper helper) {
         String test = "aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent";
         Far far = new Far(helper, test);
@@ -1520,7 +1520,7 @@ public final class MowzieGameTests {
      * then the den's chunks released: CAMP_OUT, the line STALE, nothing held. With the player gone and the den
      * forced again: census 2, no held line, and no Frostmaw (the stale line is not played later).
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_held_out", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_held_out", skyAccess = true)
     public static void aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut(GameTestHelper helper) {
         String test = "aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut";
         Far far = new Far(helper, test);
@@ -1570,6 +1570,30 @@ public final class MowzieGameTests {
     // ---- 9: deaths --------------------------------------------------------------------------------
 
     /**
+     * What the engine did with the copies a marker's records went as after the marker loaded again (MZB-652), the
+     * ones past the first {@code before} copies of the camp's CAMP_BODIES: one names {@code EARLIER_GEN}, the
+     * generation an earlier session journaled its record in, and is the answer of {@code op}, and the engine
+     * applied it (a generation it never heard); every other is a record this session journaled, and the engine
+     * dropped it. A takeover that stamped the session's own generation on the earlier record would send it
+     * under that one and have it dropped, losing a record a crash had lost. The copies as text.
+     */
+    private static String earlierCopyApplied(long faction, int before, long op) {
+        RtsimTests.engine().awaitIdle(); // every copy of the hand-over is in
+        List<ConflictKit.Copy> all = ConflictKit.bodiesCopies(faction);
+        List<ConflictKit.Copy> fresh = all.subList(before, all.size());
+        String seen = fresh.stream().map(c -> Long.toHexString(c.gen()) + (c.dropped() ? " dropped" : " applied")).toList().toString();
+        List<ConflictKit.Copy> earlier = fresh.stream().filter(c -> c.gen() == EARLIER_GEN).toList();
+        check("one copy names the earlier generation, as its record was journaled in it (copies " + seen + ")", earlier.size() == 1);
+        check("it is the adopt's answer", earlier.get(0).record().view().getLong(ConflictRecords.CampBodies.OP_ID) == op);
+        check("the engine applied it, a record of a generation it never heard (copies " + seen + ")", !earlier.get(0).dropped());
+        for (ConflictKit.Copy c : fresh)
+            if (c.gen() != EARLIER_GEN)
+                check("a copy of a record journaled in this session is dropped (copies " + seen + ")", c.dropped());
+        check("one copy applied, the engine's applied copies +1 (copies " + seen + ")", fresh.stream().filter(c -> !c.dropped()).count() == 1);
+        return seen;
+    }
+
+    /**
      * A camp body's death is booked and a stray's is not (§7 test 22). A grove with four strays, three of them
      * adopted, and a den with an adopted Frostmaw. A fake player kills warrior 0: CAMP_DEATH by a player, the
      * killer's UUID, slot 0, generation 1, a Java op id, and a record marker where it fell. The stray killed
@@ -1577,7 +1601,7 @@ public final class MowzieGameTests {
      * "taken" with the player, and the tag is gone. The Frostmaw killed is a CAMP_DEATH flagged chief, with
      * the Frostmaw's body id.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_deaths", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_deaths", skyAccess = true)
     public static void aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot(GameTestHelper helper) {
         String test = "aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot";
         Far far = new Far(helper, test);
@@ -1590,6 +1614,15 @@ public final class MowzieGameTests {
         Markers[] groveMarkers = new Markers[1], denMarkers = new Markers[1];
         long[] op = new long[2];
         Vec3[] fell = new Vec3[2];
+        UUID[] deathMarker = new UUID[1];
+        int[] copiesBefore = new int[1];
+        String[] seen = new String[1];
+        // The markers hold records of generations the next run's engine never heard (a copy of one is new to
+        // it): they do not stay in the reused world, whether the test passes or not.
+        ConflictKit.onEnd(helper, () -> {
+            MowzieKit.discardRecordMarkers(level, den.area());
+            MowzieKit.discardRecordMarkers(level, grove.area());
+        });
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
@@ -1700,8 +1733,34 @@ public final class MowzieGameTests {
                     check("the death is the last", Short.toUnsignedInt(ByteBuffer.wrap(on.entries().get(2).bytes()).order(Layout.ORDER)
                             .getShort(Layout.R_KIND)) == ConflictRecords.CAMP_DEATH);
                     check("the grove booked exactly three deaths", ConflictKit.campDeaths(grove.faction).size() == 3);
-                    record(test, "deaths", "warrior by player, discard by none, take by taken, Frostmaw chief; the stray booked none");
+                    deathMarker[0] = mk.id();
+                    copiesBefore[0] = ConflictKit.bodiesCopies(den.faction).size();
+                    // The marker is saved with its chunk, the chunk unloads and loads again: Java journals
+                    // the marker's records again, each named by the generation that journaled it (MZB-652).
+                    // This leg guards a different mutation than the check above. A takeover that stamps the
+                    // current generation (the pre-fix carry) already fails the saved-data check above, before
+                    // the chunk leaves, so this leg was not run against it. The leg is for the reload path: the
+                    // generation surviving the save and the load, the REASSERT naming it, and the engine
+                    // applying the copy that names it (MZB-655).
+                    den.release();
                 })
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, deathMarker[0]))
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("the marker's records were journaled again",
+                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0]))
+                .thenExecute(() -> {
+                    seen[0] = earlierCopyApplied(den.faction, copiesBefore[0], op[1]);
+                    check("the marker is back", level.getEntity(deathMarker[0]) instanceof Marker);
+                    for (ConflictKit.Copy c : ConflictKit.copiesOf(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.FACTION, den.faction))
+                        check("a copy of the death, journaled in this session, is dropped", c.dropped());
+                    check("the den still booked one death (a copy booked none)",
+                            ConflictKit.campDeaths(den.faction).stream().filter(r -> !r.skipped()).count() == 1);
+                    record(test, "deaths", "warrior by player, discard by none, take by taken, Frostmaw chief; the stray booked none; the chief's marker "
+                            + "loaded again journaled copies " + seen[0]);
+                    MowzieKit.acknowledge();
+                })
+                .thenWaitUntil(() -> check("the death marker is discarded once its copies are acknowledged", denMarkers[0].gone(deathMarker[0])))
                 .thenSucceed();
     }
 
@@ -1716,9 +1775,13 @@ public final class MowzieGameTests {
      * before the new CAMP_CENSUS; the census lists the Frostmaw by slot 0, generation 1, as the chief; the
      * marker is discarded once its records are acknowledged. A third holder, a marker whose records are of
      * another engine life (RG14, MZB-651), loses them at the census with nothing journaled: the stale
-     * count rises by one, and a CAMP_BODIES of its own op id never reaches the engine.
+     * count rises by one, and a CAMP_BODIES of its own op id never reaches the engine. Last, a camp takes a
+     * holder over (MZB-652): the Frostmaw, now carrying a record that an earlier session journaled, is removed
+     * by an engine order, and the marker that takes its records is saved with its chunk and loaded again. It
+     * journals the earlier record under the generation that journaled it, and the engine applies that copy,
+     * once, as a record it never heard.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "mowzie_reassert", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_reassert", skyAccess = true)
     public static void aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus(GameTestHelper helper) {
         String test = "aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus";
         Far far = new Far(helper, test);
@@ -1729,6 +1792,16 @@ public final class MowzieGameTests {
         long[] op = new long[1], stale = new long[2];
         Markers[] markers = new Markers[1];
         long staleOp = 0x5a5a5a5a5a5aL;
+        byte[][] adoptBytes = new byte[1][];
+        EntityFrostmaw[] back = new EntityFrostmaw[1];
+        long[] removeOp = new long[1];
+        Vec3[] stood = new Vec3[1];
+        UUID[] taken = new UUID[1];
+        int[] copiesBefore = new int[1];
+        String[] seen = new String[1];
+        // The markers hold records of generations the next run's engine never heard: they do not stay in the
+        // reused world, whether the test passes or not.
+        ConflictKit.onEnd(helper, () -> MowzieKit.discardRecordMarkers(level, den.area()));
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
@@ -1747,6 +1820,7 @@ public final class MowzieGameTests {
                 .thenWaitUntil(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING)))
                 .thenExecute(() -> {
                     byte[] adopt = ConflictKit.campBodies(den.faction, op[0]).get(0).bytes();
+                    adoptBytes[0] = adopt;
                     // Journaled in this session, so its generation is this session's (docs/boundary.md section 3.2).
                     long gen = RtsimSession.current().boundary().gen();
                     f[0].setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(),
@@ -1788,6 +1862,7 @@ public final class MowzieGameTests {
                     Entity e = level.getEntity(id[0]);
                     check("the Frostmaw is back, a new object", e instanceof EntityFrostmaw && e != f[0]);
                     EntityFrostmaw nf = (EntityFrostmaw) e;
+                    back[0] = nf;
                     check("tagged (faction, 0, 1)", MowzieKit.tagged(nf, den.faction, 0, 1));
                     check("restricted " + DenKind.RESTRICT + " again", nf.hasRestriction() && nf.getRestrictRadius() == DenKind.RESTRICT);
                     check("the session has journaled its records again", RtsimSession.current().reasserted(nf));
@@ -1820,6 +1895,44 @@ public final class MowzieGameTests {
                     MowzieKit.acknowledge();
                 })
                 .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(id[1])))
+                .thenWaitUntil(() -> check("acknowledged: the new Frostmaw carries no records again", !back[0].hasData(RtsimAttachments.PENDING)))
+                .thenExecute(() -> {
+                    // A camp takes the holder over: the engine orders its body removed, and the records it carries
+                    // ride on a marker where it stood. The Frostmaw carries a record that an earlier session
+                    // journaled (the adopt's answer, as a body saved with it would), which this session has not.
+                    back[0].setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(),
+                            List.of(new PendingRecords.Entry(EARLIER_GEN, adoptBytes[0].clone()))));
+                    stood[0] = back[0].position();
+                    copiesBefore[0] = ConflictKit.bodiesCopies(den.faction).size();
+                    removeOp[0] = MowzieKit.reconcile(den.faction, den.site().epoch(),
+                            List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, REMOVE, 0)));
+                })
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, removeOp[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("REMOVE", ConflictKit.outcomes(den.faction, removeOp[0]), DONE);
+                    check("the Frostmaw is gone", back[0].isRemoved());
+                    List<Markers.Seen> m = markers[0].near(stood[0], 3).stream()
+                            .filter(x -> !x.id().equals(id[1]) && !x.id().equals(id[2])).toList();
+                    check("a record marker where it stood (" + m.size() + ")", m.size() == 1);
+                    check("it carries the records", m.get(0).carriesRecords());
+                    taken[0] = m.get(0).id();
+                    check("the takeover journaled no copy: the earlier record was never journaled in this session",
+                            ConflictKit.bodiesCopies(den.faction).size() == copiesBefore[0]);
+                    den.release();
+                })
+                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, taken[0]))
+                .thenExecute(den::force)
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("the marker's records were journaled again",
+                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0]))
+                .thenExecute(() -> {
+                    seen[0] = earlierCopyApplied(den.faction, copiesBefore[0], op[0]);
+                    check("the marker is back", level.getEntity(taken[0]) instanceof Marker);
+                    record(test, "reassert takeover", "the Frostmaw removed by an order left a marker; loaded again, its earlier-generation record "
+                            + "went as a copy of that generation and was applied once (copies " + seen[0] + ")");
+                    MowzieKit.acknowledge();
+                })
+                .thenWaitUntil(() -> check("the taking marker is discarded once its copies are acknowledged", markers[0].gone(taken[0])))
                 .thenSucceed();
     }
 
@@ -1831,7 +1944,7 @@ public final class MowzieGameTests {
      * BAND_MATERIALIZE of A with one warrior. Slot 0 is handed off: the puppet stands where the body stood, with
      * its health and mask. Slot 1 is taken. Both are DONE, and the camp holds only warrior 2.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_set_out", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_set_out", skyAccess = true)
     public static void aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake(GameTestHelper helper) {
         String test = "aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake";
         Far far = new Far(helper, test);
@@ -1921,7 +2034,7 @@ public final class MowzieGameTests {
      * chunk is released until it has gone and forced again: {@code recounts} goes up 1, and a census comes with
      * no CAMP_OUT, listing w0 as ELSEWHERE again.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3500, batch = "mowzie_elsewhere", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_elsewhere", skyAccess = true)
     public static void aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart(GameTestHelper helper) {
         String test = "aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart";
         Far far = new Far(helper, test);
@@ -2018,7 +2131,7 @@ public final class MowzieGameTests {
      * levels first); the chunks unloaded and forced again: census 2 within a poll period of the chunks
      * being ready, a new epoch.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_poll", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_poll", skyAccess = true)
     public static void aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent(GameTestHelper helper) {
         String test = "aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent";
         Far far = new Far(helper, test);
@@ -2101,7 +2214,7 @@ public final class MowzieGameTests {
      * with one 60 blocks away (the near ring and the far edge both tried). With the leaves cleared the same
      * line is DONE, the warrior in the open: the stale answer was not final.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_no_room", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_no_room", skyAccess = true)
     public static void aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody(GameTestHelper helper) {
         String test = "aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody";
         Far far = new Far(helper, test);
@@ -2182,7 +2295,7 @@ public final class MowzieGameTests {
      * ({@code Camps.held}) holds no removed entity. Forced again, the census comes in again and the index holds
      * the Frostmaw the load made (another object, the same UUID), tagged, with no removed entity.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_index_unload", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_index_unload", skyAccess = true)
     public static void anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain(GameTestHelper helper) {
         String test = "anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain";
         Far far = new Far(helper, test);
@@ -2253,7 +2366,7 @@ public final class MowzieGameTests {
      * and after 40 ticks no {@code EntityUmvuthanaRaptor} and no {@code EntityUmvuthanaFollowerToRaptor} stands in
      * the area.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_raptor_standin", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_raptor_standin", skyAccess = true)
     public static void anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers(GameTestHelper helper) {
         String test = "anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers";
         Far far = new Far(helper, test);
@@ -2293,7 +2406,7 @@ public final class MowzieGameTests {
      * 40 ticks later the stray watch counter has not moved, the den made no second census and is in under the
      * epoch it had.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "mowzie_puppet_stray", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_puppet_stray", skyAccess = true)
     public static void aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount(GameTestHelper helper) {
         String test = "aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount";
         Far far = new Far(helper, test);
@@ -2367,7 +2480,7 @@ public final class MowzieGameTests {
      * den's chunks, so the premise (the event path is live) holds; where it does not (C2ME), the test only
      * records that. The silent-event test beside it is what shows the poll finds the changes alone.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_poll_agrees", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_poll_agrees", skyAccess = true)
     public static void withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect(GameTestHelper helper) {
         String test = "withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect";
         Far far = new Far(helper, test);

@@ -946,6 +946,8 @@ public final class RtsimSession {
         ensureReasserted(holder); // what it carried from disk goes first, under its own sequence
         asserted.add(holder);
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
+        if (!old.isEmpty() && old.life() != engineLife)
+            stalePending += old.entries().size(); // of an engine that started over (RG14): left out below, never journaled; counted, not asserted
         holder.setData(RtsimAttachments.PENDING, old.plusEntries(engineLife, entries));
         dropPendingWhenAcked(holder, lastSeq);
     }
