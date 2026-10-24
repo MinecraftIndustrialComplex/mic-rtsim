@@ -1185,6 +1185,7 @@ fn put_meter(w: &mut Writer, m: &RailMeter) {
     w.f64(m.pushed);
     put_opt(w, &m.pushed_at, |w, t| w.u64(t.0));
     w.var_u64(u64::from(m.stamp));
+    w.var_u64(m.wake.0);
     put_opt(w, &m.last, |w, (pos, y)| {
         put_pos(w, *pos);
         w.var_i64(i64::from(*y));
@@ -1208,6 +1209,7 @@ fn get_meter(r: &mut Reader<'_>) -> codec::Result<RailMeter> {
     m.pushed = r.f64()?;
     m.pushed_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
     m.stamp = get_u32(r)?;
+    m.wake = Tick(r.var_u64()?);
     m.last = get_opt(r, |r| Ok((get_pos(r)?, get_i32(r)?)))?;
     // A line is at least two ids, two words and a position.
     let n = r.len_prefix(30)?;
