@@ -92,7 +92,9 @@ class IndustryWireContractTest {
             // SEC-1 S4a: package stores
             "IND_PACKAGE_STORE", "IND_CHAIN_PACKAGE", "IND_STORE_CENSUS",
             // SEC-1 S4b: writes into a loaded frogport
-            "IND_WRITE_CHAIN");
+            "IND_WRITE_CHAIN",
+            // SEC-1 S4c: the frontier's held list
+            "IND_HELD_LIST");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -744,6 +746,14 @@ class IndustryWireContractTest {
                         .put32("epoch", IndRecords.ChainPackage.EPOCH, f.u32("epoch"))
                         .put64("serial", IndRecords.ChainPackage.SERIAL, f.u64("serial"))
                         .entries(IndRecords.ChainPackage.ENTRIES, f, "entry", c);
+            }
+            case "IND_HELD_LIST": {
+                int c = f.count("n_serials");
+                Rec r = journaled(n, IndRecords.IND_HELD_LIST, IndRecords.HeldList.size(c), c, f)
+                        .put32("epoch", IndRecords.HeldList.EPOCH, f.u32("epoch"));
+                for (int i = 0; i < c; i++)
+                    r.put64("serial" + i, IndRecords.HeldList.SERIALS + 8 * i, f.u64("serial" + i));
+                return r;
             }
             case "IND_STORE_CENSUS": {
                 int m = f.count("m"), c = f.count("n_entries");

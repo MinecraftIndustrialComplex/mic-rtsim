@@ -89,6 +89,9 @@ public final class IndRecords {
     public static final int IND_PACKAGE_STORE = 0x0418;
     /** Packages onto or off a package store's chain at a frogport (choice SC97). */
     public static final int IND_CHAIN_PACKAGE = 0x0419;
+    // 0x041A is left free.
+    /** The keys the frontier holds, once a session: the engine strikes any other of the epoch (choice SC140). */
+    public static final int IND_HELD_LIST = 0x041B;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
     public static final int IND_SPAWN_SAMPLE = 0x0430;
@@ -463,6 +466,23 @@ public final class IndRecords {
         public static final int CHAIN_HELD = 5;
         /** The key left the world or Java no longer holds it: struck wherever the engine holds it (choice SC137). */
         public static final int CHAIN_RELEASED = 6;
+    }
+
+    /**
+     * IND_HELD_LIST, aux = n serials (choice SC140): the frontier's held keys of one epoch, sent once a session
+     * before its other records of that session reach the engine. The engine strikes every key of the epoch it
+     * does not list. At most {@link #MAX_SERIALS}: a longer list is not sent.
+     */
+    public static final class HeldList {
+        public static final int EPOCH = 24;   // u32
+        // 28: u32 zero
+        public static final int SERIALS = 32; // n x u64
+
+        public static int size(int n) {
+            return SERIALS + 8 * n;
+        }
+
+        public static final int MAX_SERIALS = (com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.MAX_RECORD - SERIALS) / 8;
     }
 
     /**

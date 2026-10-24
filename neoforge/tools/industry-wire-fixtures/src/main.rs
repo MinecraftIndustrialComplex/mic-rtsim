@@ -30,7 +30,7 @@ use rtsim_industry::ids::{
 use rtsim_industry::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, HeldList, InvKind,
     InventoryDecl, LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer,
     ReconcileResult, ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl,
     StoreFrogport, SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
@@ -1462,6 +1462,28 @@ fn main() {
             &mut out,
             name,
             wire::IND_CHAIN_PACKAGE,
+            seq,
+            Timed { at, obs: o },
+            &f,
+        );
+    }
+
+    {
+        // Three serials (choice SC140).
+        let name = "IND_HELD_LIST";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("obs_seq", g.u64());
+        let at = game_time(&mut f, &mut g);
+        let epoch = f.u32("epoch", g.u32() | 1);
+        f.sym("n_serials", 3);
+        let serials = (0..3)
+            .map(|i| f.u64(&format!("serial{i}"), g.u64()))
+            .collect();
+        let o = Obs::HeldList(HeldList { epoch, serials });
+        obs(
+            &mut out,
+            name,
+            wire::IND_HELD_LIST,
             seq,
             Timed { at, obs: o },
             &f,

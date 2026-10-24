@@ -12,6 +12,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -36,7 +37,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Create's own answer is unchanged wherever the chunk ticks. On a client or a virtual level nothing changes.
  *
  * <p>Slice S4c1 adds the frontier (SECTIONS.md §2.5, Q5; PATCHES.md row 80; {@link Frontier}): before the
- * routing table ticks, routes toward a far frogport are kept ({@link Frontier#beforeRoutes}); a refused
+ * routing table ticks, routes toward a far frogport are kept, and on the first tick since the conveyor loaded
+ * the packages last held on it are looked for ({@link Frontier#beforeRoutes}); a refused
  * hand-off holds its package ({@link Frontier#hold}); a destroyed conveyor's kept routes go, and a package
  * Create drops (its conveyor destroyed, its connection removed) loses its key ({@link Frontier#leaves}).
  */
@@ -75,11 +77,15 @@ public abstract class ChainConveyorBlockEntityMixin {
         return exit;
     }
 
+    /** The game time of the next tick a route entry may expire at; 0 before the first tick since this conveyor loaded. */
+    @Unique
+    private long mic_rtsim$scanAt;
+
     /** The frontier's kept routes, before Create's table ticks (and so before an entry expires). */
     @WrapOperation(method = "tick", at = @At(value = "INVOKE",
             target = "Lcom/simibubi/create/content/kinetics/chainConveyor/ChainConveyorRoutingTable;tick()V"))
     private void mic_rtsim$keepRoutes(ChainConveyorRoutingTable table, Operation<Void> original) {
-        Frontier.beforeRoutes((ChainConveyorBlockEntity) (Object) this, table);
+        mic_rtsim$scanAt = Frontier.beforeRoutes((ChainConveyorBlockEntity) (Object) this, table, mic_rtsim$scanAt);
         original.call(table);
     }
 
