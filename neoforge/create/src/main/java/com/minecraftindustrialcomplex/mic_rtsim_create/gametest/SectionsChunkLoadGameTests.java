@@ -294,7 +294,13 @@ public final class SectionsChunkLoadGameTests {
         }
     }
 
-    /** Forces A and B, clears an earlier run, builds the fixture and waits for both districts. */
+    /**
+     * Forces A and B, clears an earlier run, builds the fixture and waits for both districts. It builds once
+     * A, M and B tick, not as soon as they are FULL: a chunk ticks only once its neighbours are FULL too, and
+     * at a fresh far position they are still generating. The waits after it are on Create's logic, which
+     * runs only in ticking chunks; bounded by unpaced ticks, they ran out in about 2 s while the
+     * neighbours generated (the millstones at 0, the first package not at FB).
+     */
     private static GameTestSequence build(GameTestHelper h, Adj f, int rpm) {
         ServerLevel level = h.getLevel();
         return h.startSequence()
@@ -302,7 +308,7 @@ public final class SectionsChunkLoadGameTests {
                     level.setChunkForced(f.ax, f.az, true);
                     level.setChunkForced(f.bx, f.az, true);
                 })
-                .thenWaitUntil(io(() -> check("A, M and B load", allLoaded(level, f.ax, f.bx, f.az))))
+                .thenWaitUntil(io(() -> check("A, M and B load and tick", allTick(level, f.ax, f.bx, f.az))))
                 .thenExecute(() -> {
                     clear(level, f.ax - 1, f.az - 1, f.bx + 1, f.az + 1);
                     GlassCorpusKit.motor(h, f.motor, Direction.UP, rpm);
@@ -407,6 +413,7 @@ public final class SectionsChunkLoadGameTests {
                     watch.on = false;
                     level.setChunkForced(f.bx, f.az, true);
                 })
+                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, f.cb))))
                 .thenWaitUntil(() -> check("all four reach FB once B ticks: FB " + held(level, f.frogB) + ", CA " + looping(level, f.ca) + "/" + travelling(level, f.ca),
                         held(level, f.frogB) == 4 && looping(level, f.ca) == 0 && travelling(level, f.ca) == 0));
         restore(s, level, f).thenSucceed();
@@ -950,6 +957,7 @@ public final class SectionsChunkLoadGameTests {
                     level.getChunkSource().removeRegionTicket(FULL_ONLY, b, 0, b);
                     level.setChunkForced(f.bx, f.az, true);
                 })
+                .thenWaitUntil(io(() -> check("B ticks", Loaded.ticks(level, f.cb))))
                 .thenWaitUntil(() -> check("all four reach FB once B ticks: FB " + held(level, f.frogB) + ", CA " + looping(level, f.ca) + "/" + travelling(level, f.ca),
                         held(level, f.frogB) == 4 && looping(level, f.ca) == 0 && travelling(level, f.ca) == 0));
         restore(s, level, f).thenSucceed();
@@ -1001,7 +1009,7 @@ public final class SectionsChunkLoadGameTests {
                     level.setChunkForced(ax, az, true);
                     level.setChunkForced(bx, az, true);
                 })
-                .thenWaitUntil(io(() -> check("A, M and B load", allLoaded(level, ax, bx, az))))
+                .thenWaitUntil(io(() -> check("A, M and B load and tick", allTick(level, ax, bx, az))))
                 .thenExecute(() -> {
                     clear(level, ax - 1, az - 1, bx + 1, az + 1);
                     SteamHelpers.burner(helper, burner);
@@ -1185,8 +1193,9 @@ public final class SectionsChunkLoadGameTests {
         Supplier<Float> motorSpeed = () -> kinetic(level, f.motor).getGeneratedSpeed();
         Supplier<KineticNetwork> net = () -> kinetic(level, f.ca).getOrCreateNetwork();
         GameTestSequence built = build(helper, f, 64)
+                .thenExecute(() -> level.setChunkForced(cx, f.az, true))
+                .thenWaitUntil(io(() -> check("C loads and ticks", Loaded.ticks(level, cc))))
                 .thenExecute(() -> {
-                    level.setChunkForced(cx, f.az, true);
                     GlassCorpusKit.set(helper, cc, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
                     GlassCorpusKit.cog(helper, cc.above(), Direction.Axis.Y);
                     GlassCorpusKit.set(helper, millC, AllBlocks.MILLSTONE.getDefaultState());
@@ -1479,8 +1488,9 @@ public final class SectionsChunkLoadGameTests {
         float[] share = {0, 0, 0}, own = {0, 0, 0}, u0 = {0, 0, 0};
         Supplier<KineticNetwork> net = () -> kinetic(level, f.ca).getOrCreateNetwork();
         GameTestSequence built = build(helper, f, 64)
+                .thenExecute(() -> level.setChunkForced(cx, f.az, true))
+                .thenWaitUntil(io(() -> check("C loads and ticks", Loaded.ticks(level, cc))))
                 .thenExecute(() -> {
-                    level.setChunkForced(cx, f.az, true);
                     GlassCorpusKit.set(helper, cc, AllBlocks.CHAIN_CONVEYOR.getDefaultState());
                     GlassCorpusKit.cog(helper, cog, Direction.Axis.Y);
                     GlassCorpusKit.set(helper, millC, AllBlocks.MILLSTONE.getDefaultState());
