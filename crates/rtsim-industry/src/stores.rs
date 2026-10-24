@@ -17,20 +17,24 @@
 //!   otherwise than Create did).
 //! - **Pages**: one per store (`STORE_TABLE`, id = the store id), starting with [`STORE_MAGIC`].
 //!
-//! Slice S4a books and counts only: no replay reads the pools yet (S4b), and nothing is ever
-//! written from them (UR-1: the packages are in the world, on the chain).
+//! The pools above are the world's packages: no replay draws them, and nothing is written from
+//! them (UR-1: the packages are on the chain). What replays send each other (slice S4b) is
+//! virtual: a cluster's `PoolKey::Chain` pool while one holds it, else the store's
+//! [`PackageStore::owed`], written into a loaded importer's frogport as real packages
+//! (`Engine::write_chain`).
 
 use std::collections::BTreeMap;
 
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
+use rtsim_kernel::journal::OpId;
 
 use crate::ids::{BlockPos, DistrictId, GoodVec, StoreId};
 use crate::obs::{ChainDirection, ChainPackage, StoreCensus, StoreDecl};
 use crate::persist::{Persist, persist_struct};
 
 /// A store page starts with this, so a page of another format fails by name.
-pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST1");
+pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST2");
 
 /// Packages and the goods inside them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -99,6 +103,24 @@ pub struct StoreCounts {
     /// Packages of records no later than the last census: the census, taken at the end of its
     /// tick, already counted them (only their counts above move).
     pub in_census: u64,
+    /// Packages the engine wrote into frogports from what replays sent (`CHAIN_IN` with an op).
+    pub written: u64,
+}
+
+/// What a district's replay needs of a package store for one of its chain links (slice S4b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainRoute {
+    pub store: StoreId,
+    /// The district's own frogport there.
+    pub own: BlockPos,
+    /// An export stops once its destination's pool holds this many packages: the route's room
+    /// (`chain_room_per_conveyor` on each conveyor from the exporter's to the destination's) less
+    /// the world's packages the store holds for that destination, which wait on the chain too.
+    pub room_packages: i64,
+    /// One package's contents toward the destination (empty: none seen yet).
+    pub batch: GoodVec,
+    /// An import's restart latency: the hops to the destination's farthest frogport.
+    pub travel: u64,
 }
 
 /// A package store (SECTIONS.md §2.5).
@@ -122,6 +144,16 @@ pub struct PackageStore {
     pub residue_packages: i64,
     pub census_at: Option<Tick>,
     pub counts: StoreCounts,
+    /// What replays sent toward each frogport (by position) that no replay cluster holds now: a
+    /// cluster's `PoolKey::Chain` pool starts from it and returns to it (slice S4b). Virtual: it is
+    /// written into the frogport while that is loaded, and a reset may lose it (UR-1).
+    pub owed: BTreeMap<BlockPos, GoodVec>,
+    /// One package's contents toward each frogport (by position), from the last `CHAIN_OUT` routed
+    /// there: the replay's room and the engine's writes count packages of it.
+    pub batch: BTreeMap<BlockPos, GoodVec>,
+    /// The write in flight toward each frogport (by position): no other is sent until a
+    /// `CHAIN_IN` with its op answers it.
+    pub writing: BTreeMap<BlockPos, OpId>,
 }
 
 impl PackageStore {
@@ -143,6 +175,39 @@ impl PackageStore {
         self.frogports.iter().position(|f| f.pos == pos)
     }
 
+    /// The frogport of district `d`'s inventory `inventory`, by index.
+    pub fn port_of(&self, d: DistrictId, inventory: u32) -> Option<usize> {
+        self.frogports
+            .iter()
+            .position(|f| f.district == Some(d) && f.inventory == Some(inventory))
+    }
+
+    /// District `d`'s chain link from its frogport (inventory `inventory`) toward the frogport at
+    /// `to` (its own for an import), when both are this store's.
+    pub fn route(
+        &self,
+        d: DistrictId,
+        inventory: u32,
+        to: BlockPos,
+        tun: &crate::tunables::ReplayTunables,
+    ) -> Option<ChainRoute> {
+        let i = self.port_of(d, inventory)?;
+        let j = self.index_of(to)?;
+        let hops = i64::from(self.hops_between(i, j)?);
+        let held = self.pools.get(j).map_or(0, |p| p.packages as i64);
+        let farthest = (0..self.frogports.len())
+            .filter_map(|k| self.hops_between(j, k))
+            .max()
+            .unwrap_or(0);
+        Some(ChainRoute {
+            store: self.id,
+            own: self.frogports[i].pos,
+            room_packages: tun.chain_room_per_conveyor * (hops + 1) - held,
+            batch: self.batch.get(&to).cloned().unwrap_or_default(),
+            travel: u64::from(farthest) * tun.chain_ticks_per_hop,
+        })
+    }
+
     /// Everything the store holds: every pool, the no-route pool and what it holds for frogports
     /// it no longer lists.
     pub fn held(&self) -> Pool {
@@ -153,12 +218,61 @@ impl PackageStore {
         p
     }
 
-    /// Takes what the store holds for the frogport at `pos` (a frogport moving to another store).
-    fn take_for(&mut self, pos: BlockPos) -> Pool {
-        if let Some(i) = self.index_of(pos) {
-            return std::mem::take(&mut self.pools[i]);
+    /// Takes what the store holds for the frogport at `pos` (a frogport moving to another store):
+    /// its pool, and what replays owe it with its batch.
+    fn take_for(&mut self, pos: BlockPos) -> Taken {
+        let pool = match self.index_of(pos) {
+            Some(i) => std::mem::take(&mut self.pools[i]),
+            None => self.left.remove(&pos).unwrap_or_default(),
+        };
+        Taken {
+            pool,
+            owed: self.owed.remove(&pos).unwrap_or_default(),
+            batch: self.batch.remove(&pos),
         }
-        self.left.remove(&pos).unwrap_or_default()
+    }
+
+    /// Adds what another store held for the frogport at `pos`.
+    fn bring(&mut self, pos: BlockPos, t: Taken) {
+        if !t.pool.is_empty() {
+            match self.index_of(pos) {
+                Some(i) => self.pools[i].merge(&t.pool),
+                None => self.left.entry(pos).or_default().merge(&t.pool),
+            }
+        }
+        if !t.owed.is_empty() {
+            self.owed.entry(pos).or_default().merge(&t.owed);
+        }
+        if let Some(b) = t.batch {
+            self.batch.entry(pos).or_insert(b);
+        }
+    }
+
+    /// What replays owe the frogport at `pos`, by good.
+    pub fn owed_to(&self, pos: BlockPos) -> GoodVec {
+        self.owed.get(&pos).cloned().unwrap_or_default()
+    }
+
+    /// Takes what replays owe the frogport at `pos` of good `g` (a cluster's pool starts from it).
+    pub fn take_owed(&mut self, pos: BlockPos, g: crate::ids::Good) -> i64 {
+        let Some(o) = self.owed.get_mut(&pos) else {
+            return 0;
+        };
+        let n = o.get(g);
+        o.add(g, -n);
+        if o.is_empty() {
+            self.owed.remove(&pos);
+        }
+        n
+    }
+
+    /// Adds to what replays owe the frogport at `pos` (a cluster's pool returning, floored at 0).
+    pub fn add_owed(&mut self, pos: BlockPos, g: crate::ids::Good, n: i64) {
+        let o = self.owed.entry(pos).or_default();
+        o.add(g, n.max(-o.get(g)));
+        if o.is_empty() {
+            self.owed.remove(&pos);
+        }
     }
 
     /// The store as `d` declares it, its pools re-indexed by frogport position. Frogports `d` no
@@ -200,6 +314,27 @@ impl PackageStore {
     pub fn chain(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
         let n = self.frogports.len();
         let packages = u64::from(p.packages);
+        // The engine's own write (slice S4b): it came from what replays sent, never from the
+        // chain, and no census counts a frogport's inventory.
+        if p.op.is_some() && p.direction == ChainDirection::In {
+            self.counts.written += packages;
+            return (p.frogport as usize) < n;
+        }
+        // One package's contents toward its destination, for the replay's room and the writes.
+        if p.direction == ChainDirection::Out
+            && p.packages > 0
+            && let Some(f) = p.destination.and_then(|d| self.frogports.get(d as usize))
+        {
+            let per: GoodVec = p
+                .goods
+                .iter()
+                .map(|(g, a)| (g, a / i64::from(p.packages)))
+                .filter(|e| e.1 > 0)
+                .collect();
+            if !per.is_empty() {
+                self.batch.insert(f.pos, per);
+            }
+        }
         let counted = self.census_at.is_some_and(|c| recorded <= c);
         if counted {
             let known = match p.direction {
@@ -296,11 +431,20 @@ impl PackageStore {
     }
 }
 
+/// What a store held for one frogport, moving with it to another store.
+#[derive(Clone, Debug, Default)]
+struct Taken {
+    pool: Pool,
+    owed: GoodVec,
+    batch: Option<GoodVec>,
+}
+
 /// What [`declare`] did, for the engine's log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Declared {
     New,
-    Changed,
+    /// Redeclared; true when its frogports (by position) or hops changed.
+    Changed(bool),
     /// Removed; what it held went to `into` (true) or was dropped with it (false).
     Removed(bool),
     /// A removal of a store the engine does not have.
@@ -342,34 +486,37 @@ pub fn declare(
             }
         }
         into.no_route.merge(&gone.no_route);
+        for (pos, owed) in &gone.owed {
+            into.owed.entry(*pos).or_default().merge(owed);
+        }
+        for (pos, b) in &gone.batch {
+            into.batch.entry(*pos).or_insert_with(|| b.clone());
+        }
         return Declared::Removed(true);
     }
     // What other stores held for the frogports coming from them.
-    let mut brought: BTreeMap<BlockPos, Pool> = BTreeMap::new();
+    let mut brought: Vec<(BlockPos, Taken)> = Vec::new();
     for f in &d.frogports {
         let Some(from) = f.from.filter(|&s| s != d.store) else {
             continue;
         };
         if let Some(other) = stores.get_mut(&from) {
-            let pool = other.take_for(f.pos);
-            if !pool.is_empty() {
-                brought.entry(f.pos).or_default().merge(&pool);
-            }
+            brought.push((f.pos, other.take_for(f.pos)));
         }
     }
     let new = !stores.contains_key(&d.store);
     let s = stores.get_or_insert_with(d.store, || PackageStore::new(d.store, d.dim));
+    let before: Vec<BlockPos> = s.frogports.iter().map(|f| f.pos).collect();
+    let hops_before = s.hops.clone();
     s.redeclare(d);
-    for (pos, pool) in brought {
-        match s.index_of(pos) {
-            Some(i) => s.pools[i].merge(&pool),
-            None => s.left.entry(pos).or_default().merge(&pool),
-        }
+    let moved = hops_before != s.hops || !s.frogports.iter().map(|f| f.pos).eq(before);
+    for (pos, t) in brought {
+        s.bring(pos, t);
     }
     if new {
         Declared::New
     } else {
-        Declared::Changed
+        Declared::Changed(moved)
     }
 }
 
@@ -389,7 +536,8 @@ persist_struct!(StoreCounts {
     censuses,
     declarations,
     stale_records,
-    in_census
+    in_census,
+    written
 });
 persist_struct!(PackageStore {
     id,
@@ -402,7 +550,10 @@ persist_struct!(PackageStore {
     residue,
     residue_packages,
     census_at,
-    counts
+    counts,
+    owed,
+    batch,
+    writing
 });
 
 /// A store's page.
