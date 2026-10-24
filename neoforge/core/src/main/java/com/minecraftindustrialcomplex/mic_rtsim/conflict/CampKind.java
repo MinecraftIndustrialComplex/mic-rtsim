@@ -8,6 +8,7 @@ import net.minecraft.world.entity.Mob;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * One kind of camp whose members at home are the jar's own bodies (MOWZIE.md §4.9, ledger 16): what a
@@ -18,10 +19,26 @@ import java.util.List;
  * the records.
  */
 public interface CampKind {
-    /** The census's chief fields (CAMP_CENSUS): {@code flags} are {@link ConflictRecords.CampCensus}'s CHIEF, CRYSTAL and THRONE. */
-    record Chief(int flags, float health, double x, double y, double z, float direction) {
+    /**
+     * The census's chief fields (CAMP_CENSUS): {@code flags} are {@link ConflictRecords.CampCensus}'s CHIEF, CRYSTAL
+     * and THRONE. {@code traded} is the chief body's trade memory (players by game profile id) and
+     * {@code tradedSlot} and {@code tradedGeneration} the body it is the memory of (MZB-420, MZB-434); a kind with
+     * no memory leaves them empty.
+     */
+    record Chief(int flags, float health, double x, double y, double z, float direction, int tradedSlot, int tradedGeneration,
+                 List<UUID> traded) {
         public static final Chief NONE = new Chief(0, 0f, 0, 0, 0, 0f);
+
+        public Chief(int flags, float health, double x, double y, double z, float direction) {
+            this(flags, health, x, y, z, direction, 0, 0, List.of());
+        }
     }
+
+    /**
+     * The chief's trade memory at home (CHIEF_BODY, MZB-421): the players who traded with it, by game profile id,
+     * and the engine's health and flags for it (health 0 at home: the body keeps its own).
+     */
+    record ChiefBody(float health, int flags, List<UUID> traded) {}
 
     /** Whether the entity is a body of this kind's camps that a census counts (tagged or not). */
     boolean isBody(Entity e);
@@ -50,12 +67,36 @@ public interface CampKind {
     /** A tagged body of the camp joined the level, or became the camp's: what keeps it home (a restriction). */
     void joined(Camps.Site site, Mob body);
 
+    /**
+     * Whether a TAKE, REMOVE or SET_OUT-as-take of this body waits now (Rule U, MZB-433): a body a player is
+     * near or has as a target. Held with no time limit, answered stale when the camp's epoch ends. False for a
+     * kind whose bodies go at once.
+     */
+    default boolean holdRemoval(ServerLevel level, Camps.Site site, Mob body) {
+        return false;
+    }
+
+    /**
+     * Writes the chief's trade memory onto its body (MZB-421): when the chief body is made for a SPAWN, and at
+     * once onto a standing chief body that the engine's memory outgrew. It must not journal anything (the jar's
+     * own {@code rememberTrade} is a payment's, not a copy's).
+     */
+    default void chiefBody(Mob body, ChiefBody memory) {}
+
+    /**
+     * Whether this body is in a fight a player began (it has a player as its target and a player hit it lately):
+     * a seat over it waits (MZB-410).
+     */
+    default boolean inFight(ServerLevel level, Mob body) {
+        return false;
+    }
+
     /** Copies what makes a body itself (health, crystal, mask, weapon) from one body to another of its kind. */
     void copy(Mob from, Mob to);
 
     /**
-     * Whether this kind plays a reconcile's lines for its chief's slot (a den's Frostmaw); a kind that
-     * does not answers them stale (the grove's Umvuthi is M9's, MZB-209).
+     * Whether this kind plays a reconcile's lines for its chief's slot (a den's Frostmaw, a grove's Umvuthi); a
+     * kind that does not answers them stale.
      */
     default boolean chiefLines() {
         return true;
