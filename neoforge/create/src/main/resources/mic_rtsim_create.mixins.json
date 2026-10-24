@@ -9,6 +9,8 @@
     "BasinBlockEntityMixin",
     "ChainConveyorBlockEntityMixin",
     "ChainConveyorFrogportTargetMixin",
+    "ChainConveyorRoutingTableAccessor",
+    "ChainPackageInteractionPacketMixin",
     "ChunkMapPromotionMixin",
     "ChuteBlockEntityMixin",
     "DefaultUnpackingHandlerMixin",

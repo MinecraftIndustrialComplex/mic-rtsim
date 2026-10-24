@@ -4,8 +4,11 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit edbb390
-//!   (SEC-1's slice S4p merged with main a95bd2a; S4p's formats: the engine's meta page RTJM
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 02d7ea4
+//!   (SEC-1's slice S4c1 merged with main f361a6f; S4c1's formats: the package stores' pages IST3,
+//!   each store's frontier epoch, the packages it holds toward each frogport with their keys, and
+//!   the held counters, choice SC137; before that, edbb390, SEC-1's slice S4p merged with main
+//!   a95bd2a; S4p's formats: the engine's meta page RTJM
 //!   version 2, with the journal's newest acknowledged generation, and its closed generations as
 //!   pages of table 2, docs/boundary.md §3.2, and the journal's `pinnedGen`, SC130; before that,
 //!   5d648ce, SEC-1's slice S4 merged with main 5489045; S4's formats: `IndustryData` format 3, the
@@ -34,8 +37,9 @@
 //!   stops: 6638edc's save had one, while both runs of 98d6d34
 //!   and main's 7e4042a had every herd staying put. So the route layer is not required here; it
 //!   still has to draw or say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from edbb390 (the core save's
-//!   formats; before that, 5d648ce, ec57cd7, 21e57d2 and S3's arm funnel-point fix) with the
+//! - `tests/data/create`: neoforge/create's GameTest world, run from cee946f (S4c1, the core
+//!   save's formats; before that, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm funnel-point
+//!   fix) with the
 //!   section fixtures (`-Psec1fx`; delete `run-gametest/world` before a create run that follows a
 //!   stress-generator run, whose clock is ahead of the game).
 //!   Every module's pages, mostly empty:
