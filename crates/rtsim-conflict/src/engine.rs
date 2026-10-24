@@ -507,13 +507,16 @@ pub struct ConflictStats {
     pub renewal_losses: u64,
     /// The rail meter (MOWZIE.md §4.3, M7): passes counted or held, pushes to the source, wakes
     /// that ran the gate, passes let go (a day unnamed, or pushed out by a cap), passes for a
-    /// faction unknown or minding no rail, and calls that named a train's line.
+    /// faction unknown or minding no rail, and calls that named a train's line. Every rail
+    /// event popped is a wake or a `rail_stale`.
     pub rail_passes: u64,
     pub rail_pushes: u64,
     pub rail_wakes: u64,
     pub rail_let_go: u64,
     pub rail_unknown: u64,
     pub rail_calls: u64,
+    /// Rail wakes that found no meter or another stamp, popped and dropped (also in `stale`).
+    pub rail_stale: u64,
 }
 
 /// Where goods went, per world good (thousandths).

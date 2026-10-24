@@ -1030,6 +1030,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.rail_let_go,
         s.rail_unknown,
         s.rail_calls,
+        s.rail_stale,
     ]);
     v
 }
@@ -1094,6 +1095,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.rail_let_go = n();
     s.rail_unknown = n();
     s.rail_calls = n();
+    s.rail_stale = n();
     s
 }
 

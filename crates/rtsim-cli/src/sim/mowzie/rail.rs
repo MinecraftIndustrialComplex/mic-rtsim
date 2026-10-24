@@ -173,9 +173,14 @@ struct Seen {
 
 struct Trace {
     actors: Vec<ActorId>,
-    /// Hour by hour, by (den, owner).
+    /// Hour by hour, by (den, owner), from the den's founding: the grievance is 0 and the rung
+    /// None where there is no feud (a forgotten one is 0, not an empty window).
     feuds: BTreeMap<(usize, usize), Vec<Pt>>,
     seen: Vec<Seen>,
+    /// The first hour each (den, owner) had a feud.
+    first_feud: BTreeMap<(usize, usize), f64>,
+    /// Per den: the day of its first pass and its meter's count `n` right after it.
+    first_pass: Vec<Option<(f64, f64)>>,
     /// `stats.rail_pushes` at the first hour of day 20.
     pushes_20: u64,
     c: Conflict,
@@ -230,6 +235,8 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
     let mut feuds: BTreeMap<(usize, usize), Vec<Pt>> = BTreeMap::new();
     let mut known: Vec<Handle<Party>> = Vec::new();
     let mut seen = Vec::new();
+    let mut first_feud = BTreeMap::new();
+    let mut first_pass: Vec<Option<(f64, f64)>> = vec![None; spec.dens.len()];
     let mut pushes_20 = None;
     let infra = &mut NoInfrastructure;
     for (t, what) in timeline {
@@ -245,7 +252,19 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
                 fid[i] = Some(f);
             }
             At::Event(i) => match events[i].1 {
-                RailEvent::Pass(p) => c.ingest(&mut w, infra, &Obs::RailPass(p), t),
+                RailEvent::Pass(p) => {
+                    c.ingest(&mut w, infra, &Obs::RailPass(p), t);
+                    // The count a den's meter stands at right after the den's first pass.
+                    let den = spec.dens.iter().position(|d| d.0 == p.faction);
+                    let owner = owners.iter().position(|o| *o == p.owner);
+                    if let (Some(i), Some(j)) = (den, owner)
+                        && first_pass[i].is_none()
+                        && let Some(f) = fid[i]
+                        && let Some(m) = c.factions.row(f).rail_meter(actors[j])
+                    {
+                        first_pass[i] = Some((t.0 as f64 / DAY, m.n));
+                    }
+                }
                 RailEvent::Arrive(call) => c.rail_call(&mut w, &call, t),
             },
             At::Hour => {
@@ -253,13 +272,15 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
                 for (i, f) in fid.iter().enumerate() {
                     let Some(f) = f else { continue };
                     for (j, a) in actors.iter().enumerate() {
-                        if let Some(v) = c.feud_view(spec.dens[i].0, *a) {
-                            feuds.entry((i, j)).or_default().push(Pt {
-                                day,
-                                step: v.step,
-                                g: v.grievance,
-                            });
+                        let v = c.feud_view(spec.dens[i].0, *a);
+                        if v.is_some() {
+                            first_feud.entry((i, j)).or_insert(day);
                         }
+                        feuds.entry((i, j)).or_default().push(Pt {
+                            day,
+                            step: v.as_ref().map_or(Step::None, |v| v.step),
+                            g: v.as_ref().map_or(0.0, |v| v.grievance),
+                        });
                     }
                     for (h, p) in c.parties.iter() {
                         if p.faction == *f && !known.contains(&h) {
@@ -290,6 +311,8 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
         actors,
         feuds,
         seen,
+        first_feud,
+        first_pass,
         pushes_20: pushes_20.unwrap_or(c.stats.rail_pushes),
         c,
     }
@@ -345,20 +368,29 @@ fn median_day(v: &[Option<f64>]) -> Option<f64> {
 }
 
 /// Whether the Invasion's day follows the engine's rule: the Raid's dwell restarts when a band
-/// comes home (`feud.since`, MZB-51), so the Invasion comes a dwell after the last Raid's return,
-/// or when the grievance reaches the rung's threshold if that is later (MZB-341).
-fn invasion_by_rule(tr: &Trace, den: usize, inv: f64, g140: Option<f64>) -> bool {
+/// comes home (`feud.since`, MZB-51), so the Invasion comes a dwell after the *last* Raid's
+/// return before it (the Raid rung's start if none has come home), or when the grievance reaches
+/// the rung's threshold if that is later (MZB-341). An earlier return does not excuse it.
+fn invasion_by_rule(tr: &Trace, den: usize, m: &Metrics) -> bool {
+    let Some(inv) = m.invasion else {
+        return true;
+    };
     let dwell = {
         let x = &tr.c.factions[0];
         tr.c.cultures.get(x.culture).def.dwell_days[Step::Raid.index()]
     };
-    g140.is_some_and(|g| (inv - g).abs() <= 0.25)
-        || tr
-            .seen
-            .iter()
-            .filter(|s| s.den == den && s.kind == PartyKind::Raid)
-            .filter_map(|s| s.gone)
-            .any(|home| home <= inv + 0.05 && (inv - (home + dwell)).abs() <= 0.25)
+    let last_home = tr
+        .seen
+        .iter()
+        .filter(|s| s.den == den && s.kind == PartyKind::Raid)
+        .filter_map(|s| s.gone)
+        .filter(|home| *home <= inv + 0.05)
+        .fold(None, |m: Option<f64>, home| {
+            Some(m.map_or(home, |m| m.max(home)))
+        });
+    let from = last_home.or(m.raid).map_or(0.0, |d| d + dwell);
+    let want = from.max(m.g140.unwrap_or(0.0));
+    (inv - want).abs() <= 0.25
 }
 
 /// Medians over the seeds, and the first seed's whole run.
@@ -367,6 +399,7 @@ struct Sweep {
     /// Every seed's Invasion follows the engine's dwell rule.
     inv_rule: bool,
     pushes: u64,
+    /// Every rail event popped, live and stale, a day.
     wakes_per_day: f64,
     first: Trace,
 }
@@ -382,12 +415,10 @@ fn sweep(spec: &Spec, den: usize, owner: usize, settle: (f64, f64)) -> Sweep {
         let tr = drive(100 + k, spec);
         let s = tr.feuds.get(&(den, owner)).map_or(&[][..], |v| &v[..]);
         let m = metrics(s, settle);
-        if let Some(inv) = m.invasion {
-            inv_rule &= invasion_by_rule(&tr, den, inv, m.g140);
-        }
+        inv_rule &= invasion_by_rule(&tr, den, &m);
         all.push(m);
         pushes.push(tr.pushes_20 as f64);
-        wakes.push(tr.c.stats.rail_wakes as f64 / spec.days as f64);
+        wakes.push((tr.c.stats.rail_wakes + tr.c.stats.rail_stale) as f64 / spec.days as f64);
         if first.is_none() {
             first = Some(tr);
         }
@@ -490,8 +521,10 @@ fn judge(out: &mut Vec<Check>, name: &'static str, s: &Sweep, want: &Row, pushes
         name,
         ok,
         format!(
-            "{}: {detail}; wakes {:.2} a day",
-            want.legs, s.wakes_per_day
+            "{}: {detail}; wakes {:.2} a day; first seed state {:016x}",
+            want.legs,
+            s.wakes_per_day,
+            s.first.c.state_hash()
         ),
     );
 }
@@ -555,7 +588,7 @@ pub fn meter(out: &mut Vec<Check>) {
         );
         check(
             out,
-            "a meter wakes under 3 times a day",
+            "a meter wakes under 3 times a day, stale pops counted",
             s.wakes_per_day < 3.0,
             format!(
                 "{} at {per_day} legs a day: {:.2}",
@@ -621,8 +654,12 @@ pub fn cut(out: &mut Vec<Check>) {
         let mut peak_days = Vec::new();
         let mut repeat = Vec::new();
         let mut late_raids = 0;
+        let mut hash = 0;
         for k in 0..SEEDS {
             let tr = drive(100 + k, &spec);
+            if k == 0 {
+                hash = tr.c.state_hash();
+            }
             let s = &tr.feuds[&(0, 0)];
             let m = metrics(
                 s,
@@ -673,7 +710,8 @@ pub fn cut(out: &mut Vec<Check>) {
                 && settle_ok,
             format!(
                 "{name}: under 70 on day {} (want {under70}), under 42 on day {} (want {under42}), \
-                 settles at {settled:.1} (want {settles}); peak {:.1} on day {:.1} (about 122 on 13)",
+                 settles at {settled:.1} (want {settles}); peak {:.1} on day {:.1} (about 122 on 13); \
+                 first seed state {hash:016x}",
                 day_text(u70),
                 day_text(u42),
                 median(peaks.clone()),
@@ -718,8 +756,12 @@ pub fn reroute(out: &mut Vec<Check>) {
     let mut u70 = Vec::new();
     let mut u42 = Vec::new();
     let mut set = Vec::new();
+    let mut hash = 0;
     for k in 0..SEEDS {
         let tr = drive(100 + k, &off);
+        if k == 0 {
+            hash = tr.c.state_hash();
+        }
         let s = &tr.feuds[&(0, 0)];
         u70.push(under(s, 12.0, 70.0));
         u42.push(under(s, 12.0, 42.0));
@@ -731,7 +773,8 @@ pub fn reroute(out: &mut Vec<Check>) {
         "the track moved off the circle: the grievance follows the stopped row",
         day_ok(u70, Some(19.2), DAYS_TOL) && day_ok(u42, Some(23.6), DAYS_TOL) && settled < 0.5,
         format!(
-            "under 70 on day {} (want 19.2), under 42 on day {} (want 23.6), settles at {settled:.1}",
+            "under 70 on day {} (want 19.2), under 42 on day {} (want 23.6), settles at {settled:.1}; \
+             first seed state {hash:016x}",
             day_text(u70),
             day_text(u42)
         ),
@@ -767,7 +810,9 @@ pub fn reroute(out: &mut Vec<Check>) {
         "the track moved within the circle: the next Raid aims at the new point",
         before && !after.is_empty() && after.iter().all(|x| *x == 1000) && line_x == Some(1000),
         format!(
-            "raids on the track at x {tracks:?} (days, x); the line's point at x {line_x:?} (was 1050)"
+            "raids on the track at x {tracks:?} (days, x); the line's point at x {line_x:?} (was 1050); \
+             first seed state {:016x}",
+            tr.c.state_hash()
         ),
     );
 }
@@ -813,14 +858,22 @@ pub fn two_dens(out: &mut Vec<Check>) {
     let key = synth::CAMP + 2;
     let f = c.faction_of_key(key).expect("the third den");
     let meter = c.factions.row(f).rail_meter(tr.actors[0]);
-    let first = tr.feuds.get(&(2, 0)).and_then(|s| s.first()).map(|p| p.day);
+    let first = tr.first_feud.get(&(2, 0)).copied();
+    // Its meter starts at nothing: right after the first pass it counts that one leg, whatever the
+    // other dens' meters had run up before the den was found.
+    let n1 = tr.first_pass[2];
     check(
         out,
         "a den found on day 10 gets its first pass from the next train and its own meter",
-        meter.is_some_and(|m| !m.lines.is_empty()) && first.is_some_and(|d| d > 10.0 && d < 10.5),
+        meter.is_some_and(|m| !m.lines.is_empty())
+            && first.is_some_and(|d| d > 10.0 && d < 10.5)
+            && n1.is_some_and(|(d, n)| d > 10.0 && d < 10.5 && (n - 1.0).abs() < 1e-9),
         format!(
-            "its feud first seen on day {}; a meter with {} line(s); {} of its passes unknown (the other dens')",
+            "its feud first seen on day {}; its meter counts n = {} right after its first pass \
+             (day {}); a meter with {} line(s); {} of its passes unknown (the other dens')",
             day_text(first),
+            n1.map_or("none".into(), |x| format!("{:.6}", x.1)),
+            day_text(n1.map(|x| x.0)),
             meter.map_or(0, |m| m.lines.len()),
             c.stats.rail_unknown
         ),
