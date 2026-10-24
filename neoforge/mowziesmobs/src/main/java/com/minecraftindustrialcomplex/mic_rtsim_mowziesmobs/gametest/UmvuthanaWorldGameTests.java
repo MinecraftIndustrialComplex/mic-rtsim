@@ -56,9 +56,13 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -776,6 +780,87 @@ public final class UmvuthanaWorldGameTests {
                             nuggetsIn(chestAt(level, chest[0])) > expected[0]);
                 })
                 .thenExecute(() -> record(test, "second gift", nuggetsIn(chestAt(level, chest[0])) + " nuggets in all after the room was made"))
+                .thenSucceed();
+    }
+
+    /**
+     * A chest that nothing can insert into (MZB-642): a {@code ChestBlockEntity} on a block NeoForge registers no item
+     * handler for, as Lootr's chests are (they keep their loot table, so show all slots free). Made on the enchanting
+     * table's block with a type of its own, not registered, so the test removes it before its chunk can be saved.
+     */
+    private static final class HandlerlessChest extends ChestBlockEntity {
+        static final BlockEntityType<HandlerlessChest> TYPE =
+                BlockEntityType.Builder.of(HandlerlessChest::new, Blocks.ENCHANTING_TABLE).build(null);
+
+        HandlerlessChest(BlockPos pos, BlockState state) {
+            super(TYPE, pos, state);
+        }
+    }
+
+    private static void removeHandlerless(ServerLevel level, BlockPos pos) {
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (chunk != null && chunk.getBlockEntity(pos, LevelChunk.EntityCreationType.CHECK) instanceof HandlerlessChest) {
+            chunk.removeBlockEntity(pos);
+            chunk.setBlockState(pos, Blocks.AIR.defaultBlockState(), false);
+        }
+    }
+
+    /**
+     * A container with no item handler is never a grove's chest (MZB-642; the review's P2-1: the pack's Lootr turns the
+     * grove's worldgen chests into such chests, so every transfer into one FAILED and was told again, for ever).
+     * A chest-like block entity with all 27 slots free and no handler stands nearer the middle than a vanilla chest:
+     * with only it there, a scan sends no HAVEN_CHEST and the grove names no chest; once the vanilla chest stands, the
+     * first HAVEN_CHEST names that one, with 27 free. Runs on either engine (the record is the Java side's).
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1200, batch = "umvuthana_chest_handler", skyAccess = true)
+    public static void aChestWithNoItemHandlerIsNeverTheGrovesHaven(GameTestHelper helper) {
+        String test = "aChestWithNoItemHandlerIsNeverTheGrovesHaven";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove g = new Grove(far, far.k, far.z0);
+        GroveChests chests = GroveChests.INSTANCE;
+        BlockPos[] stuck = new BlockPos[1], real = new BlockPos[1];
+
+        helper.startSequence()
+                .thenExecute(g::force)
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    g.lay().declare();
+                    stuck[0] = BlockPos.containing(g.at(3, 3));
+                    real[0] = BlockPos.containing(g.at(-9, -9));
+                    ConflictKit.onEnd(helper, () -> removeHandlerless(level, stuck[0]));
+                    level.setBlock(stuck[0], Blocks.ENCHANTING_TABLE.defaultBlockState(), 3);
+                    level.removeBlockEntity(stuck[0]);
+                    level.setBlockEntity(new HandlerlessChest(stuck[0], level.getBlockState(stuck[0])));
+                    BlockEntity be = level.getBlockEntity(stuck[0]);
+                    check("a chest block entity stands at " + stuck[0].toShortString() + " (" + be + ")", be instanceof HandlerlessChest);
+                    check("all of its slots show free", emptySlots((Container) be) == 27);
+                    check("and nothing can insert into it", level.getCapability(Capabilities.ItemHandler.BLOCK, stuck[0], null) == null);
+                    check("it is in the grove's footprint", g.site().contains(Vec3.atCenterOf(stuck[0])));
+                })
+                .thenWaitUntil(() -> check("the grove is in", g.site().in()))
+                .thenExecute(chests::scanNextTick)
+                .thenIdle(45)
+                .thenExecute(() -> {
+                    check("no HAVEN_CHEST for a chest with no handler (" + havens(g).size() + ")", havens(g).isEmpty());
+                    check("and the grove names no chest (" + chests.chestOf(g.faction) + ")", chests.chestOf(g.faction) == null);
+                    level.setBlock(real[0], Blocks.CHEST.defaultBlockState(), 3);
+                    check("a vanilla chest stands further off", level.getBlockEntity(real[0]) instanceof ChestBlockEntity
+                            && level.getCapability(Capabilities.ItemHandler.BLOCK, real[0], null) != null);
+                    chests.scanNextTick();
+                })
+                .thenWaitUntil(() -> check("HAVEN_CHEST has come for the vanilla chest", !havens(g).isEmpty()))
+                .thenExecute(() -> {
+                    ByteBuffer h = havens(g).get(0).view();
+                    check("the first names the vanilla chest, not the nearer one ("
+                                    + h.getInt(ConflictRecords.HavenChest.X) + ", " + h.getInt(ConflictRecords.HavenChest.Y) + ", " + h.getInt(ConflictRecords.HavenChest.Z) + ")",
+                            h.getInt(ConflictRecords.HavenChest.X) == real[0].getX() && h.getInt(ConflictRecords.HavenChest.Y) == real[0].getY()
+                                    && h.getInt(ConflictRecords.HavenChest.Z) == real[0].getZ());
+                    check("with 27 free", h.getInt(ConflictRecords.HavenChest.FREE) == 27);
+                    check("the grove's chest is that one", real[0].equals(chests.chestOf(g.faction)));
+                    removeHandlerless(level, stuck[0]);
+                    record(test, "haven", "the chest with no handler was skipped for the vanilla one at " + real[0].toShortString());
+                })
                 .thenSucceed();
     }
 

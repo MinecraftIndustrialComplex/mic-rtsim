@@ -18,6 +18,7 @@ import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.capabilities.Capabilities;
 
 import java.nio.ByteBuffer;
 import java.util.HashMap;
@@ -198,8 +199,9 @@ public final class GroveChests implements SessionPlugin {
 
     /**
      * The chest in the grove's loaded footprint chunks with room, nearest the centre, or null. A chest or barrel
-     * counts, inside the footprint's circle; a double chest's halves are two chests, each by its own slots (the
-     * handler at one half takes into both, so a half that reports room is never wrong, only short).
+     * counts, inside the footprint's circle and with an item handler at its place (MZB-642); a double chest's halves
+     * are two chests, each by its own slots (the handler at one half takes into both, so a half that reports room is
+     * never wrong, only short).
      */
     static Found find(ServerLevel level, Camps.Site site) {
         BlockPos best = null;
@@ -219,6 +221,12 @@ public final class GroveChests implements SessionPlugin {
                     continue;
                 int free = free(c);
                 if (free <= 0)
+                    continue;
+                // A container nothing can insert into is no haven, however many slots it shows: Lootr's chests are
+                // ChestBlockEntity subclasses with their loot table kept (all slots free) and no item handler (NeoForge
+                // registers the chest's only for the vanilla blocks), so every transfer into one would FAIL and be
+                // told again, for ever (MZB-642).
+                if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, null) == null)
                     continue;
                 double d = at.distanceToSqr(site.spot);
                 if (d < bestD || (d == bestD && p.compareTo(best) < 0)) {

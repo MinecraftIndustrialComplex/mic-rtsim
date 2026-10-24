@@ -3879,6 +3879,21 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   dimension, count, centreX, centreZ, radius, rest)` scripts an OWED_HUNT command (the script field is private to
   that class), with the dimension in the dictionary the core's tests use.
 
+- **MZB-642** (a grove's chest needs an item handler; amends MZB-422; review P2-1): `GroveChests.find` skips a chest
+  or barrel with no `Capabilities.ItemHandler.BLOCK` at its place. The pack ships Lootr 1.11.38.125 (checked in the
+  pack's jar, sha512 2e8fe46f...): `LootrChestBlockEntity extends ChestBlockEntity` and keeps its loot table, so
+  `free()` counts all 27 slots, and the jar mentions neither `Capabilit` nor `ItemHandler` anywhere; NeoForge
+  21.1.249 registers the chest's item handler only for `Blocks.CHEST` and `Blocks.TRAPPED_CHEST`
+  (`CapabilityHooks`, line 73). So every TRANSFER_TO_CONTAINER into a Lootr chest met a null handler and FAILED, and
+  `containerTransferred` then forced HAVEN_CHEST(27) again, for ever. Now such a chest is never a haven. A grove
+  whose only chests are skipped sends nothing (it was never told of one; the engine has no chest, `place_tribute`
+  sends nothing and the tribute stays in `owed_tribute`, the existing rule for a grove with no chest). A grove that
+  had been told of a chest which then turned out to have no handler is told FREE 0 once, as for a chest that is gone
+  or full. The test is `aChestWithNoItemHandlerIsNeverTheGrovesHaven`: a `ChestBlockEntity` subclass of the test's own
+  on the enchanting table's block (no item handler registered there; its type is unregistered, so the test removes
+  it before the chunk could be saved) nearer the middle than a vanilla chest. It is written and compiled, not run; on
+  the base it would fail by the first HAVEN_CHEST naming the nearer chest (FREE 27) in place of the vanilla one.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
