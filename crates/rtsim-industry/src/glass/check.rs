@@ -2220,7 +2220,9 @@ impl Compiled {
     /// One sweep: `district_live` when every chunk ran throughout it (the district's window then
     /// samples), and per unit whether its chunks did (`unit_live`, SECTIONS.md §3.4). A unit whose
     /// chunks did not run loses its open window; the others sample as the district does. Returns a
-    /// probe set to send and a newly demoted model, if any.
+    /// probe set to send and a newly demoted model, if any. `net`: the live view's inputs for the
+    /// district's coupled shared parts, by domain (SEC-1 S5-2); `None` solves the district alone.
+    #[allow(clippy::too_many_arguments)]
     pub fn sweep_with(
         &mut self,
         at: Tick,
