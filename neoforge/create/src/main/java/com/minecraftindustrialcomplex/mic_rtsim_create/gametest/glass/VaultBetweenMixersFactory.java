@@ -138,19 +138,17 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
     // ---- the checks ----------------------------------------------------------------------------------
 
     static final class Check implements GlassReplayGameTests.Scenario {
-        enum Phase { LEARN, COUNT, REPLACE, RECOMPILE, RELEARN, DONE }
+        enum Phase { LEARN, COUNT, RECOMPILE, RELEARN, DONE }
 
         static final int READ = 10;
         /** The stretch over which the count is compared with the vault's stock. */
         static final int COUNT_TICKS = 600;
-        /** Ticks between the break and the placing of the press. */
-        static final int GAP = 20;
         static final int SETTLE_AFTER_COMPILE = 40, COMPILE_DEADLINE = 1500;
         static final int LEARN_DEADLINE = 9000, RELEARN_DEADLINE = 9000;
 
         private Phase phase = Phase.LEARN;
         private long phaseAt, nextRead, acceptedBefore, settleAt;
-        private boolean placed, firstStaled;
+        private boolean firstStaled;
         private String firstStaledNote = "";
         private long stock0, in0, out0;
         private long[] awayCounted;
@@ -165,7 +163,6 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             phase = Phase.LEARN;
             phaseAt = run.now();
             nextRead = 0;
-            placed = false;
             firstStaled = false;
             firstStaledNote = "";
             awayCounted = null;
@@ -200,7 +197,6 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             switch (phase) {
                 case LEARN -> learn(run, fr, now);
                 case COUNT -> count(run, fr, now);
-                case REPLACE -> replace(run, fr, now);
                 case RECOMPILE -> recompile(run, fr, first, second, now);
                 case RELEARN -> relearn(run, fr, first, second, now);
                 default -> { }
@@ -259,28 +255,19 @@ public final class VaultBetweenMixersFactory implements CorpusFactory {
             SectionsFx.check(run, "both movers counted (the chute put brass in, the smart chute took it out)", in > 0 && out > 0, "in " + in + ", out " + out);
             SectionsFx.check(run, "every move at the vault is counted once: the stock changed by what was counted in less what was counted out",
                     ds == in - out, "stock " + (ds >= 0 ? "+" : "") + ds + ", counted " + (in - out) + " (in " + in + ", out " + out + ")");
-            // The first edit: break the second line's press, and place it again.
+            // The edit: break the second line's press and place it again within one tick. A compile between the two would see
+            // line B without its press, the vault interior to line A, and reset both lines' units (SC84).
             acceptedBefore = fr.checksum().acceptedAt();
             BlockPos[] abs = {run.helper.absolutePos(PRESS), run.far.absolutePos(PRESS)};
-            SectionsFx.info(run, "edit", "break the press at " + SectionsFx.pos(abs[1]) + ", place it " + GAP + " ticks later; compile accepted at " + acceptedBefore);
+            SectionsFx.info(run, "edit", "break the press at " + SectionsFx.pos(abs[1]) + " and place it again in the same tick; compile accepted at " + acceptedBefore);
             for (BlockPos p : abs) {
                 NeoForge.EVENT_BUS.post(new BlockEvent.BreakEvent(run.level(), p, run.level().getBlockState(p), FakePlayers.editor(run.level())));
                 run.level().setBlock(p, Blocks.AIR.defaultBlockState(), 3);
-            }
-            placed = false;
-            go(Phase.REPLACE, now);
-        }
-
-        private void replace(GlassReplayGameTests.Run run, GlassReport fr, long now) {
-            if (now - phaseAt < GAP)
-                return;
-            for (BlockPos p : new BlockPos[] {run.helper.absolutePos(PRESS), run.far.absolutePos(PRESS)}) {
                 run.level().setBlock(p, AllBlocks.MECHANICAL_PRESS.getDefaultState().setValue(MechanicalPressBlock.HORIZONTAL_FACING, Direction.NORTH), 3);
                 IndustryKit.playerPlacedBare(run.helper, p);
             }
-            placed = true;
-            go(Phase.RECOMPILE, now);
             settleAt = -1;
+            go(Phase.RECOMPILE, now);
         }
 
         // ---- RECOMPILE: the second stale, the first not ---------------------------------------------------

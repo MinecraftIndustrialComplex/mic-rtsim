@@ -844,7 +844,7 @@ public final class GlassCompiler {
         District d = ind.district(district);
         if (n == 0) {
             counting.setsTaken++;
-            counting.drop(district);
+            counting.empty(district);
             return;
         }
         Numbering num = st == null ? null : st.numbering;
