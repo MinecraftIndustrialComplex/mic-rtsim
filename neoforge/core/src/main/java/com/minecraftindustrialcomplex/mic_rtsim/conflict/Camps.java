@@ -1434,8 +1434,10 @@ public final class Camps {
      * record on a marker, as a take). It is stale, both lines, when the kind plays no chief lines, the heir stands
      * already, no warrior is home, a plain seat finds no place or the level is Peaceful (no new body appears
      * there), or the kind cannot make the heir. It is held while a player is within {@code holdSpawn} of the
-     * throne, or (seated in place over the old chief's body, MZB-410) while that body is in a fight a player
-     * began, at most {@link #HOLD_MAX} ticks after {@code since}.
+     * throne, at most {@link #HOLD_MAX} ticks after {@code since}, or (seated in place over the old chief's body,
+     * MZB-410) while that body is in a fight a player began, with no time limit: the wait ends with the fight
+     * (MOWZIE.md §4.10; an epoch's end answers it stale). The hold is decided first; the warrior is looked for only
+     * when the pair can go (a held pair is looked at every tick, P3-8).
      */
     private int pairNow(ServerLevel level, Site c, long epoch, long op, Line mask, Line seat, long now, long since, boolean first) {
         if (!c.kind.chiefLines() || seat.slot() != ConflictRecords.CampReconcile.CHIEF_SLOT || mask.body() == null || seat.body() == null)
@@ -1443,22 +1445,24 @@ public final class Camps {
         if (tagged(c.faction, seat.slot(), seat.generation()) != null)
             return PAIR_STALE; // the heir stands already: its answer was lost, and no second warrior goes for it
         Mob old = oldChief(c, seat);
+        if (old != null) {
+            if (c.kind.inFight(level, old))
+                return holdPair(c, epoch, op, mask, seat, since, first); // the fight ends it, not the clock (P2-4)
+        } else {
+            if (level.getDifficulty() == Difficulty.PEACEFUL)
+                return PAIR_STALE;
+            if (now - since < HOLD_MAX && c.kind.holdSpawn(level, c, seat.body(), seat.flags()))
+                return holdPair(c, epoch, op, mask, seat, since, first);
+        }
         Mob warrior = pickWarrior(level, c);
         if (warrior == null)
             return PAIR_STALE;
         Vec3 at;
         float yaw;
-        boolean wait = now - since < HOLD_MAX;
         if (old != null) {
-            if (wait && c.kind.inFight(level, old))
-                return holdPair(c, epoch, op, mask, seat, since, first);
             at = old.position();
             yaw = old.getYRot();
         } else {
-            if (level.getDifficulty() == Difficulty.PEACEFUL)
-                return PAIR_STALE;
-            if (wait && c.kind.holdSpawn(level, c, seat.body(), seat.flags()))
-                return holdPair(c, epoch, op, mask, seat, since, first);
             at = c.kind.spawnAt(level, c, seat.body(), seat.flags());
             if (at == null)
                 return PAIR_STALE;
