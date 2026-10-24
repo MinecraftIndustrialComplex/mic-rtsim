@@ -6262,6 +6262,286 @@ mod conflict {
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
+
+    // ---- M9a re-check: replayed hunts and the hunt race ----------------------------------------
+
+    /// Stands in for a raid on district 77, 400 blocks from the camp.
+    fn hunt_owe(e: &Engine, dim: u32, at: (i32, i32), n: u32) {
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let now = c.now();
+            c.owe_hunt(
+                f,
+                rtsim_industry::ids::DistrictId(77),
+                Pos::new(dim as u16, at.0, at.1),
+                n,
+                now,
+            );
+        })
+    }
+
+    /// The hunts the camp owes: (district, count, op).
+    fn hunt_books(e: &Engine) -> Vec<(u64, u32, u64)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.factions[f as usize]
+                .hunts
+                .iter()
+                .map(|h| (h.district.0, h.count, h.op))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// Every OWED_HUNT Java received: (op, count, replaced, rest).
+    fn hunt_written(j: &Java) -> Vec<(u64, u32, u64, u32)> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count, h.replaced, h.rest)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The plugin's answer to a hunt of district 77.
+    fn hunt_answer(op: u64, killed: u32) -> O {
+        O::HuntApplied(cb::HuntApplied {
+            faction: CAMP,
+            district: 77,
+            op,
+            killed,
+        })
+    }
+
+    fn game_tick(j: &Java) -> rtsim_kernel::clock::Tick {
+        rtsim_kernel::clock::Tick(j.game_time.max(0) as u64)
+    }
+
+    /// M9a re-check, R1: a late answer replayed after a crash. op1 (5) is replaced by op2 (8) and
+    /// both are in the saved pages. After the save: op1's late answer (the engine takes it as the
+    /// 3 the second raid owes alone and sends op2 with 3) and, if `second`, op2's answer (3
+    /// killed, the hunt spent). The server dies; the replay books the answers again. The engine
+    /// used to push OWED_HUNT while replaying; the host moves every command out of the engine's
+    /// outbox after each ingest and writes its queue at each hand-over, so the hunt reached the
+    /// next session's plugin, which had forgotten that it applied it: the animals died twice. Now
+    /// the replay sends nothing, and `resend_notices` sends the hunt still held, once.
+    /// `filler` records of a band the engine never had come before the answers in the journal: a
+    /// small observation buffer spreads the replay over several hand-overs, the answer in a later
+    /// one than the session start (the fake Java sends the players' positions only in the first
+    /// hand-over at each game time). `earlier` journals one answer for a district with no hunt.
+    fn replayed_hunt(name: &str, earlier: bool, filler: usize, second: bool) {
+        let (dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        hunt_owe(&e, dim, at, 5);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        hunt_owe(&e, dim, at, 3);
+        j.idle();
+        let [(77, 8, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        if earlier {
+            // Any journaled conflict record ahead of the late answer in the replay: an answer
+            // for a district with no hunt changes nothing.
+            j.conflict_obs(&O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 78,
+                op: 1,
+                killed: 0,
+            }));
+            j.idle();
+        }
+        for _ in 0..filler {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+            }));
+        }
+        j.conflict_obs(&hunt_answer(op1, 5));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            hunt_books(&e),
+            vec![(77, 3, op2)],
+            "the second raid's own 3"
+        );
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, 3, 0, 0)),
+            "the rest, sent"
+        );
+        if second {
+            j.conflict_obs(&hunt_answer(op2, 3));
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "spent: 5 + 3 = 8 animals killed");
+        }
+        let saved = j.world_save();
+        if filler > 0 {
+            let bytes = saved
+                .journal
+                .iter()
+                .filter(|(s, _)| *s >= first)
+                .map(|(_, r)| r.len())
+                .sum::<usize>();
+            assert!(
+                bytes > wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = if filler > 0 {
+            reopen_with(&dir, saved, gt, wire::MIN_CAPACITY)
+        } else {
+            reopen(&dir, saved, gt)
+        };
+        let want = if second { vec![] } else { vec![(77, 3, op2)] };
+        assert_eq!(hunt_books(&e), want, "the replay books the answers again");
+        for _ in 0..4 {
+            j.idle();
+        }
+        let sent = hunt_written(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        if second {
+            assert_eq!(
+                sent,
+                vec![],
+                "a spent hunt goes to the plugin of the next session (its animals die twice)"
+            );
+        } else {
+            assert_eq!(
+                sent,
+                vec![(op2, 3, 0, 0)],
+                "the hunt still held goes once, when the replay is over"
+            );
+            // The new plugin kills them and answers; the hunt is spent.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "its own answer spends it");
+            assert_eq!(j.conflict_plugin.animals_killed, 3);
+        }
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session() {
+        replayed_hunt("hunt-replay", false, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_after_another_record_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-2", true, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_in_a_later_hand_over_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-long", false, 1_500, true);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over() {
+        replayed_hunt("hunt-replay-rest", false, 0, false);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_in_a_later_hand_over_goes_once() {
+        replayed_hunt("hunt-replay-rest-long", false, 1_500, false);
+    }
+
+    /// M9a re-check, R2: the hunt race. Raid 1 owes `n1`, the plugin applies it (its answer
+    /// journaled but not yet read) and raid 2 owes `n2` before the engine reads that answer. The
+    /// OWED_HUNT of raid 2 carries the op it replaced and `rest`, the `n2` it owes alone, so the
+    /// plugin, whose last applied op is the replaced one, kills `rest` and not the sum. With
+    /// `at_once` the plugin applies raid 2's hunt before the late answer is read (the common
+    /// ordering: the circle's chunks still tick), and the hunt the engine sends again is ignored,
+    /// that op being the last it applied; otherwise it applies the hunt sent again. Either way
+    /// each raid's animals die once: `n1` and `n2`, each capped at 8.
+    fn hunt_race(name: &str, n1: u32, n2: u32, at_once: bool) {
+        let (_dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owed = n1.min(8) + n2.min(8);
+        hunt_owe(&e, dim, at, n1);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        // Applied: the animals die; the answer is journaled but not yet read.
+        j.conflict_plugin.apply_hunts(99, game_tick(&j));
+        assert_eq!(j.conflict_plugin.animals_killed, n1.min(8));
+        hunt_owe(&e, dim, at, n2);
+        j.idle();
+        let [(77, held, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        assert_eq!(held, (n1 + n2).min(8));
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, held, op1, n2.min(8))),
+            "the replacement names the op it replaced and what the second raid owes alone"
+        );
+        if at_once {
+            // The chunks still tick: op2 is applied as soon as it is read.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            assert_eq!(j.conflict_plugin.animals_killed, owed, "rest, not the sum");
+        }
+        j.conflict_flush();
+        j.idle();
+        j.idle();
+        let resent = *hunt_written(&j).last().unwrap();
+        assert_eq!(resent, (op2, n2.min(8), 0, 0), "the rest, sent again");
+        if at_once {
+            assert!(
+                j.conflict_plugin.hunts.is_empty(),
+                "which the plugin ignores"
+            );
+        } else {
+            assert_eq!(j.conflict_plugin.hunts.len(), 1, "which the plugin keeps");
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+        }
+        assert_eq!(hunt_books(&e), vec![], "spent");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let booked = e.with_conflict(|c, _| c.stats.hunts_killed);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(j.conflict_plugin.animals_killed, owed, "animals killed");
+        assert_eq!(
+            booked,
+            u64::from(owed),
+            "and the engine's books say the same"
+        );
+    }
+
+    #[test]
+    fn a_replacement_applied_before_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race", 5, 3, true);
+    }
+
+    #[test]
+    fn a_replacement_applied_after_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race-after", 5, 3, false);
+    }
+
+    #[test]
+    fn a_capped_race_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped", 6, 6, true);
+    }
+
+    #[test]
+    fn a_capped_race_applied_after_the_late_answer_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped-after", 6, 6, false);
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine
