@@ -92,7 +92,8 @@ public final class Threats {
     static final class Fight {
         final long start;
         long last;
-        final Set<UUID> attackers = new HashSet<>();
+        /** Each attacker's strength, asked once when it joins the fight ({@link Threats#strength}). */
+        final Map<UUID, Float> attackers = new HashMap<>();
         final Set<UUID> killed = new HashSet<>();
         int blocksDestroyed;
         int machinesDestroyed;
@@ -300,7 +301,33 @@ public final class Threats {
         if (f == null)
             f = s.fights[c] = new Fight(now);
         f.last = now;
-        f.attackers.add(attacker.getUUID());
+        join(f, attacker);
+    }
+
+    /** An attacker joins a fight once, with its strength. */
+    private static void join(Fight f, Entity attacker) {
+        if (!f.attackers.containsKey(attacker.getUUID()))
+            f.attackers.put(attacker.getUUID(), strength(attacker));
+    }
+
+    /**
+     * One attacker's strength in the engine's unit, one ordinary mob (F17, choice Q12): the first
+     * plugin that knows the entity says (ledger 19, MOWZIE.md §4.13), else 1. A plugin's NaN, a negative
+     * or an infinite value has no opinion.
+     */
+    static float strength(Entity attacker) {
+        for (IndustryPlugin p : IndustryApi.plugins()) {
+            float v;
+            try {
+                v = p.fightStrength(attacker);
+            } catch (RuntimeException e) {
+                MicRtsim.LOGGER.error("[mic_rtsim] industry plugin {} failed giving a fight strength", p.getClass().getName(), e);
+                continue;
+            }
+            if (Float.isFinite(v) && v >= 0f)
+                return v;
+        }
+        return 1f;
     }
 
     /** Something living took damage: either side of a fight. */
@@ -321,7 +348,7 @@ public final class Threats {
             return;
         if (ThreatClasses.hostile(e)) {
             Fight f = s.fights[ThreatClasses.classOf(e)];
-            if (f != null && f.attackers.contains(e.getUUID())) {
+            if (f != null && f.attackers.containsKey(e.getUUID())) {
                 f.killed.add(e.getUUID());
                 f.last = ind.gameTime();
             }
@@ -352,7 +379,7 @@ public final class Threats {
             if (f == null)
                 f = s.fights[c] = new Fight(ind.gameTime());
             f.last = ind.gameTime();
-            f.attackers.add(source.getUUID());
+            join(f, source);
             f.blocksDestroyed++;
             BlockEntity be = level.getBlockEntity(p);
             if (be != null && ind.districts.industrial(level, be, cache) && d.inventoryAt(p) == null)
@@ -396,11 +423,15 @@ public final class Threats {
         if (f.attackers.isEmpty() || ind.district(district) == null)
             return;
         int attackers = f.attackers.size();
+        float strength = 0f;
+        for (float v : f.attackers.values())
+            strength += v;
         ByteBuffer r = ind.journal(IndRecords.IND_FIGHT, IndRecords.Fight.SIZE, cls);
         r.putLong(IndRecords.Fight.DISTRICT, district);
         r.putInt(IndRecords.Fight.ATTACKERS, attackers);
-        // Natural mobs have strength 1 each (the engine's F17 unit, a PLACEHOLDER there; choice Q12).
-        r.putFloat(IndRecords.Fight.ATTACKER_STRENGTH, attackers);
+        // Natural mobs have strength 1 each (the engine's F17 unit, a PLACEHOLDER there; choice Q12);
+        // a plugin gives its own mobs theirs (ledger 19).
+        r.putFloat(IndRecords.Fight.ATTACKER_STRENGTH, strength);
         r.putInt(IndRecords.Fight.ATTACKERS_KILLED, f.killed.size());
         r.putInt(IndRecords.Fight.BLOCKS_DESTROYED, f.blocksDestroyed);
         r.putInt(IndRecords.Fight.MACHINES_DESTROYED, f.machinesDestroyed);
