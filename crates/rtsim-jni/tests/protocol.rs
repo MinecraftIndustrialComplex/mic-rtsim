@@ -5944,6 +5944,89 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// M9 (MZB-446, review P3-3): HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired). A payment
+    /// and the chest named after the last save are in Java's journal when the server dies: the
+    /// replay brings both back, so the chest the session knew is known again, and once the camp
+    /// is in, the stack the engine decides is the op and the amount it decided before the crash
+    /// (and so the plugin's DUPLICATE_OP answer books what it put down).
+    #[test]
+    fn a_haven_chest_journaled_after_a_save_is_replayed_and_its_stack_is_the_same() {
+        let (dir, e, mut j) = grove("grove-chest-replay", 3);
+        camp_in(&mut j);
+        save(&e, &mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        // Minecraft holds the commands, so the first stack is the only one decided.
+        j.hold_commands = true;
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6003,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let before: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(before.len(), 1, "the stack went at the chest");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        let saved = j.world_save();
+        assert!(
+            saved
+                .journal
+                .iter()
+                .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == 0x0817),
+            "the chest is in Java's journal, which the pages lack"
+        );
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "the replay gave the chest: {link:?}");
+        e.with_conflict(|c, _| {
+            let camp = c.camp(c.faction_of_key(CAMP).unwrap()).unwrap();
+            assert_eq!(camp.chest.map(|k| k.free), Some(27), "the chest is known");
+        });
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "the payment is owed again; the camp is out in the replay, so nothing is placed"
+        );
+        // The camp comes in, and the session-start chest record places the stack again.
+        camp_in(&mut j);
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        // The plugin applies each stack as it comes, so more than the first go in these hand-overs:
+        // the first is the stack of before the crash, its op and its 64 nuggets.
+        let first = j
+            .commands
+            .iter()
+            .find(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op);
+        assert_eq!(first, before.iter().next().copied(), "the same op");
+        let (owed, in_flight, sent) = owed_tribute(&e);
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(64 * sent as i32),
+            "stacks of the same 64"
+        );
+        assert_eq!(
+            owed + 64 * (i64::from(sent) - in_flight as i64),
+            567,
+            "what is owed is what is not answered"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// M9 (MZB-423): with the camp in and the chest named, the stacks go one at a time, each after
     /// the last one's answer, whole stacks of at most 64, and the chest ends with every nugget.
     #[test]

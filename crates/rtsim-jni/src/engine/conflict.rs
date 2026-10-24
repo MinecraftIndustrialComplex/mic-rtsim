@@ -11,12 +11,14 @@
 //! mirrors:
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
-//!   are BAND_STATE (counted), CHIEF_STATE (given to the engine at its own time, M6) and
-//!   HAVEN_CHEST (the same, M9; 0x0093 is retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   are BAND_STATE (counted) and CHIEF_STATE (given to the engine at its own time, M6); 0x0092
+//!   and 0x0093 are retired. The journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
 //!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED, CHIEF_PAID and
-//!   HUNT_APPLIED by their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
-//!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
-//!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
+//!   HUNT_APPLIED by their op ids too) into `Conflict::ingest`, at their own time with the other
+//!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
+//!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
+//!   after a crash knows the chest the session knew; it names the chest's state, so a copy is
+//!   idempotent). The Mowzie kinds whose engine half comes with a later
 //!   slice (`Conflict::later`: the rail's) are decoded, counted as deferred and given to the
 //!   conflict at its present, before the clock runs, so that it spends their op ids as `Replay`
 //!   does (MZB-23). Java's ids are translated to the conflict's own first (C2-4): items to
@@ -155,7 +157,7 @@ pub(super) struct Link {
     pub(super) band_states: u64,
     /// Latest-wins CHIEF_STATE records given to the engine (M6, MZB-270).
     pub(super) chief_states: u64,
-    /// Latest-wins HAVEN_CHEST records given to the engine (M9, MZB-422).
+    /// Journaled HAVEN_CHEST records given to the engine (M9, MZB-422, MZB-446).
     pub(super) haven_chests: u64,
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
@@ -443,12 +445,6 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                     st.conflict.chief_states += 1;
                     give_latest(st, &o);
                 }
-                // The haven chest the plugin chose for a grove's tribute (M9, MZB-422): the same
-                // way, and a lost one is mended by the next census's.
-                Obs::HavenChest(_) => {
-                    st.conflict.haven_chests += 1;
-                    give_latest(st, &o);
-                }
                 _ => st.conflict.deferred += 1,
             }
         }
@@ -611,6 +607,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
     };
     translate(st, &mut o);
+    if matches!(o, Obs::HavenChest(_)) {
+        st.conflict.haven_chests += 1;
+    }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
         // conflict at its present (the clock not run for it), which spends its op id and drops
@@ -1275,7 +1274,7 @@ pub struct ConflictLinkStats {
     pub band_states: u64,
     /// CHIEF_STATE records given to the engine.
     pub chief_states: u64,
-    /// HAVEN_CHEST records given to the engine.
+    /// HAVEN_CHEST records (journaled) given to the engine.
     pub haven_chests: u64,
     /// Records whose engine half comes with a later slice, dropped.
     pub deferred: u64,

@@ -1030,6 +1030,138 @@ fn only_the_tribute_good_is_owed_and_a_camp_that_is_out_places_nothing() {
     ok(&mut r);
 }
 
+/// Two runs of one grove, equal at the save a crash falls back to: the camp is in, the gold nugget
+/// is defined and nothing is owed. The first plays the session, the second the restart.
+fn twin_groves(seed: u64) -> (CampRun, CampRun, u32) {
+    let mut a = grove(seed, 9);
+    let mut b = grove(seed, 9);
+    let (_, id) = item(&mut a, "gold_nugget");
+    item(&mut b, "gold_nugget");
+    come_in(&mut a);
+    come_in(&mut b);
+    assert_eq!(a.c.state_hash(), b.c.state_hash(), "equal at the save");
+    (a, b, id)
+}
+
+/// A stray Umvuthi's payment of `n` nuggets, as the journal holds it.
+fn pay_record(key: u64, id: u32, op: u64, n: i32) -> Obs {
+    Obs::ChiefPaid(boundary::ChiefPaid {
+        faction: key,
+        slot: 0,
+        generation: 0,
+        flags: boundary::PAID_STRAY,
+        player: synth::PLAYER,
+        op,
+        items: vec![boundary::Item { item: id, count: n }],
+    })
+}
+
+/// The chest record, as the journal holds it.
+fn chest_record(key: u64, free: u32) -> Obs {
+    Obs::HavenChest(boundary::HavenChest {
+        faction: key,
+        dimension: u32::from(synth::CAMP_POS.frame),
+        pos: (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2),
+        free,
+    })
+}
+
+/// A session played: the records at their game times, the world run to each first.
+fn play(r: &mut CampRun, tail: &[(Tick, Obs)]) {
+    for (t, o) in tail {
+        r.run(*t);
+        r.c.ingest(&mut r.w, &mut *r.infra, o, *t);
+    }
+}
+
+/// The restart after a crash: the session starts, the journal's tail since the save is replayed
+/// into it as the host does it (each record at its game time), the replay is over, and the camp
+/// comes in again.
+fn restart_and_replay(r: &mut CampRun, tail: &[(Tick, Obs)]) {
+    r.restart_to_replay();
+    play(r, tail);
+    r.c.replay_done();
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+}
+
+/// MZB-446 (review P3-3): HAVEN_CHEST is journaled, so a crash that loses the tail of the session
+/// (a payment, the chest, the stack the engine decided at the chest) replays both records, and
+/// the stack decided again is the same op with the same amount: the plugin's DUPLICATE_OP answer
+/// for the stack it put down before the crash books what it put down.
+#[test]
+fn a_stack_decided_again_after_a_crash_is_the_same_op_and_amount() {
+    let (mut a, mut b, id) = twin_groves(24);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let t2 = t1 + 50;
+    let tail = [
+        (t1, pay_record(key, id, 0x6101, 30)),
+        (t2, chest_record(key, 27)),
+    ];
+    // The session: the stack goes at the chest.
+    play(&mut a, &tail);
+    let (op, p) = a.c.placings().next().expect("a stack");
+    assert_eq!(p.amount, 30 * MILLI);
+    // The crash: the save before the payment, the two records replayed. During the replay the camp
+    // is out, so nothing is placed, but the chest is known again.
+    b.restart_to_replay();
+    play(&mut b, &tail);
+    b.c.replay_done();
+    assert_eq!(b.c.placings().count(), 0, "the camp is out in the replay");
+    assert_eq!(owed(&b), 30);
+    assert_eq!(
+        b.c.camp(b.f).unwrap().chest.map(|c| c.free),
+        Some(27),
+        "the replayed record names the chest"
+    );
+    // The camp comes in, and the plugin's session-start chest record places the stack.
+    b.camp_in();
+    let to = b.c.now() + 10;
+    b.run(to);
+    chest(&mut b, 27);
+    let (again, q) = b.c.placings().next().expect("the stack again");
+    assert_eq!((again, q.amount, q.good), (op, p.amount, p.good));
+    let at = b.c.now();
+    assert!(
+        b.c.tribute_placed(&mut b.w, again, at),
+        "DUPLICATE_OP is an answer"
+    );
+    assert_eq!(owed(&b), 0, "it books what the plugin put down");
+    ok(&mut b);
+}
+
+/// MZB-446 (review P3-3): a stack decided again from more than it was decided from (a second
+/// payment, journaled after the stack went, replays before the camp comes in) is another decision,
+/// so it is another op: the plugin puts it down, and is never told that the 30 nuggets it put down
+/// before the crash were 60 (docs/boundary.md §2.2). What is left is the first stack's 30 in the
+/// chest too many, a gift to the player and never a loss.
+#[test]
+fn a_stack_decided_again_from_more_is_another_op() {
+    let (mut a, mut b, id) = twin_groves(25);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let tail = [
+        (t1, pay_record(key, id, 0x6102, 30)),
+        (t1 + 50, chest_record(key, 27)),
+        (t1 + 80, pay_record(key, id, 0x6103, 30)),
+    ];
+    play(&mut a, &tail);
+    let (op, p) = a.c.placings().next().expect("a stack");
+    assert_eq!(p.amount, 30 * MILLI, "decided before the second payment");
+    assert_eq!(owed(&a), 60);
+    restart_and_replay(&mut b, &tail);
+    chest(&mut b, 27);
+    let (again, q) = b.c.placings().next().expect("the stack again");
+    assert_eq!(q.amount, 60 * MILLI, "the replay owes both");
+    assert_ne!(again, op, "another decision, another op");
+    let at = b.c.now();
+    assert!(b.c.tribute_placed(&mut b.w, again, at));
+    assert_eq!(owed(&b), 0);
+    ok(&mut b);
+}
+
 // ---- owed hunts ---------------------------------------------------------------------------------
 
 /// Walls that hold no one back: every raid on a district is survived whole.
