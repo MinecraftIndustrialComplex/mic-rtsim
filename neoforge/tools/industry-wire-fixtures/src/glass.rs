@@ -8,9 +8,9 @@
 use rtsim_industry::cmd::Cmd;
 use rtsim_industry::glass::codec as gc;
 use rtsim_industry::glass::records::{
-    ChunkTicking, Count, CountSample, CountSet, DomainLevel, EdgeKind, GlassObs, GraphDomain,
-    GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NodeKind, ProbeSample,
-    ProbeSet, RateEntry, Term,
+    ChunkTicking, Count, CountSample, CountSet, DomainLevel, DomainSource, EdgeKind, GlassObs,
+    GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode, GraphRecipe, Member, NodeKind,
+    ProbeSample, ProbeSet, RateEntry, Term,
 };
 use rtsim_industry::ids::{ChunkPos, Good};
 use rtsim_industry::obs::{Obs, Timed};
@@ -273,8 +273,7 @@ pub fn fixtures() -> String {
         let at = game_time(&mut f, &mut g);
         let head = head(&mut f, &mut g);
         let network = f.u64("network", g.u64());
-        let current = f.u32("current", g.u32());
-        let driver = Some(f.u32("driver", g.u32() & 0x7FFF_FFFF));
+        let current = Some(f.u32("current", g.u32() & 0x7FFF_FFFF));
         let flags = f.u32("flags", g.u32());
         let live_stress = f64f(&mut f, "live_stress", f64v(&mut g));
         let live_capacity = f64f(&mut f, "live_capacity", f64v(&mut g));
@@ -290,6 +289,49 @@ pub fn fixtures() -> String {
                 capacity: f64f(&mut f, &format!("level{i}.capacity"), f64v(&mut g)),
             })
             .collect();
+        // Two sources: a driven one with two rows and a current row, a fixed one with one row, no
+        // driver and no current row.
+        f.sym("n_sources", 2);
+        let mut sources = Vec::new();
+        for i in 0..2u32 {
+            let driver = if i == 0 {
+                Some(f.u32("source0.driver", g.u32() & 0x7FFF_FFFF))
+            } else {
+                f.sym("source1.driver", "none");
+                None
+            };
+            let n = 2 - i;
+            f.sym(&format!("source{i}.n_levels"), n);
+            let mut rows = Vec::new();
+            for j in 0..n {
+                let p = format!("source{i}.level{j}");
+                rows.push(DomainLevel {
+                    selector: f.u32(&format!("{p}.selector"), g.u32()),
+                    speed_num: f.i32(
+                        &format!("{p}.speed_num"),
+                        g.i32(if j == 0 { Sign::Neg } else { Sign::Pos }),
+                    ),
+                    speed_den: f.u32(&format!("{p}.speed_den"), g.u32()),
+                    capacity: f64f(&mut f, &format!("{p}.capacity"), f64v(&mut g)),
+                });
+            }
+            let current = if i == 0 {
+                Some(f.u32("source0.current", g.u32() & 0x7FFF_FFFF))
+            } else {
+                f.sym("source1.current", "none");
+                None
+            };
+            sources.push(DomainSource {
+                driver,
+                levels: rows,
+                current,
+                ratio_num: f.i32(&format!("source{i}.ratio_num"), g.i32(Sign::Neg)),
+                ratio_den: f.u32(&format!("source{i}.ratio_den"), g.u32()),
+                pos: f.i64(&format!("source{i}.pos"), g.i64(Sign::Neg)),
+            });
+        }
+        // The last member is foreign (a count, not a wire-derived value).
+        let foreign = f.u32("foreign", 1);
         f.sym("n_members", 2);
         let members: Vec<Member> = (0..2)
             .map(|i| Member {
@@ -309,11 +351,12 @@ pub fn fixtures() -> String {
             head,
             network,
             current,
-            driver,
             flags,
             live_stress,
             live_capacity,
             levels,
+            sources,
+            foreign,
             members,
         });
         glass_obs(&mut out, name, gc::IND_GRAPH_DOMAIN, 0, at, o, &f);
