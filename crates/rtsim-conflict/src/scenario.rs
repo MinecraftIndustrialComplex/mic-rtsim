@@ -4,7 +4,8 @@
 //!
 //! A goblin tribe at Gloomhollow claims the Thornwood. A player builds a polluting refinery at the
 //! forest's edge (an industry district: its smog counts against the player, who spends the most
-//! time in its chunk, P14 as changed) and logs the forest for
+//! time in its chunk, P14 as changed; the player's days there mark it a base, P30) and logs the
+//! forest for
 //! five days (a direct act: the player's). The tribe takes notice, sends an envoy with a demand,
 //! and, in the run where the player ignores it, sends scouts and then a war band down the trail.
 //! The player logs off before it arrives: the band meets the refinery abstractly through the
@@ -223,6 +224,7 @@ pub fn run(o: &Options) -> Outcome {
     let end = Tick::from_days(o.days);
     let built = day(0.5);
     let mut smog = 0.0;
+    let mut base_marked = false;
     let mut converter_day: Option<f64> = None;
     let mut converter_at: Option<Tick> = None;
     let mut logs_done = 0u64;
@@ -274,7 +276,13 @@ pub fn run(o: &Options) -> Outcome {
             }
             c.run_until(&mut w, &mut link, next);
         }
-        // The script at this tick.
+        // The script at this tick. Once the refinery is built the player spends their days there,
+        // so the dwell counter marks it a base (P30): a market node, with roads, whose news the
+        // travellers carry (CL-D61: a rout at a base is seen by the base).
+        if next >= built && !base_marked {
+            base_marked = true;
+            w.mark_base(synth::REFINERY_BASE, synth::REFINERY_POS, player, next);
+        }
         if next >= built && smog == 0.0 && converter_at.is_none_or(|a| next < a) {
             smog = SMOG_PER_DAY;
             c.set_emission(
