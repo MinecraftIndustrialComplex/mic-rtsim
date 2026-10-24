@@ -16,6 +16,7 @@ use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
+use rtsim_kernel::renewal::LossCause;
 use rtsim_settle::NodeKind;
 use rtsim_trade::{Amount, GoodId, MILLI};
 
@@ -325,6 +326,48 @@ fn an_heir_pair_answered_stale_is_ordered_again_while_the_grove_stays_in() {
     ok(&mut r);
 }
 
+/// The same, with the camp out when the heir is killed: the CAMP_OUT voided the pair's markers, so
+/// the books have no line in flight to tell them the body is the heir's. A body tagged with the
+/// waiting heir's generation proves the world did the seat. (Found by run 10's chaos once review
+/// P2-1 and P3-1 moved its trajectories: a chief seated over a body already dead, written off.)
+#[test]
+fn an_heir_killed_while_the_camp_is_out_is_booked_dead_all_the_same() {
+    let mut r = grove(8, 9);
+    r.plugin.holders_again = true;
+    come_in(&mut r);
+    let generation = r.c.camp(r.f).unwrap().heir_generation(r.key).unwrap();
+    r.run(Tick(heir_due(&r).0 - 10));
+    r.plugin.lose_answers = 1;
+    r.run(heir_due(&r) + 100);
+    assert_eq!(chief_bodies(&r).len(), 1, "the world has its chief");
+    assert_eq!(chief(&r), None, "the books do not know yet");
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    let body = chief_bodies(&r)[0];
+    let at = r.c.now() + 1;
+    assert!(
+        r.plugin
+            .camp_kill(r.key, body.uuid, boundary::BY_PLAYER, at)
+    );
+    r.run(at + 5);
+    assert_eq!(chief(&r), None, "dead before it was heard");
+    assert_ne!(
+        r.c.camp(r.f).unwrap().heir_generation(r.key),
+        Some(generation),
+        "the next heir has another generation"
+    );
+    r.camp_in();
+    r.run(r.c.now() + 100);
+    assert_eq!(chief(&r), None, "the late record seats no one");
+    r.run(heir_due(&r) + 100);
+    let (state, second) = chief(&r).expect("the next heir sits");
+    assert_eq!(state, SlotState::Body);
+    assert_ne!(second, generation);
+    r.settle();
+    assert_eq!(r.c.stats.camp_written_off, 0, "nothing was written off");
+    ok(&mut r);
+}
+
 /// MZB-406, MZB-407: a player's kill of the chief steps the camp's pressure by one, so its heir
 /// is due after twice the wait of a death no player caused; the players the chief had traded with
 /// are forgotten; the heir that comes has another generation. (The pressure is what is left of the
@@ -416,6 +459,175 @@ fn the_chief_leads_an_invasion_and_stays_home_from_a_raid() {
     r.settle();
     assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "home again");
     ok(&mut r);
+}
+
+/// An Invasion led by the seated Umvuthi: its party and the chief's generation.
+fn led_invasion(r: &mut CampRun) -> (Handle<Party>, u32) {
+    let a = seat_chief(r);
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, REFINERY_POS);
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+            .expect("an invasion");
+    r.flush(at);
+    assert_eq!(
+        chief(r).map(|c| c.0),
+        Some(SlotState::Left),
+        "the chief leads"
+    );
+    (p, a)
+}
+
+/// MZB-412, review P3-1: the Umvuthi that leads a band and is killed away (CHIEF_KILLED, as M3's
+/// Java sends it for a chief puppet) is the camp's chief slot dying away: the slot goes Dead, the
+/// pressure steps once for a player's kill and the heir is due after the longer wait, and the band
+/// comes home without the chief.
+#[test]
+fn a_chief_killed_leading_a_band_is_the_slot_dying_away_and_the_band_comes_home_without_it() {
+    let mut waits = Vec::new();
+    for by in [boundary::BY_PLAYER, boundary::BY_MOB] {
+        let mut r = grove(8, 9);
+        let (p, a) = led_invasion(&mut r);
+        let at = r.c.now() + 1;
+        r.c.chief_killed_by(&mut r.w, p, None, by, None, at);
+        assert_eq!(chief(&r), Some((SlotState::Dead, a)), "the slot is dead");
+        let camp = r.c.camp(r.f).unwrap();
+        assert!(camp.heir.is_some(), "an heir waits");
+        waits.push((heir_due(&r).0 - at.0) as f64 / TICKS_PER_DAY as f64);
+        r.settle();
+        assert_ne!(
+            chief(&r).map(|c| c.0),
+            Some(SlotState::Body),
+            "the band comes home without the chief"
+        );
+        assert!(chief_bodies(&r).is_empty(), "and no chief body stands");
+        r.run(heir_due(&r) + 100);
+        let (state, second) = chief(&r).expect("the heir sits");
+        assert_eq!(state, SlotState::Body);
+        assert_ne!(second, a, "another generation");
+        ok(&mut r);
+    }
+    assert!(
+        waits[0] > waits[1] * 1.5,
+        "one player's loss doubles the wait: {waits:?}"
+    );
+}
+
+/// MZB-295, MZB-412: a crash between the CHIEF_KILLED and the DEMATERIALIZED does not bring the
+/// chief home: the slot is dead before the band's hand-back, saved so, and the replay finds no
+/// chief to return.
+#[test]
+fn a_crash_after_the_chiefs_death_away_does_not_bring_it_home() {
+    let mut r = grove(8, 9);
+    let (p, a) = led_invasion(&mut r);
+    let at = r.c.now() + 1;
+    r.c.chief_killed_by(&mut r.w, p, None, boundary::BY_PLAYER, None, at);
+    r.round_trip();
+    assert_eq!(chief(&r), Some((SlotState::Dead, a)), "saved dead");
+    r.restart();
+    r.settle();
+    assert_ne!(chief(&r).map(|c| c.0), Some(SlotState::Body));
+    assert!(chief_bodies(&r).is_empty());
+    ok(&mut r);
+}
+
+/// Review P3-1 (lesson 1, a copy booked by state once its answer is forgotten): a SEAT_HEIR answer
+/// for chief A, journaled again after a save made the original durable, lands after A died away.
+/// It does not raise A again, and the heir that waits still waits.
+#[test]
+fn a_late_seat_copy_does_not_raise_a_chief_that_died_away() {
+    let mut r = grove(8, 9);
+    r.c.obs_seq = 10;
+    let (p, a) = led_invasion(&mut r);
+    let (op, line) = seat_line(&r);
+    let at = r.c.now() + 1;
+    assert!(r.c.chief_died_away(r.f, LossCause::Player, at));
+    let _ = p;
+    assert_eq!(chief(&r), Some((SlotState::Dead, a)));
+    assert!(r.c.camp(r.f).unwrap().heir.is_some(), "an heir waits");
+    let stamp = r.c.camp(r.f).unwrap().heir_stamp;
+    seat_copy(&mut r, op, line, a);
+    assert_eq!(chief(&r), Some((SlotState::Dead, a)), "A is not raised");
+    let camp = r.c.camp(r.f).unwrap();
+    assert!(camp.heir.is_some(), "the heir still waits");
+    assert_eq!(camp.heir_stamp, stamp, "and its booking stands");
+}
+
+/// A copy for an old generation reaching a live chief of a newer generation leaves its trade
+/// memory and the heir's stamp alone (review P3-1).
+#[test]
+fn a_late_seat_copy_for_an_old_generation_leaves_the_live_chief_alone() {
+    let mut r = grove(9, 9);
+    r.c.obs_seq = 10;
+    let a = seat_chief(&mut r);
+    let (op, line) = seat_line(&r);
+    // A dies at the camp; the next heir sits.
+    let body = chief_bodies(&r)[0];
+    let at = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, body.uuid, boundary::BY_MOB, at));
+    r.run(at + 5);
+    r.run(heir_due(&r) + 100);
+    let (state, b) = chief(&r).expect("the next heir sits");
+    assert_eq!((state, b == a), (SlotState::Body, false));
+    // B remembers a player who paid it.
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::ChiefPaid(boundary::ChiefPaid {
+            faction: r.key,
+            slot: CHIEF_SLOT,
+            generation: b,
+            flags: 0,
+            player: synth::PLAYER,
+            op: 0x78,
+            items: Vec::new(),
+        }),
+        at,
+    );
+    assert_eq!(r.c.camp(r.f).unwrap().traded, vec![synth::PLAYER]);
+    let stamp = r.c.camp(r.f).unwrap().heir_stamp;
+    seat_copy(&mut r, op, line, a);
+    assert_eq!(chief(&r), Some((SlotState::Body, b)), "B stands");
+    let camp = r.c.camp(r.f).unwrap();
+    assert_eq!(camp.traded, vec![synth::PLAYER], "its memory stands");
+    assert_eq!(camp.heir_stamp, stamp, "and the heir's stamp");
+}
+
+/// The first SEAT_HEIR the engine sent: its op and line.
+fn seat_line(r: &CampRun) -> (u64, u32) {
+    orders(r)
+        .iter()
+        .find_map(|(_, x)| {
+            x.lines
+                .iter()
+                .position(|l| l.action == boundary::ACTION_SEAT_HEIR)
+                .map(|i| (x.op, i as u32))
+        })
+        .expect("the pair")
+}
+
+/// A holder's copy of the SEAT_HEIR answer for `generation`, after a save made the original
+/// durable (so the engine has forgotten the answer: a `CampRun`'s own are kept to the end of the
+/// epoch, `obs_seq` 0).
+fn seat_copy(r: &mut CampRun, op: u64, line: u32, generation: u32) {
+    r.c.durable_obs_seq = 20;
+    r.c.obs_seq = 30;
+    let epoch = r.c.camp(r.f).unwrap().seen;
+    let copy = boundary::CampBodies {
+        faction: r.key,
+        epoch,
+        op,
+        lines: vec![boundary::LineAnswer {
+            line,
+            slot: CHIEF_SLOT,
+            generation,
+            action: boundary::ACTION_SEAT_HEIR,
+            outcome: boundary::LINE_DONE,
+        }],
+    };
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut *r.infra, &Obs::CampBodies(copy), at);
 }
 
 /// MZB-405: a census that finds an untagged Umvuthi in a camp found without one adopts it as the

@@ -5676,6 +5676,17 @@ impl Conflict {
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
         let cause = self.renewal_cause(f, by);
         self.renewal_bump(f, 1, cause, at);
+        // The Umvuthi that leads a band is the camp's chief slot, away with it: its fall is that
+        // slot's death away (MZB-412), which steps the chief's pressure and sets the heir after
+        // the cowing `chief_falls` just booked. The member renewal's bump above is a boss
+        // culture's (a den has no chief slot), so the two never both run.
+        if self
+            .camp(f)
+            .and_then(|c| c.chief())
+            .is_some_and(|s| s.state.away() && s.party == p)
+        {
+            self.chief_died_away(f, cause, at);
+        }
         // After the pressure, as `lose_units` has it: the wait `party_lost` plans reads it.
         self.chief_unit_lost(p, epoch, at);
         if let Some(a) = self.parties[p].feud.or(killer) {
