@@ -821,3 +821,71 @@ fn a_stolen_crystal_starts_no_wait() {
     );
     ok(&mut r);
 }
+
+// ---- the chief's fall, two more ways -------------------------------------------------------------
+
+/// A chief body the muster left standing in the camp is the chief's body all the same (MZB-265): a
+/// player killing it there fells the chief, the band it leads routs with no one's rescue, the heir
+/// takes over, and the loss is the player's, so the den waits 12 days.
+#[test]
+fn a_chief_body_left_at_home_killed_routs_its_party() {
+    let mut r = den(59, 1);
+    come_in(&mut r);
+    let p = r.raid().expect("a raid goes");
+    assert!(r.c.parties[p].chief, "the Frostmaw leads its own raid");
+    assert_eq!(counts(&r), [0, 0, 1, 0, 0], "its body is left at the den");
+    let chief = r.c.factions[r.f as usize].chief;
+    let died = kill_the_frostmaw(&mut r, boundary::BY_PLAYER);
+    assert_eq!(r.c.stats.chiefs_killed, 1);
+    assert_eq!(r.c.stats.successions, 1);
+    assert_ne!(r.c.factions[r.f as usize].chief, chief);
+    assert_eq!(pressure_of(&r), 1.0);
+    assert_eq!(arrival_at(&r), Some(died + days(12.0)));
+    assert!(
+        r.c.parties.get(p).is_none_or(|x| !x.chief),
+        "the flag went with the fall"
+    );
+    r.run(died + days(2.0));
+    assert!(war_parties(&r).is_empty(), "the band is routed and gone");
+    assert_eq!(r.c.factions[r.f as usize].away, 0);
+    ok(&mut r);
+}
+
+/// A chief killed on a raid bumps the den's pressure when a player's doing is behind it, and does
+/// not when a mob did it (MZB-258, 263): `BY_NONE` and `BY_TAKEN` are a boss's player loss, `BY_MOB`
+/// a predator's. The CHIEF_KILLED record is pushed as the plugin sends it.
+#[test]
+fn a_chief_killed_away_bumps_the_pressure_unless_a_mob() {
+    for (by, want) in [
+        (boundary::BY_PLAYER, 1.0),
+        (boundary::BY_TAKEN, 1.0),
+        (boundary::BY_NONE, 1.0),
+        (boundary::BY_MOB, 0.0),
+    ] {
+        let mut r = den(48, 1);
+        come_in(&mut r);
+        let p = r.raid().expect("a raid goes");
+        r.camp_out();
+        let at = r.c.now() + 1;
+        r.plugin.push(
+            at,
+            boundary::Obs::ChiefKilled(boundary::ChiefKilled {
+                agent: Party::agent(p),
+                epoch: r.c.parties[p].epoch,
+                by,
+                killer: if by == boundary::BY_PLAYER {
+                    rtsim_conflict::synth::PLAYER
+                } else {
+                    (0, 0)
+                },
+                op: 1 << 63 | 7,
+            }),
+        );
+        let to = r.c.now() + 5;
+        r.run(to);
+        assert_eq!(r.c.stats.chiefs_killed, 1, "kind {by}");
+        assert_eq!(pressure_of(&r), want, "killed by kind {by}");
+        assert_eq!(r.c.stats.renewal_losses, want as u64, "kind {by}");
+        ok(&mut r);
+    }
+}
