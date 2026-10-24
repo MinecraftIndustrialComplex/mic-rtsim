@@ -1409,6 +1409,7 @@ mod tests {
                 None => DomainSource::fixed(0, 64, 1024.0),
             }],
             foreign: 0,
+            peers: Vec::new(),
             members: members
                 .iter()
                 .map(|&(v, r)| Member {

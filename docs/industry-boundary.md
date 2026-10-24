@@ -494,7 +494,7 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
 | IND_GRAPH_NODE | node kind | 32 u32 model, 36 u32 domain (NONE), 40 u32 inventory (NONE), 44 u32 flags, 48 i32 x, 52 i32 y, 56 i32 z, 60 u32 reserved, 64 u32 rule, 68 u32 n rates, 72 i64 capacity, 80 i64 param0, 88 i64 param1, 96 i64 param2, 104 i64 param3, 112 n × Rate24 | 112 + 24n |
 | IND_GRAPH_EDGE | edge kind | 32 u32 from, 36 u32 to, 40 u32 order, 44 u32 flags, 48 u32 capNum, 52 u32 capDen (0/0 unlimited; units per tick), 56 u32 latency, 60 u32 n filter, 64 i64 param, 72 n × u32 good | 72 + 4n, padded to 8 |
 | IND_GRAPH_RECIPE | inputs + outputs | 32 u32 recipeType, 36 u32 heat (at least), 40 u32 n inputs, 44 u32 n outputs, 48 u32 duration, 52 u32 name (NAME, 0 none), 56 n × Term24 (inputs first) | 56 + 24n |
-| IND_GRAPH_DOMAIN | n members | 32 u64 network (Create's id, a hint only), 40 u32 n speed rows L, 44 u32 current speed row (NONE), 48 reserved, 52 u32 flags (1 overstressed now, 2 stress disabled, 4 shared), 56 f64 live stress, 64 f64 live capacity, 72 u32 n sources S, 76 u32 n source rows R, 80 u32 n foreign (the last members), 84 reserved, 88 L × Level24 (speed rows), S × Source32, R × Level24 (source rows), then n × Member24 | 88 + 24L + 32S + 24R + 24n |
+| IND_GRAPH_DOMAIN | n members | 32 u64 network (Create's id, a hint only), 40 u32 n speed rows L, 44 u32 current speed row (NONE), 48 reserved, 52 u32 flags (1 overstressed now, 2 stress disabled, 4 shared), 56 f64 live stress, 64 f64 live capacity, 72 u32 n sources S, 76 u32 n source rows R, 80 u32 n foreign (the last members: the tail in no district's chunks), 84 u32 n peers P, 88 L × Level24 (speed rows), S × Source32, R × Level24 (source rows), n × Member24, then P × u64 peer district | 88 + 24L + 32S + 24R + 24n + 8P |
 | IND_GRAPH_END | flags: 1 complete, 2 not compilable, 4 black box, 8 resend | 16 u64 district, 24 u32 compile, 28 u32 window (checksum window ticks; 0 the engine's `glass.checksumWindowMin`), 32 u32 records, 36 u32 nodes, 40 u32 edges, 44 u32 recipes, 48 u32 domains, 52 u32 reason, 56 u64 fingerprint, 64 u64 frame (0 the level; else a Sable sub-level id), 72 u32 revision, 76 u32 compileTicks | 80 |
 | IND_PROBE_SAMPLE | n entries | 16 u64 district, 24 u32 sweep, 28 u32 node, 32 u32 compile, 36 reserved, 40 n × Entry16 | 40 + 16n |
 | IND_CHUNK_TICKING | 1 ticking, 0 not | (journaled prefix) 24 u64 district, 32 u32 dim, 36 i32 chunkX, 40 i32 chunkZ, 44 reserved | 48 |
@@ -522,7 +522,14 @@ Every graph record (0x0048 to 0x004B) starts `8 i64 gameTime, 16 u64 district, 2
   level 0 to 18; any other source, and every source of a domain Java cannot model, has one row,
   its speed now. `ratio` is the source's speed over the reference's. The fastest source sets the
   speed, every source adds its row's capacity, and sources that disagree in sign stop the network
-  (SECTIONS.md §2.6, §13 SC144 onward).
+  (SECTIONS.md §2.6, §13 SC144 onward). On a **shared** part (flag 4: a network that crosses the
+  district's border, SEC-1 S5-2) the sources are every source Create lists; one in another
+  district's chunks, or an engine shaft outside the district whose tank is no boiler of the
+  compile, is **foreign**: 0 rows, driver and current NONE, its ratio as known. Its members are
+  its own, then the tail (n foreign) in no district's chunks; members in another district's chunks
+  are that district's part's. The peers are the other districts whose chunks hold a listed member
+  or source, or a chunk the network reaches: ascending, distinct, never the own. Only a shared
+  part has foreign sources, a tail or peers.
 - **Member24:** `0 u32 node (NONE), 4 u32 count, 8 i32 ratioNum, 12 u32 ratioDen, 16 f64 impact`:
   `count` blocks at speed `ratio × reference speed` and `impact` SU per RPM each.
 - **Count40:** `0 u32 mover, 4 u32 store, 8 u32 good (NONE: the pair counted nothing yet),
