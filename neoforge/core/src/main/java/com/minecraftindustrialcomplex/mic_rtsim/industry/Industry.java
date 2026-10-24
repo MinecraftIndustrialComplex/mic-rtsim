@@ -473,7 +473,7 @@ public final class Industry {
      * A record just committed speaks for {@code chunk}'s contents: the journal's next file waits until the
      * chunk is written (docs/choices-repair.md R21).
      */
-    void journalDependsOn(net.minecraft.world.level.chunk.LevelChunk chunk) {
+    public void journalDependsOn(net.minecraft.world.level.chunk.LevelChunk chunk) {
         session.journal().chunks().dependsOn(chunk);
     }
 

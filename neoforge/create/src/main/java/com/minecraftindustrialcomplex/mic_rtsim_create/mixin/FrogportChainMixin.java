@@ -25,7 +25,8 @@ import org.spongepowered.asm.mixin.injection.At;
  * an IND_CHAIN_PACKAGE when the frogport is a package store's. The stack is copied before the call, as both
  * calls may keep or change it. A package the frontier keyed ({@link Frontier}, slice S4c1) has its key taken
  * out before the insert, so nothing of rtsim's stays on it in the frogport; its {@code CHAIN_IN} carries the
- * key when Java still holds it.
+ * key when Java still holds it, and the key is released when no {@code CHAIN_IN} carried it
+ * ({@link Frontier#afterLanding}).
  */
 @Mixin(value = FrogportBlockEntity.class, remap = false)
 public abstract class FrogportChainMixin {
@@ -58,6 +59,7 @@ public abstract class FrogportChainMixin {
         ItemStack left = original.call(inventory, box, simulate);
         if (left == null || left.isEmpty())
             PackageStores.chainPackage(self, copy, IndRecords.ChainPackage.CHAIN_IN, key);
+        Frontier.afterLanding(self.getLevel(), self.getBlockPos(), key);
         return left;
     }
 }
