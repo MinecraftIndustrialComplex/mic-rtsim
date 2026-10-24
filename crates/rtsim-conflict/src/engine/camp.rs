@@ -23,14 +23,14 @@
 //!   a replayed answer is a no-op by its engine op id, and one for a generation the slot no longer
 //!   holds books nothing.
 
-use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::renewal::{LossCause, Pressure};
 
 use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
-    BODY_ELSEWHERE, BODY_STRAY, CENSUS_THRONE, CampBodies, CampCensus, CampDeath, CampOut,
-    CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING,
-    ReconcileLine,
+    BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE, CampBodies,
+    CampCensus, CampDeath, CampOut, CampReconcile, CensusBody, DEATH_STRAY, LINE_CHIEF,
+    LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -374,7 +374,12 @@ impl Conflict {
     /// the census at discovery found, the camp's cap that count (one at least) bounded by the
     /// culture's, and every slot starts owed, for the first census's strays to fill. Only for a
     /// culture whose bodies a census counts.
-    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, at: Tick) {
+    ///
+    /// `census` is the record's byte (`CENSUS_CHIEF`, `CENSUS_CRYSTAL`): with the chief present it
+    /// sets the faction's crystal (MZB-257). A renewal culture's camp found with no bodies starts
+    /// at the cap wait, as if farmed to it, since no site ledger says otherwise (EQUILIBRIUM item 6),
+    /// and books its arrival; one found with its member books nothing.
+    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, census: u8, at: Tick) {
         if !self.culture(f).def.camp_bodies {
             return;
         }
@@ -384,7 +389,17 @@ impl Conflict {
         x.cap = n.max(1).min(ceiling);
         x.pool = f64::from(n);
         x.pool_at = at;
+        if u32::from(census) & CENSUS_CHIEF != 0 {
+            x.crystal = u32::from(census) & CENSUS_CRYSTAL != 0;
+        }
         self.camp_create(f, at);
+        if let Some(r) = self.culture(f).renewal
+            && bodies == 0
+        {
+            let day = (at.0 / TICKS_PER_DAY) as u32;
+            self.camp_mut(f).expect("created").pressure = Pressure::at_cap(&r.rule, day);
+        }
+        self.plan_arrival(f, at);
     }
 
     /// The ledger of a camp that has none, from the books as they are: a slot owed for each whole
@@ -523,6 +538,7 @@ impl Conflict {
             }
         }
         self.plan_refill(f, at);
+        self.plan_arrival(f, at);
     }
 
     // ---- refills ---------------------------------------------------------------------------
@@ -548,6 +564,74 @@ impl Conflict {
         let stamp = camp.refill;
         if let Some(t) = t {
             self.schedule(t, Ev::Refill { faction: f, stamp });
+        }
+    }
+
+    /// Why a member of a renewal culture's camp was lost, by who killed it (MZB-258): a player's
+    /// kill and a body carried off are a player's loss, an unclaimed death (`BY_NONE`, `BY_OTHER`, a
+    /// kind this build does not know) is a player's too when the culture's renewal is a boss's
+    /// (EQUILIBRIUM.md §2.2: an unclaimed death of a boss kind) and no one's otherwise, and a
+    /// mob's kill is a predator's.
+    pub(super) fn renewal_cause(&self, f: u32, by: u32) -> LossCause {
+        let boss = self.culture(f).renewal.is_some_and(|r| r.boss);
+        match by {
+            boundary::BY_PLAYER | boundary::BY_TAKEN => LossCause::Player,
+            boundary::BY_MOB => LossCause::Predator,
+            _ if boss => LossCause::Player,
+            _ => LossCause::Other,
+        }
+    }
+
+    /// `n` members of a renewal culture's camp were lost at `at` from `cause`: only a player's loss
+    /// (`LossCause::Player`) adds `n / cap` to the camp's pressure, as of the loss's day (MZB-258).
+    /// It goes before whatever plans the next wait (`unblock`), which reads it. A camp with no
+    /// ledger has nowhere to keep it.
+    pub(super) fn renewal_bump(&mut self, f: u32, n: u32, cause: LossCause, at: Tick) {
+        let Some(r) = self.culture(f).renewal else {
+            return;
+        };
+        if cause != LossCause::Player || n == 0 {
+            return;
+        }
+        let cap = self.factions[f as usize].cap.max(1);
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        camp.pressure
+            .bump(day, n as f32 / cap as f32, r.rule.half_life_days);
+        self.stats.renewal_losses += u64::from(n);
+    }
+
+    /// Books the wait for a renewal culture's next member (MZB-255), whether the camp is in or
+    /// out: short (the pool and the members away under the cap) with no wait booked, an arrival
+    /// after `delay_ticks` of the pressure as it stands now; no longer short with one booked, the
+    /// wait is cancelled. A wait running is never read again, so later losses do not push it out
+    /// (the kernel's rule). `plan_refill` books nothing for such a camp, since its rate is 0. A
+    /// faction with no ledger never refills.
+    pub(super) fn plan_arrival(&mut self, f: u32, at: Tick) {
+        let Some(r) = self.culture(f).renewal else {
+            return;
+        };
+        let x = &self.factions[f as usize];
+        let short = self.pool_at(f, at).floor() as u32 + x.away < x.cap;
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        match (short, camp.arrival_at) {
+            (true, None) => {
+                let t = at + r.rule.delay_ticks(camp.pressure, day).max(1);
+                camp.arrival = camp.arrival.wrapping_add(1);
+                camp.arrival_at = Some(t);
+                let stamp = camp.arrival;
+                self.schedule(t, Ev::Arrival { faction: f, stamp });
+            }
+            (false, Some(_)) => {
+                camp.arrival = camp.arrival.wrapping_add(1);
+                camp.arrival_at = None;
+            }
+            _ => {}
         }
     }
 
@@ -863,6 +947,7 @@ impl Conflict {
         }
         let cap = self.factions[f as usize].cap;
         let body = self.home_body(f);
+        let mut written_off = 0;
         let mut lines: Vec<ReconcileLine> = Vec::new();
         let flags = self.line_flags(f);
         let line = |s: &Slot, action: u8, a: u64, b: u64| ReconcileLine {
@@ -934,6 +1019,7 @@ impl Conflict {
                             camp.free(i, false);
                             self.pool_shift(f, -1.0, at);
                             self.stats.camp_written_off += 1;
+                            written_off += 1;
                         }
                     }
                 }
@@ -1037,6 +1123,9 @@ impl Conflict {
             lines.push(line(&camp.slots[i], ACTION_SPAWN, 0, 0));
         }
         self.factions[f as usize].camp = Some(camp);
+        // A body missing from the camp is a player's loss (EQUILIBRIUM item 11; rtsim cannot tell
+        // an absence, MZB-260), booked once the camp is put back and before the wait is planned.
+        self.renewal_bump(f, written_off, LossCause::Player, at);
         self.send_lines(f, lines, at);
         self.unblock(f, at);
     }
@@ -1243,6 +1332,12 @@ impl Conflict {
             let s = &self.camp(f).expect("a ledger").slots[i];
             (s.state, s.party)
         };
+        // A member that died away was lost then: its body's death at the camp is no second loss.
+        // The bump goes first: the `unblock` that follows plans the wait from it.
+        let cause = self.renewal_cause(f, d.by);
+        if state != SlotState::Dead {
+            self.renewal_bump(f, 1, cause, at);
+        }
         match state {
             SlotState::Body | SlotState::Owed => {
                 self.camp_mut(f).expect("a ledger").free(i, true);
