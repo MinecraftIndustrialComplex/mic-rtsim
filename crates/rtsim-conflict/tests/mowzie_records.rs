@@ -1772,8 +1772,8 @@ fn the_stacks_a_restart_kept_are_dropped_when_the_replay_has_caught_up() {
 
 /// MZB-138: a band in Minecraft when the pages were saved, its casualties and then its despawn
 /// journaled after. The restart's replay counts them as the session that went on counts them:
-/// the bodies the pages held in the world are a recalled stack of their epoch for the replayed
-/// records.
+/// the bodies the pages held in the world stay embodied at their epoch, with their stack, for
+/// the replayed records (docs/replay-gate.md §5.1, RP-5; no fold into a recalled stack, RP-10).
 #[test]
 fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted() {
     let mut r = Run::new(36, quiet_goblins());
@@ -1801,18 +1801,20 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
     });
     let mut same = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     let mut back = restarted(&r);
-    assert_eq!(
-        back.parties[band].recalled,
-        vec![(epoch, r.c.parties[band].spawned.clone())],
+    assert!(
+        back.parties[band].embodied,
         "the bodies in the world are kept for the replay"
     );
-    assert!(!back.parties[band].embodied);
-    assert!(back.parties[band].spawned.is_empty());
+    assert_eq!(back.parties[band].epoch, epoch);
+    assert_eq!(back.parties[band].spawned, r.c.parties[band].spawned);
+    assert!(back.parties[band].recalled.is_empty(), "nothing folded");
     // One death reported, then one more that died unreported before the chunks unloaded.
     let despawn = despawn_with(&r, band, epoch, 2);
     for c in [&mut same, &mut back] {
         c.ingest(&mut r.w, &mut NoInfrastructure, &casualty, r.c.now() + 1);
         c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, r.c.now() + 2);
+        assert!(!c.parties[band].embodied, "the despawn ends the body");
+        assert!(c.parties[band].spawned.is_empty());
     }
     assert_eq!(
         same.parties[band].alive(),
@@ -1833,6 +1835,52 @@ fn a_band_embodied_at_the_crash_has_its_replayed_casualties_and_despawn_counted(
         alive - 2,
         "kept after the replay"
     );
+}
+
+/// docs/replay-gate.md §5.1 and §5.6 (RP-5, RP-10): the replay's start changes no party; its end
+/// makes every party abstract with what the replay left. A band watched and fighting at the
+/// crash, with a stack still walking off from an older epoch: kept as the pages had it while
+/// replaying, then not embodied, nobody watching, nothing in Minecraft, no stack walking off,
+/// and the fight goes on abstractly (Waiting). Its members are all alive throughout.
+#[test]
+fn the_replay_keeps_the_bodies_and_its_end_makes_them_abstract() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch += 1;
+        x.embodied = true;
+        x.seen_by = Some(r.p);
+        x.spawned = x.units.clone();
+        x.phase = Phase::Fighting;
+    }
+    let kept = r.c.parties[band].clone();
+    let alive = kept.alive();
+    let mut back = restarted(&r);
+    assert!(back.replaying());
+    assert_eq!(
+        back.parties[band], kept,
+        "the replay's start changes no party"
+    );
+    back.replay_done();
+    assert!(!back.replaying());
+    let x = &back.parties[band];
+    assert!(!x.embodied);
+    assert_eq!(x.seen_by, None);
+    assert!(x.spawned.is_empty());
+    assert!(
+        x.recalled.is_empty(),
+        "nothing of an ended session reports again"
+    );
+    assert_eq!(x.phase, Phase::Waiting);
+    assert_eq!(x.epoch, kept.epoch);
+    assert_eq!(x.alive(), alive);
+    // A second end changes nothing (the host's resend_notices calls it again).
+    let after = back.parties[band].clone();
+    back.resend_notices();
+    assert_eq!(back.parties[band], after);
 }
 
 /// MZB-142 (re-review P2-2): a player's killing of a band on its walk-off, after it was recalled
@@ -1864,7 +1912,7 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
         count: 2,
         killer: synth::PLAYER,
     });
-    // The restart that replays it: the bodies the pages held are a recalled stack.
+    // The restart that replays it: the bodies the pages held stay embodied (RP-5).
     let mut replayed = restarted(&r);
     assert!(replayed.replaying());
     // The session that went on: the player left, the band was recalled, its bodies walk off.

@@ -275,7 +275,7 @@ impl Party {
     }
 
     /// Moves the bodies in Minecraft (`spawned`) into the recalled stack of the current epoch,
-    /// merging with the one it has (MZB-131, MZB-138). Nothing moves when none is spawned.
+    /// merging with the one it has (MZB-131). Nothing moves when none is spawned.
     fn fold_spawned_into_recalled(&mut self) {
         let s = std::mem::take(&mut self.spawned);
         if s.is_empty() {
@@ -679,6 +679,10 @@ pub struct Conflict {
     /// at 60): the NOTICE_SHOWN that echoes it answers that notice and no other, a feud forgotten
     /// and made again included (MZB-10).
     pub notice_serial: u32,
+    /// Whether the session's replay runs on an engine that came back from its pages (RP-31):
+    /// only then is a replayed BAND_MATERIALIZED the last session's answer to this engine's
+    /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
+    pub(crate) replay_from_pages: bool,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -761,6 +765,7 @@ impl Conflict {
             peaceful: false,
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
+            replay_from_pages: false,
         }
     }
 
@@ -4554,35 +4559,18 @@ impl Conflict {
         w.leave_area(p, &mut [self]);
     }
 
-    /// A session ended: every puppet is gone (they never outlive a session, S11), a watched
-    /// fight with nobody watching goes on abstractly at its next event (as when its player
-    /// leaves), and the plugin hears every faction's territory again (docs/boundary.md §9.4).
-    /// The kept notices go again later, from [`Conflict::resend_notices`], once the session's
-    /// replay has caught up (MZB-31).
+    /// A session's replay begins (docs/replay-gate.md §5.1, RP-5): no party changes. What the
+    /// pages hold embodied stays embodied, at its epoch, with its stacks, so that the journal's
+    /// records of the last session's bodies (their casualties, their despawn, the waves Java
+    /// placed) count against the bodies they were. What is still queued takes its verdict, every
+    /// push is gated until [`Conflict::replay_done`], and the plugin hears every faction's
+    /// territory again (docs/boundary.md §9.4). The bodies become abstract at the replay end,
+    /// and the kept notices go then ([`Conflict::resend_notices`], MZB-31).
     ///
-    /// The journal's replay follows, and it may hold what the last session's bodies did after the
-    /// pages were written: their casualties and their despawn. So the bodies the pages held in
-    /// Minecraft become a recalled stack of their epoch, beside the stacks already walking off,
-    /// for those records to count; whatever no record counted is dropped when the replay has
-    /// caught up ([`Conflict::replay_done`], MZB-138).
-    ///
-    /// `from_pages`: whether this engine came back from its pages (docs/replay-gate.md §5.2,
-    /// RP-31); read by the honour of a replayed BAND_MATERIALIZED, which comes with slice C's
-    /// engine changes.
-    pub fn begin_replay(&mut self, _from_pages: bool) {
-        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
-        for p in ids {
-            let x = &mut self.parties[p];
-            if x.embodied {
-                x.fold_spawned_into_recalled();
-            }
-            x.embodied = false;
-            x.seen_by = None;
-            x.spawned.clear();
-            if x.phase == Phase::Fighting {
-                x.phase = Phase::Waiting;
-            }
-        }
+    /// `from_pages`: whether this engine came back from its pages (RP-31): only then is a
+    /// replayed BAND_MATERIALIZED honoured (§5.2).
+    pub fn begin_replay(&mut self, from_pages: bool) {
+        self.replay_from_pages = from_pages;
         // What is still queued takes its verdict (docs/replay-gate.md §4.4): a party's commands
         // are derived again, a camp's reconcile in flight is void (MOWZIE.md §4.9), and the
         // notices go again from what is kept, after the replay (`resend_notices`). Every push is
@@ -4600,9 +4588,14 @@ impl Conflict {
         self.enforce_budget();
     }
 
-    /// The session's replay has caught up: the bodies no replayed record counted are gone with
-    /// the last session (nothing will report them), so the stacks the session start kept for the
-    /// replay are dropped, and their members count as alive, as they always did (MZB-138).
+    /// The session's replay has caught up (docs/replay-gate.md §5.6): every puppet of the last
+    /// session is gone (they never outlive a session, S11). Every party is abstract with what the
+    /// replay left: not embodied, nobody watching, nothing in Minecraft, a watched fight with
+    /// nobody watching goes on abstractly at its next event (as when its player leaves), and the
+    /// stacks still walking off are dropped, their members alive, as they always were (nothing of
+    /// an ended session reports again, MZB-138, RP-10). Every player's presence span ends (P14:
+    /// the replay's gap is no time spent). Then pushes are queued as usual. A no-op unless a
+    /// replay runs.
     pub fn replay_done(&mut self) {
         if !self.outbox.replaying() {
             return;
@@ -4610,8 +4603,16 @@ impl Conflict {
         self.outbox.replay_done();
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
-            self.parties[p].recalled.clear();
+            let x = &mut self.parties[p];
+            x.embodied = false;
+            x.seen_by = None;
+            x.spawned.clear();
+            x.recalled.clear();
+            if x.phase == Phase::Fighting {
+                x.phase = Phase::Waiting;
+            }
         }
+        self.presence.every_player_left();
     }
 
     /// Every notice of a feud not played yet goes to the plugin again, once a session (MOWZIE.md
