@@ -324,8 +324,11 @@ fn a_band_wiped_out_at_its_track_takes_its_lurk_down_once() {
 }
 
 /// `session_start` drops the agent commands and Java's table lives for one session: the lurk
-/// goes again from `resend_notices`, once however often it is called, and at the band's epoch of
-/// now. A queued one (a replayed record made it again) is replaced, not doubled.
+/// goes again from `resend_notices`, at the band's epoch of now. A call replaces a lurk still
+/// queued (one a replayed record made again) instead of doubling it, so the engine holds at most
+/// one per lurk however often it is called before the queue drains. That it goes once a SESSION is
+/// the host's: it calls `resend_notices` once, when its `notices_due` flag says the replay has
+/// caught up (rtsim-jni's protocol test).
 #[test]
 fn a_session_forgets_the_lurk_and_the_resend_says_it_once() {
     let mut l = Lurk::raid(68);

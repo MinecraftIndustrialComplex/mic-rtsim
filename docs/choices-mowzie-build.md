@@ -3908,6 +3908,12 @@ each at its own far base, scripted engine):
 - `start_fight` and `seen` bump the party's epoch, so the lurk table's epoch is older than the party's
   after a watch: TRAIN_PASSED is stale only on a later epoch (`<=`), never on an unequal one
   (`party_of`'s filter).
+- A SEEN lurk's passes carry epoch E (the spot's, which is what Java's table holds) against the party's
+  E+1, and they pass; but the REMOVED goes out at E+1. Java must drop a lurk by agent, never by an epoch
+  match (a table keyed or checked by epoch keeps the lurk of a band that was watched). Review C checks
+  this on the Java side (MZB-359).
+- `resend_lurks` says a lurk once per drain of the queue; once per SESSION is the host's `notices_due`
+  flag. A host that calls `resend_notices` twice in a session sends it twice.
 
 ## M9 Umvuthana
 
