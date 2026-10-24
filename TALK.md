@@ -544,14 +544,14 @@ kinds, their lines and the engine side; the conflict engine records 10, 13 and 1
   warriors fell; one that took nothing and lost nobody found nothing to raid and is no news. Also
   when a watched fight ends: a rout is beaten, a band that leaves bored or done is held (what its
   mobs carry off comes later, as BAND_LOOTED, and is not counted), and one that leaves because the
-  world turned Peaceful is no raid. A band whose war chief is killed, or whose last member dies,
-  while it is out on the road or waiting at its target (a siege between rounds, a fight nobody
-  watches any more) routs there (CL-D61) and is beaten too; one still mustering at its camp had set
-  out on nobody and is no raid. Whom is the node the band marched on, a village or a rival camp's
+  world turned Peaceful is no raid. A band whose war chief or last member is killed while it is
+  out on the road or waiting at its target (a siege between rounds, a fight nobody watches any
+  more) routs there (CL-D61) and is beaten too; one still mustering at its camp had set out on
+  nobody and is no raid. Whom is the node the band marched on, a village or a rival camp's
   haven, which witnesses it too (a haven's camp through its chief and heir), else the player its
   feud is against; a band after neither records nothing. A fight that ends early (the watching
   player leaves, the session restarts) and then goes home bored or done records nothing yet; a
-  siege's later rounds are told as unwatched raids.
+  siege's later rounds are told as unwatched raids, and a rout after a round is one more report.
 - **Fell** at every succession, a death of age (lazy: when the conflict next wakes) or a killing in
   a fight (by a player or not), naming the fallen chief. The new chief and heir witness it, so the
   camp tells its own loss (`fell.by_us`). The dead chief's actor is gone by then, so the lines name

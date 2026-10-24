@@ -304,7 +304,7 @@ public final class TalkNewsGameTests {
      * for goblins) would otherwise lie over other tests' arenas, and every block they break in it would
      * count as a signal against it too. The camp stays in the reused world when the test ends (the engine
      * keeps a faction it founded); farBase's slots are 1,024 blocks apart and picked at random, so a camp
-     * left from an earlier run never reaches another test's slot.
+     * left from an earlier run almost never lies in another test's slot.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = BATCH + "camp", skyAccess = true)
     public static void talkTellsTheCampNewsAndMood(GameTestHelper helper) {
