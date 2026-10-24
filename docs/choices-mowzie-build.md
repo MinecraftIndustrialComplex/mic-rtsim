@@ -2493,7 +2493,15 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - A Gone chief slot is freed with died true.
   - Both step P up, clear the memory and set the heir.
   - Nothing sends a chief's death away before M11 (BAND_CASUALTIES with the chief, ledger 24), so only Rust
-    tests reach it.
+    tests reach it. (Amended at review, P3-1: this no longer holds. With `chief_leads` an Umvuthi leads
+    Invasions from M9 on, and M3's Java already sends CHIEF_KILLED for a chief puppet, so M9b reaches it.
+    `chief_killed_by` calls `chief_died_away` when the faction's chief slot is away with that party, after
+    `chief_falls` booked the cowing, so the heir is due after it. The fall, the cowing and the band's rout
+    are booked once, by `chief_killed_by`; `chief_died_away` adds only the slot and the heir, and the
+    chief's pressure step, for a player's kill. The member renewal's bump (`renewal_bump`) is a boss
+    culture's and a grove has none, so the pressure steps once. The band comes home without the chief: its
+    slot is Dead with no party. A crash between the CHIEF_KILLED and the DEMATERIALIZED finds the slot
+    Dead in the save, so the replay has no chief to bring home.)
 - **MZB-413** (who leads, MOWZIE.md ledger 4): two culture fields.
   - `chief_leads: Vec<PartyKind>`: the default is raid, invasion and siege (today's "any war party").
     Umvuthana's is `["invasion"]`; frostmaw's is M6's.
@@ -2755,14 +2763,23 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - A MASK answered for a warrior the books have `Left` is booked as a take: the slot goes `Gone` and keeps
     its place in the party.
   - An unanswered pair is void at CAMP_OUT and at a session start with the other lines.
+  - `seated` seats only the heir that waits (amended at review, P3-1): an answer whose generation is not
+    `heir_generation` while an heir waits changes nothing. A holder's copy of an old SEAT_HEIR, booked by
+    state after its answer is forgotten, raised a chief that had died away (its Dead slot freed, its
+    generation seated again, the waiting heir cancelled) and, reaching a live chief of a newer generation,
+    cleared its trade memory and moved the heir's stamp. The generation of an heir whose death the books
+    have is never the next heir's, which derives from a later due tick.
   - The heir killed before its seat is answered (found by run 10's grove chaos): a CAMP_DEATH on
-    `CHIEF_SLOT` whose generation is the heir's, while the SEAT_HEIR line is in flight and the books hold no
-    chief slot of that generation, seats the heir first (`seat_before_death`) and then books its death as any
+    `CHIEF_SLOT` whose generation is the heir's, while the books hold no chief slot of that generation,
+    seats the heir first (`seat_before_death`) and then books its death as any
     chief's: the pressure steps for a player's kill, the heir is due again, the memory is cleared. The answer
     that comes late, from a holder's record at the next camp-in, finds the generation retired at a death and
     seats no one (`seated`). Without it the death booked nothing and the late answer seated a chief with no
     body, written off after three misses with its fall never booked. A generation retired by a write-off is
-    untouched.
+    untouched. (Amended at review: the first version asked the SEAT_HEIR line to be in flight, which a
+    CAMP_OUT or a session start voids, and run 10's chaos found the same ghost with the camp out when the
+    heir was killed. A body tagged with the waiting heir's generation exists only if the world did the seat,
+    whether or not the line is still held here.)
   - The emulator plays the pair whole (`synth`, a gap): `FakeConflict` does both lines of a reconcile that
     carries a MASK, or neither (`pair_possible`): a warrior that is tagged, not the chief, not elsewhere and
     not near a player, and no body of the seat's slot and generation standing already. If either cannot be

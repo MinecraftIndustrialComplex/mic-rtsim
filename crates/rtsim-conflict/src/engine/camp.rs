@@ -2109,12 +2109,12 @@ impl Conflict {
         if a.slot != CHIEF_SLOT || a.generation == 0 {
             return false;
         }
-        // A heir whose death the books have: the late answer of its seat seats no one.
-        if camp
-            .retired
-            .iter()
-            .any(|r| r.slot == CHIEF_SLOT && r.died && r.generation == a.generation)
-        {
+        // Only the heir that waits is seated (review P3-1): a copy of an answer for an older chief,
+        // one that died away or one the books replaced, is booked by state and changes nothing,
+        // and neither does a heir whose death the books have (its generation is not the next
+        // heir's, which derives from a later due tick).
+        let key = self.factions[f as usize].key;
+        if camp.heir_generation(key) != Some(a.generation) {
             return false;
         }
         match camp.chief_index() {
@@ -2149,8 +2149,10 @@ impl Conflict {
         let Some(mut camp) = self.factions[f as usize].camp.take() else {
             return;
         };
+        // A body tagged with the waiting heir's generation exists only if the world did its
+        // SEAT_HEIR, whether or not the line is still in flight here: a CAMP_OUT or a session
+        // start voids the markers, and a holder's record is journaled again at the next camp-in.
         if generation != 0
-            && camp.seat.is_some()
             && camp.index(CHIEF_SLOT, generation).is_none()
             && camp.heir_generation(key) == Some(generation)
         {
