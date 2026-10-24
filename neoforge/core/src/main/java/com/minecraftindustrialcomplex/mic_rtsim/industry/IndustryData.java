@@ -55,6 +55,12 @@ public final class IndustryData extends SavedData {
     final Map<ResourceKey<Level>, List<long[]>> mergeLinks = new HashMap<>();
     /** GOOD component hashes and the patches behind them ({@link Goods}). */
     final Map<String, DataComponentPatch> patches = new HashMap<>();
+    /**
+     * After a reinstall reset (UR-1): member chunks that held seeds, per dimension, not loaded since. At its first
+     * load each leaves the set, and one that lost its seed attachment in the gap has its machines adopted again
+     * ({@code Districts.readopt}). An optional key: a world without one has nothing to adopt again.
+     */
+    final Map<ResourceKey<Level>, LongOpenHashSet> readopt = new HashMap<>();
 
     public static final Factory<IndustryData> FACTORY = new Factory<>(IndustryData::new, IndustryData::load);
 
@@ -170,6 +176,12 @@ public final class IndustryData extends SavedData {
         for (Map.Entry<String, DataComponentPatch> e : patches.entrySet())
             DataComponentPatch.CODEC.encodeStart(ops, e.getValue()).result().ifPresent(t -> patchTag.put(e.getKey(), t));
         tag.put("patches", patchTag);
+        CompoundTag readoptTag = new CompoundTag();
+        for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : readopt.entrySet())
+            if (!e.getValue().isEmpty())
+                readoptTag.putLongArray(e.getKey().location().toString(), e.getValue().toLongArray());
+        if (!readoptTag.isEmpty())
+            tag.put("readopt", readoptTag);
         return tag;
     }
 
@@ -245,6 +257,13 @@ public final class IndustryData extends SavedData {
         RegistryOps<Tag> ops = RegistryOps.create(NbtOps.INSTANCE, registries);
         for (String key : patchTag.getAllKeys())
             DataComponentPatch.CODEC.parse(ops, patchTag.get(key)).result().ifPresent(p -> data.patches.put(key, p));
+        CompoundTag readoptTag = tag.getCompound("readopt");
+        for (String key : readoptTag.getAllKeys()) {
+            ResourceKey<Level> dim = dim(key);
+            if (dim != null)
+                for (long c : readoptTag.getLongArray(key))
+                    data.readopt.computeIfAbsent(dim, d -> new LongOpenHashSet()).add(c);
+        }
         return data;
     }
 
