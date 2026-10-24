@@ -20,7 +20,9 @@ use serde::Serialize;
 
 use crate::cluster::{MemberSpec, PoolKey, ProcSpec, ProcSpecBody};
 use crate::cmd::{BlockDestroy, ChunkReconcile};
-use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap};
+use crate::ids::{
+    BlockPos, ChunkPos, DistrictId, Good, GoodClass, GoodVec, SLOT_UNITS, StationId, VecMap,
+};
 use crate::learn::{Learned, LearnedTarget, Learner, LinkKey};
 use crate::model::{BlackBox, DistrictModel, ModelProcess};
 use crate::obs::{DepositSample, InvKind, InventoryDecl, NotLearnable};

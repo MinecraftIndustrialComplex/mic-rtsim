@@ -9,8 +9,8 @@ use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
 use rtsim_industry::learn::{Learned, LinkKey};
 use rtsim_industry::obs::{
-    ChainDirection, ChainPackage, DistrictDecl, InvKind, InventoryDecl, LoadState, Obs,
-    StoreDecl, StoreFrogport, SweepEnd, Timed,
+    ChainDirection, ChainPackage, DistrictDecl, InvKind, InventoryDecl, LoadState, Obs, StoreDecl,
+    StoreFrogport, SweepEnd, Timed,
 };
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::Tick;
@@ -270,7 +270,9 @@ fn run_writing(e: &mut Engine, from: u64, to: u64, step: u64) -> Vec<WriteChain>
 }
 
 fn iron(w: &[WriteChain]) -> i64 {
-    w.iter().map(|w| i64::from(w.count) * w.goods.get(IRON)).sum()
+    w.iter()
+        .map(|w| i64::from(w.count) * w.goods.get(IRON))
+        .sum()
 }
 
 #[test]
@@ -293,7 +295,10 @@ fn both_ends_away_replay_as_one_cluster_and_conserve_the_iron() {
         (1_000 - 40..=1_000 + 40).contains(&mine),
         "the mine sends what it makes: {mine}"
     );
-    assert!((200..=260).contains(&mill), "the mill keeps the rest: {mill}");
+    assert!(
+        (200..=260).contains(&mill),
+        "the mill keeps the rest: {mill}"
+    );
     e.check_books().expect("books");
     // Nothing is written while both are away, and the store owes nothing (a cluster holds the
     // pool).
@@ -321,7 +326,11 @@ fn an_importer_that_loads_first_is_written_what_the_exporter_still_sends() {
             (x.store, x.district, x.inventory, x.frogport, x.pos),
             (S, MILL, PORT, 1, frog(MILL))
         );
-        assert_eq!(x.goods.get(IRON), BATCH, "whole packages while the mine still sends");
+        assert_eq!(
+            x.goods.get(IRON),
+            BATCH,
+            "whole packages while the mine still sends"
+        );
     }
     assert_eq!(e.stores()[&S].counts.written as i64 * BATCH, sent);
     assert!(
@@ -425,6 +434,10 @@ fn chain_pools_and_debts_survive_a_restore() {
     assert_eq!(back.stores(), e.stores());
     back.advance_to(Tick(9_000));
     e.advance_to(Tick(9_000));
-    assert_eq!(writes(&mut back), writes(&mut e), "the restored engine writes as the original");
+    assert_eq!(
+        writes(&mut back),
+        writes(&mut e),
+        "the restored engine writes as the original"
+    );
     assert_eq!(back.sim_stock(MINE), e.sim_stock(MINE));
 }

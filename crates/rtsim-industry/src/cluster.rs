@@ -1318,8 +1318,13 @@ impl Cluster {
             // A shared pool leaves with the last district whose processes touch it.
             let leaves = match self.pools[i].key.district() {
                 Some(o) => o == d,
-                None => !self.procs.iter().any(|p| touches(p, i as u16))
-                    && !self.spaces.iter().any(|s| s.weights.iter().any(|w| w.0 == i as u16)),
+                None => {
+                    !self.procs.iter().any(|p| touches(p, i as u16))
+                        && !self
+                            .spaces
+                            .iter()
+                            .any(|s| s.weights.iter().any(|w| w.0 == i as u16))
+                }
             };
             if leaves {
                 out.push(self.pools.remove(i));

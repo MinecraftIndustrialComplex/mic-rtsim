@@ -255,7 +255,10 @@ fn a_chain_package_is_a_port_and_a_link_of_its_district() {
     let d1 = e.district(D1).expect("D1");
     assert_eq!(d1.ports.get(IRON), -64);
     assert_eq!(d1.links.iter().collect::<Vec<_>>(), [(&to_b(IRON), &-64)]);
-    assert!(d1.batches.is_empty(), "a mail batch is the postbox's, not the chain's");
+    assert!(
+        d1.batches.is_empty(),
+        "a mail batch is the postbox's, not the chain's"
+    );
     assert_eq!(e.stores()[&S].batch[&b().pos].get(IRON), 64);
     let d2 = e.district(D2).expect("D2");
     assert_eq!(d2.ports.get(IRON), 64);
@@ -279,7 +282,15 @@ fn a_chain_package_is_a_port_and_a_link_of_its_district() {
     send(
         &mut e,
         60,
-        chain(S, Some(D1), ChainDirection::Out, 0, Some(2), 1, &[(GOLD, 5)]),
+        chain(
+            S,
+            Some(D1),
+            ChainDirection::Out,
+            0,
+            Some(2),
+            1,
+            &[(GOLD, 5)],
+        ),
     );
     let d1 = e.district(D1).expect("D1");
     assert_eq!(d1.ports.get(GOLD), -15);

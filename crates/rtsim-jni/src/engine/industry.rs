@@ -706,9 +706,7 @@ fn districts_fit(o: &Obs) -> bool {
                     .all(|f| f.district.is_none_or(|d| d.0 < DISTRICT_ID_LIMIT));
         }
         Obs::StoreCensus(c) => return c.store.0 < DISTRICT_ID_LIMIT,
-        Obs::Conditions(_)
-        | Obs::CarriageResult(_)
-        | Obs::TrainUnwatched(_) => {
+        Obs::Conditions(_) | Obs::CarriageResult(_) | Obs::TrainUnwatched(_) => {
             return true;
         }
     };

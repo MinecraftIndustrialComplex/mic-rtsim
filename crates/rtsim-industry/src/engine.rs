@@ -1526,8 +1526,7 @@ impl Engine {
                 .values()
                 .find_map(|s| s.route(d, inv, to, tun_replay))
         };
-        let Some(mut spec) =
-            dist.member_spec(&model, &base, &part, &self.goods, &self.tun, &route)
+        let Some(mut spec) = dist.member_spec(&model, &base, &part, &self.goods, &self.tun, &route)
         else {
             return;
         };
@@ -1627,10 +1626,7 @@ impl Engine {
                     if self.cluster_with_pool(k).is_some() {
                         continue;
                     }
-                    let owed = self
-                        .stores
-                        .get_mut(&st)
-                        .map_or(0, |s| s.take_owed(to, g));
+                    let owed = self.stores.get_mut(&st).map_or(0, |s| s.take_owed(to, g));
                     if let Some(p) = spec.pools.iter_mut().find(|p| p.0 == k) {
                         p.1 = owed;
                     }
@@ -1836,7 +1832,11 @@ impl Engine {
             None => {
                 self.stats.chain_pools_lost += 1;
                 if self.log_enabled {
-                    let name = self.goods.get(&g).map_or("?", |i| i.name.as_str()).to_string();
+                    let name = self
+                        .goods
+                        .get(&g)
+                        .map_or("?", |i| i.name.as_str())
+                        .to_string();
                     self.note(
                         d,
                         at,
@@ -3603,7 +3603,11 @@ impl Engine {
             && let Some(to) = to
             && !self.cluster_of.contains_key(&district)
         {
-            let sign = if p.direction == ChainDirection::In { 1 } else { -1 };
+            let sign = if p.direction == ChainDirection::In {
+                1
+            } else {
+                -1
+            };
             let dist = self.district_mut(district);
             for (g, n) in p.goods.iter() {
                 *dist
