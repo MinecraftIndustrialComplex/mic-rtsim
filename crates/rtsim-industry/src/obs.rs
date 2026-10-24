@@ -290,6 +290,9 @@ pub struct StoreFrogport {
 pub struct StoreDecl {
     pub store: StoreId,
     pub dim: u32,
+    /// The frontier's epoch (choice SC136): Java's keys on held packages name it, and a declaration
+    /// of a later one means Java dropped the keys of the earlier (an engine reset, a re-enable).
+    pub epoch: u32,
     pub into: Option<StoreId>,
     pub frogports: Vec<StoreFrogport>,
     /// Hops along the chain between the frogports' conveyors, the upper triangle row by row
@@ -325,6 +328,17 @@ pub enum ChainDirection {
     Out,
     /// From the chain into the frogport (`FrogportBlockEntity.tick`'s insert).
     In,
+    /// The frontier holds the package on a boundary conveyor, its hand-off toward a frogport whose
+    /// chunk does not tick refused (SECTIONS.md §2.5, slice S4c). No port: its `Out` was booked.
+    Held,
+}
+
+/// The key the frontier writes into a package it holds (choice SC136): Java's epoch, which every
+/// engine reset changes, and a serial unique in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HeldKey {
+    pub epoch: u32,
+    pub serial: u64,
 }
 
 /// IND_CHAIN_PACKAGE (SECTIONS.md §2.5): packages that left a package store's frogport onto the
@@ -335,10 +349,10 @@ pub struct ChainPackage {
     pub district: Option<DistrictId>,
     pub inventory: Option<u32>,
     pub direction: ChainDirection,
-    /// The frogport's index in the store's last IND_PACKAGE_STORE.
+    /// The frogport's index in the store's last IND_PACKAGE_STORE (`Held`: the destination's).
     pub frogport: u32,
     /// The frogport's position: a record a chunk journals again names its frogport by it, whatever
-    /// the store's frogports became meanwhile (choice SC113).
+    /// the store's frogports became meanwhile (choice SC113). `Held`: the boundary conveyor's.
     pub pos: BlockPos,
     /// The frogport Java resolved the package's route to (for `In`, the frogport itself); None:
     /// no frogport matches its address, and it circles.
@@ -347,6 +361,8 @@ pub struct ChainPackage {
     /// NAME dictionary entry of the package's address.
     pub address: u32,
     pub op: Option<OpId>,
+    /// `Held`: the key Java wrote into the package; `In`: the key of a package Java held keyed.
+    pub key: Option<HeldKey>,
     pub goods: GoodVec,
 }
 

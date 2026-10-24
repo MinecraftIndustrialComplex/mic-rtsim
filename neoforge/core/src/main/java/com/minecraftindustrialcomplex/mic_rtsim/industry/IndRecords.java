@@ -396,7 +396,7 @@ public final class IndRecords {
     public static final class PackageStore {
         public static final int STORE = 24;      // u64
         public static final int DIM = 32;        // u32 dimension id
-        // 36: u32 zero
+        public static final int EPOCH = 36;      // u32: the frontier's epoch, which keys held packages (SECTIONS.md §2.5)
         public static final int INTO = 40;       // u64, 0 none
         public static final int FROGPORTS = 48;  // n x FROGPORT
         public static final int FROGPORT = 48;
@@ -426,9 +426,12 @@ public final class IndRecords {
 
     /**
      * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
-     * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents. The frogport is an
+     * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents, or a package the
+     * frontier holds on a boundary conveyor ({@code CHAIN_HELD}, SECTIONS.md §2.5). The frogport is an
      * index into the store's last IND_PACKAGE_STORE, and its position too; the destination is an index
-     * ({@code CHAIN_OUT} only).
+     * ({@code CHAIN_OUT}, and {@code CHAIN_HELD}, whose frogport is its destination and whose position is
+     * the boundary conveyor's). A held package's key (the frontier's epoch and a serial, choice SC136) is in
+     * {@code CHAIN_HELD} and in a {@code CHAIN_IN} of a package Java still holds keyed; epoch 0 is no key.
      */
     public static final class ChainPackage {
         public static final int STORE = 24;       // u64
@@ -443,16 +446,19 @@ public final class IndRecords {
         public static final int X = 72;           // i32, the frogport's position (choice SC113)
         public static final int Y = 76;           // i32
         public static final int Z = 80;           // i32
-        // 84: u32 zero
-        public static final int ENTRIES = 88;
+        public static final int EPOCH = 84;       // u32, 0 no key
+        public static final int SERIAL = 88;      // u64
+        public static final int ENTRIES = 96;
 
         public static int size(int n) {
             return ENTRIES + n * ENTRY16;
         }
 
-        /** After IND_PACKAGE's 1 and 2; 5 is kept for the frontier's {@code CHAIN_HELD} (§2.5). */
+        /** After IND_PACKAGE's 1 and 2. */
         public static final int CHAIN_OUT = 3;
         public static final int CHAIN_IN = 4;
+        /** The frontier holds the package on a boundary conveyor, refused at its hand-off (§2.5). */
+        public static final int CHAIN_HELD = 5;
     }
 
     /**

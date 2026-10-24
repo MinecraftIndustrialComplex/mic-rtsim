@@ -9,7 +9,7 @@ use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
 use rtsim_industry::learn::LinkKey;
 use rtsim_industry::obs::{
-    ChainDirection, ChainPackage, Obs, StoreCensus, StoreDecl, StoreFrogport, Timed,
+    ChainDirection, ChainPackage, HeldKey, Obs, StoreCensus, StoreDecl, StoreFrogport, Timed,
 };
 use rtsim_industry::persist::STORE_TABLE;
 use rtsim_industry::stores::Pool;
@@ -67,6 +67,7 @@ fn decl(store: StoreId, frogports: Vec<StoreFrogport>) -> StoreDecl {
     StoreDecl {
         store,
         dim: 0,
+        epoch: 0,
         into: None,
         frogports,
         hops,
@@ -77,6 +78,7 @@ fn removal(store: StoreId, into: Option<StoreId>) -> StoreDecl {
     StoreDecl {
         store,
         dim: 0,
+        epoch: 0,
         into,
         frogports: vec![],
         hops: vec![],
@@ -115,6 +117,7 @@ fn chain(
         packages,
         address: 0,
         op: None,
+        key: None,
         goods: GoodVec::from_pairs(goods.iter().copied()),
     })
 }
@@ -561,4 +564,168 @@ fn stores_are_paged_and_a_restore_continues_exactly() {
     broken.insert(PageKey::new(STORE_TABLE, 77).0, b);
     let pages = broken.iter().map(|(k, b)| (PageKey(*k), b.clone()));
     assert!(Engine::restore(pages, Tunables::default()).is_err());
+}
+
+// ---- the frontier (slice S4c) ----------------------------------------------------------------
+
+fn key(epoch: u32, serial: u64) -> HeldKey {
+    HeldKey { epoch, serial }
+}
+
+/// A `CHAIN_HELD` of one package toward frogport `destination`, held on the conveyor at x = 15.
+fn held(store: StoreId, destination: u32, k: HeldKey, goods: &[(Good, i64)]) -> Obs {
+    Obs::ChainPackage(ChainPackage {
+        store,
+        district: None,
+        inventory: None,
+        direction: ChainDirection::Held,
+        frogport: destination,
+        pos: pos(15),
+        destination: Some(destination),
+        packages: 1,
+        address: 0,
+        op: None,
+        key: Some(k),
+        goods: GoodVec::from_pairs(goods.iter().copied()),
+    })
+}
+
+fn with_key(o: Obs, k: HeldKey) -> Obs {
+    match o {
+        Obs::ChainPackage(mut p) => {
+            p.key = Some(k);
+            Obs::ChainPackage(p)
+        }
+        o => o,
+    }
+}
+
+fn epoch(mut d: StoreDecl, e: u32) -> StoreDecl {
+    d.epoch = e;
+    d
+}
+
+fn on_hold(e: &Engine, s: StoreId, f: StoreFrogport) -> Vec<HeldKey> {
+    e.stores()[&s]
+        .held_toward(f.pos)
+        .iter()
+        .map(|h| h.key)
+        .collect()
+}
+
+/// A held package is booked toward its destination with its key, once, and leaves the pools as
+/// they were (its `CHAIN_OUT` booked it); its keyed `CHAIN_IN` strikes it and takes it from the
+/// pool as any landing does. The held packages are paged with the store.
+#[test]
+fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
+    let mut e = engine();
+    e.set_page_check(true);
+    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(
+        &mut e,
+        1,
+        chain(S, Some(D1), ChainDirection::Out, 0, Some(1), 2, &[(IRON, 128)]),
+    );
+    send(&mut e, 40, held(S, 1, key(1, 7), &[(IRON, 64)]));
+    send(&mut e, 41, held(S, 1, key(1, 8), &[(IRON, 64)]));
+    // Seen again (it circles): one record each, Java keys a package once; the engine turns away
+    // a second record of a key all the same.
+    send(&mut e, 90, held(S, 1, key(1, 7), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 7), key(1, 8)]);
+    let s = &e.stores()[&S];
+    assert_eq!(s.pools[1], pool(2, &[(IRON, 128)]));
+    assert_eq!((s.counts.held, s.counts.held_stale), (2, 1));
+    // No port and no link: the district's books are as the `CHAIN_OUT` left them.
+    let mut disk = Disk::new();
+    save(&mut e, &mut disk);
+    let pages = disk.iter().map(|(k, b)| (PageKey(*k), b.clone()));
+    let back = Engine::restore(pages, Tunables::default()).expect("restore");
+    assert_eq!(back.stores(), e.stores());
+    // The first lands at b, keyed.
+    send(
+        &mut e,
+        300,
+        with_key(
+            chain(S, Some(D2), ChainDirection::In, 1, None, 1, &[(IRON, 64)]),
+            key(1, 7),
+        ),
+    );
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 8)]);
+    let s = &e.stores()[&S];
+    assert_eq!(s.pools[1], pool(1, &[(IRON, 64)]));
+    assert_eq!(s.counts.held_landed, 1);
+    // A key the store does not hold (struck already) lands as any package does.
+    send(
+        &mut e,
+        301,
+        with_key(
+            chain(S, Some(D2), ChainDirection::In, 1, None, 1, &[(IRON, 64)]),
+            key(1, 7),
+        ),
+    );
+    let s = &e.stores()[&S];
+    assert_eq!(s.pools[1], Pool::default());
+    assert_eq!(s.counts.held_landed, 1);
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 8)]);
+}
+
+/// Nothing is held while all of a store ticks: a census clears the held packages, and a hold
+/// recorded no later than it is turned away. A declaration of a later epoch drops the keys of
+/// earlier ones, and a hold of an earlier epoch is turned away.
+#[test]
+fn a_census_and_a_later_epoch_clear_the_held() {
+    let mut e = engine();
+    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
+    send(&mut e, 11, held(S, 0, key(1, 2), &[(GOLD, 3)]));
+    assert_eq!(on_hold(&e, S, a()), vec![key(1, 2)]);
+    send(
+        &mut e,
+        200,
+        Obs::StoreCensus(StoreCensus {
+            store: S,
+            packages: vec![(Some(1), 1)],
+            goods: vec![(Some(1), IRON, 64)],
+        }),
+    );
+    assert!(e.stores()[&S].on_hold.is_empty());
+    send(&mut e, 200, held(S, 1, key(1, 3), &[(IRON, 64)]));
+    assert!(e.stores()[&S].on_hold.is_empty());
+    send(&mut e, 201, held(S, 1, key(1, 4), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 4)]);
+    // Java's epoch moves on (an engine reset, a re-enable): it declares every store again.
+    send(&mut e, 300, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 2)));
+    assert!(e.stores()[&S].on_hold.is_empty());
+    send(&mut e, 301, held(S, 1, key(1, 5), &[(IRON, 64)]));
+    assert!(e.stores()[&S].on_hold.is_empty());
+    send(&mut e, 302, held(S, 1, key(2, 6), &[(IRON, 64)]));
+    assert_eq!(on_hold(&e, S, b()), vec![key(2, 6)]);
+    // A hold of a later epoch than the store's declaration moves it on too.
+    send(&mut e, 303, held(S, 0, key(3, 7), &[(GOLD, 3)]));
+    assert_eq!(e.stores()[&S].epoch, 3);
+    assert!(on_hold(&e, S, b()).is_empty());
+    assert_eq!(on_hold(&e, S, a()), vec![key(3, 7)]);
+    assert_eq!(e.stores()[&S].counts.held_stale, 2);
+}
+
+/// Held packages follow their frogport into another store (a split), and into the store a
+/// removed one names.
+#[test]
+fn held_packages_follow_their_frogport() {
+    let mut e = engine();
+    send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
+    // b moves to U.
+    send(&mut e, 20, Obs::PackageStore(epoch(decl(S, vec![a(), c()]), 1)));
+    send(
+        &mut e,
+        20,
+        Obs::PackageStore(epoch(decl(U, vec![from(b(), S)]), 1)),
+    );
+    assert_eq!(on_hold(&e, U, b()), vec![key(1, 1)]);
+    assert!(e.stores()[&S].on_hold.is_empty());
+    // U goes, into S, which lists b again.
+    send(&mut e, 30, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    send(&mut e, 30, Obs::PackageStore(removal(U, Some(S))));
+    assert_eq!(on_hold(&e, S, b()), vec![key(1, 1)]);
 }

@@ -15,6 +15,11 @@
 //!   packages on its conveyors by destination; the pools are set to it, and the difference from the
 //!   books is the store's residue (packages a player hung on or took off, or a route Java resolved
 //!   otherwise than Create did).
+//! - **The frontier** (slice S4c): a package Java holds on a boundary conveyor, its hand-off toward
+//!   a frogport whose chunk does not tick refused, is a `CHAIN_HELD` with a key; the store keeps
+//!   the held packages toward each frogport, oldest first ([`PackageStore::on_hold`]). A keyed
+//!   `CHAIN_IN` strikes its key, a census clears them (nothing is held while all of it ticks), and
+//!   a declaration of a later epoch drops the keys of earlier ones (Java dropped them).
 //! - **Pages**: one per store (`STORE_TABLE`, id = the store id), starting with [`STORE_MAGIC`].
 //!
 //! The pools above are the world's packages: no replay draws them, and nothing is written from
@@ -30,11 +35,11 @@ use rtsim_kernel::codec::{CodecError, Reader, Result, Writer};
 use rtsim_kernel::journal::OpId;
 
 use crate::ids::{BlockPos, DistrictId, GoodVec, StoreId};
-use crate::obs::{ChainDirection, ChainPackage, StoreCensus, StoreDecl};
+use crate::obs::{ChainDirection, ChainPackage, HeldKey, StoreCensus, StoreDecl};
 use crate::persist::{Persist, persist_struct};
 
 /// A store page starts with this, so a page of another format fails by name.
-pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST2");
+pub const STORE_MAGIC: u32 = u32::from_le_bytes(*b"IST3");
 
 /// Packages and the goods inside them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -105,6 +110,12 @@ pub struct StoreCounts {
     pub in_census: u64,
     /// Packages the engine wrote into frogports from what replays sent (`CHAIN_IN` with an op).
     pub written: u64,
+    /// Packages the frontier held (`CHAIN_HELD`), and keyed packages that landed (`CHAIN_IN`).
+    pub held: u64,
+    pub held_landed: u64,
+    /// `CHAIN_HELD` records turned away: a key already held, an earlier epoch, or one the last
+    /// census came after.
+    pub held_stale: u64,
 }
 
 /// What a district's replay needs of a package store for one of its chain links (slice S4b).
@@ -158,6 +169,23 @@ pub struct PackageStore {
     /// The last written `CHAIN_IN` taken toward each frogport (by position): a record of no write
     /// the engine still waits for, no later than the mark, was taken already (choice SC113).
     pub marks: BTreeMap<BlockPos, WriteMark>,
+    /// The frontier's epoch of the last declaration: keys of earlier ones are Java's no more.
+    pub epoch: u32,
+    /// The packages the frontier holds toward each frogport (by position), oldest first: they are
+    /// in the world, booked in [`PackageStore::pools`] like any other (choice SC137).
+    pub on_hold: BTreeMap<BlockPos, Vec<Held>>,
+}
+
+/// One package the frontier holds on a boundary conveyor (`CHAIN_HELD`, choice SC137).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub key: HeldKey,
+    pub packages: u64,
+    pub goods: GoodVec,
+    /// The boundary conveyor it circles.
+    pub at: BlockPos,
+    /// The record's own game time.
+    pub since: Tick,
 }
 
 /// One write the engine sent toward a frogport that Java has not answered yet (choice SC113).
@@ -288,6 +316,7 @@ impl PackageStore {
             batch: self.batch.remove(&pos),
             writing: self.writing.remove(&pos),
             mark: self.marks.remove(&pos),
+            held: self.on_hold.remove(&pos).unwrap_or_default(),
         }
     }
 
@@ -311,6 +340,47 @@ impl PackageStore {
         if let Some(m) = t.mark {
             self.marks.entry(pos).or_default().merge(&m);
         }
+        self.add_held(pos, t.held);
+    }
+
+    /// Adds held packages toward `pos` (another store's), keeping the oldest first and each key once.
+    fn add_held(&mut self, pos: BlockPos, held: Vec<Held>) {
+        if held.is_empty() {
+            return;
+        }
+        let e = self.on_hold.entry(pos).or_default();
+        for h in held {
+            if !e.iter().any(|x| x.key == h.key) {
+                e.push(h);
+            }
+        }
+        e.sort_by_key(|h| (h.since, h.key));
+    }
+
+    /// Whether the store holds a package with `key`.
+    pub fn holds(&self, key: HeldKey) -> bool {
+        self.on_hold.values().flatten().any(|h| h.key == key)
+    }
+
+    /// Strikes the package with `key` from the held ones (it landed); returns it.
+    pub fn strike(&mut self, key: HeldKey) -> Option<Held> {
+        let pos = *self
+            .on_hold
+            .iter()
+            .find(|(_, l)| l.iter().any(|h| h.key == key))?
+            .0;
+        let l = self.on_hold.get_mut(&pos).expect("found");
+        let i = l.iter().position(|h| h.key == key).expect("found");
+        let h = l.remove(i);
+        if l.is_empty() {
+            self.on_hold.remove(&pos);
+        }
+        Some(h)
+    }
+
+    /// Packages held toward the frogport at `pos`.
+    pub fn held_toward(&self, pos: BlockPos) -> &[Held] {
+        self.on_hold.get(&pos).map_or(&[], |l| l.as_slice())
     }
 
     fn add_writing(&mut self, pos: BlockPos, w: &[Sent]) {
@@ -451,6 +521,7 @@ impl PackageStore {
         }
         self.dim = d.dim;
         self.hops = d.hops.clone();
+        self.new_epoch(d.epoch);
         self.frogports = d
             .frogports
             .iter()
@@ -471,6 +542,52 @@ impl PackageStore {
         self.counts.declarations += 1;
     }
 
+    /// Java's frontier is at `epoch`: keys of earlier epochs are dropped (Java no longer holds them).
+    fn new_epoch(&mut self, epoch: u32) {
+        if epoch <= self.epoch {
+            return;
+        }
+        self.epoch = epoch;
+        self.on_hold.retain(|_, l| {
+            l.retain(|h| h.key.epoch >= epoch);
+            !l.is_empty()
+        });
+    }
+
+    /// A `CHAIN_HELD`: the package joins those held toward its destination, unless its key is held
+    /// already, of an earlier epoch, or recorded no later than the last census (which cleared them).
+    fn hold(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
+        let Some(f) = p.destination.and_then(|d| self.frogports.get(d as usize)) else {
+            self.counts.stale_records += 1;
+            return false;
+        };
+        let pos = f.pos;
+        let Some(key) = p.key else {
+            self.counts.held_stale += 1;
+            return false;
+        };
+        self.new_epoch(key.epoch);
+        if key.epoch < self.epoch
+            || self.census_at.is_some_and(|c| recorded <= c)
+            || self.holds(key)
+        {
+            self.counts.held_stale += 1;
+            return false;
+        }
+        self.counts.held += u64::from(p.packages);
+        self.add_held(
+            pos,
+            vec![Held {
+                key,
+                packages: u64::from(p.packages),
+                goods: p.goods.clone(),
+                at: p.pos,
+                since: recorded,
+            }],
+        );
+        true
+    }
+
     /// Books an IND_CHAIN_PACKAGE into the pools. False when it names a frogport index the
     /// store's last declaration does not have (counted). `recorded`: the record's own game time.
     /// A census runs after the block entities of its tick, so it counts that tick's crossings,
@@ -479,6 +596,10 @@ impl PackageStore {
     pub fn chain(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
         let n = self.frogports.len();
         let packages = u64::from(p.packages);
+        // The frontier's hold: the package's `CHAIN_OUT` booked it already.
+        if p.direction == ChainDirection::Held {
+            return self.hold(p, recorded);
+        }
         // The engine's own write (slice S4b): it came from what replays sent, never from the
         // chain, and no census counts a frogport's inventory. The store it is taken at counts it
         // (`counts.written`), which a redeclaration may have made another.
@@ -503,7 +624,7 @@ impl PackageStore {
         let counted = self.census_at.is_some_and(|c| recorded <= c);
         if counted {
             let known = match p.direction {
-                ChainDirection::Out => (p.frogport as usize) < n,
+                ChainDirection::Out | ChainDirection::Held => (p.frogport as usize) < n,
                 ChainDirection::In => (p.frogport as usize) < self.pools.len(),
             };
             if !known {
@@ -518,6 +639,7 @@ impl PackageStore {
                     }
                 }
                 ChainDirection::In => self.counts.packages_in += packages,
+                ChainDirection::Held => {}
             }
             self.counts.in_census += packages;
             return true;
@@ -552,6 +674,7 @@ impl PackageStore {
                 let short = pool.take(packages, &p.goods);
                 self.counts.in_beyond += short.packages;
             }
+            ChainDirection::Held => {}
         }
         true
     }
@@ -587,6 +710,8 @@ impl PackageStore {
         self.pools = pools;
         self.no_route = no_route;
         self.left.clear();
+        // Nothing is held while every chunk of the store ticks: Java cleared its keys too.
+        self.on_hold.clear();
         let after = self.held();
         self.residue = after.goods.minus(&before.goods);
         self.residue_packages = after.packages as i64 - before.packages as i64;
@@ -604,6 +729,7 @@ struct Taken {
     batch: Option<GoodVec>,
     writing: Option<Vec<Sent>>,
     mark: Option<WriteMark>,
+    held: Vec<Held>,
 }
 
 /// What [`declare`] did, for the engine's log.
@@ -665,6 +791,9 @@ pub fn declare(
         for (pos, m) in &gone.marks {
             into.marks.entry(*pos).or_default().merge(m);
         }
+        for (pos, h) in gone.on_hold {
+            into.add_held(pos, h);
+        }
         return Declared::Removed(true);
     }
     // What other stores held for the frogports coming from them.
@@ -710,10 +839,21 @@ persist_struct!(StoreCounts {
     declarations,
     stale_records,
     in_census,
-    written
+    written,
+    held,
+    held_landed,
+    held_stale
 });
 persist_struct!(Sent { op, at });
 persist_struct!(WriteMark { at, ops });
+persist_struct!(HeldKey { epoch, serial });
+persist_struct!(Held {
+    key,
+    packages,
+    goods,
+    at,
+    since
+});
 persist_struct!(PackageStore {
     id,
     dim,
@@ -729,7 +869,9 @@ persist_struct!(PackageStore {
     owed,
     batch,
     writing,
-    marks
+    marks,
+    epoch,
+    on_hold
 });
 
 /// A store's page.

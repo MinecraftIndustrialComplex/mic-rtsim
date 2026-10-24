@@ -126,7 +126,8 @@ class IndustryWireContractTest {
                 "PlayerPickup", IndRecords.Port.PLAYER_PICKUP, "StockBroken", IndRecords.Port.STOCK_BROKEN,
                 "Other", IndRecords.Port.OTHER);
         group("package_direction", "In", IndRecords.Package.IN, "Out", IndRecords.Package.OUT);
-        group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN);
+        group("chain_direction", "Out", IndRecords.ChainPackage.CHAIN_OUT, "In", IndRecords.ChainPackage.CHAIN_IN,
+                "Held", IndRecords.ChainPackage.CHAIN_HELD);
         group("cargo_from", "Arrival", 0, "Approach", IndRecords.Train.FLAG_APPROACH,
                 "Departure", IndRecords.Train.FLAG_DEPARTURE);
         group("not_learnable",
@@ -702,6 +703,7 @@ class IndustryWireContractTest {
                 Rec r = journaled(n, IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(c), c, f)
                         .put64("store", IndRecords.PackageStore.STORE, f.u64("store"))
                         .put32("dim", IndRecords.PackageStore.DIM, f.u32("dim"))
+                        .put32("epoch", IndRecords.PackageStore.EPOCH, f.u32("epoch"))
                         .put64("into", IndRecords.PackageStore.INTO, f.u64("into"));
                 for (int i = 0; i < c; i++) {
                     String p = "frogport" + i + ".";
@@ -739,6 +741,8 @@ class IndustryWireContractTest {
                         .put32("packages", IndRecords.ChainPackage.PACKAGES, f.u32("packages"))
                         .put32("address", IndRecords.ChainPackage.ADDRESS, f.u32("address"))
                         .put64("op", IndRecords.ChainPackage.OP_ID, f.u64("op"))
+                        .put32("epoch", IndRecords.ChainPackage.EPOCH, f.u32("epoch"))
+                        .put64("serial", IndRecords.ChainPackage.SERIAL, f.u64("serial"))
                         .entries(IndRecords.ChainPackage.ENTRIES, f, "entry", c);
             }
             case "IND_STORE_CENSUS": {

@@ -24,7 +24,7 @@ use crate::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, Store
 use crate::obs::{
     BlockFlags, CargoFrom, Carriage, CarriageResult, CarriageResultEntry, ChainDirection,
     ChainPackage, Conditions, DefenceSurvey, DepositPluginId, DepositSample, Direction,
-    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, InvKind, InventoryDecl,
+    DiscardReason, DistrictDecl, EditKind, ExposedBlock, FightObserved, HeldKey, InvKind, InventoryDecl,
     LoadState, NotLearnable, Obs, PackageEvent, PortKind, PortTransfer, ReconcileResult,
     ResultEntry, SpawnSample, StationDecl, StationPorts, StoreCensus, StoreDecl, StoreFrogport,
     SweepEnd, Timed, TrainCall, TrainDeparture, UnwatchedStop,
@@ -233,11 +233,12 @@ codes!(direction_code, direction_from, Direction, "direction",
     1 => Direction::In,
     2 => Direction::Out);
 
-// IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 is `CHAIN_HELD`'s,
-// slice S4's frontier.
+// IND_CHAIN_PACKAGE's direction, after IND_PACKAGE's (SECTIONS.md §2.5): 5 is the frontier's
+// `CHAIN_HELD` (slice S4c).
 codes!(chain_direction_code, chain_direction_from, ChainDirection, "chain_direction",
     3 => ChainDirection::Out,
-    4 => ChainDirection::In);
+    4 => ChainDirection::In,
+    5 => ChainDirection::Held);
 
 codes!(class_code, class_from, ThreatClass, "threat_class",
     0 => ThreatClass::GroundMelee,
@@ -789,7 +790,7 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             let mut w = W::obs(out, IND_PACKAGE_STORE, n32(d.frogports.len()), seq, at);
             w.put_u64(d.store.0);
             w.put_u32(d.dim);
-            w.zero(4);
+            w.put_u32(d.epoch);
             w.put_u64(d.into.map_or(0, |s| s.0));
             for f in &d.frogports {
                 w.put_u64(f.district.map_or(0, |x| x.0));
@@ -822,7 +823,8 @@ pub fn encode_obs(obs_seq: u64, t: &Timed, out: &mut Vec<u8>) -> Result<(), Wire
             w.put_u32(p.address);
             w.put_u64(op_or_none(p.op));
             w.pos3(p.pos);
-            w.zero(4);
+            w.put_u32(p.key.map_or(0, |k| k.epoch));
+            w.put_u64(p.key.map_or(0, |k| k.serial));
             w.goods(&p.goods);
             w.finish()
         }
@@ -1234,6 +1236,7 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             Obs::PackageStore(StoreDecl {
                 store: StoreId(r.get_u64(24)),
                 dim: r.get_u32(32),
+                epoch: r.get_u32(36),
                 into: (into != 0).then_some(StoreId(into)),
                 frogports: (0..n)
                     .map(|i| {
@@ -1256,8 +1259,9 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
             })
         }
         IND_CHAIN_PACKAGE => {
-            check(kind, size, sized(88, n, 16))?;
+            check(kind, size, sized(96, n, 16))?;
             let d = r.get_u64(32);
+            let epoch = r.get_u32(84);
             Obs::ChainPackage(ChainPackage {
                 store: StoreId(r.get_u64(24)),
                 district: (d != 0).then_some(DistrictId(d)),
@@ -1269,7 +1273,11 @@ pub fn decode_obs(rec: &[u8]) -> Result<Option<(u64, Timed)>, WireError> {
                 address: r.get_u32(60),
                 op: none_if_zero(r.get_u64(64)),
                 pos: r.pos3(72),
-                goods: r.goods(88, n),
+                key: (epoch != 0).then(|| HeldKey {
+                    epoch,
+                    serial: r.get_u64(88),
+                }),
+                goods: r.goods(96, n),
             })
         }
         IND_STORE_CENSUS => {
@@ -1971,6 +1979,7 @@ mod tests {
             Obs::PackageStore(StoreDecl {
                 store: StoreId(9),
                 dim: 1,
+                epoch: 3,
                 into: None,
                 frogports: vec![
                     StoreFrogport {
@@ -2003,6 +2012,7 @@ mod tests {
             Obs::PackageStore(StoreDecl {
                 store: StoreId(10),
                 dim: 0,
+                epoch: 0,
                 into: Some(StoreId(9)),
                 frogports: vec![],
                 hops: vec![],
@@ -2018,6 +2028,24 @@ mod tests {
                 packages: 1,
                 address: 57,
                 op: None,
+                key: None,
+                goods: goods3(),
+            }),
+            Obs::ChainPackage(ChainPackage {
+                store: StoreId(9),
+                district: None,
+                inventory: None,
+                direction: ChainDirection::Held,
+                frogport: 2,
+                pos: BlockPos::new(30, 70, -2),
+                destination: Some(2),
+                packages: 1,
+                address: 57,
+                op: None,
+                key: Some(HeldKey {
+                    epoch: 3,
+                    serial: 0x1_0000_0002,
+                }),
                 goods: goods3(),
             }),
             Obs::ChainPackage(ChainPackage {
@@ -2031,6 +2059,7 @@ mod tests {
                 packages: 2,
                 address: 0,
                 op: Some(ENGINE_OP),
+                key: None,
                 goods: goods1(),
             }),
             Obs::ReconcileResult(ReconcileResult {
@@ -2394,7 +2423,7 @@ mod tests {
                 let n = d.frogports.len();
                 (48 + 48 * n + 2 * (n * n.saturating_sub(1) / 2)).div_ceil(8) * 8
             }
-            Obs::ChainPackage(p) => 88 + 16 * p.goods.len(),
+            Obs::ChainPackage(p) => 96 + 16 * p.goods.len(),
             Obs::StoreCensus(c) => 32 + 8 * c.packages.len() + 16 * c.goods.len(),
             Obs::ReconcileResult(r) => 64 + 24 * r.entries.len() + 16 * r.destroyed.len(),
             Obs::CarriageResult(r) => 40 + 24 * r.entries.len(),
