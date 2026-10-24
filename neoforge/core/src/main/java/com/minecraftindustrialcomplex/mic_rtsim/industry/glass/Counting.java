@@ -236,7 +236,8 @@ public final class Counting {
         for (Map.Entry<Pair, Key> e : next.entrySet())
             if (old == null || !old.keys.containsKey(e.getKey()))
                 index(dim, e.getValue());
-        // A set that leaves nothing holds nothing: `active` must go null, or every hooked move pays for isMover.
+        // A guard: the caller sends an empty set to empty(), so this is not reached with n == 0, but a set that
+        // leaves nothing holds nothing: `active` must go null, or every hooked move pays for isMover.
         if (next.isEmpty())
             held.remove(district);
         else
@@ -360,6 +361,8 @@ public final class Counting {
         if (h == null || num.frame != 0)
             return;
         IntArrayList mover = new IntArrayList(), store = new IntArrayList(), good = new IntArrayList();
+        // each entry's pair's total entry count (the reserved u32: the engine refuses a pair it got fewer of)
+        IntArrayList of = new IntArrayList();
         LongArrayList since = new LongArrayList(), in = new LongArrayList(), out = new LongArrayList();
         // where each (mover node, store node) pair's entries start: a record is cut only between pairs
         IntArrayList starts = new IntArrayList();
@@ -376,6 +379,7 @@ public final class Counting {
                         mover.add(m);
                         store.add(s);
                         good.add(none ? GlassRecords.NONE : k.snapGood[g]);
+                        of.add(goods);
                         since.add(k.since);
                         in.add(none ? 0 : k.snapIn[g]);
                         out.add(none ? 0 : k.snapOut[g]);
@@ -406,6 +410,7 @@ public final class Counting {
                 b.putInt(e + GlassRecords.CountSample.E_MOVER, mover.getInt(from + i));
                 b.putInt(e + GlassRecords.CountSample.E_STORE, store.getInt(from + i));
                 b.putInt(e + GlassRecords.CountSample.E_GOOD, good.getInt(from + i));
+                b.putInt(e + GlassRecords.CountSample.E_ENTRIES, of.getInt(from + i));
                 b.putLong(e + GlassRecords.CountSample.E_SINCE, since.getLong(from + i));
                 b.putLong(e + GlassRecords.CountSample.E_IN, in.getLong(from + i));
                 b.putLong(e + GlassRecords.CountSample.E_OUT, out.getLong(from + i));
@@ -420,11 +425,17 @@ public final class Counting {
      * {@code total}): whole pairs each ({@code starts} are the entries' first index of each (mover node, store
      * node) pair, ascending), so a record lost on a full outbound ring leaves a pair missing (the engine sees
      * no cover for it and discards the sweep's unit) and never a pair with some of its goods (which would read
-     * as goods not moved). A single pair with more goods than one record holds (over a thousand goods at one
-     * (mover, store)) is split in {@code per} entries: that case alone can lose part of a pair, and is not
-     * reachable with a store's real contents.
+     * as goods not moved). A single pair with more goods than one record holds (about 1,600 goods at one
+     * (mover, store): a key keeps every good ever moved through the pair, never pruned, and goods that differ
+     * in components, such as damaged gear, Destroy mixtures or enchanted books, count apart) is split in
+     * {@code per} entries. That case alone can lose part of a pair, so every entry carries its pair's total
+     * entry count ({@code E_ENTRIES}) and the engine gives no cover to a pair it got fewer entries of (SC123).
+     * Not pruned: dropping a good's counters would move the cumulative counts the engine's window is based
+     * on and read as a residue; a counter restarts only with its key ({@code since}).
      */
     static int[] cuts(int[] starts, int total, int per) {
+        if (per <= 0)
+            throw new IllegalArgumentException("a record must hold at least one entry, per = " + per);
         int[] cuts = new int[starts.length + total / Math.max(1, per) + 2];
         int n = 0, recStart = 0;
         for (int g = 0; g < starts.length; g++) {

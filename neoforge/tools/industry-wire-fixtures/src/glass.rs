@@ -379,6 +379,7 @@ pub fn fixtures() -> String {
                 since: f.i64(&format!("entry{i}.since"), g.i64(Sign::Pos)),
                 moved_in: f.i64(&format!("entry{i}.in"), g.i64(Sign::Pos)),
                 moved_out: f.i64(&format!("entry{i}.out"), g.i64(Sign::Pos)),
+                entries: f.u32(&format!("entry{i}.entries"), g.u32()),
             })
             .collect();
         let o = GlassObs::CountSample(CountSample {

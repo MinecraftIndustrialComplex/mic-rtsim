@@ -469,7 +469,9 @@ pub struct ProbeSample {
 /// IND_COUNT_SAMPLE (0x004F): what Java counted at the count set's pairs in a sweep (SECTIONS.md
 /// §4.2, slice S3), each pair's counters read with its store's stock. Not counted in the sweep's
 /// records, as a probe sample is not: a unit missing a pair's entries skips that sweep's sample.
-/// A large sample comes in several records of one sweep.
+/// A large sample comes in several records of one sweep; each entry says how many entries its
+/// pair has in all ([`Count::entries`]), so a pair split over records, one of them lost, is seen
+/// to be incomplete.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CountSample {
     pub district: DistrictId,
@@ -493,6 +495,11 @@ pub struct Count {
     pub since: i64,
     pub moved_in: i64,
     pub moved_out: i64,
+    /// How many entries (one per good, or the one with no good) the sample holds for this entry's
+    /// (mover, store) pair in all, over every record of the sweep: the reserved u32 of the wire
+    /// entry. A pair the records of the sweep hold fewer entries of than this lost a part; its
+    /// counters are partial and the pair gives no cover (a lost good would read as not moved).
+    pub entries: u32,
 }
 
 /// IND_CHUNK_TICKING (0x040B, journaled): a chunk of a district started or stopped block-ticking

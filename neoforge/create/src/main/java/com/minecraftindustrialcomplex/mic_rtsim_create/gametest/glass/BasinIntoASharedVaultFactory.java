@@ -23,10 +23,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Hop
  * spout sideways only for a belt, a funnel or a block with a {@code DirectBeltInputBehaviour} at the block
  * diagonally below (a chute, another basin, a depot's behaviour, a drill or saw, ...): no store has one, so a
  * vault or chest beside and below a basin leaves its spout facing down (it then puts goods into its own output
- * inventory), and no vault can be the target of {@code BasinBlockEntity.tryClearingSpoutputOverflow}. The
+ * inventory). A basin does pour into a vault through a funnel facing up on it (SC120, counted at the funnel;
+ * {@link BasinThroughFunnelFactory} is this line with the funnel where this fixture has the chute). Here the
  * basin's hop is to a chute, which the engine does not count (a chute is a mover, not a store), so the move
- * into the vault is counted at the chute ({@code ChuteBlockEntityMixin}); the table's "the basin's outputs are
- * counted" has no such store in Create 6.0.10.
+ * into the vault is counted at the chute ({@code ChuteBlockEntityMixin}).
  *
  * <p>What this fixture adds is the Java count point at the basin ({@code BasinBlockEntityMixin}, PATCHES.md),
  * tested on the real spout hop: it forces the pair (basin, spout chute) onto the far district

@@ -340,6 +340,7 @@ class GlassWireContractTest {
             // The second entry has counted no good yet: NONE on the wire.
             String good = f.sym("entry" + i + ".good");
             b.putInt(e + GlassRecords.CountSample.E_GOOD, good.equals("none") ? GlassRecords.NONE : (int) Long.parseLong(good));
+            b.putInt(e + GlassRecords.CountSample.E_ENTRIES, (int) f.u32("entry" + i + ".entries"));
             b.putLong(e + GlassRecords.CountSample.E_SINCE, f.i64("entry" + i + ".since"));
             b.putLong(e + GlassRecords.CountSample.E_IN, f.i64("entry" + i + ".in"));
             b.putLong(e + GlassRecords.CountSample.E_OUT, f.i64("entry" + i + ".out"));
