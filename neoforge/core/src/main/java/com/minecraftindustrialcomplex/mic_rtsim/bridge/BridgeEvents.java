@@ -38,6 +38,9 @@ public final class BridgeEvents {
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(BridgeEvents::onServerAboutToStart);
         bus.addListener(BridgeEvents::onServerStarted);
+        // GameTest servers only: after the session started (the listener above has the normal priority).
+        bus.addListener(EventPriority.LOWEST, false, ServerStartedEvent.class,
+                com.minecraftindustrialcomplex.mic_rtsim.gametest.GameTestClock::onServerStarted);
         bus.addListener(BridgeEvents::onServerStopping);
         bus.addListener(BridgeEvents::onServerStopped);
         bus.addListener(BridgeEvents::onServerTick);
