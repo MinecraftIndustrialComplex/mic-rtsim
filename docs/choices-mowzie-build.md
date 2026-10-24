@@ -3617,8 +3617,11 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
       back on the next lap of its train, and carries its `RailLeg { train, depart, duration }`.
     - **The table's lag.** Java hears each command `LAG` (100) ticks after the engine says it (one command
       drain, a placeholder). A pass in the few ticks between a lurk's end and Java hearing of it is the one
-      stale TRAIN_PASSED the engine may count, so "no pass is stale except after a lurk ended" is checked
-      against the lurk's end, not against the table.
+      stale TRAIN_PASSED the engine may count, so "no pass is stale except just after a lurk ended" is checked
+      against the lurk's end, not against the table: a stale pass must fall in `[end, end + LAG]`. (With only
+      the lower bound, a table that kept a removed lurk's passes, by not dropping them on REMOVED, still
+      passed with 4953 stale passes at 12 legs a day and 12238 at 24; with the upper bound it fails with
+      those numbers.)
     - **`synth::pass_tick(lines, leg, spot)`** is the first sampler tick (every 20 ticks, at the trains'
       1.4 blocks a tick) at or after the polyline's nearest approach to the spot's track point, when that
       is within the spot's reach.
