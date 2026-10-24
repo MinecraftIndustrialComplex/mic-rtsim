@@ -2481,7 +2481,9 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
 - **MZB-410** (seated in place): this is SEAT_HEIR with L_A not 0, while the old generation's body stands
   tagged in the footprint.
   - Java waits while that body is in a fight: it has a player target, and a player hit it within 600
-    ticks (PLACEHOLDER). The plugin keeps the hits in a weak map.
+    ticks (PLACEHOLDER). The plugin keeps the hits in a weak map. The wait has no time limit: it ends with the
+    fight (amended at review, P2-4; before, `HOLD_MAX` also ended it). The old body is the one of the L_A
+    generation inside the camp's footprint, no other chief-slot body (P2-3).
   - Then, in one tick, Java answers the old body's held lines STALE, removes it with no CAMP_DEATH, and
     makes the heir where it stood: at full health, in its direction, with an empty trade memory.
   - With the old body gone, it is a plain SEAT_HEIR at the throne.
@@ -2820,11 +2822,11 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     arrived, and answered STALE if the camp goes out first (an epoch's end) or the plugin's session ends
     (its memory is lost, as at the camp's out the engine voids the pair). The lines that do not wait are
     applied and answered on arrival. The engine sees the pair in flight meanwhile and orders nothing again.
-    What the emulator still leaves out of MZB-433 is the other hold, the Umvuthi's removal: a TAKE, REMOVE
+    What the emulator first left out of MZB-433 was the other hold, the Umvuthi's removal: a TAKE, REMOVE
     or SET_OUT-as-take of the chief body waits with no time limit while a player is within 160 blocks of it
-    or has it as a target, and an epoch's end answers it STALE. It hides how the engine behaves with a
-    chief line in flight for a long time (a chief killed away while a remove waits, the crystal's steal
-    while a take waits): the Java GameTest 29 plays it with the real hold.
+    or has it as a target, and an epoch's end answers it STALE. (Amended at review, MZB-613 (c): the emulator
+    now holds a chief body's removal on a flag with no limit and answers it STALE at a census or an out, and a
+    pair seated in place waits on a fight flag, not on `watched`. The Java GameTest 29 plays the real hold.)
   - The sim's grove checks, where the design leaves the detail open. Run 5 (`grove_rest`): plunder (livestock
     only, eaten, no village defence; 8 raids ate 240 items), an Invasion led by the chief (fights of strength
     3.8 and 12.6), the grove in and out (6 rounds, its own plunder drive quiet), hunts owed to the cap (2, 4,
@@ -3437,9 +3439,11 @@ place (MZB-402), not given new ids.
   Visage is asserted as at least one (the count is recorded), not exactly one. The devoted warrior within 30
   blocks dies on the jar's own timer (up to 20 ticks, `random.nextInt(20)`), so the deaths are asserted within
   30 ticks of the kill. The player's follower (`UMVUTHANA_FOLLOWER_TO_PLAYER`, not devoted) stays alive.
-- **MZB-608** (the fight watch fallback): test 30b hits the old Umvuthi with a 1 point player attack and asserts
-  the fight watch saw it. If the Umvuthi refuses the hit (it is a NoAi stray in a far place), the test tells
-  `FightWatch.hit` directly, as the hit event does, and records the note in the test log.
+- **MZB-608** (the hit must land; amended at review, P3-11): test 30b hits the old Umvuthi with a 1 point player
+  attack and asserts that the hit lands and that the fight watch saw it. The first version told `FightWatch.hit`
+  directly, as the hit event does, when the Umvuthi refused the hit (a NoAi stray in a far place), and recorded a
+  note. That fallback let the test pass without the event path it exists to cover, so it is gone: a hit that does
+  not land fails the test, and the failure says so.
 - **MZB-609** (the hunt records are M9c's): by the lead's change, M9b writes no Java layout, constant or code
   for OWED_HUNT or HUNT_APPLIED (the M9a re-check changes OWED_HUNT's layout). HAVEN_CHEST has its layout
   only, with no code behind it.
@@ -3449,6 +3453,103 @@ place (MZB-402), not given new ids.
   after the reconcile; an heir over a fight is answered 600 to 640 ticks after the hit (`inFight` is
   `now - at <= 600`); the player-hit and target assertions of 29a and 30b depend on `setTarget` sticking on a
   NoAi Umvuthi. These are the numbers to adjust if the first run shows a different quantum.
+- **MZB-611** (a second body is a mark that outlives the held lines; amends MZB-431, closes P1 and P3-7): the
+  first version asked whether a held or draining line named the body. A census, a CAMP_OUT and a session start
+  clear those lines, so a second body killed after one journaled a CAMP_DEATH, dropped a Sol Visage and
+  experience and took its warriors with it. `Camps.second` is now a weak identity set (memory only, never saved),
+  and `secondBody` answers from it first. A chief-slot body is marked when a chief REMOVE naming it arrives (held
+  or not, before the hold is decided), when a SEAT_HEIR pair names its generation in L_A (held or played), and
+  lazily by `secondBody` itself: a tagged chief-slot body of another generation than `Site.chiefGeneration`, the
+  generation the lines of this session last made, adopted or seated as the chief. The mark leaves with the body
+  (`onLeave`). `GroveKind.chief` (the census) and the `die` mixin read the same answer, so a second body is never
+  reported as the chief and takes no warriors. After a server restart the set is empty and `chiefGeneration` is 0
+  until a line names a chief, so the lazy rule is silent; a retired chief body is marked when the engine's REMOVE
+  for it arrives, which a census brings (MZB-412), and that arrival is the mark whether or not a player holds the
+  line. The window is the time from the load to the answer to the first census. A retired body killed in it
+  journals a CAMP_DEATH of its generation, which the engine books as a Dead slot's death (no second fall, `camp_death`)
+  and drops, experience and its warriors' deaths leak. The conservative reading (any chief-slot body of a
+  generation the camp does not know is second) is not taken at generation 0: Java does not know the engine's
+  chief then, and the first chief a restart loads would be called second.
+- **MZB-612** (the heir waits for a muster to end; closes P2-5): a MASK takes a warrior at home with no line of
+  its own, and the engine's books call a warrior of a band that is mustering `Left` with no line yet, so the pair
+  could mask a warrior the band is about to send out. `camp_heir` now orders nothing while a slot of the camp is
+  `Left` with `line.is_none()` in a party whose phase is `Mustering`, and looks at the camp again when the muster
+  ends: `camp_set_out` calls `camp_heir` after `send_lines` (the phase is still Mustering, but the slots now have
+  lines, which opens the gate), and `home` (through `unblock`) and the stand-down look again. No format
+  change. The heir is delayed by at most one muster (the umvuthana's `muster_days` is 1.0), and a plunder band that
+  musters over the due tick delays it; musters can follow one another, and nothing caps that. Hashes: `sim conflict`
+  (seed 7) is identical to the base apart from `wall_ms`, and the `sim mowzie` save-load state hashes did not move.
+  What moved is `sim mowzie`'s grove chaos with heirs (58 heirs seated and 18 of 416 Invasions took the Umvuthi,
+  now 54 and 20 of 418). Run 12 (`heir_farmed`, the default plunder drive) failed with the gate alone, since it
+  expected the seat within 10 ticks of its due tick; its harness now waits up to 96 steps of a muster/24 for the
+  seat. Its seat counts (106 and 59) and rates (1.822 and 1.003 a game year) are the base's; the last waits it
+  prints differ by under a muster in their decimals. Tests in `tests/grove.rs`: an heir due during a muster
+  waits and is ordered at the muster's end, no warrior of a mustering band is masked, a chief killed leading a
+  band, and a raid across the due tick. Tests that run the plunder drive and look at the heir on its due day use
+  `quiet_grove` (no plunder) or wait a muster.
+- **MZB-613** (the emulator against Java; closes the review's four divergences): two are fixed, two are
+  documented.
+  - (a), documented: Java answers the pair in two CAMP_BODIES records (the MASK's with the warrior's marker, then
+    the SEAT_HEIR's with the heir), the emulator in one. The engine books each answer by (op, line) in either shape.
+    The one difference is that the first record clears the MASK marker with no seat yet, so `camp_bodies` schedules
+    a CampHeir retry an hour on (`HEIR_RETRY`); the second record's seating bumps `heir_stamp`, and the retry
+    finds a changed stamp and does nothing. No book differs.
+  - (b), fixed (P2-3): the emulator kept any chief-slot body for a SEAT_HEIR. Java seats in place over the body of
+    the L_A generation only (`oldChief`), and a body of another generation is left alone. `watch_throne`'s
+    SEAT_HEIR `retain` now replaces the L_A generation's body only.
+  - (c), fixed: Java holds a chief's TAKE or REMOVE with no limit while a player is near it or it has a player as
+    a target (answered STALE at each census and each CAMP_OUT, the body reported in every census), and seats a pair
+    over it only when the fight is over, with the REMOVE's STALE and the pair's DONE in one batch. The emulator
+    now has a hold flag on a chief body (no limit; STALE at a census, at the camp's out and when a heir sits over the body), a fight
+    flag on a pair seated in place in place of `watched`, and the same order of answers. `FakeConflict::hold_chief`
+    sets a hold. Tests in `tests/grove.rs`: a removal held on a dead chief's body is answered STALE in the batch of
+    the pair that sits over it (the books checked: the new chief alone), and a pair over a chief in a fight waits
+    on the fight alone and leaves a second body of another generation standing (P2-3).
+  - (d), documented: `watched` is a boolean and Java reads 160 blocks. The engine sees no distance, only whether an
+    answer comes now or later, and the scenario sets `watched` at the moments a player crosses the line. The
+    boolean is the engine-visible content of the distance, so no outcome differs; the 160 blocks and the order
+    in which two players cross it are the GameTests' (29b, 30a).
+- **MZB-614** (test 29d, a second body's death is nobody's; closes P3-9): `aSecondChiefBodysDeathIsNobodys` is a
+  test of its own, not an addition to 29a, because 29a ends with grove B's REMOVE played (the playback of a held
+  REMOVE keeps its coverage) and a kill would have to replace that. It has three groves, each with an adopted
+  Umvuthi and an adopted FEAR-masked warrior 10 blocks from it: C (a REMOVE of the chief, held for a player at
+  150 blocks), D (the same, then `Camps.forceRecount`: a new epoch, the REMOVE answered STALE, no held line) and
+  E (the control, no line). Each Umvuthi, last hurt by a player, is killed by him. E books two deaths (the chief
+  and its warrior) and drops a Sol Visage and experience; C and D book nothing, drop neither, and their
+  warriors live, tagged. C's REMOVE, held when its body died, is answered NOTHING. D is the P1 ordering. The
+  test needed one hook in core: `Camps.forceRecount(faction)` (public, GameTests only), which sets the camp's
+  recount flag as a body read from disk outside its footprint does. The experience is read from the orbs about
+  the grove; no player stands within 8 blocks to draw them off. Test 27 is unchanged: E is its control for the
+  experience, since its warriors' own deaths would make an experience count there unclear.
+- **MZB-615** (test 30a's all-near case; closes P3-10): a fourth grove, G4, has three warriors 6, 14 and 22 blocks
+  south of its centre in slots 1, 0 and 2, a throne 10 blocks north and a player 165 blocks south. The warriors
+  are 159, 151 and 143 blocks from the player (every one within 160) and the throne 175 (no hold, since the
+  pair waits on the throne). The pair is played at once and its MASK names slot 1, the farthest of the three: not the
+  lowest slot (ties go to the lower slot) and not the nearest. `pickWarrior` takes the largest distance to the
+  nearest player, so the case with every warrior near a player and the case with one far are one rule; the test
+  covers the first, which G1 of the same test (the 5-block warrior at 175 blocks) did not.
+
+#### Notes (which fix closes which finding)
+
+The review of 253f8d45..9d55c2b7 (the lead's brief `m9b-review-fixes`), the fixes in order:
+- P1, the second body set, and P3-7, the census filter: MZB-611 (`Camps.second`, `markSecond`, the lazy
+  `chiefGeneration` rule; `ConflictBridge` and `GroveKind.chief` read `secondBody`).
+- P2-2, the restriction asserts: tests 30a and 30b assert `getRestrictRadius() == -1` and the centre, since vanilla's
+  `hasRestriction()` is false at -1.
+- P2-3, `oldChief`: it returns the body of the L_A generation inside `c.contains`, else null (MZB-410), and the
+  emulator narrowed to match (MZB-613 (b)).
+- P2-4, the fight wait: a seat in place waits on `inFight` alone, with no `HOLD_MAX` term; the wait ends with the
+  fight (MZB-410, MOWZIE.md §4.10).
+- P2-5, the MASK takes a mustering warrior: MZB-612.
+- P2-6, the kin signal counted twice: `ConflictBridge.onDeath` counts the kin killing signal once per UUID per
+  tick (`killedThisTick`, cleared each server tick), since `EntityUmvuthi.die` posts the event twice.
+- P3-8, D1: `pairNow` decides the hold first and looks for a warrior only when the pair can go. `oldChief` is still
+  called first, because the hold depends on whether an old body exists; `pickWarrior` is the deferred call.
+- Emulator divergences (a) to (d): MZB-613.
+- P3-9, P3-10: MZB-614 and MZB-615.
+- P3-11: MZB-608 (amended).
+- P3-12: test 25 is `aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine`, per MZB-601.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
