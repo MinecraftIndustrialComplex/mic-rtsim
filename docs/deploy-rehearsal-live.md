@@ -821,22 +821,29 @@ under an 8 GiB cap, and 1.2 GiB of non-heap memory on top. Replace the file with
 
 ### 8.6 Rollback
 
-- **rtsim only** (keep the new pack): first give the wandering traders back, while rtsim is still
-  installed: set `trade = false` under `[modules]` in `config/mic_rtsim-server.toml` and restart, and
-  rtsim logs `trade or travel is off: doTraderSpawning back to true`. Then stop; delete
-  `mods/mic_rtsim*.jar` and `mods/mic_native-*.jar`; start. If the jars are already gone, run
-  `gamerule doTraderSpawning true` instead: nothing else turns it back on (6.6). Expect section 6.6's
-  one-off `unknown or non-serializable data attachment mic_rtsim:*` errors. What rtsim leaves on disk
-  is inert (6.6): `world/rtsim/`, `world/data/mic_rtsim_*.dat`, `config/mic_rtsim*.toml` and the
-  `mic_native/` folder can stay or go.
+- **rtsim only** (keep the new pack): stop; delete `mods/mic_rtsim*.jar` and `mods/mic_native-*.jar`;
+  start. Since C8a rtsim never writes `doTraderSpawning` (it cancels vanilla's trader spawner while it
+  runs), so there is nothing to give back first: round 2 read the gamerule true in every run, with
+  rtsim, after it and without it (10.6). Only a world that ran a build from before C8a (round 1's) can
+  have it false: check `gamerule doTraderSpawning` after the start and set it true if not. Expect
+  section 6.6's one-off `unknown or non-serializable data attachment mic_rtsim:*` errors, one per chunk
+  that carries one as it loads (round 2: 74). What rtsim leaves on disk is inert (6.6): `world/rtsim/`,
+  `world/data/mic_rtsim_*.dat`, `config/mic_rtsim*.toml` and the `mic_native/` folder can stay or go.
+- **Putting rtsim back** after the world ran without it (UR-1): put the jars back, delete `world/rtsim/`
+  before the first start (the sim reset below), then `rtsim district adopt` the factories again where
+  they stand. Round 2 put the jars back without the reset (10.6): rtsim does not see that it was out,
+  restores its pages as they were, and every district dissolves as its chunks load, because the
+  uninstall's save dropped their seed attachments. The reset keeps the villages and makes the engine
+  forget production it owed, which a reconcile could otherwise replay (UR-1); the districts need the
+  adopt either way. Until rtsim detects the gap itself, as UR-1 asks.
 - **Everything**: stop; `sudo mv /var/lib/mc/server /var/lib/mc/server-failed`; `sudo mv
   /var/lib/mc/server-backup-<date> /var/lib/mc/server`; start.
 - **Sim reset** (SRV2, when a save format change has no migration): stop; delete `world/rtsim/` and
   nothing else (the world's `data/mic_rtsim_*.dat` is how the bridge knows what to announce again);
   start. The log must then say `the engine's pages lack observations the journal no longer holds` twice,
   from the industry module and from phase 1, with the counts of districts and villages announced
-  again, and `rtsim perf`'s phase 1 line must count as many villages `in the engine` as before the
-  semicolon. Section 6.7 says what a reset keeps and what it loses. Only with jars at or after this
+  again (round 2: 6 districts and 2 villages, 10.6), and `rtsim perf`'s phase 1 line must count as many
+  villages `in the engine` as before the semicolon. Section 6.7 says what a reset keeps and what it loses. Only with jars at or after this
   branch's merge: older ones leave the fresh engine without the districts and villages (6.8, 3.). Do
   the same for an rtsim update that changes a page format: delete `world/rtsim/` rather than let the
   engine drop one module's pages by itself, which the bridge does not see (6.9, 6.).

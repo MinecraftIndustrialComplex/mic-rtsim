@@ -12,8 +12,10 @@ have $R/out-h-off.json $R/out-h-on.json && py $T/runreport.py --pair $R/out-h-of
 have $R/out-r-uninstall.json $R/out-r-reset.json && py $T/runreport.py --pair $R/out-r-uninstall.json $R/out-r-reset.json > $A/pair-undo.txt 2>&1
 have $R/out-r-reinstall.json $R/out-r-reset-reload.json && py $T/runreport.py --pair $R/out-r-reinstall.json $R/out-r-reset-reload.json > $A/pair-after.txt 2>&1
 have $R/out-r0-july.json $R/out-r0-pack.json && py $T/runreport.py --pair $R/out-r0-july.json $R/out-r0-pack.json > $A/pair-july.txt 2>&1
-ALL=(r1-pack r1-rtsim r2-rtsim r2-pack h-on h-off r1-reload r-uninstall r-reset r-reset-reload r-reinstall r0-july r0-pack)
-RT=(r1-rtsim r2-rtsim r1-reload r-reset r-reset-reload r-reinstall)
+have $R/out-r3-pack.json $R/out-r3-rtsim.json && py $T/runreport.py --pair $R/out-r3-pack.json $R/out-r3-rtsim.json > $A/pair-p3.txt 2>&1
+have $R/out-h-on.json $R/out-h-nodh.json && py $T/runreport.py --pair $R/out-h-on.json $R/out-h-nodh.json > $A/pair-nodh.txt 2>&1
+ALL=(r1-pack r1-rtsim r2-rtsim r2-pack h-on h-off r1-reload r-uninstall r-reset r-reset-reload r-reinstall r3-pack r3-rtsim r-hoff h-nodh r0-july r0-pack)
+RT=(r1-rtsim r2-rtsim r1-reload r-reset r-reset-reload r-reinstall r3-rtsim)
 for t in "${ALL[@]}"; do
   have $R/out-$t.json && py $T/runreport.py $R/out-$t.json --replies > $A/replies-$t.txt 2>&1
 done
@@ -33,9 +35,12 @@ have $R/log-r-uninstall.log $R/log-r1-pack.log && py $T/logsum.py $R/log-r-unins
 have $R/log-r-reset.log $R/log-r1-rtsim.log && py $T/logsum.py $R/log-r-reset.log $R/log-r1-rtsim.log > $A/logsum-reset-vs-rtsim.txt 2>&1
 have $R/log-r-reset-reload.log $R/log-r-reset.log && py $T/logsum.py $R/log-r-reset-reload.log $R/log-r-reset.log > $A/logsum-reset-reload-vs-reset.txt 2>&1
 have $R/log-r-reinstall.log $R/log-r1-rtsim.log && py $T/logsum.py $R/log-r-reinstall.log $R/log-r1-rtsim.log > $A/logsum-reinstall-vs-rtsim.txt 2>&1
+have $R/log-r3-rtsim.log $R/log-r3-pack.log && py $T/logsum.py $R/log-r3-rtsim.log $R/log-r3-pack.log > $A/logsum-rtsim3-vs-pack3.txt 2>&1
+have $R/log-r-hoff.log $R/log-r1-pack.log && py $T/logsum.py $R/log-r-hoff.log $R/log-r1-pack.log > $A/logsum-hoff-vs-pack.txt 2>&1
+have $R/log-h-nodh.log $R/log-h-on.log && py $T/logsum.py $R/log-h-nodh.log $R/log-h-on.log > $A/logsum-nodh-vs-hon.txt 2>&1
 have $R/log-r0-pack.log $R/log-r0-july.log && py $T/logsum.py $R/log-r0-pack.log $R/log-r0-july.log > $A/logsum-pack-vs-july.txt 2>&1
 # mixins applied (verbose runs)
-for t in r1-reload r-reset r-reinstall h-on h-off; do
+for t in r1-reload r-reset r-reinstall h-on h-off h-nodh; do
   have $R/log-$t.log && grep -oE 'Mixing [A-Za-z0-9_.$]+ from mic_[a-z_]*\.mixins\.json into [A-Za-z0-9_.$/]+' $R/log-$t.log | sort -u > $A/mixins-$t.txt
 done
 # the checks, one file: DR1, DR4, DR9 and the uninstall and reset lines
