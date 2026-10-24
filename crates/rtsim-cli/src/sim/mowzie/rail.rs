@@ -576,6 +576,7 @@ fn single(per_day: f64) -> Spec {
 
 /// Run 1's M7 part: the meter on one line at 4, 12, 24 and 50 legs a day, and the trunk.
 pub fn meter(out: &mut Vec<Check>) {
+    let mut pops = Vec::new();
     for (per_day, row) in [(4.0, &R4), (12.0, &R12), (24.0, &R24), (50.0, &R50)] {
         let s = sweep(&single(per_day), 0, 0, (50.0, 70.0));
         judge(out, row.legs, &s, row, 1);
@@ -588,14 +589,26 @@ pub fn meter(out: &mut Vec<Check>) {
         );
         check(
             out,
-            "a meter wakes under 3 times a day, stale pops counted",
-            s.wakes_per_day < 3.0,
+            WAKES_CHECK,
+            s.wakes_per_day <= WAKES_MAX,
             format!(
-                "{} at {per_day} legs a day: {:.2}",
+                "{} at {per_day} legs a day: {:.2} pops a day",
                 row.legs, s.wakes_per_day
             ),
         );
+        pops.push(s.wakes_per_day);
     }
+    // The pops do not grow with the rate: the busiest line's figure against the next busiest's.
+    let (p24, p50) = (pops[2], pops[3]);
+    check(
+        out,
+        "a meter's pops do not grow with the rate",
+        p50 <= WAKES_GROWTH * p24,
+        format!(
+            "50 legs a day {p50:.2} pops a day, 24 legs a day {p24:.2}: x{:.2}",
+            p50 / p24
+        ),
+    );
     let trunk = Spec {
         lines: trunk_lines(synth::PLAYER, 14, 1.7, 0.0),
         dens: vec![den_at(0, 900, 1000, Tick::ZERO)],
@@ -603,7 +616,22 @@ pub fn meter(out: &mut Vec<Check>) {
     };
     let s = sweep(&trunk, 0, 0, (50.0, 70.0));
     judge(out, TRUNK.legs, &s, &TRUNK, 1);
+    check(
+        out,
+        WAKES_CHECK,
+        s.wakes_per_day <= WAKES_MAX,
+        format!("{}: {:.2} pops a day", TRUNK.legs, s.wakes_per_day),
+    );
 }
+
+/// The most rail events (every `Ev::Rail` pop, live and stale) a meter takes a day, at every rate
+/// and on the trunk (MZB-385). A meter in steady flow wakes on its band's lower edge,
+/// `tau ln(1/0.9)` = 0.21 days later, so about 4.8 a day whatever the rate (measured 2.09 to
+/// 5.79); the design's "under 3 a day" counted the live wakes before the booked wake existed.
+const WAKES_MAX: f64 = 6.5;
+/// The busiest line's pops against the next busiest's: no growth with the rate (MZB-385).
+const WAKES_GROWTH: f64 = 1.1;
+const WAKES_CHECK: &str = "a meter takes at most 6.5 rail pops a day, stale pops counted";
 
 /// The first day at or after `from` the feud's grievance is under `g`.
 fn under(s: &[Pt], from: f64, g: f64) -> Option<f64> {
