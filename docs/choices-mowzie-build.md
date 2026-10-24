@@ -3483,8 +3483,8 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `a_robbery_of_unmapped_goods_still_sends_train_robbed`.
 - **MZB-357** (persistence): nothing new. A lurk is derived from the party's phase, kind and target, and
   Track has been persisted since M7. The pages stay at M7's format.
-  - Amendment (built, step 2): the four new stats (`lurks`, `lurks_ended`, `passes`, `passes_watched`) are
-    appended to the saved stats list. That list is length-prefixed and read with `unwrap_or(0)`, so a page
+  - Amendment (built, step 2; review A adds the fifth): the new stats (`lurks`, `lurks_ended`, `passes`,
+    `passes_watched`, and `lurk_robberies`, the TRAIN_ROBBED sent) are appended to the saved stats list. That list is length-prefixed and read with `unwrap_or(0)`, so a page
     written before them reads zeros and no reader breaks; the page layout is M7's, and a save is four
     varints longer. Every state hash moves for that reason alone (stats are hashed with the state), so
     `sim conflict` and `sim mowzie` regenerate with only their state hashes and the new stat fields
@@ -3828,8 +3828,9 @@ each at its own far base, scripted engine):
     trains.
   - The share of each train's first daily pass that robs is between 35% and 65% over the 8 seeds
     (`ambush_milli` 500).
-  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.ambushes` equals the
-    TRAIN_ROBBED count.
+  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.lurk_robberies` equals the
+    TRAIN_ROBBED count (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send no
+    roar, so it is the larger).
   - No TRAIN_PASSED is stale except after a lurk ended.
 - **Run 8, save and restore** (MZB-372): the four points, each blob and paged, against the control; then
   the session restarts at each.
