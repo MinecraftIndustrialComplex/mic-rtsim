@@ -2840,6 +2840,10 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     DUPLICATE_OP for 60 nuggets when 30 were in the chest. What is left of the window: a stack decided
     again from different state is put down twice, the first in the chest by Java's save and the second by
     the replay, since the pages lack the first's answer.
+  - Amended at review, P3-4: `camp_census` ends with `place_tribute`, so tribute owed to a chest named while
+    the camp was out (or by a replayed record, MZB-446 above) goes at the census that brings the camp in, and
+    the plugin's session-start HAVEN_CHEST is no longer what places it. A duplicate census (the camp's own
+    epoch) and a replayed one place nothing.
 - **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
   tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
   coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.

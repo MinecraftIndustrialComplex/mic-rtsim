@@ -5999,9 +5999,8 @@ mod conflict {
             (567, 0, 0),
             "the payment is owed again; the camp is out in the replay, so nothing is placed"
         );
-        // The camp comes in, and the session-start chest record places the stack again.
+        // The camp comes in, and its census places the stack again (MZB-446, review P3-4).
         camp_in(&mut j);
-        chest_report(&mut j, chest);
         j.idle();
         j.idle();
         // The plugin applies each stack as it comes, so more than the first go in these hand-overs:

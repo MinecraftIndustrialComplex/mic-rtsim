@@ -5274,7 +5274,7 @@ impl Conflict {
             Obs::ChiefState(c) => self.chief_state(c, at),
             Obs::HuntApplied(h) => self.hunt_applied(h),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
-            Obs::CampCensus(c) => self.camp_census(c, at),
+            Obs::CampCensus(c) => self.camp_census(w, c, at),
             Obs::CampBodies(b) => self.camp_bodies(b, at),
             Obs::CampOut(o) => self.camp_out(o, at),
             Obs::FactionFound(ff) => {

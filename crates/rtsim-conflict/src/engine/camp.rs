@@ -1281,7 +1281,7 @@ impl Conflict {
     /// earlier epoch is void, and each slot is compared with the bodies found (MOWZIE.md §4.9's
     /// table). A census replayed from an earlier session only marks its camp out: its bodies are
     /// not the world as it is now.
-    pub(super) fn camp_census(&mut self, c: &CampCensus, at: Tick) {
+    pub(super) fn camp_census(&mut self, w: &mut World, c: &CampCensus, at: Tick) {
         let Some(&f) = self.by_key.get(&c.faction) else {
             return;
         };
@@ -1686,6 +1686,9 @@ impl Conflict {
         self.unblock(f, at);
         // A chief to come is looked at again at each census (MZB-407).
         self.camp_heir(f, at);
+        // The camp is in: tribute owed to a chest the plugin named while the camp was out (or
+        // before a restart's replay) goes now, not at the next record (MZB-446, review P3-4).
+        self.place_tribute(w, f, at);
     }
 
     // ---- tribute, trade and the chest (MZB-416 to MZB-423) -----------------------------------
