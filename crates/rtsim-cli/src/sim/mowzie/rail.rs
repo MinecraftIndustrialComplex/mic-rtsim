@@ -922,7 +922,7 @@ pub fn trunk(out: &mut Vec<Check>) {
     let first = sweep(&spec, 0, 0, (50.0, 70.0));
     let second = sweep(&spec, 0, 1, (50.0, 70.0));
     let f = first.first.c.faction_of_key(synth::CAMP).expect("the den");
-    let meters = first.first.c.factions.row(f).rail.len();
+    let meters = first.first.c.factions.row(f).rail().len();
     let feuds = first.first.c.feuds_of(f).len();
     let own = |s: &Sweep, want: &Row| {
         settle_ok(s.m.settles, want.settles) && day_ok(s.m.notice, want.notice, DAYS_TOL)

@@ -49,7 +49,7 @@ use serde::Serialize;
 
 use crate::boundary::{self, Cmd, Obs, Uuid};
 use crate::culture::{Culture, Cultures, PartyKind, SignalKind, Step, days_to_ticks};
-use crate::grievance::{Grievance, K};
+use crate::grievance::{Grievance, KB};
 use crate::presence::{ChunkKey, Presence, chunk_of};
 use crate::tables::{FactionTable, PlaceIndex, SourceTable};
 use crate::tunables::ConflictTunables;
@@ -138,15 +138,17 @@ pub struct Demand {
 }
 
 /// Where a feud's raids go: the strongest recent source.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Focus {
     pub pos: Pos,
     pub district: Option<DistrictId>,
     pub weight: f64,
     /// Set by a rail source (a source with a pin): the y of the track at `pos` and the station
     /// nearer to it that has a district (MZB-314). A focus with a district outranks one with a
-    /// track, and that a bare position.
-    pub track: Option<TrackFocus>,
+    /// track, and that a bare position. Boxed, so that a focus with none (every focus of a world
+    /// with no rail) is one pointer over what it was before M7 (MZB-313, amended by the lead for
+    /// MZB-331's gate); the focus is not `Copy`.
+    pub track: Option<Box<TrackFocus>>,
 }
 
 impl Focus {
@@ -167,8 +169,10 @@ impl Focus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feud {
     pub g: Grievance,
-    /// Raw continuous rates per tick by kind (sources × falloff), before weight and tolerance.
-    pub raw: [f64; K],
+    /// Raw continuous rates per tick by kind (sources × falloff), before weight and tolerance,
+    /// of the kinds before Rail; the Rail kind's rides with its other components in the
+    /// grievance's tail ([`Feud::raw_of`]), which only a feud with a rail signal has.
+    pub raw: [f64; KB],
     pub step: Step,
     pub since: Tick,
     pub demand: Option<Demand>,
@@ -192,7 +196,7 @@ impl Feud {
     pub fn new(at: Tick) -> Self {
         Feud {
             g: Grievance::new(at),
-            raw: [0.0; K],
+            raw: [0.0; KB],
             step: Step::None,
             since: at,
             demand: None,
@@ -204,6 +208,40 @@ impl Feud {
             notice: None,
             envoy_again: false,
         }
+    }
+
+    /// The raw rate of `kind`.
+    pub fn raw_of(&self, kind: SignalKind) -> f64 {
+        match self.raw.get(kind.index()) {
+            Some(r) => *r,
+            None => self.g.raw_rail(),
+        }
+    }
+
+    pub(crate) fn set_raw(&mut self, kind: SignalKind, raw: f64) {
+        match self.raw.get_mut(kind.index()) {
+            Some(r) => *r = raw,
+            None => self.g.set_raw_rail(raw),
+        }
+    }
+
+    /// The heap the feud holds besides its row's vector: the tail of the Rail kind's components,
+    /// a focus's track.
+    pub(crate) fn tail_bytes(&self) -> usize {
+        self.g
+            .rail
+            .as_ref()
+            .map_or(0, |_| std::mem::size_of::<crate::grievance::RailTail>())
+            + self
+                .focus
+                .as_ref()
+                .and_then(|fo| fo.track.as_ref())
+                .map_or(0, |_| std::mem::size_of::<TrackFocus>())
+    }
+
+    /// No kind has a raw rate: no source feeds the feud.
+    fn raw_idle(&self) -> bool {
+        self.raw.iter().all(|r| *r <= 0.0) && self.g.raw_rail() <= 0.0
     }
 
     /// Held on Envoy after a withdrawn demand ([`Feud::envoy_again`]); a feud no longer on Envoy
@@ -1527,11 +1565,14 @@ impl Conflict {
             // with no district does not displace a track.
             let better = feud
                 .focus
+                .as_ref()
                 .is_none_or(|fo| fo.class() <= if s.district.is_some() { 2 } else { 0 });
             if better {
                 feud.focus = Some(Focus {
                     pos: s.pos,
-                    district: s.district.or(feud.focus.and_then(|fo| fo.district)),
+                    district: s
+                        .district
+                        .or(feud.focus.as_ref().and_then(|fo| fo.district)),
                     weight: amount,
                     track: None,
                 });
@@ -1759,7 +1800,7 @@ impl Conflict {
     /// (exact, no drift) and its focus (the strongest source with a district).
     fn refresh_rates(&mut self, f: u32, a: ActorId, kind: SignalKind, at: Tick) {
         let mut raw = 0.0;
-        let mut best: Option<Focus> = None;
+        let mut best: Option<(Pos, Option<DistrictId>, f64, Option<TrackFocus>)> = None;
         // Only the sources that reach this faction (its row's list), in id order.
         for id in self.factions.row(f).reach_of(kind) {
             let Some(s) = self.sources.by_id(id).map(|r| &r.s) else {
@@ -1771,13 +1812,8 @@ impl Conflict {
             if let Some(&(_, fall)) = s.affects.iter().find(|x| x.0 == f) {
                 raw += s.rate * fall;
                 let wgt = s.rate * fall;
-                if best.is_none_or(|b| wgt > b.weight) {
-                    best = Some(Focus {
-                        pos: s.pos,
-                        district: s.district,
-                        weight: wgt,
-                        track: s.pin.as_deref().copied(),
-                    });
+                if best.is_none_or(|b| wgt > b.2) {
+                    best = Some((s.pos, s.district, wgt, s.pin.as_deref().copied()));
                 }
             }
         }
@@ -1789,16 +1825,23 @@ impl Conflict {
             return;
         }
         let feud = self.feud_entry(f, a, at);
-        feud.raw[kind.index()] = raw;
+        feud.set_raw(kind, raw);
         feud.g.set_rate(kind, eff, at, lambda);
         // A kind the culture gives no weight sets no focus; otherwise the strongest source sets
         // it when its class is at least the focus's now (MZB-314): a district is never displaced
         // by a pass through the wild, nor a track by a bare position.
-        if let Some(b) = best
+        if let Some((pos, district, weight, track)) = best
             && sd.weight > 0.0
-            && b.class() >= feud.focus.as_ref().map_or(0, Focus::class)
         {
-            feud.focus = Some(b);
+            let b = Focus {
+                pos,
+                district,
+                weight,
+                track: track.map(Box::new),
+            };
+            if b.class() >= feud.focus.as_ref().map_or(0, Focus::class) {
+                feud.focus = Some(b);
+            }
         }
         self.plan_feud(f, a, at, false);
     }
@@ -1906,7 +1949,7 @@ impl Conflict {
             take(self.repeat_at(f, a, feud));
             if feud.step > Step::None {
                 take(feud.g.crossing_down(self.down_theta(f, feud.step), lambda));
-            } else if feud.raw.iter().all(|r| *r <= 0.0) {
+            } else if feud.raw_idle() {
                 take(feud.g.crossing_down(self.tun.forget_below, lambda));
             }
         }
@@ -1999,12 +2042,7 @@ impl Conflict {
                 );
             } else if step == Step::None
                 && g < self.tun.forget_below
-                && self
-                    .feud(f, a)
-                    .expect("exists")
-                    .raw
-                    .iter()
-                    .all(|r| *r <= 0.0)
+                && self.feud(f, a).expect("exists").raw_idle()
             {
                 self.remove_feud(f, a);
                 self.stats.feuds_forgotten += 1;
@@ -2030,7 +2068,7 @@ impl Conflict {
         let feud = self.feud(f, a).expect("exists");
         let g = feud.g.total_at(at, lambda);
         let kind = feud.g.dominant(at, lambda);
-        let focus = feud.focus;
+        let focus = feud.focus.clone();
         if to.is_war() || to == Step::Scouts || to == Step::Envoy {
             let pk = PartyKind::of_step(to).expect("a party rung");
             if self.culture(f).parties[pk.index()].is_empty() {
@@ -2040,7 +2078,7 @@ impl Conflict {
                 debug_assert!(false, "escalate to the empty rung {}", to.name());
                 return;
             }
-            let target = self.target_of(w, f, pk, focus, at);
+            let target = self.target_of(w, f, pk, focus.as_ref(), at);
             let Some(p) = self.send_party(w, f, Some(a), pk, target, at) else {
                 // Not enough warriors: wait for the pool (closed form). The whole warriors
                 // `send_party` needs, so the wait ends when it can send (MOWZIE.md ledger 6).
@@ -2089,7 +2127,9 @@ impl Conflict {
             return;
         }
         self.stats.escalations[to.index()] += 1;
-        let pos = focus.map_or(self.factions[f as usize].pos, |fo| fo.pos);
+        let pos = focus
+            .as_ref()
+            .map_or(self.factions[f as usize].pos, |fo| fo.pos);
         let severity = if matches!(to, Step::Invasion | Step::Siege) {
             Severity::Major
         } else {
@@ -2218,9 +2258,9 @@ impl Conflict {
         let (g, kind, focus) = (
             feud.g.total_at(at, lambda),
             feud.g.dominant(at, lambda),
-            feud.focus,
+            feud.focus.clone(),
         );
-        let target = self.target_of(w, f, PartyKind::Envoy, focus, at);
+        let target = self.target_of(w, f, PartyKind::Envoy, focus.as_ref(), at);
         let Some(p) = self.send_party(w, f, Some(a), PartyKind::Envoy, target, at) else {
             // The whole warriors `send_party` needs, as `escalate` waits for (MZB-52).
             let need = (self.party_size(f, PartyKind::Envoy) as f64 / 2.0).ceil();
@@ -2271,7 +2311,7 @@ impl Conflict {
         w: &World,
         f: u32,
         kind: PartyKind,
-        focus: Option<Focus>,
+        focus: Option<&Focus>,
         at: Tick,
     ) -> Target {
         let _ = (w, at);
@@ -2280,7 +2320,7 @@ impl Conflict {
                 district: Some(d),
                 pos,
                 ..
-            }) => Target::District(d, pos),
+            }) => Target::District(*d, *pos),
             Some(Focus {
                 track: Some(t),
                 pos,
@@ -2288,11 +2328,11 @@ impl Conflict {
             }) => match (kind, t.station) {
                 (PartyKind::Invasion, Some((sp, d))) => Target::District(d, sp),
                 (PartyKind::Raid | PartyKind::Invasion, _) => Target::Track {
-                    track: pos,
-                    spot: self.spot_toward(pos, self.factions[f as usize].pos),
+                    track: *pos,
+                    spot: self.spot_toward(*pos, self.factions[f as usize].pos),
                     y: t.y,
                 },
-                _ => Target::Pos(pos),
+                _ => Target::Pos(*pos),
             },
             Some(fo) => Target::Pos(fo.pos),
             None => Target::Pos(self.factions[f as usize].pos),
@@ -2304,7 +2344,7 @@ impl Conflict {
         let Some(d) = feud.demand else {
             return;
         };
-        let cut = feud.g.rate[d.kind.index()] <= 0.0 && d.after <= 0.0;
+        let cut = feud.g.rate_of(d.kind) <= 0.0 && d.after <= 0.0;
         if d.paid >= d.tribute {
             self.settle(w, f, a, boundary::SETTLED_PAID, at);
         } else if cut {
