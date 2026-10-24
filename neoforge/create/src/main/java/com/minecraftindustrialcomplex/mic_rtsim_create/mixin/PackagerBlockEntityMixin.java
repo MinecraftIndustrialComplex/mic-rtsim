@@ -15,7 +15,8 @@ import org.spongepowered.asm.mixin.injection.At;
  * slot's stack from the target inventory, simulated to test and then for real, into a box it is packing. The
  * real extraction is the move. The other direction, a package unpacked into the inventory, is
  * {@code DefaultUnpackingHandler} (its own mixin). The packager's own item handler (what a chute above it
- * inserts a box into) is not an inventory of a district.
+ * inserts a box into) is not an inventory of a district. A repackager overrides these calls and is hooked in
+ * {@link RepackagerBlockEntityMixin} (PATCHES.md row 76).
  */
 @Mixin(value = PackagerBlockEntity.class, remap = false)
 public abstract class PackagerBlockEntityMixin {
