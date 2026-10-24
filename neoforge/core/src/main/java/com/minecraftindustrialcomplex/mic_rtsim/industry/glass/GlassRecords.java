@@ -166,6 +166,11 @@ public final class GlassRecords {
          * district's chunks, and it names its peers.
          */
         public static final int OVERSTRESSED = 1, STRESS_DISABLED = 2, SHARED = 4;
+        /**
+         * A driven source's passive row's selector, above every boiler level (0 to 18): the row its engines run
+         * at while the boiler has passive heat only ({@code BoilerData.isPassive}; SECTIONS.md choice SC154).
+         */
+        public static final int PASSIVE_SELECTOR = 19;
         /** Most speed rows a modelled domain has; more and the domain is unstable. */
         public static final int MAX_SPEED_ROWS = 32;
 

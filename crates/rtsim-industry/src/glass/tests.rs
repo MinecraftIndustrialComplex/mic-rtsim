@@ -608,6 +608,61 @@ fn less_water_drops_the_level_into_overstress_and_the_members_stop() {
     assert_eq!(bound(&s, SHEET).in_l, Q::ZERO);
 }
 
+/// Choice SC154: a blaze burner that is out smoulders, and Create's boiler takes that for passive
+/// heat while it has water and size enough for a level: the engines run at an eighth of their
+/// efficiency (16 RPM), on the source's passive row. Without water it stops; a source without a
+/// passive row (none tabulated) stops too.
+#[test]
+fn a_boiler_whose_burner_is_out_runs_its_engines_on_passive_heat() {
+    let passive = |g: &mut Graph| {
+        g.domains[0].sources[0].levels.push(DomainLevel {
+            selector: DomainLevel::PASSIVE,
+            speed_num: 16,
+            speed_den: 1,
+            capacity: 2048.0,
+        });
+    };
+    // A burner (1,600 ticks a coal, not creative) with no burn left and no fuel.
+    let out = |g: &mut Graph, rg: &mut Regime| {
+        let h = g
+            .nodes
+            .iter()
+            .position(|n| n.kind == NodeKind::Heater)
+            .unwrap();
+        g.nodes[h].params[2] = 1600;
+        rg.burning[h] = solve::burn::OUT;
+    };
+    // Lit: level 4 as before; the passive row is never a level's.
+    let (mut g, rg, _) = steam(40, 0);
+    passive(&mut g);
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(2)]);
+    assert_eq!(s.dom_level, vec![Some(1)]);
+    // Out, with water: the passive row, 16 RPM, 2,048 SU for 1,152 SU of members.
+    let (mut g, mut rg, _) = steam(40, 0);
+    passive(&mut g);
+    out(&mut g, &mut rg);
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(3)]);
+    assert_eq!(s.dom_level, vec![Some(0)]);
+    assert_eq!(s.dom_cap, vec![2048.0]);
+    assert_eq!(bound(&s, SHEET).in_l, Q::new(1, 20));
+    // Out, without water: no level and not passive.
+    let (mut g, mut rg, pump) = steam(40, 0);
+    passive(&mut g);
+    out(&mut g, &mut rg);
+    rg.gate_off[pump as usize] = true;
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(0)]);
+    assert_eq!(s.dom_level, vec![None]);
+    // Out, with water, no passive row tabulated: its row at level 0.
+    let (mut g, mut rg, _) = steam(40, 0);
+    out(&mut g, &mut rg);
+    let s = run(&g, &rg);
+    assert_eq!(s.src_row, vec![Some(0)]);
+    assert_eq!(s.dom_level, vec![None]);
+}
+
 #[test]
 fn stress_disabled_domains_never_overstress() {
     let (g, rg, _) = steam(20, domain_flags::STRESS_DISABLED);
