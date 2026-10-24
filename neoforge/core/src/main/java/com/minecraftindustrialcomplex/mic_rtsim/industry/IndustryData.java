@@ -37,12 +37,17 @@ public final class IndustryData extends SavedData {
     public static final String FILE = "mic_rtsim_industry";
 
     /**
-     * 2: districts carry their seed counts per chunk (DS-10: only machines seed). A save from before has
-     * none, so detection finds no seed in its unloaded chunks and drops those districts as it reaches
-     * them; the loaded ones are seeded again from their chunks' machines. No migration (nothing is
-     * released): a world from before wants a fresh start, or has its districts rebuilt.
+     * 3 (SEC-1, slice S4): districts cut at links (SECTIONS.md §2), and the plugins' state ({@link #plugin},
+     * a Create package store's identity). A save of an older format with districts has them dropped on load
+     * (SECTIONS.md §6, choice SC98): their ids stay used ({@code nextId} is kept), the engine is told each
+     * is gone at the session's start ({@link #droppedOnLoad}), and detection finds them again from the
+     * seeds their chunks keep. The pins name dropped districts and go too; exclusions and merge links are
+     * chunks and stay. No migration (nothing is released).
      */
-    public static final int FORMAT = 2;
+    public static final int FORMAT = 3;
+
+    /** The operator's one line when an older format's districts were dropped (SECTIONS.md §6). */
+    public static final String FORMAT_RESET_LINE = "rtsim industry: the save format changed (SEC-1); learned factory state was reset and districts are detected again.";
 
     /** Districts by id, in id order. */
     final TreeMap<Long, District> districts = new TreeMap<>();
@@ -55,6 +60,15 @@ public final class IndustryData extends SavedData {
     final Map<ResourceKey<Level>, List<long[]>> mergeLinks = new HashMap<>();
     /** GOOD component hashes and the patches behind them ({@link Goods}). */
     final Map<String, DataComponentPatch> patches = new HashMap<>();
+    /** Each plugin's own saved state, by a key the plugin chose ({@link #plugin}). */
+    final Map<String, CompoundTag> plugins = new TreeMap<>();
+    /**
+     * Districts an older format's save held and a load dropped (format 3): the engine may still hold them,
+     * so the session's start removes each (IND_DISTRICT_REMOVED) and clears the list. Saved until then
+     * ({@code droppedDistricts}), so a save made before a session starts (the industry switched off) keeps
+     * them to remove.
+     */
+    final List<Long> droppedOnLoad = new ArrayList<>();
     /**
      * After a reinstall reset (UR-1): member chunks that held seeds, per dimension, not loaded since. At its first
      * load each leaves the set, and one that lost its seed attachment in the gap has its machines adopted again
@@ -87,6 +101,20 @@ public final class IndustryData extends SavedData {
 
     public java.util.Collection<District> districts() {
         return districts.values();
+    }
+
+    /** A plugin's saved state under {@code key}, or null. The plugin owns the tag; {@link #putPlugin} replaces it. */
+    public CompoundTag plugin(String key) {
+        return plugins.get(key);
+    }
+
+    /** Replaces a plugin's saved state (null removes it) and marks the index to save. */
+    public void putPlugin(String key, CompoundTag tag) {
+        if (tag == null)
+            plugins.remove(key);
+        else
+            plugins.put(key, tag);
+        setDirty();
     }
 
     // ---- NBT ------------------------------------------------------------------------------------
@@ -176,6 +204,12 @@ public final class IndustryData extends SavedData {
         for (Map.Entry<String, DataComponentPatch> e : patches.entrySet())
             DataComponentPatch.CODEC.encodeStart(ops, e.getValue()).result().ifPresent(t -> patchTag.put(e.getKey(), t));
         tag.put("patches", patchTag);
+        CompoundTag pluginTag = new CompoundTag();
+        for (Map.Entry<String, CompoundTag> e : plugins.entrySet())
+            pluginTag.put(e.getKey(), e.getValue());
+        tag.put("plugins", pluginTag);
+        if (!droppedOnLoad.isEmpty())
+            tag.putLongArray("droppedDistricts", droppedOnLoad.stream().mapToLong(Long::longValue).toArray());
         CompoundTag readoptTag = new CompoundTag();
         for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : readopt.entrySet())
             if (!e.getValue().isEmpty())
@@ -187,12 +221,21 @@ public final class IndustryData extends SavedData {
 
     public static IndustryData load(CompoundTag tag, HolderLookup.Provider registries) {
         IndustryData data = new IndustryData();
-        if (tag.getInt("format") < FORMAT && !tag.getList("districts", Tag.TAG_COMPOUND).isEmpty())
-            com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.warn(
-                    "mic_rtsim: industry data format {} (now {}): districts without a recorded machine are dissolved as detection reaches them",
-                    tag.getInt("format"), FORMAT);
         data.nextId = Math.max(1, tag.getLong("nextId"));
-        for (Tag raw : tag.getList("districts", Tag.TAG_COMPOUND)) {
+        boolean reset = tag.getInt("format") < FORMAT && !tag.getList("districts", Tag.TAG_COMPOUND).isEmpty();
+        for (long id : tag.getLongArray("droppedDistricts"))
+            data.droppedOnLoad.add(id);
+        if (reset) {
+            for (Tag raw : tag.getList("districts", Tag.TAG_COMPOUND)) {
+                long id = ((CompoundTag) raw).getLong("id");
+                data.droppedOnLoad.add(id);
+                data.nextId = Math.max(data.nextId, id + 1);
+            }
+            com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.warn("{} (industry data format {}, now {}: {} districts dropped)",
+                    FORMAT_RESET_LINE, tag.getInt("format"), FORMAT, tag.getList("districts", Tag.TAG_COMPOUND).size());
+            data.setDirty();
+        }
+        for (Tag raw : reset ? new ListTag() : tag.getList("districts", Tag.TAG_COMPOUND)) {
             CompoundTag t = (CompoundTag) raw;
             ResourceKey<Level> dim = dim(t.getString("dim"));
             if (dim == null)
@@ -227,7 +270,7 @@ public final class IndustryData extends SavedData {
             data.districts.put(d.id, d);
             data.nextId = Math.max(data.nextId, d.id + 1);
         }
-        CompoundTag pinTag = tag.getCompound("pins");
+        CompoundTag pinTag = reset ? new CompoundTag() : tag.getCompound("pins");
         for (String key : pinTag.getAllKeys()) {
             ResourceKey<Level> dim = dim(key);
             if (dim == null)
@@ -257,6 +300,9 @@ public final class IndustryData extends SavedData {
         RegistryOps<Tag> ops = RegistryOps.create(NbtOps.INSTANCE, registries);
         for (String key : patchTag.getAllKeys())
             DataComponentPatch.CODEC.parse(ops, patchTag.get(key)).result().ifPresent(p -> data.patches.put(key, p));
+        CompoundTag pluginTag = reset ? new CompoundTag() : tag.getCompound("plugins");
+        for (String key : pluginTag.getAllKeys())
+            data.plugins.put(key, pluginTag.getCompound(key));
         CompoundTag readoptTag = tag.getCompound("readopt");
         for (String key : readoptTag.getAllKeys()) {
             ResourceKey<Level> dim = dim(key);

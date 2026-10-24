@@ -277,11 +277,19 @@ public final class CreatePlugin implements IndustryPlugin {
     @Override
     public void tick(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry, long now) {
         TrainWatch.tick(industry, now);
+        PackageStores.of(industry).tick(now);
     }
 
     @Override
     public String perfLine() {
-        return TrainWatch.perfLine();
+        com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
+        return ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine();
+    }
+
+    /** The engine forgot what it was told: every package store is declared again (SECTIONS.md §2.5). */
+    @Override
+    public void announce(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry) {
+        PackageStores.of(industry).announce();
     }
 
     @Override

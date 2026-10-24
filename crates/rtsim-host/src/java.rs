@@ -1133,6 +1133,10 @@ impl Java {
                 .goods
                 .goods()
                 .for_each(|g| self.check_mirrored(DICT_GOOD, g.0)),
+            Cmd::WriteChain(p) => p
+                .goods
+                .goods()
+                .for_each(|g| self.check_mirrored(DICT_GOOD, g.0)),
             Cmd::ProbeSet(_) | Cmd::CountSet(_) => {}
         }
         if self.fail_next_carriage
