@@ -205,7 +205,7 @@ public final class DragonLook implements FarLook {
         } else
             yawDeg = lastYaw.getOrDefault(m.key(), 0f);
         float yawRad = (float) Math.toRadians(yawDeg);
-        double time = clock + Math.floorMod(m.key().hashCode(), 60);
+        double time = clock + beatOffset(m);
         boolean flying = m.state() != FarState.ROOST;
         int age = age(m);
         float s = renderSize(species, age) / renderSize(species, ageFor(stage));
@@ -365,6 +365,14 @@ public final class DragonLook implements FarLook {
         if (into < 0)
             into += LOOP;
         return (int) Math.round(into / (LOOP / FRAMES)) % FRAMES;
+    }
+
+    /**
+     * Where in its loop a mover's far model is at clock 0: each mover's own, so a flight's wings do not all beat
+     * together. Its far time is the far clock plus this.
+     */
+    static int beatOffset(FarMover m) {
+        return Math.floorMod(m.key().hashCode(), (int) LOOP);
     }
 
     /**
