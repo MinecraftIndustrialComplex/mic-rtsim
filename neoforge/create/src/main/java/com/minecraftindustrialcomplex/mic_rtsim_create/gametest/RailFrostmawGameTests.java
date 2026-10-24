@@ -28,11 +28,14 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.Clearable;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -108,6 +111,10 @@ public final class RailFrostmawGameTests {
         double runFrom, runTo;
         boolean overlapped, hurt, healthChanged;
         double drift;
+        /** The box's block states before the test built in it (null until taken), and the chest's position once placed. */
+        BlockState[] before;
+        BlockPos chest;
+        boolean cleaned;
 
         Drive(GameTestHelper helper, String entityId, boolean boss) {
             this.helper = helper;
@@ -121,6 +128,47 @@ public final class RailFrostmawGameTests {
 
         double lead() {
             return train.carriages.get(0).getLeadingPoint().getPosition(train.graph).x;
+        }
+
+        /** The box the test builds in: the track's length and three blocks past each end, 4 to each side, one below the rail to 7 above it. */
+        BlockPos box(int i) {
+            int dz = 2 * SIDE + 1, h = BELOW + ABOVE;
+            int dx = i / (dz * h) - MARGIN, rest = i % (dz * h);
+            return new BlockPos(x0 + dx, y - BELOW + rest % h, z0 - SIDE + rest / h);
+        }
+
+        static final int MARGIN = 3, SIDE = 4, BELOW = 1, ABOVE = 8;
+
+        int boxSize() {
+            return (LENGTH + 2 * MARGIN) * (2 * SIDE + 1) * (BELOW + ABOVE);
+        }
+
+        /** Before anything is built: what the box holds now. */
+        void snapshot(ServerLevel level) {
+            before = new BlockState[boxSize()];
+            for (int i = 0; i < before.length; i++)
+                before[i] = level.getBlockState(box(i));
+        }
+
+        /**
+         * Puts the box back as the snapshot has it: the track and the station out first, as blocks, so Create takes
+         * them (and their graph) out; the chest emptied so it drops nothing; then every block of the box, with no
+         * neighbour or shape updates. Block entities of the original terrain are not restored (a generated far chunk
+         * has none the test could reach).
+         */
+        void restore(ServerLevel level) {
+            if (before == null)
+                return;
+            for (int dx = 0; dx < LENGTH; dx++)
+                level.setBlock(track(dx), Blocks.AIR.defaultBlockState(), 3);
+            level.setBlock(track(STATION_AT).south(), Blocks.AIR.defaultBlockState(), 3);
+            if (chest != null && level.getBlockEntity(chest) instanceof Clearable c)
+                c.clearContent();
+            for (SuperGlueEntity glue : level.getEntitiesOfClass(SuperGlueEntity.class, AABB.encapsulatingFullBlocks(track(0), track(LENGTH))
+                    .inflate(SIDE, ABOVE, SIDE)))
+                glue.discard();
+            for (int i = 0; i < before.length; i++)
+                level.setBlock(box(i), before[i], Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
         }
 
         /** Ends the test at once (a waiting step would only retry until its timeout). */
@@ -175,6 +223,9 @@ public final class RailFrostmawGameTests {
         Direction[] dir = {null};
 
         ConflictKit.onEnd(helper, () -> {
+            if (d.cleaned)
+                return;
+            d.cleaned = true;
             if (d.train != null) {
                 for (Carriage c : d.train.carriages) {
                     Entity e = c.anyAvailableEntity();
@@ -185,12 +236,8 @@ public final class RailFrostmawGameTests {
             }
             if (d.target != null)
                 d.target.discard();
-            // The track and the station out again (they take their graph with them), then the chunks
-            if (d.y != 0) {
-                for (int dx = 0; dx < LENGTH; dx++)
-                    level.setBlock(d.track(dx), Blocks.AIR.defaultBlockState(), 3);
-                level.setBlock(d.track(STATION_AT).south(), Blocks.AIR.defaultBlockState(), 3);
-            }
+            // The box as it was (the track and the station take their graph with them), then the chunks
+            d.restore(level);
             for (int cx = cx0; cx <= cx1; cx++)
                 for (int z = cz - 1; z <= cz + 1; z++)
                     level.setChunkForced(cx, z, false);
@@ -206,13 +253,14 @@ public final class RailFrostmawGameTests {
                         }
                     d.y = level.getHeight(Heightmap.Types.WORLD_SURFACE, d.x0 + STATION_AT, d.z0);
                     record("railFrostmaw", "track height", d.y);
+                    d.snapshot(level);
                     BlockState air = Blocks.AIR.defaultBlockState(), floor = Blocks.STONE.defaultBlockState();
                     BlockState xo = AllBlocks.TRACK.getDefaultState().setValue(TrackBlock.SHAPE, TrackShape.XO);
                     // Whatever the terrain: a floor one below the rail and clear air above (a Frostmaw is 4 wide and 4 tall)
-                    for (int dx = -3; dx < LENGTH + 3; dx++)
-                        for (int dz = -4; dz <= 4; dz++) {
+                    for (int dx = -Drive.MARGIN; dx < LENGTH + Drive.MARGIN; dx++)
+                        for (int dz = -Drive.SIDE; dz <= Drive.SIDE; dz++) {
                             level.setBlock(new BlockPos(d.x0 + dx, d.y - 1, d.z0 + dz), floor, 2);
-                            for (int dy = 0; dy < 8; dy++)
+                            for (int dy = 0; dy < Drive.ABOVE; dy++)
                                 level.setBlock(new BlockPos(d.x0 + dx, d.y + dy, d.z0 + dz), air, 2);
                         }
                     for (int dx = 0; dx < LENGTH; dx++)
@@ -237,7 +285,7 @@ public final class RailFrostmawGameTests {
                     sbe.updateName("Frostmaw Pass");
                     dir[0] = sbe.getAssemblyDirection();
                     check("an assembly direction along the track", dir[0] != null && dir[0].getAxis() == Direction.Axis.X);
-                    cars(helper, d.track(STATION_AT), dir[0]);
+                    d.chest = cars(helper, d.track(STATION_AT), dir[0]);
                     Create.RAILWAYS.markTracksDirty();
                 })
                 .thenIdle(5)
@@ -323,9 +371,9 @@ public final class RailFrostmawGameTests {
     /**
      * Two single-bogey carriages on the station's track, as a player builds them ({@code RailFixtureGameTests.cars}):
      * a small bogey at the first block past the station and one four further, controls facing the assembly
-     * direction on the first, a chest with coal on the second, each glued.
+     * direction on the first, a chest with coal on the second, each glued. The chest's position.
      */
-    private static void cars(GameTestHelper h, BlockPos stationTrack, Direction d) {
+    private static BlockPos cars(GameTestHelper h, BlockPos stationTrack, Direction d) {
         ServerLevel level = h.getLevel();
         BlockState bogey = AllBlocks.SMALL_BOGEY.getDefaultState().setValue(BlockStateProperties.HORIZONTAL_AXIS, Direction.Axis.X);
         BlockPos b1 = stationTrack.relative(d, 1).above(), b2 = stationTrack.relative(d, 5).above();
@@ -336,5 +384,6 @@ public final class RailFrostmawGameTests {
         fill(h, b2.above(), Items.COAL, 32);
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b1, b1.above())));
         level.addFreshEntity(new SuperGlueEntity(level, SuperGlueEntity.span(b2, b2.above())));
+        return b2.above();
     }
 }

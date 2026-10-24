@@ -3282,14 +3282,25 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     blocks inside the arc on the chord (the chord crosses and the rail does not). Each run verifies the
     geometry itself before the sampler is trusted (`Run.verify`). The checks are MZB-327's, with the
     point within 2.5 blocks of the rail.
-  - Test 10 (`RailFrostmawGameTests`, batch `rail_frostmaw_pass`): the real train is built as
-    `RailFixtureGameTests` builds its own. The track is 150 blocks along x at a far base, on a stone floor
-    with the air above cleared (a Frostmaw is 4 by 4 blocks and the terrain is whatever the world made),
-    and all of it is taken out again at the end, so Create's saved graph holds nothing of it. The train is
-    driven by `manualTick` and `speed` 1.0 each tick; its direction is found by running it three ticks. The
-    distance check counts observations, not game time, so it does not depend on whether this test or
-    Create's tick runs first in a server tick; the entity's start is taken three observations after it
-    is placed (it settles on the rail while the train is 30 blocks off). The zombie has fire resistance
+  - Test 10 (`RailFrostmawGameTests`, batch `rail_frostmaw_pass` for the Frostmaw and `rail_frostmaw_control`
+    for the zombie: each calls `releaseFarChunks`, which would release the other's chunks if they shared a
+    batch): the real train is built as `RailFixtureGameTests` builds its own. The track is 150 blocks along
+    x at a far base, on a stone floor with the air above cleared (a Frostmaw is 4 by 4 blocks and the
+    terrain is whatever the world made). The train is driven by `manualTick` and `speed` 1.0 each tick; its
+    direction is found by running it three ticks. The distance check counts observations, not game time,
+    so it does not depend on whether this test or Create's tick runs first in a server tick, and expects
+    `SPEED * (observations - 1)`: observation 1 is in the tick that took the start, before Create moves the
+    train. The entity's start is taken three observations after it
+    is placed (it settles on the rail while the train is 30 blocks off).
+    - What is restored, on a pass and on a failure alike, once: the train and its carriage entities are
+      removed; the track and the station are taken out as blocks (so Create takes their graph); the chest is
+      emptied (it drops nothing); the glue entities in the box are discarded; and every block of the box
+      (the track's 150 blocks and 3 past each end, 4 each side, from one below the rail to 7 above it) is
+      set back to the state it had before the test built in it, with no neighbour or shape updates. The
+      bogeys, controls, chest and glue of the cars are inside the box, so a failure before assembly leaves
+      them nowhere. Block entities of the original terrain are not restored (a freshly generated far chunk
+      has none the test could reach). The forced chunks are then released.
+    The zombie has fire resistance
     (a NoAI zombie would burn in daylight and flinch) and ends the run when moved half a block. Hurt,
     health and drift are recorded each tick and judged at the end; only a derailed or lost train, or a
     dead entity, ends the test at once (`testInfo.fail`).
