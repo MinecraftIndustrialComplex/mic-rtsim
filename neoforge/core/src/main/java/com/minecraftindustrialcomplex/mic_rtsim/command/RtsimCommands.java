@@ -51,7 +51,8 @@ public final class RtsimCommands {
         String text = String.join("\n",
                 "engine: " + s.engine().describe() + (s.failed() ? " (bridge FAILED)" : ""),
                 "hand-overs: " + b.handover().submits() + " submitted, " + b.handover().ticksWaiting() + " ticks waited on the engine",
-                "journal: " + b.journal().size() + " unacknowledged (" + b.journal().bytes() + " bytes), last applied command " + b.journal().lastAppliedCmdSeq(),
+                "journal: " + b.journal().size() + " unacknowledged (" + b.journal().bytes() + " bytes), last applied command " + b.journal().lastAppliedCmdSeq()
+                        + "; carried records journaled again " + s.reasserted() + " (" + b.plainRecommits() + " too large to copy)",
                 "puppets: " + s.registry().size() + " groups; spawned " + s.spawnedGroups() + ", rejected " + s.rejectedSpawns()
                         + ", captured " + s.capturedGroups() + ", taken " + s.takes() + ", died " + s.deaths()
                         + ", removed by others " + s.removedByOther() + ", stale copies discarded " + s.staleDiscarded(),

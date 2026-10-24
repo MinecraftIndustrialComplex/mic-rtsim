@@ -125,12 +125,12 @@ public final class Reconciler {
         IndustryAttachments.Epochs epochs = chunk.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
         if (epochs != null) {
             for (IndustryAttachments.EpochEntry e : epochs.entries()) {
-                // A result saved with the chunk but maybe not with the journal (a crash): journaled
-                // again (same bytes, same op id, a new sequence); the engine skips it by op id.
+                // A result saved with the chunk but maybe not with the journal (a crash): a copy of it
+                // journaled (REASSERT, docs/boundary.md §2.6), which the engine applies only if it lacks it.
                 if (e.pendingResult().isPresent()) {
                     String key = level.dimension().location() + "/" + chunk.getPos().toLong() + "/" + e.district() + "/" + e.epoch();
                     if (recommitted.add(key)) {
-                        long seq = ind.boundary.recommit(e.pendingResult().get());
+                        long seq = ind.boundary.reassert(e.gen(), e.pendingResult().get());
                         dropResultWhenAcked(level, chunk.getPos(), e.district(), e.epoch(), seq);
                     }
                 }
@@ -355,7 +355,7 @@ public final class Reconciler {
             res.putInt(p0 + i * IndRecords.POS16 + 8, broken.get(i).getZ());
         }
         long seq = ind.commit(res);
-        chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()))));
+        chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()), ind.boundary.gen())));
         chunk.setUnsaved(true);
         ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
@@ -416,11 +416,11 @@ public final class Reconciler {
             ServerLevel l = ind.level(dim);
             LevelChunk c = l == null ? null : l.getChunkSource().getChunkNow(cp.x, cp.z);
             if (c == null)
-                return; // unloaded: the result is journaled again at its next load, and skipped by op id
+                return; // unloaded: a copy of the result is journaled at its next load, and dropped if the engine has it
             IndustryAttachments.Epochs ep = c.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
             IndustryAttachments.EpochEntry e = ep == null ? null : ep.get(district);
             if (e != null && e.epoch() == epoch && e.pendingResult().isPresent()) {
-                c.setData(IndustryAttachments.RECONCILE.get(), ep.with(new IndustryAttachments.EpochEntry(district, epoch, Optional.empty())));
+                c.setData(IndustryAttachments.RECONCILE.get(), ep.with(new IndustryAttachments.EpochEntry(district, epoch)));
                 c.setUnsaved(true);
             }
         });

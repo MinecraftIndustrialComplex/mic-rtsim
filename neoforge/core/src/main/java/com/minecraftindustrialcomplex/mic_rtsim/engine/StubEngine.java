@@ -46,6 +46,9 @@ import java.util.function.Consumer;
  *       thread, the way the host's background pool will;</li>
  *   <li>reads observations: skips journaled records its pages or memory already include, applies
  *       TRANSFER op ids at most once into a ledger, and remembers op ids Java reports as applied;</li>
+ *   <li>judges a copy of a carried record (REASSERT) by its generation as the Rust engine does
+ *       (docs/boundary.md §2.6): applied only when no generation it knows admitted the record and no
+ *       copy of it applied before;</li>
  *   <li>writes the commands a test (or {@code /rtsim stub}) scripts, assigning command sequences and
  *       its own dictionary ids, as many as fit, the rest next step;</li>
  *   <li>keeps "pages": a snapshot taken at a save request, written to {@code pagesFile} when there
@@ -60,13 +63,28 @@ public final class StubEngine implements ScriptedEngine {
     /** Record bytes per buffer. PLACEHOLDER: the real engine sizes buffers from caps and quotas (PLAN.md §4.5). */
     public static final int DEFAULT_CAPACITY = 256 * 1024;
 
-    /** What the stub's saved pages hold. */
-    public record Pages(long obsSeq, long nextCmdSeq, Set<Long> appliedOps, Map<Long, Long> ledger) {
-        public static final Pages EMPTY = new Pages(0, 1, Set.of(), Map.of());
+    /** A record of a generation, by its sequence (docs/boundary.md §2.6). */
+    public record GenSeq(long gen, long seq) {}
+
+    /**
+     * What the stub's saved pages hold. The generations as the kernel's Replay keeps them: the open one
+     * ({@code openGen} 0: none) with the last sequence it admitted, each closed one's last, and every copy
+     * that applied.
+     */
+    public record Pages(long obsSeq, long nextCmdSeq, Set<Long> appliedOps, Map<Long, Long> ledger,
+                        long openGen, long openLast, Map<Long, Long> lastOf, Set<GenSeq> copied) {
+        public static final Pages EMPTY = new Pages(0, 1, Set.of(), Map.of(), 0, 0, Map.of(), Set.of());
 
         public Pages {
             appliedOps = Set.copyOf(appliedOps);
             ledger = Map.copyOf(ledger);
+            lastOf = Map.copyOf(lastOf);
+            copied = Set.copyOf(copied);
+        }
+
+        /** Pages that know no generation (tests). */
+        public Pages(long obsSeq, long nextCmdSeq, Set<Long> appliedOps, Map<Long, Long> ledger) {
+            this(obsSeq, nextCmdSeq, appliedOps, ledger, 0, 0, Map.of(), Set.of());
         }
 
         public byte[] encode() {
@@ -83,6 +101,18 @@ public final class StubEngine implements ScriptedEngine {
                 for (Map.Entry<Long, Long> e : ledger.entrySet()) {
                     out.writeLong(e.getKey());
                     out.writeLong(e.getValue());
+                }
+                out.writeLong(openGen);
+                out.writeLong(openLast);
+                out.writeInt(lastOf.size());
+                for (Map.Entry<Long, Long> e : lastOf.entrySet()) {
+                    out.writeLong(e.getKey());
+                    out.writeLong(e.getValue());
+                }
+                out.writeInt(copied.size());
+                for (GenSeq c : copied) {
+                    out.writeLong(c.gen());
+                    out.writeLong(c.seq());
                 }
                 out.flush();
                 return bytes.toByteArray();
@@ -103,7 +133,15 @@ public final class StubEngine implements ScriptedEngine {
             Map<Long, Long> ledger = new HashMap<>();
             for (int i = in.readInt(); i > 0; i--)
                 ledger.put(in.readLong(), in.readLong());
-            return new Pages(obsSeq, nextCmdSeq, ops, ledger);
+            long openGen = in.readLong();
+            long openLast = in.readLong();
+            Map<Long, Long> lastOf = new HashMap<>();
+            for (int i = in.readInt(); i > 0; i--)
+                lastOf.put(in.readLong(), in.readLong());
+            Set<GenSeq> copied = new HashSet<>();
+            for (int i = in.readInt(); i > 0; i--)
+                copied.add(new GenSeq(in.readLong(), in.readLong()));
+            return new Pages(obsSeq, nextCmdSeq, ops, ledger, openGen, openLast, lastOf, copied);
         }
     }
 
@@ -153,6 +191,12 @@ public final class StubEngine implements ScriptedEngine {
     /** Java op ids of events (TAKEN, DIED, TRADE, CARGO_CHANGED), with how often each arrived unskipped. */
     private final Map<Long, Integer> eventOps = new HashMap<>();
     private long eventOpDuplicates;
+    private long openGen;
+    private long openLast;
+    private final Map<Long, Long> lastOf = new HashMap<>();
+    private final Set<GenSeq> copied = new HashSet<>();
+    private long copiesApplied;
+    private long copiesDropped;
     private boolean started;
     /** Guarded by {@code worker}. */
     private boolean closed;
@@ -217,6 +261,12 @@ public final class StubEngine implements ScriptedEngine {
         appliedOps.addAll(p.appliedOps());
         ledger.clear();
         ledger.putAll(p.ledger());
+        openGen = p.openGen();
+        openLast = p.openLast();
+        lastOf.clear();
+        lastOf.putAll(p.lastOf());
+        copied.clear();
+        copied.addAll(p.copied());
         return new SessionStart(p.obsSeq(), nextCmdSeq);
     }
 
@@ -453,30 +503,15 @@ public final class StubEngine implements ScriptedEngine {
                 skipped = true;
             } else {
                 maxObsSeq = seq;
-                if (kind == Obs.TRANSFER) {
-                    long op = b.getLong(at + Obs.Transfer.OP_ID);
-                    if (!appliedOps.add(op)) {
-                        opDuplicates++;
-                    } else {
-                        ledger.merge(b.getLong(at + Obs.Transfer.TO), b.getLong(at + Obs.Transfer.AMOUNT), Long::sum);
-                    }
-                } else if (kind == Obs.COMMAND_RESULT) {
-                    int status = r.aux();
-                    if (status == Obs.CommandResult.APPLIED || status == Obs.CommandResult.DUPLICATE_OP)
-                        appliedOps.add(b.getLong(at + Obs.CommandResult.OP_ID));
+                if (kind == Obs.JOURNAL_GEN) {
+                    beginGen(b.getLong(at + Obs.JournalGen.GEN), seq);
                 } else {
-                    int opAt = switch (kind) {
-                        case Obs.TAKEN -> Obs.Taken.OP_ID;
-                        case Obs.DIED -> Obs.Died.OP_ID;
-                        case Obs.TRADE -> Obs.Trade.OP_ID;
-                        case Obs.CARGO_CHANGED -> Obs.CargoChanged.OP_ID;
-                        default -> -1;
-                    };
-                    if (opAt > 0 && r.size() >= opAt + 8) {
-                        // An event's op id applies at most once: the engine counts the cargo it moves once.
-                        if (eventOps.merge(b.getLong(at + opAt), 1, Integer::sum) > 1)
-                            eventOpDuplicates++;
-                    }
+                    if (openGen != 0)
+                        openLast = seq;
+                    if (kind == Obs.REASSERT)
+                        skipped = !reasserted(b, at, r.size());
+                    else
+                        apply(kind, r.aux(), b, at, r.size());
                 }
             }
         }
@@ -485,8 +520,81 @@ public final class StubEngine implements ScriptedEngine {
         received.addLast(new Received(h, kind, r.aux(), seq, skipped, r.copyRecord()));
     }
 
+    /** What a journaled record does to the stub's memory. */
+    private void apply(int kind, int aux, ByteBuffer b, int at, int size) {
+        if (kind == Obs.TRANSFER) {
+            long op = b.getLong(at + Obs.Transfer.OP_ID);
+            if (!appliedOps.add(op)) {
+                opDuplicates++;
+            } else {
+                ledger.merge(b.getLong(at + Obs.Transfer.TO), b.getLong(at + Obs.Transfer.AMOUNT), Long::sum);
+            }
+        } else if (kind == Obs.COMMAND_RESULT) {
+            if (aux == Obs.CommandResult.APPLIED || aux == Obs.CommandResult.DUPLICATE_OP)
+                appliedOps.add(b.getLong(at + Obs.CommandResult.OP_ID));
+        } else {
+            int opAt = switch (kind) {
+                case Obs.TAKEN -> Obs.Taken.OP_ID;
+                case Obs.DIED -> Obs.Died.OP_ID;
+                case Obs.TRADE -> Obs.Trade.OP_ID;
+                case Obs.CARGO_CHANGED -> Obs.CargoChanged.OP_ID;
+                default -> -1;
+            };
+            if (opAt > 0 && size >= opAt + 8) {
+                // An event's op id applies at most once: the engine counts the cargo it moves once.
+                if (eventOps.merge(b.getLong(at + opAt), 1, Integer::sum) > 1)
+                    eventOpDuplicates++;
+            }
+        }
+    }
+
+    /** Opens generation {@code gen} at its JOURNAL_GEN's sequence, closing the open one (the kernel's begin_gen). */
+    private void beginGen(long gen, long seq) {
+        if (openGen != 0)
+            lastOf.put(openGen, openLast);
+        openGen = gen;
+        openLast = seq;
+    }
+
+    /**
+     * A copy (REASSERT): its inner record applies only when no generation the stub knows admitted it
+     * (the open one, or a closed one with a later last sequence) and no copy of it applied before, as
+     * the kernel's Replay::copy_is_new judges. Returns whether it applied.
+     */
+    private boolean reasserted(ByteBuffer b, int at, int size) {
+        int in = at + Obs.Reassert.INNER;
+        int innerSize = size < Obs.Reassert.INNER + Obs.BODY ? 0 : Short.toUnsignedInt(b.getShort(in + Layout.R_SIZE));
+        int innerKind = innerSize == 0 ? 0 : Short.toUnsignedInt(b.getShort(in + Layout.R_KIND));
+        if (innerSize < Obs.BODY || Obs.Reassert.INNER + innerSize > size || !Obs.isJournaled(innerKind)
+                || innerKind == Obs.REASSERT || innerKind == Obs.JOURNAL_GEN) {
+            protocolError = "a REASSERT of " + size + " bytes holds no journaled record";
+            return false;
+        }
+        long gen = b.getLong(at + Obs.Reassert.GEN);
+        long of = b.getLong(in + Obs.OBS_SEQ);
+        GenSeq key = new GenSeq(gen, of);
+        boolean fresh;
+        if (gen == 0)
+            fresh = true;
+        else if (copied.contains(key))
+            fresh = false;
+        else {
+            Long last = gen == openGen ? Long.valueOf(openLast) : lastOf.get(gen);
+            fresh = last == null || of > last;
+        }
+        if (!fresh) {
+            copiesDropped++;
+            return false;
+        }
+        copiesApplied++;
+        if (gen != 0)
+            copied.add(key);
+        apply(innerKind, b.getInt(in + Layout.R_AUX), b, in, innerSize);
+        return true;
+    }
+
     private void savePages() {
-        disk = new Pages(maxObsSeq, nextCmdSeq, appliedOps, ledger);
+        disk = new Pages(maxObsSeq, nextCmdSeq, appliedOps, ledger, openGen, openLast, lastOf, copied);
         ackedObsSeq = maxObsSeq;
         if (pagesFile != null) {
             try {
@@ -861,6 +969,16 @@ public final class StubEngine implements ScriptedEngine {
 
     public synchronized long eventOpDuplicates() {
         return eventOpDuplicates;
+    }
+
+    /** Copies (REASSERT) whose record the stub lacked, and so applied. */
+    public synchronized long copiesApplied() {
+        return copiesApplied;
+    }
+
+    /** Copies (REASSERT) of a record the stub had, dropped. */
+    public synchronized long copiesDropped() {
+        return copiesDropped;
     }
 
     @Override

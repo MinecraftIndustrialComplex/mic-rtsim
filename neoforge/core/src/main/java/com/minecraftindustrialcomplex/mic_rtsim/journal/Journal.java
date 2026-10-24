@@ -126,9 +126,9 @@ public final class Journal {
         byte[] bytes = record.array();
         entries.addLast(new Entry(seq, bytes));
         entryBytes += bytes.length;
-        int kind = Short.toUnsignedInt(record.getShort(Layout.R_KIND));
-        if (kind == Obs.COMMAND_RESULT && record.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-            appliedCmdOps.add(record.getLong(Obs.CommandResult.OP_ID));
+        int opAt = appliedOpAt(record);
+        if (opAt >= 0)
+            appliedCmdOps.add(record.getLong(opAt));
         onChange.run();
         return seq;
     }
@@ -171,9 +171,25 @@ public final class Journal {
 
     private void forgetOp(Entry e) {
         ByteBuffer b = ByteBuffer.wrap(e.bytes()).order(Layout.ORDER);
-        if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.COMMAND_RESULT
-                && b.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-            appliedCmdOps.remove(b.getLong(Obs.CommandResult.OP_ID));
+        int opAt = appliedOpAt(b);
+        if (opAt >= 0)
+            appliedCmdOps.remove(b.getLong(opAt));
+    }
+
+    /**
+     * Where a record holds the op id of an engine command Java applied: a COMMAND_RESULT APPLIED's, or
+     * the one inside a copy of one (REASSERT, docs/boundary.md §2.6). -1 for any other record.
+     */
+    static int appliedOpAt(ByteBuffer b) {
+        int base = 0;
+        if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.REASSERT)
+            base = Obs.Reassert.INNER;
+        if (b.limit() < base + Obs.CommandResult.SIZE)
+            return -1;
+        if (Short.toUnsignedInt(b.getShort(base + Layout.R_KIND)) == Obs.COMMAND_RESULT
+                && b.getInt(base + Layout.R_AUX) == Obs.CommandResult.APPLIED)
+            return base + Obs.CommandResult.OP_ID;
+        return -1;
     }
 
     /**
@@ -278,9 +294,9 @@ public final class Journal {
             j.entries.addLast(e);
             j.entryBytes += e.bytes().length;
             ByteBuffer b = ByteBuffer.wrap(e.bytes()).order(Layout.ORDER);
-            if (Short.toUnsignedInt(b.getShort(Layout.R_KIND)) == Obs.COMMAND_RESULT
-                    && b.getInt(Layout.R_AUX) == Obs.CommandResult.APPLIED)
-                j.appliedCmdOps.add(b.getLong(Obs.CommandResult.OP_ID));
+            int opAt = appliedOpAt(b);
+            if (opAt >= 0)
+                j.appliedCmdOps.add(b.getLong(opAt));
         }
         for (int d = 0; d < s.dictNames().length; d++) {
             DictEntry key = new DictEntry(s.dictKinds()[d], s.dictNames()[d]);

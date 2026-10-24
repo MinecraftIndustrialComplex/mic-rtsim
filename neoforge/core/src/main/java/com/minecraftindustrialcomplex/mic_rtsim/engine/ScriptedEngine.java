@@ -26,6 +26,34 @@ public interface ScriptedEngine extends Engine {
         public ByteBuffer view() {
             return ByteBuffer.wrap(bytes).order(Layout.ORDER);
         }
+
+        /**
+         * A copy's record (REASSERT, docs/boundary.md §2.6) as received under the copy's sequence: its kind,
+         * aux and bytes as first journaled (its own sequence at {@code Obs.OBS_SEQ}), skipped when the engine
+         * judged it one it had and dropped it. Null for any other record.
+         */
+        public Received inner() {
+            int in = com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Reassert.INNER;
+            if (kind != com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.REASSERT
+                    || bytes.length < in + com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.BODY)
+                return null;
+            ByteBuffer b = view();
+            int size = Math.min(Short.toUnsignedInt(b.getShort(in + Layout.R_SIZE)), bytes.length - in);
+            byte[] r = java.util.Arrays.copyOfRange(bytes, in, in + size);
+            return new Received(handover, Short.toUnsignedInt(b.getShort(in + Layout.R_KIND)), b.getInt(in + Layout.R_AUX),
+                    obsSeq, skipped, r);
+        }
+    }
+
+    /** The records of {@code kind} that copies carried (REASSERT, {@link Received#inner}), oldest first. */
+    default List<Received> copies(int kind) {
+        List<Received> out = new java.util.ArrayList<>();
+        for (Received r : received(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.REASSERT)) {
+            Received in = r.inner();
+            if (in != null && in.kind() == kind)
+                out.add(in);
+        }
+        return out;
     }
 
     /** One cargo stack of a scripted member: (slot, item name, count). */
@@ -140,14 +168,16 @@ public interface ScriptedEngine extends Engine {
 
     /**
      * How many times an event's op id (TAKEN, DIED, TRADE, CARGO_CHANGED) arrived not skipped by
-     * sequence: the engine applies it once, so a count above 1 is a resend the op id caught. From the
-     * received log (the last 10,000 records).
+     * sequence, a copy that applied included: the engine applies it once, so a count above 1 is a resend
+     * the op id caught. From the received log (the last 10,000 records).
      */
     default int eventOpCount(long opId) {
         int n = 0;
         for (Received r : received()) {
             if (r.skipped())
                 continue;
+            if (r.inner() != null)
+                r = r.inner(); // a copy that applied: an arrival of its record
             int at = switch (r.kind()) {
                 case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TAKEN -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Taken.OP_ID;
                 case com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.DIED -> com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Died.OP_ID;
