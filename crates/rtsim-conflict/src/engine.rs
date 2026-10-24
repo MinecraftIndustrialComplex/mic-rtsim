@@ -709,8 +709,8 @@ pub struct Conflict {
     /// decision (docs/replay-gate.md §5.2). Set by [`Conflict::begin_replay`]; in memory only.
     pub(crate) replay_from_pages: bool,
     /// The epoch floors (docs/replay-gate.md §5.3, RP-7, RP-30): agent to the highest epoch the
-    /// engine has seen for it that its party's own `epoch` does not hold (a replayed
-    /// BAND_MATERIALIZED not honoured, a copy). A party's next body takes an epoch above both.
+    /// engine has seen for it that its party's own `epoch` does not hold (any replayed record or
+    /// copy that names one, RP-57). A party's next body takes an epoch above both.
     /// Not the epoch itself: a party embodied at an older epoch keeps it, so that its records
     /// still find it. Folded into the epochs at the replay end; in memory only.
     pub(crate) floors: BTreeMap<u64, u32>,
@@ -4705,6 +4705,18 @@ impl Conflict {
         self.parties[p].epoch.max(floor) + 1
     }
 
+    /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a party's
+    /// epoch ([`Obs::party_epoch`]) raises the agent's floor, whatever its kind and whatever the
+    /// record does after (a refusal, a stale despawn, a record of a party not held or not in the
+    /// pages yet), before any check that drops it. Live records name this session's epochs, which
+    /// the party holds. rtsim-jni calls it for a copy it refuses (RP-21), whose epoch counts all
+    /// the same.
+    pub fn fold_epoch(&mut self, o: &Obs) {
+        if let Some((agent, epoch)) = o.party_epoch() {
+            self.raise_floor(agent, epoch);
+        }
+    }
+
     /// An epoch the engine has seen for `agent` that its party may not hold (§5.3).
     fn raise_floor(&mut self, agent: u64, epoch: u32) {
         let held = Party::of_agent(agent)
@@ -5206,6 +5218,9 @@ impl Conflict {
     pub fn ingest(&mut self, w: &mut World, infra: &mut dyn Infrastructure, o: &Obs, at: Tick) {
         let at = at.max(self.now);
         self.run_until(w, infra, at);
+        if self.outbox.replaying() {
+            self.fold_epoch(o);
+        }
         if let Some(op) = o.op()
             && !self.first_time(op)
         {
@@ -5479,8 +5494,8 @@ impl Conflict {
         if !self.outbox.replaying() {
             return;
         }
+        // A fresh engine: `ingest` raised the floor (RP-57), all a fresh engine does (RP-31).
         if !self.replay_from_pages {
-            self.raise_floor(m.agent, m.epoch);
             return;
         }
         if let Some(p) = Party::of_agent(m.agent).filter(|p| self.parties.contains(*p)) {
@@ -5529,12 +5544,11 @@ impl Conflict {
         let held = if fight { self.held_since(p, at) } else { None };
         if fight && held.is_none() {
             // Recorded at or past its hold's slack, whose poll resolves the round unwatched as
-            // of the hold: the epoch floor only, so that its bodies and loot count against
-            // nothing (no double).
+            // of the hold: the epoch floor only (raised in `ingest`, RP-57), so that its bodies
+            // and loot count against nothing (no double).
             if self.unheld_fights.insert(p, m.epoch) != Some(m.epoch) {
                 self.stats.fights_unheld += 1;
             }
-            self.raise_floor(m.agent, m.epoch);
             return;
         }
         let x = &self.parties[p];
@@ -5565,12 +5579,13 @@ impl Conflict {
 
     /// A copy of a record from an ended session (S4p's REASSERT; docs/replay-gate.md §2.3, §5.7,
     /// RP-8, RP-9), called by the host instead of [`Conflict::ingest`] while it applies one. Its
-    /// body is gone, so a copy embodies nothing and is applied by identity: a BAND_CASUALTIES
-    /// against the party's alive units of that body kind, at any epoch, from no stack, with the
-    /// killer's signal and the rout as for a live one, and the party's epoch floor raised to the
-    /// record's; a BAND_MATERIALIZED raises the floor only. Every other kind (CHIEF_KILLED by
-    /// party and op id among them) as [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES
-    /// copy of generation 0 before it gets here (RP-21).
+    /// body is gone, so a copy embodies nothing and is applied by identity. Every copy that names
+    /// a party's epoch raises the agent's epoch floor to it, live or replayed (RP-57). Then a
+    /// BAND_CASUALTIES against the party's alive units of that body kind, at any epoch, from no
+    /// stack, with the killer's signal and the rout as for a live one; a BAND_MATERIALIZED
+    /// nothing more. Every other kind (CHIEF_KILLED by party and op id among them) as
+    /// [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES copy of generation 0 before it
+    /// gets here (RP-21).
     pub fn ingest_copy(
         &mut self,
         w: &mut World,
@@ -5578,18 +5593,13 @@ impl Conflict {
         o: &Obs,
         at: Tick,
     ) {
+        let at = at.max(self.now);
+        self.run_until(w, infra, at);
+        // Every kind's epoch, a live copy's too (RP-57).
+        self.fold_epoch(o);
         match o {
-            Obs::Casualties(cs) => {
-                let at = at.max(self.now);
-                self.run_until(w, infra, at);
-                self.casualties(w, cs, at, true);
-                self.raise_floor(cs.agent, cs.epoch);
-            }
-            Obs::Materialized(m) => {
-                let at = at.max(self.now);
-                self.run_until(w, infra, at);
-                self.raise_floor(m.agent, m.epoch);
-            }
+            Obs::Casualties(cs) => self.casualties(w, cs, at, true),
+            Obs::Materialized(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }

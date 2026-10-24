@@ -558,6 +558,42 @@ impl Obs {
             _ => None,
         }
     }
+
+    /// The party epoch the record names, as (agent, epoch): the engine's own numbering, which a
+    /// replayed record or a copy folds into the agent's epoch floor, so that no epoch is used
+    /// twice (docs/replay-gate.md §5.3, RP-7, RP-57). None for a kind that names none (the camp
+    /// records' epoch is a camp's, Java's op id, which the engine never allocates) and for agent
+    /// 0 (a tribute paid at the camp). Every kind is listed, so a new one must say.
+    pub fn party_epoch(&self) -> Option<(u64, u32)> {
+        let (agent, epoch) = match self {
+            Obs::State(s) => (s.agent, s.epoch),
+            Obs::Materialized(m) => (m.agent, m.epoch),
+            Obs::SpawnRejected(r) => (r.agent, r.epoch),
+            Obs::Dematerialized(d) => (d.agent, d.epoch),
+            Obs::Casualties(c) => (c.agent, c.epoch),
+            Obs::ChiefKilled(c) => (c.agent, c.epoch),
+            Obs::EnvoyAnswer(a) => (a.agent, a.epoch),
+            Obs::TributePaid(t) => (t.agent, t.epoch),
+            Obs::Looted(l) => (l.agent, l.epoch),
+            Obs::TrainPassed(t) => (t.agent, t.epoch),
+            Obs::FactionFound(_)
+            | Obs::Signal(_)
+            | Obs::Pollution(_)
+            | Obs::GiftGiven(_)
+            | Obs::ChiefState(_)
+            | Obs::HavenChest(_)
+            | Obs::Difficulty(_)
+            | Obs::RailPass(_)
+            | Obs::CampDeath(_)
+            | Obs::CampCensus(_)
+            | Obs::Traded(_)
+            | Obs::NoticeShown(_)
+            | Obs::CampBodies(_)
+            | Obs::CampOut(_)
+            | Obs::ChiefPaid(_) => return None,
+        };
+        (agent != 0).then_some((agent, epoch))
+    }
 }
 
 // ---- Commands ----

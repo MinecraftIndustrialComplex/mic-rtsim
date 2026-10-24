@@ -1268,8 +1268,8 @@ conservative option at its fork.
   for BAND_MATERIALIZED. Corrected by RP-56: BAND_SPAWN_REJECTED has no free bytes (24 agent, 32
   epoch, 36 wave, 40 u64 cmdSeq, 48 bytes), so fixes4 item 2's echoed flag cannot go there; this
   residual stays and needs a layout change. A replayed refusal of a newer epoch for a party not held
-  raises no epoch floor, so the next decision after the replay can take the refused epoch again
-  (reported, not changed). The sims are unchanged.
+  raised no epoch floor, so the next decision after the replay could take the refused epoch again;
+  closed by RP-57. The sims are unchanged.
 - **RP-55** (the replay window's growth, logged; §3.2; RP-49; fixes4 item 7): the engine logs a
   warning, and counts it in `Stats::window_grew` (a test hook, not in Java's array), each time the
   next start's replay window grows past one save interval: a save Java asked for that is not made
@@ -1318,3 +1318,47 @@ conservative option at its fork.
   live ([], 3, 1, 5000). Case B and the control one tick inside passed before the fix (they guard
   against reading the flag the other way). The sims are unchanged but for the new stat. Not done: a
   refused sighting inside the slack (RP-54's residual).
+- **RP-57** (every record that names an epoch raises the floor; §5.3; RP-7; RP-30; RP-37; fixes5
+  item 1): while replaying, `Conflict::ingest` folds the record's party epoch (`Obs::party_epoch`)
+  into the agent's floor first, before the op-id dedupe, the later kinds' return and any check that
+  drops the record; `ingest_copy` folds every copy's, live or replayed, before its match; rtsim-jni
+  folds the generation-0 casualty copy it refuses (RP-21). `replay_done` then lifts each party's
+  epoch past its floor, as before. Before, only a BAND_MATERIALIZED (fresh engine, or a fight that
+  found no hold) and a copied BAND_CASUALTIES or BAND_MATERIALIZED raised it, so a replayed refusal
+  of a newer epoch for a party not held left the next decision to take that epoch again. Failing
+  first, mowzie_records'
+  `a_replayed_refusal_for_a_party_not_held_raises_its_epoch_floor` (a raid band Out at epoch 0, on
+  an engine from its pages, a replayed BAND_SPAWN_REJECTED of epoch 1, then the replay end): the
+  next BAND_MATERIALIZE took epoch 1 against 2. The sweep,
+  `every_record_naming_an_epoch_raises_its_floor`, applies each kind below at epoch 4 to a band at
+  epoch 0 on three paths (an engine from its pages, a fresh engine, a copy) and reads the epoch
+  after the replay end: 29 of 36 cases stayed at 0 before (every kind but BAND_MATERIALIZED on the
+  pages and fresh paths; every kind but BAND_MATERIALIZED and BAND_CASUALTIES as copies).
+  `a_copied_casualty_counts_against_an_abstract_band_once`'s control changed with it: it asserted
+  epoch 0 after a replayed straggler casualty, which encoded the bug; it now asserts the record's
+  3 on both paths. The sims are unchanged. Every kind that carries an epoch:
+
+| Kind | Epoch | Reaches the floor |
+| --- | --- | --- |
+| 0x0090 BAND_STATE | the party's | Latest-wins, never journaled, so never replayed or copied; rtsim-jni counts it and the engine reads none of it (rtsim-jni `conflict.rs` `observe_state`). `party_epoch` names it, so a slice that reads it folds it through `ingest` |
+| 0x0803 BAND_MATERIALIZED | the party's | `ingest`'s fold (a sighting, a held fight, a fight that finds no hold, a stale epoch, a fresh engine); a copy, `ingest_copy`'s |
+| 0x0804 BAND_SPAWN_REJECTED | the party's | `ingest`'s fold, held or not, any wave; a copy, `ingest_copy`'s |
+| 0x0805 BAND_DEMATERIALIZED | the party's | `ingest`'s fold, a stale epoch too; a copy, `ingest_copy`'s |
+| 0x0806 BAND_CASUALTIES | the party's | `ingest`'s fold; a copy, `ingest_copy`'s; a generation-0 copy refused in rtsim-jni, `fold_epoch` there |
+| 0x0807 CHIEF_KILLED | the party's | `ingest`'s fold, before the op-id dedupe; a copy, `ingest_copy`'s |
+| 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
+| 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
+| 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
+| 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says |
+| A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
+| Any conflict record while the conflict is switched off (U10) | | Ignored whole, as every journaled record is (MZB-30). A fork, reported, not built: a session that crashed with the conflict on, a next start with it off that saves past the crashed session's window, and a third with it on again would issue that window's epochs again, from pages that never saw them |
+| Herds (HERD_*), dragons (DRAGON_*), ships (SHIP_*) | the module's own | No floor yet in any of them: their `replay_end` is empty (rtsim-jni `engine/herds.rs:263`, `dragons.rs:280`, `ships.rs:275`) and a copy is applied as a live record. Their epochs come from `herds/engine.rs:1920`, rtsim-ecology `engine.rs:3011`, `:4364` and `:4402`, rtsim-ships `engine.rs:2802` and `:3983`. Slices D, H and S build them (§9.2, §9.4, §9.5), to this rule: every kind of theirs that names an epoch, not only the *_MATERIALIZED. Reported, not built here (slice C is the conflict's) |
+
+  A live copy's floor stays in memory until the party's next body (`next_epoch`), as RP-30's did,
+  and a save before it does not write it. Not a gap: the session that issued that epoch moved the
+  party's epoch to it at once, so its own save holds it, or, crashed first, the next start's replay
+  of what Java journaled for it does (this rule), short of the switched-off case above. The
+  rtsim-jni generation-0 fold has no jni-level test of a newer epoch: the fixture's copies are of
+  the pages' own epoch; the engine half is the sweep's Copy path.
