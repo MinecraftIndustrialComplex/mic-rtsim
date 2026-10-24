@@ -1216,3 +1216,11 @@ conservative option at its fork.
   `a_watched_fights_record_gap_is_measured_from_its_decision` (the band seen on its road, then
   fought at its arrival; the plugin answers a tick later): 0 against 1. The sims' JSON gains the
   field.
+- **RP-52** (a held round's walk home, labelled by the round; §6.1; RP-48; fixes4 item 3):
+  `wait_over` labels the walk home bored when the round (`until.min(at)`) is at or past `bored_at`,
+  not the call's tick. Live they are the same tick; a held siege round resolved at the slack's
+  poll is up to the slack later, so a round that kills the last of the band within the slack
+  before its boredom went home bored in the replay and done in the session that went on. Failing
+  first, mowzie_records' `a_held_round_that_kills_the_band_before_its_boredom_sends_it_home_done`
+  (every raider held at the walls, `abstract_loss_share` 1, `bored_at` the round + 300): the
+  replay's bored count 1 against the live 0. The sims are unchanged.

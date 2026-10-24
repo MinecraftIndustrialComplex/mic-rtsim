@@ -3469,7 +3469,8 @@ impl Conflict {
                 return;
             }
         }
-        let reason = if at >= self.parties[p].bored_at {
+        // Bored as of the round, not of a held round's poll (fixes4 item 3, RP-52).
+        let reason = if round >= self.parties[p].bored_at {
             self.stats.bored += 1;
             if kind.is_war() {
                 self.note(
