@@ -923,7 +923,7 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
                     .iter()
                     .rev()
                     .find(|l| l.agent == p.agent)
-                    .is_some_and(|l| l.end.is_some_and(|e| p.at >= e))
+                    .is_some_and(|l| l.end.is_some_and(|e| p.at >= e && p.at.0 <= e.0 + LAG))
             })
         });
         let stale = runs
@@ -932,11 +932,11 @@ pub(super) fn ambushes(out: &mut Vec<Check>) {
             .sum::<usize>();
         check(
             out,
-            "no TRAIN_PASSED is stale except after a lurk ended",
+            "no TRAIN_PASSED is stale except just after a lurk ended",
             stale_ok && counted + stale as u64 == sent && counted > 0,
             format!(
-                "{name}: {sent} passes sent, {counted} counted, {stale} stale, every one after its \
-                 lurk's end: {stale_ok}"
+                "{name}: {sent} passes sent, {counted} counted, {stale} stale, every one within \
+                 {LAG} ticks after its lurk's end: {stale_ok}"
             ),
         );
     }
