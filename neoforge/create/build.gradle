@@ -9,6 +9,12 @@ plugins {
 // that jar, so the compile classpath gets copies extracted from it; the GameTest server loads the full
 // Create jar, whose jar-in-jar FML unpacks itself.
 evaluationDependsOn(':core')
+// -PwithMowzie (docs/choices-mowzie-build.md MZB-329): the GameTest server loads mic_rtsim_mowziesmobs and Mowzie's
+// Mobs too, for the Frostmaw test of the train sampler (M7). Without it the project needs no Mowzie jar: its tests
+// name Mowzie only by registry id and NBT, and the Frostmaw test is registered only where the mod is loaded.
+def withMowzie = project.hasProperty('withMowzie')
+if (withMowzie)
+    evaluationDependsOn(':mowziesmobs')
 
 version = mod_version
 group   = mod_group_id
@@ -67,6 +73,24 @@ neoForge {
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
         }
+        // `./gradlew :create:runSamplerBench -PskipJni`: the train sampler's bench (M7, bench/SamplerBench): 200
+        // synthetic trains on the far bench's rings (FarTrainBench), 64 rail territories along them, the stub
+        // engine, and a GameTest that keeps the server up for the bench's windows (gametest/SamplerBenchGameTests).
+        // -PsamplerTrains=<n>, -PsamplerWindows=<n> and -PsamplerTerritories=<n> change its size.
+        samplerBench {
+            type = 'gameTestServer'
+            systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim_samplerbench'
+            systemProperty 'mic_rtsim.gametest', 'true'
+            systemProperty 'mic_rtsim.engine', 'stub'
+            systemProperty 'mic_rtsim.farbench', 'true'
+            systemProperty 'mic_rtsim.farbench.trains', (project.findProperty('samplerTrains') ?: '200').toString()
+            systemProperty 'mic_rtsim.farbench.dress', 'false'
+            systemProperty 'mic_rtsim.samplerbench', 'true'
+            systemProperty 'mic_rtsim.samplerbench.windows', (project.findProperty('samplerWindows') ?: '6').toString()
+            systemProperty 'mic_rtsim.samplerbench.territories', (project.findProperty('samplerTerritories') ?: '64').toString()
+            jvmArgument '-Xmx4G'
+            gameDirectory = file('run-samplerbench')
+        }
         // `./gradlew :create:runStressGen -PskipJni`: builds the synthetic stress world (choice SG1,
         // gametest/stress/StressWorldGameTests) into run-stressgen/world and stops. Only the generator's
         // namespace runs; MIC_STRESS_* environment variables size it. tools/stress-worlds/synth.sh wraps it.
@@ -88,7 +112,24 @@ neoForge {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+        if (withMowzie) {
+            "mic_rtsim_mowziesmobs" {
+                sourceSet(project(':mowziesmobs').sourceSets.main)
+            }
+        }
     }
+}
+
+if (withMowzie) {
+    // The GameTest server runs with the pack's Mowzie's Mobs config, as the mowziesmobs project's own run does
+    def mowzieConfig = file("${packMods}/${project(':mowziesmobs').property('mowzie_config')}")
+    def packMowzieConfig = tasks.register('packMowzieConfig', Copy) {
+        description = "Copies the pack's Mowzie's Mobs config into the GameTest server's config folder."
+        from mowzieConfig
+        into file('run-gametest/config')
+        onlyIf { mowzieConfig.isFile() }
+    }
+    tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packMowzieConfig }
 }
 
 dependencies {
@@ -99,6 +140,9 @@ dependencies {
     compileOnly createLibs
     // The GameTest server loads Create from the same jar (with its jar-in-jar libraries).
     runtimeOnly files(createJar)
+    // -PwithMowzie: the Mowzie plugin and, through it, the Mowzie and GeckoLib jars
+    if (withMowzie)
+        runtimeOnly project(':mowziesmobs')
 
     // Pure-Java unit tests of the glass box's cycle models (Cycles touches no Minecraft class).
     testImplementation(platform("org.junit:junit-bom:${junit_version}"))
