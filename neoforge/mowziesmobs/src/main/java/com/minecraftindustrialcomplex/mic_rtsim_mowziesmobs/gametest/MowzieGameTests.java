@@ -44,6 +44,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Marker;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
@@ -52,6 +53,7 @@ import net.minecraft.world.level.levelgen.structure.pieces.PiecesContainer;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -726,6 +728,83 @@ public final class MowzieGameTests {
                     check("by its slot 0, generation 1, not as a stray (" + b.flags() + ")",
                             b.slot() == 0 && b.generation() == 1 && (b.flags() & ConflictRecords.CampCensus.BODY_STRAY) == 0);
                     record(test, "stale", "TAKE, SPAWN and SET_OUT in the tick the footprint went down were STALE; the Frostmaw stayed and was counted by slot");
+                })
+                .thenSucceed();
+    }
+
+    // ---- review fixes: the finder's queue -----------------------------------------------------------
+
+    /** A detached chunk carrying a den start of the real structure, as a load would hand the finder (MZB-237). */
+    private static LevelChunk denChunk(ServerLevel level, int cx, int cz) {
+        Structure structure = level.registryAccess().registryOrThrow(Registries.STRUCTURE).get(ResourceLocation.parse(MicRtsimMowziesMobs.DEN_STRUCTURE));
+        ChunkPos pos = new ChunkPos(cx, cz);
+        LevelChunk chunk = new LevelChunk(level, pos);
+        FrostmawPieces.FrostmawPiece piece = new FrostmawPieces.FrostmawPiece(level.getStructureManager(), FROSTMAW_TEMPLATE,
+                new BlockPos(cx * 16 + 8, 64, cz * 16 + 8), Rotation.NONE);
+        chunk.setStartForStructure(structure, new StructureStart(structure, pos, 0, new PiecesContainer(List.of(piece))));
+        return chunk;
+    }
+
+    /** The den declared for a start chunk, or null. */
+    private static Camps.Site denAt(int cx, int cz) {
+        ChunkPos start = new ChunkPos(cx, cz);
+        for (Camps.Site s : MowzieKit.camps().sites())
+            if (MicRtsimMowziesMobs.DEN_STRUCTURE.equals(s.structure) && new ChunkPos(s.pos).equals(start))
+                return s;
+        return null;
+    }
+
+    /**
+     * A flood of chunk loads cannot grow the finder's queue past its bound, and a den it drops is found at its
+     * chunk's next load (MZB-237). The queue holds records of what the finder reads, not chunks: one den's load
+     * first, then {@code QUEUE_CAP + 5} loads of a second den's chunk (the same camp each time), then a third
+     * den's, all posted in one tick (the drain is at the end of it). The queue holds exactly {@code QUEUE_CAP},
+     * the loads past it are counted as dropped, and the third den, dropped, is not found. Drained, the first
+     * two dens are declared (a new chunk: not late). The third den's chunk loads again, this time from disk: it
+     * is found, and late; the first den's load from disk changes nothing (its late flag was fixed when it was
+     * found). The three camps stand in chunks nobody loads, so the real engine plays nothing for them.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 400, batch = "mowzie_finder_queue", skyAccess = true)
+    public static void aFloodOfChunkLoadsKeepsTheFindersQueueBoundedAndADroppedDenIsFoundAtItsNextLoad(GameTestHelper helper) {
+        String test = "aFloodOfChunkLoadsKeepsTheFindersQueueBoundedAndADroppedDenIsFoundAtItsNextLoad";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        int ex = far.k, fx = far.k + 10, dx = far.k + 20, z = far.z0;
+        LevelChunk[] chunk = new LevelChunk[3];
+        long[] dropped = new long[1];
+
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the queue is empty (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == 0))
+                .thenExecute(() -> {
+                    chunk[0] = denChunk(level, ex, z);
+                    chunk[1] = denChunk(level, fx, z);
+                    chunk[2] = denChunk(level, dx, z);
+                    check("none of the three is declared yet", denAt(ex, z) == null && denAt(fx, z) == null && denAt(dx, z) == null);
+                    dropped[0] = MowzieCamps.dropped;
+                    MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[0], true));
+                    for (int i = 0; i < MowzieCamps.QUEUE_CAP + 5; i++)
+                        MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[1], true));
+                    MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[2], true));
+                    record(test, "flood", "queued " + MowzieCamps.queued() + ", dropped " + (MowzieCamps.dropped - dropped[0]));
+                    check("the queue stands at its bound (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == MowzieCamps.QUEUE_CAP);
+                    check("the loads past it are counted (" + (MowzieCamps.dropped - dropped[0]) + ")", MowzieCamps.dropped - dropped[0] == 7);
+                })
+                .thenWaitUntil(() -> check("drained (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == 0))
+                .thenExecute(() -> {
+                    Camps.Site e = denAt(ex, z), f = denAt(fx, z);
+                    check("the first den was found and is not late", e != null && !e.late());
+                    check("so was the flooded one, once", f != null && !f.late());
+                    check("the third, dropped, was not found", denAt(dx, z) == null);
+                    MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[2], false));
+                    MowzieCamps.onChunkLoad(new ChunkEvent.Load(chunk[0], false));
+                })
+                .thenWaitUntil(() -> check("drained again (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == 0))
+                .thenExecute(() -> {
+                    Camps.Site d = denAt(dx, z), e = denAt(ex, z);
+                    check("the dropped den is found at its next load, and late: its chunk had loaded before", d != null && d.late());
+                    check("the first den's late flag is the one it was found with", e != null && !e.late());
+                    check("no more drops (" + (MowzieCamps.dropped - dropped[0]) + ")", MowzieCamps.dropped - dropped[0] == 7);
+                    check("nothing played for them: no census", !d.in() && !e.in());
                 })
                 .thenSucceed();
     }
