@@ -3954,6 +3954,18 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   for the chest a grove told of, by status (`transfersApplied`, `transfersFailed`, with `transfers` as before), and
   the test reads those. The unused `mark` of the second payment (the size of the COMMAND_RESULT list) is gone.
 
+- **MZB-649** (the heir goes first in `unblock`; amends MZB-616; review P3-4): `unblock` called `unblock_lines` and then
+  `camp_heir`, which when it orders the pair ends with `unblock_lines` too, so the lines were looked at twice in one
+  step. `camp_heir` now returns whether it ordered the pair, and `unblock` calls it first and calls `unblock_lines`
+  only when it did not. This changes nothing a run can see, and the A/B says so: the second look was a no-op already
+  (it plans only a feud whose wait is `BLOCKED`, and the first look cleared those; `plan_refill` and `plan_arrival`
+  book nothing the second time). The state hash, `stats.stale` and `stats.feud_wakes` at the end of all 283 `ok`
+  checks of the `camp`, `frostmaw` and `grove` test files are identical on the base (46c589c0 plus the review's earlier
+  items) and on this change, so no hash moved and nothing is regenerated (the conflict tests pin no hash literal;
+  the viewer's `core` and `create` save data carry hashes of GameTest worlds, which no engine edit rewrites).
+  The first look planned the feuds before the pair was ordered, but a feud wakes at an event after the handler
+  returns, so it found the pair in flight either way.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
