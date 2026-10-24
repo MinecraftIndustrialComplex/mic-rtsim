@@ -324,8 +324,8 @@ pub struct Stats {
     /// The view tap's counters (`tap.rs`). Not in Java's array.
     pub tap: tap::Counters,
     /// The session's journal replay (docs/replay-gate.md §3.2): the replay ends this engine ran
-    /// (one a session), and the last replay's hand-overs and records applied. Not in Java's
-    /// array.
+    /// (one a session), and the last replay's hand-overs and records applied while replaying
+    /// (`dispatch` says which). Not in Java's array.
     pub replays_ended: AtomicU64,
     pub replay_handovers: AtomicU64,
     pub replay_records: AtomicU64,
@@ -369,7 +369,8 @@ struct State {
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
     replay_clock: Tick,
     /// The replay's hand-overs (counted at each step's entry while replaying) and its records
-    /// applied, for the replay end's log line and the stats. Not saved.
+    /// applied while replaying (`dispatch`), for the replay end's log line and the stats. Not
+    /// saved.
     replay_handovers: u64,
     replay_records: u64,
     /// The replay ends run, one a session.
@@ -1800,6 +1801,10 @@ impl Engine {
     /// A journaled record admitted by sequence, to the module that claims it.
     fn dispatch(&self, st: &mut State, rec: &Rec<'_>, seq: u64, verdict: Verdict) {
         let b = rec.bytes;
+        // The records applied while replaying (docs/replay-gate.md §3.2): not the JOURNAL_GENs
+        // (never dispatched), the stale records the pages hold, the copies dropped as not new or
+        // the op-id duplicates. A copy of generation 0 that conflict refuses counts: it is
+        // dispatched as Apply.
         if st.replaying && verdict == Verdict::Apply {
             st.replay_records += 1;
         }

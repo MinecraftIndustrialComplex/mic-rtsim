@@ -342,11 +342,16 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
   run `replay_end(st)`. Called at the step's top and at the SESSION_START arm's end.
 - `shared::replay_end_before(st, seq)`: when `st.replaying` and `seq >= session_first`, run
   `replay_end(st)`. Called at the top of `journaled()`.
-- `replay_end(st)`: `st.replaying = false`; one info log line (the observations replayed, the
-  hand-overs the replay took, §2.2, and each module's commands dropped and skipped while replaying,
-  §4.3), the same counts in the JNI stats; then each module's `replay_end(st)` in the step's order
+- `replay_end(st)`: `st.replaying = false`; one info log line (the hand-overs the replay took,
+  §2.2, the records applied while replaying, and each module's commands dropped and skipped while
+  replaying, §4.3), the same counts in the JNI stats; then each module's `replay_end(st)` in the step's order
   (dragons, ships, herds, conflict). Each module's `replay_done` runs at the replay clock (§3.6); the
   held part of the hand-over's time runs after it, at the next run of the clock.
+- **The records applied while replaying** are those `dispatch` takes as Apply before the replay
+  end. Not counted: the JOURNAL_GENs (never dispatched), the stale records the pages hold
+  (AlreadyApplied, a REASSERT's included), the copies dropped as not new (`copy_is_new`), and the
+  op-id duplicates (DuplicateOp, a copy's included). Counted: a copy of generation 0 that conflict
+  refuses (RP-21), since it is dispatched as Apply and refused in the module.
 - A module's `replay_end(st)`: when its `replay_end_due` is set and it runs (`running(st)`): clear
   the flag, call its engine's `replay_done`, take its commands. Conflict then re-sends its kept
   notices (today's `resend_notices_if_due` body). A module that is switched off keeps the flag; its
@@ -1210,8 +1215,8 @@ overrule.
    the first hand-overs (a few more for a long journal); bands, dragons, herds and ships near a player
    appear right after it. *Recommended: accept.* Players normally join after it. **Decided: accept**, with a
    counter: `shared::replay_end` records how many hand-overs the replay took (a stat, and an info log line
-   at the end naming the count and the records replayed), so a slow replay shows up in GameTests and
-   soaks (RP-2).
+   at the end naming the count and the records applied while replaying, §3.2), so a slow replay shows
+   up in GameTests and soaks (RP-2).
 3. **A copied band death after a crash** (a dying member's drops carried its record) shrinks the band
    by one even when it is in view again; its bodies in the world may then be one more than its count
    until the next despawn. *Recommended: accept.* The other way leaves a dead member alive for good. **Decided:
