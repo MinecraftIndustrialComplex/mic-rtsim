@@ -1001,8 +1001,22 @@ conservative option at its fork.
   hand-over's time (dragons', ships'), the rejects (conflict's, ships', herds', dragons'
   `write_queue`), worldmodel's founding. Ships' journaled path raises the replay clock too
   (`catch_up_to`). Worldmodel's guard is `st.replaying` itself: nothing is founded while replaying,
-  the regions stay pending. Not held: test and console orders (TRIBUTE_START, HERD_FOUND, the
-  works grants and raids), which tests give after the replay end, and industry (RP-24).
+  the regions stay pending. Not held: industry (RP-24).
+  Amended (the fix round's item 3): the test orders that run the clock to the hand-over's time
+  (the works grants and raids, `phase1::directive`; TRIBUTE_START; HERD_FOUND) are queued until the
+  replay end, not held at the replay clock. Taken at once, one runs the world to Java's present, and
+  the next replayed record's clamp (`max(record, conflict.now, phase1.world.now)`) carries the
+  conflict there: RP-24's fault. Held at the replay clock instead, each would take effect in the
+  replayed past (a grant spent, a tribute begun, a herd founded before Java gave the order). Queued,
+  a unit that holds one, and every unit after it so that units keep their order, is taken at the
+  first step that starts after the replay end, at the hand-over's time as any order is: after every
+  replayed record, and no earlier than Java gave it. In memory (`held_units`), lost with a crash
+  before the end as any untaken order is. The other orders run no clock: commands are queued for
+  Java, SaveAtNextStep waits anyway (RP-42), and ScriptVillage, Phase1SpawnNear, NestDay and
+  TalkReport move no time. Phase1Advance (a test's fast-forward of the world-tick mapping) is not
+  held; a test gives it outside a replay. Failing first, a kept fight's casualties replayed
+  over several hand-overs with the order taken in the second: a WorksGrant and, apart, a
+  HERD_FOUND (herds on) each undid all 3 (12 out): the camp's pool's closed form 26.92, live 23.92.
 - **RP-34** (the arm's leave; §2.1, RP-26): `shared::session_start` leaves each player's area
   through `with_viewers_of(st, false, ..)`, every viewer but the conflict; the conflict's
   `replay_done` ends every presence span at once (`Presence::every_player_left`).
