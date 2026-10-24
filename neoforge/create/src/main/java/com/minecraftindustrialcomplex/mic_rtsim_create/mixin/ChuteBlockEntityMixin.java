@@ -32,10 +32,14 @@ public abstract class ChuteBlockEntityMixin {
         ItemStack taken = original.call(inv, accept, mode, count, simulate);
         Counting c = Counting.active();
         if (c != null && !simulate && !taken.isEmpty()) {
-            ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos())) {
-                BlockPos target = startLocation >= 0.5F ? self.getBlockPos().above() : self.getBlockPos().below();
-                c.moved(self.getLevel(), self.getBlockPos(), target, taken, taken.getCount(), false);
+            try {
+                ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos())) {
+                    BlockPos target = startLocation >= 0.5F ? self.getBlockPos().above() : self.getBlockPos().below();
+                    c.moved(self.getLevel(), self.getBlockPos(), target, taken, taken.getCount(), false);
+                }
+            } catch (RuntimeException e) {
+                c.failed("a chute's input", e); // never break the chute's tick
             }
         }
         return taken;
@@ -45,13 +49,25 @@ public abstract class ChuteBlockEntityMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countDown(IItemHandler inv, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a chute's downward output", e); // never break the chute's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(inv, stack, simulate);
         if (seen != null) {
-            ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
+            try {
+                ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
                 c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().below(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("a chute's downward output", e);
+            }
         }
         return remainder;
     }
@@ -60,13 +76,25 @@ public abstract class ChuteBlockEntityMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countUp(IItemHandler inv, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a chute's upward output", e); // never break the chute's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(inv, stack, simulate);
         if (seen != null) {
-            ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
+            try {
+                ChuteBlockEntity self = (ChuteBlockEntity) (Object) this;
                 c.moved(self.getLevel(), self.getBlockPos(), self.getBlockPos().above(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("a chute's upward output", e);
+            }
         }
         return remainder;
     }

@@ -41,7 +41,19 @@ public abstract class BasinBlockEntityMixin {
             target = "Lnet/neoforged/neoforge/items/ItemHandlerHelper;insertItemStacked(Lnet/neoforged/neoforge/items/IItemHandler;Lnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countOverflow(IItemHandler target, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null;
+        ItemStack seen = null;
+        if (c != null && !simulate) {
+            try {
+                // Copy only for a pour that can be counted: the basin or the block at its spout is a mover.
+                BasinBlockEntity self = (BasinBlockEntity) (Object) this;
+                Level level = self.getLevel();
+                BlockPos spout = self.getBlockPos().below().relative(self.getBlockState().getValue(BasinBlock.FACING));
+                if (c.isMover(level, spout) || c.isMover(level, self.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a basin's spout", e); // never break the basin's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(target, stack, simulate);
         if (seen != null) {

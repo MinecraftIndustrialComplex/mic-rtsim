@@ -30,13 +30,23 @@ public abstract class DefaultUnpackingHandlerMixin {
     private ItemStack mic_rtsim$countUnpack(IItemHandler inventory, ItemStack stack, boolean simulate, Operation<ItemStack> original,
             @Local(argsOnly = true) Level level, @Local(argsOnly = true) BlockPos pos, @Local(argsOnly = true) Direction side) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null; // the handler may change its argument
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                if (c.isMover(level, pos.relative(side)))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("an unpacking", e); // never break the packager's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(inventory, stack, simulate);
         if (seen != null) {
-            BlockPos packager = pos.relative(side);
-            if (c.isMover(level, packager))
-                c.moved(level, packager, pos, seen, before - remainder.getCount(), true);
+            try {
+                c.moved(level, pos.relative(side), pos, seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("an unpacking", e);
+            }
         }
         return remainder;
     }

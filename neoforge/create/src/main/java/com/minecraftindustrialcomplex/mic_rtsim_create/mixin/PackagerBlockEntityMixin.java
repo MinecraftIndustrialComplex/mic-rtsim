@@ -26,9 +26,13 @@ public abstract class PackagerBlockEntityMixin {
         ItemStack taken = original.call(inventory, slot, amount, simulate);
         Counting c = Counting.active();
         if (c != null && !simulate && !taken.isEmpty()) {
-            PackagerBlockEntity self = (PackagerBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.targetInventory.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            try {
+                PackagerBlockEntity self = (PackagerBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    c.moved(self.getLevel(), self.getBlockPos(), self.targetInventory.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            } catch (RuntimeException e) {
+                c.failed("a packager's extract", e); // never break the machine's tick
+            }
         }
         return taken;
     }

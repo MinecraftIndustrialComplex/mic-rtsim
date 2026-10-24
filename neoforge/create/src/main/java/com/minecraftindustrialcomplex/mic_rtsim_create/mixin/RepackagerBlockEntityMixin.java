@@ -32,9 +32,13 @@ public abstract class RepackagerBlockEntityMixin {
         ItemStack taken = original.call(inventory, slot, amount, simulate);
         Counting c = Counting.active();
         if (c != null && !simulate && !taken.isEmpty()) {
-            RepackagerBlockEntity self = (RepackagerBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
-                c.moved(self.getLevel(), self.getBlockPos(), self.targetInventory.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            try {
+                RepackagerBlockEntity self = (RepackagerBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    c.moved(self.getLevel(), self.getBlockPos(), self.targetInventory.getTarget().getConnectedPos(), taken, taken.getCount(), false);
+            } catch (RuntimeException e) {
+                c.failed("a repackager's extract", e); // never break the machine's tick
+            }
         }
         return taken;
     }
@@ -43,13 +47,25 @@ public abstract class RepackagerBlockEntityMixin {
             target = "Lnet/neoforged/neoforge/items/IItemHandler;insertItem(ILnet/minecraft/world/item/ItemStack;Z)Lnet/minecraft/world/item/ItemStack;"))
     private ItemStack mic_rtsim$countUnwrap(IItemHandler inventory, int slot, ItemStack stack, boolean simulate, Operation<ItemStack> original) {
         Counting c = Counting.active();
-        ItemStack seen = c != null && !simulate ? stack.copy() : null;
+        ItemStack seen = null; // copied only for a counted mover (the handler may change its argument)
+        if (c != null && !simulate) {
+            try {
+                RepackagerBlockEntity self = (RepackagerBlockEntity) (Object) this;
+                if (c.isMover(self.getLevel(), self.getBlockPos()))
+                    seen = stack.copy();
+            } catch (RuntimeException e) {
+                c.failed("a repackager's unwrap", e); // never break the machine's tick
+            }
+        }
         int before = stack.getCount();
         ItemStack remainder = original.call(inventory, slot, stack, simulate);
         if (seen != null) {
-            RepackagerBlockEntity self = (RepackagerBlockEntity) (Object) this;
-            if (c.isMover(self.getLevel(), self.getBlockPos()))
+            try {
+                RepackagerBlockEntity self = (RepackagerBlockEntity) (Object) this;
                 c.moved(self.getLevel(), self.getBlockPos(), self.targetInventory.getTarget().getConnectedPos(), seen, before - remainder.getCount(), true);
+            } catch (RuntimeException e) {
+                c.failed("a repackager's unwrap", e);
+            }
         }
         return remainder;
     }
