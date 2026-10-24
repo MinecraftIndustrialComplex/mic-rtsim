@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.DistrictDiagnostics;
@@ -1272,19 +1273,35 @@ public final class IndustryGameTests {
             IndRecords.IND_EDIT, IndRecords.IND_STOCK_SAMPLE, IndRecords.IND_SWEEP_END, IndRecords.IND_WATCHED, IndRecords.IND_SURVEY,
             IndRecords.IND_SURVEY_BLOCKS};
 
-    private static int sentCount(int... kinds) {
-        int n = 0;
-        for (int k : kinds)
-            n += engine().received(k).size();
-        return n;
+    /**
+     * The last hand-over in the engine's received log, once every step Java handed over has run: what the engine
+     * receives later was handed over later. Counting from a mark, not comparing totals, because the log keeps only
+     * the last 10,000 records and drops the oldest as new ones come.
+     */
+    private static long receivedMark() {
+        engine().awaitIdle();
+        List<ScriptedEngine.Received> all = engine().received();
+        return all.isEmpty() ? Long.MIN_VALUE : all.get(all.size() - 1).handover();
+    }
+
+    /** The records of a kind the engine received after a mark (skipped ones too: they were sent). */
+    private static List<ByteBuffer> receivedAfter(long mark, int kind) {
+        List<ByteBuffer> out = new ArrayList<>();
+        for (var r : engine().received(kind))
+            if (r.handover() > mark)
+                out.add(r.view());
+        return out;
     }
 
     /**
      * U10: while the industry module is off nothing is sent (not at a chunk event, not by a tick); when it
      * is on again every district, chunk and load state is announced as at a session start: IND_DISTRICT,
      * IND_DISTRICT_CHUNKS, IND_INVENTORY, IND_CHUNK_LOADED and IND_LOAD_STATE, the calendar, and the survey.
+     * The checks read the engine, which takes Java's records on its own thread, so they wait on it, not on ticks:
+     * the district's declaration has reached the engine before the switch, and what was sent while off is what
+     * the engine received after every step handed over before the switch had run.
      */
-    @GameTest(template = YARD, batch = "industry_15", timeoutTicks = 1200)
+    @GameTest(template = YARD, batch = "industry_15", timeoutTicks = 4000)
     public static void aSwitchedOffIndustrySendsNothingAndAnnouncesEverythingWhenOn(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -1298,17 +1315,18 @@ public final class IndustryGameTests {
         playerPlaced(helper, vaultPos);
         Industry[] industry = {null};
         long[] id = {0};
-        int[] quiet = {0};
-        int[] quietEach = new int[QUIET.length];
-        int[][] announced = {null};
+        long[] offMark = {0}, onMark = {0};
         helper.startSequence()
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     District d = districtAt(helper, chestPos);
                     check("one district for the chest and the vault", d != null && d == districtAt(helper, vaultPos));
                     check("it has declared itself and its load state", d.loadState() >= 0 && d.inventories.size() == 2);
                     id[0] = d.id;
                     industry[0] = ind();
-                })
+                    check("the engine has the declaration and the load state",
+                            !received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d.id).isEmpty()
+                                    && !received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, d.id).isEmpty());
+                }))
                 .thenExecute(() -> {
                     // Off: the engine is told the switch (a MODULES record) and Java goes quiet.
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
@@ -1317,40 +1335,45 @@ public final class IndustryGameTests {
                 .thenIdle(3)
                 .thenExecute(() -> {
                     check("the module is off: no industry for the API", IndustryApi.current() == null);
-                    quiet[0] = sentCount(QUIET);
-                    for (int i = 0; i < QUIET.length; i++)
-                        quietEach[i] = sentCount(QUIET[i]);
+                    offMark[0] = receivedMark();
                     // A change the module would have sent: a player places a block next to the district.
                     set(helper, chestPos.above(), Blocks.CHEST.defaultBlockState());
                     playerPlaced(helper, chestPos.above());
                 })
                 .thenIdle(60)
                 .thenExecute(() -> {
+                    long sentOff = receivedMark();
                     StringBuilder which = new StringBuilder();
-                    for (int i = 0; i < QUIET.length; i++)
-                        if (sentCount(QUIET[i]) != quietEach[i])
-                            which.append(" 0x").append(Integer.toHexString(QUIET[i])).append(" +").append(sentCount(QUIET[i]) - quietEach[i]);
-                    check("nothing was sent while off: " + quiet[0] + " then " + sentCount(QUIET) + which, sentCount(QUIET) == quiet[0]);
+                    int sent = 0;
+                    for (int kind : QUIET) {
+                        int n = receivedAfter(offMark[0], kind).size();
+                        sent += n;
+                        if (n > 0)
+                            which.append(" 0x").append(Integer.toHexString(kind)).append(" x").append(n);
+                    }
+                    check("nothing was sent while off (hand-overs " + offMark[0] + " to " + sentOff + "):" + which, sent == 0);
                     set(helper, chestPos.above(), Blocks.AIR.defaultBlockState());
-                    announced[0] = new int[ANNOUNCED.length];
-                    for (int i = 0; i < ANNOUNCED.length; i++)
-                        announced[0][i] = engine().received(ANNOUNCED[i]).size();
+                    onMark[0] = sentOff;
                     RtsimConfig.Test.setModule(Module.INDUSTRY, null);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     check("the module is on again", IndustryApi.current() == industry[0]);
-                    // Everything again, as at a session start: each kind has records it did not have while off.
-                    for (int i = 0; i < ANNOUNCED.length; i++)
-                        check("announced again: kind 0x" + Integer.toHexString(ANNOUNCED[i]) + ", " + announced[0][i] + " before and "
-                                + engine().received(ANNOUNCED[i]).size() + " now", engine().received(ANNOUNCED[i]).size() > announced[0][i]);
+                    // Everything again, as at a session start: each kind has records sent after the switch.
+                    for (int kind : ANNOUNCED)
+                        check("announced again: kind 0x" + Integer.toHexString(kind), !receivedAfter(onMark[0], kind).isEmpty());
                     long d = id[0];
-                    List<ByteBuffer> decl = received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d);
-                    check("IND_DISTRICT for the district again, with its inventories", decl.size() >= 2
+                    List<ByteBuffer> decl = new ArrayList<>();
+                    for (ByteBuffer r : receivedAfter(onMark[0], IndRecords.IND_DISTRICT))
+                        if (r.getLong(IndRecords.District.DISTRICT) == d)
+                            decl.add(r);
+                    check("IND_DISTRICT for the district again, with its inventories", !decl.isEmpty()
                             && decl.get(decl.size() - 1).getInt(IndRecords.District.INVENTORY_COUNT) == 2);
-                    List<ByteBuffer> loads = received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, d);
-                    check("IND_LOAD_STATE of the district again", loads.size() >= 2);
-                })
+                    boolean load = false;
+                    for (ByteBuffer r : receivedAfter(onMark[0], IndRecords.IND_LOAD_STATE))
+                        load |= r.getLong(IndRecords.LoadState.DISTRICT) == d;
+                    check("IND_LOAD_STATE of the district again", load);
+                }))
                 .thenSucceed();
     }
 
