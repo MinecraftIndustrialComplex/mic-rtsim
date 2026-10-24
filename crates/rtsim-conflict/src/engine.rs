@@ -136,10 +136,11 @@ pub struct Hunt {
     pub pos: Pos,
     pub count: u32,
     pub op: u64,
-    /// The hunt this one replaced while it was in flight, as its op and the count it owed, one
-    /// deep (MZB-449, review P3-8). The plugin may have applied it before the replacement was
-    /// read, its answer still on the way: the count it owed is taken off this one's when that
-    /// answer comes, so the animals are not paid twice.
+    /// The hunt this one replaced while it was in flight, as its op and `rest`, one deep (MZB-449,
+    /// review P3-8 and the re-check). The plugin may have applied the replaced hunt before it read
+    /// this one, its answer still on the way: it then kills `rest` for this one, the animals the
+    /// replacing raid owes on its own (`min(cap, n)`), not `count`, which holds the replaced
+    /// hunt's animals too. OWED_HUNT carries both.
     pub replaced: Option<(u64, u32)>,
 }
 
@@ -3690,8 +3691,10 @@ impl Conflict {
 
     /// A raid on an unwatched district leaves `count` hunts owed there (MZB-424, MZB-449): added
     /// to the one already in flight for the district and capped at the culture's `hunt_cap`, with
-    /// a new op (the old hunt, if the plugin has not applied it, is replaced; its late answer
-    /// is spent and clears nothing). Nothing is owed on Peaceful, nor by a culture with no cap.
+    /// a new op. The hunt it replaces is kept one deep with `rest`, what this raid owes on its own
+    /// (`min(cap, count)`): if the plugin applied the replaced hunt before it read this one, it
+    /// kills `rest` and not the sum (review P3-8 and the re-check, OWED_HUNT's `replaced` and
+    /// `rest`). Nothing is owed on Peaceful, nor by a culture with no cap.
     /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`).
     pub fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
         let cap = self.culture(f).def.hunt_cap;
@@ -3709,48 +3712,61 @@ impl Conflict {
         let op = boundary::AGENT_NAMESPACE << 56
             | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
         let x = &mut self.factions[f as usize];
-        let (count, op) = match x.hunts.iter_mut().find(|h| h.district == d) {
+        let (hunt, added) = match x.hunts.iter_mut().find(|h| h.district == d) {
             Some(h) => {
                 // The hunt in flight is the one replaced; the one it had replaced is forgotten
                 // (a third hunt inside the flight of two applied ones overpays by the oldest,
                 // bounded by the cap).
-                h.replaced = Some((h.op, h.count));
-                h.count = h.count.saturating_add(count).min(cap);
+                let before = h.count;
+                h.replaced = Some((h.op, count.min(cap)));
+                h.count = before.saturating_add(count).min(cap);
                 h.op = op;
                 h.pos = pos;
-                (h.count, h.op)
+                (*h, h.count - before)
             }
             None => {
-                let count = count.min(cap);
-                x.hunts.push(Hunt {
+                let hunt = Hunt {
                     district: d,
                     pos,
-                    count,
+                    count: count.min(cap),
                     op,
                     replaced: None,
-                });
-                (count, op)
+                };
+                x.hunts.push(hunt);
+                (hunt, hunt.count)
             }
         };
-        self.stats.hunts_owed += u64::from(count);
-        let cmd = self.hunt_cmd(f, d, pos, count, op);
-        self.outbox.push(cmd);
+        // What the raid adds to the books after the cap, not the whole sum again (re-check P3).
+        self.stats.hunts_owed += u64::from(added);
+        // TEMPORARY (fix/replay-push): a replay re-derives the raids of the last session, whose
+        // OWED_HUNTs the plugin already had; the host moves every command out of the outbox after
+        // each ingest, so a push here reaches the next session's plugin, which forgot what it
+        // applied. `resend_notices` sends every hunt still held once the replay has caught up.
+        // The choke point of fix/replay-push declares OWED_HUNT not-while-replaying, and this
+        // guard and the one in `hunt_applied` go.
+        if !self.replaying {
+            let cmd = self.hunt_cmd(f, &hunt);
+            self.outbox.push(cmd);
+        }
         self.note(
             at,
             Some(f),
             "hunt",
-            format!("owes {count} animals near district {}", d.0),
+            format!("owes {} animals near district {}", hunt.count, d.0),
         );
     }
 
-    fn hunt_cmd(&self, f: u32, d: DistrictId, pos: Pos, count: u32, op: u64) -> Cmd {
+    fn hunt_cmd(&self, f: u32, h: &Hunt) -> Cmd {
+        let (replaced, rest) = h.replaced.unwrap_or((0, 0));
         Cmd::OwedHunt(boundary::OwedHunt {
             faction: self.factions[f as usize].key,
-            district: d.0,
-            op,
-            dimension: u32::from(pos.frame),
-            count,
-            centre: (pos.x, pos.z),
+            district: h.district.0,
+            op: h.op,
+            replaced,
+            dimension: u32::from(h.pos.frame),
+            count: h.count,
+            rest,
+            centre: (h.pos.x, h.pos.z),
             radius: HUNT_RADIUS,
         })
     }
@@ -3762,11 +3778,13 @@ impl Conflict {
     ///
     /// - The held hunt's op: the hunt is spent, with the replaced one it carried.
     /// - The replaced op (the plugin applied it before it read the replacement, review P3-8): the
-    ///   animals it killed are not owed again, so its count comes off the held hunt's, and the
-    ///   held hunt goes to the plugin again with what is left (the plugin keeps the latest
-    ///   command for a district, so the one it holds is replaced; a count of 0 is the hunt
-    ///   cancelled, and is answered with a HUNT_APPLIED that kills none). A held hunt left at 0 is
-    ///   cleared.
+    ///   animals it killed are not owed again, and the held hunt owes what the replacing raid
+    ///   owed on its own, `rest` (not the sum less the replaced count: the cap clipped that sum,
+    ///   re-check). The held hunt goes to the plugin again with that count and no `replaced`
+    ///   (the plugin keeps the latest command for a district, so the one it holds is replaced; a
+    ///   plugin that applied the held op meanwhile ignores the repeat, M9c). A count of 0 is the
+    ///   hunt cancelled, and is answered with a HUNT_APPLIED that kills none. A held hunt left at
+    ///   0 is cleared.
     /// - Any other op, an older one or one already booked: nothing, whatever hunt the faction
     ///   holds.
     fn hunt_applied(&mut self, h: &boundary::HuntApplied) {
@@ -3785,14 +3803,18 @@ impl Conflict {
             x.hunts.remove(i);
             return;
         }
-        let (_, owed) = e.replaced.take().expect("the replaced hunt matched");
-        e.count = e.count.saturating_sub(owed);
+        let (_, rest) = e.replaced.take().expect("the replaced hunt matched");
+        e.count = rest;
         let e = *e;
         if e.count == 0 {
             x.hunts.remove(i);
         }
-        let cmd = self.hunt_cmd(f, e.district, e.pos, e.count, e.op);
-        self.outbox.push(cmd);
+        // TEMPORARY (fix/replay-push): see `owe_hunt`. A replayed late answer changes the books
+        // and sends nothing; the hunt that is left goes with `resend_notices`.
+        if !self.replaying {
+            let cmd = self.hunt_cmd(f, &e);
+            self.outbox.push(cmd);
+        }
     }
 
     /// What party `p`'s living members carry between them, thousandths, each unit as its chief's
@@ -4945,13 +4967,12 @@ impl Conflict {
         }
         self.replaying = true;
         // Per session: a camp's reconcile in flight is void (MOWZIE.md §4.9); the notices go
-        // again from what is kept, after the replay (`resend_notices`).
+        // again from what is kept, after the replay (`resend_notices`). A hunt is not dropped here
+        // (it was, before the re-check): no hunt is pushed while replaying, and the host takes the
+        // outbox after every ingest, so no host test needed the filter.
         self.outbox.retain(|c| {
             c.agent().is_none()
-                && !matches!(
-                    c,
-                    Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_) | Cmd::OwedHunt(_)
-                )
+                && !matches!(c, Cmd::Territory(_) | Cmd::Notice(_) | Cmd::Reconcile(_))
         });
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
@@ -4987,8 +5008,7 @@ impl Conflict {
     /// what goes. Page by page, keeping to the budget (PM-C8).
     pub fn resend_notices(&mut self) {
         self.replay_done();
-        self.outbox
-            .retain(|c| !matches!(c, Cmd::Notice(_) | Cmd::OwedHunt(_)));
+        self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
             let mut kept: Vec<Cmd> = self
@@ -4998,11 +5018,7 @@ impl Conflict {
                 .collect();
             // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
             let hunts: Vec<Hunt> = self.factions[f as usize].hunts.clone();
-            kept.extend(
-                hunts
-                    .iter()
-                    .map(|h| self.hunt_cmd(f, h.district, h.pos, h.count, h.op)),
-            );
+            kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));
             self.outbox.extend(kept);
             if (f + 1) % per == 0 {
                 self.enforce_budget();

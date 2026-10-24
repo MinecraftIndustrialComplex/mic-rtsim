@@ -1685,6 +1685,73 @@ fn a_stack_decided_again_from_more_is_another_op() {
     ok(&mut b);
 }
 
+/// MZB-446 (amended at the re-check): the real bound of a crash's gift. A session names the chest
+/// and then takes three payments (30, 50, 40), each stack put down and answered before the next
+/// payment: 120 nuggets are in the chest and nothing is owed. The chest's chunk is saved after
+/// those stacks but the pages are not, and then the server dies. The replay books the three
+/// payments and the chest, places nothing (the camp is out), and the census decides stacks of 64
+/// and 56 from the 120 owed: ops the plugin never saw (the amount is in the op), so both are put
+/// down, on top of the 120 the chunk kept. The gift is every stack answered since the last save
+/// (120, not one stack), the journal ahead of the world, as a replayed CHIEF_PAID after a
+/// player's inventory rolled back gifts the same way. Nothing is ever lost, and the books stay
+/// right.
+#[test]
+fn a_crash_after_several_answered_stacks_gifts_those_stacks_and_loses_nothing() {
+    let (mut a, mut b, id) = twin_groves(27);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let tail = [
+        (t1, chest_record(key, 27)),
+        (t1 + 50, pay_record(key, id, 0x6201, 30)),
+        (t1 + 100, pay_record(key, id, 0x6202, 50)),
+        (t1 + 150, pay_record(key, id, 0x6203, 40)),
+    ];
+    let paid = 30 + 50 + 40;
+    let mut in_chest = 0;
+    let mut answered = Vec::new();
+    for (t, o) in &tail {
+        a.run(*t);
+        a.c.ingest(&mut a.w, &mut *a.infra, o, *t);
+        loop {
+            let next = a.c.placings().next();
+            let Some((op, p)) = next else { break };
+            in_chest += p.amount / MILLI;
+            answered.push(op);
+            let at = a.c.now();
+            assert!(a.c.tribute_placed(&mut a.w, op, at));
+        }
+    }
+    assert_eq!(in_chest, paid);
+    assert_eq!(owed(&a), 0);
+    assert_eq!(answered.len(), 3, "a stack for each payment");
+    // The crash. The COMMAND_RESULTs of the three stacks replay too, but no stack is in flight
+    // in the replay (the camp is out), so `tribute_placed` finds none of them.
+    restart_and_replay(&mut b, &tail);
+    let mut replayed = Vec::new();
+    loop {
+        let next = b.c.placings().next();
+        let Some((op, p)) = next else { break };
+        replayed.push(p.amount / MILLI);
+        assert!(!answered.contains(&op), "an op the plugin answered once");
+        let at = b.c.now();
+        assert!(b.c.tribute_placed(&mut b.w, op, at));
+    }
+    assert_eq!(owed(&b), 0, "the books are right");
+    ok(&mut b);
+    // The chunk kept the first session's stacks and the replay puts the owed ones down again.
+    let replayed_total: i64 = replayed.iter().sum();
+    assert!(
+        replayed_total >= paid,
+        "nothing lost: the replay owes all {paid}, stacks {replayed:?}"
+    );
+    let chest_holds = in_chest + replayed_total;
+    let gift = chest_holds - paid;
+    assert_eq!(
+        gift, in_chest,
+        "the gift is every stack answered since the save: {replayed:?}"
+    );
+}
+
 /// Review P3-6: the stack in flight is resident, so the engine's memory counts it.
 #[test]
 fn a_stack_in_flight_is_counted_in_the_engines_memory() {
@@ -1811,11 +1878,12 @@ fn a_raid_on_an_unwatched_district_leaves_its_raptors_hunts_owed() {
 }
 
 /// MZB-449: a hunt owed again in a district before the plugin answered adds to the one in flight
-/// up to the culture's `hunt_cap` (8) and replaces it with a new op; the replaced op's late answer
-/// takes the count it owed off the new hunt (review P3-8) and sends the rest again; another
-/// district has its own hunt.
+/// up to the culture's `hunt_cap` (8) and replaces it with a new op, keeping the replaced op and
+/// `rest`, what the second raid owes on its own; the replaced op's late answer leaves the hunt at
+/// `rest` (the re-check: not the capped sum less the 6, which would owe the second raid 2) and
+/// sends it again; another district has its own hunt.
 #[test]
-fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_late_answer_takes_its_count_off()
+fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_late_answer_leaves_the_second_raids_own_count()
  {
     let mut r = grove(31, 9);
     owe(&mut r, 5, 6);
@@ -1830,33 +1898,44 @@ fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_late_answer_
     assert_eq!(hunts(&r).len(), 2, "another district, another hunt");
     let sent: Vec<_> = hunt_cmds(&r)
         .iter()
-        .map(|h| (h.district, h.count))
+        .map(|h| (h.district, h.count, h.replaced, h.rest))
         .collect();
-    assert_eq!(sent, [(5, 6), (5, 8), (6, 3)]);
-    // The first op's answer is late: the 6 it owed are not owed again.
+    assert_eq!(
+        sent,
+        [(5, 6, 0, 0), (5, 8, first.2, 6), (6, 3, 0, 0)],
+        "the replacement names the op it replaced and the 6 the second raid owes alone"
+    );
+    // The first op's answer is late: the 6 it owed are not owed again, and the second raid keeps
+    // its own 6 (the cap clipped the sum, not the raid).
     applied(&mut r, 5, first.2, 6);
     assert_eq!(
         hunts(&r).iter().map(|h| (h.0, h.1)).collect::<Vec<_>>(),
-        [(5, 2), (6, 3)],
-        "8 less the 6 it killed, and the other district untouched"
+        [(5, 6), (6, 3)],
+        "the second raid's own 6, and the other district untouched"
     );
     assert_eq!(r.c.stats.hunts_killed, 6);
     let again = hunt_cmds(&r).pop().expect("the rest is sent again");
     assert_eq!(
-        (again.district, again.count, again.op),
-        (5, 2, second[0].2),
-        "the held hunt, under its op, with what is left"
+        (
+            again.district,
+            again.count,
+            again.op,
+            again.replaced,
+            again.rest
+        ),
+        (5, 6, second[0].2, 0, 0),
+        "the held hunt, under its op, with what is left and no replaced op"
     );
     // A copy of that answer finds the replaced op gone: nothing comes off twice.
     applied(&mut r, 5, first.2, 6);
-    assert_eq!(hunts(&r).iter().map(|h| h.1).collect::<Vec<_>>(), [2, 3]);
+    assert_eq!(hunts(&r).iter().map(|h| h.1).collect::<Vec<_>>(), [6, 3]);
     assert_eq!(r.c.stats.hunts_killed, 6);
     // The second's clears its district only, once.
-    applied(&mut r, 5, second[0].2, 2);
+    applied(&mut r, 5, second[0].2, 6);
     assert_eq!(hunts(&r).iter().map(|h| h.0).collect::<Vec<_>>(), [6]);
-    assert_eq!(r.c.stats.hunts_killed, 8);
-    applied(&mut r, 5, second[0].2, 2);
-    assert_eq!(r.c.stats.hunts_killed, 8, "once");
+    assert_eq!(r.c.stats.hunts_killed, 12);
+    applied(&mut r, 5, second[0].2, 6);
+    assert_eq!(r.c.stats.hunts_killed, 12, "once");
     ok(&mut r);
 }
 
@@ -1877,10 +1956,8 @@ fn a_hunt_applied_while_a_second_raid_replaces_it_is_not_paid_twice() {
     let op1 = hunts(&r)[0].2;
     // The plugin applies it: 5 die, the answer is two ticks away.
     let at = r.c.now() + 2;
-    let before = pending_kills(&r);
     r.plugin.apply_hunts(99, at);
-    let mut killed = before;
-    assert_eq!(killed, 5);
+    assert_eq!(r.plugin.animals_killed, 5);
     // The second raid is owed before the answer arrives.
     owe(&mut r, 5, 3);
     let [(_, held, op2)] = hunts(&r)[..] else {
@@ -1892,6 +1969,11 @@ fn a_hunt_applied_while_a_second_raid_replaces_it_is_not_paid_twice() {
     // A save and load in between loses nothing of the replaced hunt.
     r.round_trip();
     assert_eq!(hunts(&r), [(5, 8, op2)]);
+    assert_eq!(
+        r.c.factions[r.f as usize].hunts[0].replaced,
+        Some((op1, 3)),
+        "the replaced op and the 3 the second raid owes alone"
+    );
     r.run(at + 5);
     assert_eq!(hunts(&r), [(5, 3, op2)], "the 5 are paid");
     assert_eq!(
@@ -1899,37 +1981,239 @@ fn a_hunt_applied_while_a_second_raid_replaces_it_is_not_paid_twice() {
         3,
         "the plugin keeps the hunt as sent again, in place of the 8"
     );
-    killed += pending_kills(&r);
     // The plugin applies what it holds; its answer spends the hunt.
     let at = r.c.now() + 2;
     r.plugin.apply_hunts(99, at);
     r.run(at + 5);
     assert!(hunts(&r).is_empty(), "spent");
-    assert_eq!(killed, 8, "the animals that die are the animals owed");
+    assert_eq!(
+        r.plugin.animals_killed, 8,
+        "the animals that die are the animals owed"
+    );
     assert_eq!(r.c.stats.hunts_killed, 8, "and so are the animals booked");
     ok(&mut r);
 }
 
-/// The same race where the first hunt was the whole cap: the late answer leaves nothing owed, so
-/// the hunt is cleared and the plugin is told 0 for the one it holds, which kills none.
+/// The race of the test above in its common ordering (the re-check): the plugin applied the first
+/// hunt (5) because the circle's chunks tick entities, and they still tick when the second raid's
+/// OWED_HUNT arrives, so it applies the second at once, before the engine has read the first's
+/// answer. The hunt carries the op it replaced and `rest`, so the plugin, whose last applied op
+/// is the replaced one, kills the 3 the second raid owes, not the 8. The engine then reads the
+/// first's late answer and sends the second again with 3, which the plugin ignores: it applied
+/// that op. 5 and 3 die for the 8 owed.
 #[test]
-fn a_hunt_the_plugin_already_applied_whole_leaves_none_owed_and_the_one_it_holds_is_cancelled() {
+fn a_replacement_applied_before_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+    let mut r = grove(34, 9);
+    owe(&mut r, 5, 5);
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    owe(&mut r, 5, 3);
+    let [(_, 8, op2)] = hunts(&r)[..] else {
+        panic!("one hunt of 8: {:?}", hunts(&r));
+    };
+    // The circle still ticks: op2 is applied as soon as it is read, its answer one tick behind
+    // op1's.
+    r.plugin.apply_hunts(99, at + 1);
+    assert_eq!(r.plugin.animals_killed, 8, "5 and the 3 of the second raid");
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty(), "spent: {:?}", hunts(&r));
+    assert_eq!(
+        r.plugin.hunts,
+        [],
+        "the hunt sent again is ignored by the plugin (it applied that op), and nothing is held"
+    );
+    let sent = hunt_cmds(&r);
+    assert_eq!(
+        sent.last().map(|h| (h.op, h.count, h.replaced)),
+        Some((op2, 3, 0)),
+        "the engine did send the rest again, after op1's answer"
+    );
+    assert_eq!(
+        r.plugin.animals_killed, 8,
+        "the animals killed for the 8 owed"
+    );
+    assert_eq!(
+        r.c.stats.hunts_killed, 8,
+        "and the engine's books say the same"
+    );
+    ok(&mut r);
+}
+
+/// The same race where the first hunt was the whole cap: the second raid still owes its own 3, so
+/// the hunt is not cleared by the late answer. (Before the re-check the late answer left nothing
+/// owed, as the cap had clipped the second raid away.)
+#[test]
+fn a_hunt_the_plugin_already_applied_whole_leaves_the_second_raid_its_own_count() {
     let mut r = grove(35, 9);
     owe(&mut r, 5, 8);
     let at = r.c.now() + 2;
     r.plugin.apply_hunts(99, at);
     owe(&mut r, 5, 3);
-    assert_eq!(pending_kills(&r), 8, "the plugin holds the second hunt");
+    assert_eq!(
+        pending_kills(&r),
+        8,
+        "the plugin holds the second hunt, capped"
+    );
     r.run(at + 5);
-    assert!(hunts(&r).is_empty(), "nothing is owed after the 8 died");
+    assert_eq!(hunts(&r).iter().map(|h| h.1).collect::<Vec<_>>(), [3]);
+    assert_eq!(pending_kills(&r), 3, "the hunt as sent again");
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    assert_eq!(r.plugin.animals_killed, 11, "8 and 3, each raid its own");
+    assert_eq!(r.c.stats.hunts_killed, 11);
+    ok(&mut r);
+}
+
+/// A replacing raid that owes nothing of its own (a count of 0) is the hunt cancelled once the
+/// plugin's answer for the replaced hunt arrives: the held hunt is cleared and sent as a count of
+/// 0, which the plugin applies as a hunt that kills none (MZB-426) and answers all the same.
+#[test]
+fn a_replacement_owing_nothing_cancels_the_hunt_the_plugin_holds() {
+    let mut r = grove(39, 9);
+    owe(&mut r, 5, 5);
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    owe(&mut r, 5, 0);
+    assert_eq!(pending_kills(&r), 5, "the plugin holds a hunt of 5");
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty(), "nothing is owed after the 5 died");
     assert_eq!(hunt_cmds(&r).last().map(|h| h.count), Some(0), "cancelled");
     assert_eq!(pending_kills(&r), 0, "it kills none");
     let at = r.c.now() + 2;
     r.plugin.apply_hunts(99, at);
     r.run(at + 5);
     assert!(hunts(&r).is_empty());
-    assert_eq!(r.c.stats.hunts_killed, 8, "the animals owed, no more");
+    assert_eq!(r.plugin.animals_killed, 5, "the animals owed, no more");
+    assert_eq!(r.c.stats.hunts_killed, 5);
     ok(&mut r);
+}
+
+/// One step of a hunt ordering against the plugin's rule.
+#[derive(Clone, Copy, Debug)]
+enum Hs {
+    /// A raid owes this many animals in district 5.
+    Owe(u32),
+    /// The plugin applies the hunt it holds, finding every animal; its answer is journaled.
+    Apply,
+    /// The journaled answers reach the engine.
+    Read,
+}
+
+/// The steps played on a fresh grove, a save and load inserted before step `save` (none past the
+/// end): the animals killed in the world, those the engine booked and what it still owes.
+fn play_hunts(seed: u64, steps: &[Hs], save: usize) -> (u32, u64, usize) {
+    let mut r = grove(seed, 9);
+    let mut applies = 0;
+    for (i, s) in steps.iter().chain(&[Hs::Read]).enumerate() {
+        if i == save {
+            r.round_trip();
+        }
+        match *s {
+            Hs::Owe(n) => owe(&mut r, 5, n),
+            Hs::Apply => {
+                applies += 1;
+                let at = r.c.now() + 1 + applies;
+                r.plugin.apply_hunts(99, at);
+            }
+            Hs::Read => {
+                let to = r.c.now() + 10;
+                r.run(to);
+            }
+        }
+    }
+    ok(&mut r);
+    (
+        r.plugin.animals_killed,
+        r.c.stats.hunts_killed,
+        hunts(&r).len(),
+    )
+}
+
+/// MZB-449 (the re-check): every ordering of two raids against the plugin's rule (it keeps the
+/// last op it applied, ignores a repeat of it, and kills `rest` for a hunt that replaced it)
+/// kills the animals owed: each raid its own count, capped as a lone hunt would be, or the
+/// capped sum when the plugin never applied the first. A save and load between any two steps
+/// changes nothing.
+#[test]
+fn every_ordering_of_two_raids_kills_the_animals_owed() {
+    use Hs::{Apply, Owe, Read};
+    #[rustfmt::skip]
+    let table: [(&str, &[Hs], u32); 12] = [
+        ("answer read before the second raid", &[Owe(5), Apply, Read, Owe(3), Apply, Read], 8),
+        ("second applied before the late answer", &[Owe(5), Apply, Owe(3), Apply, Read], 8),
+        ("second applied after the late answer", &[Owe(5), Apply, Owe(3), Read, Apply, Read], 8),
+        ("first never applied", &[Owe(5), Owe(3), Apply, Read], 8),
+        ("capped pair, answer read first", &[Owe(6), Apply, Read, Owe(6), Apply, Read], 12),
+        ("capped pair, second applied at once", &[Owe(6), Apply, Owe(6), Apply, Read], 12),
+        ("capped pair, second applied after", &[Owe(6), Apply, Owe(6), Read, Apply, Read], 12),
+        ("capped pair, first never applied", &[Owe(6), Owe(6), Apply, Read], 8),
+        ("whole cap, second applied at once", &[Owe(8), Apply, Owe(3), Apply, Read], 11),
+        ("whole cap, second applied after", &[Owe(8), Apply, Owe(3), Read, Apply, Read], 11),
+        ("applied, answered, a third raid later", &[Owe(2), Apply, Read, Owe(4), Owe(1), Apply, Read], 5 + 2),
+        ("answered, a second raid, applied later", &[Owe(5), Apply, Read, Owe(5), Read, Apply, Read], 10),
+    ];
+    for (n, (name, steps, owed)) in table.iter().enumerate() {
+        for save in 0..=steps.len() + 1 {
+            let (killed, booked, held) = play_hunts(40 + n as u64, steps, save);
+            let at = if save <= steps.len() {
+                format!("a save before step {save}")
+            } else {
+                "no save".to_string()
+            };
+            assert_eq!(killed, *owed, "{name}, {at}: animals killed in the world");
+            assert_eq!(booked, u64::from(*owed), "{name}, {at}: animals booked");
+            assert_eq!(held, 0, "{name}, {at}: nothing is left owed");
+        }
+    }
+}
+
+/// MZB-449's named residual: a third raid inside the flight of one answer, with the plugin having
+/// skipped the second hunt, forgets the second's replaced op, so the first hunt's late answer
+/// finds no hunt and the third's hunt (capped) is paid on top of the first's animals. The overpay
+/// is the cap at most.
+#[test]
+fn a_third_raid_inside_one_answers_flight_overpays_by_at_most_the_cap() {
+    let mut r = grove(52, 9);
+    owe(&mut r, 5, 5);
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    // The plugin has not read the second hunt when the third replaces it.
+    owe(&mut r, 5, 3);
+    owe(&mut r, 5, 2);
+    r.run(at + 5);
+    let at = r.c.now() + 2;
+    r.plugin.apply_hunts(99, at);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    let owed = 5 + 3 + 2;
+    let killed = r.plugin.animals_killed;
+    assert!(
+        killed >= owed && killed - owed <= 8,
+        "{killed} against {owed}"
+    );
+    assert_eq!(
+        killed,
+        5 + 8,
+        "the first's 5, then the capped sum of the three"
+    );
+    ok(&mut r);
+}
+
+/// `stats.hunts_owed` counts what a raid adds after the cap, not a replacement's whole sum
+/// again: 5 then 3 more are 8 animals owed, not 13; 6 then 6 more add the 2 the cap leaves.
+#[test]
+fn recheck_hunts_owed_counts_a_replacement_once() {
+    let mut r = grove(38, 9);
+    owe(&mut r, 5, 5);
+    owe(&mut r, 5, 3);
+    assert_eq!(hunts(&r).len(), 1);
+    assert_eq!(r.c.stats.hunts_owed, 8, "5 and 3");
+    let mut q = grove(38, 9);
+    owe(&mut q, 5, 6);
+    owe(&mut q, 5, 6);
+    assert_eq!(q.c.stats.hunts_owed, 8, "6, then the 2 the cap leaves");
 }
 
 /// MZB-449, review P3-6 and the coordinator's rule: an answer clears the hunt it names by its op
@@ -2019,6 +2303,121 @@ fn an_owed_hunt_is_saved_and_written_again_with_its_op_at_a_session_start() {
     r.plugin.apply_hunts(2, at + 1);
     r.run(at + 5);
     assert!(hunts(&r).is_empty());
+    ok(&mut r);
+}
+
+/// The crash: the engine as the pages `saved` hold it, the next session started with its replay
+/// open (the plugin forgets what it held and applied, `restart_to_replay`).
+fn crash_to(r: &mut CampRun, saved: &[u8]) {
+    r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), saved).expect("loads");
+    r.restart_to_replay();
+}
+
+/// The hunts the plugin was sent so far, as (op, count).
+fn hunts_sent(r: &CampRun) -> Vec<(u64, u32)> {
+    r.plugin
+        .hunts_sent
+        .iter()
+        .map(|h| (h.op, h.count))
+        .collect()
+}
+
+/// MZB-449 (the re-check, R1): a late answer replayed after a crash changes the books and sends
+/// nothing. The host moves every command out of the engine's outbox after each ingest and writes
+/// its queue at each hand-over, so a hunt pushed while replaying reached the next session's
+/// plugin, which had forgotten that it killed for it: the animals died twice. Here the first
+/// hunt's late answer and the second's are both journaled after the save; the replay books both,
+/// the hunt is spent, and the plugin of the next session hears of none.
+#[test]
+fn a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session() {
+    let mut r = grove(41, 9);
+    owe(&mut r, 5, 5);
+    let op1 = hunts(&r)[0].2;
+    owe(&mut r, 5, 3);
+    let [(_, 8, op2)] = hunts(&r)[..] else {
+        panic!("{:?}", hunts(&r));
+    };
+    let saved = r.c.save();
+    // The session goes on: the plugin killed 5, then 3.
+    applied(&mut r, 5, op1, 5);
+    applied(&mut r, 5, op2, 3);
+    assert!(hunts(&r).is_empty());
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r);
+    assert_eq!(hunts(&r), [(5, 8, op2)], "the pages");
+    // The replay: each ingest is followed by the host's take.
+    applied(&mut r, 5, 0x1234, 0);
+    applied(&mut r, 5, op1, 5);
+    assert_eq!(hunts(&r), [(5, 3, op2)], "8 less the 5 killed");
+    assert_eq!(hunts_sent(&r), before, "nothing is sent while replaying");
+    applied(&mut r, 5, op2, 3);
+    assert!(hunts(&r).is_empty(), "spent");
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    assert_eq!(hunts_sent(&r), before, "a spent hunt goes to no plugin");
+    assert!(r.plugin.hunts.is_empty());
+    assert_eq!(r.c.stats.hunts_killed, 8);
+    ok(&mut r);
+}
+
+/// The same crash with the second hunt's own answer lost: the replay books the late answer of the
+/// first, which leaves 3 owed, and `resend_notices` sends what is held, once, whole, with no
+/// replaced op (the new plugin applied nothing).
+#[test]
+fn a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over() {
+    let mut r = grove(42, 9);
+    owe(&mut r, 5, 5);
+    let op1 = hunts(&r)[0].2;
+    owe(&mut r, 5, 3);
+    let [(_, 8, op2)] = hunts(&r)[..] else {
+        panic!("{:?}", hunts(&r));
+    };
+    let saved = r.c.save();
+    applied(&mut r, 5, op1, 5);
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r).len();
+    applied(&mut r, 5, op1, 5);
+    assert_eq!(hunts_sent(&r).len(), before, "nothing while replaying");
+    assert_eq!(hunts(&r), [(5, 3, op2)]);
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let sent: Vec<_> = r.plugin.hunts_sent.split_off(before);
+    assert_eq!(
+        sent.iter()
+            .map(|h| (h.op, h.count, h.replaced, h.rest))
+            .collect::<Vec<_>>(),
+        [(op2, 3, 0, 0)],
+        "the hunt held, once"
+    );
+    // The new plugin kills them and answers; the hunt is spent.
+    r.plugin.apply_hunts(99, at + 1);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    assert_eq!(r.plugin.animals_killed, 3);
+    ok(&mut r);
+}
+
+/// A raid re-derived by the replay owes its hunt in the books and sends nothing; the hunt goes
+/// once, with the others held, when the replay is over.
+#[test]
+fn a_hunt_owed_while_replaying_goes_once_when_the_replay_is_over() {
+    let mut r = grove(43, 9);
+    let saved = r.c.save();
+    crash_to(&mut r, &saved);
+    let before = hunts_sent(&r).len();
+    owe(&mut r, 5, 4);
+    owe(&mut r, 6, 2);
+    assert_eq!(hunts(&r).len(), 2);
+    assert_eq!(r.plugin.hunts_sent.len(), before, "nothing while replaying");
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let sent: Vec<_> = r.plugin.hunts_sent.split_off(before);
+    let mut got: Vec<_> = sent.iter().map(|h| (h.district, h.count)).collect();
+    got.sort_unstable();
+    assert_eq!(got, [(5, 4), (6, 2)], "each, once");
     ok(&mut r);
 }
 
