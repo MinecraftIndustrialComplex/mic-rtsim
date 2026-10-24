@@ -1019,6 +1019,10 @@ conservative option at its fork.
   held; a test gives it outside a replay. Failing first, a kept fight's casualties replayed
   over several hand-overs with the order taken in the second: a WorksGrant and, apart, a
   HERD_FOUND (herds on) each undid all 3 (12 out): the camp's pool's closed form 26.92, live 23.92.
+  Amended (the re-review's item 5): a SESSION_START drops the held units (they were the last
+  session's), with a warning and the pending count corrected; a works raid and a TRIBUTE_START
+  (dragons on, its village given works and a purse and its lair found before the save) each have
+  their test, and each fails with its kind taken at once: 26.92 against 23.92 again.
 - **RP-34** (the arm's leave; §2.1, RP-26): `shared::session_start` leaves each player's area
   through `with_viewers_of(st, false, ..)`, every viewer but the conflict; the conflict's
   `replay_done` ends every presence span at once (`Presence::every_player_left`).

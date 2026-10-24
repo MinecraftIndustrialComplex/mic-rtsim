@@ -347,7 +347,8 @@ struct State {
     units: VecDeque<Vec<Order>>,
     /// Order units taken while the session's replay runs that hold an order which runs the clock
     /// to the hand-over's time, and every unit after one (docs/replay-gate.md §3.6, RP-33):
-    /// taken at the first step after the replay end, oldest first. Not saved.
+    /// taken at the first step after the replay end, oldest first. Not saved; a SESSION_START
+    /// drops them (the re-review's item 5).
     held_units: VecDeque<Vec<Order>>,
     /// Outbox commands to resend at the start of the session, before anything new.
     resend: VecDeque<(u64, OpId, TransferCmd)>,
@@ -1559,6 +1560,15 @@ impl Engine {
                 st.replay_clock = st.phase1.world.now();
                 st.replay_handovers = 0;
                 st.replay_records = 0;
+                // A test's order units held for the last session's replay end (RP-33) were that
+                // session's: none waits for this one's.
+                let held = std::mem::take(&mut st.held_units).len() as u64;
+                if held > 0 {
+                    self.stats.orders_pending.fetch_sub(held, Ordering::AcqRel);
+                    log_warn(&format!(
+                        "SESSION_START drops {held} test order units held for the last session's replay end"
+                    ));
+                }
                 st.world.session_start();
                 st.world.module_mask = wire::u32_at(b, obs::session_start::MODULE_MASK);
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
