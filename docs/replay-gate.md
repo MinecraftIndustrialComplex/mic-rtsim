@@ -842,6 +842,18 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   lost, and the band walks home later.
 - An M7 track-target party held at a track Java has removed since (§4.4's note).
 
+**More than one crash** (the fix round's item 8). A held arrival stays held until the replay end of
+the first session that reaches one. A session that crashes before its replay end takes no page
+(RP-42, §3.2), so the next opens on the same pages and replays the last live session's records and
+then the crashed session's own: the arrival comes again in the replayed window, is held again, and
+its poll runs once, after that session's replay end
+(`a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once`, rtsim-jni
+tests/protocol.rs: one resolution in S1 and S2 together, the band's books as in S0). What is lost
+is time: the arrival is resolved, or fought by its honoured record, after the replay end of the
+session that completes one, not at its tick in the session that went on, so an unwatched band walks
+home later. The crashed session's in-memory replay state (`held`, the floors and the fill's deaths,
+§5.3) goes with it and is rebuilt from the same records.
+
 **Slices D and S** check dragon raids and pirate coast raids for the same pattern: a decision in the
 replayed window that asks whether a player watches, which while replaying always hears no.
 

@@ -7133,6 +7133,90 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    // ---- The fix round: a held arrival across two crashes (§6.1) ------------------------------
+
+    /// The fix round's item 8 (§6.1): a session's held arrival stays held across a second crash
+    /// before its replay end. S0: a raid, unwatched, reaches its target after the save, resolves
+    /// (it finds nothing to raid) and walks home; 4,000 fillers; a crash. S1 replays at
+    /// MIN_CAPACITY, past the arrival (held, nothing resolved), journals records of its own and
+    /// crashes before its replay end. It takes no page while replaying (RP-42), so S2 opens on
+    /// the same pages and replays S0's tail and S1's records whole: the arrival is held again
+    /// and resolved once, after S2's replay end, its books as in S0. What is lost is time: the
+    /// arrival resolves after S2's replay end, not at its tick in S0.
+    #[test]
+    fn a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once() {
+        let resolved = |e: &Engine| {
+            e.conflict_log(true)
+                .iter()
+                .filter(|l| l.what == "finds nothing to raid")
+                .count()
+        };
+        let (dir, e, mut j) = camp("conflict-held-two-crashes");
+        j.players.clear();
+        j.game_time += 2_500;
+        j.idle();
+        let target = (CAMP_AT.0 + 600, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, target);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 100, 3 * DAY, "the raid on its way", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        save(&e, &mut j);
+        let pages = e.durable_obs_seq();
+        let arrival = e.with_conflict(|c, _| *c.parties[p].times.last().unwrap());
+        let _ = resolved(&e);
+        advance_until(
+            &mut j,
+            100,
+            3 * DAY,
+            "the raid arrived and going home",
+            |j| party(&j.e, p).is_some_and(|x| x.0 == Phase::Home),
+        );
+        assert_eq!(resolved(&e), 1, "S0 resolves the arrival");
+        let live = books(&e, p).0;
+        fillers(&mut j, 4_000);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        // S1: replays past the arrival, journals 20 records of its own, and crashes.
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let _ = e.conflict_log(true);
+        j.flush();
+        assert_eq!(replay_counts(&e).0, 0, "S1 still replaying");
+        assert!(
+            e.with_conflict(|c, _| c.now()) > arrival,
+            "S1's replay past the arrival"
+        );
+        assert_eq!(party(&e, p), Some((Phase::Out, false)), "held in S1");
+        assert_eq!(resolved(&e), 0, "S1 resolves nothing");
+        fillers(&mut j, 20);
+        let gt = j.game_time;
+        let saved = j.crash();
+        let tail = saved.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
+
+        // S2: the same pages, S0's tail and S1's records replayed whole.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.durable_obs_seq(), pages, "S1 took no page");
+        let _ = e.conflict_log(true);
+        hand_over_all(&mut j);
+        // All but S1's JOURNAL_GEN, which is never dispatched.
+        assert_eq!(replay_counts(&e), (1, 1, tail - 1), "S0's and S1's records");
+        advance_until(&mut j, 20, DAY, "the arrival run after S2's replay", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        assert_eq!(resolved(&e), 1, "resolved once, after S2's replay end");
+        assert_eq!(books(&e, p).0, live, "the band's books as in S0");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     // ---- The fix round: phase 1 shows nothing while replaying (RP-44) ------------------------
 
     /// The villages of [`phase1_across_a_replay`]: a player stands in A, on its roads to B and C.
