@@ -1572,6 +1572,7 @@ impl Engine {
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
                 dragons::after_core(st, rec);
+                conflict::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1585,6 +1586,7 @@ impl Engine {
                     industry::answered_again(st, rec);
                 }
                 dragons::answered_again(st, rec);
+                conflict::answered_again(st, rec);
                 st.world.refused_journaled(rec);
             }
             Verdict::Gap { .. } => {

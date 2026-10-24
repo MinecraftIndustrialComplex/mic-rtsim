@@ -1427,9 +1427,11 @@ body mod is verified: it is the contract a plugin would have to meet.
 `docs/choices-mowzie-build.md`) adds 17 kinds and DEMAND_SETTLED outcome 5. Its Java half (the
 conflict module in core, slice M3, and the plugin `neoforge/mowziesmobs`, slice M5) is the first
 plugin. The engine half of the camp records (CAMP_CENSUS, CAMP_OUT, CAMP_RECONCILE, CAMP_BODIES,
-CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178); that of the
-rest comes with a later slice (§9.6), and until then the engine decodes them, counts them as
-deferred and drops them, and sends none of their commands.
+CAMP_DEATH, and FACTION_FOUND's census) is built (slice M4, choices MZB-150 to MZB-178), as are the
+chief's (CHIEF_STATE, CHIEF_BODY, slice M6) and the grove's (TRADED, CHIEF_PAID, HAVEN_CHEST,
+OWED_HUNT and HUNT_APPLIED, slice M9, MZB-400 to MZB-449); that of the rest comes with a later slice
+(§9.6), and until then the engine decodes them, counts them as deferred and drops them, and sends
+none of their commands.
 
 ### 9.1 Kind ranges (reserved)
 
@@ -1442,8 +1444,8 @@ deferred and drops them, and sends none of their commands.
 The bridge's, phase 1's, the industry's (`docs/industry-boundary.md` §1), the dragons' (§6.1), the
 ships' (§7.1) and the herds' (§8.1: 0x0080 to 0x008F, 0x0700 to 0x07FF, 0x8700 to 0x87FF) ranges
 stay as they are; these three are next to the herds'. Mowzie's kinds take 0x0091 and 0x0092
-(latest-wins; 0x0093 is retired, DIFFICULTY's before it was journaled), 0x080C to 0x0815 (journaled)
-and 0x8807 to 0x880B (commands). **Dictionary kind 0x20**
+(latest-wins; 0x0093 is retired, DIFFICULTY's before it was journaled), 0x080C to 0x0816 (journaled)
+and 0x8807 to 0x880C (commands). **Dictionary kind 0x20**
 (each direction, as §2.2) names Destroy pollution types (`destroy:smog`); the industry's 0x10 to 0x12
 are untouched.
 **Pages**: table 0x4300 ('C'), the meta page at id 0 and the rows at 0x4310 and up, as the ships'
@@ -1472,8 +1474,9 @@ are untouched.
   they never meet phase 1's village cultures (`human`) in the one dictionary (MZB-12).
 - **Players** are UUIDs (most, least); **(0, 0) means the settlers** (P14's recommendation: one
   shared actor for unowned signals and acts). **Op ids** are the plugin's (top bit set, §2.2) on
-  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID; the engine applies
-  each once (rtsim-jni hands them to `Replay`, which spends a deferred kind's too). CAMP_DEATH has
+  CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED, CHIEF_PAID and HUNT_APPLIED (the
+  OWED_HUNT's own, allocator 0x43); the engine applies each once (rtsim-jni hands them to `Replay`,
+  which spends a deferred kind's too). CAMP_DEATH has
   one in its record, but the engine does not keep it: a death is idempotent by its slot and
   generation, and a set of every camp death's op id would grow with each death of a farmed grove.
   The engine's commands move no items, so they carry no op ids, but for CAMP_RECONCILE: its op id is
@@ -1518,11 +1521,13 @@ are untouched.
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
+| 0x0816 | HUNT_APPLIED | 0 | 24 u64 faction, 32 u64 district, 40 u64 opId (the OWED_HUNT's), 48 u32 killed, 52 reserved | 56 |
 
-All of 0x0800 to 0x0815 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
-retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN and the camp records
-(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census) today; the rest are deferred
-(§9.6).
+All of 0x0800 to 0x0816 are journaled; 0x0090 to 0x0092 are latest-wins (§2.3), and 0x0093 is
+retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, the camp records
+(0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census), the chief's (0x0091 and
+0x880A) and the grove's (0x0092, 0x0810, 0x0814, 0x0816 and 0x880C) today; RAIL_PASS and TRAIN_PASSED
+are deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1602,16 +1607,18 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
 | 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
-| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir; u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
+| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
 | 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
+| 0x880C | OWED_HUNT | 0 | 16 u64 faction, 24 u64 district, 32 u64 opId (the engine's, allocator 0x43), 40 u32 dimension, 44 u32 count, 48 i32 centreX, 52 i32 centreZ, 56 u32 radius (blocks), 60 reserved | 64 | HUNT_APPLIED |
 
 Every conflict command is per session: puppets never outlive one (the dragons' S11 and the ships'
-U4), so none is kept or resent, with three exceptions. TERRITORY is sent again for every faction at a
+U4), so none is kept or resent, with four exceptions. TERRITORY is sent again for every faction at a
 session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that no NOTICE_SHOWN has
 answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
-notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). BAND_MARCH goes again for
+notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). Every OWED_HUNT no HUNT_APPLIED has answered goes
+again with the notices, for the same reason (MZB-449). BAND_MARCH goes again for
 every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
@@ -1748,12 +1755,24 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
-- **Deferred kinds.** The engine halves of CHIEF_STATE (slice M6), HAVEN_CHEST, TRADED and CHIEF_PAID
-  (M9), RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do their commands, which the engine does
-  not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
+- **Deferred kinds.** The engine halves of RAIL_PASS (M7) and TRAIN_PASSED (M8) come later, as do
+  their commands, which the engine does not send yet. Until then rtsim-jni decodes each, translates its ids, counts it
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
   catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
   `Conflict::ingest`, so the same record again is not counted twice (MZB-23).
+- **The grove's records** (slice M9, MZB-400 to MZB-449). CHIEF_PAID and TRADED book a payment at the
+  grove's price (an unpriced tribute good is worth `1 / tribute_per_coin`, MZB-447) and, for a payer
+  to the live chief's body, the chief's trade memory. A tribute the grove took in (CHIEF_PAID,
+  TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, the engine takes
+  one stack (64 items at most, the tribute good only) out of the faction's stock and writes it as a
+  TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
+  saved counter, so a restart sends it again and Java answers DUPLICATE_OP (MZB-446). APPLIED or
+  DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
+  chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
+  each district, a new raid on the same district replacing it with the counts added and capped, and
+  HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for a replaced op is
+  spent and clears nothing (MZB-449). The chief's slot, the heir's MASK and SEAT_HEIR pair and its
+  wheel event are in MZB-401 to MZB-445.
 - **The camp records** (slice M4, MZB-150 to MZB-178) are built, with CAMP_BODIES' lines changed
   to carry their action (MZB-168). CAMP_CENSUS
   (a camp that is in, at an epoch), CAMP_OUT, CAMP_BODIES and CAMP_DEATH are ingested by

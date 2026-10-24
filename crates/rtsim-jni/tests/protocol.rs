@@ -3446,6 +3446,7 @@ mod conflict {
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
     use rtsim_settle::Pos;
+    use std::collections::BTreeSet;
 
     /// The core's four phase 1 modules and CONFLICT (bit 5).
     const MODULES: u32 = 0b1111 | MODULE_CONFLICT;
@@ -4678,11 +4679,11 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's, the
-    /// tribute's; the camp's came with M4 and the chief's state with M6) is decoded, counted as
-    /// deferred and dropped; one with an op id spends it, so the same record again is not counted
-    /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
-    /// to count ignores it).
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the rail's: RAIL_PASS
+    /// and TRAIN_PASSED; the camp's came with M4, the chief's state with M6, the grove's with M9) is
+    /// decoded, counted as deferred and dropped. CHIEF_STATE is counted as its own and given to the
+    /// engine (a camp with no bodies to count ignores it), and a CHIEF_PAID is the grove's: it
+    /// reaches the engine and spends its op id, so the same record again changes nothing.
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
@@ -4698,6 +4699,15 @@ mod conflict {
         });
         j.conflict_obs(&paid);
         j.conflict_obs(&paid);
+        j.conflict_obs(&O::RailPass(cb::RailPass {
+            faction: CAMP,
+            train: 7,
+            owner: (0, 0),
+            dimension: 0,
+            pos: (900.0, 64.0, 1000.0),
+            entry: 100,
+            exit: 200,
+        }));
         j.conflict_obs(&O::ChiefState(cb::ChiefState {
             faction: CAMP,
             flags: 1,
@@ -5799,6 +5809,261 @@ mod conflict {
         );
         assert!(!embodied && spawned == 0, "no body survived the crash");
         assert!(!recalled, "nothing kept once the replay has caught up");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The transfers Java applied (or held), by op id.
+    fn tribute_ops(j: &Java) -> BTreeSet<u64> {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op)
+            .collect()
+    }
+
+    /// What the grove still owes its chest (items of its tribute good), the stacks in flight and
+    /// the stacks it has sent so far.
+    fn owed_tribute(e: &Engine) -> (i64, usize, u32) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let camp = c.camp(f).unwrap();
+            (
+                camp.owed_tribute.iter().map(|e| e.1).sum::<i64>() / rtsim_trade::MILLI,
+                c.placings().count(),
+                camp.stacks,
+            )
+        })
+    }
+
+    fn chest_report(j: &mut Java, chest: [i32; 3]) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.conflict_obs(&O::HavenChest(cb::HavenChest {
+            faction: CAMP,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+            free: 27,
+        }));
+    }
+
+    /// M9 (MZB-418, MZB-419, MZB-422, MZB-423): a player's seven gold blocks to a stray Umvuthi
+    /// (CHIEF_PAID) are 567 nuggets of tribute, owed to the grove's chest. With no chest reported
+    /// nothing is sent; a chest reported in a world whose chunk is gone fails its stack, which
+    /// goes back to the grove's stock and forgets the chest; reported again while Minecraft holds
+    /// the commands (a world save that is lost), the stack is in the outbox at the save, so after
+    /// a crash it is sent again under the same op id and lands once, and the rest wait for the
+    /// camp to come in again. The CHIEF_PAID's op id is spent by the replay too.
+    #[test]
+    fn a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash() {
+        let (dir, e, mut j) = grove("grove-tribute", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let paid = O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6001,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        });
+        j.conflict_obs(&paid);
+        j.conflict_obs(&paid);
+        j.idle();
+        j.idle();
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "seven blocks are 567 nuggets, owed once; no chest yet, nothing sent"
+        );
+        assert!(tribute_ops(&j).is_empty());
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+
+        // The chest is named, but its chunk is gone: the stack fails, goes back and waits.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.fail_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let failed = tribute_ops(&j);
+        assert_eq!(failed.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 0, 1), "back in the grove's stock");
+        assert!(j.containers.is_empty());
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "{link:?}");
+        assert!(
+            j.cmd_dict
+                .iter()
+                .any(|((k, _), n)| *k == wire::DICT_ITEM && n == "minecraft:gold_nugget"),
+            "the tribute is the grove's gold nuggets"
+        );
+        // The forgotten chest sends nothing until it is reported again.
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), failed);
+
+        // Reported again while the commands are held: a new op in the outbox, then a crash.
+        j.fail_transfers = false;
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let held: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(held.len(), 1);
+        assert!(held.is_disjoint(&failed), "a failed stack goes as a new op");
+        assert_eq!(owed_tribute(&e), (567, 1, 2));
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // After the crash the outbox sends it again under the same op id, and it lands once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 1, 2),
+            "the stack in flight is saved"
+        );
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), held, "the held stack, by its op id");
+        assert_eq!(j.containers.get(&chest).copied(), Some(64), "one stack");
+        assert_eq!(
+            owed_tribute(&e),
+            (503, 0, 2),
+            "placed: 64 nuggets less owed; the camp is out, so no more is sent"
+        );
+        // The same answer again changes nothing.
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.deferred, 0, "{link:?}");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-423): with the camp in and the chest named, the stacks go one at a time, each after
+    /// the last one's answer, whole stacks of at most 64, and the chest ends with every nugget.
+    #[test]
+    fn a_groves_tribute_goes_in_stacks_one_after_another() {
+        let (_dir, e, mut j) = grove("grove-stacks", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        j.idle();
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        advance_until(&mut j, 10, 1_000, "all 567 nuggets in the chest", |j| {
+            j.containers.get(&chest).copied() == Some(567)
+        });
+        assert_eq!(tribute_ops(&j).len(), 9, "8 full stacks and one of 55");
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-424 to MZB-426): a hunt owed after a raid on an unwatched district is written as
+    /// OWED_HUNT with the dimension's name; the plugin's HUNT_APPLIED (journaled, booked once by
+    /// its op id) spends it; a hunt owed again before the answer replaces the first with a new op,
+    /// and the first one's late answer clears nothing.
+    #[test]
+    fn an_owed_hunt_is_written_and_spent_by_its_answer_once() {
+        let (_dir, e, mut j) = grove("grove-hunt", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let written = |j: &Java| {
+            cmds(j)
+                .filter_map(|c| match c {
+                    C::OwedHunt(h) => Some(*h),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        owe(&e, 2);
+        j.idle();
+        j.idle();
+        let first = written(&j);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!((first[0].district, first[0].count), (77, 2));
+        assert_eq!(first[0].centre, at);
+        assert_eq!(
+            java_name(&j, wire::DICT_DIMENSION, first[0].dimension).as_deref(),
+            Some(OVERWORLD),
+            "the dimension is written by name"
+        );
+        let op1 = first[0].op;
+        assert_eq!(hunts(&e), vec![(77, 2, op1)]);
+
+        // Owed again before the answer: the sum, a new op.
+        owe(&e, 3);
+        j.idle();
+        j.idle();
+        let both = written(&j);
+        assert_eq!(both.len(), 2, "{both:?}");
+        let op2 = both[1].op;
+        assert_ne!(op1, op2, "the replacement is a new hunt");
+        assert_eq!(both[1].count, 5);
+        assert_eq!(hunts(&e), vec![(77, 5, op2)]);
+
+        // The first one's answer is late: it clears nothing.
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), vec![(77, 5, op2)], "a stale answer");
+        // The second's clears it, once: a repeat of the record is spent by its op id.
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        let before = killed(&e);
+        j.conflict_obs(&applied(op2, 4));
+        j.conflict_obs(&applied(op2, 4));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "spent");
+        assert_eq!(killed(&e), before + 4, "booked once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
