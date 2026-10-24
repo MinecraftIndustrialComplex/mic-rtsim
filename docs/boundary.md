@@ -258,6 +258,15 @@ from before this session, flagged `REPLAY`) never makes an agent embodied again.
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
 
+That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate
+instead (docs/replay-gate.md, choices RP-1 to RP-20): from SESSION_START until the replay end (the
+first record at or past `session_first`) they keep the bodies their pages hold embodied, honour a
+replayed *_MATERIALIZED that is not a copy, decide nothing that embodies or moves a body, and drop or
+hold each command kind as their gate says; at the replay end every body still embodied becomes
+abstract. A record is replayed when its own OBS_SEQ (a copy's own, for a REASSERT) is below
+`session_first`. Pages hold no module command for the new session: the gate drops a restored body
+command at the session start.
+
 ### 2.4 Commands (the engine to Java)
 
 Every command has a `cmdSeq` at offset 8: per world, increasing. A DICT's `cmdSeq` means nothing,
@@ -559,13 +568,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    §1.2; its release store of `published` is its last act on the buffers.
 4. **Journaled observations** go through `Replay::admit` (TRANSFER, TAKEN, DIED and
    COMMAND_RESULT applied or duplicate with their op ids); a gap is logged and skipped
-   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every agent abstract;
-   WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
+   (`Replay::skip_to`); SESSION_START feeds `Replay::reconcile` and makes every phase 1 agent
+   abstract (the four modules make theirs abstract at the replay end instead, §2.3 and
+   docs/replay-gate.md); WORLD_SAVED calls `forget_ops_through`. Repeats are no-ops by op id, then by state.
 5. **Saves**: the pages are snapshotted at a step boundary (before the first journaled record past
    the requested `through`) and written on the IO lane; `ackedObsSeq` names only pages on disk.
 6. **Commands**: transfers go through the `Outbox`, leave it when their COMMAND_RESULT is admitted,
    and are resent after a restart with their original sequences and op ids, before anything new;
-   puppet commands are per session. DICT records come before their first use in the same buffer.
+   puppet commands are per session (the four modules' pass a gate per engine that sends none of them
+   while the journal replays, docs/replay-gate.md §4). DICT records come before their first use in
+   the same buffer.
    What does not fit waits (`MORE`).
 7. **Op ids**: Java's have the top bit set; the engine's leave it clear. Ordered transfers take 55
    random bits (§2.2); the sim's own commands derive theirs from their identity (industry, phase 1).
