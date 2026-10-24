@@ -92,24 +92,32 @@ public final class ChunkWait {
     /** Holds every chunk within {@code blocks} of {@code at} at {@code need} until the test ends. */
     public Hold hold(BlockPos at, int blocks, Need need) {
         Hold h = new Hold(helper.getLevel(), at, blocks, need);
+        onEnd(h::release);
+        return h;
+    }
+
+    /**
+     * Runs {@code r} when the test passes or fails, however it ends: for chunks a test forced (a forced
+     * chunk is saved with the world, and a failed test's would stay loaded in every later run).
+     */
+    public void onEnd(Runnable r) {
         helper.testInfo.addListener(new GameTestListener() {
             @Override
             public void testStructureLoaded(GameTestInfo info) {}
 
             @Override
             public void testPassed(GameTestInfo info, GameTestRunner runner) {
-                h.release();
+                r.run();
             }
 
             @Override
             public void testFailed(GameTestInfo info, GameTestRunner runner) {
-                h.release();
+                r.run();
             }
 
             @Override
             public void testAddedForRerun(GameTestInfo old, GameTestInfo next, GameTestRunner runner) {}
         });
-        return h;
     }
 
     /**

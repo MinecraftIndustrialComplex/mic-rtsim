@@ -662,7 +662,7 @@ public final class HerdGameTests {
      * leaves (no PLAYER for over 200 ticks): the engine despawns the group and it is captured. The player
      * comes back: the same sheep, with the same colours, and never the dead one.
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "herd_native")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "herd_native")
     public static void theEnginesOwnHerdMaterializesNearAPlayerAndRemembersItsSheep(GameTestHelper helper) {
         String test = "theEnginesOwnHerdMaterializesNearAPlayerAndRemembersItsSheep";
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
@@ -671,6 +671,7 @@ public final class HerdGameTests {
             return;
         }
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         int bx = 3_000_000 + ThreadLocalRandom.current().nextInt(0, 2_000) * 1_024 + 8;
         int bz = -3_000_000 - ThreadLocalRandom.current().nextInt(0, 2_000) * 1_024 + 8;
         List<ChunkPos> forced = new ArrayList<>();
@@ -680,7 +681,11 @@ public final class HerdGameTests {
                 if (level.setChunkForced(p.x, p.z, true))
                     forced.add(p);
             }
-        Runnable unforce = () -> forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+        Runnable unforce = () -> {
+            forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+            forced.clear();
+        };
+        waits.onEnd(unforce);
         boolean[] reporting = {false};
         ServerPlayer[] player = new ServerPlayer[1];
         long[] agent = {0};
@@ -693,8 +698,8 @@ public final class HerdGameTests {
         });
 
         helper.startSequence()
-                .thenWaitUntil(() -> check("the far chunks tick entities",
-                        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.entitiesTickAt(level, new BlockPos(bx, 64, bz))))
+                .thenWaitUntil(waits.chunks(() -> check("the far chunks tick entities",
+                        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.entitiesTickAt(level, new BlockPos(bx, 64, bz)))))
                 .thenExecute(() -> {
                     int y = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
                     player[0] = FakePlayers.add(level, new Vec3(bx + 0.5, y, bz + 0.5), "herd_watcher");
@@ -702,8 +707,8 @@ public final class HerdGameTests {
                             ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE));
                     reporting[0] = true;
                 })
-                .thenWaitUntil(RtsimTests.io(() -> check("the engine's group near the player", groupNear(bx, bz) != null)))
-                .thenWaitUntil(RtsimTests.io(() -> check("all of it", groupNear(bx, bz) != null && bridge().bodies(groupNear(bx, bz).agent).size() == 12)))
+                .thenWaitUntil(waits.engine(() -> check("the engine's group near the player", groupNear(bx, bz) != null)))
+                .thenWaitUntil(waits.engine(() -> check("all of it", groupNear(bx, bz) != null && bridge().bodies(groupNear(bx, bz).agent).size() == 12)))
                 .thenExecute(() -> {
                     HerdBridge.Group g = groupNear(bx, bz);
                     agent[0] = g.agent;
@@ -723,10 +728,10 @@ public final class HerdGameTests {
                     victim.hurt(level.damageSources().playerAttack(player[0]), 1000f);
                     record(test, "materialized", "12 sheep of herd " + Long.toHexString(g.agent) + " (epoch " + g.epoch + "), colours " + firstColours.values());
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     long[] info = e.herdInfo(agent[0]);
                     check("the engine booked the kill", info != null && info[NativeEngine.HERD_KILLED] == 1);
-                })
+                }))
                 .thenExecute(() -> {
                     long[] info = e.herdInfo(agent[0]);
                     check("the herd's count dropped by one (" + info[NativeEngine.HERD_ALIVE] + " of " + alive[0] + ")",
@@ -734,15 +739,15 @@ public final class HerdGameTests {
                     check("the dead one is in the dead set", info[NativeEngine.HERD_DEAD] == 1);
                     reporting[0] = false; // the player leaves
                 })
-                .thenWaitUntil(() -> check("the engine took the group back", bridge().group(agent[0]) == null
-                        && !HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0]).isEmpty()))
+                .thenWaitUntil(waits.engine(() -> check("the engine took the group back", bridge().group(agent[0]) == null
+                        && !HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0]).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = HerdKit.about(HerdRecords.HERD_DEMATERIALIZED, agent[0]).get(0);
                     check("11 sheep captured with their states", d.view().getInt(HerdRecords.Dematerialized.COUNT) == 11);
                     reporting[0] = true; // the player is back
                 })
-                .thenWaitUntil(() -> check("the group again", groupNear(bx, bz) != null && groupNear(bx, bz).agent == agent[0]
-                        && bridge().bodies(agent[0]).size() == 11))
+                .thenWaitUntil(waits.engine(() -> check("the group again", groupNear(bx, bz) != null && groupNear(bx, bz).agent == agent[0]
+                        && bridge().bodies(agent[0]).size() == 11)))
                 .thenExecute(() -> {
                     HerdBridge.Group g = bridge().group(agent[0]);
                     check("a new epoch", g.epoch > 1);
@@ -756,7 +761,7 @@ public final class HerdGameTests {
                     reporting[0] = false;
                     FakePlayers.remove(player[0]);
                 })
-                .thenWaitUntil(() -> check("taken back once the player is gone", bridge().group(agent[0]) == null))
+                .thenWaitUntil(waits.engine(() -> check("taken back once the player is gone", bridge().group(agent[0]) == null)))
                 .thenExecute(unforce)
                 .thenSucceed();
     }

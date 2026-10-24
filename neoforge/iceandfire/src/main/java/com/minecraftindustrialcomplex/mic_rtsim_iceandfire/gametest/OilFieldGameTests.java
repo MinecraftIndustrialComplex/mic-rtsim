@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire.gametest;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.api.OilSource;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
@@ -300,8 +301,9 @@ public final class OilFieldGameTests {
      * New chunks (OG-2): a chunk generated for the first time is sampled once, at the end of a tick, and
      * its oil goes to the engine; chunks with none send nothing.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "oil_new_chunks")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_new_chunks")
     public static void newChunksAreSampledAsTheyGenerate(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "newChunksAreSampledAsTheyGenerate";
         ServerLevel level = helper.getLevel();
         BlockPos site = DragonKit.farSite();
@@ -323,8 +325,8 @@ public final class OilFieldGameTests {
         long new0 = s.newSampled;
         Runnable unforce = DragonKit.forceChunks(level, sc, r);
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks generated", DragonKit.ready(level, sc, r)))
-                .thenWaitUntil(() -> check("their samples ran (" + s.newChunksPending() + " pending)", s.newChunksPending() == 0))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks generated", DragonKit.ready(level, sc, r))))
+                .thenWaitUntil(waits.logic(() -> check("their samples ran (" + s.newChunksPending() + " pending)", s.newChunksPending() == 0)))
                 .thenIdle(2)
                 .thenExecute(() -> {
                     Map<Long, long[]> got = new HashMap<>();
@@ -356,8 +358,9 @@ public final class OilFieldGameTests {
      * the dragon as untagged with that lair; the engine adopts it (native). A repeat for the field places
      * nothing; the saved state reads back.
      */
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 2400, batch = "oil_place_lair")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_place_lair")
     public static void placeLairPlacesARoostWithItsOwnDragon(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "placeLairPlacesARoostWithItsOwnDragon";
         ServerLevel level = helper.getLevel();
         BlockPos site = DragonKit.farSite();
@@ -381,7 +384,7 @@ public final class OilFieldGameTests {
                 DragonKit.reportPlayerAt(player, level, site.getX() + 0.5, 70, site.getZ() + 0.5);
         });
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5)))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, 5))))
                 .thenExecute(() -> {
                     if (nat) {
                         // The engine's path: an oil field there, a player near it, the switch on.
@@ -395,7 +398,7 @@ public final class OilFieldGameTests {
                         DragonKit.placeLair(scriptedField, DragonKit.dimension(helper), ROOST, site.getX(), site.getZ(), 100);
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = placed0; i < placer.placements.size(); i++) {
                         LairPlacer.Placed p = placer.placements.get(i);
                         if (p.dimension().equals(DragonKit.dimension(helper)) && p.pivot().distManhattan(site.atY(p.pivot().getY())) <= 260)
@@ -403,7 +406,7 @@ public final class OilFieldGameTests {
                     }
                     check("a roost was placed near the site (" + placer.requests + " requests, " + placer.sitesTried + " sites tried, "
                             + placer.refused + " refused, " + placer.badRequests + " bad)", got[0] != null);
-                })
+                }))
                 .thenExecute(() -> {
                     LairPlacer.Placed p = got[0];
                     if (!nat)
@@ -435,7 +438,7 @@ public final class OilFieldGameTests {
                             own[0] = d;
                     check("Ice and Fire spawned the roost's own fire dragon", own[0] != null);
                 })
-                .thenWaitUntil(() -> check("DRAGON_UNTAGGED for it", !DragonKit.untagged(own[0].getUUID()).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("DRAGON_UNTAGGED for it", !DragonKit.untagged(own[0].getUUID()).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received u = DragonKit.untagged(own[0].getUUID()).get(0);
                     check("spawned by a structure (" + u.aux() + ")", u.aux() == DragonRecords.Untagged.SPAWN_STRUCTURE);
@@ -446,8 +449,8 @@ public final class OilFieldGameTests {
                     if (!nat)
                         record(test, "adopted", "skipped on the stub (it decides nothing)");
                 })
-                .thenWaitUntil(() -> check("the engine adopted it", !nat || bridge().agentOf(own[0]) != 0))
-                .thenWaitUntil(() -> check("and asked for the oil around it (OIL_SURVEY)", !nat || bridge().sampler.surveysAsked > surveys0))
+                .thenWaitUntil(waits.logic(() -> check("the engine adopted it", !nat || bridge().agentOf(own[0]) != 0)))
+                .thenWaitUntil(waits.logic(() -> check("and asked for the oil around it (OIL_SURVEY)", !nat || bridge().sampler.surveysAsked > surveys0)))
                 .thenExecute(() -> {
                     if (nat) {
                         long[] oil1 = DragonKit.nativeOil(0);
@@ -505,8 +508,9 @@ public final class OilFieldGameTests {
     // An unthrottled GameTest server runs ~1,000 ticks a second, so one engine step spans many ticks and
     // a roll can find the player's presence stale (r1 drew in 162 ticks, r2 in 6,427): the draw is waited
     // for at 5 ms a tick and gets room.
-    @GameTest(template = DragonKit.ARENA, timeoutTicks = 24000, batch = "oil_flights")
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "oil_flights")
     public static void fieldFlightsDrawADragonOnlyOverOilAndHighEnough(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 24000);
         String test = "fieldFlightsDrawADragonOnlyOverOilAndHighEnough";
         if (!DragonKit.nativeEngine()) {
             record(test, "skipped", "on the stub: field flights are the engine's");
@@ -540,7 +544,7 @@ public final class OilFieldGameTests {
         });
         int quiet = 1200, stale = 260;
         helper.startSequence()
-                .thenWaitUntil(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, force)))
+                .thenWaitUntil(waits.chunks(() -> check("the site's chunks loaded", DragonKit.ready(level, sc, force))))
                 .thenExecute(() -> {
                     List<int[]> field = new ArrayList<>();
                     for (int dx = -1; dx <= 1; dx++)
@@ -556,7 +560,7 @@ public final class OilFieldGameTests {
                     phase[0] = 1;
                 })
                 // The engine's rolls run on its own thread: io() holds each failing tick 5 ms.
-                .thenWaitUntil(RtsimTests.io(() -> {
+                .thenWaitUntil(waits.engine(() -> {
                     long[] o = DragonKit.nativeOil(0);
                     check("a field flight was drawn (" + (o[NativeEngine.OIL_FIELD_ROLLS] - mark[5]) + " rolls, switches "
                             + o[NativeEngine.OIL_FLAGS] + ", " + o[NativeEngine.OIL_FIELDS] + " fields, " + o[NativeEngine.OIL_CHUNKS]
@@ -565,7 +569,7 @@ public final class OilFieldGameTests {
                             o[NativeEngine.OIL_FIELD_DRAWS] > mark[0]);
                 }))
                 .thenExecute(() -> drawn[0] = level.getGameTime() - mark[1])
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (ScriptedEngine.Received r : engine().received(DragonRecords.DRAGON_MATERIALIZED)) {
                         long a = r.view().getLong(DragonRecords.Materialized.AGENT);
                         int flags = bridge().materializeFlagsOf(a);
@@ -575,7 +579,7 @@ public final class OilFieldGameTests {
                             agent[0] = a;
                     }
                     check("a fire dragon materialized hostile with its oil", agent[0] != 0);
-                })
+                }))
                 .thenExecute(() -> {
                     DragonBaseEntity d = DragonKit.body(agent[0]);
                     check("its body is a fire dragon", d != null && d.getType() == IafDragons.speciesType(DragonKit.FIRE));
