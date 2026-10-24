@@ -634,7 +634,7 @@ fn a_train_passed_rolls_and_robs() {
     l.c.tun.ambush_milli = 1000;
     l.pass(&mut rails, 7, 0, 10);
     assert_eq!((l.c.stats.passes, l.c.stats.passes_watched), (1, 0));
-    assert_eq!(l.c.stats.ambushes, 1);
+    assert_eq!((l.c.stats.ambushes, l.c.stats.lurk_robberies), (1, 1));
     assert_eq!(
         l.said
             .iter()
@@ -667,7 +667,7 @@ fn a_train_passed_rolls_and_robs() {
     l.c.tun.ambush_milli = 0;
     l.pass(&mut rails, 8, 0, 10);
     assert_eq!(l.c.stats.passes, 2);
-    assert_eq!(l.c.stats.ambushes, 1);
+    assert_eq!((l.c.stats.ambushes, l.c.stats.lurk_robberies), (1, 1));
     assert_eq!(rails.threats.len(), asked, "a miss asks nothing");
     assert_eq!(l.robbed(), vec![7]);
 }
@@ -685,6 +685,7 @@ fn a_robbery_of_nothing_sends_no_train_robbed() {
     assert!(!rails.threats.is_empty(), "the industry was asked");
     assert_eq!((l.c.stats.passes, l.c.stats.ambushes), (1, 0));
     assert!(l.robbed().is_empty());
+    assert_eq!(l.c.stats.lurk_robberies, 0);
 
     // A hit that found an empty cargo.
     let mut l = Lurk::raid(77);
@@ -694,6 +695,7 @@ fn a_robbery_of_nothing_sends_no_train_robbed() {
     l.pass(&mut rails, 7, 0, 10);
     assert_eq!(l.c.stats.ambushes, 1, "an attack that found nothing is one");
     assert!(l.robbed().is_empty());
+    assert_eq!(l.c.stats.lurk_robberies, 0, "and tells no robbery");
 }
 
 /// A robbery of goods the world has no name for still robs the train, and the plugin is told: the
@@ -707,7 +709,7 @@ fn a_robbery_of_unmapped_goods_still_sends_train_robbed() {
     l.until_lurking();
     l.c.tun.ambush_milli = 1000;
     l.pass(&mut rails, 7, 0, 10);
-    assert_eq!(l.c.stats.ambushes, 1);
+    assert_eq!((l.c.stats.ambushes, l.c.stats.lurk_robberies), (1, 1));
     assert_eq!(
         l.robbed(),
         vec![7],
@@ -907,11 +909,13 @@ fn the_cooldown_bounds_a_train_to_one_robbery_a_day() {
     assert!(e.stats.attacks_skipped > skipped, "the industry said no");
     assert_eq!(l.robbed(), vec![7, 8], "and nothing was robbed");
     assert_eq!(l.c.stats.ambushes, 2);
+    assert_eq!(l.c.stats.lurk_robberies, 2);
     // A day after the first robbery of train 7 it can be robbed again.
     let wait = first.0 + 24_000 - l.c.now().0;
     pass(&mut l, &mut e, 7, wait + 10);
     assert_eq!(l.robbed(), vec![7, 8, 7]);
     assert_eq!(l.c.stats.ambushes, 3);
+    assert_eq!(l.c.stats.lurk_robberies, 3);
     l.c.check(&l.w).expect("books");
 }
 
@@ -944,6 +948,10 @@ fn the_on_the_way_note_keeps_its_wording() {
         l.c.run_until(&mut l.w, &mut rails, t);
     }
     let items = l.c.stats.items_from_districts;
+    assert_eq!(
+        l.c.stats.lurk_robberies, 0,
+        "an on-the-way ambush is no lurk's"
+    );
     assert!(
         l.c.log.iter().any(|e| e.kind == "ambush"
             && e.what == format!("falls on train 9 on the way: {items} items")),
@@ -972,7 +980,7 @@ enum Trip {
 
 /// A band lurks, trains pass it, the engine is saved and loaded (or not) in the middle of the
 /// wait, and the lurk goes on to its end: what the plugin heard, the stats and the state hash.
-fn lurk_run(seed: u64, trip: Trip) -> (Vec<AmbushSpot>, Vec<u64>, [u64; 6], u64) {
+fn lurk_run(seed: u64, trip: Trip) -> (Vec<AmbushSpot>, Vec<u64>, [u64; 7], u64) {
     use rtsim_conflict::scenario::META_KEY;
     use rtsim_kernel::page::{Durability, PageStore, SaveBatch};
     use std::sync::{Arc, RwLock};
@@ -1035,6 +1043,7 @@ fn lurk_run(seed: u64, trip: Trip) -> (Vec<AmbushSpot>, Vec<u64>, [u64; 6], u64)
             s.passes_watched,
             s.ambushes,
             s.stale,
+            s.lurk_robberies,
         ],
         l.c.state_hash(),
     );
@@ -1048,6 +1057,7 @@ fn a_lurk_survives_a_save_mid_wait_blob_and_paged() {
     assert_eq!(whole.0.len(), 2, "a start and a removal: {:?}", whole.0);
     assert_eq!(whole.2[..4], [1, 1, 12, 6]);
     assert!(!whole.1.is_empty(), "some of twelve passes robbed");
+    assert_eq!(whole.2[6], whole.1.len() as u64, "a told robbery each");
     assert_eq!(lurk_run(85, Trip::Blob), whole, "blob");
     assert_eq!(lurk_run(85, Trip::Paged), whole, "paged");
 }

@@ -876,6 +876,7 @@ impl Conflict {
         }
         let taken = self.ambush(infra, p, tp.train, at, w, "by the track");
         if taken > 0 {
+            self.stats.lurk_robberies += 1;
             let faction = self.factions[self.parties[p].faction as usize].key;
             self.outbox.push(Cmd::TrainRobbed(boundary::TrainRobbed {
                 faction,

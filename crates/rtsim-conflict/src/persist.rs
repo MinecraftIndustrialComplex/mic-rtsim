@@ -1035,6 +1035,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.lurks_ended,
         s.passes,
         s.passes_watched,
+        s.lurk_robberies,
     ]);
     v
 }
@@ -1104,6 +1105,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.lurks_ended = n();
     s.passes = n();
     s.passes_watched = n();
+    s.lurk_robberies = n();
     s
 }
 
