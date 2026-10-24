@@ -84,6 +84,22 @@ fn save_durable(e: &Engine, j: &mut Java) {
     }
 }
 
+/// Runs Java in lockstep with the engine until `done`: one game tick a step (`Java::flush` hands
+/// over, waits for that step and applies its commands), at most `max_ticks` of game time. For a
+/// wait whose outcome counts game time: `Java::run_until` ticks on the wall clock, so under load
+/// the engine falls behind, one step takes in hundreds of game ticks, and a clock the test races
+/// (wool regrowing, a player's presence going stale) runs out between two of the engine's answers.
+fn flush_until(j: &mut Java, what: &str, max_ticks: i64, mut done: impl FnMut(&mut Java) -> bool) {
+    let start = j.game_time;
+    while !done(j) {
+        assert!(
+            j.game_time - start < max_ticks,
+            "timed out waiting for {what}: not within {max_ticks} game ticks in lockstep"
+        );
+        j.flush();
+    }
+}
+
 /// `save_durable` covers what the save step's own commands bring back: an engine transfer is
 /// written in the step that takes the save, Java's answer is applied one step after it, and the
 /// pages must hold that answer too. (One order and one wait on `durable_obs_seq` never ends here.)
@@ -3224,6 +3240,9 @@ mod herds {
         let sheared = j.herd_plugin.shear(agent, 1, PLAYER);
         let led = j.herd_plugin.lead(agent, PLAYER).expect("one led away");
         assert_eq!((killed.len(), sheared.len()), (1, 1));
+        // From here to the second group, Java runs in lockstep with the engine: the sheared sheep
+        // is still sheared only while its wool has not regrown (`sheared_ticks` of game time).
+        let shorn_at = j.game_time;
         j.herd_flush();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -3286,7 +3305,7 @@ mod herds {
 
         // The player leaves: the group is captured, each member with its state.
         j.players.clear();
-        j.run_until("the group captured", |j| {
+        flush_until(&mut j, "the group captured", 1_000, |j| {
             j.herds
                 .iter()
                 .any(|(_, c)| matches!(c, H::Despawn(d) if d.agent == agent && d.epoch == m.epoch))
@@ -3306,8 +3325,14 @@ mod herds {
 
         // The player is back: the same sheep, the sheared one still sheared, no dead one.
         j.players = vec![(PLAYER, dim, pos)];
-        j.run_until("the group again", |j| materializations(j).len() >= 2);
+        flush_until(&mut j, "the group again", 1_000, |j| materializations(j).len() >= 2);
         j.idle();
+        let regrow = e.with_herds(|h, _| h.tun.sheared_ticks) as i64;
+        assert!(
+            j.game_time - shorn_at < regrow,
+            "the group came back {} game ticks after the shearing, past the {regrow} its wool takes to regrow",
+            j.game_time - shorn_at
+        );
         let m2 = materializations(&j).remove(1);
         assert!(m2.epoch > m.epoch, "a new epoch for every materialization");
         let first: std::collections::BTreeMap<u64, u32> =
