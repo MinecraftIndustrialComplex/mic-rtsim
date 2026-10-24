@@ -44,7 +44,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash c705e2c7bdb20218"
+          "detail": "state hash 44284ff8aea039cf"
         }
       ],
       "rungs": [
@@ -477,7 +477,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 46deaab0bfb474c9"
+          "detail": "state hash ce8608809ccf7f9c"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -761,17 +761,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 9a40499dcc0c05d4 against 9a40499dcc0c05d4, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state c6f01aac6c3ce6fd against c6f01aac6c3ce6fd, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state dde23f6ce3e5cf53 against dde23f6ce3e5cf53, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state 1e4d9d6fbbf54834 against 1e4d9d6fbbf54834, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state 2a40c95265f72db2 against 2a40c95265f72db2, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state 7f07907dca776fad against 7f07907dca776fad, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",

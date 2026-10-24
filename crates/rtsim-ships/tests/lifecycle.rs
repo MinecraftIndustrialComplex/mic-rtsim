@@ -763,6 +763,67 @@ fn no_refound_in_view() {
     });
 }
 
+/// PC103: a refound missed while the ships were switched off waits for live time. As
+/// `no_refound_in_view`, a shut haven with prey again; the ships are switched off before its
+/// look, the world runs on alone ten days past it, and at the switch-on a player stands 100
+/// blocks off its dock. The switch-on's catch-up puts the missed look off to the world's present,
+/// where the player sees the dock: the site stays empty, nothing is taped, and it looks again a
+/// refound delay later. Once the player leaves, that look refounds it.
+#[test]
+fn a_refound_missed_while_off_waits_for_live_time() {
+    let tun = ShipTunables::default();
+    per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        c.ships.tape.set_on(true);
+        let h = c.haven;
+        escort_all(&mut c, 2.5, Tick::ZERO);
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        let mut t = Tick::ZERO;
+        while c.ships.havens[h as usize].shut.is_none() {
+            t += TICKS_PER_DAY / 4;
+            assert!(t < Tick::from_days(40), "seed {seed}: not shut");
+            idle(&mut c, &mut fake, t);
+        }
+        let back = c.ships.havens[h as usize].shut.unwrap().back;
+        escort_all(&mut c, 0.0, t);
+        // Off before the look; the world runs on alone past it.
+        c.ships.lift_closures(&mut c.world);
+        let on = back + 10 * TICKS_PER_DAY;
+        c.world.run_until(on);
+        c.ships.session_start();
+        let dock = c.ships.havens[h as usize].dock;
+        let pos = rtsim_settle::Pos::new(c.ships.havens[h as usize].frame, dock.0 + 100, dock.2);
+        let player = c.ships.player_stays(
+            &mut c.world,
+            synth::SCRIPT_PLAYER,
+            pos,
+            on,
+            on + 200 * TICKS_PER_DAY,
+        );
+        c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
+        let hv = &c.ships.havens[h as usize];
+        assert_eq!(
+            hv.counts.refounds, 0,
+            "seed {seed}: refounded in the missed time"
+        );
+        assert_eq!(
+            hv.shut.expect("still shut").back,
+            on + tun.refound.delay_ticks(Pressure::default(), 0),
+            "seed {seed}: it looks again"
+        );
+        assert!(tape_events(&c.ships, rtsim_archive::kinds::SHIPS_BACK).is_empty());
+        c.ships.check(&c.world).expect("check");
+        // The player leaves: the next look refounds.
+        let again = hv.shut.unwrap().back;
+        c.ships.player_left(&mut c.world, player);
+        idle(&mut c, &mut fake, again + TICKS_PER_DAY);
+        let hv = &c.ships.havens[h as usize];
+        assert_eq!(hv.counts.refounds, 1, "seed {seed}");
+        assert!(hv.shut.is_none());
+        c.ships.check(&c.world).expect("check");
+    });
+}
+
 // ---- navies (§2.4.6a rule 3) -----------------------------------------------------------------
 
 /// The tunables for the navy tests: S8b's lifecycle, with the navy looking every 2 days so a
@@ -1153,6 +1214,62 @@ fn no_assault_in_view() {
             );
         }
         assert_eq!(c.ships.navy_counts().assaults, 1);
+        c.ships.check(&c.world).expect("check");
+    });
+}
+
+/// PC103: a navy's look missed while the ships were switched off waits for live time. As
+/// `no_assault_in_view`, once the coast's haven is a target its pool is emptied (weak whatever is
+/// in port); the ships are switched off, the world runs on alone 30 days (15 of the navy's
+/// looks), and at the switch-on a player stands 100 blocks off the haven's dock. The catch-up
+/// makes one look, at the world's present and in the player's view: it breaks nothing, and the
+/// navy's next look is a look interval after it.
+#[test]
+fn a_navy_look_missed_while_off_waits_for_live_time() {
+    let tun = looks_often();
+    let every = u64::from(tun.assault_every_days) * TICKS_PER_DAY;
+    per_seed(&[1, 2, 3, 4, 5, 6], |seed| {
+        let mut c = synth::coastal(seed, tun.clone());
+        let (h, nv) = (c.haven, c.navy.expect("the coast's navy"));
+        let cap = tun.crew_pool_cap * 1000;
+        let mut fake = FakeShips::new(f64::from(tun.view_radius));
+        while !a_target(&c.ships, nv, h, c.ships.now()) {
+            let due = to_look(&mut c, &mut fake, nv);
+            assert!(
+                due < Tick::from_days(800),
+                "seed {seed}: no target in 800 days"
+            );
+            set_pool(&mut c, h, cap);
+            idle_by(&mut c, &mut fake, due + 1, 1);
+        }
+        set_pool(&mut c, h, 0);
+        let off = c.ships.now();
+        let before = c.ships.navy_counts();
+        c.ships.lift_closures(&mut c.world);
+        let on = off + 30 * TICKS_PER_DAY;
+        c.world.run_until(on);
+        c.ships.session_start();
+        let dock = c.ships.havens[h as usize].dock;
+        let pos = rtsim_settle::Pos::new(c.ships.havens[h as usize].frame, dock.0 + 100, dock.2);
+        c.ships.player_stays(
+            &mut c.world,
+            synth::SCRIPT_PLAYER,
+            pos,
+            on,
+            on + 100 * TICKS_PER_DAY,
+        );
+        c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
+        let n = c.ships.navy_counts();
+        assert_eq!(
+            (n.looked, n.assaults),
+            (before.looked + 1, before.assaults),
+            "seed {seed}: one look, at the switch-on"
+        );
+        assert!(
+            c.ships.havens[h as usize].broken_at.is_none(),
+            "seed {seed}: broken"
+        );
+        assert_eq!(c.ships.assault_due(nv), Some(on + every), "seed {seed}");
         c.ships.check(&c.world).expect("check");
     });
 }
