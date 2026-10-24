@@ -4,6 +4,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.chunk.LevelChunk;
 import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.energy.IEnergyStorage;
 import net.neoforged.neoforge.fluids.FluidStack;
@@ -26,6 +28,25 @@ public interface StockAccess {
      * to what fits. Returns the amount applied, with the sign of {@code delta}.
      */
     long apply(Goods.Name good, long delta);
+
+    /**
+     * Whether the inventory at {@code pos} reads only loaded (FULL) chunks: its own chunk is loaded, and no
+     * plugin says a part of it is in a chunk that is not ({@link IndustryPlugin#partsLoaded}). Loads nothing.
+     * The capability reads below go through {@code Level.getBlockEntity}, which waits for a chunk still
+     * loading (R2-11): ask this first where a tick's cost must stay bounded.
+     */
+    static boolean loaded(ServerLevel level, BlockPos pos) {
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (chunk == null)
+            return false;
+        BlockEntity be = chunk.getBlockEntities().get(pos);
+        if (be == null)
+            return true;
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS)
+            if (!plugin.partsLoaded(level, be))
+                return false;
+        return true;
+    }
 
     /** The item handler at a position, the unsided one first, else the first side that has one. */
     static IItemHandler items(ServerLevel level, BlockPos pos) {
