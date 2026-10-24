@@ -1780,6 +1780,10 @@ impl Conflict {
         let Some(chest) = camp.chest.filter(|c| c.free > 0) else {
             return;
         };
+        // The stock is read as it stands at `at`: the world is caught up first, as
+        // `stock_to_players` does it, or a market that drains between its clock and `at` would
+        // be taken short of what was read (review P3-2).
+        w.run_until(at);
         let m = w.market(node);
         let pick = camp.owed_tribute.iter().find_map(|&(g, owed)| {
             let good = GoodId(u16::try_from(g).ok()?);
@@ -1791,7 +1795,14 @@ impl Conflict {
             return;
         };
         let taken = w.stock_to_players(node, &BTreeMap::from([(good, n)]), at);
-        if taken.get(&good).copied() != Some(n) {
+        // A take short of what was read (the stock moved after all): place the whole items taken
+        // and put the rest back, so the goods are never lost on this path.
+        let got = taken.get(&good).copied().unwrap_or(0);
+        let n = got / MILLI * MILLI;
+        if got > n {
+            w.stock_from_players(node, &BTreeMap::from([(good, got - n)]), at);
+        }
+        if n < MILLI {
             return;
         }
         let Some(camp) = self.camp_mut(f) else {

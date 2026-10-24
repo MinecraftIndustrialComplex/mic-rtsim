@@ -1349,3 +1349,42 @@ fn a_groves_plunder_takes_livestock_only_and_eats_it() {
     }
     assert!(raided >= 4, "{raided} raids of 8");
 }
+
+/// MZB-423, review P3-2: the grove's stock drains with the world's clock, and a chest named at a
+/// later tick than the world's is read at that tick. Six nuggets are left; two days on, at the
+/// stock's draw of about two a day, two and a few hundredths are. The stack placed is the two whole
+/// nuggets that are there, and the rest stays in the stock instead of leaving the books with no
+/// stack to show for it.
+#[test]
+fn a_stack_is_read_at_its_own_tick_and_loses_no_goods_to_a_stock_that_drained() {
+    let (mut r, nugget) = tribute_run(21);
+    let node = r.c.factions[r.f as usize].node;
+    let t0 = r.c.now();
+    let held = stock(&r, nugget);
+    let drain = BTreeMap::from([(nugget, held - 6 * MILLI)]);
+    r.w.stock_to_players(node, &drain, t0);
+    assert_eq!(stock(&r, nugget), 6 * MILLI);
+    chest_at(&mut r, 27, t0 + days(2.0));
+    let placed: Vec<_> = r.c.placings().collect();
+    assert_eq!(placed.len(), 1, "one stack: {placed:?}");
+    assert_eq!(placed[0].1.amount, 2 * MILLI, "the two whole nuggets");
+    let left = stock(&r, nugget);
+    assert!(
+        (0..MILLI).contains(&left) && left > 0,
+        "the rest stays in the stock: {left}"
+    );
+}
+
+fn chest_at(r: &mut CampRun, free: u32, at: Tick) {
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::HavenChest(boundary::HavenChest {
+            faction: r.key,
+            dimension: u32::from(synth::CAMP_POS.frame),
+            pos: (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2),
+            free,
+        }),
+        at,
+    );
+}
