@@ -1606,6 +1606,12 @@ under its own heading.
     elsewhere body is listed by every census as long as its object is alive; one that then unloads leaves the
     index at the next prune and comes back with a join from disk and a recount (the one gap is a record
     carrier hidden when its acknowledgement comes, which keeps its records until the next session, MZB-241).
+  - The fourth round (`target/m5-gt4.log`, Carry On's first run): 3 of 4 passed. The camp pickup test failed
+    at its first census (it listed no body, expected the one stray): the test's vindicator stands in a far
+    chunk with no player within 128 blocks, and a non-persistent monster there is discarded by
+    `checkDespawn` on its first tick, before the census. A fault of the test: it now calls
+    `setPersistenceRequired()` on the stray (`Camps` sets it on every body it makes; an adopted stray keeps the
+    jar's own persistence, MZB-210, so a real stray far from every player is the jar's concern). No product change.
   - Not tested: the Peaceful check ordering in `playHeld` (the Peaceful tests answer a SPAWN that is not held)
     and the chief's exclusion (it needs a second den's Frostmaw standing in the first's footprint).
   - Under C2ME the poll sees a camp's levels at most `POLL_PERIOD` (20) ticks late (MZB-290), so an unload
