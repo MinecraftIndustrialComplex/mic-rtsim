@@ -7248,23 +7248,24 @@ mod conflict {
 
     // ---- The fix round: a held arrival across two crashes (§6.1) ------------------------------
 
-    /// The fix round's item 8 (§6.1): a session's held arrival stays held across a second crash
-    /// before its replay end. S0: a raid, unwatched, reaches its target after the save, resolves
-    /// (it finds nothing to raid) and walks home; 4,000 fillers; a crash. S1 replays at
-    /// MIN_CAPACITY, past the arrival (held, nothing resolved), journals records of its own and
-    /// crashes before its replay end. It takes no page while replaying (RP-42), so S2 opens on
-    /// the same pages and replays S0's tail and S1's records whole: the arrival is held again
-    /// and resolved once, after S2's replay end, its books as in S0. What is lost is time: the
-    /// arrival resolves after S2's replay end, not at its tick in S0.
-    #[test]
-    fn a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once() {
+    /// The fix round's item 8 (§6.1): a session's held arrival stays held across a second
+    /// session that ends before its replay end, by a crash or by a clean close (`clean`, the
+    /// re-review's item 3: `close(true)`, the path RP-42 changed). S0: a raid, unwatched,
+    /// reaches its target after the save, resolves (it finds nothing to raid) and walks home;
+    /// 4,000 fillers; a crash. S1 replays at MIN_CAPACITY, past the arrival (held, nothing
+    /// resolved), journals records of its own and ends before its replay end. It takes no page
+    /// while replaying (RP-42), so S2 opens on the same pages and replays S0's tail and S1's
+    /// records whole: the arrival is held again and resolved once, after S2's replay end (inside
+    /// the hold's slack, RP-48), its books as in S0. What is lost is time: the arrival resolves
+    /// after S2's replay end, not at its tick in S0.
+    fn a_held_arrival_across_a_second_session(name: &str, clean: bool) {
         let resolved = |e: &Engine| {
             e.conflict_log(true)
                 .iter()
                 .filter(|l| l.what == "finds nothing to raid")
                 .count()
         };
-        let (dir, e, mut j) = camp("conflict-held-two-crashes");
+        let (dir, e, mut j) = camp(name);
         j.players.clear();
         j.game_time += 2_500;
         j.idle();
@@ -7292,7 +7293,7 @@ mod conflict {
         let gt = j.game_time;
         let saved = j.crash();
 
-        // S1: replays past the arrival, journals 20 records of its own, and crashes.
+        // S1: replays past the arrival, journals 20 records of its own, and crashes or closes.
         let e = engine(&dir, wire::MIN_CAPACITY);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
@@ -7308,7 +7309,14 @@ mod conflict {
         assert_eq!(resolved(&e), 0, "S1 resolves nothing");
         fillers(&mut j, 20);
         let gt = j.game_time;
-        let saved = j.crash();
+        let saved = if clean {
+            let saved = j.world_save();
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+            saved
+        } else {
+            j.crash()
+        };
         let tail = saved.journal.iter().filter(|(s, _)| *s > pages).count() as u64;
 
         // S2: the same pages, S0's tail and S1's records replayed whole.
@@ -7328,6 +7336,21 @@ mod conflict {
         assert_eq!(books(&e, p).0, live, "the band's books as in S0");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_held_arrival_across_a_second_crash_before_the_replay_end_is_resolved_once() {
+        a_held_arrival_across_a_second_session("conflict-held-two-crashes", false);
+    }
+
+    /// The re-review's item 3: S1 closes cleanly while replaying. With RP-42's guard in `close`
+    /// off, S1 saves its pages mid-replay and S2 opens on them: durable through observation
+    /// 1,026, a record S1 replayed, not S0's save at 3; S2 then replays 2,997 records, not
+    /// 4,020. The arrival is still resolved once with S0's books, by `held_since`'s inference
+    /// from pages saved mid-replay, kept as a defence (§6.1, RP-40).
+    #[test]
+    fn a_held_arrival_across_a_clean_close_before_the_replay_end_is_resolved_once() {
+        a_held_arrival_across_a_second_session("conflict-held-a-clean-close", true);
     }
 
     // ---- The fix round: phase 1 shows nothing while replaying (RP-44) ------------------------
