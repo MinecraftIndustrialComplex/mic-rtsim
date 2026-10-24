@@ -64,7 +64,19 @@ public final class ConflictKit {
 
     // ---- scripting the engine side --------------------------------------------------------------
 
+    /** Commands {@link #together} collects instead of sending; null when none is collecting. */
+    private static final ThreadLocal<List<Consumer<StubEngine.CommandOut>>> COLLECTING = new ThreadLocal<>();
+
     private static void script(Consumer<StubEngine.CommandOut> command) {
+        List<Consumer<StubEngine.CommandOut>> collecting = COLLECTING.get();
+        if (collecting != null) {
+            collecting.add(command);
+            return;
+        }
+        send(command);
+    }
+
+    private static void send(Consumer<StubEngine.CommandOut> command) {
         ScriptedEngine e = RtsimTests.engine();
         if (e instanceof StubEngine stub) {
             stub.script(command);
@@ -77,6 +89,31 @@ public final class ConflictKit {
         if (out.b == null)
             throw new GameTestAssertException("the script wrote no record");
         n.conflictCommand(out.names, out.b.array());
+    }
+
+    /**
+     * The commands {@code r} scripts, in one hand-over: the stub writes them together; the native engine
+     * takes them as CONFLICT_COMMAND orders in a row, which its next step writes together.
+     */
+    public static void together(Runnable r) {
+        List<Consumer<StubEngine.CommandOut>> commands = new ArrayList<>();
+        COLLECTING.set(commands);
+        try {
+            r.run();
+        } finally {
+            COLLECTING.remove();
+        }
+        if (commands.isEmpty())
+            return;
+        if (RtsimTests.engine() instanceof StubEngine stub) {
+            stub.script(out -> {
+                for (Consumer<StubEngine.CommandOut> c : commands)
+                    c.accept(out);
+            });
+            return;
+        }
+        for (Consumer<StubEngine.CommandOut> c : commands)
+            send(c);
     }
 
     /** One record with Java's dictionary ids, for the native engine's CONFLICT_COMMAND order. */
@@ -309,6 +346,116 @@ public final class ConflictKit {
             b.putFloat(at + ConflictRecords.Notice.GRIEVANCE, grievance);
             b.putInt(at + ConflictRecords.Notice.SERIAL, serial);
         });
+    }
+
+    // ---- the camp reconciler (MOWZIE.md §4.9, M5) ------------------------------------------------
+
+    /**
+     * One CAMP_RECONCILE line: a slot and generation, its body, its action and flags, and {@code a},
+     * {@code b}: a stray's UUID halves, or a party's agent and epoch (SET_OUT, HAND_BACK).
+     */
+    public record CampLine(int slot, int generation, String body, int action, int flags, long a, long b) {
+        public static CampLine of(int slot, int generation, String body, int action, int flags) {
+            return new CampLine(slot, generation, body, action, flags, 0, 0);
+        }
+
+        /** A line naming a body by UUID (an adoption, a removal of a stray). */
+        public static CampLine of(int slot, int generation, String body, int action, int flags, UUID u) {
+            return new CampLine(slot, generation, body, action, flags, u.getMostSignificantBits(), u.getLeastSignificantBits());
+        }
+
+        /** A line for a party's member (SET_OUT, HAND_BACK). */
+        public static CampLine party(int slot, int generation, String body, int action, int flags, long agent, int epoch) {
+            return new CampLine(slot, generation, body, action, flags, agent, epoch);
+        }
+    }
+
+    /** CAMP_RECONCILE for a camp at an epoch, with an op id. */
+    public static void reconcile(long faction, long epoch, long op, List<CampLine> lines) {
+        script(out -> {
+            int[] bodies = new int[lines.size()];
+            for (int i = 0; i < lines.size(); i++)
+                bodies[i] = out.dict(Obs.DICT_BODY, lines.get(i).body());
+            int n = lines.size();
+            int at = out.reserve(ConflictRecords.CAMP_RECONCILE, ConflictRecords.CampReconcile.size(n), n);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.CampReconcile.FACTION, faction);
+            b.putLong(at + ConflictRecords.CampReconcile.EPOCH, epoch);
+            b.putLong(at + ConflictRecords.CampReconcile.OP_ID, op);
+            for (int i = 0; i < n; i++) {
+                CampLine l = lines.get(i);
+                int o = at + ConflictRecords.CampReconcile.LINES + i * ConflictRecords.CampReconcile.LINE;
+                b.putInt(o + ConflictRecords.CampReconcile.L_SLOT, l.slot());
+                b.putInt(o + ConflictRecords.CampReconcile.L_GENERATION, l.generation());
+                b.putInt(o + ConflictRecords.CampReconcile.L_BODY, bodies[i]);
+                b.put(o + ConflictRecords.CampReconcile.L_ACTION, (byte) l.action());
+                b.put(o + ConflictRecords.CampReconcile.L_FLAGS, (byte) l.flags());
+                b.putLong(o + ConflictRecords.CampReconcile.L_A, l.a());
+                b.putLong(o + ConflictRecords.CampReconcile.L_B, l.b());
+            }
+        });
+    }
+
+    /** A test op id: namespace 0x4D over random bits, apart from the engine's and Java's own. */
+    public static long newOp() {
+        return (0x4DL << 56) | (ThreadLocalRandom.current().nextLong() & 0x00FF_FFFF_FFFF_FFFFL);
+    }
+
+    /** CAMP_CENSUS records of one camp, in the order received. */
+    public static List<ScriptedEngine.Received> censuses(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_CENSUS, ConflictRecords.CampCensus.FACTION, faction);
+    }
+
+    /** CAMP_BODIES records of one camp, in the order received (a holder's record journaled again is one more). */
+    public static List<ScriptedEngine.Received> campBodies(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.FACTION, faction);
+    }
+
+    /** CAMP_BODIES records answering one op. */
+    public static List<ScriptedEngine.Received> campBodies(long faction, long op) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : campBodies(faction))
+            if (r.view().getLong(ConflictRecords.CampBodies.OP_ID) == op)
+                out.add(r);
+        return out;
+    }
+
+    /** The outcome each line of an op was answered with (by line index; a line answered twice keeps its first). */
+    public static Map<Integer, Integer> outcomes(long faction, long op) {
+        Map<Integer, Integer> out = new LinkedHashMap<>();
+        for (ScriptedEngine.Received r : campBodies(faction, op)) {
+            ByteBuffer b = r.view();
+            for (int i = 0; i < r.aux(); i++) {
+                int o = ConflictRecords.CampBodies.LINES + i * ConflictRecords.CampBodies.LINE;
+                out.putIfAbsent(b.getInt(o + ConflictRecords.CampBodies.L_LINE), b.get(o + ConflictRecords.CampBodies.L_OUTCOME) & 0xFF);
+            }
+        }
+        return out;
+    }
+
+    public static List<ScriptedEngine.Received> campOuts(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_OUT, ConflictRecords.CampOut.FACTION, faction);
+    }
+
+    public static List<ScriptedEngine.Received> campDeaths(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.FACTION, faction);
+    }
+
+    /** A census's bodies: body id, flags, slot, generation and UUID. */
+    public record CensusBody(int body, int flags, int slot, int generation, UUID uuid) {}
+
+    public static List<CensusBody> censusBodies(ScriptedEngine.Received r) {
+        List<CensusBody> out = new ArrayList<>();
+        ByteBuffer b = r.view();
+        for (int i = 0; i < r.aux(); i++) {
+            int o = ConflictRecords.CampCensus.BODIES + i * ConflictRecords.CampCensus.BODY;
+            out.add(new CensusBody(b.getInt(o + ConflictRecords.CampCensus.B_BODY), b.getInt(o + ConflictRecords.CampCensus.B_FLAGS),
+                    b.getInt(o + ConflictRecords.CampCensus.B_SLOT), b.getInt(o + ConflictRecords.CampCensus.B_GENERATION),
+                    new UUID(b.getLong(o + ConflictRecords.CampCensus.B_UUID_MOST), b.getLong(o + ConflictRecords.CampCensus.B_UUID_LEAST))));
+        }
+        return out;
     }
 
     // ---- reading what the engine received -------------------------------------------------------

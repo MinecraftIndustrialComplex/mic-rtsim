@@ -803,7 +803,7 @@ public final class Camps {
 
     /**
      * HAND_BACK: the party's puppet of that body becomes the camp's body where it stands (its state kept),
-     * the puppet goes; with no puppet in the world, as a spawn (MZB-212). The party's rest goes home after.
+     * the puppet goes; with no puppet in the world, as a spawn (MZB-213). The party's rest goes home after.
      */
     private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
         ConflictBridge.Party p = bridge.party(ln.a());
