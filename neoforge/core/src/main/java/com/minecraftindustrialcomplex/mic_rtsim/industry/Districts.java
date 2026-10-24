@@ -130,7 +130,10 @@ public final class Districts {
     long lastRescanChunkLoads, lastRescanClassLoads;
     /** The block entity type whose look loaded the last detection's first chunk, or "". */
     String lastRescanLoadedBy = "";
-    /** R2-11: the stack of the first chunk load inside a detection step is logged once per session. */
+    /**
+     * R2-11: the stack of the first chunk load inside a detection step is logged once a session. Detection reads
+     * only FULL chunks, so a load there is a read that waited for a chunk still loading (a plugin's, say).
+     */
     boolean loadStackLogged;
     long declared;
 
@@ -1098,56 +1101,60 @@ public final class Districts {
         boolean step(int budget) {
             long t0 = System.nanoTime();
             long loads0 = IndustryEvents.chunkLoads(), classes0 = CLASSES.getTotalLoadedClassCount();
-            IndustryEvents.loadInDetection = null;
-            IndustryEvents.watchLoads = true;
             int micros = IndustryConfig.get(IndustryConfig.RESCAN_SLICE_MICROS);
             long limit = micros <= 0 ? Long.MAX_VALUE : micros * 1000L;
             long spent = 0, tickItemNanos = 0;
             boolean progressed = false, done = false;
             long commitNanos = 0;
-            while (true) {
-                // At least one chunk a tick; then the block entity budget or the time limit, whichever comes first (R2-11).
-                if (progressed && (spent >= budget || System.nanoTime() - t0 >= limit))
-                    break;
-                if (cursor < pending.size()) {
-                    long r0 = System.nanoTime();
-                    int cost = root(pending.getLong(cursor++));
-                    spent += cost;
-                    maxItem = Math.max(maxItem, cost);
-                    long dt = System.nanoTime() - r0;
-                    rootNanos += dt;
-                    tickItemNanos = Math.max(tickItemNanos, dt);
-                    maxItemNanos = Math.max(maxItemNanos, dt);
-                } else if (!queue.isEmpty()) {
-                    long w0 = System.nanoTime();
-                    int cost = walk(queue.dequeueLong());
-                    spent += cost;
-                    maxItem = Math.max(maxItem, cost);
-                    long dt = System.nanoTime() - w0;
-                    walkNanos += dt;
-                    tickItemNanos = Math.max(tickItemNanos, dt);
-                    maxItemNanos = Math.max(maxItemNanos, dt);
-                } else {
-                    Set<Long> more = full ? Set.of() : grown();
-                    if (!more.isEmpty()) {
-                        affected.addAll(more);
-                        scheduleDistricts(more);
-                        continue;
+            IndustryEvents.loadInDetection = null;
+            IndustryEvents.watchLoads = true;
+            try {
+                while (true) {
+                    // At least one chunk a tick; then the block entity budget or the time limit, whichever comes first (R2-11).
+                    if (progressed && (spent >= budget || System.nanoTime() - t0 >= limit))
+                        break;
+                    if (cursor < pending.size()) {
+                        long r0 = System.nanoTime();
+                        int cost = root(pending.getLong(cursor++));
+                        spent += cost;
+                        maxItem = Math.max(maxItem, cost);
+                        long dt = System.nanoTime() - r0;
+                        rootNanos += dt;
+                        tickItemNanos = Math.max(tickItemNanos, dt);
+                        maxItemNanos = Math.max(maxItemNanos, dt);
+                    } else if (!queue.isEmpty()) {
+                        long w0 = System.nanoTime();
+                        int cost = walk(queue.dequeueLong());
+                        spent += cost;
+                        maxItem = Math.max(maxItem, cost);
+                        long dt = System.nanoTime() - w0;
+                        walkNanos += dt;
+                        tickItemNanos = Math.max(tickItemNanos, dt);
+                        maxItemNanos = Math.max(maxItemNanos, dt);
+                    } else {
+                        Set<Long> more = full ? Set.of() : grown();
+                        if (!more.isEmpty()) {
+                            affected.addAll(more);
+                            scheduleDistricts(more);
+                            continue;
+                        }
+                        long c0 = System.nanoTime();
+                        commit();
+                        commitNanos = System.nanoTime() - c0;
+                        commitNanosAll += commitNanos;
+                        done = true;
+                        break;
                     }
-                    long c0 = System.nanoTime();
-                    commit();
-                    commitNanos = System.nanoTime() - c0;
-                    commitNanosAll += commitNanos;
-                    done = true;
-                    break;
+                    progressed = true;
                 }
-                progressed = true;
+            } finally {
+                IndustryEvents.watchLoads = false;
             }
-            IndustryEvents.watchLoads = false;
             Throwable load = IndustryEvents.loadInDetection;
             if (load != null && !loadStackLogged) {
                 loadStackLogged = true;
-                MicRtsim.LOGGER.info("[industry] a chunk loaded inside a detection step; the stack of the first (once per session):", load);
+                MicRtsim.LOGGER.warn("[industry] a chunk loaded inside a detection step: a read waited for a chunk still loading,"
+                        + " which detection never should (R2-11); the stack of the first, once a session:", load);
             }
             long dt = System.nanoTime() - t0;
             nanos += dt;

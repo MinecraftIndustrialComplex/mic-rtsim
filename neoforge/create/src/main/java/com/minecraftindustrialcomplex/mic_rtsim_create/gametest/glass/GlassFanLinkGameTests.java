@@ -3,6 +3,8 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GraphBuilder;
+import com.minecraftindustrialcomplex.mic_rtsim_create.CreatePlugin;
+import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.kinetics.fan.EncasedFanBlock;
@@ -13,14 +15,19 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
+import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.YARD;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.borderX;
@@ -32,6 +39,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.forget;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.ind;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.midZ;
+import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.paced;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.playerPlaced;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.record;
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.GlassCorpusKit.at;
@@ -226,5 +234,76 @@ public final class GlassFanLinkGameTests {
         Gap g = gap(helper);
         playerPlaced(helper, g.depot());
         gapChecks(helper, g, "glass fan gap, depot placed");
+    }
+
+    /** A ticket that holds a chunk FULL (level 33), not block-ticking: its neighbours stay at 34, not loaded. */
+    private static final TicketType<ChunkPos> FULL_ONLY = TicketType.create("mic_rtsim_create_fan_full_only", Comparator.comparingLong(ChunkPos::toLong));
+
+    /**
+     * A link never waits for a chunk that is due but still loading (R2-11). A depot at the east edge of a far
+     * chunk A, and a fan in the next chunk N blowing west at it across one block of air. Both are let go until
+     * N has unloaded (no chunk holder left), then A alone is held FULL, so N is at level 34. In one tick N gets a
+     * FULL ticket and the distance manager's updates run, as the next tick's would ({@code save(false)} runs them
+     * and polls no task): {@code Level.isLoaded} now passes at the fan while N is not FULL, the state the first
+     * detection after a start met in hundreds of chunks. The depot's links, asked at once, must not name the fan,
+     * and N must still not be FULL: before the fix the ray's {@code getBlockState} waited for N's load, and
+     * every other chunk load due ran meanwhile. Once N has loaded, the same question names the fan.
+     */
+    @GameTest(template = YARD, batch = "glass_fan_04", timeoutTicks = 4000)
+    public static void aLinkNeverWaitsForAChunkStillLoading(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        ServerChunkCache cache = level.getChunkSource();
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        int ax = (o.getX() >> 4) + 6400, az = (o.getZ() >> 4) + 6400, nx = ax + 1, y = 180, z = az * 16 + 8;
+        ChunkPos a = new ChunkPos(ax, az), n = new ChunkPos(nx, az);
+        BlockPos depot = new BlockPos(ax * 16 + 15, y, z), fan = new BlockPos(nx * 16 + 1, y, z);
+        CreatePlugin plugin = new CreatePlugin();
+        Supplier<List<BlockPos>> links = () -> {
+            BlockEntity be = Loaded.blockEntity(level, depot);
+            check("the depot's block entity", be != null);
+            List<BlockPos> out = new ArrayList<>();
+            plugin.links(be, out::add);
+            return out;
+        };
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(ax, az, true);
+                    level.setChunkForced(nx, az, true);
+                })
+                .thenWaitUntil(paced(() -> check("A and N load", cache.getChunkNow(ax, az) != null && cache.getChunkNow(nx, az) != null)))
+                .thenExecute(() -> {
+                    level.setBlock(depot, AllBlocks.DEPOT.getDefaultState(), 3);
+                    level.setBlock(depot.east(), Blocks.AIR.defaultBlockState(), 3);
+                    level.setBlock(fan, AllBlocks.ENCASED_FAN.getDefaultState().setValue(EncasedFanBlock.FACING, Direction.WEST), 3);
+                    List<BlockPos> got = links.get();
+                    check("both loaded, the depot finds the fan: " + got, got.equals(List.of(fan)));
+                    level.setChunkForced(ax, az, false);
+                    level.setChunkForced(nx, az, false);
+                })
+                .thenWaitUntil(paced(() -> check("N unloads (no chunk holder)", cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
+                .thenExecute(() -> cache.addRegionTicket(FULL_ONLY, a, 0, a))
+                .thenWaitUntil(paced(() -> check("A loads", Loaded.blockEntity(level, depot) != null)))
+                .thenExecute(() -> {
+                    check("N is away (level 34)", cache.getChunkNow(nx, az) == null && !level.isLoaded(fan));
+                    cache.addRegionTicket(FULL_ONLY, n, 0, n);
+                    cache.save(false);
+                    check("N is due and still loading: Level.isLoaded passes, getChunkNow does not",
+                            level.isLoaded(fan) && cache.getChunkNow(nx, az) == null);
+                    List<BlockPos> got = links.get();
+                    boolean waited = cache.getChunkNow(nx, az) != null;
+                    record("aLinkNeverWaitsForAChunkStillLoading", "links while N loads, N FULL after the look", got + ", " + waited);
+                    check("the look did not wait for N's load", !waited);
+                    check("no link into a chunk still loading: " + got, got.isEmpty());
+                })
+                .thenWaitUntil(paced(() -> check("N loads", cache.getChunkNow(nx, az) != null)))
+                .thenExecute(() -> {
+                    List<BlockPos> got = links.get();
+                    check("N loaded, the depot finds the fan again: " + got, got.equals(List.of(fan)));
+                    level.setBlock(depot, Blocks.AIR.defaultBlockState(), 3);
+                    level.setBlock(fan, Blocks.AIR.defaultBlockState(), 3);
+                    cache.removeRegionTicket(FULL_ONLY, a, 0, a);
+                    cache.removeRegionTicket(FULL_ONLY, n, 0, n);
+                })
+                .thenSucceed();
     }
 }
