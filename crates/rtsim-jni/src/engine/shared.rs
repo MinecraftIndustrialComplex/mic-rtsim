@@ -36,7 +36,7 @@ use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
-use super::{State, conflict, dragons, herds, phase1, ships};
+use super::{State, conflict, dragons, herds, log_info, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
 /// A player not reported for this many game ticks has left (phase 1's own rule, V8's
@@ -300,4 +300,47 @@ pub(super) fn catch_up(st: &mut State, rec: &Rec<'_>) {
         let at = Tick(phase1::world_tick(st, gt));
         run_to(st, at);
     }
+}
+
+// ---- the replay end ---------------------------------------------------------------------------------
+
+/// The step's top, after the observations are read (docs/replay-gate.md §2.2, trigger 2): a
+/// replay whose last record was the hand-over's last ends here.
+pub(super) fn replay_end_if_due(st: &mut State) {
+    if st.replaying && st.replay.applied_through().0 + 1 >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The SESSION_START arm's end (§2.1, trigger 3): with nothing to replay the replay ends at once.
+/// Java's journal counts too (RP-29): one that starts at or past `session_first`
+/// (`journal_first`, 0 read as `world_next` by the caller) sends nothing below it.
+pub(super) fn replay_end_at_session_start(st: &mut State, journal_first: u64) {
+    if st.replaying && (st.replay.applied_through().0 + 1).max(journal_first) >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The top of `journaled()` (§2.2, trigger 1): the first record at or past `session_first` ends
+/// the replay before it is admitted, whatever its kind.
+pub(super) fn replay_end_before(st: &mut State, seq: u64) {
+    if st.replaying && seq >= st.session_first {
+        replay_end(st);
+    }
+}
+
+/// The replay is over (§3.2), once a session: logged with its counts, then each module's own end
+/// in the step's order. Each module's end runs at the replay clock; the held part of the
+/// hand-over's time runs at the next run of the clock.
+fn replay_end(st: &mut State) {
+    st.replaying = false;
+    st.replays_ended += 1;
+    log_info(&format!(
+        "the session's replay is over: {} records replayed over {} hand-overs",
+        st.replay_records, st.replay_handovers
+    ));
+    dragons::replay_end(st);
+    ships::replay_end(st);
+    herds::replay_end(st);
+    conflict::replay_end(st);
 }

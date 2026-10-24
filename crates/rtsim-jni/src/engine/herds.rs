@@ -258,6 +258,10 @@ pub(super) fn running(st: &State) -> bool {
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
+/// The session's replay end (docs/replay-gate.md §3.2): nothing yet. Its bodies still end at
+/// SESSION_START (`session_start`), until slice H moves that work into its engine's `replay_done`.
+pub(super) fn replay_end(_st: &mut State) {}
+
 /// SESSION_START: every group the herds thought embodied is abstract again (puppets never
 /// outlive a session; the reset runs as soon as the herds run, now or when switched on), and
 /// Java forgot the engine's dictionary.
