@@ -825,7 +825,8 @@ under its own heading.
   proceeds) and the bodies already standing stay.
 - **MZB-216** (stand-ins): `conflict/frostmaw/frostmaw` is `mowziesmobs:frostmaw`; `conflict/umvuthana/warrior`
   and `conflict/umvuthana/envoy` are `mowziesmobs:umvuthana` (the grove warrior, `EntityUmvuthanaMinion`);
-  `conflict/umvuthana/raptor` is `mowziesmobs:umvuthana_raptor`.
+  `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor` and is, until M9, `mowziesmobs:umvuthana`
+  too (MZB-594).
 - **MZB-217** (den spot): the template box's floor centre, ((minX + maxX + 1) / 2, minY, (minZ + maxZ + 1) / 2).
   The template stands its Frostmaw at (3, 0, 3.5) of the unrotated [6, 5, 7] template, so under every
   rotation it is within about a block of the spot. A home Frostmaw is restricted round the spot's block.
@@ -1089,6 +1090,17 @@ under its own heading.
   `ChunkTicketLevelUpdatedEvent`s of the den's chunks from the release on; `sawWaiting` is asserted only when
   the count is above zero, else the test records that it was not. "No census before every footprint chunk had
   its entities" is asserted always.
+
+- **MZB-594** (the raptor stand-in is the grove warrior until M9; re-review P2-D; owner M9): the stand-in
+  for `conflict/umvuthana/raptor` was `mowziesmobs:umvuthana_raptor`, and `ConflictBodies.create` calls
+  `finalizeSpawn(EVENT)`, whose raptor adds 4 or 5 `EntityUmvuthanaFollowerToRaptor` through
+  `addFreshEntity`. Every umvuthana party that materialized with a raptor unit would have brought untagged
+  hostile followers the engine does not know. Until M9 the raptor maps to `mowziesmobs:umvuthana`, a
+  placeholder. **M9 owns the raptor maker**: a raptor with exactly 4 followers, each tagged as the party's
+  member (or its followers made by the party as bodies of their own). Test:
+  `anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers` (batch `mowzie_raptor_standin`): two raptor units
+  embodied, both the grove warrior, no `EntityUmvuthanaRaptor` and no `EntityUmvuthanaFollowerToRaptor` in the
+  area after 40 ticks.
 
 ### M5 design for the implementer
 

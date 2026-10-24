@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 import com.bobmowzie.mowziesmobs.server.entity.EntityHandler;
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthana;
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaFollowerToRaptor;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaRaptor;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
@@ -827,6 +828,11 @@ public final class MowzieGameTests {
 
     /** A band of {@code n} warriors of the grove's faction at its centre, holding still (the party's agent). */
     private static long bandAt(Grove g, GameTestHelper helper, int n) {
+        return bandAt(g, helper, MowzieKit.WARRIOR, n);
+    }
+
+    /** As above, of one body kind. */
+    private static long bandAt(Grove g, GameTestHelper helper, String body, int n) {
         long agent = ConflictKit.newAgent();
         ConflictKit.Band b = ConflictKit.band(agent, g.faction, RtsimTests.dimension(helper));
         b.arcX = g.spot.x;
@@ -835,7 +841,7 @@ public final class MowzieGameTests {
         b.targetY = g.spot.y;
         b.targetZ = g.spot.z;
         b.speed = 0f;
-        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.WARRIOR, n, false)));
+        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(body, n, false)));
         return agent;
     }
 
@@ -2168,6 +2174,46 @@ public final class MowzieGameTests {
                     check("tagged slot 0, generation 1", MowzieKit.tagged(again, den.faction, 0, 1));
                     check("census 2 lists it home", MowzieKit.bodyOf(MowzieKit.census(den.faction, 2), id[0]) != null);
                     record(test, "indexed again", "the load's join indexed the new Frostmaw object");
+                })
+                .thenSucceed();
+    }
+
+    // ---- MZB-594: the raptor stand-in -------------------------------------------------------------
+
+    /**
+     * An umvuthana party with a raptor unit brings no untagged followers (MZB-594): the jar's raptor adds 4 or
+     * 5 followers through {@code addFreshEntity} in its {@code finalizeSpawn}, which {@code ConflictBodies.create}
+     * calls, so until M9 builds the raptor maker the raptor stand-in is the grove warrior. A band of two raptor
+     * units materialized at a grove: both puppets stand and are the grove's warrior ({@code EntityUmvuthanaMinion}),
+     * and after 40 ticks no {@code EntityUmvuthanaRaptor} and no {@code EntityUmvuthanaFollowerToRaptor} stands in
+     * the area.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "mowzie_raptor_standin", skyAccess = true)
+    public static void anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers(GameTestHelper helper) {
+        String test = "anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove grove = new Grove(far, far.k, far.z0);
+        long[] agent = new long[1];
+        Mob[][] puppet = new Mob[1][];
+
+        helper.startSequence()
+                .thenExecute(() -> grove.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    grove.lay().declare();
+                    agent[0] = bandAt(grove, helper, MowzieKit.RAPTOR, 2);
+                })
+                .thenWaitUntil(() -> bandStands(agent[0], 2))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    puppet[0] = bandStands(agent[0], 2);
+                    for (Mob p : puppet[0])
+                        check("the raptor unit's puppet is the grove warrior", p instanceof EntityUmvuthanaMinion && RtsimApi.isPuppet(p));
+                    check("no raptor stands in the area", level.getEntitiesOfClass(EntityUmvuthanaRaptor.class, grove.area()).isEmpty());
+                    List<EntityUmvuthanaFollowerToRaptor> followers = level.getEntitiesOfClass(EntityUmvuthanaFollowerToRaptor.class, grove.area());
+                    check("no raptor follower stands in the area (" + followers.size() + ")", followers.isEmpty());
+                    record(test, "raptor", "two raptor units embodied as grove warriors, no raptor and no follower");
                 })
                 .thenSucceed();
     }
