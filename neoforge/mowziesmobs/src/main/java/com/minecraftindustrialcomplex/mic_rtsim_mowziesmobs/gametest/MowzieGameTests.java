@@ -129,7 +129,7 @@ public final class MowzieGameTests {
         boolean[] persistent = new boolean[n];
         long[] faction = new long[n], op = new long[n];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++)
                         far.forceRect(cx[i] - 1, cz - 1, cx[i] + 1, cz + 1);
@@ -255,7 +255,7 @@ public final class MowzieGameTests {
         long[] e1 = new long[1];
         float[] chiefHealth = new float[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(g::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -413,7 +413,7 @@ public final class MowzieGameTests {
         long[] op = new long[1], e1 = new long[1];
         float[] health = new float[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -489,7 +489,7 @@ public final class MowzieGameTests {
         EntityFrostmaw[] f = new EntityFrostmaw[2];
         long[] op = new long[1], strays = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     late.force(1);
                     plain.force(1);
@@ -562,7 +562,7 @@ public final class MowzieGameTests {
         EntityFrostmaw[] f = new EntityFrostmaw[2];
         long[] op = new long[1], watches = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force(1))
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -621,7 +621,7 @@ public final class MowzieGameTests {
         Markers[] mk = new Markers[1];
         long[] taken = new long[1], markers = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -680,7 +680,7 @@ public final class MowzieGameTests {
         long[] op = new long[2];
         long[] was = new long[6];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -788,7 +788,7 @@ public final class MowzieGameTests {
         LevelChunk[] chunk = new LevelChunk[3];
         long[] dropped = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenWaitUntil(() -> check("the queue is empty (" + MowzieCamps.queued() + ")", MowzieCamps.queued() == 0))
                 .thenExecute(() -> {
                     chunk[0] = denChunk(level, ex, z);
@@ -885,7 +885,7 @@ public final class MowzieGameTests {
         long[] agent = new long[1], op = new long[2], handed = new long[1];
         Mob[][] puppet = new Mob[1][];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -946,7 +946,7 @@ public final class MowzieGameTests {
         long[] agent = new long[1], op = new long[1], spawned = new long[1];
         Mob[][] puppet = new Mob[1][];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1007,7 +1007,7 @@ public final class MowzieGameTests {
         int[][] leaves = new int[1][];
         long[] taken = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     check("the Nether is there", nether != null);
                     ConflictKit.onEnd(helper, () -> {
@@ -1098,7 +1098,7 @@ public final class MowzieGameTests {
         int[] weapon = new int[1];
         UUID[] bodyId = new UUID[1], markerId = new UUID[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(grove::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1185,7 +1185,7 @@ public final class MowzieGameTests {
         long[] op = new long[3];
         Vec3[] born = new Vec3[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     den.force();
                     grove.force();
@@ -1285,7 +1285,7 @@ public final class MowzieGameTests {
         ServerPlayer[] player = new ServerPlayer[1];
         long[] sent = new long[1], placed = new long[1], op = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1339,7 +1339,7 @@ public final class MowzieGameTests {
         int[][] events = new int[1][];
         long[] declaredAt = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     den.force();
                     far.forceRect(grove.cx - 2, grove.cz - 2, grove.cx - 1, grove.cz + 2);
@@ -1434,7 +1434,7 @@ public final class MowzieGameTests {
         Set<Entity> bodies = new HashSet<>();
         List<CampLine> adopt = new ArrayList<>();
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(g::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1520,7 +1520,7 @@ public final class MowzieGameTests {
         ServerPlayer[] player = new ServerPlayer[1];
         long[] op = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1582,7 +1582,7 @@ public final class MowzieGameTests {
         long[] op = new long[2];
         Vec3[] fell = new Vec3[2];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     den.force();
                     grove.force();
@@ -1701,7 +1701,7 @@ public final class MowzieGameTests {
         long[] op = new long[1];
         Markers[] markers = new Markers[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1781,7 +1781,7 @@ public final class MowzieGameTests {
         MaskType[] mask = new MaskType[1];
         Markers[] markers = new Markers[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(grove::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -1872,7 +1872,7 @@ public final class MowzieGameTests {
         Vec3[] w1At = new Vec3[1];
         Markers[] markers = new Markers[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> {
                     grove.force();
                     far.force(outChunk, grove.cz);
@@ -1964,7 +1964,7 @@ public final class MowzieGameTests {
         long[] n = new long[3]; // polls and level changes before the release; level changes before the reload
         long[] epoch = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -2048,7 +2048,7 @@ public final class MowzieGameTests {
         int[] y = new int[1];
         ServerPlayer[] player = new ServerPlayer[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> grove.lay().declare())
@@ -2128,7 +2128,7 @@ public final class MowzieGameTests {
         long[] op = new long[1];
         long[] removedAt = new long[1], heldRemovedFor = new long[1];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -2197,7 +2197,7 @@ public final class MowzieGameTests {
         long[] agent = new long[1];
         Mob[][] puppet = new Mob[1][];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -2237,7 +2237,7 @@ public final class MowzieGameTests {
         EntityFrostmaw[] f = new EntityFrostmaw[1];
         long[] op = new long[2], agent = new long[1], was = new long[4];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
@@ -2312,7 +2312,7 @@ public final class MowzieGameTests {
         long[] n = new long[2]; // pollChanges and polls at the CAMP_OUT
         int[][] events = new int[1][];
 
-        helper.startSequence()
+        MowzieKit.seq(helper)
                 .thenExecute(den::force)
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
