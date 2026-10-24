@@ -3222,7 +3222,15 @@ impl Conflict {
         let c = self.culture(f).clone();
         let kind = self.parties[p].kind;
         let patience = self.patience(f);
-        self.parties[p].bored_at = at + patience;
+        // A war party's arrival held while replaying arrives again at a poll after the replay
+        // end, or after a restart that lost the map (§6.1, RP-23): it keeps the arrival it had,
+        // its route's last time, and its patience runs from there (RP-45). Live, that is `at`.
+        let arrival = if kind.is_war() {
+            self.parties[p].times.last().map_or(at, |&t| t.min(at))
+        } else {
+            at
+        };
+        self.parties[p].bored_at = arrival + patience;
         let target = self.parties[p].target;
         let tpos = self.target_pos(w, target);
         match kind {
@@ -3264,10 +3272,6 @@ impl Conflict {
                 // While replaying no player is routed, so `watcher` would say no one watches:
                 // the arrival waits for the replay end or for its replayed fight (§6.1, RP-23).
                 if self.outbox.defer() {
-                    // A poll that arrives again after a restart lost the map keeps the arrival
-                    // it had: its route's last time, its patience from there.
-                    let arrival = self.parties[p].times.last().map_or(at, |&t| t.min(at));
-                    self.parties[p].bored_at = arrival + patience;
                     self.hold(p, arrival, at, true);
                     return;
                 }
