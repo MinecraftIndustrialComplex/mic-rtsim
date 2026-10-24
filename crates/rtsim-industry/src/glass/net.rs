@@ -422,3 +422,243 @@ impl Nets {
         self.by_district.contains_key(&d)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::glass::records::{DomainLevel, DomainSource, GraphHead, Member, domain_flags};
+
+    const A: DistrictId = DistrictId(1);
+    const B: DistrictId = DistrictId(2);
+    const C: DistrictId = DistrictId(3);
+    /// The engine's powered shaft, in A's chunks.
+    const P: i64 = 100;
+
+    /// A's engine: 16 RPM and 1,000 SU at boiler level 2, 32 RPM and 4,096 SU at level 4.
+    fn engine() -> DomainSource {
+        DomainSource::driven(0, P, &[(0, 0, 0.0), (2, 16, 1000.0), (4, 32, 4096.0)], 2)
+    }
+
+    /// A source this part lists but does not tabulate, at `ratio` (num, den) in its frame.
+    fn foreign(pos: i64, ratio: (i32, u32)) -> DomainSource {
+        DomainSource {
+            driver: None,
+            levels: Vec::new(),
+            current: None,
+            ratio_num: ratio.0,
+            ratio_den: ratio.1,
+            pos,
+        }
+    }
+
+    /// A SHARED part of district `d`: its speed rows, sources, peers, and members as (stress per
+    /// RPM, in the tail), the tail last.
+    fn part(
+        d: DistrictId,
+        speeds: &[i32],
+        sources: Vec<DomainSource>,
+        peers: &[DistrictId],
+        members: &[(f64, bool)],
+    ) -> GraphDomain {
+        GraphDomain {
+            head: GraphHead {
+                district: d,
+                compile: 1,
+                index: 0,
+            },
+            network: 1,
+            current: None,
+            flags: domain_flags::SHARED,
+            live_stress: 0.0,
+            live_capacity: 0.0,
+            levels: speeds.iter().map(|&v| DomainLevel::speed_row(v)).collect(),
+            sources,
+            foreign: members.iter().filter(|m| m.1).count() as u32,
+            members: members
+                .iter()
+                .map(|&(impact, _)| Member {
+                    node: None,
+                    count: 1,
+                    ratio_num: 1,
+                    ratio_den: 1,
+                    impact,
+                })
+                .collect(),
+            peers: peers.to_vec(),
+        }
+    }
+
+    fn id(d: DistrictId) -> PartId {
+        PartId {
+            district: d,
+            domain: 0,
+        }
+    }
+
+    /// A's engine drives B's line; B's reference turns at half the shaft (the shaft's ratio in
+    /// B's frame is 2).
+    fn a_and_b() -> (GraphDomain, GraphDomain) {
+        let a = part(A, &[16, 32], vec![engine()], &[B], &[(8.0, false)]);
+        let b = part(B, &[8, 16], vec![foreign(P, (2, 1))], &[A], &[(4.0, false)]);
+        (a, b)
+    }
+
+    /// B's reference turns at the shaft's speed over its ratio, and carries A's members' stress
+    /// in its own frame: 8 per RPM of A's reference is 16 per RPM of B's (the same 256 SU at 32
+    /// and 16 RPM). A counts B's 4 per RPM as 2 of its own.
+    #[test]
+    fn a_boiler_in_one_district_gives_the_next_its_speed_through_the_frames() {
+        let (a, b) = a_and_b();
+        let nets = Nets::build(&[(id(B), 0, &b), (id(A), 0, &a)], 16);
+        assert_eq!(nets.len(), 1);
+        let net = nets.net_of(id(B)).expect("a network");
+        assert_eq!(net.status, Status::Coupled, "{}", net.why);
+        assert_eq!(net.districts().collect::<Vec<_>>(), vec![A, B]);
+        let mut rows = |p: PartId| {
+            assert_eq!(p, id(A), "only A owns a source");
+            vec![Some(2)]
+        };
+        let inp = net.input(id(B), &mut rows).expect("coupled");
+        assert_eq!(
+            inp,
+            NetInput {
+                own: vec![false],
+                fwd: 16.0,
+                back: 0.0,
+                cap: 4096.0,
+                stress: 16.0,
+                tail: false,
+            }
+        );
+        let inp = net.input(id(A), &mut rows).expect("coupled");
+        assert_eq!(inp.own, vec![true]);
+        assert_eq!((inp.fwd, inp.back, inp.cap), (0.0, 0.0, 0.0));
+        assert_eq!(inp.stress, 2.0);
+        // At level 2 B turns at 8; with A's boiler out, the shaft stands and gives nothing.
+        let inp = net.input(id(B), &mut |_| vec![Some(1)]).expect("coupled");
+        assert_eq!((inp.fwd, inp.cap), (8.0, 1000.0));
+        let inp = net.input(id(B), &mut |_| vec![Some(0)]).expect("coupled");
+        assert_eq!((inp.fwd, inp.cap), (0.0, 0.0));
+        let inp = net.input(id(B), &mut |_| vec![None]).expect("coupled");
+        assert_eq!((inp.fwd, inp.cap), (0.0, 0.0));
+        assert_eq!(net.stress_of(id(B)), Some((16.0, false)));
+    }
+
+    /// A peer with no part (its district's compile has none, or the engine has no compile of it)
+    /// leaves every part decoupled.
+    #[test]
+    fn a_peer_without_a_part_leaves_the_network_incomplete() {
+        let (mut a, b) = a_and_b();
+        a.peers = vec![B, C];
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 16);
+        let net = nets.net_of(id(A)).expect("a network");
+        assert_eq!(net.status, Status::Incomplete);
+        assert!(net.input(id(B), &mut |_| vec![Some(2)]).is_none());
+        assert!(net.stress_of(id(B)).is_none());
+        // B alone: A has no part.
+        let nets = Nets::build(&[(id(B), 0, &b)], 16);
+        assert_eq!(
+            nets.net_of(id(B)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+    }
+
+    /// More districts than `clusterDistrictsMax` on one network: past the cap, decoupled.
+    #[test]
+    fn more_parts_than_the_cap_is_past_max() {
+        let (a, b) = a_and_b();
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 1);
+        let net = nets.net_of(id(A)).expect("a network");
+        assert_eq!(net.status, Status::PastMax);
+        assert!(net.input(id(B), &mut |_| vec![Some(2)]).is_none());
+    }
+
+    /// Two parts of one district on one network (a compile Java split, or one built before a
+    /// merge) do not couple; nor do parts of another dimension.
+    #[test]
+    fn two_parts_in_one_district_are_incomplete_and_dimensions_do_not_join() {
+        let (a, b) = a_and_b();
+        let a2 = PartId {
+            district: A,
+            domain: 1,
+        };
+        let nets = Nets::build(&[(id(A), 0, &a), (a2, 0, &a), (id(B), 0, &b)], 16);
+        assert_eq!(
+            nets.net_of(id(B)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 1, &b)], 16);
+        assert_eq!(nets.len(), 2);
+        assert_eq!(
+            nets.net_of(id(A)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+    }
+
+    /// The members in no district's chunks count once, in the lowest part listing them.
+    #[test]
+    fn the_tail_counts_once_in_the_lowest_part() {
+        let a = part(
+            A,
+            &[16, 32],
+            vec![engine()],
+            &[B],
+            &[(8.0, false), (3.0, true)],
+        );
+        let b = part(
+            B,
+            &[8, 16],
+            vec![foreign(P, (2, 1))],
+            &[A],
+            &[(4.0, false), (5.0, true)],
+        );
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 16);
+        let net = nets.net_of(id(A)).expect("a network");
+        assert_eq!(net.status, Status::Coupled, "{}", net.why);
+        let a_in = net.input(id(A), &mut |_| vec![Some(2)]).expect("coupled");
+        let b_in = net.input(id(B), &mut |_| vec![Some(2)]).expect("coupled");
+        assert!(a_in.tail && !b_in.tail);
+        // B carries A's own members and the tail; A carries B's own members only.
+        assert_eq!(b_in.stress, 22.0);
+        assert_eq!(a_in.stress, 2.0);
+        // B's own stress at 16 RPM: its own member, not its copy of the tail.
+        assert_eq!(
+            super::super::solve::part_stress(&b, 16.0, Some(&b_in)),
+            64.0 + 22.0 * 16.0
+        );
+        assert_eq!(
+            super::super::solve::part_stress(&a, 32.0, Some(&a_in)),
+            11.0 * 32.0 + 64.0
+        );
+    }
+
+    /// Every speed an owner's source can give needs a speed row in every other part, a source
+    /// every part places with a known ratio, and a part that tabulates each source.
+    #[test]
+    fn parts_that_cannot_agree_are_incomplete() {
+        let (a, mut b) = a_and_b();
+        // B lacks the 8 RPM its reference turns at at A's level 2.
+        b.levels.remove(0);
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 16);
+        assert_eq!(
+            nets.net_of(id(A)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+        // B does not know the shaft's ratio: no frame.
+        let (a, mut b) = a_and_b();
+        b.sources[0].ratio_den = 0;
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 16);
+        assert_eq!(
+            nets.net_of(id(A)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+        // Nobody tabulates the shaft.
+        let (mut a, b) = a_and_b();
+        a.sources[0] = foreign(P, (1, 1));
+        let nets = Nets::build(&[(id(A), 0, &a), (id(B), 0, &b)], 16);
+        assert_eq!(
+            nets.net_of(id(A)).map(|n| n.status),
+            Some(Status::Incomplete)
+        );
+    }
+}
