@@ -1124,7 +1124,12 @@ conservative option at its fork.
   ConflictStats takes no new field. Unwatched only: a watched arrival's honoured fight is read
   from the same records in each session, as in the one-crash tests. S2 replays S0's 4,000 records
   and S1's 20, not S1's JOURNAL_GEN (never dispatched). With the arrival's hold off, S1 resolves
-  it while replaying (Home, want Out).
+  it while replaying (Home, want Out). A second case ends S1 with a clean close (`close(true)`,
+  the path RP-42 changed; the re-review's item 3): with `close`'s guard off, S1 saves mid-replay
+  and S2 opens on pages durable through observation 1,026, not S0's save at 3, and replays 2,997
+  records, not 4,020. The outcome holds even then (resolved once, S0's books), through
+  `held_since`'s inference from pages saved mid-replay (RP-40), so the test checks the pages and
+  the replay's records too.
 - **RP-48** (a held decision's slack; §6.1; amends RP-23; the re-review's item 1): while
   replaying, a held arrival or siege round waits for its fight's BAND_MATERIALIZED only
   `REPLAY_HOLD_SLACK_TICKS` (PLACEHOLDER 600 world ticks, 30 s; a watched decision's record comes a
