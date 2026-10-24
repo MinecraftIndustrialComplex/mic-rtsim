@@ -1637,12 +1637,47 @@ public final class ConflictBridge implements SessionPlugin {
         return ConflictRecords.BY_OTHER;
     }
 
+    /** Who is credited with a death, for the records that name a killer (MZB-261). */
+    record Credit(int by, UUID killer) {}
+
+    /**
+     * The kill credit of a death (MZB-261): {@link #byKind} of the damage's entity, and when that is not a
+     * player, vanilla's {@code getKillCredit} (a player's hit within 100 ticks, or a tame animal's owner's)
+     * when it is a real player (a FakePlayer is a machine, MZB-111). So a pet's kill, and a death within five
+     * seconds of a player's hit, are the player's (EQUILIBRIUM item 9). Used for a camp body's CAMP_DEATH and
+     * a chief puppet's CHIEF_KILLED; BAND_CASUALTIES keep {@link #byKind}, since nothing reads them.
+     */
+    static Credit credit(LivingEntity dead, DamageSource source) {
+        Entity killer = source.getEntity();
+        int by = byKind(killer);
+        if (by == ConflictRecords.BY_PLAYER)
+            return new Credit(by, killer.getUUID());
+        if (dead.getKillCredit() instanceof Player pl && !(pl instanceof FakePlayer))
+            return new Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
+        return new Credit(by, null);
+    }
+
+    /**
+     * The faction whose chief an entity is: a chief puppet of a live party, else 0. (A camp's own body is
+     * {@link Camps}'s to name.)
+     */
+    long chiefPuppetFaction(Entity e) {
+        Slot sl = live(e);
+        return sl != null && sl.chief ? sl.stack.party.faction : 0L;
+    }
+
     /** LivingDeathEvent (lowest, not cancelled): a member's death is journaled at the end of the tick, once certain. */
     void onDeath(LivingEntity dead, DamageSource source, long now) {
         reconciler.onDeath(dead, source);
         Slot sl = live(dead);
         Entity killer = source.getEntity();
         if (sl != null) {
+            // a chief's death goes by the kill credit (CHIEF_KILLED renews the den, MZB-261); the rest by the hit
+            if (sl.chief) {
+                Credit c = credit(dead, source);
+                sl.pendingDeath = new Death(c.by(), c.killer());
+                return;
+            }
             int by = byKind(killer);
             sl.pendingDeath = new Death(by, by == ConflictRecords.BY_PLAYER ? killer.getUUID() : null);
             return;
