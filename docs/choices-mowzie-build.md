@@ -3563,7 +3563,9 @@ place (MZB-402), not given new ids.
   journals a CAMP_DEATH of its generation, which the engine books as a Dead slot's death (no second fall, `camp_death`)
   and drops, experience and its warriors' deaths leak. The conservative reading (any chief-slot body of a
   generation the camp does not know is second) is not taken at generation 0: Java does not know the engine's
-  chief then, and the first chief a restart loads would be called second.
+  chief then, and the first chief a restart loads would be called second. The residual (a retired chief body
+  killed after a restart and before the first census's REMOVE marks it) is accepted as named by the coordinator,
+  2026-10-24.
 - **MZB-612** (the heir waits for a muster to end; closes P2-5): a MASK takes a warrior at home with no line of
   its own, and the engine's books call a warrior of a band that is mustering `Left` with no line yet, so the pair
   could mask a warrior the band is about to send out. `camp_heir` now orders nothing while a slot of the camp is
