@@ -69,6 +69,12 @@ public final class IndustryData extends SavedData {
      * them to remove.
      */
     final List<Long> droppedOnLoad = new ArrayList<>();
+    /**
+     * After a reinstall reset (UR-1): member chunks that held seeds, per dimension, not loaded since. At its first
+     * load each leaves the set, and one that lost its seed attachment in the gap has its machines adopted again
+     * ({@code Districts.readopt}). An optional key: a world without one has nothing to adopt again.
+     */
+    final Map<ResourceKey<Level>, LongOpenHashSet> readopt = new HashMap<>();
 
     public static final Factory<IndustryData> FACTORY = new Factory<>(IndustryData::new, IndustryData::load);
 
@@ -204,6 +210,12 @@ public final class IndustryData extends SavedData {
         tag.put("plugins", pluginTag);
         if (!droppedOnLoad.isEmpty())
             tag.putLongArray("droppedDistricts", droppedOnLoad.stream().mapToLong(Long::longValue).toArray());
+        CompoundTag readoptTag = new CompoundTag();
+        for (Map.Entry<ResourceKey<Level>, LongOpenHashSet> e : readopt.entrySet())
+            if (!e.getValue().isEmpty())
+                readoptTag.putLongArray(e.getKey().location().toString(), e.getValue().toLongArray());
+        if (!readoptTag.isEmpty())
+            tag.put("readopt", readoptTag);
         return tag;
     }
 
@@ -291,6 +303,13 @@ public final class IndustryData extends SavedData {
         CompoundTag pluginTag = reset ? new CompoundTag() : tag.getCompound("plugins");
         for (String key : pluginTag.getAllKeys())
             data.plugins.put(key, pluginTag.getCompound(key));
+        CompoundTag readoptTag = tag.getCompound("readopt");
+        for (String key : readoptTag.getAllKeys()) {
+            ResourceKey<Level> dim = dim(key);
+            if (dim != null)
+                for (long c : readoptTag.getLongArray(key))
+                    data.readopt.computeIfAbsent(dim, d -> new LongOpenHashSet()).add(c);
+        }
         return data;
     }
 

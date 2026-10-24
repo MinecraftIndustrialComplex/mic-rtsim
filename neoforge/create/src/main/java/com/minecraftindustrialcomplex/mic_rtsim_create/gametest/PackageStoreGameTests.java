@@ -489,9 +489,12 @@ public final class PackageStoreGameTests {
                 .thenExecute(() -> send(level, fa.pos, box("nowhere", 5)))
                 .thenWaitUntil(() -> check("the package circles CA: " + looping(level, y.ca) + "/" + travelling(level, y.ca),
                         looping(level, y.ca) == 1 && travelling(level, y.ca) == 0 && held(level, fa.pos) == 0))
+                // The engine may take the record a step after the package is seen looping (under load).
+                .thenWaitUntil(() -> check("one package out: " + chainRecords(store[0], IndRecords.ChainPackage.CHAIN_OUT).size(),
+                        chainRecords(store[0], IndRecords.ChainPackage.CHAIN_OUT).size() == 1))
                 .thenExecute(() -> {
                     List<ByteBuffer> out = chainRecords(store[0], IndRecords.ChainPackage.CHAIN_OUT);
-                    check("one package out: " + out.size(), out.size() == 1);
+                    check("still one package out: " + out.size(), out.size() == 1);
                     check("with no destination", out.get(0).getInt(IndRecords.ChainPackage.DESTINATION) == IndRecords.NO_INVENTORY);
                     at[0] = level.getGameTime();
                 })
