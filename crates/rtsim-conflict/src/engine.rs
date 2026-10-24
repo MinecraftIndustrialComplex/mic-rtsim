@@ -2766,6 +2766,10 @@ impl Conflict {
         if make.is_empty() {
             return None;
         }
+        // A grove's heir that is due goes before any new war party (MZB-616).
+        if kind.is_war() && self.heir_first(f, at) {
+            return None;
+        }
         let want: u32 = make.iter().map(|u| u.1).sum();
         let units = if kind.is_war() {
             // The smaller of the whole warriors and the slots at home with no line in flight

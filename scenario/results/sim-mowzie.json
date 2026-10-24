@@ -1042,7 +1042,7 @@
         {
           "name": "grove chaos with heirs: no two live chief bodies, the chief in no pool count, every MASK done with its SEAT_HEIR done, after every event",
           "ok": true,
-          "detail": "32 groves of 220 events (7040 in all); 58 heirs seated, 18 of 416 Invasions took the Umvuthi"
+          "detail": "32 groves of 220 events (7040 in all); 56 heirs seated, 20 of 416 Invasions took the Umvuthi"
         }
       ],
       "rungs": [],
@@ -1066,12 +1066,12 @@
         {
           "name": "killed as fast as it comes back for 60 game years at base 6, the Umvuthi returns about 1.8 times a year",
           "ok": true,
-          "detail": "106 seats, 1.822 a game year against the closed form's 1.810 (a wait of 53.03 days) and the doc's 1.8; every wait the kernel's on its day: true; the last waits [53.05, 53.06, 53.06, 53.07, 53.07, 53.07, 53.07, 53.07, 53.07, 53.07] days"
+          "detail": "106 seats, 1.822 a game year against the closed form's 1.810 (a wait of 53.03 days) and the doc's 1.8; every wait the kernel's on its day: true; the last waits [52.77, 53.44, 52.75, 52.86, 53.5, 52.79, 52.88, 52.94, 52.99, 53.01] days"
         },
         {
           "name": "killed as fast as it comes back for 60 game years at base 24, the Umvuthi returns about 1.0 times a year",
           "ok": true,
-          "detail": "59 seats, 1.003 a game year against the closed form's 1.000 (a wait of 96.00 days) and the doc's 1; every wait the kernel's on its day: true; the last waits [96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0, 96.0] days"
+          "detail": "59 seats, 1.003 a game year against the closed form's 1.000 (a wait of 96.00 days) and the doc's 1; every wait the kernel's on its day: true; the last waits [95.68, 96.32, 95.68, 96.32, 95.68, 96.32, 95.68, 96.32, 95.68, 96.32] days"
         }
       ],
       "rungs": [],
