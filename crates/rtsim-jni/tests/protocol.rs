@@ -2011,16 +2011,19 @@ mod dragons {
                 _ => None,
             })
         };
-        let mut ticks = 0;
+        // In lockstep. A roll draws only while the player's last report is fresh (within
+        // `presence_fresh_ticks`, 200), and a step runs the dragons to its time before it reads
+        // the step's players. A step that takes in more than 200 game ticks (Java ticking ahead
+        // of a loaded engine) finds a roll late in it stale: the rolls stop, start again from the
+        // next report with a new wait, and the 12,000 ticks ran out under load.
+        let start = j.game_time;
         while drawn(&j).is_none() {
             assert!(
-                ticks < 12_000,
+                j.game_time - start < 12_000,
                 "no field flight drawn: {:?}",
                 e.dragon_stats()
             );
-            j.tick();
-            ticks += 1;
-            std::thread::sleep(Duration::from_micros(100));
+            j.flush();
         }
         j.idle();
         let m = drawn(&j).unwrap();
