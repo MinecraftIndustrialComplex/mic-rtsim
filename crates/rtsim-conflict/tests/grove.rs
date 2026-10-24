@@ -10,7 +10,7 @@ use rtsim_conflict::culture::PartyKind;
 use rtsim_conflict::engine::{
     CHIEF_SLOT, Conflict, HUNT_RADIUS, Party, Phase, SlotState, Target, body_id, item_of,
 };
-use rtsim_conflict::synth::{self, CAMP, CampRun, REFINERY_POS};
+use rtsim_conflict::synth::{self, CampRun, REFINERY_POS};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
 use rtsim_industry::threat::Threat;
@@ -18,7 +18,6 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_settle::NodeKind;
 use rtsim_trade::{Amount, GoodId, MILLI};
-use rtsim_world::World;
 
 fn days(d: f64) -> u64 {
     (d * TICKS_PER_DAY as f64).round() as u64
@@ -95,11 +94,10 @@ fn lines_of(r: &CampRun, action: u8) -> usize {
 fn seat_chief(r: &mut CampRun) -> u32 {
     come_in(r);
     let due = heir_due(r);
-    let predicted = r
-        .c
-        .camp(r.f)
-        .and_then(|c| c.heir_generation(r.key))
-        .expect("an heir waits");
+    let predicted =
+        r.c.camp(r.f)
+            .and_then(|c| c.heir_generation(r.key))
+            .expect("an heir waits");
     r.run(due + 100);
     assert_eq!(chief(r), Some((SlotState::Body, predicted)), "seated");
     predicted
@@ -116,12 +114,24 @@ fn seat_chief(r: &mut CampRun) -> u32 {
 fn a_grove_found_without_its_umvuthi_seats_an_heir_when_the_cap_wait_ends() {
     let mut r = grove(5, 9);
     assert_eq!(chief(&r), None, "found without a chief");
-    assert_eq!(heir_due(&r), Tick(1 + days(192.0)), "the cap's wait from the finding");
+    assert_eq!(
+        heir_due(&r),
+        Tick(1 + days(192.0)),
+        "the cap's wait from the finding"
+    );
     come_in(&mut r);
     r.run(Tick(days(191.0)));
-    assert_eq!(lines_of(&r, boundary::ACTION_MASK), 0, "nothing before the wait is over");
+    assert_eq!(
+        lines_of(&r, boundary::ACTION_MASK),
+        0,
+        "nothing before the wait is over"
+    );
     let key = r.key;
-    let generation = r.c.camp(r.f).unwrap().heir_generation(key).expect("an heir");
+    let generation =
+        r.c.camp(r.f)
+            .unwrap()
+            .heir_generation(key)
+            .expect("an heir");
     assert_eq!(
         r.c.camp(r.f).unwrap().heir_generation(key),
         Some(generation),
@@ -130,15 +140,26 @@ fn a_grove_found_without_its_umvuthi_seats_an_heir_when_the_cap_wait_ends() {
     r.run(heir_due(&r) + 100);
     let pairs: Vec<_> = orders(&r)
         .into_iter()
-        .filter(|(_, x)| x.lines.iter().any(|l| l.action == boundary::ACTION_SEAT_HEIR))
+        .filter(|(_, x)| {
+            x.lines
+                .iter()
+                .any(|l| l.action == boundary::ACTION_SEAT_HEIR)
+        })
         .collect();
     assert_eq!(pairs.len(), 1, "one reconcile seats the heir");
     let lines = &pairs[0].1.lines;
     assert_eq!(lines.len(), 2, "the pair");
     assert_eq!(lines[0].action, boundary::ACTION_MASK);
-    assert_eq!((lines[0].slot, lines[0].generation), (0, 0), "a MASK names no slot");
+    assert_eq!(
+        (lines[0].slot, lines[0].generation),
+        (0, 0),
+        "a MASK names no slot"
+    );
     assert_eq!(lines[1].action, boundary::ACTION_SEAT_HEIR);
-    assert_eq!((lines[1].slot, lines[1].generation), (CHIEF_SLOT, generation));
+    assert_eq!(
+        (lines[1].slot, lines[1].generation),
+        (CHIEF_SLOT, generation)
+    );
     assert_eq!(chief(&r), Some((SlotState::Body, generation)));
     assert!(r.c.camp(r.f).unwrap().heir.is_none(), "the wait is over");
     let bodies = chief_bodies(&r);
@@ -170,7 +191,11 @@ fn a_lost_answer_to_the_heirs_pair_is_mended_by_the_census() {
     assert_eq!(chief_bodies(&r).len(), 1, "the world has its chief");
     assert_eq!(warriors(&r), before - 1, "and one warrior less");
     assert_eq!(chief(&r), None, "the books do not know yet");
-    assert_eq!(r.c.camp(r.f).unwrap().in_flight(), 2, "the pair is in flight");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().in_flight(),
+        2,
+        "the pair is in flight"
+    );
     r.camp_out();
     r.run(r.c.now() + 5);
     r.camp_in();
@@ -226,7 +251,10 @@ fn a_chiefs_death_sets_the_next_heir_by_who_caused_it() {
         (waits[0] / waits[1] - 2.0).abs() < 0.05,
         "one player's loss doubles the wait: {waits:?}"
     );
-    assert!((12.0..16.0).contains(&waits[1]), "6 x 2^1.25 days: {waits:?}");
+    assert!(
+        (12.0..16.0).contains(&waits[1]),
+        "6 x 2^1.25 days: {waits:?}"
+    );
 }
 
 /// MZB-413: the Umvuthi leads an invasion and no raid (`chief_leads`): drawn into the party, its
@@ -241,25 +269,31 @@ fn the_chief_leads_an_invasion_and_stays_home_from_a_raid() {
     r.c.order_party(&mut r.w, r.key, PartyKind::Raid, target, None, at)
         .expect("a raid");
     r.flush(at);
-    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "a raid is led by a warrior");
+    assert_eq!(
+        chief(&r).map(|c| c.0),
+        Some(SlotState::Body),
+        "a raid is led by a warrior"
+    );
     r.settle();
     assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body));
     let at = r.c.now();
-    let p = r
-        .c
-        .order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
-        .expect("an invasion");
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+            .expect("an invasion");
     r.flush(at);
-    assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Left), "the chief leads");
-    let in_party: Vec<u32> = r
-        .c
-        .camp(r.f)
-        .unwrap()
-        .slots
-        .iter()
-        .filter(|s| s.party == p)
-        .map(|s| s.id)
-        .collect();
+    assert_eq!(
+        chief(&r).map(|c| c.0),
+        Some(SlotState::Left),
+        "the chief leads"
+    );
+    let in_party: Vec<u32> =
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .filter(|s| s.party == p)
+            .map(|s| s.id)
+            .collect();
     assert!(in_party.contains(&CHIEF_SLOT), "{in_party:?}");
     r.settle();
     assert_eq!(chief(&r).map(|c| c.0), Some(SlotState::Body), "home again");
@@ -278,7 +312,10 @@ fn a_census_that_finds_an_untagged_umvuthi_adopts_it_as_the_chief() {
         b.body = umvuthi;
         b.chief = true;
     }
-    assert!(r.c.camp(r.f).unwrap().heir.is_some_and(|h| h.found_empty), "waiting for an heir");
+    assert!(
+        r.c.camp(r.f).unwrap().heir.is_some_and(|h| h.found_empty),
+        "waiting for an heir"
+    );
     come_in(&mut r);
     assert!(r.c.camp(r.f).unwrap().heir.is_none(), "the wait is over");
     assert!(matches!(chief(&r), Some((SlotState::Body, g)) if g != 0));
@@ -308,14 +345,7 @@ fn grievance(r: &CampRun) -> f64 {
 }
 
 /// A player's payment to an Umvuthi body, as the plugin reports it.
-fn paid(
-    r: &mut CampRun,
-    slot: u32,
-    generation: u32,
-    flags: u32,
-    op: u64,
-    items: &[(u32, i32)],
-) {
+fn paid(r: &mut CampRun, slot: u32, generation: u32, flags: u32, op: u64, items: &[(u32, i32)]) {
     let at = r.c.now();
     r.c.ingest(
         &mut r.w,
@@ -344,7 +374,10 @@ fn relief(pay: impl FnOnce(&mut CampRun)) -> f64 {
     let g0 = grievance(&r);
     pay(&mut r);
     let g1 = grievance(&r);
-    assert!(g1 > 0.0, "a payment that clears the feud proves nothing ({g0})");
+    assert!(
+        g1 > 0.0,
+        "a payment that clears the feud proves nothing ({g0})"
+    );
     g0 - g1
 }
 
@@ -362,7 +395,10 @@ fn unpriced_tribute_is_worth_the_groves_price_and_a_trade_a_tenth() {
         paid(r, 0, 0, boundary::PAID_STRAY, 0x32, &[(id, 9)]);
     });
     assert!(nuggets > 1.0, "a gift softens the feud: {nuggets}");
-    assert!((nuggets - coins).abs() < 1e-9, "81 nuggets {nuggets} are 9 coins {coins}");
+    assert!(
+        (nuggets - coins).abs() < 1e-9,
+        "81 nuggets {nuggets} are 9 coins {coins}"
+    );
     let traded = relief(|r| {
         let at = r.c.now();
         let t = Obs::Traded(boundary::Traded {
@@ -392,9 +428,23 @@ fn only_a_payment_to_the_live_chief_is_remembered() {
     paid(&mut r, CHIEF_SLOT, 5, 0, 0x41, &[(id, 9)]);
     assert!(memory(&r).is_empty(), "no chief seated");
     let generation = seat_chief(&mut r);
-    paid(&mut r, CHIEF_SLOT, generation.wrapping_add(1), 0, 0x42, &[(id, 9)]);
+    paid(
+        &mut r,
+        CHIEF_SLOT,
+        generation.wrapping_add(1),
+        0,
+        0x42,
+        &[(id, 9)],
+    );
     assert!(memory(&r).is_empty(), "another generation");
-    paid(&mut r, CHIEF_SLOT, generation, boundary::PAID_STRAY, 0x43, &[(id, 9)]);
+    paid(
+        &mut r,
+        CHIEF_SLOT,
+        generation,
+        boundary::PAID_STRAY,
+        0x43,
+        &[(id, 9)],
+    );
     assert!(memory(&r).is_empty(), "a stray Umvuthi");
     paid(&mut r, 0, 1, 0, 0x44, &[(id, 9)]);
     assert!(memory(&r).is_empty(), "a warrior's slot");
@@ -458,7 +508,10 @@ fn the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to() {
     assert_eq!(written.len(), 1, "the body is written to: {cmds:?}");
     // The body with the whole list is not written to.
     let cmds = census(&mut r, CHIEF_SLOT, generation, want.clone());
-    assert!(!cmds.iter().any(|c| matches!(c, Cmd::ChiefBody(_))), "{cmds:?}");
+    assert!(
+        !cmds.iter().any(|c| matches!(c, Cmd::ChiefBody(_))),
+        "{cmds:?}"
+    );
 }
 
 /// The grove's tribute (567 nuggets, one stack at most 64 at a time): a run with the camp in and
@@ -472,7 +525,13 @@ fn tribute_run(seed: u64) -> (CampRun, GoodId) {
 }
 
 fn owed(r: &CampRun) -> i64 {
-    r.c.camp(r.f).unwrap().owed_tribute.iter().map(|e| e.1).sum::<i64>() / MILLI
+    r.c.camp(r.f)
+        .unwrap()
+        .owed_tribute
+        .iter()
+        .map(|e| e.1)
+        .sum::<i64>()
+        / MILLI
 }
 
 fn chest(r: &mut CampRun, free: u32) {
@@ -502,7 +561,10 @@ fn stock(r: &CampRun, g: GoodId) -> Amount {
 fn tribute_goes_to_the_chest_in_stacks_one_after_another() {
     let (mut r, nugget) = tribute_run(20);
     let held = stock(&r, nugget);
-    assert!(held >= 567 * MILLI, "the nuggets are stocked at the haven: {held}");
+    assert!(
+        held >= 567 * MILLI,
+        "the nuggets are stocked at the haven: {held}"
+    );
     assert_eq!(owed(&r), 567);
     assert_eq!(r.c.placings().count(), 0, "no chest, nothing sent");
     chest(&mut r, 27);
@@ -528,7 +590,11 @@ fn tribute_goes_to_the_chest_in_stacks_one_after_another() {
     assert_eq!(r.c.camp(r.f).unwrap().stacks, 9);
     assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.free), Some(27 - 9));
     assert_eq!(r.c.stats.tribute_stacks, 9);
-    assert_eq!(stock(&r, nugget), held - 567 * MILLI, "they have left the books");
+    assert_eq!(
+        stock(&r, nugget),
+        held - 567 * MILLI,
+        "they have left the books"
+    );
     ok(&mut r);
 }
 
@@ -547,11 +613,20 @@ fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
     assert!(r.c.tribute_failed(&mut r.w, op1, at));
     assert_eq!(stock(&r, nugget), held, "back");
     assert_eq!(owed(&r), 567);
-    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "the chest is forgotten");
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "the chest is forgotten"
+    );
     assert_eq!(r.c.placings().count(), 0);
     assert!(!r.c.tribute_failed(&mut r.w, op1, at), "answered once");
-    assert!(!r.c.tribute_placed(&mut r.w, op1, at), "and not placed after");
-    assert!(!r.c.tribute_placed(&mut r.w, 0xDEAD, at), "an op of no stack");
+    assert!(
+        !r.c.tribute_placed(&mut r.w, op1, at),
+        "and not placed after"
+    );
+    assert!(
+        !r.c.tribute_placed(&mut r.w, 0xDEAD, at),
+        "an op of no stack"
+    );
     chest(&mut r, 27);
     let (op2, p2) = r.c.placings().next().expect("the chest again");
     assert_ne!(op1, op2, "a new op");
@@ -573,7 +648,10 @@ fn a_stack_in_flight_survives_a_save_and_the_chest_does_not() {
     assert_eq!(before.len(), 1);
     r.round_trip();
     assert_eq!(r.c.placings().collect::<Vec<_>>(), before);
-    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "the chest is not saved");
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "the chest is not saved"
+    );
     assert_eq!(owed(&r), 567);
     let at = r.c.now();
     assert!(r.c.tribute_placed(&mut r.w, before[0].0, at));
@@ -601,12 +679,343 @@ fn only_the_tribute_good_is_owed_and_a_camp_that_is_out_places_nothing() {
     let (op, _) = r.c.placings().next().expect("a stack");
     r.camp_out();
     r.run(r.c.now() + 5);
-    assert!(r.c.camp(r.f).unwrap().chest.is_none(), "forgotten at CAMP_OUT");
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "forgotten at CAMP_OUT"
+    );
     assert_eq!(r.c.placings().count(), 1, "the stack in flight stays");
     let at = r.c.now();
     assert!(r.c.tribute_placed(&mut r.w, op, at));
-    assert_eq!(r.c.placings().count(), 0, "nothing goes while the camp is out");
+    assert_eq!(
+        r.c.placings().count(),
+        0,
+        "nothing goes while the camp is out"
+    );
     chest(&mut r, 27);
-    assert_eq!(r.c.placings().count(), 0, "a chest named to a camp that is out");
+    assert_eq!(
+        r.c.placings().count(),
+        0,
+        "a chest named to a camp that is out"
+    );
     ok(&mut r);
+}
+
+// ---- owed hunts ---------------------------------------------------------------------------------
+
+/// Walls that hold no one back: every raid on a district is survived whole.
+struct Open;
+
+impl Infrastructure for Open {
+    fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
+        Vec::new()
+    }
+
+    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+        Some(RaidOutcome {
+            survived: 1.0,
+            floor: None,
+            untested: false,
+            stolen: GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+
+    fn good_name(&self, _: Good) -> Option<String> {
+        None
+    }
+}
+
+/// The hunts the grove owes: (district, count, op).
+fn hunts(r: &CampRun) -> Vec<(u64, u32, u64)> {
+    r.c.factions[r.f as usize]
+        .hunts
+        .iter()
+        .map(|h| (h.district.0, h.count, h.op))
+        .collect()
+}
+
+/// Every OWED_HUNT the engine sent.
+fn hunt_cmds(r: &CampRun) -> Vec<boundary::OwedHunt> {
+    r.cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Cmd::OwedHunt(h) => Some(*h),
+            _ => None,
+        })
+        .collect()
+}
+
+fn owe(r: &mut CampRun, district: u64, count: u32) {
+    let at = r.c.now();
+    r.c.owe_hunt(
+        r.f,
+        rtsim_industry::ids::DistrictId(district),
+        REFINERY_POS,
+        count,
+        at,
+    );
+    r.flush(at);
+}
+
+fn applied(r: &mut CampRun, district: u64, op: u64, killed: u32) {
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::HuntApplied(boundary::HuntApplied {
+            faction: r.key,
+            district,
+            op,
+            killed,
+        }),
+        at,
+    );
+}
+
+/// MZB-424, MZB-425: a raid on a district nobody watches, survived, leaves the hunts its
+/// survivors stand for (the raptor's 2 a head) owed in that district, as an OWED_HUNT the plugin
+/// answers with HUNT_APPLIED whatever it killed; the answer spends it.
+#[test]
+fn a_raid_on_an_unwatched_district_leaves_its_raptors_hunts_owed() {
+    let mut r = grove(30, 9);
+    r.infra = Box::new(Open);
+    come_in(&mut r);
+    r.raid().expect("a raid: three warriors and a raptor");
+    r.run(Tick(days(4.0)));
+    assert_eq!(r.c.stats.raids_district, 1);
+    let owed = hunts(&r);
+    assert_eq!(owed.len(), 1, "{owed:?}");
+    assert_eq!(
+        (owed[0].0, owed[0].1),
+        (synth::REFINERY.0, 2),
+        "one raptor, two animals"
+    );
+    let sent = hunt_cmds(&r);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].district, sent[0].count, sent[0].op),
+        (synth::REFINERY.0, 2, owed[0].2)
+    );
+    assert_eq!(sent[0].centre, (REFINERY_POS.x, REFINERY_POS.z));
+    assert_eq!(sent[0].radius, HUNT_RADIUS);
+    assert_eq!(sent[0].dimension, u32::from(REFINERY_POS.frame));
+    assert_eq!(r.plugin.hunts.len(), 1, "the plugin has it");
+    // The plugin kills one of the two (no more to be found) and says so.
+    let at = r.c.now() + 1;
+    r.plugin.apply_hunts(1, at);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty(), "spent, whatever it killed");
+    assert_eq!(r.c.stats.hunts_killed, 1);
+    ok(&mut r);
+}
+
+/// MZB-449: a hunt owed again in a district before the plugin answered adds to the one in flight
+/// up to the culture's `hunt_cap` (8) and replaces it with a new op; the old op's late answer is
+/// spent and clears nothing; another district has its own hunt.
+#[test]
+fn a_hunt_owed_again_sums_to_the_cap_with_a_new_op_and_the_old_ones_answer_is_stale() {
+    let mut r = grove(31, 9);
+    owe(&mut r, 5, 6);
+    let first = hunts(&r)[0];
+    assert_eq!((first.0, first.1), (5, 6));
+    owe(&mut r, 5, 6);
+    let second = hunts(&r);
+    assert_eq!(second.len(), 1);
+    assert_eq!((second[0].0, second[0].1), (5, 8), "capped at 8");
+    assert_ne!(second[0].2, first.2, "a new op");
+    owe(&mut r, 6, 3);
+    assert_eq!(hunts(&r).len(), 2, "another district, another hunt");
+    let sent: Vec<_> = hunt_cmds(&r)
+        .iter()
+        .map(|h| (h.district, h.count))
+        .collect();
+    assert_eq!(sent, [(5, 6), (5, 8), (6, 3)]);
+    // The first op's answer is late.
+    applied(&mut r, 5, first.2, 6);
+    assert_eq!(hunts(&r).len(), 2, "clears nothing");
+    assert_eq!(r.c.stats.hunts_killed, 0);
+    // The second's clears its district only, once.
+    applied(&mut r, 5, second[0].2, 4);
+    assert_eq!(hunts(&r).iter().map(|h| h.0).collect::<Vec<_>>(), [6]);
+    assert_eq!(r.c.stats.hunts_killed, 4);
+    applied(&mut r, 5, second[0].2, 4);
+    assert_eq!(r.c.stats.hunts_killed, 4, "once");
+    ok(&mut r);
+}
+
+/// MZB-424 (what owes none): nothing is owed on Peaceful, nor by a culture with no `hunt_cap`.
+#[test]
+fn nothing_is_owed_on_peaceful_or_by_a_culture_without_a_cap() {
+    let mut r = grove(32, 9);
+    r.c.peaceful = true;
+    owe(&mut r, 5, 3);
+    assert!(hunts(&r).is_empty() && hunt_cmds(&r).is_empty(), "Peaceful");
+    let mut g = CampRun::new(32, "goblin", 3);
+    owe(&mut g, 5, 3);
+    assert!(hunts(&g).is_empty() && hunt_cmds(&g).is_empty(), "goblins");
+}
+
+/// MZB-425 (saves and sessions): an owed hunt is saved; at a new session it is written again,
+/// with the same op, once the replay has caught up (`resend_notices`), and answered, it is spent.
+#[test]
+fn an_owed_hunt_is_saved_and_written_again_with_its_op_at_a_session_start() {
+    let mut r = grove(33, 9);
+    owe(&mut r, 5, 3);
+    owe(&mut r, 6, 2);
+    let before = hunts(&r);
+    r.round_trip();
+    assert_eq!(hunts(&r), before, "saved");
+    let sent = hunt_cmds(&r).len();
+    r.restart_to_replay();
+    r.c.resend_notices();
+    let at = r.c.now();
+    r.flush(at);
+    let again: Vec<_> = hunt_cmds(&r).split_off(sent);
+    assert_eq!(
+        again
+            .iter()
+            .map(|h| (h.district, h.count, h.op))
+            .collect::<Vec<_>>(),
+        before,
+        "each hunt again, under its op"
+    );
+    r.plugin.apply_hunts(2, at + 1);
+    r.run(at + 5);
+    assert!(hunts(&r).is_empty());
+    ok(&mut r);
+}
+
+// ---- plunder ------------------------------------------------------------------------------------
+
+fn taken(c: &Conflict, g: GoodId) -> i128 {
+    c.ledger.from_villages.get(&g).copied().unwrap_or(0)
+}
+
+/// MZB-427: a grove's plunder band takes its `plunder_goods` (leather and wool) and nothing else,
+/// whatever it carries (a raptor carries nothing), and eats what it takes where it stands: the
+/// goods are booked destroyed, never landed, and the band brings nothing home.
+#[test]
+fn a_groves_plunder_takes_livestock_only_and_eats_it() {
+    let mut raided = 0;
+    for seed in 1..=8u64 {
+        let (mut w, _) = synth::world(seed);
+        let mut c = synth::conflict(seed, &w);
+        // The villages put up no defence, so the band lives to take what it can.
+        c.tun.village_defence_per_pop = 0.0;
+        for k in &mut c.cultures.list {
+            k.def.plunder_mean_days = None;
+        }
+        c.add_faction(
+            &mut w,
+            synth::CAMP,
+            "umvuthana",
+            synth::CAMP_POS,
+            Tick::ZERO,
+        )
+        .expect("the grove");
+        let grove_culture = c
+            .cultures
+            .get(c.cultures.index_of("umvuthana").unwrap())
+            .clone();
+        let mut prey: Vec<usize> = (0..w.nodes.len())
+            .filter(|&i| {
+                matches!(w.nodes[i].kind, NodeKind::Village(cu) if grove_culture.hates(cu.name()))
+            })
+            .collect();
+        prey.sort_by_key(|&i| {
+            let p = w.nodes[i].pos;
+            let (dx, dz) = (
+                i64::from(p.x - synth::CAMP_POS.x),
+                i64::from(p.z - synth::CAMP_POS.z),
+            );
+            (dx * dx + dz * dz, i)
+        });
+        let i = prey[0];
+        let p = c
+            .order_party(
+                &mut w,
+                synth::CAMP,
+                PartyKind::Plunder,
+                Target::Node(i),
+                None,
+                Tick::from_days(1),
+            )
+            .expect("a plunder band");
+        // To its arrival.
+        let at = loop {
+            let x = &c.parties[p];
+            if x.phase == Phase::Out && x.seg as usize + 2 >= x.route.len() {
+                let at = x.times[x.seg as usize + 1];
+                w.run_until(at);
+                break at;
+            }
+            let next = c.next_due().expect("the band's next event");
+            c.run_until(&mut w, &mut rtsim_ecology::infra::NoInfrastructure, next);
+        };
+        // Every good stands 100 items over its target.
+        let goods: Vec<GoodId> = w.goods.ids().collect();
+        let m = w.market(i);
+        let rich: BTreeMap<GoodId, Amount> = goods
+            .iter()
+            .map(|&g| (g, m.line(g).target + 100 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+        w.stock_from_players(i, &rich, at);
+        let leather = w.goods.find("leather").unwrap();
+        let wool = w.goods.find("wool").unwrap();
+        let m = w.market(i);
+        let share = grove_culture.def.loot_share_milli;
+        let reach: Amount = [leather, wool]
+            .iter()
+            .map(|&g| (m.stock(g) - m.line(g).target).max(0) * share / 1000)
+            .sum();
+        let before: Vec<i128> = goods.iter().map(|&g| taken(&c, g)).collect();
+        let landed = c.ledger.landed.clone();
+        let raids = c.stats.raids_village;
+        c.run_until(&mut w, &mut rtsim_ecology::infra::NoInfrastructure, at);
+        if c.stats.raids_village == raids {
+            continue;
+        }
+        raided += 1;
+        for (k, &g) in goods.iter().enumerate() {
+            let got = taken(&c, g) - before[k];
+            if g == leather || g == wool {
+                assert!(got >= 0, "seed {seed}");
+            } else {
+                assert_eq!(got, 0, "seed {seed}: good {k} is no livestock");
+            }
+        }
+        let items = (taken(&c, leather) + taken(&c, wool))
+            - (before[leather.index()] + before[wool.index()]);
+        assert!(items > 0, "seed {seed}: livestock was taken");
+        assert!(
+            items <= i128::from(reach),
+            "seed {seed}: {items} of at most {reach}"
+        );
+        assert_eq!(
+            c.ledger
+                .destroyed
+                .keys()
+                .copied()
+                .collect::<Vec<_>>()
+                .iter()
+                .filter(|g| ![leather, wool].contains(g))
+                .count(),
+            0,
+            "only livestock is eaten"
+        );
+        assert!(c.ledger.destroyed.values().sum::<i128>() >= items);
+        assert_eq!(c.ledger.landed, landed, "nothing lands at the haven");
+        assert!(c.parties[p].loot.is_empty(), "nothing carried");
+        while c.parties.get(p).is_some() {
+            let next = c.next_due().expect("the band's next event");
+            c.run_until(&mut w, &mut rtsim_ecology::infra::NoInfrastructure, next);
+        }
+        w.run_until(c.now());
+        assert!(c.check(&w).is_ok(), "seed {seed}: {:?}", c.check(&w));
+        let _: Option<Handle<Party>> = None;
+    }
+    assert!(raided >= 4, "{raided} raids of 8");
 }

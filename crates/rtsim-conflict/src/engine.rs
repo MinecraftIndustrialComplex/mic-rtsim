@@ -3694,7 +3694,13 @@ impl Conflict {
             return;
         }
         let key = self.factions[f as usize].key;
-        let slot = fnv1a64(&[d.0.to_le_bytes(), at.0.to_le_bytes()].concat());
+        // A replacement takes a new op even within one tick: the op in flight is folded in.
+        let held = self.factions[f as usize]
+            .hunts
+            .iter()
+            .find(|h| h.district == d)
+            .map_or(0, |h| h.op);
+        let slot = fnv1a64(&[d.0.to_le_bytes(), at.0.to_le_bytes(), held.to_le_bytes()].concat());
         let op = boundary::AGENT_NAMESPACE << 56
             | rtsim_world::ribbits::identity_op(key, HUNT_SLOT ^ slot);
         let x = &mut self.factions[f as usize];
