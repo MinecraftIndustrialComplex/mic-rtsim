@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_create.mixin;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
+import com.minecraftindustrialcomplex.mic_rtsim_create.Frontier;
 import com.minecraftindustrialcomplex.mic_rtsim_create.PackageStores;
 import com.simibubi.create.content.logistics.packagePort.PackagePortTarget;
 import com.simibubi.create.content.logistics.packagePort.frogport.FrogportBlockEntity;
@@ -22,7 +23,9 @@ import org.spongepowered.asm.mixin.injection.At;
  * frogport's inventory (anything left over: Create drops it, nothing is recorded). Both are wrapped, never
  * changed: for a frogport on a chain conveyor in a server level, {@link PackageStores#chainPackage} journals
  * an IND_CHAIN_PACKAGE when the frogport is a package store's. The stack is copied before the call, as both
- * calls may keep or change it.
+ * calls may keep or change it. A package the frontier keyed ({@link Frontier}, slice S4c1) has its key taken
+ * out before the insert, so nothing of rtsim's stays on it in the frogport; its {@code CHAIN_IN} carries the
+ * key when Java still holds it.
  */
 @Mixin(value = FrogportBlockEntity.class, remap = false)
 public abstract class FrogportChainMixin {
@@ -48,10 +51,13 @@ public abstract class FrogportChainMixin {
         if (simulate || !(self.target instanceof PackagePortTarget.ChainConveyorFrogportTarget) || !(self.getLevel() instanceof ServerLevel)
                 || box == null || box.isEmpty())
             return original.call(inventory, box, simulate);
+        Frontier.Key key = Frontier.key(box);
+        if (key != null)
+            Frontier.strip(box);
         ItemStack copy = box.copy();
         ItemStack left = original.call(inventory, box, simulate);
         if (left == null || left.isEmpty())
-            PackageStores.chainPackage(self, copy, IndRecords.ChainPackage.CHAIN_IN);
+            PackageStores.chainPackage(self, copy, IndRecords.ChainPackage.CHAIN_IN, key);
         return left;
     }
 }

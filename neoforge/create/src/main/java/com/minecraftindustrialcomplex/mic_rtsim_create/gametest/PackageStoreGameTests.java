@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
+import com.minecraftindustrialcomplex.mic_rtsim_create.Frontier;
 import com.minecraftindustrialcomplex.mic_rtsim_create.Loaded;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.PackageStores;
@@ -31,8 +32,10 @@ import net.neoforged.neoforge.items.ItemHandlerHelper;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
@@ -43,7 +46,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * motor and joined to CB in B, 23 blocks away. Frogports hang on the conveyors' loops, two blocks from them.
  * Packages are put into a frogport's own inventory, which it sends (Create's {@code tryPullingFrom}: a
  * package its own filter does not match). Slice S4b adds the engine's writes into a loaded frogport
- * (IND_WRITE_CHAIN).
+ * (IND_WRITE_CHAIN), slice S4c1 the frontier (a far frogport whose chunk does not tick).
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -593,6 +596,151 @@ public final class PackageStoreGameTests {
                     FrogportBlockEntity f = frog(level, fb.pos);
                     for (int i = 0; i < f.inventory.getSlots(); i++)
                         f.inventory.setStackInSlot(i, ItemStack.EMPTY);
+                });
+        restore(s, level, y).thenSucceed();
+    }
+
+    // ---- slice S4c1: the frontier ---------------------------------------------------------------------
+
+    /** The frontier's CHAIN_HELD records of a store. */
+    private static List<ByteBuffer> heldRecords(long store) {
+        return chainRecords(store, IndRecords.ChainPackage.CHAIN_HELD);
+    }
+
+    /** The keys of the packages circling a conveyor; a package with no key adds 0. */
+    private static List<Long> keysAt(ServerLevel level, BlockPos p) {
+        List<Long> out = new ArrayList<>();
+        ChainConveyorBlockEntity c = conveyor(level, p);
+        for (ChainConveyorPackage box : c == null ? List.<ChainConveyorPackage>of() : c.getLoopingPackages()) {
+            Frontier.Key k = Frontier.key(box.item);
+            out.add(k == null ? 0 : k.serial());
+        }
+        return out;
+    }
+
+    /**
+     * Slice S4c1 (SECTIONS.md §2.5, Q5; choices SC135 to SC139): B stops ticking (FULL, around A's forced chunk),
+     * so Create's route to FB expires on CA, the boundary conveyor. The frontier keeps it, and packages from FA
+     * for FB circle CA, held: one CHAIN_HELD each, keyed, toward FB at CA, and none again while they circle. A
+     * restart (CA's table emptied, the stores and the frontier loaded again from {@code IndustryData}) brings
+     * the route back and keeps the keys; new packages are held once each. Once B ticks again, the kept route
+     * goes, every package lands in FB as a CHAIN_IN carrying its key, and FB's packages carry no key.
+     */
+    @GameTest(template = YARD, batch = "sec1_s4c", timeoutTicks = TIMEOUT)
+    public static void aRouteToAnAwayFrogportIsKept(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        String t = "aRouteToAnAwayFrogportIsKept";
+        Yard y = Yard.at(helper, 6100, false);
+        Frog fa = new Frog(y.ca.west(2), y.ca, "west"), fb = new Frog(y.cb.east(2), y.cb, "east");
+        BlockPos toB = y.cb.subtract(y.ca);
+        long[] store = {-1};
+        int[] at = {-1, 0};
+        long[] gone = {-1};
+        Set<Long> serials = new HashSet<>();
+        GameTestSequence s = build(helper, y, false, List.of(fa, fb))
+                .thenWaitUntil(() -> checkStore(level, List.of(fa, fb), new long[] {y.da(), y.db()}, store))
+                .thenExecute(() -> {
+                    at[0] = indexIn(declaration(store[0]), fb.pos);
+                    check("CA routes east to CB", conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)).equals(toB));
+                    // A stays forced (level 31): the chunk between ticks (32), B is FULL and does not tick (33).
+                    level.setChunkForced(y.ax + 1, y.az, false);
+                    level.setChunkForced(y.bx, y.az, false);
+                    gone[0] = level.getGameTime();
+                })
+                .thenWaitUntil(() -> check("B is FULL and does not tick", level.getChunkSource().getChunkNow(y.bx, y.az) != null
+                        && !level.shouldTickBlocksAt(net.minecraft.world.level.ChunkPos.asLong(y.bx, y.az)) && Loaded.ticks(level, y.ca)
+                        && !Loaded.ticks(level, fb.pos)))
+                .thenWaitUntil(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    List<Frontier.Kept> k = f.keptAt(level.dimension(), y.ca);
+                    check("CA keeps the route to FB: " + k, k != null && k.size() == 1 && k.get(0).port().equals("east")
+                            && k.get(0).connection().equals(toB));
+                })
+                .thenExecute(() -> {
+                    record(t, "route kept after (ticks)", level.getGameTime() - gone[0]);
+                    check("no package held yet", heldRecords(store[0]).isEmpty());
+                    for (int i = 1; i <= 3; i++)
+                        send(level, fa.pos, box("east", i));
+                })
+                .thenWaitUntil(() -> check("three packages circle CA, held: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
+                        looping(level, y.ca) == 3 && held(level, fa.pos) == 0 && heldRecords(store[0]).size() == 3))
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    List<ByteBuffer> h = heldRecords(store[0]);
+                    record(t, "held: records, CA's keys, " + f.perfLine(), h.size() + ", " + keysAt(level, y.ca));
+                    check("still three, each held once: " + h.size(), h.size() == 3 && looping(level, y.ca) == 3);
+                    check("nothing reached FB", held(level, fb.pos) == 0);
+                    long iron = 0;
+                    for (ByteBuffer r : h) {
+                        check("toward FB", r.getInt(IndRecords.ChainPackage.FROGPORT) == at[0] && r.getInt(IndRecords.ChainPackage.DESTINATION) == at[0]);
+                        check("at CA", r.getInt(IndRecords.ChainPackage.X) == y.ca.getX() && r.getInt(IndRecords.ChainPackage.Y) == y.ca.getY()
+                                && r.getInt(IndRecords.ChainPackage.Z) == y.ca.getZ());
+                        check("no district, no inventory", r.getLong(IndRecords.ChainPackage.DISTRICT) == 0
+                                && r.getInt(IndRecords.ChainPackage.INVENTORY) == IndRecords.NO_INVENTORY);
+                        check("one package", r.getInt(IndRecords.ChainPackage.PACKAGES) == 1 && r.getLong(IndRecords.ChainPackage.OP_ID) == 0);
+                        check("keyed in this epoch", r.getInt(IndRecords.ChainPackage.EPOCH) == f.epoch() && f.epoch() != 0);
+                        serials.add(r.getLong(IndRecords.ChainPackage.SERIAL));
+                        iron += goodsIn(r, IndRecords.ChainPackage.ENTRIES, aux(r), IndRecords.ENTRY16);
+                    }
+                    check("three keys", serials.size() == 3 && f.held().keySet().equals(serials));
+                    check("the packages carry them: " + keysAt(level, y.ca), new HashSet<>(keysAt(level, y.ca)).equals(serials));
+                    check("6 iron held: " + iron, iron == 6);
+                    ByteBuffer d = declaration(store[0]);
+                    check("the declaration carries the epoch", d.getInt(IndRecords.PackageStore.EPOCH) == f.epoch());
+                    at[1] = f.epoch();
+                    // A restart: Create's tables start empty, the stores and the frontier load from IndustryData.
+                    conveyor(level, y.ca).routingTable.entriesByDistance.clear();
+                    conveyor(level, y.cb).routingTable.entriesByDistance.clear();
+                    PackageStores.forgetForTest(ind());
+                })
+                .thenWaitUntil(() -> check("the kept route is back on CA",
+                        conveyor(level, y.ca).routingTable.getExitFor(box("east", 1)).equals(toB)))
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    check("the same epoch: " + f.epoch(), f.epoch() == at[1]);
+                    check("the same three held", f.held().keySet().equals(serials));
+                    send(level, fa.pos, box("east", 4));
+                    send(level, fa.pos, box("east", 5));
+                })
+                .thenWaitUntil(() -> check("five circle CA, five held: " + looping(level, y.ca) + ", " + heldRecords(store[0]).size(),
+                        looping(level, y.ca) == 5 && heldRecords(store[0]).size() == 5))
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    List<ByteBuffer> h = heldRecords(store[0]);
+                    record(t, "after the restart: records, CA's keys, " + f.perfLine(), h.size() + ", " + keysAt(level, y.ca));
+                    check("the first three were not held again: " + h.size(), h.size() == 5);
+                    for (ByteBuffer r : h)
+                        serials.add(r.getLong(IndRecords.ChainPackage.SERIAL));
+                    check("five keys", serials.size() == 5 && f.held().keySet().equals(serials));
+                    level.setChunkForced(y.ax + 1, y.az, true);
+                    level.setChunkForced(y.bx, y.az, true);
+                })
+                .thenWaitUntil(() -> check("all five land in FB once B ticks: FB " + held(level, fb.pos) + ", CA " + looping(level, y.ca),
+                        held(level, fb.pos) == 5 && looping(level, y.ca) == 0 && travelling(level, y.ca) == 0))
+                .thenWaitUntil(() -> {
+                    check("five in at FB", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN).size() == 5);
+                    check("the kept route went", PackageStores.of(ind()).frontier.keptAt(level.dimension(), y.ca) == null);
+                })
+                .thenExecute(() -> {
+                    Frontier f = PackageStores.of(ind()).frontier;
+                    Set<Long> landed = new HashSet<>();
+                    for (ByteBuffer r : chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN)) {
+                        check("in at FB", r.getInt(IndRecords.ChainPackage.FROGPORT) == at[0]);
+                        check("with its key", r.getInt(IndRecords.ChainPackage.EPOCH) == f.epoch());
+                        landed.add(r.getLong(IndRecords.ChainPackage.SERIAL));
+                    }
+                    record(t, "landed: " + f.perfLine(), landed.size());
+                    check("every key landed once", landed.equals(serials));
+                    check("nothing held", f.held().isEmpty());
+                    FrogportBlockEntity frog = frog(level, fb.pos);
+                    for (int i = 0; i < frog.inventory.getSlots(); i++)
+                        check("FB's packages carry no key", frog.inventory.getStackInSlot(i).isEmpty()
+                                || Frontier.key(frog.inventory.getStackInSlot(i)) == null);
+                    for (int i = 0; i < frog.inventory.getSlots(); i++)
+                        frog.inventory.setStackInSlot(i, ItemStack.EMPTY);
                 });
         restore(s, level, y).thenSucceed();
     }

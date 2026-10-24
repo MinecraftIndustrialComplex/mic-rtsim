@@ -71,7 +71,9 @@ import java.util.function.IntUnaryOperator;
  *       animation.</li>
  * </ul>
  * The stores persist in {@code IndustryData} under {@link #KEY} (format 3). Nothing here changes the world: block
- * entities are read with {@code EntityCreationType.CHECK} or through {@link Loaded}, never created.
+ * entities are read with {@code EntityCreationType.CHECK} or through {@link Loaded}, never created. The
+ * frontier ({@link Frontier}, slice S4c) is the stores' too: its epoch goes in every IND_PACKAGE_STORE, and a
+ * census takes the keys out of the packages it counts.
  */
 public final class PackageStores {
     /** The key of the stores' state in {@code IndustryData}. */
@@ -92,10 +94,23 @@ public final class PackageStores {
     private static final int MAX_DEPTH = 4;
 
     private static final Map<Industry, PackageStores> BY_INDUSTRY = new WeakHashMap<>();
+    /** The last answer of {@link #of} (the frontier asks it from every chain conveyor's tick). */
+    private static PackageStores last;
 
     /** The stores of {@code ind}'s session, loaded from its {@code IndustryData} at first use. */
     public static PackageStores of(Industry ind) {
-        return BY_INDUSTRY.computeIfAbsent(ind, PackageStores::new);
+        PackageStores l = last;
+        if (l != null && l.ind == ind)
+            return l;
+        l = BY_INDUSTRY.computeIfAbsent(ind, PackageStores::new);
+        last = l;
+        return l;
+    }
+
+    /** GameTests: forgets {@code ind}'s stores, so the next {@link #of} loads them from its {@code IndustryData}, as a restart does. */
+    public static void forgetForTest(Industry ind) {
+        BY_INDUSTRY.remove(ind);
+        last = null;
     }
 
     /** One frogport of a store. */
@@ -193,14 +208,20 @@ public final class PackageStores {
     final Industry ind;
     final TreeMap<Long, Store> stores = new TreeMap<>();
     private final Map<ResourceKey<Level>, Long2LongOpenHashMap> byPort = new HashMap<>();
+    /** The store of each conveyor of a store's last walk (the frontier's boundary conveyors). */
+    private final Map<ResourceKey<Level>, Long2LongOpenHashMap> byConveyor = new HashMap<>();
     private final Map<ResourceKey<Level>, Long2LongOpenHashMap> nextUnknownWalk = new HashMap<>();
     long nextId = 1;
     // Counters (perfLine).
     long walks, censuses, records, declarations;
 
+    /** The frontier of the stores whose far side does not tick (slice S4c). */
+    public final Frontier frontier;
+
     private PackageStores(Industry ind) {
         this.ind = ind;
         load(ind.data().plugin(KEY));
+        frontier = new Frontier(ind, this);
     }
 
     public java.util.Collection<Store> stores() {
@@ -210,6 +231,15 @@ public final class PackageStores {
     /** The store a frogport at {@code pos} belongs to, or null. */
     public Store storeOfPort(ResourceKey<Level> dim, BlockPos pos) {
         Long2LongOpenHashMap m = byPort.get(dim);
+        if (m == null)
+            return null;
+        long id = m.get(pos.asLong());
+        return id == 0 ? null : stores.get(id);
+    }
+
+    /** The store whose last walk took the chain conveyor at {@code pos}, or null. */
+    public Store storeOfConveyor(ResourceKey<Level> dim, BlockPos pos) {
+        Long2LongOpenHashMap m = byConveyor.get(dim);
         if (m == null)
             return null;
         long id = m.get(pos.asLong());
@@ -537,10 +567,15 @@ public final class PackageStores {
             for (Port p : s.ports)
                 if (m.get(p.pos.asLong()) == s.id)
                     m.remove(p.pos.asLong());
+        Long2LongOpenHashMap c = byConveyor.get(s.dim);
+        if (c != null)
+            for (long p : s.conveyors)
+                if (c.get(p) == s.id)
+                    c.remove(p);
         ByteBuffer r = ind.journal(IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(0), 0);
         r.putLong(IndRecords.PackageStore.STORE, s.id);
         r.putInt(IndRecords.PackageStore.DIM, ind.dimId(s.dim));
-        r.putInt(IndRecords.PackageStore.DIM + 4, 0);
+        r.putInt(IndRecords.PackageStore.EPOCH, frontier.epoch());
         r.putLong(IndRecords.PackageStore.INTO, into);
         ind.commit(r);
         declarations++;
@@ -552,6 +587,10 @@ public final class PackageStores {
         m.long2LongEntrySet().removeIf(e -> e.getLongValue() == s.id);
         for (Port p : s.ports)
             m.put(p.pos.asLong(), s.id);
+        Long2LongOpenHashMap c = byConveyor.computeIfAbsent(s.dim, d -> new Long2LongOpenHashMap());
+        c.long2LongEntrySet().removeIf(e -> e.getLongValue() == s.id);
+        for (long p : s.conveyors)
+            c.put(p, s.id);
     }
 
     /** Sends the store's declaration when it differs from the last one sent (or carries frogports from another store). */
@@ -599,7 +638,7 @@ public final class PackageStores {
         ByteBuffer r = ind.journal(IndRecords.IND_PACKAGE_STORE, IndRecords.PackageStore.size(n), n);
         r.putLong(IndRecords.PackageStore.STORE, s.id);
         r.putInt(IndRecords.PackageStore.DIM, ind.dimId(s.dim));
-        r.putInt(IndRecords.PackageStore.DIM + 4, 0);
+        r.putInt(IndRecords.PackageStore.EPOCH, frontier.epoch());
         r.putLong(IndRecords.PackageStore.INTO, into);
         for (int i = 0; i < n; i++) {
             Port p = s.ports.get(i);
@@ -641,8 +680,12 @@ public final class PackageStores {
         }
     }
 
-    /** Sends every store again (the engine forgot what it was told: {@code IndustryPlugin.announce}). */
+    /**
+     * Sends every store again (the engine forgot what it was told: {@code IndustryPlugin.announce}), in a new
+     * frontier epoch: no key given out before is Java's any more.
+     */
     public void announce() {
+        frontier.newEpoch();
         for (Store s : stores.values()) {
             s.declared = null;
             declare(s, 0, new long[s.ports.size()]);
@@ -697,6 +740,14 @@ public final class PackageStores {
      * IND_CHAIN_PACKAGE when the frogport is a store's.
      */
     public static void chainPackage(FrogportBlockEntity f, ItemStack box, int direction) {
+        chainPackage(f, box, direction, null);
+    }
+
+    /**
+     * The same, for a package that came off the chain with the frontier's key {@code key} (taken out of it
+     * already): its {@code CHAIN_IN} carries the key when Java still held it there.
+     */
+    public static void chainPackage(FrogportBlockEntity f, ItemStack box, int direction, Frontier.Key key) {
         try {
             if (!(f.getLevel() instanceof ServerLevel level) || box == null || box.isEmpty())
                 return;
@@ -728,9 +779,11 @@ public final class PackageStores {
             District.Inventory inv = d == null ? null : d.inventoryAt(pos);
             String address = PackageItem.getAddress(box);
             int destination = direction == IndRecords.ChainPackage.CHAIN_OUT ? routeFromPort(s, index, address) : index;
+            Frontier.Key landed = direction == IndRecords.ChainPackage.CHAIN_IN ? ps.frontier.landed(s.id, key) : null;
             Industry.GoodsCounter goods = ind.counter();
             ind.countStack(box, box.getCount(), goods);
-            journalChain(ind, s, index, pos, d, inv, direction, destination, box.getCount(), address, goods, 0);
+            journalChain(ind, s, index, pos, d, inv, direction, destination, box.getCount(), address, goods, 0,
+                    landed == null ? 0 : landed.epoch(), landed == null ? 0 : landed.serial());
             ps.records++;
         } catch (RuntimeException e) {
             if (!warned) {
@@ -745,10 +798,11 @@ public final class PackageStores {
     /**
      * Journals and commits one IND_CHAIN_PACKAGE: {@code packages} packages with {@code goods} in all at the
      * store's frogport {@code index}, at {@code pos}. {@code opId}: 0 for what Create moved, the engine's op for what an
-     * IND_WRITE_CHAIN wrote ({@link WriteChains}). Returns the committed record.
+     * IND_WRITE_CHAIN wrote ({@link WriteChains}). {@code epoch} and {@code serial}: the frontier's key
+     * ({@code CHAIN_HELD}, a keyed {@code CHAIN_IN}), epoch 0 for none. Returns the committed record.
      */
     static ByteBuffer journalChain(Industry ind, Store s, int index, BlockPos pos, District d, District.Inventory inv, int direction, int destination,
-            int packages, String address, Industry.GoodsCounter goods, long opId) {
+            int packages, String address, Industry.GoodsCounter goods, long opId, int epoch, long serial) {
         int[] ids = goods.nonZeroIds();
         ByteBuffer r = ind.journal(IndRecords.IND_CHAIN_PACKAGE, IndRecords.ChainPackage.size(ids.length), ids.length);
         r.putLong(IndRecords.ChainPackage.STORE, s.id);
@@ -763,7 +817,8 @@ public final class PackageStores {
         r.putInt(IndRecords.ChainPackage.X, pos.getX());
         r.putInt(IndRecords.ChainPackage.Y, pos.getY());
         r.putInt(IndRecords.ChainPackage.Z, pos.getZ());
-        r.putInt(IndRecords.ChainPackage.Z + 4, 0);
+        r.putInt(IndRecords.ChainPackage.EPOCH, epoch);
+        r.putLong(IndRecords.ChainPackage.SERIAL, serial);
         for (int i = 0; i < ids.length; i++) {
             int at = IndRecords.ChainPackage.ENTRIES + i * IndRecords.ENTRY16;
             r.putInt(at, ids[i]);
@@ -814,6 +869,8 @@ public final class PackageStores {
 
     private void census(ServerLevel level, Store s, Walk w, long now) {
         int n = s.ports.size();
+        List<ItemStack> keyed = new ArrayList<>();
+        List<ChainConveyorBlockEntity> keyedOn = new ArrayList<>();
         int[][] dist = new int[n][];
         for (int i = 0; i < n; i++)
             dist[i] = w.bfs(w.of(s.ports.get(i).conveyor));
@@ -822,13 +879,20 @@ public final class PackageStores {
         for (int c = 0; c < w.order.size(); c++) {
             if (!(Loaded.blockEntity(level, BlockPos.of(w.order.getLong(c))) instanceof ChainConveyorBlockEntity cc))
                 continue;
-            for (ChainConveyorPackage p : cc.getLoopingPackages())
+            int before = keyed.size();
+            for (ChainConveyorPackage p : cc.getLoopingPackages()) {
+                keyed(p.item, keyed);
                 count(s, dist, c, p.item, packages, goods);
+            }
             for (Map.Entry<BlockPos, List<ChainConveyorPackage>> e : cc.getTravellingPackages().entrySet()) {
                 int next = w.of(cc.getBlockPos().offset(e.getKey()));
-                for (ChainConveyorPackage p : e.getValue())
+                for (ChainConveyorPackage p : e.getValue()) {
+                    keyed(p.item, keyed);
                     count(s, dist, next >= 0 ? next : c, p.item, packages, goods);
+                }
             }
+            if (keyed.size() > before)
+                keyedOn.add(cc);
         }
         for (int i = 0; i < n; i++) {
             if (Loaded.blockEntity(level, s.ports.get(i).pos) instanceof FrogportBlockEntity f && f.isAnimationInProgress()
@@ -871,6 +935,19 @@ public final class PackageStores {
                 b.putLong(o + 8, goods[d].get(id));
             }
         censuses++;
+        // Sent: nothing of the store is held now (the engine clears its held packages at the census).
+        for (ItemStack box : keyed)
+            Frontier.strip(box);
+        frontier.stripped += keyed.size();
+        for (ChainConveyorBlockEntity cc : keyedOn)
+            cc.setChanged();
+        frontier.census(s.id);
+    }
+
+    /** A package the census counts loses the frontier's key once the census is sent: nothing is held while all of its store ticks. */
+    private static void keyed(ItemStack box, List<ItemStack> keyed) {
+        if (box != null && !box.isEmpty() && Frontier.key(box) != null)
+            keyed.add(box);
     }
 
     private void count(Store s, int[][] dist, int c, ItemStack box, long[] packages, Industry.GoodsCounter[] goods) {
@@ -889,7 +966,7 @@ public final class PackageStores {
 
     public String perfLine() {
         return "stores " + stores.size() + " walks " + walks + " censuses " + censuses + " chain records " + records
-                + " declarations " + declarations;
+                + " declarations " + declarations + ", " + frontier.perfLine();
     }
 
     // ---- persistence (IndustryData, format 3) ----------------------------------------------------

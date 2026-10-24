@@ -19,7 +19,7 @@
 //!   a frogport whose chunk does not tick refused, is a `CHAIN_HELD` with a key; the store keeps
 //!   the held packages toward each frogport, oldest first ([`PackageStore::on_hold`]). A keyed
 //!   `CHAIN_IN` strikes its key, a census clears them (nothing is held while all of it ticks), and
-//!   a declaration of a later epoch drops the keys of earlier ones (Java dropped them).
+//!   a declaration of another epoch drops the keys of the one before (Java dropped them).
 //! - **Pages**: one per store (`STORE_TABLE`, id = the store id), starting with [`STORE_MAGIC`].
 //!
 //! The pools above are the world's packages: no replay draws them, and nothing is written from
@@ -113,8 +113,8 @@ pub struct StoreCounts {
     /// Packages the frontier held (`CHAIN_HELD`), and keyed packages that landed (`CHAIN_IN`).
     pub held: u64,
     pub held_landed: u64,
-    /// `CHAIN_HELD` records turned away: a key already held, an earlier epoch, or one the last
-    /// census came after.
+    /// `CHAIN_HELD` records turned away: a key already held, of another epoch than the store's,
+    /// or one the last census came after.
     pub held_stale: u64,
 }
 
@@ -169,7 +169,8 @@ pub struct PackageStore {
     /// The last written `CHAIN_IN` taken toward each frogport (by position): a record of no write
     /// the engine still waits for, no later than the mark, was taken already (choice SC113).
     pub marks: BTreeMap<BlockPos, WriteMark>,
-    /// The frontier's epoch of the last declaration: keys of earlier ones are Java's no more.
+    /// The frontier's epoch of the last declaration (Java's, nonzero; it changes at every
+    /// announce and starts anywhere): keys of any other are Java's no more.
     pub epoch: u32,
     /// The packages the frontier holds toward each frogport (by position), oldest first: they are
     /// in the world, booked in [`PackageStore::pools`] like any other (choice SC137).
@@ -542,20 +543,22 @@ impl PackageStore {
         self.counts.declarations += 1;
     }
 
-    /// Java's frontier is at `epoch`: keys of earlier epochs are dropped (Java no longer holds them).
+    /// Java's frontier is at `epoch`: keys of any other epoch are dropped (Java no longer holds
+    /// them). Epochs are compared for equality only: Java starts them anywhere (choice SC136).
     fn new_epoch(&mut self, epoch: u32) {
-        if epoch <= self.epoch {
+        if epoch == self.epoch {
             return;
         }
         self.epoch = epoch;
         self.on_hold.retain(|_, l| {
-            l.retain(|h| h.key.epoch >= epoch);
+            l.retain(|h| h.key.epoch == epoch);
             !l.is_empty()
         });
     }
 
     /// A `CHAIN_HELD`: the package joins those held toward its destination, unless its key is held
-    /// already, of an earlier epoch, or recorded no later than the last census (which cleared them).
+    /// already, of another epoch than the last declaration's, or recorded no later than the last
+    /// census (which cleared them).
     fn hold(&mut self, p: &ChainPackage, recorded: Tick) -> bool {
         let Some(f) = p.destination.and_then(|d| self.frogports.get(d as usize)) else {
             self.counts.stale_records += 1;
@@ -566,8 +569,7 @@ impl PackageStore {
             self.counts.held_stale += 1;
             return false;
         };
-        self.new_epoch(key.epoch);
-        if key.epoch < self.epoch
+        if key.epoch != self.epoch
             || self.census_at.is_some_and(|c| recorded <= c)
             || self.holds(key)
         {

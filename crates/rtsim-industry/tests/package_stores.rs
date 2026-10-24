@@ -670,10 +670,11 @@ fn the_frontier_holds_once_and_a_keyed_landing_strikes() {
 }
 
 /// Nothing is held while all of a store ticks: a census clears the held packages, and a hold
-/// recorded no later than it is turned away. A declaration of a later epoch drops the keys of
-/// earlier ones, and a hold of an earlier epoch is turned away.
+/// recorded no later than it is turned away. A declaration of another epoch (Java's epochs start
+/// anywhere, so a lower one too) drops the keys of the one before, and a hold of any epoch but the
+/// declaration's is turned away.
 #[test]
-fn a_census_and_a_later_epoch_clear_the_held() {
+fn a_census_and_another_epoch_clear_the_held() {
     let mut e = engine();
     send(&mut e, 0, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
     send(&mut e, 10, held(S, 1, key(1, 1), &[(IRON, 64)]));
@@ -700,12 +701,16 @@ fn a_census_and_a_later_epoch_clear_the_held() {
     assert!(e.stores()[&S].on_hold.is_empty());
     send(&mut e, 302, held(S, 1, key(2, 6), &[(IRON, 64)]));
     assert_eq!(on_hold(&e, S, b()), vec![key(2, 6)]);
-    // A hold of a later epoch than the store's declaration moves it on too.
+    // A hold of an epoch the store was not declared with is turned away, a later one too.
     send(&mut e, 303, held(S, 0, key(3, 7), &[(GOLD, 3)]));
-    assert_eq!(e.stores()[&S].epoch, 3);
-    assert!(on_hold(&e, S, b()).is_empty());
-    assert_eq!(on_hold(&e, S, a()), vec![key(3, 7)]);
-    assert_eq!(e.stores()[&S].counts.held_stale, 2);
+    assert_eq!(e.stores()[&S].epoch, 2);
+    assert!(on_hold(&e, S, a()).is_empty());
+    // A lower epoch is another epoch: it drops the keys of the one before.
+    send(&mut e, 400, Obs::PackageStore(epoch(decl(S, vec![a(), b(), c()]), 1)));
+    assert!(e.stores()[&S].on_hold.is_empty());
+    send(&mut e, 401, held(S, 0, key(1, 8), &[(GOLD, 3)]));
+    assert_eq!(on_hold(&e, S, a()), vec![key(1, 8)]);
+    assert_eq!(e.stores()[&S].counts.held_stale, 3);
 }
 
 /// Held packages follow their frogport into another store (a split), and into the store a
