@@ -49,7 +49,8 @@ public final class SectionsFxGameTests {
             new Fx("shared_boiler", false, SharedBoilerTwoLinesFactory::new, SharedBoilerTwoLinesFactory.Check::new),
             new Fx("vault_mixers", false, VaultBetweenMixersFactory::new, VaultBetweenMixersFactory.Check::new),
             new Fx("residue_vault", false, ResidueAtASharedVaultFactory::new, ResidueAtASharedVaultFactory.Check::new),
-            new Fx("basin_vault", false, BasinIntoASharedVaultFactory::new, BasinIntoASharedVaultFactory.Check::new));
+            new Fx("basin_vault", false, BasinIntoASharedVaultFactory::new, BasinIntoASharedVaultFactory.Check::new),
+            new Fx("basin_funnel_vault", false, BasinThroughFunnelFactory::new, BasinThroughFunnelFactory.Check::new));
 
     /** The fixtures {@code MIC_SEC1FX_ONLY} names (comma separated), or none when it is unset: all. */
     private static Set<String> only() {
