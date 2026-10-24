@@ -1114,3 +1114,12 @@ conservative option at its fork.
   fight's BAND_MATERIALIZED: live counts it against no stack; replayed, (casualties, pool on day 9)
   (4, 35.998), want live's (3, 36.998). The engine test of §5.2's honour now asserts no recalled
   stack at the newer epoch.
+- **RP-47** (a held arrival across two crashes; §6.1; the fix round's item 8): the test sits in
+  rtsim-jni tests/protocol.rs, not at engine level, because "no double" rests on the host: a
+  session that crashes before its replay end takes no page (RP-42) and the journal keeps its
+  records, so the next session replays from the same pages. A resolution is counted by the
+  engine's log note ("finds nothing to raid", a raid on a place with no district), since
+  ConflictStats takes no new field. Unwatched only: a watched arrival's honoured fight is read
+  from the same records in each session, as in the one-crash tests. S2 replays S0's 4,000 records
+  and S1's 20, not S1's JOURNAL_GEN (never dispatched). With the arrival's hold off, S1 resolves
+  it while replaying (Home, want Out).
