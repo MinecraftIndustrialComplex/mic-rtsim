@@ -758,7 +758,7 @@ public final class SectionsChunkLoadGameTests {
      * choice SC10; PATCHES.md row 53's kept members). The motor is in B; with B away, A's compile reads CA's
      * chain into B as nothing (counted as stops at unloaded chunks), and the network, which has members
      * outside A, is a crossing one: millstone A's domain has one level at the speed the network last had, no
-     * driver, and its members are bounded. {@code /rtsim district graph} writes the compile without loading
+     * driver (every source fixed), and its members are bounded. {@code /rtsim district graph} writes the compile without loading
      * anything either. Then B's block entities are taken out of the network, as a restart with B away leaves
      * it (the network lists only what loaded this session): the next compile still finds the network
      * crossing (choice SC44: CA's chain reaches B, which is not loaded), with the same domain.
@@ -794,7 +794,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain", d);
                     check("one level: " + d.levels(), d.levels().size() == 1);
                     check("at the network's last speed: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(g, d);
                     try {
                         Path p = GlassGraphCommand.write(ind(), level.getServer(), ind().district(f.da()));
@@ -836,7 +836,7 @@ public final class SectionsChunkLoadGameTests {
                     record(t, "millstone A's domain, B unlisted", d);
                     check("still one level: " + d.levels(), d.levels().size() == 1);
                     check("at the speed of A's members: " + d.levels().get(0).rpm(), Math.abs(d.levels().get(0).rpm()) == 64);
-                    check("still no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                    check("still no driver: " + d.sources(), d.driven().isEmpty());
                     checkBounded(GlassKit.latest(f.da()), d);
                 });
         restore(s, level, f).thenSucceed();
@@ -974,8 +974,8 @@ public final class SectionsChunkLoadGameTests {
      * boiler's district included. In A, a 2 x 2 x 1 fluid tank over one kindled blaze burner, filled with
      * 20 mB of water a tick, and a steam engine on it turn a shaft, a chain conveyor over it, a cog and a
      * millstone; the chain reaches CB in B, two chunks away, with a cog and a millstone. Both chunks are
-     * forced. In both districts' compiles the millstone's domain has one level, no driver (not the
-     * boiler's ladder of levels) and bounded members.
+     * forced. In both districts' compiles the millstone's domain has one speed row, no driver (every
+     * source fixed, not the boiler's ladder of rows) and bounded members.
      */
     @GameTest(template = YARD, batch = "sec1_6", timeoutTicks = 12000)
     public static void aBoilerOnAChainDrivesTheNextDistrict(GameTestHelper helper) {
@@ -1054,7 +1054,7 @@ public final class SectionsChunkLoadGameTests {
                         GlassKit.Domain d = millDomain(g);
                         record(t, "district " + which + ": graph, domain", g.describe() + "; " + d);
                         check(which + ": one level: " + d.levels(), d.levels().size() == 1);
-                        check(which + ": no driver: " + d.driver(), d.driver() == GlassRecords.NONE);
+                        check(which + ": no driver: " + d.sources(), d.driven().isEmpty());
                         checkBounded(g, d);
                     }
                     water[0] = false;
