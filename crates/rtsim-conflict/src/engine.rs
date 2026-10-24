@@ -3687,7 +3687,8 @@ impl Conflict {
     /// to the one already in flight for the district and capped at the culture's `hunt_cap`, with
     /// a new op (the old hunt, if the plugin has not applied it, is replaced; its late answer
     /// is spent and clears nothing). Nothing is owed on Peaceful, nor by a culture with no cap.
-    fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
+    /// Public so that a test can stand in for a raid on a district (`with_conflict_mut`).
+    pub fn owe_hunt(&mut self, f: u32, d: DistrictId, pos: Pos, count: u32, at: Tick) {
         let cap = self.culture(f).def.hunt_cap;
         if cap == 0 || self.peaceful {
             return;

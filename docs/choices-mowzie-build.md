@@ -2738,6 +2738,55 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
   - `body_names` appends a culture's `chief_body` after its units, so every existing body id keeps its
     number (the Umvuthi's is the last).
 
+- **MZB-445** (the heir's pair, M9a; design gaps):
+  - The heir's generation is derived from the faction key, the chief slot and the tick the heir is due, and
+    never the generation the slot last held (`Camp::heir_generation`), so a census can tell the heir from
+    an answer to a lost reconcile made over an old chief's body.
+  - The pair is tried at the heir's due event and at each census only (`camp_heir`), never at a
+    `camp_sync`, so a camp that is out or has no warrior home orders nothing and is looked at again.
+  - A camp found without its Umvuthi whose wait an untagged one cancels resets its pressure to none: the
+    cap's pressure was a stand-in, as if the camp had never been found empty.
+  - A MASK answered for a warrior the books have `Left` is booked as a take: the slot goes `Gone` and keeps
+    its place in the party.
+  - An unanswered pair is void at CAMP_OUT and at a session start with the other lines.
+- **MZB-446** (the tribute stack, M9a; settles MZB-423's open edges):
+  - One op is one stack: at most 64 items, the least of what is owed, the stock and 64. Core's
+    TRANSFER_TO_CONTAINER fails above an item's own stack size, so only the tribute good is owed (the gold
+    nugget stacks to 64), never a gift's other goods.
+  - `Placing` carries the chest (Java's dimension and position) as well as the good and amount, so a
+    transfer rewritten after a restart knows where it goes. The stacks in flight are `Conflict.placing`, a
+    resident list of (faction, `Placing`) saved in the meta page, never a field of a paged row.
+  - The op id is `identity_op(faction key, TRIBUTE_SLOT | stacks)` over a counter saved in the camp, so the
+    same decision after a crash has the same id.
+  - Each stack takes one free slot off the chest's count until HAVEN_CHEST says otherwise; FAILED forgets
+    the chest; CAMP_OUT and a session start clear it.
+  - The engine books the goods as left to the players (`World::stock_to_players`, `player_out`) when it
+    sends them, and back (`stock_from_players`) on FAILED.
+- **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
+  tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
+  coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
+- **MZB-448** (the page numbers, M9a): the M9 save is RTC8 and meta page 7, with wheel tag 9 for `CampHeir`,
+  kept in `persist.rs`'s two constants, `MAGIC` and `META_VERSION`, so that a renumber (M7's rail may take
+  RTC8 first) is a two-line change. There is no migration: the mods are unreleased.
+- **MZB-449** (hunts, M9a; settles MZB-424 to MZB-427's open edges):
+  - A hunt is `Hunt { district, pos, count, op }` in `Faction.hunts`. The op is the 0x43 allocator byte over
+    `identity_op(key, HUNT_SLOT ^ hash(district, tick))`.
+  - A raid on a district that already has a hunt adds its count to the old one, capped at `hunt_cap`, with a
+    new op; the plugin keeps the latest command for the district, so the old one never applies after the
+    new one is read. A late HUNT_APPLIED for a replaced op is spent (its op id is booked) and clears
+    nothing.
+  - Nothing is owed on Peaceful, by a culture with no `hunt_cap`, or by a raid the infrastructure skipped.
+    A hunt already owed when Peaceful begins stays owed.
+  - The hunts go again with the notices, after the replay has caught up (`resend_notices`), and not in
+    `session_start`: a HUNT_APPLIED journaled last session must clear its hunt before the plugin hears of it,
+    or the animals die twice.
+  - The hunt's centre is the party's target position (the district's centre) and its radius 48
+    (PLACEHOLDER).
+  - Plunder with `plunder_goods` takes those goods and no others, and what the survivors take is the whole of
+    their reach (the goods' surplus over target times the culture's loot share), not their `carry`; no one
+    is left alive, nothing is taken. The goods are eaten: `take_stocks`, `ledger.destroyed`, whatever the
+    culture's `loot_destroyed`.
+
 ### M9 design for the implementer
 
 **Where it stands.** Designed only; no code. Branch `design/mowzie-m9` (this doc). The implementation
