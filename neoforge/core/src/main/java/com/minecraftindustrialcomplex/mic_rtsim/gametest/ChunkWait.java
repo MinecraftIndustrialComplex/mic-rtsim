@@ -36,11 +36,20 @@ import java.util.concurrent.atomic.AtomicLong;
  * by the test's tick budget, counted from the tick the last chunk wait ended (or the test's start). A
  * test using these sets GameTest's own tick timeout out of reach ({@link #NO_TICK_TIMEOUT}), because
  * that counts ticks from the test's start, chunk waits included, and wraps every wait in one of them,
- * so each is bounded.
+ * so each is bounded. Such a test runs a task every tick with {@link #eachTick}, never
+ * {@code helper.onEachTick}: that schedules one task for each tick up to the timeout, ten million of
+ * them here, in a map GameTest walks every tick (a wait's first poll fails a test that did).
  */
 public final class ChunkWait {
-    /** GameTest's own timeout for a test whose waits are all bounded here: out of reach. */
+    /**
+     * GameTest's own timeout for a test whose waits are all bounded here: out of reach. Never with
+     * {@code helper.onEachTick} ({@link #eachTick}).
+     */
     public static final int NO_TICK_TIMEOUT = 10_000_000;
+    /** More of GameTest's own per-tick tasks than any test schedules but with {@code onEachTick} up to a far timeout. */
+    private static final int MAX_SCHEDULED = 100_000;
+    /** Keeps an {@link #eachTick} sequence waiting: thrown every tick, so made once (no stack trace each time). */
+    private static final GameTestAssertException NEXT_TICK = new GameTestAssertException("every tick until the test ends");
     /** A chunk wait's wall-clock bound. */
     public static final long WALL_NANOS = 120_000_000_000L;
     /** How often a slow chunk wait logs its progress. */
@@ -69,6 +78,8 @@ public final class ChunkWait {
     private final int logicTicks;
     /** The tick the last chunk wait ended, or the test's start: logic waits count from it. */
     private long mark;
+    /** Whether a wait has looked at GameTest's own per-tick tasks yet ({@link #checkScheduled}). */
+    private boolean scheduledChecked;
 
     private ChunkWait(GameTestHelper helper, int logicTicks) {
         this.helper = helper;
@@ -121,6 +132,59 @@ public final class ChunkWait {
     }
 
     /**
+     * Runs {@code task} every tick until the test ends, as {@code helper.onEachTick} does, and a throw fails
+     * the test as there. That one schedules a task for each tick up to the test's {@code timeoutTicks},
+     * which a test of these waits sets to {@link #NO_TICK_TIMEOUT}: ten million tasks, put in at the start
+     * (seconds, and hundreds of MB) and walked every tick by GameTest (tens of ms a tick). This is one
+     * sequence that waits forever and runs the task at each poll. Call it while the test sets up, before
+     * its first tick: a sequence started from inside another's tick breaks GameTest's loop over them.
+     * Started before the test's own sequence, the task runs before that sequence's step each tick, as an
+     * {@code onEachTick} task does.
+     */
+    public void eachTick(Runnable task) {
+        helper.startSequence().thenWaitUntil(() -> {
+            try {
+                task.run();
+            } catch (RuntimeException e) {
+                helper.testInfo.fail(e);
+            }
+            throw NEXT_TICK;
+        });
+    }
+
+    /**
+     * Fails the test if GameTest's own per-tick tasks number more than {@link #MAX_SCHEDULED}: the mark of
+     * {@code helper.onEachTick} under {@link #NO_TICK_TIMEOUT} ({@link #eachTick}). Looked at once, at
+     * the first poll of the test's first wait, after its set-up. If the field cannot be read, it logs that
+     * once and looks no further.
+     */
+    private void checkScheduled() {
+        if (scheduledChecked)
+            return;
+        scheduledChecked = true;
+        int n = scheduled(helper.testInfo);
+        if (n > MAX_SCHEDULED)
+            fail(n + " tasks scheduled with helper.onEachTick, one for each tick up to the test's timeout: use ChunkWait.eachTick");
+    }
+
+    private static volatile boolean scheduledUnreadable;
+
+    /** GameTest's own per-tick tasks ({@code GameTestInfo.runAtTickTimeMap}), or -1 if it cannot be read. */
+    private static int scheduled(GameTestInfo info) {
+        if (scheduledUnreadable)
+            return -1;
+        try {
+            java.lang.reflect.Field f = GameTestInfo.class.getDeclaredField("runAtTickTimeMap");
+            f.setAccessible(true);
+            return ((java.util.Map<?, ?>) f.get(info)).size();
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            scheduledUnreadable = true;
+            MicRtsim.LOGGER.warn("[gametest] cannot count GameTest's scheduled tasks, so a helper.onEachTick under NO_TICK_TIMEOUT goes unseen: {}", e.toString());
+            return -1;
+        }
+    }
+
+    /**
      * The wait for a held square, for {@code thenWaitUntil}: a {@link #chunks} wait that says how many of
      * its chunks were ready, and, failed, what the centre chunk's holder held.
      */
@@ -140,6 +204,7 @@ public final class ChunkWait {
     private Runnable chunks(Runnable check, java.util.function.Supplier<String> more) {
         long[] t = {-1, -1}; // the first poll, the last log
         return () -> {
+            checkScheduled();
             long now = System.nanoTime();
             if (t[0] < 0)
                 t[0] = t[1] = now;
@@ -167,6 +232,7 @@ public final class ChunkWait {
      */
     public Runnable logic(Runnable wait) {
         return () -> {
+            checkScheduled();
             try {
                 wait.run();
             } catch (GameTestAssertException e) {

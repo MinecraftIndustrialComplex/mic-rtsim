@@ -75,7 +75,7 @@ public final class OilRefuelGameTests {
         long[][] before = {null}; // the engine's counters in the last step the dragon was in the sim
         long[][] after = {null}; // and in the step it left
         Vec3 high = new Vec3(site.getX() + 0.5, 70, site.getZ() + 0.5);
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (fight[0])
                 OilGameTests.nudge(OilGameTests.bodyOrNull(agent[0]), p[0], OilGameTests.Fire.SCORCH);
             if (ticks[0]++ % 20 == 0 && p[0] != null)

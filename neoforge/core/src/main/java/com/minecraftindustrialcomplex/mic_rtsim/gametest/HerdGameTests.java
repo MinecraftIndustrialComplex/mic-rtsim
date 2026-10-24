@@ -692,7 +692,7 @@ public final class HerdGameTests {
         long[] alive = {0};
         Map<Long, Integer> firstColours = new HashMap<>();
         long[] dead = {-1};
-        helper.onEachTick(() -> {
+        waits.eachTick(() -> {
             if (reporting[0] && player[0] != null && RtsimTests.session().gameTime() % 20 == 0)
                 reportPlayer(player[0]);
         });
