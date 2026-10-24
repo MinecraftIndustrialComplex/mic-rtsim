@@ -299,7 +299,7 @@ fn set_enabled(st: &mut State, on: bool) {
 fn reset_if_due(st: &mut State) {
     if st.herds.reset_due && running(st) {
         st.herds.reset_due = false;
-        let at = Tick(phase1::world_tick(st, st.game_time)).max(st.herds.engine.now());
+        let at = shared::hand_over_target(st).max(st.herds.engine.now());
         let (w, h) = (&mut st.phase1.world, &mut st.herds.engine);
         h.session_start(&mut w.legs, at);
         let _ = h.take_commands();
@@ -406,7 +406,7 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
 }
 
@@ -498,7 +498,7 @@ fn reject(st: &mut State, agent: u64, epoch: u32, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 

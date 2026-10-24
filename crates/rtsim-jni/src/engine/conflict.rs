@@ -651,7 +651,7 @@ pub(super) fn simulate(st: &mut State) {
     if st.replay.applied_through().0 + 1 >= st.session_first {
         resend_notices_if_due(st);
     }
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     feed_districts(st, at);
 }
@@ -929,7 +929,7 @@ fn reject(st: &mut State, cmd: &Cmd, reason: u32) {
         reason,
         cmd_seq: 0,
     });
-    let at = Tick(phase1::world_tick(st, st.game_time));
+    let at = shared::hand_over_target(st);
     ingest(st, &o, at);
 }
 
