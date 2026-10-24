@@ -258,14 +258,15 @@ from before this session, flagged `REPLAY`) never makes an agent embodied again.
 engine thought embodied is abstract again, with the last state it knew. The DEMATERIALIZED records
 of a clean shutdown come later, as journal replay.
 
-That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate
-instead (docs/replay-gate.md, choices RP-1 to RP-21): from SESSION_START until the replay end (the
-first record at or past `session_first`) they keep the bodies their pages hold embodied, honour a
-replayed *_MATERIALIZED that is not a copy, decide nothing that embodies or moves a body, and drop or
-hold each command kind as their gate says; at the replay end every body still embodied becomes
-abstract. A record is replayed when its own OBS_SEQ (a copy's own, for a REASSERT) is below
-`session_first`. Pages hold no module command for the new session: the gate drops a restored body
-command at the session start.
+That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate instead
+(docs/replay-gate.md, choices RP-1 onward): from SESSION_START until the replay end (the first record at
+or past `session_first`) they keep the bodies their pages hold embodied, honour a replayed *_MATERIALIZED
+that is not a copy (an engine started from pages only), decide nothing that embodies or moves a body,
+hold a war party's arrival at a watched target, run their clock and phase 1's world only as far as the
+replayed records (industry's clock is not held), and drop or hold each command kind as their gate says;
+at the replay end every body still embodied becomes abstract. A record is replayed when its own OBS_SEQ
+(a copy's own, for a REASSERT) is below `session_first`. Pages hold no module command for the new
+session: the gate drops a restored body command at the session start.
 
 ### 2.4 Commands (the engine to Java)
 
