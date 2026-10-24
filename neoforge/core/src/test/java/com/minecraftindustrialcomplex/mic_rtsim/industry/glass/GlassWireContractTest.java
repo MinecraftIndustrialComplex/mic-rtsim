@@ -274,7 +274,7 @@ class GlassWireContractTest {
         b.putDouble(GlassRecords.Domain.LIVE_CAPACITY, f.f64("live_capacity"));
         b.putInt(GlassRecords.Domain.N_SOURCES, ns);
         b.putInt(GlassRecords.Domain.N_SOURCE_LEVELS, nsl);
-        b.putInt(GlassRecords.Domain.N_FOREIGN, (int) f.u32("n_foreign"));
+        b.putInt(GlassRecords.Domain.N_FOREIGN, (int) f.u32("foreign"));
         for (int i = 0; i < nl; i++)
             level(b, GlassRecords.Domain.LEVELS + i * GlassRecords.Domain.LEVEL, f, "level" + i + ".");
         int first = 0;
