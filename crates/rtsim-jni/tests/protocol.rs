@@ -5285,6 +5285,161 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    const TRAINS: u64 = 24;
+
+    /// What a session counted after `lurk_and_trains`.
+    struct Lurked {
+        passes: u64,
+        /// Robberies by a lurk, TRAIN_ROBBED sent, items the industry books as stolen, trains its
+        /// cooldown stands on, items the engine took from districts.
+        robberies: u64,
+        told: usize,
+        stolen: i64,
+        cooled: usize,
+        items: u64,
+        /// What the lurking party carries off in all, from its culture's unit rows.
+        carry: i64,
+    }
+
+    /// A lurk, then `TRAINS` trains, each passed by it at once; with `industry` each is first booked
+    /// on a leg across the lurk's track point carrying 1,280 of a good.
+    fn lurk_and_trains(name: &str, industry: bool) -> Lurked {
+        use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodVec, StationId, TrainId};
+        use rtsim_industry::obs::{Carriage, Obs as IO, StationDecl, Timed, TrainDeparture};
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+        let (_dir, e, mut j) = camp(name);
+        if industry {
+            j.modules(MODULES | MODULE_INDUSTRY);
+            j.idle();
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        // The cargo's good, declared as Java does, so the industry has nothing to wait for.
+        let good = Good(j.dict_id(DICT_GOOD, "i/64/minecraft:iron_ingot"));
+        if industry {
+            // The line runs west to east through the lurk's track point (the camp's x + 100).
+            for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::Station(StationDecl {
+                        station,
+                        district: Some(DistrictId(district)),
+                        dim,
+                        pos: BlockPos::new(x, 64, CAMP_AT.1),
+                        name: 0,
+                    }),
+                });
+            }
+        }
+        let p = order_lurk(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        let epoch = e.with_conflict(|c, _| c.parties[p].epoch);
+        for k in 0..TRAINS {
+            let train = 1_000 + k;
+            if industry {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::TrainDeparted(TrainDeparture {
+                        train: TrainId(train),
+                        station: WEST,
+                        district: DistrictId(1),
+                        destination: Some(EAST),
+                        eta_ticks: 2_000,
+                        carriages: vec![Carriage {
+                            index: 0,
+                            item_slots: 36,
+                            fluid_capacity: 0,
+                            goods: GoodVec::from_pairs([(good, 1_280)]),
+                        }],
+                    }),
+                });
+            }
+            pass(&mut j, p, epoch, train);
+            j.game_time += 7;
+            j.idle();
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, _) = e.conflict_stats();
+        let told = cmds(&j).filter(|c| matches!(c, C::TrainRobbed(_))).count();
+        let (stolen, cooled) = e.with_industry(|ind, _| {
+            (
+                ind.books.stolen.iter().map(|(_, n)| n).sum::<i64>(),
+                (0..TRAINS)
+                    .filter(|k| ind.train_cooldown_until(TrainId(1_000 + k)) > Tick::ZERO)
+                    .count(),
+            )
+        });
+        let carry = e.with_conflict(|c, _| {
+            let party = &c.parties[p];
+            let culture = c.cultures.get(c.factions[party.faction as usize].culture);
+            party
+                .units
+                .iter()
+                .map(|&(u, n)| i64::from(n) * i64::from(culture.def.units[u as usize].carry))
+                .sum()
+        });
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Lurked {
+            passes: stats.passes,
+            robberies: stats.lurk_robberies,
+            told,
+            stolen,
+            cooled,
+            items: stats.items_from_districts,
+            carry,
+        }
+    }
+
+    /// MOWZIE.md 4.4 (MZB-355, MZB-356): a TRAIN_PASSED that hits is I24's attack on the train
+    /// through the host's infrastructure (`with_infra`: the industry engine behind `IndustryLink`
+    /// when the industry module is on, `NoInfrastructure` when it is off). With the industry on,
+    /// the lurk robs the leg's cargo (the party's carry, under a tenth of 1,280, so the carry
+    /// binds), the industry's books and its cooldown on the train show it, and the plugin is told
+    /// once per robbery; with it off, the same passes are counted and rob nothing and tell
+    /// nothing.
+    #[test]
+    fn a_pass_that_hits_robs_the_train_with_an_infrastructure_and_nothing_without_one() {
+        let with = lurk_and_trains("conflict-train-robbed", true);
+        assert_eq!(with.passes, TRAINS, "every pass met the live lurk");
+        assert!(
+            with.robberies >= 1 && with.robberies < TRAINS,
+            "the roll hit on some of {TRAINS} passes, not all: {}",
+            with.robberies
+        );
+        assert!(
+            0 < with.carry && with.carry < 128,
+            "the carry binds under a tenth of 1,280: {}",
+            with.carry
+        );
+        assert_eq!(with.told as u64, with.robberies, "one TRAIN_ROBBED per robbery");
+        assert_eq!(
+            with.stolen,
+            with.carry * with.robberies as i64,
+            "the carry is taken from the leg, as the industry books it"
+        );
+        assert_eq!(
+            with.items as i64, with.stolen,
+            "and the engine counted the same items"
+        );
+        assert_eq!(
+            with.cooled as u64, with.robberies,
+            "a robbed train is on cooldown"
+        );
+
+        let bare = lurk_and_trains("conflict-train-robbed-bare", false);
+        assert_eq!(bare.passes, TRAINS, "the passes are counted all the same");
+        assert_eq!(
+            (bare.robberies, bare.told, bare.stolen, bare.cooled, bare.items),
+            (0, 0, 0, 0, 0),
+            "with no industry module a hit finds no train to rob"
+        );
+    }
+
     /// MOWZIE.md 4.4 (MZB-353): Java's lurk table lives for one session, so each lurk goes once
     /// more at a session start, after the replay, and only once: a lurk the replay itself made (a
     /// journaled record ran the engine past the band's arrival) is dropped from the queue before
