@@ -299,7 +299,9 @@ public final class RailFrostmawGameTests {
                             beyond >= PAST || !boss && d.drift >= 0.5);
                 })
                 .thenExecute(() -> {
-                    double travelled = Math.abs(d.runTo - d.runFrom), expected = SPEED * d.observed;
+                    // A GameTest sequence runs its next step in the same tick: observation 1 is in the tick that set runFrom,
+                    // before Create moves the train, so k observations span k - 1 ticks of travel
+                    double travelled = Math.abs(d.runTo - d.runFrom), expected = SPEED * (d.observed - 1);
                     record("railFrostmaw", d.entityId + " run", "observations " + d.observed + ", travelled " + travelled + ", expected " + expected
                             + ", overlapped " + d.overlapped + ", moved " + d.drift + ", hurt " + d.hurt + ", health changed " + d.healthChanged);
                     check("the train is not derailed", !d.train.derailed && !d.train.invalid);
