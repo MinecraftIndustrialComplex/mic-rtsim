@@ -2971,10 +2971,10 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
 Where the design left a gap the build took the conservative option; each is undoable. Code is in
 `crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
 
-M7 took MZB-348, MZB-349 and MZB-375 to MZB-390 (assigned at the Opus engine review of 0fb08ef5; 391 to
+M7 took MZB-348, MZB-349 and MZB-375 to MZB-391 (assigned at the Opus engine review of 0fb08ef5; 392 to
 399 stay spare, and are M7's too if the Java half needs them). The review's fixes are MZB-348, 349 and
 375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 390 are the
-Java half's (after MZB-384 below).
+Java half's (after MZB-384 below); MZB-391 is Opus review C's engine fix (after MZB-390).
 
 - **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
   only if its exit is not before the line's reference time. A pass reported late still counts (adds are
@@ -3165,9 +3165,9 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
 - **MZB-379** (P3-5, tolerance 0): with a tolerance of 0 nothing is quiet (`r < 0` is never true), so no
   meter retired: it woke once a day for ever and pushed a vanishing rate. A meter now retires when its
   rate has fallen to `RETIRE_PER_DAY` and it is quiet or its pushed rate is as low; a dead meter that
-  still holds a pushed rate pushes it down and retires (as at tolerance 2); with no lower band edge the
-  wake is the earlier of the day and the retirement. Frostmaw's tolerance is 2, so `sim mowzie` and
-  `sim conflict` are unchanged by it.
+  still holds a pushed rate pushes it down and retires (as at tolerance 2; MZB-391 makes that one push,
+  not two); with no lower band edge the wake is the earlier of the day and the retirement. Frostmaw's
+  tolerance is 2, so `sim mowzie` and `sim conflict` are unchanged by it.
 - **MZB-380** (P3-9, rtsim-jni tests): `a_pass_is_counted_on_the_worlds_clock` (a three-day phase 1 offset;
   it fails with 61,458 found for 133,458 expected when the exit is not translated) and
   `a_held_pass_crosses_a_restart_to_the_replayed_arrival` (RAIL_PASS before the save, TRAIN_ARRIVED
@@ -3375,6 +3375,25 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
     passes (samples 0 to 2, 2 to 4, 4 to 6, 7 to 9, 9 to 11 and 12 to 14); this one two.
   - `TrainSampler` keeps `owner` in its state, set from the train at each rebucket, so a walk has no train;
     `Territories.Territory.within(x, z, margin)` is the new test.
+- **MZB-391** (Opus review C, P3-7: a dead line's gate pushes once): `rail_gate` on a meter whose rate has
+  fallen to `RETIRE_PER_DAY` now retires it at once, quiet or not, and its one push is the 0 from
+  `retire_meter`. Before, a meter that was not quiet (a tolerance of 0, MZB-379) pushed the dying rate
+  first (a source of about 0.0098 a day made, the feud planned, and in the same tick the source unmade and
+  the feud planned again) and counted that as a push; the retirement then pushed 0. The retirement's 0 is
+  not a counted push, as a quiet meter's never was, so `stats.rail_pushes` is one lower for each such
+  retirement. The test `a_dead_lines_gate_pushes_once` (a tolerance-0 Frostmaw den, four legs, run to the
+  retirement tick) counts the emissions by the feud's stamp (each plans its feud once): left 2, right 1
+  before the fix, 1 after; the push count is unchanged across the retirement. `a_meter_retires_at_tolerance_zero`
+  shares the new test's den (`zero_tolerance_den`).
+  - **Numbers**: `sim mowzie` regenerated gives `scenario/results/sim-mowzie.json` byte for byte (Frostmaw's
+    tolerance is 2, and a falling rate is pushed down at each band edge, so by the time a meter is dead its
+    pushed rate is already under 2 and it is quiet: the same reason MZB-379 left `sim conflict` alone). The rail bench pair
+    (`rtsim-cli bench scale --quick --only rail-paged`, the head before against the head after, release,
+    nice 10, side by side at load about 19): the same legs, passes, wakes, stale pops, pushes and loads a day
+    (12,788 / 12,792 / 1,004 / 164 / 368.3 / 15,287 at 256 dens; 25,599 / 25,604 / 2,004 / 315 / 739.0 /
+    44,591 at 512), the same state hashes (ce5e9ae4, 94b07803), the same slopes (resident 0.119); step ms a
+    day 141.06 before and 139.43 after at 256, 585.30 and 586.29 at 512 (noise). The bench's lines never die
+    (50 legs a day each), so the path is not on it.
 
 ## M8 Lying in wait
 
