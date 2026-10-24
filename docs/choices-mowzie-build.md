@@ -3927,6 +3927,15 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   the test cannot make the order, only offer it on each load). The tame rule on `TamableAnimal` (line 233) is not
   reachable with vanilla animals (the cat, wolf and parrot all have a damage of 3.0 or more) and has no test.
 
+- **MZB-646** (a hunt that throws partway is still answered; amends MZB-426; review P3-1): `OwedHunts.tryApply`
+  kills inside a try/finally whose finally always calls `answer` with the number dead so far. Before, an exception
+  from `Animal.kill` (a drops or death handler of another mod) escaped to `tick`, which logged it and dropped the hunt
+  without HUNT_APPLIED: the engine, holding the hunt unanswered, sent it again at the next session start and its full
+  count was killed on top of the animals already dead: up to twice the count for one hunt.
+  An animal that died before its handler threw counts as dead. `tick`'s catch still logs and removes the hunt (a
+  no-op now: `answer` removed it). No GameTest: an exception in a kill needs another mod's handler to throw, and the
+  integration's own handlers do not.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
