@@ -5,6 +5,7 @@
 //! non-zero-byte value derived from the record's name, each record decoded again by the reference
 //! decoder before it is printed.
 
+use rtsim_industry::cmd::Cmd;
 use rtsim_industry::glass::codec as gc;
 use rtsim_industry::glass::records::{
     ChunkTicking, Count, CountSample, CountSet, DomainLevel, EdgeKind, GlassObs, GraphDomain,
@@ -13,7 +14,6 @@ use rtsim_industry::glass::records::{
 };
 use rtsim_industry::ids::{ChunkPos, Good};
 use rtsim_industry::obs::{Obs, Timed};
-use rtsim_industry::cmd::Cmd;
 
 use super::{Fields, Gen, Sign, begin, cmd, district, game_time, goods, obs, pos, table};
 
@@ -46,7 +46,15 @@ fn head(f: &mut Fields, g: &mut Gen) -> GraphHead {
     }
 }
 
-fn glass_obs(out: &mut String, name: &str, kind: u16, seq: u64, at: rtsim_kernel::clock::Tick, o: GlassObs, f: &Fields) {
+fn glass_obs(
+    out: &mut String,
+    name: &str,
+    kind: u16,
+    seq: u64,
+    at: rtsim_kernel::clock::Tick,
+    o: GlassObs,
+    f: &Fields,
+) {
     obs(
         out,
         name,
@@ -493,7 +501,10 @@ fn code_tables(out: &mut String) {
                 &mut b,
             )
             .expect("encode");
-            (format!("{kind:?}"), u32::from_le_bytes(b[4..8].try_into().unwrap()))
+            (
+                format!("{kind:?}"),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
         })
         .collect();
     table(out, "node_kind", &rows);
@@ -533,7 +544,10 @@ fn code_tables(out: &mut String) {
                 &mut b,
             )
             .expect("encode");
-            (format!("{kind:?}"), u32::from_le_bytes(b[4..8].try_into().unwrap()))
+            (
+                format!("{kind:?}"),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+            )
         })
         .collect();
     table(out, "edge_kind", &rows);
