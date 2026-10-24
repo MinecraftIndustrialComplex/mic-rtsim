@@ -204,7 +204,6 @@ public final class ResidualGroupsGameTests {
                 .thenWaitUntil(() -> {
                     if (!natives)
                         return;
-                    // a later compile of the same blocks (a place event's edit) is the same graph
                     GlassReport r = GlassExitKit.report(id[0], null);
                     int now = GlassKit.latest(id[0]).end().compile();
                     check("the engine's report of the latest compile " + now + " (from " + mark[0] + ")", r != null && now >= mark[0] && r.compile() == now);

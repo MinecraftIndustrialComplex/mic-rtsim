@@ -38,7 +38,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Ste
 /**
  * SEC-1 fixture (SECTIONS.md §9.2): one boiler network driving a crushing line and a press line that share
  * nothing else. Three sections: the boiler's, and the two lines on one kinetic domain (Q1 a: domains do not
- * join sections). An edit to the press line (its input smart chute broken and placed again with a filter, which
+ * join sections). An edit to the press line (its input smart chute broken and a plain chute placed there, which
  * changes the press section's fingerprint) makes the press line's unit new and leaves the others as they were.
  * Adding presses until the stress passes the least capacity the crushing line's window ran at stales the
  * crushing line too ({@code check_domains}, SECTIONS.md §3.6).
@@ -93,7 +93,7 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
     static final BlockPos BELT_START = new BlockPos(13, 3, 16), BELT_END = new BlockPos(14, 3, 16), DEPOT = new BlockPos(15, 3, 16);
     /** The extra presses: along the press's axis, behind it, each in place of a shaft. */
     static final BlockPos EXTRA_FIRST = new BlockPos(15, 5, 17);
-    /** The press line's input smart chute, which the edit places again with a filter. */
+    /** The press line's input smart chute, which the edit replaces with a plain chute. */
     static final BlockPos PRESS_CHUTE = new BlockPos(13, 4, 16);
     /** The yard is 34 deep: z 17 to 33. */
     static final int MAX_EXTRA = 17;
@@ -346,10 +346,11 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
             }
             boilerLearned = SectionsFx.learned(u.boiler);
             structure(run, fr, u);
-            // the first edit: the press line's input smart chute broken and placed again with a filter of the iron
-            // it moves anyway. The materialized filter changes the press section's fingerprint (an edit the
-            // recompile finds as it was would only clear the stale mark, choice SC62), at the same revision: a
-            // smart chute is no district inventory
+            // the first edit: the press line's input smart chute broken and a plain chute placed there, which pulls
+            // the same iron from the chest above. The node's model (a smart chute's extraction of 64, a chute's of 16)
+            // changes the press section's fingerprint (an edit the recompile finds as it was would only clear the
+            // stale mark, choice SC62; a filter on the iron alone denies nothing, so no edge test is materialized),
+            // at the same revision: a chute is no district inventory
             acceptedBefore = fr.checksum().acceptedAt();
             crushReady = u.crush.readyAt();
             crushDone = u.crush.windowsCompleted();
@@ -365,8 +366,7 @@ public final class SharedBoilerTwoLinesFactory implements CorpusFactory {
                 if (level.getBlockEntity(abs) instanceof ChuteBlockEntity c)
                     c.setItem(ItemStack.EMPTY);
                 level.removeBlock(abs, false);
-                level.setBlock(abs, AllBlocks.SMART_CHUTE.getDefaultState(), 3);
-                filtering(run.helper, abs).setFilter(new ItemStack(Items.IRON_INGOT));
+                level.setBlock(abs, AllBlocks.CHUTE.getDefaultState(), 3);
                 IndustryKit.playerPlacedBare(run.helper, abs);
             }
             go(Phase.EDIT, now);
