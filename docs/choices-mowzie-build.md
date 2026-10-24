@@ -3502,6 +3502,13 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     (`a_fight_at_the_track_is_still_a_lurk_and_a_session_turns_it_back_to_waiting`, the phase forced:
     MZB-351's amendment). The cooldown test runs the real industry engine through `IndustryLink` with two
     booked legs, so the 24,000 ticks per train per class are the industry's own.
+  - Amendment (review A, P3): three more lurk-end tests. `a_player_leaving_a_watched_lurk_recalls_it_
+    without_ending_it` (ledger 8: `player_left` on an embodied lurk, Waiting and forced Fighting, sends
+    one Recall and no removal). `a_seen_lurk_takes_passes_at_the_epoch_its_spot_carried` (a real
+    `Ev::Seen` from a player's area; passes at the spot's epoch and the band's count, one of a later epoch
+    is stale; the removal goes at the band's new epoch). `a_band_whose_bodies_die_at_the_camp_takes_its_
+    lurk_down_once` (the camp harness: a band at a track with every body left behind, killed by
+    CAMP_DEATH, ends through `member_died`'s `go_home`).
 - **MZB-358** (news): an ambush makes no news. An unwatched one has no witness (CL-D61). A watched one is
   seen in the world by its watcher, and the engine books no first-hand report for it, as it books none for
   a puppet's blows. The owner learns from the short train and the roar (MZB-366). A rout of a lurking party
