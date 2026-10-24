@@ -1205,9 +1205,14 @@ under its own heading.
   places its own. On the MOTION_BLOCKING_NO_LEAVES surface, at the block's centre.
 - **MZB-215** (Peaceful; reworded by the review, the rule is MZB-234): on Peaceful no new body appears, so a
   SPAWN is answered STALE and the next census orders it again. The first reason given here, that the engine
-  would otherwise keep a body Peaceful despawns, was false: `shouldDespawnInPeaceful()` is false for every
-  Mowzie entity, so the jar keeps its own mobs on Peaceful. A returning body still comes home (HAND_BACK
-  proceeds) and the bodies already standing stay.
+  would otherwise keep a body Peaceful despawns, was false for the Frostmaw: it inherits `Mob`'s
+  `shouldDespawnInPeaceful()`, which is false (`MowzieEntity.checkDespawn`, `295`, asks it), and it has no
+  `discard()` of its own on Peaceful; it only deactivates and cannot wake (`EntityFrostmaw.java:582`, `600`).
+  Amended at M6 (jar 1.8.2, cfr): the same does not hold for every Mowzie mob. The Umvuthana raptor and its
+  follower, the foliaath, the naga, the bluff, and the elokosa howler and its follower `discard()` themselves
+  in `tick` on Peaceful, and `EntityElokosa` overrides `shouldDespawnInPeaceful()` to true. The grove's
+  warriors and envoys (`EntityUmvuthanaMinion`) and the Umvuthi do neither, as the Frostmaw does not. A
+  returning body still comes home (HAND_BACK proceeds) and the bodies already standing stay.
 - **MZB-216** (stand-ins): `conflict/frostmaw/frostmaw` is `mowziesmobs:frostmaw`; `conflict/umvuthana/warrior`
   and `conflict/umvuthana/envoy` are `mowziesmobs:umvuthana` (the grove warrior, `EntityUmvuthanaMinion`);
   `conflict/umvuthana/raptor` is `mowziesmobs:umvuthana_raptor`.
@@ -1901,6 +1906,15 @@ The tests:
   later slices' records now counts it apart from `deferred`. The synth's census carries the chief byte from
   the world (a chief body in the camp, its crystal flag), `FakeConflict::steal` clears the body's crystal and
   sends the record, and `CampRun::robbed` finds a den with its chief already robbed.
+- **MZB-299** (the heir's grudge is about 62.5, not 2.5; run 7 (b), built): `succeed()` hands the heir
+  grievance of -sentiment times `heir_grudge_factor` (0.5), and a witnessed Killing report is -125 (MZB-36),
+  so the heir's grudge against a player who killed the chief at the den is about 62.5, four times the
+  Frostmaw's Notice threshold (15.6), not the "about 2.5, under Notice" that MOWZIE.md (lines 647 and 2117)
+  and run 7 (b) of the design say. What keeps B's feud under Notice is that the faction is cowed after the
+  fall (`cowed_until`), not the size of the grudge. Run 7 (b) asserts the engine's value (62.5 within 2,
+  above Notice's threshold, the feud still at no step, the faction cowed). MOWZIE.md is left as it is, for the
+  lead to correct at landing. The regenerated `sim-conflict.json` also moved (survivors 20 to 19 and 8 to 7)
+  because of MZB-272's synth fix: the dead chief is no longer counted a survivor.
 
 ### M6 design for the implementer
 
@@ -2097,7 +2111,7 @@ CHIEF_STATE that flips the crystal and a census that corrects it.
 - **Run 7, the kills** (dispatched from `main`):
   - (a) The feud's player kills the chief on a raid: Raid steps down to Notice.
   - (b) A third player B kills it on A's raid: A's feud steps to Notice; B gets the Killing report, the heir
-    a witness, and B's feud stays under Notice (MOWZIE.md: about 2.5).
+    a witness, and B's feud stays under Notice (MOWZIE.md: about 2.5; built as about 62.5, MZB-299).
   - (c) A player C with no feud kills it at the camp: A unchanged, C not raised by the step-down.
   - (d) The feud's player kills it at the camp: A steps down.
   - (e) A chief body Left at home is killed there: its party routs and the heir succeeds.

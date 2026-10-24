@@ -31,7 +31,9 @@ use rtsim_conflict::engine::{
 };
 use rtsim_conflict::synth::CampRun;
 use rtsim_conflict::{Step, synth};
-use rtsim_ecology::infra::NoInfrastructure;
+use rtsim_ecology::infra::{DistrictSite, Infrastructure, NoInfrastructure, RaidOutcome};
+use rtsim_industry::ids::{Good, GoodVec};
+use rtsim_industry::threat::Threat;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_knowledge::{ActorId, Temperament, Trait};
 use rtsim_settle::NodeKind;
@@ -48,7 +50,7 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
         "M2, the ladder on kills: notice, raid, repeat, invasion",
-        "the meter M7, ambushes M8, the kill and the body M6",
+        "the meter M7, ambushes M8",
     ),
     (2, "cut service and stopped service", "", "M7"),
     (3, "reroute", "", "M7"),
@@ -59,8 +61,18 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
         "M2, the ladder and the priced demand, paid and refused",
         "the rest M9",
     ),
-    (6, "renewal of dens and groves", "", "M6 (den), M9 (grove)"),
-    (7, "kills and which feud steps down", "", "M6"),
+    (
+        6,
+        "renewal of dens and groves",
+        "M6, the den: the wait, the pressure, the farmed rate, the migrant, the steal",
+        "the grove M9",
+    ),
+    (
+        7,
+        "kills and which feud steps down",
+        "M6: the raid, the camp, a band left at home, a district's walls, the kill and the body",
+        "",
+    ),
     (
         8,
         "save and restore mid-lurk and mid-reconcile",
@@ -135,6 +147,8 @@ fn list() {
     for (n, what, built, rest) in RUNS {
         if built.is_empty() {
             println!("{n:>2}  {what}\n    built by: {rest}");
+        } else if rest.is_empty() {
+            println!("{n:>2}  {what}\n    built: {built}");
         } else {
             println!("{n:>2}  {what}\n    built: {built}; still to build: {rest}");
         }
@@ -175,6 +189,8 @@ fn main(o: Opts) -> i32 {
         let out = match n {
             1 => den_ladder(o.seed, slice),
             5 => grove_ladder(o.seed, slice),
+            6 => den_renewal(slice),
+            7 => den_kills(slice),
             8 => reconcile_in_flight(slice),
             10 => camp_reconciler(o.seed, slice),
             _ => RunOut {
@@ -238,7 +254,9 @@ fn print_report(r: &Results, quiet: bool) {
                 c.detail
             );
         }
-        println!("  still to build: {}", run.slice);
+        if !run.slice.is_empty() {
+            println!("  still to build: {}", run.slice);
+        }
     }
 }
 
@@ -711,6 +729,10 @@ fn at_day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
 }
 
+/// A Frostmaw den found with no member in it waits its renewal's cap for the migrant (MZB-257):
+/// 192 days, where it once refilled by a rate in six.
+const DEN_WAIT: f64 = 192.0;
+
 /// A grove of nine Umvuthana, found with the jar's own nine bodies standing in it.
 fn grove_run(seed: u64, found: u16) -> CampRun {
     CampRun::new(seed, "umvuthana", found)
@@ -937,9 +959,9 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
         ),
     );
 
-    // A member drawn owed carries its debt: a den out for a week.
+    // A member drawn owed carries its debt: a den out for a week, once its migrant has come.
     let mut r = den_run(25, 0);
-    r.run(at_day(6.5));
+    r.run(at_day(DEN_WAIT + 0.5));
     // The books add the pool's slots when they are read (a census, a draw, a death), not at an
     // audit: the member recruited while the den was out is the pool's, an owed slot once read.
     let owed = r.c.pool_at(r.f, r.c.now()).floor() as u32;
@@ -950,8 +972,8 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     out_and_in(&mut r);
     let while_away = (slot_counts(&r), reconciles(&r), world_bodies(&r));
     let before = applied(&r, ACTION_SPAWN);
-    let mut d = 7.0;
-    while war_parties(&r) > 0 && d < 14.0 {
+    let mut d = DEN_WAIT + 1.0;
+    while war_parties(&r) > 0 && d < DEN_WAIT + 8.0 {
         d += 0.25;
         r.run(at_day(d));
     }
@@ -1110,8 +1132,10 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     r.camp_in();
     let mut blocked = 0;
     let mut sent_blocked = false;
-    let mut d = 0.0;
-    while d < 16.0 {
+    // The den has no member for the migrant's whole wait; the kills begin the day before it comes.
+    let mut d = DEN_WAIT - 1.0;
+    r.run(at_day(d));
+    while d < DEN_WAIT + 15.0 {
         r.kill(20.0);
         d += 1.0;
         r.run(at_day(d));
@@ -1136,7 +1160,7 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     let mut r = den_run(31, 0);
     r.camp_in();
     r.plugin.lose_answers = 1;
-    r.run(at_day(6.5));
+    r.run(at_day(DEN_WAIT + 0.5));
     let flying = r.c.camp(r.f).map_or(0, |c| c.in_flight());
     out_and_in(&mut r);
     check(
@@ -1483,12 +1507,12 @@ fn reconcile_in_flight(slice: &'static str) -> RunOut {
             let mut r = den_run(seed, 0);
             r.plugin.answer_ticks = 3 * TICKS_PER_DAY;
             r.camp_in();
-            r.run(at_day(6.5));
+            r.run(at_day(DEN_WAIT + 0.5));
             assert_eq!(r.c.camp(r.f).map_or(0, |c| c.in_flight()), 1);
             if save {
                 r.round_trip();
             }
-            r.run(at_day(14.0));
+            r.run(at_day(DEN_WAIT + 8.0));
             r
         }),
         ("a muster's set-outs in flight", |seed, save| {
@@ -1559,7 +1583,7 @@ fn reconcile_in_flight(slice: &'static str) -> RunOut {
     );
 
     let mut r = den_run(311, 0);
-    r.run(at_day(6.5));
+    r.run(at_day(DEN_WAIT + 0.5));
     let held = r.census_held();
     let spawns = lines_in(&held, ACTION_SPAWN);
     r.restart();
@@ -1619,6 +1643,630 @@ fn reconcile_in_flight(slice: &'static str) -> RunOut {
         stats: None,
         log: Vec::new(),
     }
+}
+
+// ---- runs 6 and 7: the den's renewal and the chief's kills (slice M6) ---------------------------
+
+/// The tick the den's next Frostmaw is booked to come, if one is.
+fn arrival_at(r: &CampRun) -> Option<Tick> {
+    r.c.camp(r.f).and_then(|c| c.arrival_at)
+}
+
+/// The den's recent losses a player caused, `P`.
+fn pressure_of(r: &CampRun) -> f32 {
+    r.c.camp(r.f).map_or(0.0, |c| c.pressure.parts().0)
+}
+
+/// The den's first body killed, `by`, a tick from now and the books run on a few ticks: the tick it
+/// died at.
+fn kill_first(r: &mut CampRun, by: u32) -> Tick {
+    let u = r.plugin.camps[&r.key].bodies[0].uuid;
+    let at = r.c.now() + 1;
+    r.plugin.camp_kill(r.key, u, by, at);
+    let to = r.c.now() + 5;
+    r.run(to);
+    at
+}
+
+/// Days from `from` to the booked arrival.
+fn wait_days(r: &CampRun, from: Tick) -> Option<f64> {
+    arrival_at(r).map(|t| (t.0 - from.0) as f64 / TICKS_PER_DAY as f64)
+}
+
+/// The flags of the lines of every reconcile the engine sent, in order.
+fn line_flags(r: &CampRun) -> Vec<u8> {
+    r.cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Cmd::Reconcile(x) => Some(x.lines.iter().map(|l| l.flags)),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
+/// A den's feud against `who`, at `step` with grievance behind it (the feud stands there after a
+/// replan).
+fn feud_at(r: &mut CampRun, who: ActorId, step: Step) {
+    let at = r.c.now() + 1;
+    r.c.signal(
+        &mut r.w,
+        Signal {
+            faction: Some(r.key),
+            kind: SignalKind::Killing,
+            amount: 10.0,
+            actor: who,
+            pos: synth::CAMP_POS,
+            district: None,
+        },
+        at,
+    );
+    r.c.feud_mut(r.f, who).expect("a feud").step = step;
+}
+
+fn step_of(r: &CampRun, who: ActorId) -> Option<Step> {
+    r.c.feud(r.f, who).map(|f| f.step)
+}
+
+/// Run 6 (the den's half): a Frostmaw den renews by a wait, `min(192, 6 x 2^P)` days, `P` being the
+/// recent losses a player caused (EQUILIBRIUM.md §2.2, MOWZIE.md ledger 17, MZB-255 to 259, 284).
+/// Played against the emulated plugin on fixed seeds.
+fn den_renewal(slice: &'static str) -> RunOut {
+    use rtsim_kernel::renewal::Pressure;
+    let mut out = Vec::new();
+    let rule = {
+        let r = den_run(600, 1);
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .renewal
+            .expect("the Frostmaw renews by a wait")
+            .rule
+    };
+    let day = |t: Tick| (t.0 / TICKS_PER_DAY) as u32;
+
+    // The wait after a death, by what killed it.
+    let mut rows = Vec::new();
+    let mut books = true;
+    for (k, by) in [
+        boundary::BY_MOB,
+        boundary::BY_PLAYER,
+        boundary::BY_TAKEN,
+        boundary::BY_NONE,
+        boundary::BY_OTHER,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut r = den_run(610 + k as u64, 1);
+        come_in(&mut r);
+        let died = kill_first(&mut r, by);
+        rows.push((
+            by,
+            wait_days(&r, died),
+            pressure_of(&r),
+            r.c.stats.renewal_losses,
+        ));
+        books &= holds(&mut r);
+    }
+    let near = near_days;
+    check(
+        &mut out,
+        "killed by a mob the next wait is 6.00 days, by a player the first time 12.00",
+        near(rows[0].1, 6.0) && near(rows[1].1, 12.0) && books,
+        format!(
+            "a mob's kill: {:?} days; a player's: {:?} days",
+            rows[0].1, rows[1].1
+        ),
+    );
+    check(
+        &mut out,
+        "a body taken and a death no one claims bump the pressure, a mob's kill does not",
+        rows.iter().all(|r| {
+            let bumps = r.0 != boundary::BY_MOB;
+            near(r.1, if bumps { 12.0 } else { 6.0 })
+                && r.2 == f32::from(u8::from(bumps))
+                && r.3 == u64::from(bumps)
+        }),
+        format!(
+            "(by, wait, P, losses): {:?}",
+            rows.iter()
+                .map(|r| (r.0, r.1.map(|w| (w * 100.0).round() / 100.0), r.2, r.3))
+                .collect::<Vec<_>>()
+        ),
+    );
+
+    // Farmed: each Frostmaw killed by a player 2 days after it comes. A wait is the kernel's own on
+    // the days it ran (exact), and near the whole-day closed form.
+    let mut r = den_run(620, 1);
+    come_in(&mut r);
+    let mut model = Pressure::default();
+    let mut waits = Vec::new();
+    let (mut exact, mut books) = (true, true);
+    let mut at = r.c.now();
+    for _ in 0..8 {
+        let died = at + 1;
+        let u = r.plugin.camps[&r.key].bodies[0].uuid;
+        r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, died);
+        r.run(died + 5);
+        model.bump(day(died), 1.0, rule.half_life_days);
+        let Some(booked) = arrival_at(&r) else {
+            exact = false;
+            break;
+        };
+        exact &= booked.0 - died.0 == rule.delay_ticks(model, day(died));
+        waits.push((booked.0 - died.0) as f64 / TICKS_PER_DAY as f64);
+        r.run(booked + 10);
+        exact &= slot_counts(&r) == [1, 0, 0, 0, 0];
+        books &= holds(&mut r);
+        at = booked + at_day(2.0).0;
+        r.run(at);
+    }
+    let want = [12.0, 22.45, 36.4, 47.2, 50.6];
+    let close = waits.len() >= 5
+        && waits
+            .iter()
+            .zip(want)
+            .all(|(g, w)| (g - w).abs() <= 0.03 * w);
+    check(
+        &mut out,
+        "a farmed den waits as the kernel's rule says, and near the closed form's 12.0, 22.45, 36.4, \
+         47.2, 50.6",
+        exact && close && books && r.c.stats.arrivals == 8,
+        format!(
+            "waits {:?} days ({} arrivals); every one the kernel's wait on its day: {exact}",
+            waits
+                .iter()
+                .map(|w| (w * 100.0).round() / 100.0)
+                .collect::<Vec<_>>(),
+            r.c.stats.arrivals
+        ),
+    );
+
+    // Farmed for 60 game years (96 days each): the rate settles at 96 / the steady state's gap.
+    let (p_star, gap) = rule.farmed(1, 2.0);
+    let want_rate = 96.0 / f64::from(gap);
+    let years = 60.0;
+    let end = at_day(years * 96.0);
+    let mut r = den_run(621, 1);
+    come_in(&mut r);
+    let mut at = r.c.now();
+    let (mut books, mut ended) = (true, false);
+    for _ in 0..400 {
+        let died = at + 1;
+        let u = r.plugin.camps[&r.key].bodies[0].uuid;
+        r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, died);
+        r.run(died + 5);
+        books &= holds(&mut r);
+        let Some(booked) = arrival_at(&r) else { break };
+        if booked > end {
+            r.run(end);
+            ended = true;
+            break;
+        }
+        r.run(booked + 10);
+        books &= holds(&mut r);
+        at = booked + at_day(2.0).0;
+        r.run(at);
+    }
+    let rate = r.c.stats.arrivals as f64 / years;
+    check(
+        &mut out,
+        "farmed for 60 game years the den's arrivals per 96 days are within 5% of the closed form's",
+        ended && books && (rate - want_rate).abs() <= 0.05 * want_rate,
+        format!(
+            "{} arrivals, {rate:.3} per 96 days against {want_rate:.3} (P settles at {p_star:.3}, a \
+             wait of {:.2} days and a kill every {gap:.2})",
+            r.c.stats.arrivals,
+            f64::from(gap) - 2.0
+        ),
+    );
+
+    // A den found empty gets a migrant after the cap.
+    let mut r = den_run(630, 0);
+    let wait = wait_days(&r, Tick(1));
+    r.run(at_day(191.0));
+    let before = r.c.stats.arrivals;
+    r.run(at_day(193.0));
+    let owed = slot_counts(&r);
+    come_in(&mut r);
+    let spawn = r
+        .plugin
+        .applied
+        .iter()
+        .find(|a| a.line.action == boundary::ACTION_SPAWN)
+        .map(|a| a.line.flags);
+    check(
+        &mut out,
+        "a den found empty gets its migrant after 192.00 days, owed, then spawned with its crystal",
+        near(wait, 192.0)
+            && before == 0
+            && r.c.stats.arrivals == 1
+            && owed == [0, 1, 0, 0, 0]
+            && slot_counts(&r) == [1, 0, 0, 0, 0]
+            && spawn
+                .is_some_and(|f| f & boundary::LINE_CRYSTAL != 0 && f & boundary::LINE_CHIEF != 0)
+            && holds(&mut r),
+        format!(
+            "booked {wait:?} days; none by day 191, {} by 193, {owed:?} (slots) while out; then {:?}",
+            r.c.stats.arrivals,
+            slot_counts(&r)
+        ),
+    );
+
+    // A stolen crystal is no loss: no wait, no pressure; the next arrival comes with its crystal.
+    let mut r = den_run(640, 1);
+    come_in(&mut r);
+    let at = r.c.now() + 1;
+    let stole = r.plugin.steal(r.key, at);
+    let to = r.c.now() + 5;
+    r.run(to);
+    let (waits, p, losses) = (arrival_at(&r), pressure_of(&r), r.c.stats.renewal_losses);
+    let robbed = !r.c.factions[r.f as usize].crystal;
+    let stands = slot_counts(&r) == [1, 0, 0, 0, 0];
+    let died = kill_first(&mut r, boundary::BY_PLAYER);
+    r.run(died + at_day(12.0).0 + 10);
+    check(
+        &mut out,
+        "a stolen crystal starts no wait, and the next arrival's line has the crystal",
+        stole
+            && waits.is_none()
+            && p == 0.0
+            && losses == 0
+            && robbed
+            && stands
+            && r.c.stats.arrivals == 1
+            && r.c.factions[r.f as usize].crystal
+            && line_flags(&r)
+                .last()
+                .is_some_and(|f| f & boundary::LINE_CRYSTAL != 0)
+            && holds(&mut r),
+        format!(
+            "wait {waits:?}, P {p}, {losses} losses, robbed {robbed}, the Frostmaw stands {stands}; \
+             after its death {} arrival, crystal back {}",
+            r.c.stats.arrivals, r.c.factions[r.f as usize].crystal
+        ),
+    );
+
+    // A feud with a busy line, its grievance fed every day as the meter will feed it (M7), wakes a
+    // handful of times over the wait, never once a tick.
+    let mut r = den_run(650, 1);
+    come_in(&mut r);
+    let raid = theta(&r.c, r.f, Step::Raid);
+    let wakes = r.c.stats.feud_wakes;
+    let died = kill_first(&mut r, boundary::BY_PLAYER);
+    let booked = arrival_at(&r).expect("a wait");
+    let mut d = r.c.now().0 as f64 / TICKS_PER_DAY as f64;
+    while at_day(d) < booked {
+        r.kill(1.5 * raid / 8.0);
+        d += 1.0;
+        r.run(at_day(d).min(booked));
+    }
+    let grew = r.c.stats.feud_wakes - wakes;
+    let step = step_of(&r, r.player);
+    r.run(booked + 10);
+    check(
+        &mut out,
+        "a feud with a busy line wakes a handful of times over the wait, never once a tick",
+        grew < 10 && r.c.stats.arrivals == 1 && holds(&mut r),
+        format!(
+            "{grew} feud wakes over the {:.1} days from the death to the arrival (the feud at \
+             {step:?}); {} arrival",
+            booked.0 as f64 / TICKS_PER_DAY as f64 - died.0 as f64 / TICKS_PER_DAY as f64,
+            r.c.stats.arrivals
+        ),
+    );
+
+    // A save and load in the middle of the wait: the arrival comes on the same tick.
+    let end = |save: bool| {
+        let mut r = den_run(660, 1);
+        come_in(&mut r);
+        let died = kill_first(&mut r, boundary::BY_PLAYER);
+        r.run(died + at_day(5.0).0);
+        let mut same = true;
+        if save {
+            r.round_trip();
+            same &= r.failures.is_empty();
+            let c = r.c.camp(r.f).expect("a ledger");
+            same &= c.pressure.parts().0 == 1.0 && c.arrival_at == Some(died + at_day(12.0).0);
+        }
+        r.run(Tick((died + at_day(12.0).0).0 - 1));
+        let before = r.c.stats.arrivals;
+        r.run(died + at_day(12.0).0);
+        let on_the_tick = r.c.stats.arrivals == before + 1;
+        r.run(died + at_day(12.0).0 + 10);
+        (
+            r.c.state_hash(),
+            slot_counts(&r),
+            same && on_the_tick && holds(&mut r),
+        )
+    };
+    let (kept, loaded) = (end(false), end(true));
+    check(
+        &mut out,
+        "a save and load mid-wait arrives on the same tick, to the same books",
+        kept == loaded && kept.2,
+        format!(
+            "state {:016x} against {:016x}, then {:?}",
+            kept.0, loaded.0, loaded.1
+        ),
+    );
+
+    RunOut {
+        run: 6,
+        built: false,
+        slice,
+        checks: out,
+        rungs: Vec::new(),
+        stats: None,
+        log: Vec::new(),
+    }
+}
+
+/// Walls that hold no one: every raid on a district is lost to the last unit.
+struct Walls;
+
+impl Infrastructure for Walls {
+    fn districts_near(&mut self, _: u16, _: i64, _: i64, _: i64) -> Vec<DistrictSite> {
+        Vec::new()
+    }
+
+    fn raid(&mut self, _: &Threat) -> Option<RaidOutcome> {
+        Some(RaidOutcome {
+            survived: 0.0,
+            floor: None,
+            untested: false,
+            stolen: GoodVec::new(),
+            destroyed_blocks: 0,
+            machine_lost: false,
+            skipped: None,
+        })
+    }
+
+    fn good_name(&self, _: Good) -> Option<String> {
+        None
+    }
+}
+
+/// A den whose player's feud has sent the Frostmaw on a raid at the refinery: grievance one and a
+/// half times Raid's threshold (below Invasion's, which is twice it), the camp out so the band
+/// goes abstractly, and either `Some(killer)` kills the chief in the fight a watching player picks
+/// (the emulated player is `killer`), or `None`, the district's walls kill the whole band.
+fn feud_raid(seed: u64, killer: Option<boundary::Uuid>) -> CampRun {
+    let mut r = den_run(seed, 1);
+    match killer {
+        Some(k) => {
+            r.plugin.player = k;
+            r.plugin.fight = Some(synth::Fight {
+                kill_share: 0.0,
+                after: 200,
+                kill_chief: true,
+                only_at_base: false,
+            });
+            r.watch = true;
+        }
+        None => r.infra = Box::new(Walls),
+    }
+    come_in(&mut r);
+    let raid = theta(&r.c, r.f, Step::Raid);
+    r.kill(1.5 * raid / 8.0);
+    r.camp_out();
+    let mut t = r.c.now();
+    while r.c.stats.chiefs_killed == 0 && t < at_day(30.0) {
+        t += 400;
+        r.run(t);
+    }
+    let to = r.c.now() + 100;
+    r.run(to);
+    r
+}
+
+/// The war parties about walk home, for up to 12 days: whether none is left.
+fn bands_home(r: &mut CampRun) -> bool {
+    let limit = r.c.now() + at_day(12.0).0;
+    let mut t = r.c.now();
+    while war_parties(r) > 0 && t < limit {
+        t += 400;
+        r.run(t);
+    }
+    war_parties(r) == 0
+}
+
+/// Run 7: which feud steps down when the Frostmaw, a camp's chief, falls (MOWZIE.md §4.2 *Kills*,
+/// MZB-262 to 266, 285), and run 1's tail: cowed, the heir, the body 12 days after a first kill.
+fn den_kills(slice: &'static str) -> RunOut {
+    use boundary::Uuid;
+    const B: Uuid = (0x0713, 0xE2);
+    const C: Uuid = (0x1D1E, 0x01);
+    let mut out = Vec::new();
+
+    // (a) The feud's player kills the chief on its raid: the feud steps down, from Raid to Notice.
+    let mut r = feud_raid(710, Some(synth::PLAYER));
+    let a = step_of(&r, r.player);
+    let home = bands_home(&mut r);
+    check(
+        &mut out,
+        "the feud's player kills the chief on a raid: Raid steps down to Notice, the band routs home",
+        r.c.stats.chiefs_killed == 1
+            && r.c.stats.successions == 1
+            && a == Some(Step::Notice)
+            && home
+            && pressure_of(&r) == 1.0
+            && holds(&mut r),
+        format!(
+            "{} fall, the feud at {a:?}, the band home {home}, P {}",
+            r.c.stats.chiefs_killed,
+            pressure_of(&r)
+        ),
+    );
+
+    // (b) A third player kills it on A's raid: A's feud steps down, B is reported and the heir
+    // witnesses it. The heir takes over a grudge of the report's -125 at half a point of grievance
+    // each, about 62 (MZB-36; MOWZIE.md's "about 2.5" is a misreading of the factor, MZB-299), more
+    // than Notice's rung, but the faction is cowed, so B's feud is not raised yet.
+    let mut r = feud_raid(711, Some(B));
+    let b = r.c.player(&mut r.w, B);
+    let a = step_of(&r, r.player);
+    let heir_of_the_fall = r.c.factions[r.f as usize].chief;
+    let reported =
+        r.w.knowledge
+            .sentiment_snapshot(heir_of_the_fall, r.c.now())
+            .iter()
+            .any(|&(who, v)| who == b && v < 0);
+    let view = r.c.feud_view(r.key, b);
+    let grievance = view.as_ref().map_or(0.0, |v| v.grievance);
+    let theta_notice = theta(&r.c, r.f, Step::Notice);
+    let cowed = r.c.factions[r.f as usize].cowed_until > r.c.now();
+    check(
+        &mut out,
+        "a third player kills it on A's raid: A's feud steps to Notice, B is reported and the heir \
+         witnesses it, holding about 62 grievance, which the cowed faction does not act on yet",
+        r.c.stats.chiefs_killed == 1
+            && a == Some(Step::Notice)
+            && reported
+            && cowed
+            && view.as_ref().is_some_and(|v| v.step < Step::Notice)
+            && (grievance - 62.5).abs() < 2.0
+            && grievance > theta_notice
+            && holds(&mut r),
+        format!(
+            "A's feud at {a:?}; the new chief feels against B: {reported}; B's feud at {:?} with \
+             grievance {grievance:.1} (-125 at 0.5 a point; Notice at {theta_notice:.1}), cowed \
+             {cowed}",
+            view.map(|v| v.step)
+        ),
+    );
+
+    // (c) A player with no feud kills it at the camp: A's feud stays, and C is raised to nothing.
+    let mut r = den_run(712, 1);
+    come_in(&mut r);
+    let me = r.player;
+    feud_at(&mut r, me, Step::Raid);
+    r.plugin.player = C;
+    let c = r.c.player(&mut r.w, C);
+    kill_first(&mut r, boundary::BY_PLAYER);
+    let (a, cs) = (step_of(&r, me), step_of(&r, c));
+    check(
+        &mut out,
+        "a player with no feud kills it at the camp: A's feud stands, C is raised to nothing",
+        r.c.stats.chiefs_killed == 1
+            && a == Some(Step::Raid)
+            && cs.is_none_or(|s| s < Step::Notice)
+            && holds(&mut r),
+        format!("A's feud at {a:?}, C's at {cs:?}"),
+    );
+
+    // (d) The feud's player kills it at the camp: A's feud steps down.
+    let mut r = den_run(713, 1);
+    come_in(&mut r);
+    let me = r.player;
+    feud_at(&mut r, me, Step::Raid);
+    kill_first(&mut r, boundary::BY_PLAYER);
+    let a = step_of(&r, me);
+    check(
+        &mut out,
+        "the feud's player kills it at the camp: A's feud steps down to Notice",
+        r.c.stats.chiefs_killed == 1 && a == Some(Step::Notice) && holds(&mut r),
+        format!("A's feud at {a:?}"),
+    );
+
+    // (e) A chief body left at home by its mustering band is killed there: the band routs and the
+    // heir succeeds.
+    let mut r = den_run(714, 1);
+    come_in(&mut r);
+    let p = r.raid().expect("a raid goes");
+    let left = slot_counts(&r);
+    let led = r.c.parties[p].chief;
+    kill_first(&mut r, boundary::BY_PLAYER);
+    let to = r.c.now() + at_day(2.0).0;
+    r.run(to);
+    check(
+        &mut out,
+        "a chief body left at home is killed there: its band routs and the heir succeeds",
+        led && left == [0, 0, 1, 0, 0]
+            && r.c.stats.chiefs_killed == 1
+            && r.c.stats.successions == 1
+            && war_parties(&r) == 0
+            && r.c.factions[r.f as usize].away == 0
+            && pressure_of(&r) == 1.0
+            && holds(&mut r),
+        format!(
+            "the band led by the Frostmaw {led}, its slot {left:?}; then {} fall, {} succession, \
+             {} bands about, P {}",
+            r.c.stats.chiefs_killed,
+            r.c.stats.successions,
+            war_parties(&r),
+            pressure_of(&r)
+        ),
+    );
+
+    // (f) An abstract wipe-out on a district: the chief falls with no killer, the band's feud steps
+    // down and the pressure is bumped.
+    let mut r = feud_raid(715, None);
+    let a = step_of(&r, r.player);
+    let heard = r.c.stats.raids_district;
+    let home = bands_home(&mut r);
+    check(
+        &mut out,
+        "a band lost to a district's walls loses its chief with no killer: its feud steps down, the \
+         pressure is bumped",
+        heard == 1
+            && r.c.stats.chiefs_killed == 1
+            && a == Some(Step::Notice)
+            && pressure_of(&r) == 1.0
+            && home
+            && holds(&mut r),
+        format!(
+            "{heard} raid met the walls, {} fall, the feud at {a:?}, P {}",
+            r.c.stats.chiefs_killed,
+            pressure_of(&r)
+        ),
+    );
+
+    // (g) Run 1's tail: a first kill at the den. The faction is cowed, the heir is chief and the
+    // body comes 12 days after, the feud waking a handful of times, not once a tick.
+    let mut r = den_run(716, 1);
+    come_in(&mut r);
+    let chief = r.c.factions[r.f as usize].chief;
+    let wakes = r.c.stats.feud_wakes;
+    let died = kill_first(&mut r, boundary::BY_PLAYER);
+    let cowed = r.c.factions[r.f as usize].cowed_until > died;
+    let heir = r.c.factions[r.f as usize].chief != chief;
+    let wait = wait_days(&r, died);
+    let end = died + at_day(14.0).0;
+    r.run(end);
+    let grew = r.c.stats.feud_wakes - wakes;
+    check(
+        &mut out,
+        "a first kill at the den: cowed, the heir chief, the body 12 days after, the feud wakes a \
+         handful of times",
+        cowed
+            && heir
+            && near_days(wait, 12.0)
+            && r.c.stats.arrivals == 1
+            && slot_counts(&r) == [1, 0, 0, 0, 0]
+            && grew < 10
+            && holds(&mut r),
+        format!(
+            "cowed {cowed}, the heir chief {heir}, the next Frostmaw booked {wait:?} days after, \
+             {} arrival; {grew} feud wakes over the 14 days",
+            r.c.stats.arrivals
+        ),
+    );
+
+    RunOut {
+        run: 7,
+        built: true,
+        slice,
+        checks: out,
+        rungs: Vec::new(),
+        stats: None,
+        log: Vec::new(),
+    }
+}
+
+/// Whether a wait in days is `want` to a millionth.
+fn near_days(w: Option<f64>, want: f64) -> bool {
+    w.is_some_and(|w| (w - want).abs() < 1e-6)
 }
 
 #[cfg(test)]
