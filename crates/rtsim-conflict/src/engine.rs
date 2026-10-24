@@ -5281,6 +5281,24 @@ impl Conflict {
                     let x = &mut self.parties[p];
                     x.embodied = false;
                     x.spawned.clear();
+                } else if r.wave == 0
+                    && self.outbox.replaying()
+                    && self.replay_from_pages
+                    && let Some(p) = Party::of_agent(r.agent).filter(|p| self.parties.contains(*p))
+                    && r.epoch > self.parties[p].epoch
+                    && let Some(arrival) = self.held_since(p, at)
+                {
+                    // A held arrival's (or round's) fight whose first wave Java refused: live
+                    // `start_fight` took the epoch and the refusal left it fighting unembodied,
+                    // so it ends the hold as an honoured BAND_MATERIALIZED does (fixes4 item 5,
+                    // RP-54). `wave` as `spawn_wave` left it.
+                    self.held.remove(&p);
+                    let x = &mut self.parties[p];
+                    x.epoch = r.epoch;
+                    x.embodied = false;
+                    x.spawned.clear();
+                    x.wave = 1;
+                    self.fight_held(w, p, arrival, at);
                 }
             }
             Obs::Dematerialized(d) => {

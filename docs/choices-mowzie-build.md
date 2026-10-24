@@ -1233,3 +1233,18 @@ conservative option at its fork.
   the round + 110, pages at + 105, the record at + 115, before the poll at + 120): after the
   restart (Home, epoch 1, until R + 601, watched 0, raids [R + 600]) against the map's (Home,
   epoch 1, until R + 116, watched 1, no raid). The sims are unchanged.
+- **RP-54** (a held fight that Java refused; §6.1; RP-23; fixes4 item 5): a replayed
+  BAND_SPAWN_REJECTED of wave 0 at an epoch newer than a held party's, inside the slack, on an
+  engine from its pages, ends the hold as the fight: `held` loses the party, which takes the
+  record's epoch, not embodied, nothing placed, `wave` 1 (as `spawn_wave` left it), then
+  `fight_held`. Live the refusal leaves the band fighting unembodied to the fight's end; the replay
+  read it against the older epoch (`party_of` found nothing), kept the hold and resolved the
+  arrival unwatched at the slack. Failing first, mowzie_records'
+  `a_held_arrivals_refused_fight_is_fought_when_replayed` (`Run::refuse` turns the plugin's
+  BAND_MATERIALIZED of the band's fight into a refusal, reason 1): replayed (Home, false, epoch 1,
+  until 24020, watched 0, raids [55870]) against live (Home, false, epoch 2, until 61270, watched
+  1, no raid). A refused sighting inside the slack is read as the fight, the residual RP-48 names
+  for BAND_MATERIALIZED; BAND_SPAWN_REJECTED's bytes 36 to 39 are reserved too, so fixes4 item 2's
+  echoed flag could go there as well. A replayed refusal of a newer epoch for a party not held
+  raises no epoch floor, so the next decision after the replay can take the refused epoch again
+  (reported, not changed). The sims are unchanged.
