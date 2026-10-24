@@ -22,7 +22,7 @@ use std::fmt::{Display, Write as _};
 
 use rtsim_industry::cmd::{
     BlockDestroy, CarriageDelta, CarriageReason, ChunkReconcile, Cmd, DepositDelta, InvDelta,
-    WritePackage,
+    WriteChain, WritePackage,
 };
 use rtsim_industry::ids::{
     BlockPos, ChunkPos, DistrictId, Good, GoodVec, StationId, StoreId, TrainId,
@@ -1808,6 +1808,33 @@ fn main() {
             goods,
         });
         cmd(&mut out, name, wire::IND_WRITE_PACKAGE, seq, c, &f);
+    }
+
+    {
+        let name = "IND_WRITE_CHAIN";
+        let (mut g, mut f) = begin(name);
+        let seq = f.u64("cmd_seq", g.u64());
+        let op = g.engine_op();
+        f.num("op", op.0);
+        let store = StoreId(f.u64("store", g.u64()));
+        let district = district(&mut f, &mut g);
+        let inventory = f.u32("inventory", g.u32());
+        let frogport = f.u32("frogport", g.u32());
+        let p = pos(&mut f, &mut g, "");
+        let count = f.u32("count", g.u32());
+        f.sym("n_entries", 2);
+        let goods = goods(&mut f, &mut g, "entry", 2);
+        let c = Cmd::WriteChain(WriteChain {
+            op,
+            store,
+            district,
+            inventory,
+            frogport,
+            pos: p,
+            count,
+            goods,
+        });
+        cmd(&mut out, name, wire::IND_WRITE_CHAIN, seq, c, &f);
     }
 
     code_tables(&mut out);

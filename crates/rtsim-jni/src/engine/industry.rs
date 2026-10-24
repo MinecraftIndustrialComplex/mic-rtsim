@@ -78,6 +78,8 @@ pub const COMMANDS: RangeInclusive<u16> = 0x8400..=0x84FF;
 /// IND_PORT and IND_PACKAGE carry Java's op id at 48.
 const PORT_OP: usize = 48;
 const PACKAGE_OP: usize = 48;
+/// IND_CHAIN_PACKAGE carries, at 64, the engine's op of the IND_WRITE_CHAIN it answers (0: none).
+const CHAIN_OP: usize = 64;
 /// Where an industry command holds its dimension (the engine's dictionary id).
 const RECONCILE_DIM: usize = 36;
 const DEPOSIT_DIM: usize = 24;
@@ -540,14 +542,19 @@ pub(super) fn claims(rec: &Rec<'_>) -> bool {
 }
 
 /// The op id `Replay` applies an industry record under at most once (0: none). Java's own op ids
-/// only (ports and packages): IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT carry the engine's, and
+/// for ports and packages: IND_RECONCILE_RESULT and IND_CARRIAGE_RESULT carry the engine's, and
 /// the engine takes each once by state (its pending reconciles and exchanges), so they need no op
-/// in `Replay` and never meet the COMMAND_RESULT Java journals under the same op id (W11).
+/// in `Replay` and never meet the COMMAND_RESULT Java journals under the same op id (W11). A
+/// `CHAIN_IN` an IND_WRITE_CHAIN wrote does carry the engine's op (SECTIONS.md §2.5, SC113): its
+/// chunk carries it with the COMMAND_RESULT and a later session journals both again, so `Replay`
+/// takes it once by that op, and the COMMAND_RESULT after it is an answer heard again
+/// ([`answered_again`]), which still empties the outbox.
 pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     let b = rec.bytes;
     let at = match rec.kind {
         iw::IND_PORT => PORT_OP,
         iw::IND_PACKAGE => PACKAGE_OP,
+        iw::IND_CHAIN_PACKAGE => CHAIN_OP,
         _ => return 0,
     };
     if b.len() >= at + 8 {
@@ -628,6 +635,8 @@ fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
         return;
     }
     match kept {
+        // Nothing fitted in the frogport: the store still owes it and writes again (SC113).
+        Some(Cmd::WriteChain(_)) => {}
         Some(c) => log_warn(&format!(
             "Minecraft could not apply industry command {:#x} ({}); the engine keeps its books as if it had (W10)",
             op.0,

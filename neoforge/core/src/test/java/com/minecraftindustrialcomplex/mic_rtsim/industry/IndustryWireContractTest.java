@@ -72,7 +72,7 @@ class IndustryWireContractTest {
 
     /** The command fixtures; every other record fixture is an observation. */
     private static final Set<String> COMMANDS = Set.of("IND_CHUNK_RECONCILE", "IND_CARRIAGE_DELTA",
-            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE");
+            "IND_DEPOSIT_DELTA", "IND_WRITE_PACKAGE", "IND_WRITE_CHAIN");
 
     /** What the Rust program must have printed. A missing one fails, so a shrunken file cannot pass. */
     private static final List<String> REQUIRED = List.of(
@@ -90,7 +90,9 @@ class IndustryWireContractTest {
             // the syn200 fixes (SG50)
             "IND_TRAIN_UNWATCHED",
             // SEC-1 S4a: package stores
-            "IND_PACKAGE_STORE", "IND_CHAIN_PACKAGE", "IND_STORE_CENSUS");
+            "IND_PACKAGE_STORE", "IND_CHAIN_PACKAGE", "IND_STORE_CENSUS",
+            // SEC-1 S4b: writes into a loaded frogport
+            "IND_WRITE_CHAIN");
 
     // ---- the enum codes, as IndRecords names them ---------------------------------------------------
 
@@ -1017,6 +1019,25 @@ class IndustryWireContractTest {
                         .u32("count", IndRecords.WritePackage.COUNT, f.u32("count"));
                 for (int i = 0; i < c; i++) {
                     int at = IndRecords.WritePackage.ENTRIES + i * IndRecords.ENTRY16;
+                    r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
+                            .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
+                }
+                break;
+            }
+            case "IND_WRITE_CHAIN": {
+                int c = f.count("n_entries");
+                r.header(IndRecords.IND_WRITE_CHAIN, IndRecords.WriteChain.size(c), c, f);
+                r.b64("op", IndRecords.WriteChain.OP_ID, f.u64("op"))
+                        .b64("store", IndRecords.WriteChain.STORE, f.u64("store"))
+                        .b64("district", IndRecords.WriteChain.DISTRICT, f.u64("district"))
+                        .u32("inventory", IndRecords.WriteChain.INVENTORY, f.u32("inventory"))
+                        .u32("frogport", IndRecords.WriteChain.FROGPORT, f.u32("frogport"))
+                        .i32("x", IndRecords.WriteChain.X, f.i32("x"))
+                        .i32("y", IndRecords.WriteChain.Y, f.i32("y"))
+                        .i32("z", IndRecords.WriteChain.Z, f.i32("z"))
+                        .u32("count", IndRecords.WriteChain.COUNT, f.u32("count"));
+                for (int i = 0; i < c; i++) {
+                    int at = IndRecords.WriteChain.ENTRIES + i * IndRecords.ENTRY16;
                     r.u32("entry" + i + ".good", at + E_GOOD, f.u32("entry" + i + ".good"))
                             .b64("entry" + i + ".amount", at + E_AMOUNT, f.i64("entry" + i + ".amount"));
                 }

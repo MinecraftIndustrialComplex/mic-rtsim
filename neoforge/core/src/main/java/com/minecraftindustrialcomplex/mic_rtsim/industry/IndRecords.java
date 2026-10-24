@@ -102,6 +102,9 @@ public final class IndRecords {
     // 0x8402 was IND_CHANNEL_DELTA: retired with IND_CHANNEL_SAMPLE; the engine reads it as unknown.
     public static final int IND_DEPOSIT_DELTA = 0x8403;
     public static final int IND_WRITE_PACKAGE = 0x8404;
+    // 0x8406 is IND_PROBE_SET and 0x8408 IND_COUNT_SET (GlassRecords); 0x8407 is free.
+    /** Packages replays sent along a package store's chain, written into its loaded frogport (SECTIONS.md §2.5, S4b). */
+    public static final int IND_WRITE_CHAIN = 0x8409;
     // 0x8405 was IND_LEDGER: retired with IND_LEDGER_REQUEST.
 
     // ---- latest-wins layouts ----------------------------------------------------------------------
@@ -575,6 +578,28 @@ public final class IndRecords {
         public static final int ADDRESS = 48;   // u32 (NAME)
         public static final int COUNT = 52;     // u32, packages of these contents
         public static final int ENTRIES = 56;
+
+        public static int size(int n) {
+            return ENTRIES + n * ENTRY16;
+        }
+    }
+
+    /**
+     * IND_WRITE_CHAIN, aux = n entries (one package's contents): {@code COUNT} packages for the store's
+     * frogport {@code FROGPORT} (an index into its last IND_PACKAGE_STORE) at X, Y, Z, answered by one
+     * IND_CHAIN_PACKAGE {@code CHAIN_IN} with this op id for what was written (choice SC113).
+     */
+    public static final class WriteChain {
+        public static final int OP_ID = 16;     // u64
+        public static final int STORE = 24;     // u64
+        public static final int DISTRICT = 32;  // u64
+        public static final int INVENTORY = 40; // u32
+        public static final int FROGPORT = 44;  // u32
+        public static final int X = 48;         // i32
+        public static final int Y = 52;         // i32
+        public static final int Z = 56;         // i32
+        public static final int COUNT = 60;     // u32, packages of these contents
+        public static final int ENTRIES = 64;
 
         public static int size(int n) {
             return ENTRIES + n * ENTRY16;
