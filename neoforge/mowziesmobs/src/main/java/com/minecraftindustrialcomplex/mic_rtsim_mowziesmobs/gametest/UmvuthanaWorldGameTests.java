@@ -38,6 +38,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
@@ -266,7 +267,7 @@ public final class UmvuthanaWorldGameTests {
         EntityUmvuthanaMinion[] struck = new EntityUmvuthanaMinion[1];
         List<String> violations = new ArrayList<>();
         int[] watching = {0}; // 1: unprovoked, 2: the masked player has struck
-        int[] ticks = {0}, bareFirst = {0};
+        int[] ticks = {0}, bareFirst = {0}, items0 = {0}, orbs0 = {0};
 
         helper.startSequence()
                 .thenExecute(() -> st.force(1))
@@ -331,6 +332,28 @@ public final class UmvuthanaWorldGameTests {
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("the struck warrior turns on the masked player (" + struck[0].getTarget() + ")", struck[0].getTarget() == masked[0]);
+                    // The raptor's followers are extras, no members: a player's kill of each drops no loot and no experience
+                    // (MZB-643; the stack is made again with new ones, so each would be a mask and experience to farm).
+                    AABB around = new AABB(st.centre, st.centre).inflate(40);
+                    items0[0] = level.getEntitiesOfClass(ItemEntity.class, around).size();
+                    orbs0[0] = level.getEntitiesOfClass(ExperienceOrb.class, around).size();
+                    int killed = 0;
+                    for (Mob m : everyone(agent[0]))
+                        if (m instanceof EntityUmvuthanaFollowerToRaptor f) {
+                            f.setMask(MaskType.FEAR);
+                            f.hurt(level.damageSources().playerAttack(masked[0]), 1000f);
+                            check("the follower died to the player", f.isDeadOrDying());
+                            killed++;
+                        }
+                    check("the raptor's four followers were killed (" + killed + ")", killed == 4);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    AABB around = new AABB(st.centre, st.centre).inflate(40);
+                    int items = level.getEntitiesOfClass(ItemEntity.class, around).size();
+                    int orbs = level.getEntitiesOfClass(ExperienceOrb.class, around).size();
+                    check("four followers dropped no item (" + items0[0] + " before, " + items + " after)", items == items0[0]);
+                    check("and no experience (" + orbs0[0] + " orbs before, " + orbs + " after)", orbs == orbs0[0]);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, st.centre.x - 200, st.centre.z);
                 })
                 .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty()))

@@ -98,13 +98,17 @@ public final class ConflictEvents {
             event.setCanceled(true); // a chief's second body drops nothing (MZB-431)
             return;
         }
+        if (ConflictBridge.INSTANCE.isExtra(event.getEntity())) {
+            event.setCanceled(true); // nor does a body's extra, which the stack makes again (MZB-643)
+            return;
+        }
         ConflictBridge.INSTANCE.onDrops(event.getEntity(), event.getDrops());
     }
 
     private static void onExperience(LivingExperienceDropEvent event) {
         if (event.getEntity().level().isClientSide() || live() == null)
             return;
-        if (ConflictBridge.INSTANCE.reconciler().secondBody(event.getEntity()))
+        if (ConflictBridge.INSTANCE.reconciler().secondBody(event.getEntity()) || ConflictBridge.INSTANCE.isExtra(event.getEntity()))
             event.setCanceled(true);
     }
 
