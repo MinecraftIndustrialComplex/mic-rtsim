@@ -21,6 +21,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CensusBody;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.mixin.ChunkMapInvoker;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
@@ -38,6 +39,7 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -694,10 +696,15 @@ public final class MowzieGameTests {
                     den.release();
                 })
                 .thenWaitUntil(() -> {
+                    // The holder's own level from the chunk map, not the camp's cached one (MZB-592): under C2ME the
+                    // camp's levels move only in the poll inside Camps.tick, which takes the camp out in that same tick.
+                    ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
                     int top = 0;
-                    for (int l : den.site().levels())
-                        top = Math.max(top, l);
-                    check("a footprint chunk's level is above FULL (" + top + ")", top > Camps.FULL);
+                    for (ChunkPos p : den.site().footprintChunks()) {
+                        ChunkHolder h = map.mic_rtsim$updating(p.toLong());
+                        top = Math.max(top, h == null ? Camps.NO_HOLDER : h.getTicketLevel());
+                    }
+                    check("a footprint chunk's holder is above FULL (" + top + ")", top > Camps.FULL);
                 })
                 .thenExecute(() -> {
                     // the same tick: the camp has not been looked at yet, so it is still in
@@ -832,6 +839,17 @@ public final class MowzieGameTests {
         return agent;
     }
 
+    /**
+     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's
+     * {@value ConflictBridge#OUT_OF_VIEW} blocks of the band, so a HAND_BACK's recall does not despawn the band's
+     * other puppets as unseen, and beyond a warrior's sight. It holds no ticket and loads nothing.
+     */
+    private static ServerPlayer watcher(GameTestHelper helper, Grove g, String name) {
+        ServerPlayer p = FakePlayers.add(g.far.level, g.spot.add(50, 1, 0), name);
+        ConflictKit.onEnd(helper, () -> FakePlayers.remove(p));
+        return p;
+    }
+
     /** Inside {@code thenWaitUntil}: the band's one stack is placed and every member is embodied; the puppets. */
     private static Mob[] bandStands(long agent, int n) {
         ConflictBridge.Party p = ConflictKit.party(agent);
@@ -866,6 +884,7 @@ public final class MowzieGameTests {
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
                     grove.lay().declare();
+                    watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
                 .thenWaitUntil(() -> {
@@ -926,6 +945,7 @@ public final class MowzieGameTests {
                 .thenWaitUntil(far.ready())
                 .thenExecute(() -> {
                     grove.lay().declare();
+                    watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
                 .thenWaitUntil(() -> {
@@ -1078,6 +1098,7 @@ public final class MowzieGameTests {
                 .thenExecute(() -> {
                     grove.lay().declare();
                     markers[0] = new Markers(helper, level, grove.area());
+                    watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
                 .thenWaitUntil(() -> {
@@ -1309,6 +1330,7 @@ public final class MowzieGameTests {
         UUID[] id = new UUID[1];
         boolean[] sawWaiting = new boolean[1], early = new boolean[1];
         int[] seen = new int[1];
+        int[][] events = new int[1][];
         long[] declaredAt = new long[1];
 
         helper.startSequence()
@@ -1347,6 +1369,7 @@ public final class MowzieGameTests {
                 .thenExecute(() -> {
                     check("one census so far", MowzieKit.censusCount(den.faction) == 1);
                     seen[0] = 1;
+                    events[0] = MowzieKit.watchTicketEvents(helper, den.site().footprintChunks());
                     MowzieKit.everyTick(helper, () -> {
                         Camps.Site s = den.site();
                         if (s.waiting())
@@ -1363,8 +1386,13 @@ public final class MowzieGameTests {
                 })
                 .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
                 .thenExecute(() -> {
-                    check("the camp was seen waiting for its entities", sawWaiting[0]);
-                    check("and no census came before every footprint chunk had them", !early[0]);
+                    // Waiting is seen only when the levels move ahead of the entities, which the ticket event path does; under
+                    // C2ME (no event) the poll moves them with the load and the camp may never be seen waiting (MZB-593).
+                    if (events[0][0] > 0)
+                        check("the camp was seen waiting for its entities (" + events[0][0] + " ticket events)", sawWaiting[0]);
+                    else
+                        record(test, "waiting", "no ticket event fired for the den's chunks (C2ME?): the waiting is not asserted; seen waiting: " + sawWaiting[0]);
+                    check("no census came before every footprint chunk had its entities", !early[0]);
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     CensusBody b = MowzieKit.bodyOf(c, id[0]);
                     check("census 2 lists the Frostmaw, a stray chief", b != null && b.body() == ConflictKit.bodyId(MowzieKit.FROSTMAW)

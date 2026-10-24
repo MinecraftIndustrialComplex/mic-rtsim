@@ -1066,6 +1066,30 @@ under its own heading.
   tick the poll prunes in is not asserted (it is 1 in 20 that it prunes in the removal tick itself); the
   log line records how many ticks the removed body stayed.
 
+- **MZB-591** (three tests had no player in view of the band; re-review P2-A): a DONE HAND_BACK starts the
+  party's recall, and `ConflictBridge.recallStep` despawns at once every placed puppet with no
+  non-spectator player within `OUT_OF_VIEW` (64) blocks of a living member. The homecoming, handback_cancelled
+  and peaceful tests had no player, so the band's other puppet was gone by the time they looked at it. Each now
+  adds a `FakePlayers` watcher 50 blocks east of the grove's centre (`MowzieGameTests.watcher`: inside the 64,
+  outside a warrior's sight, no ticket, removed when the test ends), before the band is made.
+
+- **MZB-592** (play_time is triggered on the holder's level; re-review P2-B): the test waited until the
+  camp's cached footprint level was above FULL, which under C2ME moves only in the poll inside `Camps.tick`,
+  where `look` takes the camp out in that same tick, so the camp was no longer "in" when the line landed.
+  The step now waits on the footprint holders' own levels, read through `ChunkMapInvoker.mic_rtsim$updating`
+  (a null holder is `NO_HOLDER`). The line then lands before `Camps.tick`, and `playable` reads the levels
+  afresh (MZB-290), so it is STALE under both chunk systems. A residual race remains under C2ME: C2ME's
+  holder level can change on its own threads, and a change that lands in the middle of a tick's Post, after
+  the step and before the poll, still lets the poll take the camp out first (a small window; the round will
+  show whether it ever bites).
+- **MZB-593** (cold's "seen waiting" is asserted only with the event live; re-review P2-C): the camp is seen
+  waiting for its entities when its levels move ahead of them, which the ticket event does (the level rises
+  in the level tick, the entities arrive later); under C2ME the poll reads levels that already carry the load,
+  so the camp may never be seen waiting. `MowzieKit.watchTicketEvents` counts the
+  `ChunkTicketLevelUpdatedEvent`s of the den's chunks from the release on; `sawWaiting` is asserted only when
+  the count is above zero, else the test records that it was not. "No census before every footprint chunk had
+  its entities" is asserted always.
+
 ### M5 design for the implementer
 
 **Where it stands.** Branch `feat/mowzie-m5`, from `feat/mowzie-m3` at 0a5a4c2c; the code is in 5a87527d,
