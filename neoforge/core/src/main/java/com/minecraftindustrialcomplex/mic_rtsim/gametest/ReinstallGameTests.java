@@ -4,11 +4,14 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallRules;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
@@ -49,10 +52,13 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * {@code mic_rtsim} (as a server without rtsim would have written it), rtsim's chunk attachments are stripped from
  * the chunks that "loaded during the gap", the world clock moves on, and the session restarts.
  *
- * <p>Three far chunks, each with one machine: A and C side by side (district X), B four chunks on (district Y). A
- * stays loaded and is stripped (re-adopted at the session's start), C stays loaded and keeps its seeds (it "did not
- * load during the gap"), and B is stripped and unloads, so it is re-adopted when it loads again. The test runs alone
- * in its batch: a restart is the whole server's.
+ * <p>Three far chunks, each with one machine: A and C side by side (district X), B seventeen chunks on (district Y).
+ * A stays loaded and is stripped (re-adopted at the session's start), C stays loaded and keeps its seeds (it "did
+ * not load during the gap"), and B is stripped and unloads, so it is re-adopted when it loads again. A fourth chunk,
+ * D, carries a pending COMMAND_RESULT of the old engine across the gap without loading in it: at its load after
+ * the reset the record is dropped, not journaled into the new engine (RG14). B and D lie more than 13 chunks from
+ * every forced chunk, so unforcing them really unloads them (a nearer chunk stays in memory below FULL and comes
+ * back without a load event). The test runs alone in its batch: a restart is the whole server's.
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -61,7 +67,7 @@ public final class ReinstallGameTests {
 
     private static final String YARD = "industry_yard";
     /** Chunk offsets from the yard's first whole chunk: B is far enough from A and C to unload while they stay forced. */
-    private static final int A = 6, C = 7, B = 11;
+    private static final int A = 6, C = 7, B = 24, D_DZ = 16;
     private static final long GAP_TICKS = 6000;
 
     private static Path worldDir(MinecraftServer server) {
@@ -163,12 +169,12 @@ public final class ReinstallGameTests {
         MinecraftServer server = level.getServer();
         BlockPos base = inChunk(helper, 0, 0);
         int bx = base.getX() >> 4, bz = base.getZ() >> 4;
-        ChunkPos a = new ChunkPos(bx + A, bz), c = new ChunkPos(bx + C, bz), b = new ChunkPos(bx + B, bz);
+        ChunkPos a = new ChunkPos(bx + A, bz), c = new ChunkPos(bx + C, bz), b = new ChunkPos(bx + B, bz), d = new ChunkPos(bx + B, bz + D_DZ);
         BlockPos[] ms = new BlockPos[3];
         long[] ids = new long[2];
         String[] before = new String[2];
         Path[] aside = new Path[1];
-        long[] life = new long[1], dups = new long[1];
+        long[] life = new long[1], dups = new long[1], staleOp = new long[1], counts = new long[2];
         helper.startSequence()
                 .thenExecute(() -> {
                     cleanUp(server);
@@ -209,6 +215,15 @@ public final class ReinstallGameTests {
                     // An epoch the old engine applied in C (I8, RG13). The reset's engine numbers X's epochs from 1 again.
                     life[0] = ind().engineLife();
                     reconcile(engineOp(), ids[0], 40, level, c.x, c.z, List.of());
+                    // D: a transfer of the old engine applied into it, not acknowledged before D unloads (RG14).
+                    level.setChunkForced(d.x, d.z, true);
+                    LevelChunk dc = level.getChunk(d.x, d.z);
+                    dc.removeData(RtsimAttachments.PENDING);
+                    staleOp[0] = engineOp();
+                    ind().commandResultInChunk(dc, 0, staleOp[0], Obs.CommandResult.APPLIED);
+                    check("D carries the old engine's result", RtsimSession.chunkCarriesOp(dc, staleOp[0])
+                            && dc.getData(RtsimAttachments.PENDING).life() == life[0]);
+                    level.setChunkForced(d.x, d.z, false);
                 })
                 .thenWaitUntil(() -> check("C holds X's epoch 40: " + epochs(level, c), epochsAt(level, c).epoch(ids[0], life[0]) == 40))
                 .thenExecute(() -> {
@@ -217,7 +232,8 @@ public final class ReinstallGameTests {
                     check("B had rtsim attachments", strip(level.getChunk(b.x, b.z)) > 0);
                     level.setChunkForced(b.x, b.z, false);
                 })
-                .thenWaitUntil(() -> check("B has unloaded", level.getChunkSource().getChunkNow(b.x, b.z) == null))
+                .thenWaitUntil(() -> check("B and D have unloaded", level.getChunkSource().getChunkNow(b.x, b.z) == null
+                        && level.getChunkSource().getChunkNow(d.x, d.z) == null && ind().districts().loadedChunks(ind().district(ids[1])) == 0))
                 .thenExecute(() -> {
                     // The rest of the gap, in one tick: level.dat without rtsim, A loaded without it, the clock on, the restart.
                     CommonHooks.readAdditionalLevelSaveData(levelDatWithoutRtsim(server), new LevelStorageSource.LevelDirectory(worldDir(server)));
@@ -240,6 +256,8 @@ public final class ReinstallGameTests {
                     check("the restart's engine lost its observations", RtsimSession.current().boundary().observationsLost());
                     check("the reset's engine has a new life", ind().engineLife() != life[0]);
                     check("A, B and C are to be adopted again: " + ind().districts().readoptLeft(), ind().districts().readoptLeft() == 3);
+                    check("the marker stays after the restart's own save", !ReinstallGuard.markerCleared(server)
+                            && Files.exists(worldDir(server).resolve(ReinstallRules.MARKER)));
                 })
                 .thenWaitUntil(() -> {
                     Districts ds = ind().districts();
@@ -265,6 +283,27 @@ public final class ReinstallGameTests {
                             + Long.toHexString(ind().engineLife()) + ": " + epochs(level, c));
                 })
                 .thenExecute(() -> {
+                    // D loads: its record is of the old life, no op of the new engine, and dropped at the tick's end unjournaled.
+                    RtsimSession s = RtsimSession.current();
+                    counts[0] = s.stalePending();
+                    counts[1] = s.reasserted();
+                    level.setChunkForced(d.x, d.z, true);
+                    LevelChunk dc = level.getChunk(d.x, d.z);
+                    PendingRecords p = dc.getExistingDataOrNull(RtsimAttachments.PENDING);
+                    check("D kept the old engine's record through the gap: " + p, p != null && p.life() == life[0] && p.records().size() == 1);
+                    check("an op id of the old engine is no op of the new one", !RtsimSession.chunkCarriesOp(dc, staleOp[0]));
+                })
+                .thenWaitUntil(() -> {
+                    RtsimSession s = RtsimSession.current();
+                    check("D's load dropped the record unjournaled: stale " + (s.stalePending() - counts[0]) + ", journaled again "
+                                    + (s.reasserted() - counts[1]),
+                            !level.getChunk(d.x, d.z).hasData(RtsimAttachments.PENDING) && s.stalePending() == counts[0] + 1
+                                    && s.reasserted() == counts[1]);
+                    record(test, "pending records", "D held 1 record of life " + Long.toHexString(life[0]) + "; dropped at its load into life "
+                            + Long.toHexString(ind().engineLife()));
+                    level.setChunkForced(d.x, d.z, false);
+                })
+                .thenExecute(() -> {
                     level.setChunkForced(b.x, b.z, true);
                     level.getChunk(b.x, b.z);
                 })
@@ -288,8 +327,7 @@ public final class ReinstallGameTests {
                     for (long id : ids)
                         check("the new engine heard of district " + id, !received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, id).isEmpty());
                     check("no reconcile is held for the new engine", ind().reconciler().held() == 0);
-                    check("the marker stays until the first save", !ReinstallGuard.markerCleared(server)
-                            && Files.exists(worldDir(server).resolve(ReinstallRules.MARKER)));
+                    // An autosave may have come first; else this is the first save.
                     server.saveEverything(true, true, true);
                 })
                 .thenWaitUntil(() -> check("the first save deleted the marker", ReinstallGuard.markerCleared(server)
@@ -303,7 +341,7 @@ public final class ReinstallGameTests {
                     check("nothing left to adopt again", ind().districts().readoptLeft() == 0 && ind().districts().readoptSummary() == null);
                     record(test, "rtsim perf after a normal restart", ReinstallGuard.describe(server));
                     record(test, "engine", engineName());
-                    for (ChunkPos p : new ChunkPos[] {a, c, b})
+                    for (ChunkPos p : new ChunkPos[] {a, c, b, d})
                         level.setChunkForced(p.x, p.z, false);
                     cleanUp(server);
                 })
@@ -325,6 +363,23 @@ public final class ReinstallGameTests {
         check("the read saw no gap: " + cap, cap != null && cap.verdict() == ReinstallRules.Verdict.NO_GAP);
         check("no marker", !Files.exists(worldDir(server).resolve(ReinstallRules.MARKER)));
         cleanUp(server);
+        helper.succeed();
+    }
+
+    /** {@code mic_rtsim:pending} keeps its life through NBT; a plain list, written before the life existed, reads as life 0 (RG14). */
+    @GameTest(template = YARD, batch = "reinstall_2", timeoutTicks = 200)
+    public static void pendingRecordsKeepTheirEngineLife(GameTestHelper helper) {
+        byte[] a = {1, 2, 3}, b = {4, 5};
+        PendingRecords p = PendingRecords.EMPTY.plus(0x5eedL, List.of(a)).plus(0x5eedL, List.of(b));
+        net.minecraft.nbt.Tag tag = PendingRecords.CODEC.encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, p).getOrThrow();
+        PendingRecords back = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, tag).getOrThrow();
+        check("a round trip keeps the life and the records: " + tag, back.life() == 0x5eedL && back.records().size() == 2
+                && Arrays.equals(back.records().get(0), a) && Arrays.equals(back.records().get(1), b));
+        check("records of another life are not carried on", p.plus(7, List.of(a)).records().size() == 1 && p.plus(7, List.of(a)).life() == 7);
+        net.minecraft.nbt.Tag old = com.mojang.serialization.Codec.BYTE_BUFFER.listOf()
+                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, List.of(java.nio.ByteBuffer.wrap(a))).getOrThrow();
+        PendingRecords o = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, old).getOrThrow();
+        check("an old plain list reads as life 0: " + old, o.life() == 0 && o.records().size() == 1 && Arrays.equals(o.records().get(0), a));
         helper.succeed();
     }
 

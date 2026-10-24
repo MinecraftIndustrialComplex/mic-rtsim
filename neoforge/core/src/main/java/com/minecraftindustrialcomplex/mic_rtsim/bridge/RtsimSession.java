@@ -218,6 +218,8 @@ public final class RtsimSession {
     long removedByOther;
     long passNanos;
     long reasserted;
+    /** Pending records a holder brought from an earlier engine life, dropped unjournaled (RG14). */
+    long stalePending;
     /** Leaders steered again after a seam folded them (TP11). */
     long resteered;
 
@@ -904,7 +906,7 @@ public final class RtsimSession {
     /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(records));
+        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, records));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
@@ -928,6 +930,11 @@ public final class RtsimSession {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
+        if (p.life() != engineLife) {
+            stalePending += p.records().size(); // of an engine that started over since (RG14): never journaled again
+            holder.removeData(RtsimAttachments.PENDING);
+            return;
+        }
         long last = 0;
         for (byte[] record : p.records())
             last = boundary.recommit(record);
@@ -940,6 +947,12 @@ public final class RtsimSession {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
+        if (p.life() != engineLife) {
+            stalePending += p.records().size(); // of an engine that started over since (RG14): never journaled again
+            chunk.removeData(RtsimAttachments.PENDING);
+            chunk.setUnsaved(true);
+            return;
+        }
         for (byte[] record : p.records()) {
             long seq = boundary.recommit(record);
             long op = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID);
@@ -948,10 +961,14 @@ public final class RtsimSession {
         reasserted += p.records().size();
     }
 
-    /** The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one. */
+    /**
+     * The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one of this engine
+     * life (an op id of an engine that started over is no op of this one, RG14).
+     */
     public static boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
-        if (p == null)
+        RtsimSession s = current();
+        if (p == null || s != null && p.life() != s.engineLife)
             return false;
         for (byte[] r : p.records())
             if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) == opId)
@@ -961,7 +978,7 @@ public final class RtsimSession {
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, old.plus(java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
@@ -985,7 +1002,7 @@ public final class RtsimSession {
             if (keep.isEmpty())
                 c.removeData(RtsimAttachments.PENDING);
             else
-                c.setData(RtsimAttachments.PENDING, new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+                c.setData(RtsimAttachments.PENDING, p.with(keep));
             c.setUnsaved(true);
         });
     }
@@ -1196,5 +1213,6 @@ public final class RtsimSession {
     public long passNanos() { return passNanos; }
     public long ticks() { return ticks; }
     public long reasserted() { return reasserted; }
+    public long stalePending() { return stalePending; }
     public int ackWaiters() { return ackWaiters.size(); }
 }

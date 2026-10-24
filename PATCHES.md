@@ -120,7 +120,7 @@ what was verified, not what is known to break.
 | Attachment | On | Saved | What |
 |---|---|---|---|
 | `mic_rtsim:agent` | puppet entities (herd animals too) | with the entity (a copy keeps it) | engine id and epoch (PLAN.md §6.1) |
-| `mic_rtsim:pending` | chunks, entities | with the holder | journal records the world side carries until the engine has them (docs/boundary.md §3.1) |
+| `mic_rtsim:pending` | chunks, entities | with the holder | journal records the world side carries until the engine has them (docs/boundary.md §3.1), with the engine life they were written in (`{life, records}`; a plain list reads as life 0): a holder that loads into another life drops them unjournaled (RG14, docs/choices-reinstall-guard.md) |
 | `mic_rtsim:gossip_ops` | villagers | with the villager | the gossip op ids it was written with, the last 64 (C20, G11) |
 | `mic_rtsim:player_blocks` | chunks | with the chunk | blocks players placed, per section (G12) |
 | `mic_rtsim_ribbits:cargo` | ribbit merchants | with the ribbit | a ribbit caravan's pack (G15) |
@@ -140,4 +140,4 @@ what was verified, not what is known to break.
 | `data/mic_rtsim_create_repairs.dat` | the repair schematic files this world wrote (district, file, level, anchor), so retention deletes only its own (R25) |
 | `mic_rtsim-reinstall.txt` (in the world directory) | the reinstall guard's marker (UR-1): written and synced when `level.dat` shows the world ran without rtsim, deleted after the reset's first save; while it exists every start resets the sim |
 | `rtsim-reinstall-<time>/` (in the world directory) | the engine pages a reinstall reset moved aside (UR-1); never read again, the admin's to delete |
-| `rtsim/bridge-life.txt` (in the engine's page directory) | the engine life (RG13, docs/choices-reinstall-guard.md): a hex token that belongs to the page directory: kept while the file is there, drawn by Java when a directory without one starts over (new pages, observations lost), else 0; it goes wherever `world/rtsim/` goes, so a sim reset starts a new life and voids the reconcile epochs chunks hold from the old one |
+| `rtsim/bridge-life.txt` (in the engine's page directory) | the engine life (RG13, docs/choices-reinstall-guard.md): a hex token that belongs to the page directory: kept while the file is there, drawn by Java when a directory without one starts over (new pages, observations lost), else 0; it goes wherever `world/rtsim/` goes, so a sim reset starts a new life and voids the reconcile epochs and pending records chunks hold from the old one |
