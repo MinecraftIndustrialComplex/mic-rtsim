@@ -767,7 +767,392 @@ under its own heading.
 
 ## M4 Camp reconciler, engine
 
-(none yet)
+- **MZB-150** (the five camp records got their engine half): CAMP_CENSUS (0x080F), CAMP_OUT
+  (0x0813), CAMP_RECONCILE (0x8808), CAMP_BODIES (0x0812) and CAMP_DEATH (0x080E) are ingested,
+  booked and (the reconcile) sent by `crates/rtsim-conflict/src/engine/camp.rs`, and are off
+  `Conflict::later`; each later slice takes its own kinds off that list (MZB-23). No record's layout
+  changed, so `boundary.rs`, `docs/boundary.md` and rtsim-jni's decoder are as M1 left them.
+  `tests/mowzie_records.rs`'s deferred-record test spends an op id on CHIEF_PAID instead, and cites
+  this choice. A fork (reported): the lead's brief said to change a layout only if the plan
+  demanded it, and nothing did.
+- **MZB-151** (`camp_bodies`, a culture flag, gates the ledger): the plan keeps a ledger for a camp
+  "whose bodies a census counts"; a culture says so with `camp_bodies: true` in its JSON, which
+  `frostmaw.json` and `umvuthana.json` set. Every other culture has no ledger and reads no camp
+  record, but the pool's room (MZB-171) applies to it too, which moved `sim conflict`'s state
+  hashes. Amended (review of 408d4a07): M4 first said every other culture was untouched. A fork
+  (reported): the plan does not say how a culture opts in.
+- **MZB-152** (where a ledger starts): at FACTION_FOUND (`camp_found`: the pool is the census's
+  home bodies bounded by the culture's `pool_cap`, the camp's cap that count, one at least, bounded
+  by the same, every slot owed for the first census's strays to fill), or lazily (`camp_create`, from
+  the books as they are) for a faction found some other way. A den found empty gets cap 1 and pool 0
+  and refills at the culture's rate (1 a 6 days) until M6's arrival renewal; a grove found with 4 of
+  its 9 bodies has cap 4, so a grove cannot recruit past what was found. So a grove found empty or
+  part-cleared, as every grove of an existing world may be, has the cap of the bodies it was found
+  with (one at least) and raids only when its room fits a party (MZB-171): an empty one, cap 1, does
+  not raid until M6's and M9's arrival renewal grows it. A fork (reported): the plan gives the cap as
+  the culture's and says nothing of a camp found part-empty; keeping the cap at the found count is the
+  choice that cannot field a body the world never had, and M6 and M9 own the arrival that grows it.
+- **MZB-153** (slots, generations, ops): a slot takes the lowest free number; its generation is
+  `derive_gen(key, slot, tick, last retired)`, never 0 (0 names a stray) and never the generation the
+  slot last retired. The engine's allocator byte for a camp's ops is 0x43; a CAMP_RECONCILE's op is
+  `derive_op(key, epoch, seq)`, so a decision made again after a restart has the same op. An answer
+  line is booked once by (op, line) (MZB-169) and a CAMP_DEATH by its slot and generation (MZB-170);
+  neither op goes into `applied_ops`, which first held them and grew with every death of a farmed
+  grove.
+- **MZB-154** (the pool stays closed-form, and slots follow it on a read): `pool_at` stays a closed
+  form, so a feud, the bench and a save cost what they did, but its refill now stops at the cap less
+  the members away for every culture (MZB-171; M4 first said it was unchanged). A change of the
+  slots (`camp_sync`, called by every ledger entry point that changes them, and by `camp_bodies`
+  after its epoch gate, MZB-172) first adds one owed slot for each whole member the pool gained
+  since the last, each with a generation from the tick it became whole (`whole_at`). A camp that is
+  in books `Ev::Refill` (wheel tag 7) with a stamp for its next whole member; one that is out books
+  none, and its next census spawns what it gained. A state hash must sync first; `camp_audit` is
+  `&self` and adds nothing, so it reads the books as they are, and the slots at home may be fewer
+  than the whole warriors the pool holds (MZB-172). Reason: a per-tick or per-refill loop over every
+  camp would break D1, and the closed form already says when a member is whole.
+- **MZB-155** (waiting for whole bodies counts the slots a draw may take): M2's quorum for a
+  party that must muster whole (`ceil(size / 2)`, MZB-52) is unchanged, but it is now measured in
+  the slots a draw may take (home, no line in flight). A feud with fewer waits on `BLOCKED`
+  (`u64::MAX / 2`), which books no event; `unblock` (an answer, a void, a CAMP_OUT, a return to the
+  pool) wakes the waiting feuds and plans a refill, so a busy line wakes a feud a handful of times,
+  never once a tick (`sim mowzie` run 10 asserts `feud_wakes`). Reason: a member whose body is
+  being spawned or taken cannot be drawn, and the old closed-form wait did not know it.
+- **MZB-156** (the draw order and `misses`): found bodies (misses 0) first, then missed, then owed,
+  by slot number within each, never a slot with a line in flight, and never more than the smaller of
+  `floor(pool)` and the slots it may take (the chaos run checks every draw). A slot drawn keeps its
+  `misses` and `missed_at`: a body missed at a census and drawn is I3-unverified until its set-out
+  answer or the next census, and a member that comes home is written off on the clock it was on.
+- **MZB-157** (the write-off): `WRITE_OFF_MISSES` 3 censuses that miss a home body, the third at
+  least `WRITE_OFF_DAYS` 2 days after the first (both PLACEHOLDER, as §8's row says); the slot is
+  freed, the pool loses the member, and its generation is retired as "not died", so a body found
+  later is a stray and is adopted or removed like any other. A generation retired at a death is
+  retired as died: a body of it found later is removed.
+- **MZB-158** (the census's table): Body found keeps its slot; Body missed counts a miss; Owed found
+  becomes Body; Left found with its party out is taken, with its party mustering stays; Left absent
+  becomes Gone; Gone found becomes Left (and is taken or kept by its party's phase); Dead found is
+  removed, Dead absent is freed. Strays and tagged bodies no slot holds fill owed slots, then new
+  slots while the pool and the members away are under the cap, and are removed above it; a body of
+  a generation retired at a death is removed. A census never ends a party (§4.16).
+- **MZB-159** (a replayed census): a census ingested while `Conflict::replaying` is set (M3's window,
+  from `session_start` to `replay_done`, MZB-138 and MZB-141; before the merge rtsim-jni set it around
+  each record whose `OBS_SEQ` was before the session's first, MZB-178) only marks its camp out:
+  the session that took it is over, its epoch is not the plugin's, and it orders nothing. The
+  records that follow it (answers, deaths) are booked as usual (an answer by the action it carries,
+  MZB-168), and the census still names its epoch as the camp's latest (MZB-169). Not a fork: this is
+  the plan's own wording (MOWZIE.md §4.9: "A CAMP_CENSUS replayed from an earlier session only marks
+  its camp out"). The reason, for the record: a census has no state to skip by op id, and booking one
+  against a camp that is out would adopt strays on a dead epoch.
+- **MZB-160** (lines are void, never resent): at CAMP_OUT, and at a session start for every camp, a
+  camp's lines in flight are voided and nothing is sent again; at most one line is in flight per
+  slot (`send_lines` guards it as well as its callers, which makes the guard defence only); orders
+  go only to a camp that is in; a CAMP_OUT for an epoch that is not the camp's ends nothing.
+- **MZB-161** (an answer with no line in flight): replaced by MZB-168. M4 first booked it by the
+  action the slot's state implies (Owed a spawn, Left or Dead a take, Body and Gone nothing), which
+  was a guess; the review of 408d4a07 showed it lose members.
+- **MZB-162** (a death books the member wherever the books have it): a CAMP_DEATH for a slot and
+  generation the books hold frees it: at home the pool loses a member (the generation retired as
+  died), away the party loses that unit in any phase (`member_died`) and a party left with none ends
+  through its own `home` (`go_home`, or `end_fight` when fighting), so the pool takes back its
+  survivors and `away` falls in one place; dead, left, the slot is freed. A stray's death books
+  nothing, and a death for a generation the slot no longer holds books nothing. A fork (reported):
+  the plan's table gives each row; an emptied party's end is the choice, `casualties`' own.
+- **MZB-163** (the hand-back): `camp_home` turns Left into Body and Gone into Owed; an embodied party
+  with puppets at a camp that is in gets a hand-back line for each Gone slot, else spawn lines. No M4
+  flow reaches it (the embodied walk home is M10's), so one test forges an embodied party and the
+  scenario's run 10 names the case "forged state". A fork (reported).
+- **MZB-164** (what M4 leaves for the slices that own it): a chief killed at the camp and the den's
+  arrival (M6), the Umvuthi's slot, heir, seat, Rule U and throne lines (M9 to M11), BAND_MARCH and
+  the walk home in bodies (M10), AMBUSH_SPOT's removed flag (M8). A held line (Rule U, the
+  Frostmaw's spawn wait) is Java's (M5) and is not emulated: the fake plugin applies every line in
+  the tick it arrives, and answers it after `answer_ticks`. One more is M10's: a CAMP_DEATH for a
+  slot left behind (its body still in the camp while the party musters or is out) whose party is
+  embodied makes `member_died` take one unit off the party's books, but the puppet of that unit
+  stays in the world, since the body that died is the camp's and not the puppet; the books and the
+  world then disagree by one puppet until the party is recalled. No `debug_assert` fits: the chaos
+  run reaches it (counted at this commit: 15 times over its 48 camps, 14 for a left slot and 1 for a
+  gone one, with the player watching a fight), so it is a known state and not a bug in M4's flows. M10, which owns the embodied walk, ends that puppet with its party's recall.
+- **MZB-165** (pages): the conflict page magic is RTC6 and the meta page's version is 5, after the
+  merge with M3 (M3 took RTC5 and meta 4 for the recalled stacks kept per epoch, MZB-131; this
+  branch's own format change comes after it): a camp's ledger (slots, retired generations, throne,
+  refill stamp) is saved with its faction, and the stats grew six camp counters; a camp's page also
+  holds the latest epoch a census named and the (op, line) answers booked in it, each with its
+  record's journal sequence (MZB-169, MZB-177). No migration (no backward compatibility before
+  release). This changes a page format, so the rtsim-view fixtures and hashes tests and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` fail until the fixtures are regenerated
+  from fresh GameTest worlds of the merged build, which the landing does.
+- **MZB-166** (the emulated plugin and runs 8 and 10): `synth::FakeConflict`'s camp worlds apply a
+  reconcile in the tick it arrives if the epoch is the camp's, else answer it stale; answers can be
+  late, lost (`lose_answers`, one per order), replayed, dropped at a restart (`drop_queued`) or split
+  over several records (`split_answers`, that many lines to a record, as holders in several chunks
+  answer). Holders are emulated as MOWZIE.md §4.9 has them: a line applied and done, and a death,
+  leaves its record on a holder (`holders`, `death_holders`) until the engine has it, and with
+  `holders_again` the restart and each camp-in, before its census, journal those records again
+  (`journal_holders`, MZB-175), which the engine books by the action each carries and skips by
+  (op, line). `CampRun` drives an engine against one,
+  with `decide` and `census_held` for crash tests, `track` and `settle` for the ghosts (MZB-167),
+  and `check`: I1 and I2 by the engine's own audit, I4 by counting each (op, line) the plugin
+  applied, I3 and I5 against the world; I6 is by construction, the engine never sees the world. Run
+  10 is the scripted cases on worlds of fixed seeds (they check exact slot counts, which a raid's
+  follow-up party changes from world to world) and chaos over 64 camps from `--seed`, whose
+  plugin follows the seed (a lost record stays lost; holders journal it again; holders journal it
+  again one line to a record), settled at the end and asserting that the engine's write-offs are
+  exactly the ghosts, and none where holders journal again (MZB-167, MZB-175); run 8's part saves and restarts with lines in flight three ways.
+  Both are printing checks that must pass (`sim mowzie` exits 1 otherwise, and a test runs it).
+  Where run 10 still falls short of MOWZIE.md §7: no line is held (Rule U's holds, the Frostmaw's
+  spawn wait: Java's, deferred by MZB-164, so the fake plugin applies every line in the tick it
+  arrives) and no heir is seated, no Umvuthi marches (M10), and a chief's or the Umvuthi's death
+  waits for M6 and M9; what it does reach is camps in and out with a player at the edge, musters,
+  homecomings with hand-backs, refills, deaths at home, left behind and of strays, answers lost,
+  late, replayed and stale, restarts and saves, with the invariants checked after every event.
+
+- **MZB-167** (what a lost answer costs: the ghosts, counted exactly): an applied take or set-out
+  whose answer never reaches the engine (lost, or in the journal's tail at a restart) once left a
+  slot Left though the body was gone; if the party then came home the slot became Body, three
+  censuses missed it and it was written off. M4 first called that a loss of the emulation and not
+  of the plugin, because the real plugin journals the answer again from the marker the body left
+  (§4.9). That premise was wrong: the marker's record, booked by the state its slot has by then
+  (Body), booked nothing, so the real plugin lost the member too. MZB-168 fixes it: the record
+  carries its action and is booked by it, so Body with a set-out done is owed and spawned. With the
+  holders' records journaled again at the restart (the real plugin's), the four members of a raid
+  whose set-out answer was in the journal's tail are owed, spawned at the next census, and none is
+  lost; with the record lost for good (`holders_again` off), a party that gets home before the next
+  census leaves four ghosts, and four members are written off. A ghost is a slot that is a body at
+  home with no body in the world and no record on its way to the engine; three censuses over two
+  days write it off, and a draw first rescues it (its set-out finds nothing to do and books the body
+  gone). A record only a holder has is cover where the plugin journals holders again
+  (`holders_again`, MZB-175): the emulated holders journal at a session start and at each
+  camp-in, before the census, as the real ones do when their chunks load and as MZB-174 makes the
+  census wait for. A footprint holder's record that arrives at camp-in, before the new census,
+  still carries the latest epoch and books (MZB-169); one that arrives after a census of a later
+  epoch is of an older epoch and books nothing, and for it the table is what counts. An answer
+  lost with no restart after it, which the chaos run does, is repaired at the next camp-in by the
+  holders. The chaos run ends with `settle` and asserts that the
+  engine's write-offs are exactly the ghosts the run made and that none is left (`CampRun::track`
+  finds them by effect after each step of a run), and (MZB-175) that nothing is written off where
+  holders journal again; `lost_members`, which the assertion used, was an upper bound that any
+  loss passed, and is gone. Tests:
+  `a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none` (four against none, each
+  equal to its ghosts), `a_body_whose_death_is_on_its_way_is_no_ghost`,
+  `answers_split_into_records_leave_the_books_as_whole_ones_do` and
+  `the_check_names_an_order_applied_twice`.
+
+- **MZB-168** (CAMP_BODIES' lines carry their action; replaces MZB-161): a line's answer is
+  `u32 line, u32 slot, u32 generation, u8 action, u8 outcome, u16 reserved`, 16 bytes as before (so
+  the record's size is unchanged), with the action of the CAMP_RECONCILE line it answers
+  (`ACTION_*`), and the engine books the world fact by that action: not by the slot's state, which
+  was MZB-161's guess, and not by the line in flight, which a CAMP_OUT or a session start voids
+  while Java still answers it. The reviewer's case: a grove of 9 raids, Java applies the four
+  set-outs, the answer waits in a journal tail past CAMP_OUT, the party gets home abstractly (Left
+  becomes Body), and the answer then books nothing for a Body slot; four censuses miss four bodies
+  and write four members off. By its action the answer says "set out, done": the Body slot is owed
+  and the next census spawns it. The outcome constants are `u8` now. Layout changed in
+  `boundary.rs` (encode, decode, fixture, generator), docs/boundary.md's row 0x0812 and
+  MOWZIE.md's record table; rtsim-jni uses the same codec, so its decoder follows. A fork
+  (reported): the lead's decision after the review, not the plan's wording; the main session
+  accepted it on 2026-10-23. MOWZIE.md's §4.9 prose,
+  ledger 7 and crash table rows 2 to 4 say so now (MZB-174).
+- **MZB-169** (an answer line is booked once by (op, line), and only in the latest census's
+  epoch): one op has several CAMP_BODIES records, since a holder's record is journaled again at load
+  and held lines are answered later, so the skip is per line, not per op (a four-line set-out
+  answered as two records of two lines lost the second under the op-only skip). A camp keeps the
+  latest epoch a census named (`seen`, replayed censuses too) and the (op, line) answers booked in
+  it (`answered`, sorted, saved with the ledger), emptied at each census of a new epoch; an answer
+  of any other epoch books nothing, since a later census read the world after Java applied the
+  lines, and the fact the answer reports is older than the books. That is the prune by epoch: the
+  set holds one epoch's lines (a few dozen a day at a raided camp) and cannot grow without bound.
+  Answers booked by action need the skip: a copy of a set-out answer, delivered after the party is
+  home and the bodies are back, would turn a living body's slot owed and spawn a second body.
+- **MZB-170** (camp records keep no op id): CAMP_DEATH is idempotent by its slot and generation
+  (the first frees the slot, a copy finds none), and CAMP_BODIES by (op, line), so neither goes into
+  `applied_ops`. `Obs::op()` no longer returns the death's op and rtsim-jni's `conflict::op_of` no
+  longer gives it to `Replay`, which kept it for the session. The op stays in the record, as
+  Java's name for it. The engine acknowledges by sequence (`ackedObsSeq`, docs/boundary.md §1), not
+  by op id, so Java's dropping of a marker's record is unaffected. A fork (reported): the lead's
+  decision; a death replayed after a slot was freed and made again under a new generation is
+  absorbed by the generation, which `derive_gen` never repeats for the slot's last life.
+
+- **MZB-171** (the pool's room is every culture's): MOWZIE.md ledger 6 says `pool_at`'s refill
+  stops at the cap less the members away, "at every camp", and the code does so for every culture,
+  ledger or not: a camp's cap is its culture's `pool_cap` (set at `add_faction`, bounded by a census
+  that finds fewer) and `away` is kept for all. `pool_at` is the refilled pool bounded by that room
+  and never below the smaller of the stored pool and the room, so a pool above the room is clamped
+  to it (the code comment said it stayed; fixed); `pool_add` clamps to the room, and `pool_ready`
+  is `BLOCKED` for a party larger than the room, which only a return can end (`unblock`). MZB-151
+  and MZB-154 said other cultures were untouched and `pool_at` unchanged; both were wrong. What
+  moved: M2's refill went to `pool_cap` from the moment a party left, so a goblin camp of 60 that
+  sent a raid of 12 had the pool back to 60 within 6 days while the band was out (72 members
+  fielded), and the survivors were clamped off the pool when they came home. Now the pool and the
+  members away never pass the cap, and survivors come home to room. A second war party waits for a
+  first one's return only when the room is short of it, which no default culture's numbers do but
+  the two with a ledger (a den's cap is 1; a grove found with 4 of 9 bodies has cap 4); for a
+  goblin the difference is the pool's value. In `sim conflict`'s JSON only the state hashes
+  moved (the three variants and the restore line): the checks, logs, event counts, wire bytes and
+  archive rows are M2's. The page format moved them too (MZB-165), so the room alone was measured,
+  as M2's refill on M4's format against M4's: ignore e5d0d1d99fbe97d5 against e271b3b7af114664,
+  tribute e7a65dc23ea5e53e against 788cce5224a8bb3f, converter 699a30ab49314569 against
+  8f4a3f1dafeb5a7c. At day 24 the goblin camp's pool is 57.92 in the tribute and converter runs
+  (60 less the two warriors lost) where M2's refill left 60.00, and 48.65 against 51.96 in the
+  ignore run, where a plunder party of 8 is still out. Test:
+  `every_cultures_pool_refills_only_to_its_cap_less_the_members_away` (a goblin camp of cap 20 with
+  raids of 12 out for 6 days: pool plus away never passes 20 in 60 days, where M2's formula reached
+  8.08 + 12 on the first day out). A fork (reported): the lead's decision to keep the room for every
+  culture, as the plan's ledger 6 words it, over a flag that would keep M2's pool for a culture
+  with no ledger; the main session accepted it on 2026-10-23.
+
+- **MZB-172** (the review's smaller fixes): four things the review of 408d4a07 found, each with a
+  test that fails without it. (1) An adoption answered "nothing to do" (the stray died before the
+  order was applied) leaves the slot owed with no body there; a camp that is in now sends it a
+  spawn line, as it does for a body found gone, where it used to wait for the next census (test:
+  `an_adoption_with_nothing_to_adopt_is_followed_by_a_spawn`). (2) Every change of a ledger's slots
+  follows a sync: `camp_bodies` syncs first (it freed a dead slot with the pool's gained members
+  not yet added, so the lowest free number a later sync takes depended on whether anything had
+  synced in between), and `camp_audit` is `&self` and adds nothing (the slots at home must be no
+  more than the pool's whole warriors; a gain not yet added is the books as they should be). An
+  audited run is now the run not audited: the chaos run's state hash is the same with its audit
+  after every event and without (`auditing_after_every_event_changes_nothing`, a guard: it did not
+  tell the old syncing audit from this one in 32 seeds, so the teeth are in
+  `the_audit_leaves_the_slots_the_pool_gained_unadded` and
+  `a_refill_while_the_camp_is_out_is_spawned_at_the_next_census`; the answer's sync is
+  `an_answer_syncs_the_books_before_it_frees_a_slot`). Two tests that read the slots after an audit
+  read the pool instead, since the audit no longer adds them. (3) Two guards no flow reaches, a
+  slot left or gone whose party is not in the books (a party leaves the books through `home`,
+  which settles its slots first), have a `debug_assert!` at the census and at the answer; the
+  release arms stay as they were (two `should_panic` tests, debug builds only). (4) A war party is
+  never drawn larger than the slots at home with no line in flight: every unit kind keeps one at
+  least, so a make-up of two kinds from a camp with one warrior at home was two units on one slot
+  and `away` one too many; the last kinds now give theirs up, so a party can have fewer kinds than
+  its make-up when the camp is that short, and `send_party` sends nothing when `have` is 0
+  (`a_party_is_never_drawn_larger_than_the_slots_at_home`). The member-died puppet is noted in
+  MZB-164. A fork (reported) for (4): the plan says a party takes at least half its make-up and
+  does not say which kinds go first.
+
+- **MZB-173** (what M4 costs `bench scale`'s factions sweeps): measured once, M2's head (4b07ea84)
+  against M4 as first built (408d4a07's engine; the review's fixes came after and were not measured
+  again: they add a clamp to `pool_at` and an (op, line) lookup per camp answer, which the bench's
+  cultures never send),
+  `bench scale --full`, one run of each in turn. The machine was loaded (load average 32.7, 31.3 and
+  28.7 on 24 threads, other sessions' builds and runs), so a few percent either way is noise, and
+  every cpu figure of one run is inflated together.
+
+  | sweep | factions | cpu ms/day M2 | cpu ms/day M4 | save KiB M2 | save KiB M4 | heap MiB M2 | heap MiB M4 |
+  |---|---|---|---|---|---|---|---|
+  | closed | 16 | 0.12 | 0.16 | 8.6 | 8.6 | 0.5 | 0.5 |
+  | closed | 64 | 0.81 | 0.86 | 31.3 | 31.5 | 1.7 | 1.7 |
+  | closed | 256 | 5.10 | 5.25 | 125.7 | 126.4 | 8.1 | 8.1 |
+  | closed | 1,000 | 19.82 | 20.06 | 511.7 | 514.7 | 35.2 | 35.2 |
+  | paged | 1,000 | 35.11 | 36.93 | 511.7 | 514.7 | 34.3 | 34.2 |
+  | paged | 2,000 | 112.74 | 117.64 | 1027.2 | 1033.2 | 69.9 | 69.9 |
+  | paged | 4,000 | 145.54 | 151.38 | 2058.6 | 2070.7 | 141.6 | 141.6 |
+
+  The cpu is 1 to 6% above M2's from 64 factions up (the 16-faction row is 0.04 ms a day, below what
+  the load moves), the save at most 0.6% larger (the cause was not traced), the heap the same. Two
+  verdict lines differ and neither is M4's: `factions-paged resident` fails its slope on both
+  (0.920 on M2, 0.921 on M4), and `factions closed cpuperunit` fails on M2 (0.234 against a declared
+  0.20) and passes on M4 (0.178), which is the load, not a speed-up. Slots a day and conservation
+  are as before (0, ok). The bench builds goblins, bandits and raiders (`synth::many`), none with
+  `camp_bodies`, so this is the cost of the pool's room and the page's new fields, not of a ledger.
+
+- **MZB-174** (the contract that makes the epoch gate safe, an M5 obligation): MZB-169's gate books
+  an answer line only while its epoch is the latest a census of the camp named, so a holder's record
+  that reaches the engine after a census of a later epoch books nothing. The review (P2-1) found
+  that gate drops a late holder record, and the decision is a contract and no engine change:
+  **Java sends a camp's census only after every holder in its footprint has journaled its record
+  again.** A footprint holder loads with the camp's chunks, so M5's census (sent when every
+  footprint chunk is FULL with its entities in) waits for those records, and they reach the engine
+  carrying the epoch that is still the latest, before the new census; the books take them by the
+  action each carries. MOWZIE.md §4.9 (the CAMP_BODIES bullet, the journal-again sentence, crash
+  table rows 2 to 4) and ledger 7 say so, in the reviewer's words. The cost that remains and is
+  known: a holder outside the footprint whose record arrives after a census of a later epoch is
+  not booked. That census books the missing body by its table (a body left becomes gone), and a
+  body at home is missed and written off at the third miss over two days, so one member is lost.
+  This happens only after a crash, and the camp refills the member at its rate (`pool_at`). The
+  engine cannot tell that holder's record from one of a superseded census, which is why it books
+  nothing rather than guess (MZB-169). For M5: wait for the holders in the census's footprint;
+  a holder outside it is not waited for, and is the cost above.
+
+- **MZB-175** (run 10's exact ghost count had no teeth; the fake plugin follows MZB-174): the review
+  (P2-2) found that putting the engine back to booking by state (MZB-168) or skipping by op
+  (MZB-169) left `sim mowzie` at exit 0: holders journaled only at a restart, so in the chaos run a
+  lost answer was a ghost the exact count simply counted, whatever the engine did with the records.
+  Four changes. (1) With `holders_again` the emulated footprint holders journal their records again
+  at each camp-in, before the census (`journal_holders_of`, at the census's own tick, the records
+  queued first), as MZB-174 says the census waits for; the restart still journals them all. (2)
+  `CampRun::track` counts a record a holder still has (a line, or a death) as cover where holders
+  journal again: the member is no ghost, since the next camp-in or restart books it. (3) The chaos
+  run, in the camp tests and in run 10, asserts `camp_written_off == 0` where `holders_again` is on,
+  and keeps the equality with the ghosts gone for the seeds where it is off. (4) Run 10 gains three
+  scripted cases with exact outcomes, the grove of nine whose raid's four set-out answers are lost:
+  the records land after the party is home (whole, and one line to a record), and the records are
+  journaled again at the next camp-in with no restart; each ends with no member written off. Tests:
+  `holders_journal_their_records_as_the_camp_comes_in_before_its_census` and
+  `a_death_only_a_marker_carries_is_no_ghost_where_holders_journal_again`. What each guard catches,
+  measured by putting it back (one run of the camp tests and of `sim mowzie` each): booking by state
+  (408d4a07's rule): 5 camp tests (the chaos test at seed 7: 3 written off, the late set-out answer,
+  the camp-in case, a superseded epoch, one `should_panic`) and `sim mowzie` exit 1 on the three
+  scripted cases (4 written off each); skipping by op (a record of an op already seen books
+  nothing): 3 camp tests (both split-answer tests and the chaos test) and `sim mowzie` exit 1 on the
+  one-line-to-a-record case and on the chaos (6 camps, the first three with 3, 3 and 1 members
+  written off); the fake without camp-in journaling: 3 camp tests and `sim mowzie` exit 1 on the
+  camp-in case (4 written off); the fake without the cover rule: one camp test, and `sim mowzie`
+  exit 0, since its chaos seeds meet no death only a marker carries. The sim's chaos camps alone (64
+  from `--seed`) do not meet the by-state case, which the reviewer's own 44 holders-on runs did (9
+  written off by state, 17 by op, 0 with the fix): the scripted cases are what make `sim mowzie`
+  fail for it. A fork (reported): none; this is the reviewer's plan.
+
+- **MZB-176** (the audit's I2 has its lower bound back): MZB-172 made `camp_audit` read-only, which
+  left I2 with only its upper bound (the slots at home are no more than the pool's whole warriors
+  now). The lower bound is the pool's stored value: it is what the pool held when it was last moved,
+  and every move of the pool follows a sync and moves the slots with it (`pool_return`, a draw's
+  `pool_shift`, a death), so at least `floor(pool)` slots are at home, the refill since being the
+  gain the next sync adds. A slot taken from home with the pool left as it was is now named (`I2:
+  ... the pool held N when it was last moved`). It holds over every camp test, the chaos runs and
+  `sim mowzie` (its chaos checks every event). Tests:
+  `the_audit_names_a_pool_the_slots_at_home_fall_short_of` (a home slot made Dead by hand; and a
+  pool that refilled for 30 days with the slots unadded, which is no shortfall). A fork (reported):
+  the review said "at the camp's last sync"; the pool's stamp (`pool_at`) is that moment, since a
+  sync comes before every move and the books hold no other mark of it.
+
+- **MZB-177** (a camp forgets the answers a durable world save covers): the (op, line) answers
+  booked in a camp's latest epoch (`Camp::answered`, MZB-169) grew with every answer until the next
+  census, and a grove can stay in one epoch for months. Each answer is now kept with the journal
+  sequence of the latest record that carried it (`Answered { op, line, seq }`; a holder's copy that
+  is skipped raises it, so a copy keeps the answer until the copy is durable too). The host reports
+  the highest durable sequence at WORLD_SAVED (`Conflict::durable_obs_seq`, set where
+  `Replay::forget_ops_through` is called, which is the rule docs/boundary.md §2.3 gives for op ids)
+  and `Conflict::obs_seq` carries the record being ingested. A camp forgets the answers at or below
+  the durable sequence when it next books an answer, so only the camp that grows is touched: no scan
+  of the faction table (its pages would load and dirty), and the set stays at what the last save has
+  not covered. A host with no sequences (the simulations, whose records carry 0) keeps its answers
+  to the end of the epoch. The camp page gains each answer's sequence (a varint); the layout change
+  goes with group E's RTC6 bump (unreleased, no migration, MZB-165's rule). Cost, accepted as
+  TAKEN's is (docs/boundary.md §2.3: by state after the op id is forgotten): a holder's copy
+  journaled after the save but before Java has processed the engine's acknowledgement and dropped
+  the record (an unloaded and reloaded holder chunk in that gap) is booked a second time, by its
+  slot's state. A spawn answer or an answer for a slot the action cannot move changes nothing; a
+  take answer for a slot spawned again since turns it owed once more, and the next order or census
+  sets it right (Java's spawn does nothing where a body with that slot and generation is loaded).
+  Tests: `a_booked_answer_is_forgotten_once_its_record_is_durable` (the sequence kept and raised by
+  a copy, the bound exactly at the save, the cost, and the set bounded over 300 answers), the page
+  round trip in `rich_ledger`, and rtsim-jni's
+  `a_durable_world_save_lets_the_camp_forget_the_answers_it_covers` (both host hooks). A fork
+  (reported): the trigger is WORLD_SAVED, the signal `Replay` already uses, not the engine's own
+  `ackedObsSeq`, which the IO lane writes after the pages are on disk and which would need the camp
+  ledger touched from that thread.
+
+- **MZB-178** (the merge with M3, group E): the conflict pages are RTC6 with meta version 5
+  (MZB-165). M3's `Conflict::replaying` window (set by `session_start`, ended by `replay_done` from
+  `resend_notices`, which rtsim-jni calls once the journal has caught up, MZB-141) is the one replay
+  window; the lines rtsim-jni set and cleared around each record are gone, and it only sets
+  `obs_seq`. A camp's census inside the window only marks its camp out (MZB-159). `CampRun::restart`
+  ends the replay at once (`replay_done`), and `restart_to_replay` leaves it open for the camp tests
+  that replay the last session's journal, whose `replay` helper closes it. Fixed in the merge:
+  `party_lost` stays in the despawn's tail (the dead the stack less its survivors; M3's
+  `recalled.clear()` there is gone, an entry being removed per epoch) and in `casualties`, which M3
+  now counts off a recalled stack live (MZB-142). A death is counted once by whichever record finds
+  it, since a casualty takes the member off the stack the despawn compares against:
+  `a_member_lost_on_a_walk_off_books_once_in_the_camp` (a casualty and a despawn death on a raid's
+  walk-off: two slots freed as died, none written off, the camp refilled to its cap), and it fails
+  without either `party_lost`.
 
 ## M5 Camp reconciler, Java
 
