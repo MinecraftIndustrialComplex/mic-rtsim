@@ -898,7 +898,7 @@ impl Engine {
                 district,
                 kind,
                 player,
-                ..
+                pos,
             } => {
                 // Every IND_EDIT is a player's (§3.3): a learned district goes stale (I5), and
                 // what its starvation episodes showed may no longer hold (I6). A replay of its
@@ -915,11 +915,13 @@ impl Engine {
                 if went_stale {
                     dist.phase = Phase::Stale;
                 }
-                // The compile no longer matches the blocks until Java recompiles (G-B3).
-                self.glass.discard(
+                // The compile no longer matches the blocks until Java recompiles (G-B3); of its
+                // judging units, those whose box holds the edit (all, for a command's).
+                self.glass.edit(
                     at,
                     *district,
-                    crate::glass::report::discard::EDIT,
+                    *pos,
+                    *kind == EditKind::Command,
                     &self.tun.glass,
                 );
                 self.mark(*district);
@@ -927,7 +929,25 @@ impl Engine {
                     self.district_event(kinds::INDUSTRY_STALE, *district, at, STALE_EDIT);
                 }
             }
-            Obs::Discard { district, .. } => self.district_mut(*district).learner.discard(),
+            Obs::Discard {
+                district,
+                reason,
+                station,
+            } => {
+                self.district_mut(*district).learner.discard();
+                if let (crate::obs::DiscardReason::Other, Some(s)) = (reason, station) {
+                    // A station's call moved cargo no one measured (SECTIONS.md §3.6): the units
+                    // its last ports named lose their windows, every unit when it named none.
+                    let ports = self
+                        .district_mut(*district)
+                        .exchange
+                        .get(s)
+                        .map(|r| r.ports.clone())
+                        .unwrap_or_default();
+                    self.glass
+                        .station_discard(at, *district, &ports, &self.tun.glass);
+                }
+            }
             Obs::LoadState {
                 district, state, ..
             } => {
@@ -942,6 +962,7 @@ impl Engine {
             Obs::ChunkUnloaded { district, chunk } => {
                 self.per_chunk_unloads = true;
                 self.district_mut(*district).loaded_chunks.remove(chunk);
+                self.glass.chunk_stopped(*district, *chunk);
                 self.mark(*district);
             }
             Obs::ChunkLoaded {
@@ -1017,6 +1038,11 @@ impl Engine {
                 let dist = self.district_mut(p.district);
                 dist.stations.insert(p.station);
                 dist.exchange.entry(p.station).or_default().ports = inventories;
+                // Each station's ports take its cargo as one: their units join (choice SC75).
+                let revision = dist.revision;
+                let sets = dist.exchange.values().map(|r| r.ports.clone()).collect();
+                self.glass
+                    .station_ports(at, p.district, revision, sets, &self.tun.glass);
             }
             Obs::ReconcileResult(r) => self.reconcile_result(at, r),
             Obs::CarriageResult(r) => self.carriage_result(at, r),
@@ -1184,22 +1210,36 @@ impl Engine {
             dist.deposits.insert(s.good, s);
         }
         // The glass checksum (GLASSBOX.md §5.3): every live sweep counts, creative and
-        // overstressed ones too (the compile models both); read only in G1.
-        if e.live {
+        // overstressed ones too (the compile models both). A sweep that was not live discards
+        // the district's window (`NOT_LIVE`) and samples the judging units whose chunks all ran
+        // (SECTIONS.md §3.4).
+        {
             let view = crate::glass::check::View {
                 revision: dist.revision,
                 inventories: &dist.inventories,
                 ports: &dist.ports,
             };
+            let live = if e.live {
+                crate::glass::check::Liveness::All
+            } else {
+                crate::glass::check::Liveness::Partial {
+                    loaded: &dist.loaded_chunks,
+                    dim: dist.dim,
+                }
+            };
             if let Some(p) = self
                 .glass
-                .sweep(at, e.district, &view, goods, &self.tun.glass)
+                .sweep(at, e.district, &view, &live, goods, &self.tun.glass)
             {
                 self.out.push(Cmd::ProbeSet(p));
             }
-        } else {
-            self.glass
-                .discard(at, e.district, discard::NOT_LIVE, &self.tun.glass);
+            // A unit of a partly loaded district that failed or was cut anew while the rest
+            // replays: the replay starts again over the units that may (SECTIONS.md §3.5).
+            if self.glass.districts.get(&e.district).is_some_and(
+                |g| matches!((&g.replay, &g.compiled), (Some(r), Some(c)) if !r.same_units(c)),
+            ) {
+                self.dirty.insert(e.district);
+            }
         }
         if !e.live || e.creative || e.overstressed {
             if e.creative || e.overstressed {
@@ -1313,9 +1353,17 @@ impl Engine {
                 if let Some(dg) = self.glass.districts.get_mut(&d) {
                     dg.fallback = None;
                 }
+                if old == Presence::Unloaded {
+                    self.glass.back(at, d, &self.tun.glass);
+                }
                 self.reconcile_round(d, at, Round::Full);
             }
-            Presence::Partial => self.mark(d),
+            Presence::Partial => {
+                if old == Presence::Unloaded {
+                    self.glass.back(at, d, &self.tun.glass);
+                }
+                self.mark(d);
+            }
             Presence::Unloaded => {
                 dist.watched = false;
                 dist.learner.discard();
@@ -1324,6 +1372,8 @@ impl Engine {
                 }
                 self.mark(d);
                 self.schedule_pressure(d, at);
+                // No judging unit's window spans the stretch away (choice SC59).
+                self.glass.away(at, d, &self.tun.glass);
             }
         }
         // Live or not, its power sinks follow it (F21).
@@ -1373,13 +1423,13 @@ impl Engine {
         };
         if let Some(span) = &dist.sim {
             let same_kind = span.glass == (mode == GlassMode::Glass);
+            // A glass replay goes on while its nodes run where they did and its judging units
+            // are the ones that may replay now (SECTIONS.md §3.5).
             let same_live = !span.glass
-                || self
-                    .glass
-                    .districts
-                    .get(&d)
-                    .and_then(|g| g.replay.as_ref())
-                    .is_some_and(|r| r.live() == self.glass_live(d).as_slice());
+                || self.glass.districts.get(&d).is_some_and(|g| {
+                    matches!((&g.replay, &g.compiled), (Some(r), Some(c))
+                        if r.live() == self.glass_live(d).as_slice() && r.same_units(c))
+                });
             if span.invs == want && same_kind && same_live {
                 return;
             }
@@ -1649,9 +1699,11 @@ impl Engine {
     // ---- the glass replay (GLASSBOX.md §4, G2) ----------------------------------------------
 
     /// How district `d` replays while away. A compiled district replays on its graph once a
-    /// window of the compile passed (G-B4), and freezes before that; what the glass replay does
+    /// window of the compile passed (G-B4), and freezes before that; with judging units, once one
+    /// unit may replay (SECTIONS.md §3.5: the others are gated off). What the glass replay does
     /// not model yet (deposits, cross-district links, PowerGrid coupling, damage) keeps the black
-    /// box (choice G2-16), as does a compile whose glass replay fell back (§4.5).
+    /// box (choice G2-16), as does a compile whose glass replay fell back with no unit left to
+    /// replay (§4.5).
     fn glass_mode(&self, d: DistrictId) -> GlassMode {
         let Some(dg) = self.glass.districts.get(&d) else {
             return GlassMode::Black;
@@ -1671,7 +1723,7 @@ impl Engine {
         {
             return GlassMode::Black;
         }
-        if comp.eligible() {
+        if comp.replayable() {
             GlassMode::Glass
         } else {
             GlassMode::Freeze
@@ -1793,6 +1845,7 @@ impl Engine {
         };
         let cut = rp.cut_edges();
         let parts = rp.parts();
+        let frozen = rp.frozen().iter().filter(|&&f| f).count();
         dg.replay = Some(rp);
         dg.replay_model = crate::glass::report::replay_model::GLASS;
         dg.replay_since = Some(at);
@@ -1815,11 +1868,14 @@ impl Engine {
         });
         self.stats.sims_started += 1;
         self.glass.stats.replays += 1;
-        let what = if whole {
+        let mut what = if whole {
             "glass replay starts".to_string()
         } else {
             format!("glass replay starts over {covered} inventories ({cut} cut edges)")
         };
+        if frozen > 0 {
+            what.push_str(&format!(", {frozen} units frozen"));
+        }
         self.note(d, at, what);
         self.after_cluster(h, at);
         // A first regime blocked at once stops silently: take it as its breakpoint.
@@ -1866,13 +1922,25 @@ impl Engine {
             dirty.insert(d);
             return;
         }
+        let fz = rp.freezes();
         let r = clusters.apply(h, at, |c, at| match why {
             Some((id, w)) => rp.on_stop(comp, c, id, w, at, goods, &tun.glass),
             None => rp.refresh(comp, c, at, goods, &tun.glass),
         });
+        let frozen = rp.frozen().iter().filter(|&&f| f).count();
+        let froze = rp.freezes() > fz;
         match r {
             Some(Err(f)) => self.glass_fallback(d, f, at),
-            _ => self.after_cluster(h, at),
+            _ => {
+                if froze {
+                    self.note(
+                        d,
+                        at,
+                        format!("glass replay freezes units: {frozen} frozen, the rest go on"),
+                    );
+                }
+                self.after_cluster(h, at);
+            }
         }
     }
 
@@ -2394,6 +2462,8 @@ impl Engine {
             }
             // Applied amounts cross the boundary: learning must never read them as production.
             dist.ports.add(e.good, e.applied);
+            self.glass
+                .port_one(r.district, dist.revision, e.inventory, e.good, e.applied);
             if e.requested < 0 && e.applied > e.requested {
                 shortfall.add(e.good, e.applied - e.requested);
             }
@@ -2405,6 +2475,7 @@ impl Engine {
         // Blocks broke: the doomed inventories at those positions are gone, and what they held
         // dropped. A block skipped (changed since) keeps its inventory (review finding 7).
         if !r.destroyed.is_empty() {
+            let revision = dist.revision;
             for inv in dist.inventories.values_mut() {
                 if inv.doomed && r.destroyed.contains(&inv.decl.pos) {
                     inv.doomed = false;
@@ -2412,6 +2483,8 @@ impl Engine {
                     let spill = inv.effective();
                     self.books.dropped.merge(&spill);
                     dist.ports.subtract(&spill);
+                    let out: GoodVec = spill.iter().map(|(g, a)| (g, -a)).collect();
+                    self.glass.port(r.district, revision, inv.decl.index, &out);
                     inv.known = GoodVec::new();
                     inv.pending = GoodVec::new();
                 }
@@ -2590,9 +2663,28 @@ impl Engine {
 
     /// Goods that crossed the boundary while loaded (§3.3). Ender Transmission channels cross no
     /// boundary: their endpoints are one district's (I13 as corrected), so they have no port kind.
-    fn port(&mut self, _at: Tick, p: &crate::obs::PortTransfer) {
+    fn port(&mut self, at: Tick, p: &crate::obs::PortTransfer) {
         let dist = self.district_mut(p.district);
         dist.ports.merge(&p.goods);
+        let revision = dist.revision;
+        if let Some(inv) = p.inventory {
+            self.glass.port(p.district, revision, inv, &p.goods);
+        } else if p.kind == crate::obs::PortKind::TrainCargo {
+            // The train's whole change at the station it stands at, a loaded call (§4.4): mapped
+            // through that station's ports, which Java sends before the cargo (choice SC75).
+            let train = TrainId(p.counterpart);
+            let station = self
+                .arrivals
+                .range((train, StationId(0))..=(train, StationId(u64::MAX)))
+                .map(|(&(_, s), _)| s)
+                .next();
+            let ports = station
+                .and_then(|s| self.district_mut(p.district).exchange.get(&s))
+                .map(|r| r.ports.clone())
+                .unwrap_or_default();
+            self.glass
+                .cargo(at, p.district, revision, &ports, &p.goods, &self.tun.glass);
+        }
     }
 
     /// A train's call outside every district (IND_TRAIN_UNWATCHED, choice SG50): the leg it began at
@@ -2656,6 +2748,17 @@ impl Engine {
                 crate::obs::CargoFrom::Approach => self.stats.arrivals_approach += 1,
                 crate::obs::CargoFrom::Departure => self.stats.arrivals_departure += 1,
                 crate::obs::CargoFrom::Arrival => self.stats.arrivals_late += 1,
+            }
+            // A train stands at one station: an arrival left at another (a restart while it stood
+            // there sends no departure) would map this call's cargo through that station's ports.
+            let stale: Vec<StationId> = self
+                .arrivals
+                .range((c.train, StationId(0))..=(c.train, StationId(u64::MAX)))
+                .map(|(&(_, s), _)| s)
+                .filter(|&s| s != c.station)
+                .collect();
+            for s in stale {
+                self.arrivals.remove(&(c.train, s));
             }
             self.arrivals
                 .insert((c.train, c.station), c.carriages.clone());
@@ -3067,6 +3170,12 @@ impl Engine {
         let d = p.district;
         let simulated = self.cluster_of.contains_key(&d);
         let sign = if p.direction == Direction::In { 1 } else { -1 };
+        // Into or out of a judging unit's store: a port for its window, loaded or not (an away
+        // unit's window is gone already).
+        if let Some(revision) = self.districts.get(&d).map(|x| x.revision) {
+            let signed: GoodVec = p.goods.iter().map(|(g, n)| (g, sign * n)).collect();
+            self.glass.port(d, revision, p.inventory, &signed);
+        }
         let dist = self.district_mut(d);
         if !simulated {
             // Loaded: an ordinary port. Packages leaving are the packager's learned rate.
@@ -4570,6 +4679,7 @@ mod persist_impls {
             let mut districts = BTreeMap::new();
             let mut clusters = Vec::new();
             let mut glass = BTreeMap::new();
+            let mut glass_dropped = Vec::new();
             let mut leg_pages = Vec::new();
             // The page check's start (ID5): the pages as given, so a restored engine that would
             // save other bytes than it was restored from fails the check at its first save.
@@ -4607,8 +4717,17 @@ mod persist_impls {
                         clusters.push((k.id(), model, anchor, wake));
                     }
                     GLASS_TABLE => {
-                        let dg = crate::glass::page::read_district_page(&bytes)?;
-                        glass.insert(DistrictId(k.id()), dg);
+                        match crate::glass::page::read_district_page(
+                            &bytes,
+                            tun.glass.sections_max,
+                        )? {
+                            crate::glass::page::PageRead::Kept(dg) => {
+                                glass.insert(DistrictId(k.id()), *dg);
+                            }
+                            crate::glass::page::PageRead::Dropped(why) => {
+                                glass_dropped.push((DistrictId(k.id()), why));
+                            }
+                        }
                     }
                     LEG_TABLE => leg_pages.push((k.id(), bytes)),
                     _ => {}
@@ -4653,6 +4772,12 @@ mod persist_impls {
             r.finish()?;
             e.legs = LegIndex::from_pages(legs_next, leg_pages)?;
             e.glass.districts = Tracked::restored(glass);
+            e.glass.recount_rows();
+            // A dropped glass page is deleted at the next save; the district learns again.
+            for &(id, _) in &glass_dropped {
+                e.glass.districts.mark(id);
+            }
+            e.glass.dropped_on_restore = glass_dropped;
             e.districts = Tracked::restored(districts);
             e.clusters = TrackedTable::new(world_seed, REPLAY, e.now);
             clusters.sort_by_key(|c| c.0);
