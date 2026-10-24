@@ -401,11 +401,7 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.var_u64(u64::from(*g));
         w.i64(*m);
     }
-    put_opt(w, &c.placing, |w, p| {
-        w.u64(p.op);
-        w.var_u64(u64::from(p.good));
-        w.i64(p.amount);
-    });
+    w.var_u64(u64::from(c.stacks));
     put_opt(w, &c.mask, |w, m| {
         w.u64(m.0);
         w.var_u64(u64::from(m.1));
@@ -414,6 +410,27 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.u64(m.0);
         w.var_u64(u64::from(m.1));
     });
+}
+
+/// A tribute stack in flight (MZB-423).
+fn put_placing(w: &mut Writer, p: &Placing) {
+    w.u64(p.op);
+    w.var_u64(u64::from(p.good));
+    w.i64(p.amount);
+    w.var_u64(u64::from(p.dimension));
+    w.var_i64(i64::from(p.pos.0));
+    w.var_i64(i64::from(p.pos.1));
+    w.var_i64(i64::from(p.pos.2));
+}
+
+fn get_placing(r: &mut Reader<'_>) -> codec::Result<Placing> {
+    Ok(Placing {
+        op: r.u64()?,
+        good: get_u32(r)?,
+        amount: r.i64()?,
+        dimension: get_u32(r)?,
+        pos: (get_i32(r)?, get_i32(r)?, get_i32(r)?),
+    })
 }
 
 fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
@@ -519,13 +536,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         }
         owed_tribute.push(e);
     }
-    let placing = get_opt(r, |r| {
-        Ok(Placing {
-            op: r.u64()?,
-            good: get_u32(r)?,
-            amount: r.i64()?,
-        })
-    })?;
+    let stacks = get_u32(r)?;
     let mask = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
     let seat = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
     Ok(Camp {
@@ -545,7 +556,8 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         heir_stamp,
         traded,
         owed_tribute,
-        placing,
+        stacks,
+        chest: None,
         mask,
         seat,
     })
@@ -999,6 +1011,9 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.camp_written_off,
         s.arrivals,
         s.renewal_losses,
+        s.tribute_stacks,
+        s.hunts_owed,
+        s.hunts_killed,
     ]);
     v
 }
@@ -1057,6 +1072,9 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.camp_written_off = n();
     s.arrivals = n();
     s.renewal_losses = n();
+    s.tribute_stacks = n();
+    s.hunts_owed = n();
+    s.hunts_killed = n();
     s
 }
 
@@ -1260,6 +1278,11 @@ impl Conflict {
         w.u8(u8::from(self.peaceful));
         w.u64(self.peaceful_since.0);
         w.var_u64(u64::from(self.notice_serial));
+        put_usize(w, self.placing.len());
+        for (f, p) in &self.placing {
+            w.var_u64(u64::from(*f));
+            put_placing(w, p);
+        }
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1313,6 +1336,11 @@ impl Conflict {
         c.peaceful = r.u8()? != 0;
         c.peaceful_since = Tick(r.u64()?);
         c.notice_serial = get_u32(r)?;
+        let n = r.len_prefix(8)?;
+        for _ in 0..n {
+            let f = get_u32(r)?;
+            c.placing.push((f, get_placing(r)?));
+        }
         Ok(c)
     }
 
