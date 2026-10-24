@@ -13,6 +13,7 @@
     "ChuteBlockEntityMixin",
     "DefaultUnpackingHandlerMixin",
     "FrogportBlockEntityMixin",
+    "FrogportChainMixin",
     "GeneratingKineticBlockEntityMixin",
     "GlobalStationMixin",
     "InvManipulationBehaviourMixin",

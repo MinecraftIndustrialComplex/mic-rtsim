@@ -94,9 +94,22 @@ own age) changes size once".
 | # | Choice | Why |
 |---|---|---|
 | DHT67 | **FAR_LEG carries the dragon's age** (boundary.md §12.1: `u32 age_days` at offset 76, the record's last four bytes, which were reserved): whole days at the record's time, ticks over 24,000 as Ice and Fire's `getAgeInDays` counts them, 0 in a GONE record. The server's far feed sends it in the INTRO as it sends a body's age (DHT60), so a dragon the engine flies is drawn at its own age, as Ice and Fire sizes it, before, during and after its body. The age is the record's, so a dragon that sends nothing for days keeps the age of its last record. Pinned by a codec test on each side, the same bytes (`far.rs`, `FarLegsTest`). No compatibility with the old record. | Ben's answer (DH-7). The stage alone spans 25 days, so the far model jumped in size when the body took over; the body's INTRO gave the age only to a dragon this client had seen embodied. Whole days are what Ice and Fire's size reads. The record's spare bytes keep it 80 bytes. |
-| DHT68 | **A new dragon body is held back for 5 of its ticks while its animation settles, and the far model drawn instead** (`DragonArrivals` in mic_rtsim_iceandfire, `FarLook.holds`, `FarHide`). For a body that joins the client's level and that a far dragon of the feed names: from its first frame, vanilla's render of its model is cancelled through GeckoLib's cancelable `GeoRenderEvent.Entity.Pre` (posted on NeoForge's bus; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so NeoForge's own RenderLivingEvent never fires for a dragon; no mixin); its renderer runs once a frame into nothing, so its animation goes through its opening transition unseen; and `FarHide` counts the body as not there, so the far model goes on where it was (DH's pass or the band) and no copy of the body is drawn (DHT47). After 5 ticks of the body's own clock from its first such render, and at most 1 s of wall time from its arrival (a paused or frozen game), vanilla draws it. Only while the far view runs (the hold is decided in the looks' frame and forgotten at the frame's end), and never again once vanilla has drawn the body (a render that goes through ends its hold for good, so a body is never hidden after it was seen). Never held: a lightning dragon while it breathes (`DragonLook.copies`), a dragon with riders (Ice and Fire draws them inside the dragon's render and cancels their own, so they would vanish with it), and a body whose render throws. What the event does not cover is still drawn while held: a named dragon's name tag, a leash, and its shadow within 16 blocks, each where the far model is. Uninstall effect: none; client only, nothing saved, nothing sent; it hides a vanilla entity for 0.25 s on the client. | Ice and Fire's controllers start a body's animation with a 2-tick transition from the model's rest pose at their speed of 0.4, 5 ticks: a new body unfolded its wings and neck from that pose where the far model had been flying a frame before. The coordinator chose (a), holding the far model, over (b), priming GeckoLib with a made-up partial tick, and (c), leaving it, to be kept only if the stills showed no unfold and no double draw. They showed neither: in all 8 arrivals with the hold, at 114 and 149 blocks, zoomed and not, the far model flies up to the swap and the body flies from its first frame, one dragon in every frame, where every arrival without it showed the rest pose (the code review and a visual review, both Opus; "Round two" under Measured). What is left is the wings jumping to another point of their beat at the swap: the body's loop always starts wings up and the far model's is wherever its own clock has it. The warm render is the body's own, into nothing, never added anywhere (D3). |
+| DHT68 | **A new dragon body is held back for 5 of its ticks while its animation settles, and the far model drawn instead** (`DragonArrivals` in mic_rtsim_iceandfire, `FarLook.holds`, `FarHide`). For a body that joins the client's level and that a far dragon of the feed names: from its first frame, vanilla's render of its model is cancelled through GeckoLib's cancelable `GeoRenderEvent.Entity.Pre` (posted on NeoForge's bus; Ice and Fire's renderer is GeckoLib's, not a LivingEntityRenderer, so NeoForge's own RenderLivingEvent never fires for a dragon; no mixin); its renderer runs once a frame into nothing, so its animation goes through its opening transition unseen; and `FarHide` counts the body as not there, so the far model goes on where it was (DH's pass or the band) and no copy of the body is drawn (DHT47). After 5 ticks of the body's own clock from its first such render, and at most 1 s of wall time from its arrival (a paused or frozen game), vanilla draws it. Only while the far view runs (the hold is decided in the looks' frame and forgotten at the frame's end), and never again once vanilla has drawn the body (a render that goes through ends its hold for good, so a body is never hidden after it was seen). Never held: a lightning dragon while it breathes (`DragonLook.copies`), a dragon with riders (Ice and Fire draws them inside the dragon's render and cancels their own, so they would vanish with it), and a body whose render throws. What the event does not cover is still drawn while held: a leash and its shadow within 16 blocks, each where the far model is (the name tag is held too since DHT72). Uninstall effect: none; client only, nothing saved, nothing sent; it hides a vanilla entity for 0.25 s on the client. | Ice and Fire's controllers start a body's animation with a 2-tick transition from the model's rest pose at their speed of 0.4, 5 ticks: a new body unfolded its wings and neck from that pose where the far model had been flying a frame before. The coordinator chose (a), holding the far model, over (b), priming GeckoLib with a made-up partial tick, and (c), leaving it, to be kept only if the stills showed no unfold and no double draw. They showed neither: in all 8 arrivals with the hold, at 114 and 149 blocks, zoomed and not, the far model flies up to the swap and the body flies from its first frame, one dragon in every frame, where every arrival without it showed the rest pose (the code review and a visual review, both Opus; "Round two" under Measured). What is left is the wings jumping to another point of their beat at the swap: the body's loop always starts wings up and the far model's is wherever its own clock has it. The warm render is the body's own, into nothing, never added anywhere (D3). |
 | DHT69 | **In the band the dragons, models and boxes together, keep to the tier's count** (8, 24 or 64), nearest first by horizontal distance, counted after the hand-over and before the frustum (`FarBandRenderer`, as `FarModelRenderer` counts the band's models with the dragons still drawn as boxes in their places). The carriages' boxes in the band are not counted. The bench logs the dragons counted and those the count left out. | Weak PCs (D1): the band's boxes had no count, so a flock over the loaded chunks drew every dragon on the lowest tier too. The same order as DH's pass and the band's models, so a dragon is drawn by one of them or by neither. Carriages are bounded by the feed's object budget already (DHT63). |
-| DHT70 | **A far feed RESET frees what no mover asks for again within 2 s (PLACEHOLDER)** (`FarLook.reset`, `FarLooks.resetAll`, called by `FarFeedReceiver` before it applies the RESET's records; `FarLookReset`): the carriages' meshes and the dragons' pose sets, live stand-ins and asks that no mover drew or asked for since the RESET go at the first frame 2 s after it; what the movers sent again asked for stays. What the prewarm loaded (Create's bogeys, the dragon probes and their render sizes), the headings last seen and the looks that would not bake stay too. A look with no reset of its own clears. Leaving the world still frees everything at once. | The server sends a RESET on every subscription: when the client's far radius, detail or kinds change, on a new dimension and on a resubscribe, as well as after a server or sim restart; every mover it still chooses comes again with it. Freeing at once blanked every far model and baked them all again, about 27 ms of bakes a dragon set, 2 ms a frame, so seconds of boxes after an options change (the code review); a mesh kept by hash past a RESET was right but held GPU memory for a minute after its movers were gone. Two seconds is the models' own grace for a mover whose model is not baked yet. |
+| DHT70 | **A far feed RESET frees what no mover asks for again within 2 s** (`FarLook.reset`, `FarLooks.resetAll`, called by `FarFeedReceiver` before it applies the RESET's records; `FarLookReset`): the carriages' meshes and the dragons' pose sets, live stand-ins and asks that no mover drew or asked for since the RESET go at the first frame 2 s after it; what the movers sent again asked for stays. What the prewarm loaded (Create's bogeys, the dragon probes and their render sizes), the headings last seen and the looks that would not bake stay too. A look with no reset of its own clears. Leaving the world still frees everything at once. | The server sends a RESET on every subscription: when the client's far radius, detail or kinds change, on a new dimension and on a resubscribe, as well as after a server or sim restart; every mover it still chooses comes again with it. Freeing at once blanked every far model and baked them all again, about 27 ms of bakes a dragon set, 2 ms a frame, so seconds of boxes after an options change (the code review); a mesh kept by hash past a RESET was right but held GPU memory for a minute after its movers were gone. Two seconds is the models' own grace for a mover whose model is not baked yet. Round three measured it and the coordinator kept it: in two RESETs with 12 far dragons, every set was asked for again 0.8 to 1.2 ms after the RESET was applied, in the same frame, as the RESET carries the INTRO of every mover the server still chooses, and the grace freed none of the 12 when it ran out at 1.99 s. So a shorter grace would free sooner only what nothing asks for any more, a little memory, and would bake again a mover the server chooses a sweep later (the sweeps are 1 s apart); a longer one would help only across a server or sim restart, when movers come back over several sweeps. |
+| DHT73 | **A far carriage with a bad shape is not drawn as one** (`FarTrainView.tooLong` and `oddRun`, `FarModelRenderer.placed`, `FarBandRenderer`, `CarriageLook.outside`, `BogeyMeshes`): a run between its bogey points that is not finite or is longer than 160 blocks is skipped by the boxes, the models and the band; a model whose placement is not finite is skipped; a baked carriage mesh with a vertex past its own blocks (3 blocks of slack, 5.5 about each bogey) or not finite stays a box; a Create bogey with a vertex more than 5 blocks from its block is left out of the far meshes. Each is counted, the first few logged. | Black slabs across the sky in Ben's client (2026-10-24) looked like a far carriage drawn with one vertex far off. They were not ours: they came with the far view OFF as well (see "The black slabs in the sky"). Create builds no carriage longer than 128 blocks by default, so 160 leaves room. The checks cost a bound test when a mesh is baked and a finite test a model a frame, and turn such a mesh of ours, should one ever come, into a log line instead of a sliver across the sky. |
+
+## Round three
+
+The third round on the arrival (branch `fix/dh-round3`, 2026-10-23), the coordinator's call under Ben's away
+rule, all of it reversible. These supersede, where they say otherwise: DHT68's "What is left is the wings jumping
+to another point of their beat at the swap" (DHT71) and its "a named dragon's name tag" among what is still drawn
+while held (DHT72).
+
+| # | Choice | Why |
+|---|---|---|
+| DHT71 | **A body that arrives flying starts its flight loop on its far model's beat** (`DragonArrivals.warm`). At the body's first held frame (DHT68), when the far dragon is not roosting, the game is not frozen, and Ice and Fire's controller would play the flight loop for the body (its `selectGeckoAnimation`: not dead, not swimming, flying or hovering or part way into either, and neither charging a blast nor breathing fire), the hidden renders run at ticks of the body's own clock chosen for the far model's loop: the far model's time is the far clock plus its key's offset (DHT65), and the body's tick that is the last start of that loop at or before it gets the two warm renders a stand-in gets, so the transition ends there and the loop starts there; during the hold the body gets a render at each later start of the loop, as the stand-ins do. Each render sets the body's `tickCount`, renders into nothing and puts it back, inside the frame; nothing ticks between. A body that arrives on the ground, swimming, charging a blast or breathing fire plays its own opening, unseen for the hold as before. The stats line counts how many bodies were held and how many started on the beat. Uninstall effect: none; client only, nothing saved, nothing sent. | The coordinator's call: the wings jumped at the swap in every take of round two, in 4 of 8 from fully down to fully up in one frame, because the body's loop starts wings up at its first render and the far model's is wherever its clock has it. Within 300 blocks the two nearest far dragons are drawn live, on the same loop and the same clock (DHT65), so there the far model's pose and the body's are the same at the swap; farther out the far model draws the baked frame nearest its time, 12 to the loop, and the two agree to within half a frame step, 2.5 ticks. The jump was up to half the loop. The stand-ins already start a loop at a chosen tick this way (DHT65); a body's `tickCount` is what GeckoLib's clock reads (TICK). GeckoLib takes up an animation only when its clock is not -1, its "never polled" value, so a first warm render that would land on -1 goes one tick earlier, which still ends the transition at the loop's start. Under `/tick freeze` the far clock runs on and the body's does not, so the beat would not hold; a blast's charge or a breath plays another animation, and the body's own clock then decides. A body new to the client has no action at all (Ice and Fire's `getAnimation` is null then, not `NO_ANIMATION`), and the flight loop plays for any action but the charge, so the check names the charge and nothing else. In eight takes on the beat no wing flipped at the swap, where all four before did; a smaller change of pose is left, from the body's turn while held, which the far model does not follow ("Round three" under Measured). |
+| DHT72 | **While held, a named body's name tag is held too; its leash and its shadow are not** (`MicRtsimIceAndFireClient`). The name tag goes through NeoForge's `RenderNameTagEvent`, at the lowest priority, set to not render for a held body (GeckoLib still runs vanilla's render, which posts it, after its own Pre event is cancelled). A leash and a shadow have no event: the leash is drawn twice for a GeckoLib mob, by vanilla's `EntityRenderer.render` (its private `renderLeash`) and by GeckoLib's `GeoEntityRenderer.renderFinal` (`Mob.getLeashHolder`, then its own `renderLeash`), so hiding it needs a mixin at both, a head cancel on `EntityRenderer#renderLeash` and on `GeoEntityRenderer#renderLeash` for a held body; the shadow is drawn by `EntityRenderDispatcher.render` after the renderer returns, so it needs a mixin there (around its `renderShadow` call). Neither is done. | The coordinator's call: hide what an event covers, leave and name what needs a mixin. The lowest priority, so a mod that forces name tags on does not bring a held one back. A shadow is drawn only within 16 blocks of the camera, onto blocks a short way below the body, so a dragon arriving in flight at the tracking range's edge has none to show; a leashed dragon arriving from the far view needs its holder there too. Ice and Fire sets the renderer's `shadowRadius` in its `preRender`, before GeckoLib's Pre event, so a Pre listener could zero it by reflection for that frame without a mixin; that is not an event's cover and is not done either. |
 
 ## Measured
 
@@ -420,6 +433,127 @@ vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-ro
   blocky terrain at 0.5 s is DH reloading its own LODs). No log line shows the RESET itself arriving; that it came
   rests on the subscription's code and the tests (`FarFeedReceiverTest`, `FarLookResetTest`).
 
+### Round three (DHT70 to DHT72)
+
+Captured on 2026-10-23 and 24 in a private headless sway at 1920x1080 with the pack's Sodium 0.8.13, on a local
+verify branch (`verify/dh-round3`: this branch plus the media stub, a white square in a corner on the frames a
+body is held in, and `MEDIAPHASE`, `MEDIAHOLD` and `MEDIARESET` lines on the client's stdout). The before takes
+and the RESET ran on 2026-10-23, 21:48 to 22:48 (`/micmedia beat 0`: the hold as round two landed it); the after
+takes on the beat gate's fix (ca1f7ed6) in session A, 00:17 to 00:29 (its client stopped in its fifth take on a
+media tool bug), and session B, 08:51 to 09:10 (the tools at 8466a760, which also log the yaw at the swap). Round
+two's world and flights: render distance 10, simulation distance 12, field of view 60 (15 zoomed), a stage 4
+fire dragon of 76 days whose body arrives 114 blocks from the camera (fly) or 149 (ring); the machine shared
+with other sessions' jobs. Every take recorded lossless (`libx264rgb`, crf 0), so no chroma ghost (round two's
+recording trap). Stills, recordings, frame crops and logs in `/home/greencheetah/mic-media/dh-round3-2026-10-23/`
+(`stills/`, `raw/rec/`, `raw/frames/<take>/`, `raw/phase.log`, `raw/reset_r3.log`). The swap is found by the
+corner square; `swap.py` compares the dragon's silhouette at the swap with the frame before (IoU), against the
+median of the same comparison over its neighbours, which is the dragon's own motion from frame to frame.
+
+- **The wings at the swap (DHT71).** Before: in all four takes the far model's wings were down and the body's
+  first frame had them fully up (`stills/before_b3_*_swap_pair.png`, `*_sheet.png`); the body's loop started
+  4 to 24 ticks off the far model's 60-tick beat. After, eight takes, the four flights twice: every body started
+  its loop on the beat to the tick (`MEDIAPHASE clock=0.000 standin=0.000`, the controller `RUNNING`, where
+  before it was still `TRANSITIONING` at the release), held 5 of its ticks, 240 to 263 ms. A visual review
+  (Opus) of each take frame by frame, swap less 4 to swap plus 3, found the stroke going on in the same direction
+  through the swap in all eight, and no flip like the before takes'
+  (`stills/before-after_wing_swap_fly_114-blocks.png`, `stills/after_a3*_swap_pair.png`).
+
+  | Take | IoU at the swap, before | after (session A) | after (session B) | neighbours' median, after |
+  |---|---|---|---|---|
+  | fly, 114 blocks | 0.39 | 0.64 | 0.66 | 0.79 to 0.86 |
+  | ring, 149 blocks | 0.44 | 0.79 | 0.78 | 0.84 |
+  | fly, zoomed | 0.35 | 0.70 | 0.71 | 0.78 to 0.79 |
+  | ring, zoomed | 0.46 | 0.73 | 0.70 | 0.76 to 0.83 |
+
+  Left: a smaller change of pose at the swap, not of phase. In `a3_fly` the far wing, seen past the body, goes
+  in one frame and the dragon reads about a fifth longer head to tail; in `a3b_fly`, `a3b_flyz` and `a3t_flyz`
+  the far wing opens from edge-on in one frame; in 7 of the 10 takes on the beat the tail's tip ends 20 to 28
+  pixels further back at the swap. The body turns while it is held and the far model does not: at the release
+  the body's yaw is 1.8 to 4.7 degrees past the stand-in's (1.2 at the hold's start; session B's six takes on
+  the beat) and its pitch about 1 degree off, and Ice and Fire swings a turning body's tail and rolls it, which a
+  stand-in following the feed's heading does not. `a3b_ring` (1.8 degrees) is clean, and `a3t_fly` (3.0, TAA
+  off) the cleanest swap of all. Turning the stand-in onto the body's yaw and pitch through the hold should
+  close it; not done.
+- **The smear under the body is DH's TAA.** With DH's temporal anti-aliasing on, the far model's lowered wings
+  stay as a red smear over the ground for a frame or two after the swap (strong before, where the wings jumped,
+  faint after); with it off (`/micmedia dh taa 0`) none, beat or not (`b3t_*`, `a3t_*`; beat off, the wings still
+  jump, IoU 0.24 and 0.34). Round two's "faint blocky trace" after the swap was most likely this, not the
+  recording.
+- **The name tag (DHT72).** A named dragon ("Ember"), HUD shown (vanilla draws name tags only then), 50 blocks
+  off, zoomed. With the tag's hold off (`n3g_tag0`) the name floats over the far model for all 8 held frames,
+  with no body under it; with it on (`n3g_tag1`) none until the release frame, then the tag as before. Both
+  takes on the beat. Session R's name takes ran with the HUD hidden and showed no tag either way.
+- **The RESET's grace (DHT70).** 12 far dragons 300 to 500 blocks ahead (none within the stand-ins' 300), DH's
+  radius from 160 chunks to 150 and back, so two RESETs: each of the 12 pose sets was asked for again 0.8 to
+  1.2 ms after the RESET was applied, in the same frame, and at the grace's end, 1.99 s, none was freed. So the
+  grace decides only what becomes of a set nothing asks for at once; why 2 s stays is in DHT70's row.
+
+### The black slabs in the sky (DHT73)
+
+Ben's client showed black shapes in the sky on 2026-10-24, of two kinds: a long straight slab with parallel edges,
+slanted, rising from a building or the ground across the sky; and the sky gone black beyond a storm cloud's edge,
+a wedge. Run on 2026-10-24 in a private headless sway at 1920x1080 with the pack's mods, Ben's Mesa 26.2.2 and his
+10 GB heap, one client at a time; each arm a flight with slow pans, recorded and scanned for near-black sky (luma
+under 20 over at least 1% of the frame's top 30%), with a dev-only probe in our DH module that read the frame back
+each frame (not landed). Two worlds: a copy of Ben's save, where it showed, and our own fresh world, "MIC storm
+test", with tornadoes and their storm cells started by `/pa tornado spawn`. The copy is a third-party world, so its
+stills and clips stay local and none is cited here; the stills below are our world's only. Every arm ran on a fresh
+DH database (the save's `DistantHorizons.sqlite` deleted first), so DH built its LODs during the flight, and in
+daylight. Media in `/home/greencheetah/mic-media/dh-artifact-2026-10-24/` (`stills/` is our world; `raw/` and
+`vid/` hold the copy's as well and stay local).
+
+- **Not ours.** In the copy, clear weather showed none (two flights, our far view at MEDIUM). Storms showed it
+  within 2 to 10 minutes in every storm run: four times in 12 minutes with our far view on, at 93 s with it OFF
+  (`detail = "OFF"` in `mic_rtsim_dh-client.toml`, so we draw nothing), and at 562 s
+  with C2ME removed. Removing SimpleClouds and Project Atmosphere together could not be run: the client stopped at
+  load (watut: `Invalid shaders/core/particle.json`).
+- **Storm fog clears it.** With SimpleClouds' storm fog off (`renderStormFog = false`) the copy ran 22 minutes of
+  storms without one black frame. The shapes did not all go: the same straight slanted bands and wedges came white
+  instead of black. Turning storm fog off hides the black, not the shapes.
+- **DH rendering off: still black.** With DH's renderer off (`rendererMode = "DISABLED"`, DH still loaded) and storm
+  fog on, at noon, three huge black polygons with straight edges came 568 s into the flight and stayed 20 s, up to
+  96% of the sky band. With DH loaded SimpleClouds always takes its DH pipeline, which draws its cloud mesh, storm
+  fog and lightning after DH's frame; with DH drawing nothing only its high wisps (drawn after the sky) showed, so
+  its storm fog was most likely not drawn either. `/pa tornado list` just after: no active tornadoes. So the black
+  needs neither DH's LODs nor a tornado, and what draws the shapes is not DH, not SimpleClouds' cloud mesh and not
+  ours. Their colour (black here and with storm fog on, white with storm fog off and DH on) may be GL state left
+  bound by whatever drew before them, as in the DH bug below; a guess, not shown.
+- **Our world, storm fog on and off.** About 20 minutes with storm fog on (four standpoints 150 blocks from a
+  tornado looking up and level, the storm's edge from 450 to 850 blocks, and the tornado from 450 blocks at four
+  bearings) and a second session with it off: no black frame in either. With storm fog on the tornado is a grey
+  funnel from the cloud base to the ground under grey rain shafts, and where the funnel stands behind nearer
+  terrain it is drawn over that terrain in grey shards (`stills/ours_storm-fog-on_funnel_865-blocks.png`, about 865
+  blocks off; `ours_storm-fog-on_shafts-and-funnel.png`, `ours_storm-fog-on_shafts.png`). With it off we could not
+  pick out a funnel, white or other: the flat white walls in those stills are clouds at the camera's height, and
+  they come with and without a tornado (`stills/ours_storm-fog-off_cloud-walls.png`, `ours_storm-fog-off_clouds.png`).
+  So the white bands are seen in the copy only, and that they are tornadoes is not shown.
+- **What the jars say (read, not tested).** With DH present SimpleClouds draws through its `DhSupportPipeline`,
+  after DH's frame: the clouds, then the storm fog (blended into the main target, its alpha the fog's density),
+  then lightning. Project Atmosphere's tornado mixins hook only SimpleClouds' `DefaultPipeline.afterSky` and
+  `ShaderSupportPipeline.afterLevel`; `DhSupportPipeline` is neither, so with DH the tornado would come only through
+  the cloud mesh it carves. Veil also fails to compile two of Project Atmosphere's shaders at every start
+  (`projectatmosphere:cloud_atmosphere_volume`: "syntax error, unexpected IDENTIFIER";
+  `projectatmosphere:shaders/core/tornado_round.fsh`: "Couldn't load vanilla shader ... skipping").
+- **A DH bug found on the way (DH 3.3.3, decompiled).** `GlBlockTextureAtlas.tryCreateOrResize` binds the new atlas
+  on whatever texture unit is active, unit 0, which DH's box shader reads as its lightmap, and leaves it there. It
+  runs on DH's first frame and whenever the atlas outgrows its tiles (4,096, then doubling), that is while LODs are
+  being built. For that frame DH's generic boxes, ours included, sample the atlas as their light at
+  (block light, sky light), which in the open (sky light 15) lands in the atlas's empty rows, with alpha forced to
+  1: the boxes draw black for one frame. LODs read their light at (0.97, 0.03), a filled tile, and are only tinted.
+  Not what Ben saw (that came with our far view off); noted here, not worked around and not reported.
+- **The guard (DHT73) stays.** It was written while a far carriage with a vertex flung off was the suspect, and
+  costs a bound test when a mesh is baked and a finite test a model a frame.
+- **The keys**, in the instance's `config/` (the pack ships none of these files; the values are those of Ben's
+  instance, which the copy took): `simpleclouds-client.toml` `[performance]` `renderStormFog = true` (false
+  clears the black; `stormFogLightningFlashes = true` beside it); `simpleclouds-server.toml` `cloudMode = "DEFAULT"`;
+  `projectatmosphere-common.toml` `[display]` `cloudMode = "FULL"`, `[storms]` `enableTornadoes = true`,
+  `[storms.tornado]` `disableSimpleCloudsTornadoSSBO = false`; `DistantHorizons.toml`
+  `[client.advanced.debugging]` `rendererMode = "DEFAULT"` (`"DISABLED"` for the DH-off arm) and
+  `[client.advanced.graphics.genericRendering]` `enableGenericRendering = true`. The arms changed only the copy's
+  instance; nothing in the pack or Ben's instances.
+- Nothing here adds an entity, block or item to a world (D3): the guards check our own meshes, and the probe was a
+  dev build's. Nothing was filed upstream.
+
 ### Not measured or not exercised
 
 - The boxes' GPU time (above).
@@ -436,8 +570,9 @@ vanilla fade). Stills, 5 s clips and logs in `/home/greencheetah/mic-media/dh-ro
 - The real models with players' own trains (only DHT66's four designs ran: no carriage of block entities only,
   none mixing upright and upside-down bogeys) and a hand-over for each species (only a stage 4 fire dragon).
 - The real models under an Iris shader pack, or on a GPU other than the laptop's Radeon on Mesa.
-- The arrival's hold (DHT68) in a client for a named or leashed dragon, one with riders or a lightning dragon
-  breathing, and for any species but fire.
+- The arrival's hold (DHT68) in a client for a leashed dragon, one with riders or a lightning dragon breathing,
+  and for any species but fire (a named one ran in round three), and the beat (DHT71) for a body arriving
+  anything but flying straight.
 - The far object that ran away from a dragon setting off from a hover (2 of 8 takes in "The body's copy (DHT47)",
   a double image for up to 0.8 s): round two found no cause it could show, so DHT44's run on is not changed and
   the case stays open.

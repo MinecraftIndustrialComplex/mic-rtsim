@@ -378,6 +378,14 @@ fn mix_key(h: &mut u64, k: PoolKey) {
             mix(h, u64::from(i));
             mix(h, u64::from(g.0));
         }
+        PoolKey::Chain(s, to, g) => {
+            mix(h, 4);
+            mix(h, s.0);
+            mix(h, to.x as u64);
+            mix(h, to.y as u64);
+            mix(h, to.z as u64);
+            mix(h, u64::from(g.0));
+        }
     }
 }
 
@@ -412,7 +420,7 @@ fn level(lv: &Levels, k: PoolKey) -> i64 {
 pub fn levels_of(c: &Cluster, d: DistrictId) -> BTreeMap<PoolKey, i64> {
     c.pools()
         .iter()
-        .filter(|p| p.key.district() == d)
+        .filter(|p| p.key.district() == Some(d))
         .map(|p| (p.key, p.level))
         .collect()
 }
@@ -1451,7 +1459,9 @@ impl Part {
                     .filter(|&(k, &a)| a > 0 && !self.st.empty.contains_key(&(inv, k.good())))
                     .map(|(k, _)| k.good())
                     .collect();
-                rg.room[v] = !self.st.full.contains_key(&inv);
+                rg.room[v] = !self.st.full.contains_key(&inv)
+                    && graph.node(v as u32).flags & crate::glass::records::node_flags::CHAIN_PORT
+                        == 0;
             } else if !self.st.dry.is_empty() {
                 rg.held[v].retain(|g| !self.st.dry.contains(g));
             }
@@ -2110,7 +2120,8 @@ impl Part {
                         changed = true;
                     }
                 }
-                PoolKey::Mail(..) => {}
+                // A glass replay has no links (choice SC107).
+                PoolKey::Mail(..) | PoolKey::Chain(..) => {}
             }
         }
         // (c) Full: a store an arriving good has no room in for a tick.

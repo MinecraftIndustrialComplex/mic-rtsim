@@ -36,6 +36,8 @@ import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.logistics.crate.CreativeCrateBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
 import com.simibubi.create.content.logistics.packager.PackagerBlockEntity;
+import com.simibubi.create.content.logistics.vault.ItemVaultBlockEntity;
+import com.simibubi.create.infrastructure.config.AllConfigs;
 import com.simibubi.create.content.trains.station.GlobalStation;
 import com.simibubi.create.content.trains.station.StationBlockEntity;
 import com.simibubi.create.foundation.blockEntity.IMultiBlockEntityContainer;
@@ -185,6 +187,26 @@ public final class CreatePlugin implements IndustryPlugin {
         return null;
     }
 
+    /** A multiblock with a chunk of its box not loaded reads that chunk through its capability ({@link Loaded#partsLoaded}, R2-11). */
+    @Override
+    public boolean partsLoaded(ServerLevel level, BlockEntity be) {
+        return Loaded.partsLoaded(level, be);
+    }
+
+    /**
+     * A vault's shape from its controller, without reading its parts: the core asks while a part's chunk is not
+     * loaded (R2-11). As its handler counts it ({@code ItemVaultBlockEntity.initCapability}): one inventory of
+     * {@code vaultCapacity} slots per block of the box. Null for anything else (a tank is never asked: its
+     * controller's handler reads only itself).
+     */
+    @Override
+    public long[] describe(ServerLevel level, BlockPos pos) {
+        if (!(Loaded.blockEntity(level, pos) instanceof ItemVaultBlockEntity vault) || !vault.isController())
+            return null;
+        long slots = (long) vault.getHeight() * vault.getWidth() * vault.getWidth() * AllConfigs.server().logistics.vaultCapacity.get();
+        return new long[] {IndRecords.Inventory.KIND_ITEMS, slots, 0, 0};
+    }
+
     @Override
     public void inventories(BlockEntity be, InventorySink out) {
         if (be instanceof PackagerBlockEntity packager && packager.targetInventory != null) {
@@ -255,11 +277,19 @@ public final class CreatePlugin implements IndustryPlugin {
     @Override
     public void tick(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry, long now) {
         TrainWatch.tick(industry, now);
+        PackageStores.of(industry).tick(now);
     }
 
     @Override
     public String perfLine() {
-        return TrainWatch.perfLine();
+        com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
+        return ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine();
+    }
+
+    /** The engine forgot what it was told: every package store is declared again (SECTIONS.md §2.5). */
+    @Override
+    public void announce(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry) {
+        PackageStores.of(industry).announce();
     }
 
     @Override

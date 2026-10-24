@@ -92,6 +92,15 @@ public final class RtsimSession {
             current.close();
         current = null;
         startFailure = null;
+        // UR-1: a world that ran without rtsim is reset before the engine opens; a reset that cannot be done opens nothing.
+        try {
+            ReinstallGuard.beforeEngineOpens(server);
+        } catch (java.io.IOException | RuntimeException e) {
+            startFailure = "the world ran without rtsim and the reinstall reset failed (" + e + "); move world/rtsim/ aside by hand"
+                    + " and start again (docs/deploy-rehearsal-live.md runbook 8.6)";
+            MicRtsim.LOGGER.error("[mic_rtsim] {}; the bridge does not run this session", startFailure, e);
+            return;
+        }
         String kind = "configured";
         Engine engine = null;
         try {
@@ -134,12 +143,32 @@ public final class RtsimSession {
         }
     }
 
+    /**
+     * GameTests only: what a restart does to the session, in this server: stopping (every puppet captured),
+     * the world saved, stopped, started again (UR-1's reinstall test). The world's saved data stay the same
+     * objects, as a restart would read them back.
+     */
+    public static void restartGlobalForTest(MinecraftServer server) {
+        if (!RtsimConfig.Test.ENABLED)
+            throw new IllegalStateException("a session restart is for GameTests only");
+        stoppingGlobal();
+        server.saveEverything(true, true, true);
+        stopGlobal();
+        startGlobal(server);
+    }
+
     // ---- state ----------------------------------------------------------------------------------
 
     final MinecraftServer server;
     final Engine engine;
     final JournalSavedData journalData;
     final BoundarySession boundary;
+    /**
+     * The engine life (ReinstallRules.engineLife, RG13): the page directory's, new when a new directory's
+     * engine starts over (new pages and observations lost), which is when its reconcile epochs start again
+     * from 1 without the old results. The industry module stamps applied epochs with it.
+     */
+    final long engineLife;
     final PuppetRegistry registry = new PuppetRegistry();
     final CommandDispatcher commands;
     /** Phase 1: villages, markets, gossip, damage, rescues, robbery, bases, growth (PLAN.md §8). */
@@ -189,6 +218,8 @@ public final class RtsimSession {
     long removedByOther;
     long passNanos;
     long reasserted;
+    /** Pending records a holder brought from an earlier engine life, dropped unjournaled (RG14). */
+    long stalePending;
     /** Leaders steered again after a seam folded them (TP11). */
     long resteered;
 
@@ -197,6 +228,16 @@ public final class RtsimSession {
         this.engine = engine;
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
+        boolean startsOver = ReinstallRules.startsOver(boundary.start().pagesObsSeq(), boundary.observationsLost());
+        try {
+            this.engineLife = ReinstallRules.engineLife(server.getWorldPath(LevelResource.ROOT).resolve("rtsim"), startsOver,
+                    new java.security.SecureRandom()::nextLong);
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException("the engine life (world/rtsim/" + ReinstallRules.LIFE_FILE + "): " + e.getMessage(), e);
+        }
+        if (startsOver)
+            MicRtsim.LOGGER.info("[mic_rtsim] the engine starts over (new pages, observations lost): engine life {}; reconcile"
+                    + " epochs that chunks hold of another life are void as the chunks load", Long.toHexString(engineLife));
         this.commands = new CommandDispatcher(this);
         this.boundary.onAck(this::onAcked);
         for (int i = 0; i < 2; i++) {
@@ -259,6 +300,11 @@ public final class RtsimSession {
 
     public BoundarySession boundary() {
         return boundary;
+    }
+
+    /** The engine life (RG13): changes exactly when the engine's pages start over. */
+    public long engineLife() {
+        return engineLife;
     }
 
     public PuppetRegistry registry() {
@@ -861,7 +907,7 @@ public final class RtsimSession {
     /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(records));
+        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), records));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
@@ -877,48 +923,80 @@ public final class RtsimSession {
     }
 
     /**
-     * An entity that carries pending records came back from disk: journal them again (the engine has
-     * maybe never seen them, if the journal on disk was older than the entity's chunk) and drop them
-     * once acknowledged in this session.
+     * An entity that carries pending records came back from disk: journal a copy of each (REASSERT,
+     * docs/boundary.md §3.2; the engine has maybe never seen them, if the journal on disk was older than
+     * the entity's chunk, and applies a copy only then) and drop them once the copies are acknowledged.
      */
     public void reassert(Entity holder) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = holder.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
+        if (p.life() != engineLife) {
+            stalePending += p.records().size(); // of an engine that started over since (RG14): never journaled again
+            holder.removeData(RtsimAttachments.PENDING);
+            return;
+        }
         long last = 0;
-        for (byte[] record : p.records())
-            last = boundary.recommit(record);
-        reasserted += p.records().size();
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last = boundary.reassert(r.gen(), r.bytes());
+        reasserted += p.entries().size();
         dropPendingWhenAcked(holder, last);
     }
 
-    /** The same for a chunk: its pending records are COMMAND_RESULTs of transfers applied into it. */
+    /**
+     * The same for a chunk: its pending records are COMMAND_RESULTs of engine ops applied into it, each
+     * with the records Java journaled for it just before (IND_WRITE_CHAIN's CHAIN_IN). An op's records are
+     * dropped together once the last of them is acknowledged.
+     */
     public void reassert(net.minecraft.world.level.chunk.LevelChunk chunk) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
         if (p == null || p.isEmpty())
             return;
-        for (byte[] record : p.records()) {
-            long seq = boundary.recommit(record);
-            long op = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID);
-            dropFromChunkWhenAcked(chunk, op, seq);
+        if (p.life() != engineLife) {
+            stalePending += p.records().size(); // of an engine that started over since (RG14): never journaled again
+            chunk.removeData(RtsimAttachments.PENDING);
+            chunk.setUnsaved(true);
+            return;
         }
-        reasserted += p.records().size();
+        java.util.Map<Long, Long> last = new java.util.LinkedHashMap<>();
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last.put(pendingOp(r.bytes()), boundary.reassert(r.gen(), r.bytes()));
+        for (java.util.Map.Entry<Long, Long> e : last.entrySet())
+            dropFromChunkWhenAcked(chunk, e.getKey(), e.getValue());
+        reasserted += p.entries().size();
     }
 
-    /** The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one. */
+    /**
+     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, or the engine op of an
+     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5).
+     */
+    public static long pendingOp(byte[] record) {
+        ByteBuffer b = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER);
+        int kind = Short.toUnsignedInt(b.getShort(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.R_KIND));
+        if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_CHAIN_PACKAGE
+                && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID + 8)
+            return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID);
+        return record.length >= Obs.CommandResult.OP_ID + 8 ? b.getLong(Obs.CommandResult.OP_ID) : 0;
+    }
+
+    /**
+     * The COMMAND_RESULT of an engine op applied into {@code chunk}, if the chunk still carries one of this engine
+     * life (an op id of an engine that started over is no op of this one, RG14).
+     */
     public static boolean chunkCarriesOp(net.minecraft.world.level.chunk.LevelChunk chunk, long opId) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = chunk.getExistingDataOrNull(RtsimAttachments.PENDING);
-        if (p == null)
+        RtsimSession s = current();
+        if (p == null || s != null && p.life() != s.engineLife)
             return false;
         for (byte[] r : p.records())
-            if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) == opId)
+            if (pendingOp(r) == opId)
                 return true;
         return false;
     }
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, old.plus(java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
@@ -935,14 +1013,11 @@ public final class RtsimSession {
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p == null)
                 return;
-            java.util.List<byte[]> keep = new java.util.ArrayList<>();
-            for (byte[] r : p.records())
-                if (ByteBuffer.wrap(r).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER).getLong(Obs.CommandResult.OP_ID) != opId)
-                    keep.add(r);
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep = p.filter(r -> pendingOp(r) != opId);
             if (keep.isEmpty())
                 c.removeData(RtsimAttachments.PENDING);
             else
-                c.setData(RtsimAttachments.PENDING, new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords(java.util.List.copyOf(keep)));
+                c.setData(RtsimAttachments.PENDING, keep);
             c.setUnsaved(true);
         });
     }
@@ -1153,5 +1228,6 @@ public final class RtsimSession {
     public long passNanos() { return passNanos; }
     public long ticks() { return ticks; }
     public long reasserted() { return reasserted; }
+    public long stalePending() { return stalePending; }
     public int ackWaiters() { return ackWaiters.size(); }
 }
