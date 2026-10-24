@@ -382,6 +382,36 @@ public final class Counting {
         return h != null && h.keys.containsKey(new Pair(mover.asLong(), store.asLong()));
     }
 
+    /** The (mover, store) positions {@code district} holds keys for, in the order the engine named them. */
+    public List<BlockPos[]> pairs(long district) {
+        Held h = held.get(district);
+        List<BlockPos[]> out = new ArrayList<>();
+        if (h != null)
+            for (Key k : h.keys.values())
+                out.add(new BlockPos[] {BlockPos.of(k.mover), BlockPos.of(k.store)});
+        return out;
+    }
+
+    /**
+     * Adds one pair to {@code district}'s keys as a set would, with its counters starting at {@code now}: for a
+     * GameTest of a count point whose block the engine names no pair for (see BasinIntoASharedVaultFactory). The
+     * engine skips a pair it did not name when it reads a sample, and its next set replaces the district's keys.
+     */
+    public void holdForTest(long district, ResourceKey<Level> dim, BlockPos mover, BlockPos store, long now) {
+        Held old = held.get(district);
+        Map<Pair, Key> next = new LinkedHashMap<>();
+        if (old != null && old.dim.equals(dim))
+            next.putAll(old.keys);
+        Pair p = new Pair(mover.asLong(), store.asLong());
+        if (next.containsKey(p))
+            return;
+        Key k = new Key(district, p.mover, p.store, now);
+        next.put(p, k);
+        index(dim, k);
+        held.put(district, new Held(dim, next));
+        refresh();
+    }
+
     /**
      * A held key's {@code {since, items in, items out}} (all goods summed), or null when none: for the GameTests,
      * which compare it to what the movers did.
