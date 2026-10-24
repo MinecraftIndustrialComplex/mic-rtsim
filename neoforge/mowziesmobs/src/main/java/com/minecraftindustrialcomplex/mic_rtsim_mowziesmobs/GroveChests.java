@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
 
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
@@ -69,8 +70,12 @@ public final class GroveChests implements SessionPlugin {
     private final Set<Long> dirty = new LinkedHashSet<>();
     private long lastScan = Long.MIN_VALUE;
 
-    /** This session's counters (GameTests). */
-    public long records, transfers;
+    /**
+     * This session's counters (GameTests). {@code transfers} counts every TRANSFER_TO_CONTAINER answered for a chest
+     * a grove told of, and the next two those answered APPLIED and FAILED: the results of those commands alone, which
+     * the engine's journal does not tell apart from any other command's.
+     */
+    public long records, transfers, transfersApplied, transfersFailed;
 
     private GroveChests() {}
 
@@ -93,7 +98,7 @@ public final class GroveChests implements SessionPlugin {
         sent.clear();
         dirty.clear();
         lastScan = Long.MIN_VALUE;
-        records = transfers = 0;
+        records = transfers = transfersApplied = transfersFailed = 0;
     }
 
     /** The next tick looks at every grove that is in (GameTests). */
@@ -125,6 +130,10 @@ public final class GroveChests implements SessionPlugin {
             if (s.dimension().equals(level.dimension()) && s.pos().equals(pos)) {
                 dirty.add(e.getKey());
                 transfers++;
+                if (status == Obs.CommandResult.APPLIED)
+                    transfersApplied++;
+                else if (status == Obs.CommandResult.FAILED)
+                    transfersFailed++;
             }
         }
     }
