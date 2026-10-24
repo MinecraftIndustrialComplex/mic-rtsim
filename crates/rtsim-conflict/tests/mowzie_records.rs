@@ -1905,6 +1905,108 @@ fn a_death_on_the_walk_off_counts_the_same_live_and_replayed() {
     }
 }
 
+/// A band recalled at epoch `e`, its bodies walking off, and seen again and embodied at `e + 1`
+/// before that despawn (MZB-131): both stacks hold every alive member. Returns the band, `e` and
+/// the body id of its first unit.
+fn walking_off_and_embodied_again(r: &mut Run) -> (Handle<Party>, u32, u32) {
+    let band = raid_band(r);
+    let e = {
+        let x = &mut r.c.parties[band];
+        x.epoch += 1;
+        x.recalled = vec![(x.epoch, x.units.clone())];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch - 1
+    };
+    let body = {
+        let c = r.c.cultures.get(0).clone();
+        body_id(&r.c.cultures, &c.unit(r.c.parties[band].units[0].0).body)
+    };
+    (band, e, body)
+}
+
+fn casualty_of(band: Handle<Party>, epoch: u32, body: u32) -> Obs {
+    Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch,
+        by: boundary::BY_MOB,
+        body,
+        count: 1,
+        killer: (0, 0),
+    })
+}
+
+/// RP-27 (MZB-131, docs/replay-gate.md §5.9): a casualty finds its stack by the record's epoch. A
+/// death on the walk-off of epoch `e` while the band is embodied again at `e + 1` takes from the
+/// recalled stack of `e` and leaves `spawned` whole; one of `e + 1` takes from `spawned`. Before
+/// it the death of `e` was dropped (`party_of` wants the current epoch), and the despawn of `e`
+/// then counted that member as a survivor.
+#[test]
+fn a_walk_off_death_of_an_older_epoch_counts_against_its_own_stack() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, e, body) = walking_off_and_embodied_again(&mut r);
+    let alive = r.c.parties[band].alive();
+    let first = r.c.parties[band].units[0];
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, e, body), at);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 1, "the walk-off's death is counted");
+    assert_eq!(
+        x.recalled,
+        vec![(e, {
+            let mut s = x.units.clone();
+            s[0].1 = first.1 - 1;
+            s
+        })],
+        "against the recalled stack of its epoch"
+    );
+    assert_eq!(
+        x.spawned[0], first,
+        "and the newer epoch's bodies are whole"
+    );
+    assert_eq!(r.c.stats.casualties, 1);
+    r.ingest(casualty_of(band, e + 1, body), at + 1);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 2);
+    assert_eq!(
+        x.spawned[0],
+        (first.0, first.1 - 1),
+        "a death of e + 1 takes from spawned"
+    );
+    assert_eq!(
+        x.recalled[0].1[0],
+        (first.0, first.1 - 1),
+        "and not from e's stack"
+    );
+    assert_eq!(r.c.stats.casualties, 2);
+}
+
+/// RP-27's control: deaths of the newer epoch only take from `spawned`, as they did before.
+#[test]
+fn a_death_of_the_newer_epoch_counts_against_spawned_alone() {
+    let mut r = Run::new(36, quiet_goblins());
+    let (band, e, body) = walking_off_and_embodied_again(&mut r);
+    let alive = r.c.parties[band].alive();
+    let first = r.c.parties[band].units[0];
+    let at = r.c.now() + 1;
+    r.ingest(casualty_of(band, e + 1, body), at);
+    r.ingest(casualty_of(band, e + 1, body), at + 1);
+    let x = &r.c.parties[band];
+    assert_eq!(x.alive(), alive - 2);
+    assert_eq!(x.spawned[0], (first.0, first.1 - 2));
+    assert_eq!(
+        x.recalled,
+        vec![(e, {
+            let mut s = x.units.clone();
+            s[0].1 = first.1;
+            s
+        })],
+        "the walk-off's stack is untouched"
+    );
+    assert_eq!(r.c.stats.casualties, 2);
+}
+
 /// MZB-134 (review item 3): a refusal that reaches the engine on Peaceful (an answer in flight
 /// when the world changed, a dialogue still open) is recorded, but a climb to a rung Peaceful
 /// holds waits for Normal. The culture here skips the scouts, so the rung above the Envoy is the
