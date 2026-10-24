@@ -620,6 +620,15 @@ impl Culture {
                 "{n}: chief_renewal, chief_leads and chief_strength need a chief_body"
             ));
         }
+        // A boss's chief is the band's one unit (`chief_unit_lost`), a camp chief a body outside
+        // its units with a slot of its own: a culture with both would lose the chief twice, once
+        // as a unit and once as a slot (the re-check, R5).
+        if renewal.is_some_and(|r| r.boss) && def.chief_body.is_some() {
+            return Err(format!(
+                "{n}: renewal.boss makes the chief the band's one unit, so a chief_body (a camp \
+                 chief slot) cannot be set too"
+            ));
+        }
         if !(def.chief_strength.is_finite() && def.chief_strength >= 0.0) {
             return Err(format!(
                 "{n}: chief_strength must be finite and not below 0"
@@ -973,6 +982,25 @@ mod tests {
         })
         .expect("refused");
         assert!(e.contains("recruits_per_day"), "{e}");
+        // A boss's renewal and a camp chief slot are two ways to lose a chief: refused together
+        // (the re-check, R5), while a renewal that is no boss's stands beside a chief_body.
+        let e = with(&|d| {
+            d.recruits_per_day = 0.0;
+            d.renewal = Some(d.chief_renewal.unwrap());
+            assert!(d.renewal.unwrap().boss);
+        })
+        .expect("refused");
+        assert!(e.contains("renewal.boss"), "{e}");
+        assert!(e.contains("chief_body"), "{e}");
+        assert_eq!(
+            with(&|d| {
+                d.recruits_per_day = 0.0;
+                d.renewal = Some(d.chief_renewal.unwrap());
+                d.renewal.as_mut().unwrap().boss = false;
+            }),
+            None,
+            "a renewal that is no boss's"
+        );
     }
 
     #[test]

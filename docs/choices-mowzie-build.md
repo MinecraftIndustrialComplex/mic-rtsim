@@ -2838,6 +2838,15 @@ and toml line. Not changed: the footprint, the restriction, the hold, `DenKind` 
     or has it as a target, and an epoch's end answers it STALE. It hides how the engine behaves with a
     chief line in flight for a long time (a chief killed away while a remove waits, the crystal's steal
     while a take waits): the Java GameTest 29 plays it with the real hold.
+  - Amended at the re-check, R5 (P3-7): no rtsim-cli run sets `watched` or `near`, so runs 10 and 12 do not
+    exercise the hold or the farthest-warrior choice; the unit tests do (the throne tests in
+    `tests/grove.rs`). The hold is at most `HOLD_MAX`, 6,000 ticks, against a heir wait of 192 days at the
+    cap, so it is immaterial to those runs' numbers.
+  - Amended at the re-check, R5: `Culture::resolve` refuses a culture with both `renewal.boss` and a
+    `chief_body`. A boss's chief is the band's one unit (`chief_unit_lost`, `renewal_cause` read
+    `renewal.boss`), a camp chief a body outside its units with a slot of its own, and a culture with both
+    would lose the chief twice. The Frostmaw has the first, the Umvuthana the second (its `chief_renewal`
+    has `boss`, which the check leaves alone: it is the heir's wait, not a `renewal`).
   - The sim's grove checks, where the design leaves the detail open. Run 5 (`grove_rest`): plunder (livestock
     only, eaten, no village defence; 8 raids ate 240 items), an Invasion led by the chief (fights of strength
     3.8 and 12.6), the grove in and out (6 rounds, its own plunder drive quiet), hunts owed to the cap (2, 4,
@@ -3423,7 +3432,11 @@ Two fixes for M6:
      - anything else kills `count`.
      Applying a hunt sets the last op to its `op`. A count of 0 is applied as a hunt that kills none and is
      answered all the same. The records are 72 bytes with `replaced` at 40 and `rest` at 68.
-  3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer.
+  3. `GroveChests` and HAVEN_CHEST, with the tribute's transfer. Java sends HAVEN_CHEST after every stack
+     it places, whether or not the chest's free-slot count changed (the re-check, R5): the engine takes a
+     slot off its count for each stack it sends, as if the stack filled one, and a stack that merged into
+     a partly filled slot leaves the engine's count one short until a record says otherwise. The record is
+     the chest's state, so an extra copy changes nothing (boundary.md §9.3).
   4. `MowzieStrength`.
   5. GameTests 12, 13, 14, 16, 17 and 20.
 
