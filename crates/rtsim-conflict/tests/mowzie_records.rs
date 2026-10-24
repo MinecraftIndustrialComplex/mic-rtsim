@@ -2665,6 +2665,66 @@ fn fillers_casualty() -> Obs {
     })
 }
 
+/// fixes4 item 1 (RP-51): the largest gap between a live watched fight's decision
+/// (`start_fight`) and its first BAND_MATERIALIZED, the data RP-48's slack is set from
+/// (`ConflictStats::fight_record_gap_max`). A raid on the refinery, the player there from 3,000
+/// ticks before its arrival: the band is seen on its road (a sighting, not measured) and fought
+/// at its arrival, and the plugin answers each command a tick after it. A later record of the
+/// fight's epoch measures nothing: only the first answers the decision.
+#[test]
+fn a_watched_fights_record_gap_is_measured_from_its_decision() {
+    let mut r = Run::new(36, quiet_goblins());
+    r.c.log_enabled = true;
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    r.watch = true;
+    r.next_obs = r.c.now();
+    let mut end = r.c.now();
+    while !fight_materialized(&r, band, &journal) {
+        end += 100;
+        assert!(end < arrival + 6_000, "the band fought");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    let epoch = r.c.parties[band].epoch;
+    let decided =
+        r.c.log
+            .iter()
+            .find(|l| l.what.contains("arrives where a player watches"))
+            .map(|l| l.tick)
+            .expect("the fight's decision");
+    let records: Vec<(u32, u64)> = journal
+        .iter()
+        .filter_map(|(at, o)| match o {
+            Obs::Materialized(m) if m.agent == Party::agent(band) => Some((m.epoch, at.0)),
+            _ => None,
+        })
+        .collect();
+    assert!(records[0].0 < epoch, "seen on its road first: {records:?}");
+    let fought = records
+        .iter()
+        .find(|(e, _)| *e == epoch)
+        .expect("the fight's record")
+        .1;
+    assert!(fought > decided, "{records:?}, decided at {decided}");
+    assert_eq!(r.c.stats.fight_record_gap_max, fought - decided);
+    r.ingest(materialized(band, epoch, 1, 0), Tick(decided + 5_000));
+    assert_eq!(
+        r.c.stats.fight_record_gap_max,
+        fought - decided,
+        "a later wave's record measures nothing"
+    );
+}
+
 /// RP-23 (amendment b): a raid reaching a watched target in the replayed window, its
 /// BAND_MATERIALIZED and casualties replayed: resolved once, by the fight (no abstract raid), its
 /// casualties counted, and its pool as the session that went on left it.

@@ -58,7 +58,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
-use rtsim_conflict::engine::{body_id, body_names, item_of};
+use rtsim_conflict::engine::{REPLAY_HOLD_SLACK_TICKS, body_id, body_names, item_of};
 use rtsim_conflict::presence::ChunkKey;
 use rtsim_conflict::{
     Conflict, ConflictStats, ConflictTickets, ConflictTunables, Cultures, SignalKind,
@@ -167,6 +167,9 @@ pub(super) struct Link {
     pub(super) copies_refused: u64,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
+    /// The largest gap from a watched fight's decision to its first BAND_MATERIALIZED last
+    /// logged (`ConflictStats::fight_record_gap_max`, RP-51). Not saved.
+    gap_logged: u64,
 }
 
 /// The conflict's own dictionary (C2-4): the catalogue's goods as items (`item_of`), the culture
@@ -273,6 +276,7 @@ impl Link {
             never_logged: 0,
             copies_refused: 0,
             fed: 0,
+            gap_logged: 0,
         }
     }
 
@@ -619,10 +623,31 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
         }
     });
     st.phase1.taint();
+    log_fight_record_gap(st);
     reset_if_due(st);
     take_commands(st);
     if !was_running && running(st) {
         shared::introduce_conflict(st);
+    }
+}
+
+/// Logs a new largest gap from a watched fight's decision to its first BAND_MATERIALIZED
+/// (RP-51): the data the replay hold's slack is set from, and a warning past the slack, where a
+/// replay would resolve that fight unwatched before its record (docs/replay-gate.md §6.1).
+fn log_fight_record_gap(st: &mut State) {
+    let gap = st.conflict.engine.stats.fight_record_gap_max;
+    if gap <= st.conflict.gap_logged {
+        return;
+    }
+    st.conflict.gap_logged = gap;
+    let line = format!(
+        "conflict: a watched fight's BAND_MATERIALIZED came {gap} ticks after its decision, the \
+         most this process has seen (the replay hold's slack is {REPLAY_HOLD_SLACK_TICKS})"
+    );
+    if gap >= REPLAY_HOLD_SLACK_TICKS {
+        log_warn(&line);
+    } else {
+        log_info(&line);
     }
 }
 
