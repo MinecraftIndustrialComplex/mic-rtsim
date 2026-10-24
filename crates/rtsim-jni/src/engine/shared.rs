@@ -81,8 +81,18 @@ fn with_viewers<R>(
     st: &mut State,
     f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
 ) -> R {
+    with_viewers_of(st, true, f)
+}
+
+/// [`with_viewers`], the conflict among them only when `conflict` (the session start leaves it
+/// out, RP-26).
+fn with_viewers_of<R>(
+    st: &mut State,
+    conflict: bool,
+    f: impl FnOnce(&mut rtsim_world::World, &mut [&mut dyn Viewer]) -> R,
+) -> R {
     let (d_on, s_on, h_on) = (dragons::running(st), ships::running(st), herds::running(st));
-    let c_on = conflict::running(st);
+    let c_on = conflict && conflict::running(st);
     let w = &mut st.phase1.world;
     let mut v: Vec<&mut dyn Viewer> = Vec::with_capacity(4);
     if d_on {
@@ -155,8 +165,11 @@ pub(super) fn introduce_conflict(st: &mut State) {
 
 // ---- the interest areas ---------------------------------------------------------------------------
 
-/// SESSION_START: every player's area goes (the world forgets where players were), and every
-/// module hears it.
+/// SESSION_START: every player's area goes (the world forgets where players were). The dragons,
+/// the ships and the herds hear it (their bodies end at the arm until their slices move that
+/// work into their replay end); the conflict does not (docs/replay-gate.md §2.1, §5.1, RP-26):
+/// its `player_left` would recall the bands the pages hold in view, whose replayed records count
+/// against them, and its replay end does that player work for every player (§5.6).
 pub(super) fn session_start(st: &mut State) {
     st.shared.pending.clear();
     st.shared.present.clear();
@@ -172,7 +185,7 @@ pub(super) fn session_start(st: &mut State) {
         return;
     }
     for p in with_area {
-        leave(st, p);
+        with_viewers_of(st, false, |w, v| w.leave_area(p, v));
     }
     st.phase1.taint();
 }

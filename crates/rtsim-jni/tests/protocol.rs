@@ -5519,6 +5519,100 @@ mod conflict {
     fn a_fight_kept_in_the_pages_pools_what_is_left_without_a_crash() {
         a_fight_kept_in_the_pages_across_a_replay("conflict-rp24-live", None);
     }
+
+    /// RP-26 (the review's item): a watched fight kept in the pages, its casualties journaled
+    /// after the save, then 4,000 fillers. After the crash the arm changes no body (conflict
+    /// hears no `player_left` there): in the replay's hand-overs that carry the casualties the
+    /// band is still embodied at its epoch, fighting, with its kept stack, and the casualties
+    /// count off that stack, as in the session that went on; no RECALL goes in any buffer.
+    /// `crash`: false is the control (the same books, read at the same point).
+    fn a_watched_band_kept_across_the_arm(name: &str, crash: bool) {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 8, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        let fight_at = j.game_time;
+        let at_save = books(&e, p);
+        assert!(at_save.2 && at_save.4 > 0, "in view at the save: {at_save:?}");
+        save(&e, &mut j);
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= fight_at + 1_500 + 200
+        });
+        let live = books(&e, p);
+        assert!(n - live.0 >= 2, "the fight cost members: {live:?}");
+        assert_eq!(party(&e, p), Some((Phase::Fighting, true)), "still fighting");
+        assert!(live.4 < at_save.4, "off its stack: {live:?}, at the save {at_save:?}");
+        fillers(&mut j, 4_000);
+        if !crash {
+            j.idle();
+            assert_eq!(books(&e, p), live, "the session that went on");
+            assert!(recalls(&j, 0, p).is_empty(), "no recall");
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+            return;
+        }
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        // Hand over until the casualties are counted, the replay still running.
+        let mut seen = Vec::new();
+        for _ in 0..8 {
+            j.flush();
+            let b = books(&e, p);
+            seen.push((b, party(&e, p)));
+            if b.0 == live.0 {
+                break;
+            }
+        }
+        assert!(
+            e.with_conflict(|c, _| c.replaying()),
+            "the fillers are still to come: {seen:?}"
+        );
+        assert_eq!(
+            (books(&e, p), party(&e, p)),
+            (live, Some((Phase::Fighting, true))),
+            "the kept band, its casualties off its kept stack: {seen:?}"
+        );
+        assert!(recalls(&j, 0, p).is_empty(), "no recall in any buffer");
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(!e.with_conflict(|c, _| c.replaying()), "the replay ended");
+        assert_eq!(books(&e, p).0, live.0, "the replay counted each death once");
+        assert!(recalls(&j, 0, p).is_empty(), "no recall after it either");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_watched_band_kept_in_the_pages_stays_embodied_across_the_arm() {
+        a_watched_band_kept_across_the_arm("conflict-rp26", true);
+    }
+
+    /// Control: no crash.
+    #[test]
+    fn a_watched_band_keeps_its_books_without_a_crash() {
+        a_watched_band_kept_across_the_arm("conflict-rp26-live", false);
+    }
 }
 
 /// The world model (docs/boundary.md §10): the core's habitat sampler reports cells, the engine
