@@ -1101,3 +1101,16 @@ conservative option at its fork.
   with nobody near, the pages saved 3,000 ticks before its arrival, the replay 600 past it: the
   replayed siege's (`bored_at`, turn for home) (123570, 123570), want the session that went on's
   (122950, 122950), 620 ticks late (the replay's 600 and one 20-tick poll).
+- **RP-46** (honour as live at a newer epoch; §5.2; the fix round's item 6): `honour` at a newer
+  epoch clears `spawned` without folding it into a recalled stack, as live `start_fight` (and
+  `seen`, which needs the party not embodied) takes a new epoch. A live recall still folds
+  (MZB-131). With the real bridge the fold seldom had anything to fold: `ConflictBridge.materialize`
+  ends an older epoch's party (BAND_DEMATERIALIZED, reason COMMAND, its survivors) before it
+  journals the newer one's BAND_MATERIALIZED, and that despawn, replayed while the party is
+  embodied at the older epoch, takes `dematerialized`'s live branch first. The fake plugin drops
+  the older bodies silently, so a record of the older epoch after the newer one's materialize
+  shows the difference. Failing first, the watched raid of RP-23's test (b), seen on its road at
+  one epoch and fought at the refinery at the next, with one older-epoch body's death after the
+  fight's BAND_MATERIALIZED: live counts it against no stack; replayed, (casualties, pool on day 9)
+  (4, 35.998), want live's (3, 36.998). The engine test of §5.2's honour now asserts no recalled
+  stack at the newer epoch.

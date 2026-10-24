@@ -1965,8 +1965,8 @@ fn placed(c: &Conflict, band: Handle<Party>) -> u32 {
 /// docs/replay-gate.md §5.2 (RP-6, RP-22): a replayed BAND_MATERIALIZED on an engine from its
 /// pages embodies the party at the record's epoch with the quota's members (16 of 26), not every
 /// alive member; a live one changes nothing. At a newer epoch an older embodied epoch's bodies
-/// walk off as its recalled stack; a record below the party's wave, or of an older epoch,
-/// changes nothing.
+/// leave the books, as live `start_fight` drops them (RP-46): no recalled stack. A record below
+/// the party's wave, or of an older epoch, changes nothing.
 #[test]
 fn a_replayed_materialize_embodies_with_what_java_was_commanded() {
     let mut r = Run::new(36, quiet_goblins());
@@ -2012,7 +2012,7 @@ fn a_replayed_materialize_embodies_with_what_java_was_commanded() {
     );
     assert_eq!((back.parties[band].epoch, back.parties[band].wave), (1, 1));
     assert_eq!(placed(&back, band), 16);
-    // A newer epoch: epoch 1's bodies walk off as its stack, epoch 2 has the quota.
+    // A newer epoch: epoch 1's bodies leave the books unfolded, epoch 2 has the quota.
     back.ingest(
         &mut r.w,
         &mut NoInfrastructure,
@@ -2021,9 +2021,7 @@ fn a_replayed_materialize_embodies_with_what_java_was_commanded() {
     );
     let x = &back.parties[band];
     assert_eq!((x.epoch, x.wave), (2, 1));
-    assert_eq!(x.recalled.len(), 1);
-    assert_eq!(x.recalled[0].0, 1);
-    assert_eq!(x.recalled[0].1.iter().map(|s| s.1).sum::<u32>(), 16);
+    assert!(x.recalled.is_empty(), "no recalled stack: {:?}", x.recalled);
     assert_eq!(placed(&back, band), 16);
 }
 
@@ -2456,7 +2454,13 @@ struct Arrival {
 /// as the arm forgets it), ends its replay and runs on two days with nobody near. `restart`:
 /// also a second restart, from pages saved once the replay holds the arrival, whose clock then
 /// runs that many ticks before the next record (past the poll: it arrives again first).
-fn a_raid_arriving_after_the_save(watched: bool, crash: bool, restart: Option<u64>) -> Arrival {
+/// `straggler`: a body of the band's older epoch dies in its fight ([`straggler`], RP-46).
+fn a_raid_arriving_after_the_save(
+    watched: bool,
+    crash: bool,
+    restart: Option<u64>,
+    straggler: bool,
+) -> Arrival {
     let mut r = Run::new(36, quiet_goblins());
     r.plugin.fight = Some(synth::Fight {
         kill_share: 0.25,
@@ -2482,11 +2486,17 @@ fn a_raid_arriving_after_the_save(watched: bool, crash: bool, restart: Option<u6
     r.watch = watched;
     r.next_obs = r.c.now();
     let mut end = arrival;
+    let mut straggled = !straggler;
     while r.c.parties.get(band).is_some() {
         end += 600;
         assert!(end < day(8.0), "the band comes home");
         run_journaled(&mut r, &mut walls, end, &mut journal);
+        if !straggled && fight_materialized(&r, band, &journal) {
+            straggled = true;
+            self::straggler(&mut r, &mut walls, band, &mut journal);
+        }
     }
+    assert!(straggled, "the band fought");
     // Java journals other records all along: one past the band's, so that the replayed window
     // holds its arrival whatever the band's records are.
     journal.push((end, fillers_casualty()));
@@ -2554,6 +2564,43 @@ fn a_raid_arriving_after_the_save(watched: bool, crash: bool, restart: Option<u6
     a
 }
 
+/// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
+fn fight_materialized(r: &Run, band: Handle<Party>, journal: &[(Tick, Obs)]) -> bool {
+    let x = &r.c.parties[band];
+    x.phase == Phase::Fighting
+        && journal.iter().any(|(_, o)| {
+            matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band) && m.epoch == x.epoch)
+        })
+}
+
+/// RP-46 (the fix round's item 6): a body of `band`'s epoch before its fight's dies, after the
+/// fight's BAND_MATERIALIZED: a straggler Java still had. The band was seen on its road at that
+/// epoch, and `start_fight` took the next without folding its bodies into a recalled stack, so
+/// live the death counts against no stack.
+fn straggler(r: &mut Run, walls: &mut Walls, band: Handle<Party>, journal: &mut Vec<(Tick, Obs)>) {
+    let x = &r.c.parties[band];
+    let older = x.epoch - 1;
+    let seen = journal.iter().any(|(_, o)| {
+        matches!(o, Obs::Materialized(m)
+            if m.agent == Party::agent(band) && m.epoch == older && m.spawned > 0)
+    });
+    assert!(seen, "seen on its road at epoch {older}");
+    let c = r.c.cultures.get(0).clone();
+    let o = Obs::Casualties(boundary::BandCasualties {
+        agent: Party::agent(band),
+        epoch: older,
+        by: boundary::BY_MOB,
+        body: body_id(&r.c.cultures, &c.unit(x.units[0].0).body),
+        count: 1,
+        killer: (0, 0),
+    });
+    let at = r.c.now();
+    let casualties = r.c.stats.casualties;
+    r.c.ingest(&mut r.w, walls, &o, at);
+    assert_eq!(r.c.stats.casualties, casualties, "live, no stack");
+    journal.push((at, o));
+}
+
 /// A filler record: a casualty of a band the engine never had.
 fn fillers_casualty() -> Obs {
     Obs::Casualties(boundary::BandCasualties {
@@ -2571,11 +2618,14 @@ fn fillers_casualty() -> Obs {
 /// casualties counted, and its pool as the session that went on left it.
 #[test]
 fn a_watched_arrival_in_the_replayed_window_is_resolved_once() {
-    let live = a_raid_arriving_after_the_save(true, false, None);
+    let live = a_raid_arriving_after_the_save(true, false, None, false);
     assert!(live.raids.is_empty(), "fought, not raided: {live:?}");
     assert_eq!(live.watched, 1);
     assert!(live.casualties >= 2, "{live:?}");
-    assert_eq!(a_raid_arriving_after_the_save(true, true, None), live);
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, None, false),
+        live
+    );
 }
 
 /// RP-23: the same with a restart from pages saved while the replay holds the arrival: its
@@ -2583,19 +2633,38 @@ fn a_watched_arrival_in_the_replayed_window_is_resolved_once() {
 /// after it (the map again).
 #[test]
 fn a_held_arrival_survives_a_restart_from_pages_saved_mid_replay() {
-    let live = a_raid_arriving_after_the_save(true, false, None);
-    assert_eq!(a_raid_arriving_after_the_save(true, true, Some(0)), live);
-    assert_eq!(a_raid_arriving_after_the_save(true, true, Some(50)), live);
+    let live = a_raid_arriving_after_the_save(true, false, None, false);
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, Some(0), false),
+        live
+    );
+    assert_eq!(
+        a_raid_arriving_after_the_save(true, true, Some(50), false),
+        live
+    );
+}
+
+/// RP-46 (the fix round's item 6): a straggler of the band's older epoch dies in its fight: live
+/// it counts against no stack, and so replayed. The replay's honoured fight used to fold the
+/// older epoch's bodies into its recalled stack, which counted the death.
+#[test]
+fn a_straggler_of_an_older_epoch_counts_as_live_when_replayed() {
+    let live = a_raid_arriving_after_the_save(true, false, None, true);
+    assert_eq!(
+        live,
+        a_raid_arriving_after_the_save(true, false, None, false)
+    );
+    assert_eq!(a_raid_arriving_after_the_save(true, true, None, true), live);
 }
 
 /// RP-23's control: an unwatched arrival in the window resolves abstractly once, after the
 /// replay end (and once in the session that went on).
 #[test]
 fn an_unwatched_arrival_in_the_replayed_window_is_resolved_once_after_the_replay_end() {
-    let live = a_raid_arriving_after_the_save(false, false, None);
+    let live = a_raid_arriving_after_the_save(false, false, None, false);
     assert_eq!(live.raids.len(), 1, "{live:?}");
     assert_eq!((live.watched, live.casualties), (0, 0));
-    let back = a_raid_arriving_after_the_save(false, true, None);
+    let back = a_raid_arriving_after_the_save(false, true, None, false);
     assert_eq!(back.raids.len(), 1, "{back:?}");
     assert_eq!((back.watched, back.casualties), (0, 0));
 }
