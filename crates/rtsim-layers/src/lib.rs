@@ -1218,6 +1218,7 @@ fn feuds(cx: &Src, sel: &Sel, out: &mut PartWriter) -> Option<String> {
 pub fn party_target_pos(world: Option<&World>, t: &PartyTarget) -> Option<Pos> {
     match *t {
         PartyTarget::District(_, p) | PartyTarget::Pos(p) => Some(p),
+        PartyTarget::Track { spot, .. } => Some(spot),
         PartyTarget::Node(n) => Some(world?.nodes.get(n)?.pos),
     }
 }
