@@ -7576,6 +7576,55 @@ mod replay_path {
                 assert_eq!(g.count_stats.sets_sent, 5);
             }
 
+            /// A resend END marks the set Java may have lost, but only for a district that was sent
+            /// one: a district with no counted pair is not sent an empty set at every resend.
+            #[test]
+            fn a_resend_sends_an_empty_set_only_to_a_district_that_held_one() {
+                let (belt, _) = vault_lines(20, model::BELT);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                ingest_all(&mut g, 0, &records_for(&belt, 1, D), &tun);
+                assert!(g.take_count_sets().is_empty());
+                let mut resend = records_for(&belt, 1, D);
+                if let Some(GlassObs::End(e)) = resend.last_mut() {
+                    e.flags |= end_flags::RESEND;
+                }
+                ingest_all(&mut g, 200, &resend, &tun);
+                assert_eq!(g.stats.resends_ignored, 1);
+                assert!(g.take_count_sets().is_empty());
+                assert_eq!(g.count_stats.sets_sent, 0);
+            }
+
+            /// The last session's count sample goes at a session start, and with the same factory's
+            /// compile kept under its new number: a new session's sweep numbers start over.
+            #[test]
+            fn a_session_start_and_a_numbers_reset_clear_the_last_sample() {
+                let (b, ids) = vault_lines(20, model::FUNNEL_ANDESITE);
+                let tun = GlassTunables::default();
+                let mut g = Glass::default();
+                let goods = goods();
+                ingest_all(&mut g, 0, &records_for(&b, 1, D), &tun);
+                let s = GlassObs::CountSample(CountSample {
+                    district: D,
+                    sweep: 7,
+                    compile: 1,
+                    counts: counts(ids, steady(700)),
+                });
+                g.ingest(Tick(700), &s, None, &goods, &tun);
+                assert!(comp(&g, D).counts.is_some());
+                g.session_start(Tick(800), &tun);
+                assert!(comp(&g, D).counts.is_none());
+                // The sample of the same sweep number in the new session is not mixed with it.
+                g.ingest(Tick(900), &s, None, &goods, &tun);
+                assert!(
+                    comp(&g, D).counts.is_none(),
+                    "numbers not reset yet: ignored"
+                );
+                ingest_all(&mut g, 1000, &records_for(&b, 1, D), &tun);
+                assert_eq!(g.stats.compiles_kept, 1);
+                assert!(comp(&g, D).counts.is_none());
+            }
+
             /// Through the engine: the compile's count set goes out as a command, and the count
             /// samples Java sends before each sweep's end judge the lines apart.
             #[test]
