@@ -1,5 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.glass.GlassRecords;
@@ -30,6 +32,7 @@ import net.neoforged.neoforge.items.ItemHandlerHelper;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryKit.*;
 
@@ -39,7 +42,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.IndustryK
  * chunk A, district B around one in chunk B two chunks east, a chain conveyor CA in A turned by a creative
  * motor and joined to CB in B, 23 blocks away. Frogports hang on the conveyors' loops, two blocks from them.
  * Packages are put into a frogport's own inventory, which it sends (Create's {@code tryPullingFrom}: a
- * package its own filter does not match).
+ * package its own filter does not match). Slice S4b adds the engine's writes into a loaded frogport
+ * (IND_WRITE_CHAIN).
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -310,6 +314,29 @@ public final class PackageStoreGameTests {
                 b -> b.getLong(IndRecords.StoreCensus.STORE) == store && b.getLong(IndRecords.StoreCensus.GAME_TIME) >= since);
     }
 
+    /** The packages a frogport holds: their addresses into {@code addresses}, and the iron in them. */
+    private static long ironHeld(ServerLevel level, BlockPos p, List<String> addresses) {
+        FrogportBlockEntity f = frog(level, p);
+        long iron = 0;
+        for (int i = 0; f != null && i < f.inventory.getSlots(); i++) {
+            ItemStack box = f.inventory.getStackInSlot(i);
+            if (box.isEmpty())
+                continue;
+            addresses.add(PackageItem.getAddress(box));
+            var contents = PackageItem.getContents(box);
+            for (int k = 0; k < contents.getSlots(); k++)
+                if (contents.getStackInSlot(k).is(Items.IRON_INGOT))
+                    iron += contents.getStackInSlot(k).getCount();
+        }
+        return iron;
+    }
+
+    /** The CHAIN_IN records of a store that an engine op wrote. */
+    private static List<ByteBuffer> writtenIn(long store, long op) {
+        return received(IndRecords.IND_CHAIN_PACKAGE, b -> b.getLong(IndRecords.ChainPackage.STORE) == store
+                && b.getInt(IndRecords.ChainPackage.DIRECTION) == IndRecords.ChainPackage.CHAIN_IN && b.getLong(IndRecords.ChainPackage.OP_ID) == op);
+    }
+
     // ---- the tests ---------------------------------------------------------------------------------
 
     /**
@@ -489,6 +516,82 @@ public final class PackageStoreGameTests {
                     record(t, "census after: destinations, entries", r.getInt(IndRecords.StoreCensus.M) + ", " + aux(r));
                     check("no package on the chain", r.getInt(IndRecords.StoreCensus.M) == 0 && aux(r) == 0);
                     check("no package in", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_IN).isEmpty());
+                });
+        restore(s, level, y).thenSucceed();
+    }
+
+    /**
+     * Slice S4b (choice SC113): IND_WRITE_CHAIN writes whole packages into a loaded frogport, addressed to its
+     * filter, and the frogport keeps them (Create never sends out a package its filter matches). One CHAIN_IN
+     * with the engine's op says what was written; the frogport's chunk carries it with the COMMAND_RESULT until
+     * the engine acknowledges them. The op again is DUPLICATE; more packages than free slots write what fits;
+     * a full frogport is FAILED, with no record.
+     */
+    @GameTest(template = YARD, batch = "sec1_s4b", timeoutTicks = TIMEOUT)
+    public static void anEngineWriteLandsInALoadedFrogport(GameTestHelper helper) {
+        fastConfig();
+        ServerLevel level = helper.getLevel();
+        String t = "anEngineWriteLandsInALoadedFrogport";
+        String iron = "i/64/minecraft:iron_ingot";
+        Yard y = Yard.at(helper, 6000, false);
+        Frog fa = new Frog(y.ca.west(2), y.ca, "west"), fb = new Frog(y.cb.east(2), y.cb, "east");
+        long[] store = {-1};
+        int[] at = {-1, -1};
+        long op1 = engineOp(), op2 = engineOp(), op3 = engineOp();
+        boolean[] carried = {false};
+        GameTestSequence s = build(helper, y, false, List.of(fa, fb))
+                .thenWaitUntil(() -> checkStore(level, List.of(fa, fb), new long[] {y.da(), y.db()}, store))
+                .thenExecute(() -> {
+                    at[0] = indexIn(declaration(store[0]), fb.pos);
+                    at[1] = districtAt(helper, fb.pos).inventoryAt(fb.pos).index();
+                    IndustryTestKit.writeChain(op1, store[0], y.db(), at[1], at[0], fb.pos, 2, Map.of(iron, 4L));
+                })
+                .thenWaitUntil(() -> {
+                    carried[0] |= ind().chunkCarriesOp(level.getChunkAt(fb.pos), op1);
+                    check("op 1 applied", commandResults(op1).contains(Obs.CommandResult.APPLIED));
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    List<String> addresses = new ArrayList<>();
+                    long got = ironHeld(level, fb.pos, addresses);
+                    List<ByteBuffer> in = writtenIn(store[0], op1);
+                    record(t, "FB after op 1 (" + IndustryTestKit.engineName() + ")", addresses + ", " + got + " iron, chunk carried " + carried[0]
+                            + ", CHAIN_INs with the op " + in.size());
+                    check("the chunk carried the write", carried[0]);
+                    check("two packages to east in FB: " + addresses, addresses.equals(List.of("east", "east")));
+                    check("8 iron in them: " + got, got == 8);
+                    check("one CHAIN_IN with the op: " + in.size(), in.size() == 1);
+                    ByteBuffer r = in.get(0);
+                    check("at FB, in B", r.getInt(IndRecords.ChainPackage.FROGPORT) == at[0] && r.getLong(IndRecords.ChainPackage.DISTRICT) == y.db()
+                            && r.getInt(IndRecords.ChainPackage.INVENTORY) == at[1]);
+                    check("two packages of 8 iron", r.getInt(IndRecords.ChainPackage.PACKAGES) == 2
+                            && goodsIn(r, IndRecords.ChainPackage.ENTRIES, aux(r), IndRecords.ENTRY16) == 8);
+                    check("addressed east", "east".equals(javaName(r.getInt(IndRecords.ChainPackage.ADDRESS))));
+                    check("FB sent nothing out", chainRecords(store[0], IndRecords.ChainPackage.CHAIN_OUT).isEmpty());
+                    IndustryTestKit.writeChain(op1, store[0], y.db(), at[1], at[0], fb.pos, 2, Map.of(iron, 4L));
+                })
+                .thenWaitUntil(() -> check("op 1 again is a duplicate", commandResults(op1).contains(Obs.CommandResult.DUPLICATE_OP)))
+                .thenExecute(() -> {
+                    check("still two packages", held(level, fb.pos) == 2);
+                    check("still one CHAIN_IN with op 1", writtenIn(store[0], op1).size() == 1);
+                    IndustryTestKit.writeChain(op2, store[0], y.db(), at[1], at[0], fb.pos, 20, Map.of(iron, 4L));
+                })
+                .thenWaitUntil(() -> check("op 2 applied", commandResults(op2).contains(Obs.CommandResult.APPLIED)))
+                .thenExecute(() -> {
+                    List<ByteBuffer> in = writtenIn(store[0], op2);
+                    record(t, "FB after op 2", held(level, fb.pos) + " packages, CHAIN_INs " + in.size()
+                            + (in.isEmpty() ? "" : ", packages " + in.get(0).getInt(IndRecords.ChainPackage.PACKAGES)));
+                    check("FB is full: " + held(level, fb.pos), held(level, fb.pos) == 18);
+                    check("op 2 wrote the 16 that fitted", in.size() == 1 && in.get(0).getInt(IndRecords.ChainPackage.PACKAGES) == 16
+                            && goodsIn(in.get(0), IndRecords.ChainPackage.ENTRIES, aux(in.get(0)), IndRecords.ENTRY16) == 64);
+                    IndustryTestKit.writeChain(op3, store[0], y.db(), at[1], at[0], fb.pos, 1, Map.of(iron, 4L));
+                })
+                .thenWaitUntil(() -> check("op 3 failed", commandResults(op3).contains(Obs.CommandResult.FAILED)))
+                .thenExecute(() -> {
+                    check("no CHAIN_IN for op 3", writtenIn(store[0], op3).isEmpty());
+                    FrogportBlockEntity f = frog(level, fb.pos);
+                    for (int i = 0; i < f.inventory.getSlots(); i++)
+                        f.inventory.setStackInSlot(i, ItemStack.EMPTY);
                 });
         restore(s, level, y).thenSucceed();
     }
