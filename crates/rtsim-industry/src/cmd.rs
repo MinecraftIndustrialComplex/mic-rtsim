@@ -113,6 +113,8 @@ pub enum Cmd {
     WritePackage(WritePackage),
     /// IND_PROBE_SET (GLASSBOX.md §5.3, G-B14): buffers to add to a district's sweeps.
     ProbeSet(crate::glass::records::ProbeSet),
+    /// IND_COUNT_SET (SECTIONS.md §4.2): the movers to count at a district's shared stores.
+    CountSet(crate::glass::records::CountSet),
     WriteChain(WriteChain),
 }
 
@@ -123,7 +125,7 @@ impl Cmd {
             Cmd::CarriageDelta(c) => Some(c.op),
             Cmd::DepositDelta(c) => Some(c.op),
             Cmd::WritePackage(c) => Some(c.op),
-            Cmd::ProbeSet(_) => None,
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => None,
             Cmd::WriteChain(c) => Some(c.op),
         }
     }
@@ -198,7 +200,7 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = OpId(0),
             Cmd::DepositDelta(x) => x.op = OpId(0),
             Cmd::WritePackage(x) => x.op = OpId(0),
-            Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => {}
             Cmd::WriteChain(x) => x.op = OpId(0),
         }
         c
@@ -211,7 +213,7 @@ impl Cmd {
             Cmd::CarriageDelta(x) => x.op = op,
             Cmd::DepositDelta(x) => x.op = op,
             Cmd::WritePackage(x) => x.op = op,
-            Cmd::ProbeSet(_) => {}
+            Cmd::ProbeSet(_) | Cmd::CountSet(_) => {}
             Cmd::WriteChain(x) => x.op = op,
         }
     }
@@ -285,6 +287,11 @@ mod persist_impls {
         compile,
         nodes
     });
+    persist_struct!(crate::glass::records::CountSet {
+        district,
+        compile,
+        pairs
+    });
 
     impl Persist for Cmd {
         fn put(&self, w: &mut Writer) {
@@ -309,7 +316,11 @@ mod persist_impls {
                     w.u8(6);
                     c.put(w);
                 }
-                // 7 is slice S3's IND_COUNT_SET; 8 left free.
+                Cmd::CountSet(c) => {
+                    w.u8(7);
+                    c.put(w);
+                }
+                // 8 left free.
                 Cmd::WriteChain(c) => {
                     w.u8(9);
                     c.put(w);
@@ -323,6 +334,7 @@ mod persist_impls {
                 3 => Cmd::DepositDelta(Persist::get(r)?),
                 4 => Cmd::WritePackage(Persist::get(r)?),
                 6 => Cmd::ProbeSet(Persist::get(r)?),
+                7 => Cmd::CountSet(Persist::get(r)?),
                 9 => Cmd::WriteChain(Persist::get(r)?),
                 _ => return invalid("command tag"),
             })

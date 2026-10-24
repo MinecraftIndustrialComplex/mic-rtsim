@@ -444,7 +444,10 @@ mod tests {
             units: vec![UnitReport {
                 sections: 2,
                 nodes: 9,
-                bbox: Some((BlockPos { x: -3, y: 60, z: 4 }, BlockPos { x: 5, y: 64, z: 9 })),
+                bbox: Some((
+                    BlockPos { x: -3, y: 60, z: 4 },
+                    BlockPos { x: 5, y: 64, z: 9 },
+                )),
                 window_ticks: 300,
                 windows_completed: 1,
                 verdict: verdict::PASS,
@@ -469,7 +472,10 @@ mod tests {
             &[100.0, 1300.0, 9.0, 7.0, 2.0, 2000.0, 4.0, -1.0, 900.0, 2.0]
         );
         assert_eq!(&v[26..33], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert_eq!(&v[33..42], &[2.0, 5000.0, 3.0, 9.0, 1.0, 2.0, 1.0, 4.0, 8.0]);
+        assert_eq!(
+            &v[33..42],
+            &[2.0, 5000.0, 3.0, 9.0, 1.0, 2.0, 1.0, 4.0, 8.0]
+        );
         assert_eq!(Report::default().to_f64s()[34], -1.0);
         assert_eq!(v[HEADER], 7.0);
         assert_eq!(v[HEADER + 1], 1.0);
