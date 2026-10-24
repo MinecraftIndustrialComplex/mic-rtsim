@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The reinstall guard's rules (UR-1, docs/choices-reinstall-guard.md RG1 to RG4): what each start sees in
+ * The reinstall guard's rules (UR-1, docs/choices-reinstall-guard.md): what each start sees in
  * {@code level.dat} and the world directory, and whether it resets. Each scenario test is one of the edge cases
  * the guard must tell apart, with the files a real start would find.
  */
@@ -180,5 +180,35 @@ final class ReinstallRulesTest {
         Files.delete(world.resolve("data/mic_rtsim_journal.dat"));
         Files.delete(world.resolve("data/mic_rtsim_industry.dat"));
         assertFalse(ReinstallRules.stateExists(world));
+    }
+    /**
+     * The engine life (RG13): new exactly when the engine's pages are, kept while they are not, and gone with
+     * the page directory, so a reset (8.6's or the reinstall's) always starts a new one.
+     */
+    @Test
+    void theEngineLifeChangesExactlyWhenThePagesStartOver() throws IOException {
+        Path pages = world.resolve("rtsim");
+        long[] draws = {0, 0x1234, 0x5678, -2};
+        int[] next = {0};
+        java.util.function.LongSupplier random = () -> draws[next[0]++];
+        long first = ReinstallRules.engineLife(pages, true, random);
+        assertEquals(0x1234, first, "new pages: a new life, never 0 (0 is the life of entries without one)");
+        assertTrue(Files.exists(pages.resolve(ReinstallRules.LIFE_FILE)));
+        assertFalse(Files.exists(pages.resolve(ReinstallRules.LIFE_FILE + ".tmp")));
+        assertEquals(first, ReinstallRules.engineLife(pages, false, random), "a restart on the same pages keeps it");
+        assertEquals(first, ReinstallRules.engineLife(pages, false, random));
+        long second = ReinstallRules.engineLife(pages, true, random);
+        assertEquals(0x5678, second, "pages that include nothing (a crash before their first save) start a new life");
+        assertEquals(second, ReinstallRules.engineLife(pages, false, random));
+        // the reinstall reset moves the directory, 8.6's deletes it: the next pages are new, and so is the life
+        ReinstallRules.moveAside(world, Instant.parse("2026-10-23T12:00:00Z"));
+        assertEquals(-2, ReinstallRules.engineLife(pages, true, random), "every bit of the draw is kept");
+        assertEquals(-2, ReinstallRules.engineLife(pages, false, random));
+        // pages from before the life file: their entries carry no life, which reads as 0
+        Path old = world.resolve("old-pages");
+        Files.createDirectories(old);
+        assertEquals(0, ReinstallRules.engineLife(old, false, random));
+        assertEquals(0, ReinstallRules.engineLife(old, false, random));
+        assertEquals(4, next[0], "only new pages draw");
     }
 }

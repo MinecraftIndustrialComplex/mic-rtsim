@@ -142,6 +142,47 @@ public final class ReinstallRules {
         return aside;
     }
 
+    // ---- the engine life ------------------------------------------------------------------------
+
+    /** The engine life's file, inside the engine's page directory, so it goes wherever the pages go. */
+    public static final String LIFE_FILE = "bridge-life.txt";
+
+    /**
+     * The engine life for a session (RG13): a token that changes exactly when the engine's state starts
+     * over. An engine whose pages are new ({@code pagesFresh}: they include no observation) numbers every
+     * district's reconcile epochs from 1 again, so it gets a new token, written and synced before anything
+     * is stamped with it. Pages that are not new keep the token in {@code pagesDir}, or 0 when there is
+     * none (pages from before the token, whose chunk entries carry none either). The file lives in the
+     * page directory itself: deleting, moving or restoring {@code world/rtsim/} takes the token with it.
+     */
+    public static long engineLife(Path pagesDir, boolean pagesFresh, java.util.function.LongSupplier random) throws IOException {
+        Path f = pagesDir.resolve(LIFE_FILE);
+        if (!pagesFresh) {
+            if (Files.exists(f))
+                return Long.parseUnsignedLong(Files.readString(f, StandardCharsets.UTF_8).strip(), 16);
+            writeLife(pagesDir, 0);
+            return 0;
+        }
+        long life = 0;
+        while (life == 0)
+            life = random.getAsLong();
+        writeLife(pagesDir, life);
+        return life;
+    }
+
+    private static void writeLife(Path pagesDir, long life) throws IOException {
+        Files.createDirectories(pagesDir);
+        Path tmp = pagesDir.resolve(LIFE_FILE + ".tmp");
+        try (FileChannel ch = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            ByteBuffer b = ByteBuffer.wrap((Long.toHexString(life) + "\n").getBytes(StandardCharsets.UTF_8));
+            while (b.hasRemaining())
+                ch.write(b);
+            ch.force(true);
+        }
+        Files.move(tmp, pagesDir.resolve(LIFE_FILE), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        syncDir(pagesDir);
+    }
+
     /** Syncs a directory's entries (a rename's durability) where the platform allows it. */
     static void syncDir(Path dir) {
         try (FileChannel ch = FileChannel.open(dir, StandardOpenOption.READ)) {

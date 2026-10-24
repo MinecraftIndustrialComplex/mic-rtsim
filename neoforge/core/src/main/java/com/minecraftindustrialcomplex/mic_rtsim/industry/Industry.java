@@ -285,6 +285,11 @@ public final class Industry {
         return boundary.journal().commandOpApplied(opId);
     }
 
+    /** The session's engine life (RG13): what applied reconcile epochs are stamped with. */
+    public long engineLife() {
+        return session.engineLife();
+    }
+
     /** Runs {@code then} once the engine acknowledges sequence {@code seq} in this session. */
     public void whenAcked(long seq, Runnable then) {
         session.afterAck(seq, then);

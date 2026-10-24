@@ -124,6 +124,19 @@ public final class ReinstallGameTests {
         return s == null ? new long[0] : s.positions().clone();
     }
 
+    private static IndustryAttachments.Epochs epochsAt(ServerLevel level, ChunkPos p) {
+        LevelChunk ch = level.getChunkSource().getChunkNow(p.x, p.z);
+        IndustryAttachments.Epochs e = ch == null ? null : ch.getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
+        return e == null ? IndustryAttachments.Epochs.EMPTY : e;
+    }
+
+    private static String epochs(ServerLevel level, ChunkPos p) {
+        List<String> out = new ArrayList<>();
+        for (IndustryAttachments.EpochEntry e : epochsAt(level, p).entries())
+            out.add("district " + e.district() + " epoch " + e.epoch() + " life " + Long.toHexString(e.life()));
+        return out.toString();
+    }
+
     private static String describe(District d) {
         if (d == null)
             return "no district";
@@ -138,7 +151,8 @@ public final class ReinstallGameTests {
     /**
      * The gap emulated, then the restart: the sim resets loudly (pages moved aside, a reset in {@code rtsim perf}),
      * the modules announce again, X and Y are adopted again (A at the start, B at its load, C kept), and the
-     * districts are what they were. The first save deletes the marker, and the next restart is a normal one.
+     * districts are what they were. The epoch the old engine applied in C is void, so the new engine's epoch 1
+     * applies there (RG13). The first save deletes the marker, and the next restart is a normal one.
      */
     @GameTest(template = YARD, batch = "reinstall_1", timeoutTicks = 20000)
     public static void aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain(GameTestHelper helper) {
@@ -154,6 +168,7 @@ public final class ReinstallGameTests {
         long[] ids = new long[2];
         String[] before = new String[2];
         Path[] aside = new Path[1];
+        long[] life = new long[1], dups = new long[1];
         helper.startSequence()
                 .thenExecute(() -> {
                     cleanUp(server);
@@ -191,6 +206,12 @@ public final class ReinstallGameTests {
                     before[1] = describe(y);
                 })
                 .thenExecute(() -> {
+                    // An epoch the old engine applied in C (I8, RG13). The reset's engine numbers X's epochs from 1 again.
+                    life[0] = ind().engineLife();
+                    reconcile(engineOp(), ids[0], 40, level, c.x, c.z, List.of());
+                })
+                .thenWaitUntil(() -> check("C holds X's epoch 40: " + epochs(level, c), epochsAt(level, c).epoch(ids[0], life[0]) == 40))
+                .thenExecute(() -> {
                     // The gap begins for B: it loads without rtsim (its attachments go) and unloads. No periodic detection meanwhile.
                     IndustryConfig.Test.set(IndustryConfig.PERIODIC_RESCAN, 1_728_000);
                     check("B had rtsim attachments", strip(level.getChunk(b.x, b.z)) > 0);
@@ -217,6 +238,7 @@ public final class ReinstallGameTests {
                     record(test, "rtsim perf after the restart", line);
                     check("rtsim perf says the sim was reset: " + line, line.contains("SIM RESET"));
                     check("the restart's engine lost its observations", RtsimSession.current().boundary().observationsLost());
+                    check("the reset's engine has a new life", ind().engineLife() != life[0]);
                     check("A, B and C are to be adopted again: " + ind().districts().readoptLeft(), ind().districts().readoptLeft() == 3);
                 })
                 .thenWaitUntil(() -> {
@@ -225,6 +247,22 @@ public final class ReinstallGameTests {
                             ds.readoptChunks() == 1 && ds.readoptKept() == 1 && ds.readoptLeft() == 1);
                     check("A's machine is a seed again", Arrays.equals(seedsOf(level.getChunk(a.x, a.z)), new long[] {ms[0].asLong()}));
                     check("C kept its seed", Arrays.equals(seedsOf(level.getChunk(c.x, c.z)), new long[] {ms[1].asLong()}));
+                    check("C's epoch from the old engine is void: " + epochs(level, c) + ", " + ind().reconciler().staleEpochs() + " dropped",
+                            epochsAt(level, c).get(ids[0]) == null && ind().reconciler().staleEpochs() == 1);
+                })
+                .thenExecute(() -> {
+                    // The new engine's first reconcile of X in C applies; with the old epoch kept, it was a duplicate (RG13).
+                    dups[0] = ind().reconciler().duplicates();
+                    reconcile(engineOp(), ids[0], 1, level, c.x, c.z, List.of());
+                })
+                .thenWaitUntil(() -> check("the reconcile was answered: " + epochs(level, c),
+                        epochsAt(level, c).get(ids[0]) != null || ind().reconciler().duplicates() > dups[0]))
+                .thenExecute(() -> {
+                    check("the new engine's epoch 1 is applied in C, no duplicate: " + epochs(level, c) + ", duplicates "
+                                    + (ind().reconciler().duplicates() - dups[0]),
+                            epochsAt(level, c).epoch(ids[0], ind().engineLife()) == 1 && ind().reconciler().duplicates() == dups[0]);
+                    record(test, "epochs", "C held X's epoch 40 of life " + Long.toHexString(life[0]) + "; after the reset, life "
+                            + Long.toHexString(ind().engineLife()) + ": " + epochs(level, c));
                 })
                 .thenExecute(() -> {
                     level.setChunkForced(b.x, b.z, true);
