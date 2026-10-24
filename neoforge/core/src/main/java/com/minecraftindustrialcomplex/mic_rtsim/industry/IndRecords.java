@@ -62,6 +62,8 @@ public final class IndRecords {
      * race, option d) is not decided.
      */
     public static final int IND_APPROACH = 0x0046;
+    /** A package store's count of the packages on its chain (SECTIONS.md §2.5, slice S4; choice SC97). */
+    public static final int IND_STORE_CENSUS = 0x0051;
 
     // ---- journaled observations -------------------------------------------------------------------
     public static final int IND_DISTRICT = 0x0400;
@@ -83,6 +85,10 @@ public final class IndRecords {
     public static final int IND_STATION_PORTS = 0x0415;
     /** A train called at a station outside every district: the engine ends its leg there (choice SG50). */
     public static final int IND_TRAIN_UNWATCHED = 0x0416;
+    /** A package store: its frogports and the hops between them (SECTIONS.md §2.5, slice S4). */
+    public static final int IND_PACKAGE_STORE = 0x0418;
+    /** Packages onto or off a package store's chain at a frogport (choice SC97). */
+    public static final int IND_CHAIN_PACKAGE = 0x0419;
     public static final int IND_RECONCILE_RESULT = 0x0420;
     public static final int IND_CARRIAGE_RESULT = 0x0421;
     public static final int IND_SPAWN_SAMPLE = 0x0430;
@@ -376,6 +382,92 @@ public final class IndRecords {
 
         public static final int IN = 1;
         public static final int OUT = 2;
+    }
+
+    /**
+     * IND_PACKAGE_STORE, aux = n frogports (SECTIONS.md §2.5, slice S4): a package store's frogports in
+     * position order, then the hops between their conveyors along the chain as the upper triangle, row by
+     * row ({@code (0,1), (0,2) .. (0,n-1), (1,2) ..}), u16 each, {@link #UNKNOWN_HOPS} where the walk did
+     * not reach. With n = 0 the store is gone, and what it held joins {@code INTO} (0: nothing).
+     */
+    public static final class PackageStore {
+        public static final int STORE = 24;      // u64
+        public static final int DIM = 32;        // u32 dimension id
+        // 36: u32 zero
+        public static final int INTO = 40;       // u64, 0 none
+        public static final int FROGPORTS = 48;  // n x FROGPORT
+        public static final int FROGPORT = 48;
+        // A frogport: offsets within its entry.
+        public static final int F_DISTRICT = 0;  // u64, 0 none
+        public static final int F_INVENTORY = 8; // u32, NO_INVENTORY none
+        public static final int F_FLAGS = 12;    // u32: FLAG_STAR
+        public static final int F_X = 16, F_Y = 20, F_Z = 24;                // the frogport
+        public static final int F_CONVEYOR_X = 28, F_CONVEYOR_Y = 32, F_CONVEYOR_Z = 36; // its conveyor
+        public static final int F_FROM = 40;     // u64: the store it came from, 0 none
+        public static final int FLAG_STAR = 1;   // its address filter is "*" (Create's distance 1000)
+        public static final int UNKNOWN_HOPS = 0xFFFF;
+
+        public static int triangle(int n) {
+            return n * Math.max(0, n - 1) / 2;
+        }
+
+        /** Where the hops between frogports {@code a < b} of {@code n} sit, from the record's start. */
+        public static int hopAt(int n, int a, int b) {
+            return FROGPORTS + FROGPORT * n + 2 * (a * (2 * n - a - 1) / 2 + (b - a - 1));
+        }
+
+        public static int size(int n) {
+            return (FROGPORTS + FROGPORT * n + 2 * triangle(n) + 7) & ~7;
+        }
+    }
+
+    /**
+     * IND_CHAIN_PACKAGE, aux = n entries (choice SC97): packages leaving a package store's frogport onto its
+     * chain ({@code CHAIN_OUT}) or landing in one ({@code CHAIN_IN}), with their contents. The frogport is an
+     * index into the store's last IND_PACKAGE_STORE; the destination too ({@code CHAIN_OUT} only).
+     */
+    public static final class ChainPackage {
+        public static final int STORE = 24;       // u64
+        public static final int DISTRICT = 32;    // u64, 0 none
+        public static final int INVENTORY = 40;   // u32, NO_INVENTORY none
+        public static final int DIRECTION = 44;   // u32: CHAIN_OUT, CHAIN_IN
+        public static final int FROGPORT = 48;    // u32
+        public static final int DESTINATION = 52; // u32, NO_INVENTORY none (no route)
+        public static final int PACKAGES = 56;    // u32
+        public static final int ADDRESS = 60;     // u32 (NAME)
+        public static final int OP_ID = 64;       // u64, 0 none
+        // 72: u64 zero
+        public static final int ENTRIES = 80;
+
+        public static int size(int n) {
+            return ENTRIES + n * ENTRY16;
+        }
+
+        /** After IND_PACKAGE's 1 and 2; 5 is kept for the frontier's {@code CHAIN_HELD} (§2.5). */
+        public static final int CHAIN_OUT = 3;
+        public static final int CHAIN_IN = 4;
+    }
+
+    /**
+     * IND_STORE_CENSUS (latest-wins), aux = n goods: m (destination, packages) pairs, then n Entry16-sized
+     * (u32 good, u32 destination, i64 amount). A destination is a frogport index of the store's last
+     * IND_PACKAGE_STORE, NO_INVENTORY for packages with no route.
+     */
+    public static final class StoreCensus {
+        public static final int GAME_TIME = 8; // u64
+        public static final int STORE = 16;    // u64
+        public static final int M = 24;        // u32
+        // 28: u32 zero
+        public static final int PACKAGES = 32; // m x (u32 destination, u32 packages)
+        public static final int PAIR = 8;
+
+        public static int goodsAt(int m) {
+            return PACKAGES + PAIR * m;
+        }
+
+        public static int size(int m, int n) {
+            return goodsAt(m) + n * 16;
+        }
     }
 
     /** IND_RECONCILE_RESULT, aux = n entries; then m Pos16 of the blocks broken. */

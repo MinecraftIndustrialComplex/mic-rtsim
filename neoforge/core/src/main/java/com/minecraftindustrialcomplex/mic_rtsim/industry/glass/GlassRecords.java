@@ -63,6 +63,8 @@ public final class GlassRecords {
 
         // Flags.
         public static final int BOUNDED = 1, ANY_OUTPUT_BLOCKS = 2, STOCHASTIC = 4, FLUID = 8, CALIBRATED = 16, FRAME = 32, PASS_THROUGH = 64;
+        /** A package store's frogport (SECTIONS.md §2.5, slice S4): a store whose chain side is a port. */
+        public static final int CHAIN_PORT = 128;
 
         // Rate flags.
         public static final int RATE_SHARED = 1, RATE_FIRST_CYCLE = 2;

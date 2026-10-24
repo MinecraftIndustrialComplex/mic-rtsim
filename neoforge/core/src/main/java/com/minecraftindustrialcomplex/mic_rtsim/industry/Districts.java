@@ -265,6 +265,14 @@ public final class Districts {
     // ---- session start --------------------------------------------------------------------------
 
     void sessionStart(long now) {
+        // An older format's districts, dropped on load (IndustryData format 3, SECTIONS.md §6): the engine's
+        // pages may still hold them.
+        for (long id : data.droppedOnLoad) {
+            ByteBuffer r = ind.journal(IndRecords.IND_DISTRICT_REMOVED, IndRecords.DistrictRemoved.SIZE, 0);
+            r.putLong(IndRecords.DistrictRemoved.DISTRICT, id);
+            ind.commit(r);
+        }
+        data.droppedOnLoad.clear();
         for (District d : data.districts.values()) {
             if (d.declaredRevision < d.revision || d.declaredRevision == 0)
                 declare(d, now);
