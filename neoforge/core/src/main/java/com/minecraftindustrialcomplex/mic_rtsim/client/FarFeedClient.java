@@ -51,7 +51,7 @@ public final class FarFeedClient {
     private static boolean answered;
     private static long ticks;
 
-    private static final FarFeedReceiver RECEIVER = new FarFeedReceiver();
+    private static final FarFeedReceiver RECEIVER = new FarFeedReceiver(FarFeedClient::onReset);
     private static final FarShapeStore SHAPES = new FarShapeStore();
     // What came, for the bench and the log
     static long messages, bytes, records, malformed, shapes, shapeBytes, malformedShapes;
@@ -191,10 +191,16 @@ public final class FarFeedClient {
             return;
         }
         records += m.recs().size();
-        if ((m.flags() & FarWire.RESET) != 0) {
-            answered = true;
-            SHAPES.clear(); // the server sends them again, after this message
-        }
+    }
+
+    /**
+     * The server started the view over (a RESET): it sends the shapes again, after this message, and every object
+     * again in it, so the far looks free what they baked for the old ones (docs/choices-dh-feed.md DHT70).
+     */
+    private static void onReset() {
+        answered = true;
+        SHAPES.clear();
+        FarLooks.resetAll();
     }
 
     private static void onShape(long hash, byte[] data) {
