@@ -28,9 +28,9 @@ use rtsim_kernel::renewal::{LossCause, Pressure};
 use super::*;
 use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
-    BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE, CampBodies,
-    CampCensus, CampDeath, CampOut, CampReconcile, CensusBody, DEATH_CHIEF, DEATH_STRAY,
-    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, ReconcileLine,
+    BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL,
+    CampBodies, CampCensus, CampDeath, CampOut, CampReconcile, CensusBody, ChiefState, DEATH_CHIEF,
+    DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -907,6 +907,34 @@ impl Conflict {
 
     // ---- CAMP_CENSUS -----------------------------------------------------------------------
 
+    /// A camp's chief at home reported its crystal (CHIEF_STATE, latest-wins, MZB-268): the steal
+    /// sends it with the flag off, and the faction's crystal follows, so the next body asked for
+    /// (an arrival, a body handed back) is asked for without it. A change only is noted. The
+    /// health is not kept: nothing of M6 reads it (the census carries it). A record for a faction
+    /// this engine does not know, or one whose camp holds no bodies, is ignored.
+    pub(super) fn chief_state(&mut self, c: &ChiefState, at: Tick) {
+        let Some(&f) = self.by_key.get(&c.faction) else {
+            return;
+        };
+        if !self.culture(f).def.camp_bodies {
+            return;
+        }
+        let crystal = c.flags & CHIEF_CRYSTAL != 0;
+        if self.factions[f as usize].crystal == crystal {
+            return;
+        }
+        self.factions[f as usize].crystal = crystal;
+        self.note(
+            at,
+            Some(f),
+            "crystal",
+            format!(
+                "the chief's crystal is {}",
+                if crystal { "back" } else { "gone" }
+            ),
+        );
+    }
+
     /// A camp's entities have all come in: it is in at the census's epoch, every line of an
     /// earlier epoch is void, and each slot is compared with the bodies found (MOWZIE.md §4.9's
     /// table). A census replayed from an earlier session only marks its camp out: its bodies are
@@ -949,6 +977,12 @@ impl Conflict {
         let body = self.home_body(f);
         let mut written_off = 0;
         let mut lines: Vec<ReconcileLine> = Vec::new();
+        // The chief the census found at home says whether its crystal is on it, before the lines
+        // that ask for the body are made: this mends a CHIEF_STATE lost in a crash, which is
+        // latest-wins and not journaled (MZB-269).
+        if c.flags & CENSUS_CHIEF != 0 {
+            self.factions[f as usize].crystal = c.flags & CENSUS_CRYSTAL != 0;
+        }
         let flags = self.line_flags(f);
         let line = |s: &Slot, action: u8, a: u64, b: u64| ReconcileLine {
             slot: s.id,

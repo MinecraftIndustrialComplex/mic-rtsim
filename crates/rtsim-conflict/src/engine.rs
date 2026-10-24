@@ -4906,13 +4906,12 @@ impl Conflict {
     }
 
     /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the rail
-    /// meter's, the chief's and the grove's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT,
-    /// CAMP_BODIES, CAMP_DEATH) are built (M4).
+    /// meter's and the grove's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES,
+    /// CAMP_DEATH) are built (M4), the chief's CHIEF_STATE with M6.
     pub fn later(o: &Obs) -> bool {
         matches!(
             o,
-            Obs::ChiefState(_)
-                | Obs::HavenChest(_)
+            Obs::HavenChest(_)
                 | Obs::RailPass(_)
                 | Obs::TrainPassed(_)
                 | Obs::Traded(_)
@@ -4938,12 +4937,12 @@ impl Conflict {
             Obs::State(_) | Obs::Materialized(_) => {}
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::ChiefState(_)
-            | Obs::HavenChest(_)
+            Obs::HavenChest(_)
             | Obs::RailPass(_)
             | Obs::TrainPassed(_)
             | Obs::Traded(_)
             | Obs::ChiefPaid(_) => {}
+            Obs::ChiefState(c) => self.chief_state(c, at),
             Obs::CampDeath(d) => self.camp_death(w, d, at),
             Obs::CampCensus(c) => self.camp_census(c, at),
             Obs::CampBodies(b) => self.camp_bodies(b, at),
