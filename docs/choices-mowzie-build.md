@@ -900,9 +900,12 @@ under its own heading.
   asleep; against a template box grown by 1 it came to rest outside two times in three. The slack is a
   constant derived from the restriction constant so the two cannot drift apart. The GameTests force the
   3 by 3 chunks round a den, a superset of the 5.
-- **MZB-231** (the index keeps its bodies through a hidden chunk): `onLeave` keeps a tagged body's index
-  entry when the removal reason is null (the entity is still alive, its chunk only hidden or unloading) and
-  drops it on a real removal; the census adds every tagged body of its faction found inside, idempotently;
+- **MZB-231** (the index keeps its bodies through a hidden chunk; its premise corrected by MZB-590):
+  `onLeave` keeps a tagged body's index entry when the removal reason is null (the entity is still alive, its
+  chunk only hidden) and drops it on a real removal (discarded, changed dimension). The first wording said
+  the entry was dropped when the body unloaded with its chunk; that was false: vanilla posts the leave once,
+  when the chunk goes HIDDEN, with a null reason, and the unload that follows (`setRemoved(UNLOADED_TO_CHUNK)`
+  in `PersistentEntitySectionManager`) posts no leave at all, so the entry stays as a removed object (MZB-590); the census adds every tagged body of its faction found inside, idempotently;
   iterating `tagged()` prunes removed entries. Why: a footprint chunk can go TRACKED, HIDDEN and TRACKED
   within one tick, and the second promotion posts no join. A TAKE by tag after such a flicker is DONE.
 - **MZB-232** (the chief reads the index; strays within 64 blocks): `DenKind.chief` takes the footprint's
@@ -1049,6 +1052,19 @@ under its own heading.
   server, and whether every test of the suite holds under the poll's up to 20 ticks of delay (tests that
   wait on a CAMP_OUT or a census do; a test that assumes the camp goes out in the tick after a release
   does not), are for the first run to show. The other plugins' projects have no such line.
+
+- **MZB-590** (the index is pruned of removed entities; from the re-review of d5b45b22, P1-A): a body whose
+  chunk unloads stayed in its faction's identity set as a removed object, so those objects piled up (a D1
+  leak) and `declare` called `kind.joined` on them. Now every reader of the index skips and drops removed
+  entries (`Camps.live(faction)`: `declare`, `freeSlots`, the census's loop over the camp's bodies, and
+  `tagged()` as before), `poll` prunes the polled camp's set (so a camp's set is clean within one poll
+  period of an unload), and `indexAdd` prunes the faction's set when it adds, which covers a faction no camp
+  declared. `Camps.held(faction)`, the GameTests' view, stays raw so the test can see what the poll pruned.
+  Test: `anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain` (batch `mowzie_index_unload`): an
+  adopted Frostmaw, the den released and unloaded, `POLL_PERIOD + 3` ticks, the raw index holds no removed
+  entity; forced again, it holds the Frostmaw the load made (another object, the same UUID), tagged. Which
+  tick the poll prunes in is not asserted (it is 1 in 20 that it prunes in the removal tick itself); the
+  log line records how many ticks the removed body stayed.
 
 ### M5 design for the implementer
 

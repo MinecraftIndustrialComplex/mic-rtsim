@@ -351,7 +351,7 @@ public final class Camps {
         c.pollSlot = declared++ % POLL_PERIOD;
         pollSlots.get(c.pollSlot).add(c);
         bridge.putCamp(c);
-        Set<Entity> loaded = index.get(key);
+        Set<Entity> loaded = live(key);
         if (loaded != null)
             for (Entity e : loaded)
                 if (e instanceof Mob mob && e.level().dimension().equals(c.dimension))
@@ -404,7 +404,7 @@ public final class Camps {
         // A body that changed dimension is not its camp's to keep: its copy in the other dimension is not indexed (MZB-240).
         if (c != null && !c.dimension.equals(e.level().dimension()))
             return;
-        index.computeIfAbsent(m.faction(), k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(e);
+        indexAdd(e, m.faction());
         if (c == null)
             return;
         if (e instanceof Mob mob)
@@ -447,18 +447,20 @@ public final class Camps {
         if (slots == Integer.MAX_VALUE)
             return slots;
         int used = 0;
-        Set<Entity> s = index.get(c.faction);
+        Set<Entity> s = live(c.faction);
         if (s != null)
             for (Entity e : s)
-                if (e.isAlive() && !e.isRemoved())
+                if (e.isAlive())
                     used++;
         return Math.max(0, slots - used);
     }
 
     /**
-     * EntityLeaveLevelEvent. A body leaves the index when it is removed (unloaded with its chunk, discarded,
-     * changed dimension); one that only went hidden with its chunk, still alive, is kept, since its
-     * re-promotion posts no join (MZB-231). A body discarded by anything but the reconciler (which takes the
+     * EntityLeaveLevelEvent. A body leaves the index when it is removed (discarded, changed dimension); one that
+     * only went hidden with its chunk, still alive, is kept, since its re-promotion posts no join (MZB-231).
+     * The unload that follows a hidden chunk posts no leave at all, so a body whose chunk unloaded stays in
+     * the index as a removed object until something prunes it (MZB-590: {@link #live}, the poll and
+     * {@link #indexAdd}). A body discarded by anything but the reconciler (which takes the
      * tag off first) is gone from its camp: CAMP_DEATH, killer kind none (§4.9).
      */
     void onLeave(Entity e) {
@@ -483,7 +485,29 @@ public final class Camps {
     }
 
     private void indexAdd(Entity e, long faction) {
-        index.computeIfAbsent(faction, k -> Collections.newSetFromMap(new IdentityHashMap<>())).add(e);
+        Set<Entity> s = index.get(faction);
+        if (s == null)
+            index.put(faction, s = Collections.newSetFromMap(new IdentityHashMap<>()));
+        else
+            s.removeIf(Entity::isRemoved); // a faction nobody declared is pruned only here (MZB-590)
+        s.add(e);
+    }
+
+    /**
+     * A faction's indexed bodies with the removed ones dropped, or null with none (MZB-590): vanilla posts no
+     * leave event when a chunk unloads, so a body whose chunk went is still in its set, as a removed object.
+     * Every reader of the index but {@link #held} (the GameTests' raw view) goes through this.
+     */
+    private Set<Entity> live(long faction) {
+        Set<Entity> s = index.get(faction);
+        if (s == null)
+            return null;
+        s.removeIf(Entity::isRemoved);
+        if (s.isEmpty()) {
+            index.remove(faction);
+            return null;
+        }
+        return s;
     }
 
     /** Takes a body's tag off (out of the index first): it is the camp's no more. */
@@ -521,7 +545,7 @@ public final class Camps {
         return found;
     }
 
-    /** The loaded bodies a camp holds (GameTests). */
+    /** The bodies in a camp's index as they are, removed ones not yet pruned included (GameTests; MZB-590). */
     public List<Entity> held(long faction) {
         Set<Entity> s = index.get(faction);
         return s == null ? List.of() : List.copyOf(s);
@@ -571,6 +595,7 @@ public final class Camps {
         List<Site> slot = pollSlots.get((int) Math.floorMod(now, (long) POLL_PERIOD));
         for (int i = 0; i < slot.size(); i++) {
             Site c = slot.get(i);
+            live(c.faction); // bodies whose chunk unloaded post no leave: dropped here (MZB-590)
             ServerLevel level = bridge.level(c.dimension);
             if (level == null)
                 continue;
@@ -723,12 +748,12 @@ public final class Camps {
         }
         // What the chief is read from: the footprint's entities, the camp's bodies loaded elsewhere and the strays found wide.
         List<Entity> view = new ArrayList<>(inside);
-        Set<Entity> mine = index.get(c.faction);
+        Set<Entity> mine = live(c.faction);
         if (mine != null) {
             for (Entity e : mine) {
                 if (bodies.size() >= CENSUS_CAP)
                     break;
-                if (insideSet.contains(e) || !e.isAlive() || e.isRemoved() || !e.level().dimension().equals(c.dimension))
+                if (insideSet.contains(e) || !e.isAlive() || !e.level().dimension().equals(c.dimension))
                     continue;
                 CampMember m = RtsimAttachments.campMember(e);
                 int flags = ConflictRecords.CampCensus.BODY_ELSEWHERE | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);

@@ -2074,5 +2074,75 @@ public final class MowzieGameTests {
         check("no warrior stands in the area", level.getEntitiesOfClass(EntityUmvuthanaMinion.class, g.area()).isEmpty());
     }
 
+    // ---- MZB-590: the index and an unload --------------------------------------------------------
+
+    /**
+     * A body whose chunk unloads leaves the camp's index within a poll period (MZB-590): vanilla posts no leave
+     * event for the unload, so the removed entity would stay in the faction's set for ever. A den's adopted
+     * Frostmaw, the den released and unloaded: within {@link Camps#POLL_PERIOD} + 3 ticks the raw index
+     * ({@code Camps.held}) holds no removed entity. Forced again, the census comes in again and the index holds
+     * the Frostmaw the load made (another object, the same UUID), tagged, with no removed entity.
+     */
+    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "mowzie_index_unload", skyAccess = true)
+    public static void anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain(GameTestHelper helper) {
+        String test = "anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        UUID[] id = new UUID[1];
+        long[] op = new long[1];
+        long[] removedAt = new long[1], heldRemovedFor = new long[1];
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(far.ready())
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                    id[0] = f[0].getUUID();
+                    MowzieKit.everyTick(helper, () -> {
+                        if (f[0].isRemoved()) {
+                            if (removedAt[0] == 0)
+                                removedAt[0] = level.getGameTime();
+                            if (MowzieKit.camps().held(den.faction).contains(f[0]))
+                                heldRemovedFor[0]++;
+                        }
+                    });
+                })
+                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, id[0]))))
+                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("held by the camp", MowzieKit.camps().held(den.faction).contains(f[0]));
+                    den.release();
+                })
+                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenWaitUntil(gone(level, id[0]))
+                .thenExecute(() -> check("the Frostmaw object is removed", f[0].isRemoved()))
+                .thenIdle(Camps.POLL_PERIOD + 3)
+                .thenExecute(() -> {
+                    check("the raw index holds no removed entity (" + MowzieKit.camps().held(den.faction).size() + " entries)",
+                            MowzieKit.camps().held(den.faction).stream().noneMatch(Entity::isRemoved));
+                    check("the removed Frostmaw is not in it", !MowzieKit.camps().held(den.faction).contains(f[0]));
+                    record(test, "pruned", "removed at tick " + removedAt[0] + ", still in the raw index for " + heldRemovedFor[0] + " ticks after, then dropped");
+                    den.force();
+                })
+                .thenWaitUntil(far.ready())
+                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenExecute(() -> {
+                    List<Entity> held = MowzieKit.camps().held(den.faction);
+                    check("the index holds the one Frostmaw again (" + held.size() + ")", held.size() == 1);
+                    Entity again = held.get(0);
+                    check("a new object with the old UUID", again != f[0] && again.getUUID().equals(id[0]) && !again.isRemoved());
+                    check("tagged slot 0, generation 1", MowzieKit.tagged(again, den.faction, 0, 1));
+                    check("census 2 lists it home", MowzieKit.bodyOf(MowzieKit.census(den.faction, 2), id[0]) != null);
+                    record(test, "indexed again", "the load's join indexed the new Frostmaw object");
+                })
+                .thenSucceed();
+    }
+
     // @@NEXT@@
 }
