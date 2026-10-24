@@ -358,9 +358,9 @@ ahead:
   (`threat_with` takes `t.at.max(self.now)`), so a held module's raid books on industry's later
   state. Conflict's district raids come from `resolve`, which §6.1 holds; its train ambushes
   (`Ev::Ambush`, `raid_train`) still run in the replayed window, as today, and are abstract (no
-  body). Dragons' and pirates' raids are slices D's and S's check. **Open, recommendation first:**
-  leave industry unheld and record this as a known limit (holding it would put RP into industry's
-  own replay); the long-replay tests run with industry on and off.
+  body). Dragons' and pirates' raids are slices D's and S's check. **Decided by the coordinator,
+  2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
+  industry's own replay); the long-replay tests run with industry on and off.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).
@@ -550,9 +550,10 @@ the agent is embodied as the last session had it:
     members lost.
   - **Not the record's `spawned`:** it counts the members placed at once; the pending rest are also
     Java's, and its despawn reports them as survivors (ConflictBridge.java about L815).
-  - **An envoy** fills as `materialize_envoy` does: nothing, so `spawned` stays empty, as live. The
-    reviewer asked for every unit; the live engine records none for an envoy and its despawn then
-    counts nothing, so a fill would part the replayed path from the live one.
+  - **An envoy** (decided by the coordinator, 2026-10-24): an honoured envoy record fills nothing,
+    as `materialize_envoy` does, so `spawned` stays empty, as live. The reviewer asked for every
+    unit; the live engine records none for an envoy and its despawn then counts nothing, so a fill
+    would part the replayed path from the live one.
   - **A war party held at its target** (§6.1) whose record this is takes the fight's state too.
 - **Dragons** (DRAGON_MATERIALIZED: agent, epoch, entity): `epoch` = the record's; the dragon's
   state becomes Embodied (since: the record's time, depart_at never, purpose home, no harass), its
