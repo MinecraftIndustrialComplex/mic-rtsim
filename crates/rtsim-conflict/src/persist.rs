@@ -43,7 +43,8 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    Line, Party, Phase, Retired, Slot, SlotState, Source, Target, Throne,
+    Held, Line, LineCount, Party, Phase, Pin, RailMeter, Retired, Slot, SlotState, Source, Target,
+    Throne,
 };
 use crate::grievance::{Grievance, K};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -62,15 +63,17 @@ use crate::tunables::ConflictTunables;
 /// the epoch recalled (MZB-131). RTC6: a faction carries its cap, its members away and its camp
 /// ledger, and the wheel's events may be a camp refill (MOWZIE.md §4.9, M4). RTC7: a camp's
 /// ledger ends with its renewal pressure and its booked arrival, and the wheel's events may be an
-/// arrival (M6, MZB-271).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC7");
+/// arrival (M6, MZB-271). RTC8: a focus may keep its track, a source its pin, a party's target may
+/// be a track, a faction carries its rail meters, the wheel's events may be a rail wake and the
+/// resident state ends with the passes held for a line (M7, MZB-302).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTC8");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
-/// event may differ. 6: a camp carries its pressure and arrival (M6).
+/// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 6;
+const META_VERSION: u16 = 7;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -510,10 +513,32 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
     })
 }
 
+fn put_station(w: &mut Writer, (pos, d): &(Pos, DistrictId)) {
+    put_pos(w, *pos);
+    w.u64(d.0);
+}
+
+fn get_station(r: &mut Reader<'_>) -> codec::Result<(Pos, DistrictId)> {
+    Ok((get_pos(r)?, DistrictId(r.u64()?)))
+}
+
+fn put_pin(w: &mut Writer, p: &Pin) {
+    w.var_i64(i64::from(p.y));
+    put_opt(w, &p.station, put_station);
+}
+
+fn get_pin(r: &mut Reader<'_>) -> codec::Result<Pin> {
+    Ok(Pin {
+        y: get_i32(r)?,
+        station: get_opt(r, get_station)?,
+    })
+}
+
 fn put_focus(w: &mut Writer, f: &Focus) {
     put_pos(w, f.pos);
     put_opt(w, &f.district, |w, d| w.u64(d.0));
     w.f64(f.weight);
+    put_opt(w, &f.track, put_pin);
 }
 
 fn get_focus(r: &mut Reader<'_>) -> codec::Result<Focus> {
@@ -521,7 +546,7 @@ fn get_focus(r: &mut Reader<'_>) -> codec::Result<Focus> {
         pos: get_pos(r)?,
         district: get_opt(r, |r| Ok(DistrictId(r.u64()?)))?,
         weight: r.f64()?,
-        track: None,
+        track: get_opt(r, get_pin)?,
     })
 }
 
@@ -1032,6 +1057,7 @@ fn put_source(w: &mut Writer, s: &Source) {
     for c in &s.chunks {
         put_chunk(w, *c);
     }
+    put_opt(w, &s.pin.as_deref().copied(), put_pin);
 }
 
 fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
@@ -1055,7 +1081,7 @@ fn get_source(r: &mut Reader<'_>) -> codec::Result<Source> {
         affects,
         actor,
         chunks,
-        pin: None,
+        pin: get_opt(r, get_pin)?.map(Box::new),
     })
 }
 
@@ -1072,7 +1098,78 @@ impl Encode for FactionRow {
             w.u8(*k as u8);
             w.var_u64(u64::from(*id));
         }
+        put_usize(w, self.rail.len());
+        self.rail.iter().for_each(|m| put_meter(w, m));
     }
+}
+
+fn put_meter(w: &mut Writer, m: &RailMeter) {
+    w.u64(m.actor.to_bits());
+    w.f64(m.n);
+    w.u64(m.t_ref.0);
+    w.f64(m.pushed);
+    put_opt(w, &m.pushed_at, |w, t| w.u64(t.0));
+    w.var_u64(u64::from(m.stamp));
+    put_opt(w, &m.last, |w, (pos, y)| {
+        put_pos(w, *pos);
+        w.var_i64(i64::from(*y));
+    });
+    put_usize(w, m.lines.len());
+    for l in &m.lines {
+        w.u64(l.a);
+        w.u64(l.b);
+        w.f64(l.n);
+        w.u64(l.t_ref.0);
+        put_pos(w, l.point);
+        w.var_i64(i64::from(l.y));
+        put_opt(w, &l.near, put_station);
+    }
+}
+
+fn get_meter(r: &mut Reader<'_>) -> codec::Result<RailMeter> {
+    let mut m = RailMeter::new(handle(r)?);
+    m.n = r.f64()?;
+    m.t_ref = Tick(r.u64()?);
+    m.pushed = r.f64()?;
+    m.pushed_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    m.stamp = get_u32(r)?;
+    m.last = get_opt(r, |r| Ok((get_pos(r)?, get_i32(r)?)))?;
+    // A line is at least two ids, two words and a position.
+    let n = r.len_prefix(30)?;
+    for _ in 0..n {
+        let l = LineCount {
+            a: r.u64()?,
+            b: r.u64()?,
+            n: r.f64()?,
+            t_ref: Tick(r.u64()?),
+            point: get_pos(r)?,
+            y: get_i32(r)?,
+            near: get_opt(r, get_station)?,
+        };
+        if l.a > l.b || m.lines.last().is_some_and(|p| (p.a, p.b) >= (l.a, l.b)) {
+            return bad("a meter's lines out of order".into());
+        }
+        m.lines.push(l);
+    }
+    Ok(m)
+}
+
+fn put_held(w: &mut Writer, h: &Held) {
+    w.var_u64(u64::from(h.faction));
+    put_opt(w, &h.actor, |w, a| w.u64(a.to_bits()));
+    w.u64(h.exit.0);
+    put_pos(w, h.point);
+    w.var_i64(i64::from(h.y));
+}
+
+fn get_held(r: &mut Reader<'_>) -> codec::Result<Held> {
+    Ok(Held {
+        faction: get_u32(r)?,
+        actor: get_opt(r, |r| handle(r))?,
+        exit: Tick(r.u64()?),
+        point: get_pos(r)?,
+        y: get_i32(r)?,
+    })
 }
 
 impl Decode for FactionRow {
@@ -1096,11 +1193,20 @@ impl Decode for FactionRow {
             }
             reach.push(e);
         }
+        let n = r.len_prefix(36)?;
+        let mut rail: Vec<RailMeter> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let m = get_meter(r)?;
+            if rail.last().is_some_and(|l| l.actor >= m.actor) {
+                return bad("a faction's rail meters out of order".into());
+            }
+            rail.push(m);
+        }
         Ok(FactionRow {
             x,
             feuds,
             reach,
-            rail: Vec::new(),
+            rail,
         })
     }
 }
@@ -1223,6 +1329,12 @@ impl Conflict {
         w.u8(u8::from(self.peaceful));
         w.u64(self.peaceful_since.0);
         w.var_u64(u64::from(self.notice_serial));
+        put_usize(w, self.held.len());
+        for (train, v) in &self.held {
+            w.u64(*train);
+            put_usize(w, v.len());
+            v.iter().for_each(|h| put_held(w, h));
+        }
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1276,6 +1388,27 @@ impl Conflict {
         c.peaceful = r.u8()? != 0;
         c.peaceful_since = Tick(r.u64()?);
         c.notice_serial = get_u32(r)?;
+        for _ in 0..r.len_prefix(9)? {
+            let train = r.u64()?;
+            // A held pass is at least a faction, a flag, an exit, a position and a y.
+            let m = r.len_prefix(12)?;
+            let mut v: Vec<Held> = Vec::with_capacity(m);
+            for _ in 0..m {
+                let h = get_held(r)?;
+                if v.last().is_some_and(|p| p.exit > h.exit) {
+                    return bad("a train's held passes out of order".into());
+                }
+                v.push(h);
+            }
+            let Some(first) = v.first() else {
+                return bad("a train that holds nothing".into());
+            };
+            c.held_oldest.insert((first.exit, train));
+            c.held_n += v.len();
+            if c.held.insert(train, v).is_some() {
+                return bad("a train held twice".into());
+            }
+        }
         Ok(c)
     }
 
@@ -1328,6 +1461,14 @@ impl Conflict {
             || self.cells.keys().any(|e| e.1 as usize >= n)
         {
             return bad("an index names a faction past the table".into());
+        }
+        if self
+            .held
+            .values()
+            .flatten()
+            .any(|h| h.faction as usize >= n)
+        {
+            return bad("a held pass names a faction past the table".into());
         }
         if self.sources.rows.len() != self.sources.ids.len() as u64 {
             return bad("source rows and their index disagree".into());
