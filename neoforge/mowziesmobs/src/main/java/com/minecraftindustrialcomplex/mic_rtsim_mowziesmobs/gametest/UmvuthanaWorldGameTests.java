@@ -681,7 +681,8 @@ public final class UmvuthanaWorldGameTests {
      * of {@code GroveTrade.nuggets(desires)} nuggets and has nowhere to put it: no HAVEN_CHEST is sent). The grove is
      * released (CAMP_OUT, the Umvuthi unloaded), a chest is set at its middle chunk with only that chunk loaded, and
      * the grove is loaded again: HAVEN_CHEST comes first, with the chest's place, the dimension and all 27 slots
-     * free, then the engine's transfers are applied (COMMAND_RESULT APPLIED, none failed) and the chest holds exactly
+     * free, then the engine's transfers into it are applied (answered APPLIED, none FAILED: the grove counts the answers
+     * for its chest alone, MZB-648) and the chest holds exactly
      * the owed nuggets, which stays so; the last HAVEN_CHEST tells the slots left. A chest with no free slot is told as
      * 0: a second player's payment (the engine owes another gift) puts nothing in it over 100 ticks, and with room
      * made again (the scan is brought forward) the gift lands.
@@ -701,7 +702,7 @@ public final class UmvuthanaWorldGameTests {
         UUID[] id = new UUID[1];
         ServerPlayer[] payer = new ServerPlayer[2];
         BlockPos[] chest = new BlockPos[1];
-        int[] expected = new int[1], mark = new int[1], emptyAt = new int[1];
+        int[] expected = new int[1], emptyAt = new int[1];
         long[] transfers = new long[2];
         List<Integer> dirt = new ArrayList<>();
         GroveChests chests = GroveChests.INSTANCE;
@@ -766,24 +767,12 @@ public final class UmvuthanaWorldGameTests {
                 .thenExecute(() -> {
                     Container c = chestAt(level, chest[0]);
                     check("the gift stays exactly as it was (" + nuggetsIn(c) + ")", nuggetsIn(c) == expected[0]);
-                    var all = RtsimTests.engine().received();
-                    int first = -1;
-                    for (int i = 0; i < all.size(); i++)
-                        if (all.get(i).kind() == ConflictRecords.HAVEN_CHEST && all.get(i).view().getLong(ConflictRecords.HavenChest.FACTION) == g.faction) {
-                            first = i;
-                            break;
-                        }
-                    check("a HAVEN_CHEST of the grove is on record", first >= 0);
-                    int applied = 0, failed = 0;
-                    for (int i = first + 1; i < all.size(); i++)
-                        if (all.get(i).kind() == Obs.COMMAND_RESULT && !all.get(i).skipped()) {
-                            if (all.get(i).aux() == Obs.CommandResult.APPLIED)
-                                applied++;
-                            else if (all.get(i).aux() == Obs.CommandResult.FAILED)
-                                failed++;
-                        }
-                    check("the transfers were applied (" + applied + ") and none failed (" + failed + ")", applied >= 1 && failed == 0);
-                    check("the grove saw its chest take them (" + chests.transfers + ")", chests.transfers >= 1);
+                    // The transfers into this chest alone (the grove counts the answers for the place it told of), not
+                    // every COMMAND_RESULT after the HAVEN_CHEST: other commands of the engine's are answered meanwhile.
+                    long applied = chests.transfersApplied, failed = chests.transfersFailed;
+                    check("a HAVEN_CHEST of the grove is on record", !havens(g).isEmpty());
+                    check("the transfers into the chest were applied (" + applied + ") and none failed (" + failed + ")", applied >= 1 && failed == 0);
+                    check("the grove saw its chest take them (" + chests.transfers + ")", chests.transfers >= applied + failed);
                     emptyAt[0] = emptySlots(c);
                     check("the last HAVEN_CHEST tells the slots left (" + chests.freeOf(g.faction) + " of " + emptyAt[0] + ")",
                             chests.freeOf(g.faction) == emptyAt[0] && emptyAt[0] < 27);
@@ -801,7 +790,6 @@ public final class UmvuthanaWorldGameTests {
                     Entity e = level.getEntity(id[0]);
                     check("the Umvuthi is loaded again, tagged", e instanceof EntityUmvuthi && MowzieKit.tag(e) != null);
                     transfers[0] = chests.transfers;
-                    mark[0] = RtsimTests.engine().received(Obs.COMMAND_RESULT).size();
                     paidEverCheck(g, 1);
                     check("the second payer is a stranger to the Umvuthi", !((EntityUmvuthi) e).hasTradedWith(payer[1]));
                     check("the jar remembers the second payer", MowzieKit.payUmvuthi(payer[1], (EntityUmvuthi) e));

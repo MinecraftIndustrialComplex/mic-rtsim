@@ -3946,6 +3946,14 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   extra parties fall at 4605601 for seed 1, at 4596801 and 4668801 for seed 3, and so on, before and after the
   due tick) and none starts a party between the due tick and the pair.
 
+- **MZB-648** (test 16 counts the transfers into its chest, not every result; review P3-3): the test counted every
+  COMMAND_RESULT journaled after the first HAVEN_CHEST, applied and failed alike, but a result carries only a command
+  sequence and an op id, not the container, so any other command of the engine's (a spawn, a trade's transfer for
+  another place) counted: an unrelated APPLIED let `applied >= 1` pass with no gift landed, and an unrelated FAILED
+  failed the test with the gift in the chest. `GroveChests` now counts the answers `containerTransferred` reports
+  for the chest a grove told of, by status (`transfersApplied`, `transfersFailed`, with `transfers` as before), and
+  the test reads those. The unused `mark` of the second payment (the size of the COMMAND_RESULT list) is gone.
+
 ## M10 March
 
 - A party whose surviving members are all Left (none stands to be handed back) gets no HAND_BACK line and so
