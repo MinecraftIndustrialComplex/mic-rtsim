@@ -4,7 +4,8 @@ Choices made while building MOWZIE.md §9's slices, where the plan left somethin
 MZB-#, and each slice takes ids from its own range so slices built side by side never collide:
 M1 1 to 49, M2 50 to 99, M3 100 to 149, M4 150 to 199, M5 200 to 249, M6 250 to 299, M7 300 to 349,
 M8 350 to 399, M9 400 to 449, M10 450 to 499, M11 500 to 549, M12 550 to 599. Each slice writes only
-under its own heading.
+under its own heading. MZB-589 is lent from M12's range to M6 (the BAND_CASUALTIES op id, which rides with
+M6's branch); M12 skips it.
 
 ## M1 Records
 
@@ -2221,6 +2222,52 @@ The tests:
   and the conflict's state hash is again `cccb9a4f55839f1f`, the value it had before M6's step 7; the
   regenerated `sim-conflict.json` moves only in `wall_ms`, the hash and those two lines are the same as at
   the merge of M5 (`0d6eee77`). `sim-mowzie.json` did not change.
+- **MZB-589** (BAND_CASUALTIES carries an op id, so a copy counts once; lent from M12's range; found by the build
+  lead in the reassert path): `RtsimSession.reassert` commits the PENDING records of an unloaded chunk or entity
+  holder again under a new OBS_SEQ with the same bytes, and the ack is the engine's saved-pages sequence, which
+  lands about one autosave later. rtsim-jni's replay forgets its ops at WORLD_SAVED, so a BAND_CASUALTIES
+  (journaled on the dead body's entity, with no op id) was applied a second time: another member off the
+  band, another Killing signal, an early rout. The fix:
+  - **Wire.** BAND_CASUALTIES gets `OP_ID` at 64 and size 72 (`boundary.md` §9). Java's `journalLoss` commits
+    it with `commitWithOpId`, so each death has its own Java op (top bit set) and a copy has the same one.
+    `BandCasualties.op` in the reference codec; `Obs::op()` still does not list it.
+  - **Dedupe is per party** (`Party.casualty_ops: Vec<u64>`, saved with the party), not in the world's
+    `applied_ops` and not in `Obs::op()`: `applied_ops` never shrinks and is saved at every save, so one entry
+    per member death of the world's life would be the D1 leak. The list goes with the party, and is counted in
+    the party's memory estimate. `casualties()` returns at once for an op in the list, live or off a recalled
+    stack alike, and pushes the op only after the record took a unit (`t > 0`), so the list holds at most
+    `start_units` ops. Two records for one body with two ops are two deaths.
+  - **Format.** The party record gains a length-prefixed list of u64s at its end (RTC7 as it stands, M6's own
+    unreleased format: no version bump and no migration). The conflict's
+    state hash therefore moved, `cccb9a4f55839f1f` to `06fb447b6cb6d991` (the empty list's length prefix is in
+    every party's bytes), and the `ignore` run's wire bytes went 3080 to 3104 (three casualty records, 8 bytes
+    each). Survivors (20 and 8), the checks and every other line of `sim-conflict.json` are unchanged;
+    `sim-mowzie.json` moved only in the state hash of run 8's muster set-outs detail line.
+  - **The synth** gives each casualty its own deterministic op (`FakeConflict::op()`), so the sims stay
+    deterministic.
+  - **A copy after the party ended** finds no party: the copy carries the old agent id, `party_of` checks the
+    handle's generation and the epoch, and `handle.rs` retires a slot before its u16 generation would wrap, so
+    an old agent id never names a later party in the same slot (a reused slot's party starts at epoch 0, as an
+    old one's first epoch does: only the generation tells them apart). A copy after the despawn took the epoch's
+    stack is no death, as before (MZB-138, 142).
+  - **A crash** is the journal's job, not the list's: the pages that survive predate the casualty, so the list
+    does not hold its op, the replay applies the record once, and the reasserted copy is skipped. The crash test
+    `a_walk_offs_dead_are_counted_again_by_the_replay_after_a_crash` is unchanged and green.
+  - **Tests.** In `tests/mowzie_records.rs`: `a_casualty_copy_in_one_epoch_counts_once` (one unit, one count,
+    one grudge move and breaker, equal to an engine that saw it once), `a_casualty_copy_does_not_rout_the_band_early`
+    (a loss of four of twelve, twice would be the half that routs), `two_casualties_of_one_body_with_two_ops_both_count`
+    (and the memory estimate grows 8 bytes an op), `the_list_keeps_only_the_casualties_that_took_a_unit`,
+    `a_casualty_copy_after_a_save_and_reopen_counts_once` (the same session, and a restart's replay),
+    `a_casualty_copy_on_a_recalled_stack_counts_once`, `a_casualty_copy_after_the_recall_settled_changes_nothing`,
+    `a_casualty_copy_of_an_ended_party_does_nothing_to_the_party_in_its_slot` (live, after a reopen and a
+    restart). rtsim-jni's `a_casualty_committed_again_after_a_world_save_counts_once` runs the real reassert
+    path end to end (the same record committed twice with a WORLD_SAVED between). Java's `ConflictGameTests`
+    asserts each casualty carries a distinct Java op id (compiled only). Without the early return, five of the
+    eight rtsim-conflict tests fail; the recall-settled test passes either way (the straggler rule already
+    drops it, so it pins that rule), and the reused-slot test fails only when `party_of` ignores the
+    generation.
+  - **Same tick.** These tests ingest the copy at the first's tick: the feud's grievance decays by the
+    clock, so a copy a tick later would differ in the sixth digit with nothing counted twice.
 
 ### M6 design for the implementer
 

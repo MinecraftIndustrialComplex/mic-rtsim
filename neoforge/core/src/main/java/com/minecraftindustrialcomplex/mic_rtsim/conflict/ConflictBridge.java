@@ -1767,7 +1767,7 @@ public final class ConflictBridge implements SessionPlugin {
         forget(sl);
     }
 
-    /** CHIEF_KILLED (with a Java op id) for the chief, else BAND_CASUALTIES of one member. */
+    /** CHIEF_KILLED for the chief, else BAND_CASUALTIES of one member, each with a Java op id (MZB-589 for the latter). */
     private ByteBuffer journalLoss(Slot sl, int by, UUID killer, long now) {
         Party p = sl.stack.party;
         ByteBuffer r;
@@ -1792,7 +1792,7 @@ public final class ConflictBridge implements SessionPlugin {
                 r.putLong(ConflictRecords.Casualties.KILLER_MOST, killer.getMostSignificantBits());
                 r.putLong(ConflictRecords.Casualties.KILLER_LEAST, killer.getLeastSignificantBits());
             }
-            session.boundary().commit(r);
+            session.boundary().commitWithOpId(r, ConflictRecords.Casualties.OP_ID);
             casualties++;
         }
         return r;

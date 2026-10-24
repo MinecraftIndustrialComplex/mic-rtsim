@@ -1649,7 +1649,11 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
+        assert_eq!(
+            answers,
+            vec![("discard", 1)],
+            "the natural dragon is discarded"
+        );
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2059,17 +2063,31 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
+        let last = |j: &Java| {
+            *j.far
+                .iter()
+                .rev()
+                .find(|r| r.agent == agent)
+                .expect("a far leg")
+        };
         let body = last(&j);
-        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
+        assert_eq!(
+            body.state,
+            FarState::Body,
+            "an adopted dragon is a body in the game"
+        );
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_BODY, body.body))
+                .map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_DIMENSION, body.dimension))
+                .map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
@@ -2088,7 +2106,11 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
+            assert_eq!(
+                (after.x0, after.z0),
+                (HOME.0, HOME.2),
+                "it rests at its lair"
+            );
         }
 
         // Quiet steps send nothing.
@@ -3455,6 +3477,14 @@ mod conflict {
     const BASE: (i32, i32) = (880, 900);
     const PLAYER2: (u64, u64) = (0x2222_0000_0000_0002, 0x9999_0000_0000_0009);
     const DAY: i64 = TICKS_PER_DAY as i64;
+
+    /// A fresh Java op id for a hand-made BAND_CASUALTIES (MZB-589): each record is its own death,
+    /// so none repeats another's op.
+    fn next_casualty_op() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        wire::JAVA_OP_BIT | (N.fetch_add(1, Ordering::Relaxed) + 1)
+    }
 
     /// Moves game time on in steps of `step` ticks until `done`, journaling the fake plugin's
     /// answers at each step; fails after `limit` ticks.
@@ -5232,6 +5262,7 @@ mod conflict {
                 body,
                 count,
                 killer,
+                op: next_casualty_op(),
             }));
         }
         j.idle();
@@ -5694,6 +5725,74 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// MZB-589 (the coordinator's regression test, end to end): a member's BAND_CASUALTIES that
+    /// Java journaled on an entity is committed again by the reassert (the same bytes under a new
+    /// OBS_SEQ) when the holder was unloaded at its ack, which comes about one autosave later.
+    /// By then a WORLD_SAVED past the first copy has made the replay forget its ops, so the
+    /// second copy used to pass for a new death and took a second unit off the band. The party's
+    /// own list of the casualties it counted skips it; a second member's record, with its own op,
+    /// still counts.
+    #[test]
+    fn a_casualty_committed_again_after_a_world_save_counts_once() {
+        let (_dir, e, mut j) = camp("conflict-casualty-reassert");
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        let epoch = books(&e, p).1;
+        let body = cmds(&j)
+            .find_map(|c| match c {
+                C::Materialize(m) if m.agent == Party::agent(p) => {
+                    m.members.iter().find(|s| s.count > 0).map(|s| s.body)
+                }
+                _ => None,
+            })
+            .expect("the raid's materialize");
+        let casualty = |op| {
+            O::Casualties(cb::BandCasualties {
+                agent: Party::agent(p),
+                epoch,
+                by: cb::BY_MOB,
+                body,
+                count: 1,
+                killer: (0, 0),
+                op,
+            })
+        };
+        let first = casualty(next_casualty_op());
+        j.conflict_obs(&first);
+        j.idle();
+        j.idle();
+        assert_eq!(books(&e, p).0, n - 1, "the first copy counted");
+        // A world save past it: the replay forgets the ops it knew up to there.
+        let durable = j.next_obs - 1;
+        {
+            let Some(r) = j.reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0) else {
+                panic!("room for WORLD_SAVED")
+            };
+            wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, durable);
+        }
+        j.idle();
+        // The reassert: the same record, a new sequence.
+        let again = j.conflict_obs(&first);
+        assert!(again > durable, "after the save");
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(books(&e, p).0, n - 1, "the copy took no second unit");
+        assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 1, "one death");
+        // Another member's death is its own op.
+        j.conflict_obs(&casualty(next_casualty_op()));
+        j.idle();
+        j.idle();
+        assert_eq!(books(&e, p).0, n - 2, "a second member's record counts");
+        assert_eq!(e.with_conflict(|c, _| c.stats.casualties), 2);
+    }
+
     /// MZB-138: a raid in view at a save, fought after it (the scripted player kills half of it)
     /// and then a crash with no despawn journaled: the replayed casualties are counted once, the
     /// members who died stay dead, and the rest count as alive as they always did.
@@ -5770,6 +5869,7 @@ mod conflict {
                 body: 0,
                 count: 1,
                 killer: (0, 0),
+                op: next_casualty_op(),
             }));
         }
         let recalled_at = j.game_time;

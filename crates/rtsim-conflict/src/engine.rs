@@ -285,6 +285,13 @@ pub struct Party {
     /// The player who killed the most of it, for rescue reports.
     pub breaker: Option<ActorId>,
     pub fight_strength: f64,
+    /// The op ids of the BAND_CASUALTIES it has counted, so that a copy of one (the reassert of a
+    /// record journaled on an entity: the same bytes under a new sequence, after the replay forgot
+    /// the op at a world save) counts nothing more (MZB-589). Only a record that took a unit is
+    /// listed, so it holds at most `start_units` ops, and it goes with the party; a copy that comes
+    /// after the party has ended finds no party (`party_of` checks the handle's generation and the
+    /// epoch). Saved with the party.
+    pub casualty_ops: Vec<u64>,
 }
 
 impl Party {
@@ -2776,6 +2783,7 @@ impl Conflict {
             chief,
             breaker: None,
             fight_strength: 0.0,
+            casualty_ops: Vec::new(),
         });
         self.stats.parties[kind.index()] += 1;
         if kind.is_war() {
@@ -5305,6 +5313,12 @@ impl Conflict {
         let Some(p) = self.party_of(cs.agent, cs.epoch) else {
             return;
         };
+        // A copy of a casualty the party counted already: the reassert of a record journaled on an
+        // entity (MZB-589). By the party's own list, not the world's `applied_ops`, which never
+        // shrinks and would hold an op for every member death of the world's life.
+        if self.parties[p].casualty_ops.contains(&cs.op) {
+            return;
+        }
         // A casualty of bodies kept as a recalled stack of their epoch: the walk-off's deaths of a
         // band the player left, and a replay's, whose session start kept the last session's
         // bodies the same way (MZB-138). Both are counted off that stack, whether replaying or
@@ -5328,6 +5342,9 @@ impl Conflict {
         let x = &mut self.parties[p];
         let t = x.units[k].1.min(cs.count);
         x.units[k].1 -= t;
+        if t > 0 {
+            x.casualty_ops.push(cs.op);
+        }
         let u = x.units[k].0;
         let stacks = if replayed {
             x.recalled
@@ -5770,8 +5787,12 @@ impl Conflict {
     /// [`Conflict::heap_bytes`] by part, in bytes (as `World::memory`): what a bench reports to
     /// say where the resident bytes per faction go.
     pub fn memory(&self) -> BTreeMap<&'static str, usize> {
-        let party =
-            |x: &Party| std::mem::size_of::<Party>() + x.route.len() * 16 + x.units.len() * 8;
+        let party = |x: &Party| {
+            std::mem::size_of::<Party>()
+                + x.route.len() * 16
+                + x.units.len() * 8
+                + x.casualty_ops.len() * 8
+        };
         BTreeMap::from([
             ("factions", self.factions.rows.heap_bytes()),
             ("sources", self.sources.rows.heap_bytes()),

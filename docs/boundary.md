@@ -1503,7 +1503,7 @@ are untouched.
 | 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 reserved | 48 |
 | 0x0804 | BAND_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown body kind) | 24 u64 agent, 32 u32 epoch, 36 u32 wave, 40 u64 cmdSeq | 48 |
 | 0x0805 | BAND_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 n, 40 n × (u32 body, u32 survivors) | 40 + 8n |
-| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast | 64 |
+| 0x0806 | BAND_CASUALTIES | killer kind: 0 none, 1 player, 2 mob, 3 other (4 is CAMP_DEATH's) | 24 u64 agent, 32 u32 epoch, 36 u32 body, 40 u32 count, 44 reserved, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId (a Java op id: the top bit set, committed with `commitWithOpId`, MZB-589) | 72 |
 | 0x0807 | CHIEF_KILLED | killer kind (as CASUALTIES) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 killerMost, 48 u64 killerLeast, 56 u64 opId | 64 |
 | 0x0808 | ENVOY_ANSWER | 1 accepted, 2 refused, 3 attacked | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast | 56 |
 | 0x0809 | TRIBUTE_PAID | n | 24 u64 faction, 32 u64 agent (the envoy; 0 at the camp), 40 u32 epoch, 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
@@ -1555,6 +1555,25 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   when the engine's `Replay` has applied every record before the session's first live one, however
   many hand-overs Java drained its journal over (MZB-141); a BAND_CASUALTIES for a recalled band
   counts off the bodies kept for its epoch live and replayed alike (MZB-142).
+- **BAND_CASUALTIES carries an op id (OP_ID at 64, size 72; MZB-589) and the engine counts a copy
+  once.** The entity's death listener commits it on the dead body's entity, and the reassert of a
+  record journaled on an unloaded chunk or entity commits it again under a new OBS_SEQ with the same
+  bytes; the engine's replay forgets the op at WORLD_SAVED, so without an op the second copy took
+  another member of the band. Java commits it with `commitWithOpId`, so every record has its own
+  random op and a copy has the same one. The engine skips a copy **per party** and not through the
+  world's applied ops (`Obs::op()`, which holds every op of the world's life and is saved at every
+  save: one entry per member death would never shrink): `Party.casualty_ops` lists the op of each
+  record the party counted, saved with the party (RTC7, a length-prefixed list at the end of the
+  party record), and `casualties()` returns at once for an op in it, whether the band is in view
+  or a recalled stack of its epoch is being counted off. Only a record that took a unit is listed,
+  so the list holds at most `start_units` ops, and it is counted in the party's memory estimate. It
+  goes with the party: a copy that comes after the band has ended carries the old agent id and finds
+  no party (`party_of` checks the handle's generation and the epoch; `handle.rs` retires a slot
+  before its u16 generation would wrap, so an old agent id never names a later party), and a copy
+  after the despawn took the epoch's stack is no death as before. A crash is covered by the
+  journal and not by the list: the pages that survive predate the casualty, so the replay applies
+  it once and the reasserted copy is skipped. Two records for the same body with two ops are two
+  deaths.
 - **BAND_CASUALTIES** by a player is also a direct act against the faction: a killing signal from
   that player (P14). CHIEF_KILLED routs the band (§9.5) when the band still has a chief: the chief
   flag (BAND_CHIEF, and MEMBER_CHIEF on its first stack) goes when the chief dies of age while out,
