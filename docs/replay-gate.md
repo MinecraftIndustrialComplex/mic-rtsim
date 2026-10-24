@@ -1032,15 +1032,16 @@ base goes in first in its plain form, as first designed, and the amendment after
 - **(b) RP-23:** a raid reaching a watched target in the replayed window, its BAND_MATERIALIZED and
   casualties replayed: resolved once (no abstract `resolve`, the district's damage and the loot as
   the no-crash run's), its casualties counted. Control: no crash; and an unwatched arrival in the
-  window, which resolves abstractly once, after the replay end.
+  window, which resolves abstractly once, at the hold's slack (RP-48; after the replay end if that
+  comes first).
 - **(c) RP-24:** a watched fight kept in the pages (Fighting at the save), whose casualties are
   delivered in the replay's third hand-over (fillers before them), and whose end, walk home and
   arrival (`home()`, which pools the party) all fall after those casualties' game time but inside
   the window, on a short route home. Today the first replayed hand-over's step runs the clock past
   the arrival, the party is pooled, and the casualties drop. After: they count, and the faction's
   pool after the replay is the no-crash run's. The event inside a later hand-over's window is what
-  the test is for; the audit's 3,000-block march had none. Control: no crash; and the
-  one-hand-over replay.
+  the test is for; the audit's 3,000-block march had none. Control: no crash. A second case, the
+  one-hand-over replay, is no control for RP-24: before df53fe38 it failed too, on RP-26's anchor.
 - **(d) RP-25:** a raid of 6 all placed, a copied BAND_CASUALTIES, then Java's despawn with 6
   survivors: 5 alive (6 without the cap). Control: a live BAND_CASUALTIES and a despawn with 5
   survivors: 5.
