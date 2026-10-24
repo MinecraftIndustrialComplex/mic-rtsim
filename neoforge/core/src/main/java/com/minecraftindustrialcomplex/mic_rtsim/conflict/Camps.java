@@ -1010,25 +1010,29 @@ public final class Camps {
      */
     private Moved removeWithMarker(ServerLevel level, Entity e) {
         Marker mk = marker(level, e.position());
-        List<byte[]> old = takeRecords(e);
+        List<PendingRecords.Entry> old = takeRecords(e);
         untag(e);
         e.ejectPassengers();
         e.discard();
         return new Moved(mk, old);
     }
 
-    /** A marker left where a body stood, and the records the body carried, for the marker to carry. */
-    private record Moved(Marker marker, List<byte[]> records) {}
+    /**
+     * A marker left where a body stood, and the records the body carried, for the marker to carry, each
+     * with the generation it was journaled in (MZB-652).
+     */
+    private record Moved(Marker marker, List<PendingRecords.Entry> records) {}
 
     /**
      * The records a holder carries, taken off it: journaled in this session first if they were not yet,
-     * so the marker that carries them on carries records the engine has been sent.
+     * so the marker that carries them on carries records the engine has been sent. Each keeps the
+     * generation it was journaled in: a copy of it is judged by that one (docs/boundary.md §3.2).
      */
-    private List<byte[]> takeRecords(Entity e) {
+    private List<PendingRecords.Entry> takeRecords(Entity e) {
         bridge.session().ensureReasserted(e);
         PendingRecords old = e.getExistingDataOrNull(RtsimAttachments.PENDING);
         e.removeData(RtsimAttachments.PENDING);
-        return old == null ? List.of() : old.records();
+        return old == null ? List.of() : old.entries();
     }
 
     /** A record marker at a position (MOWZIE.md §4.9): inert, saved with its entity chunk, never sent to a client. */
@@ -1204,7 +1208,7 @@ public final class Camps {
     }
 
     /** As above, the holder (a marker) also carrying the records of the body it stands for. */
-    private void answer(Site c, long epoch, long op, Line ln, int outcome, Entity holder, List<byte[]> before, long now) {
+    private void answer(Site c, long epoch, long op, Line ln, int outcome, Entity holder, List<PendingRecords.Entry> before, long now) {
         // What the holder carried from disk is journaled before the new record, so it reaches the engine first (MZB-239).
         if (holder != null)
             bridge.session().ensureReasserted(holder);
@@ -1212,9 +1216,9 @@ public final class Camps {
         if (outcome == ConflictRecords.CampBodies.STALE)
             staleLines++;
         if (holder != null) {
-            List<byte[]> records = new ArrayList<>(before.size() + 1);
+            List<PendingRecords.Entry> records = new ArrayList<>(before.size() + 1);
             records.addAll(before);
-            records.add(r.array());
+            records.add(new PendingRecords.Entry(bridge.session().boundary().gen(), r.array()));
             bridge.session().carryOnCampHolder(holder, records, r.getLong(Obs.OBS_SEQ));
             carried++;
         }
@@ -1294,7 +1298,7 @@ public final class Camps {
         RtsimSession s = bridge.session();
         int body = kind == null ? 0 : s.dictId(Obs.DICT_BODY, kind.bodyName(e));
         boolean chief = kind != null && kind.isChief(e);
-        List<byte[]> records = new ArrayList<>(takeRecords(e)); // journaled first if they were not yet
+        List<PendingRecords.Entry> records = new ArrayList<>(takeRecords(e)); // journaled first if they were not yet
         ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.SIZE, by, now);
         r.putLong(ConflictRecords.CampDeath.FACTION, m.faction());
         r.putInt(ConflictRecords.CampDeath.BODY, body);
@@ -1307,7 +1311,7 @@ public final class Camps {
         }
         s.boundary().commitWithOpId(r, ConflictRecords.CampDeath.OP_ID);
         Marker mk = marker(level, e.position());
-        records.add(r.array());
+        records.add(new PendingRecords.Entry(s.boundary().gen(), r.array()));
         untag(e);
         s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
         deaths++;

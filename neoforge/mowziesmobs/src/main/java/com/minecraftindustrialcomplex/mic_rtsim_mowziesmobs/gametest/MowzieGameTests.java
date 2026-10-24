@@ -17,6 +17,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CensusBody;
@@ -101,6 +102,8 @@ public final class MowzieGameTests {
             TAKE = ConflictRecords.CampReconcile.TAKE, SET_OUT = ConflictRecords.CampReconcile.SET_OUT,
             HAND_BACK = ConflictRecords.CampReconcile.HAND_BACK, REMOVE = ConflictRecords.CampReconcile.REMOVE;
     private static final int CHIEF = ConflictRecords.CampReconcile.LINE_CHIEF, CRYSTAL = ConflictRecords.CampReconcile.LINE_CRYSTAL;
+    /** A generation no session of the world has: the one an earlier session's record would carry (docs/boundary.md section 3.2). */
+    private static final long EARLIER_GEN = 0x0123_4567_89AB_CDEFL;
 
     // ---- 1: a den ---------------------------------------------------------------------------
 
@@ -1669,6 +1672,14 @@ public final class MowzieGameTests {
                     check("slot 2", d.view().getInt(ConflictRecords.CampDeath.SLOT) == 2);
                     check("the tag is gone", MowzieKit.tag(w[2]) == null);
                     check("the Frostmaw has booked nothing yet", ConflictKit.campDeaths(den.faction).isEmpty());
+                    // The Frostmaw also carries a record of an earlier session's generation, as a body does that
+                    // was saved with one: the marker that takes over its records keeps each one's generation
+                    // (MZB-652), since a copy is judged by the generation that journaled the record.
+                    PendingRecords had = f[0].getExistingDataOrNull(RtsimAttachments.PENDING);
+                    check("the Frostmaw carries its adopt answer, journaled in this session", had != null && had.entries().size() == 1
+                            && had.entries().get(0).gen() == RtsimSession.current().boundary().gen());
+                    f[0].setData(RtsimAttachments.PENDING, had.plusEntries(had.life(),
+                            List.of(new PendingRecords.Entry(EARLIER_GEN, had.entries().get(0).bytes().clone()))));
                     fell[1] = f[0].position();
                     MowzieKit.kill(f[0], level.damageSources().generic());
                 })
@@ -1679,6 +1690,15 @@ public final class MowzieGameTests {
                     check("a Frostmaw", d.view().getInt(ConflictRecords.CampDeath.BODY) == ConflictKit.bodyId(MowzieKit.FROSTMAW));
                     check("by none, a generic source (" + d.aux() + ")", d.aux() == ConflictRecords.BY_NONE);
                     check("a marker where it fell", !denMarkers[0].near(fell[1], 4).isEmpty());
+                    Markers.Seen mk = denMarkers[0].near(fell[1], 4).get(0);
+                    PendingRecords on = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE,
+                            mk.nbt().getCompound("neoforge:attachments").get("mic_rtsim:pending")).getOrThrow();
+                    long now = RtsimSession.current().boundary().gen();
+                    check("the marker carries the adopt answer, the earlier record and the death (" + on.entries().size() + ")", on.entries().size() == 3);
+                    check("each with the generation it was journaled in, the earlier one kept (" + Long.toHexString(on.entries().get(1).gen()) + ")",
+                            on.entries().get(0).gen() == now && on.entries().get(1).gen() == EARLIER_GEN && on.entries().get(2).gen() == now);
+                    check("the death is the last", Short.toUnsignedInt(ByteBuffer.wrap(on.entries().get(2).bytes()).order(Layout.ORDER)
+                            .getShort(Layout.R_KIND)) == ConflictRecords.CAMP_DEATH);
                     check("the grove booked exactly three deaths", ConflictKit.campDeaths(grove.faction).size() == 3);
                     record(test, "deaths", "warrior by player, discard by none, take by taken, Frostmaw chief; the stray booked none");
                 })
@@ -1727,12 +1747,16 @@ public final class MowzieGameTests {
                 .thenWaitUntil(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING)))
                 .thenExecute(() -> {
                     byte[] adopt = ConflictKit.campBodies(den.faction, op[0]).get(0).bytes();
-                    f[0].setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(), List.of(adopt.clone())));
+                    // Journaled in this session, so its generation is this session's (docs/boundary.md section 3.2).
+                    long gen = RtsimSession.current().boundary().gen();
+                    f[0].setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(),
+                            List.of(new PendingRecords.Entry(gen, adopt.clone()))));
                     Marker m = EntityType.MARKER.create(level);
                     check("a marker is made", m != null);
                     m.setPos(den.spot.x + 2, den.spot.y + 1, den.spot.z + 2);
                     m.addTag(RtsimSession.RECORD_MARKER_TAG);
-                    m.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(), List.of(adopt.clone())));
+                    m.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife(),
+                            List.of(new PendingRecords.Entry(gen, adopt.clone()))));
                     check("the marker is added", level.addFreshEntity(m));
                     id[1] = m.getUUID();
                     // A marker whose record is of another engine life: the same bytes under another op id, so the
@@ -1743,7 +1767,8 @@ public final class MowzieGameTests {
                     check("a stale marker is made", sm != null);
                     sm.setPos(den.spot.x - 2, den.spot.y + 1, den.spot.z - 2);
                     sm.addTag(RtsimSession.RECORD_MARKER_TAG);
-                    sm.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife() + 1, List.of(old)));
+                    sm.setData(RtsimAttachments.PENDING, new PendingRecords(RtsimSession.current().engineLife() + 1,
+                            List.of(new PendingRecords.Entry(gen, old))));
                     check("the stale marker is added", level.addFreshEntity(sm));
                     id[2] = sm.getUUID();
                     stale[0] = RtsimSession.current().stalePending();
@@ -1770,9 +1795,13 @@ public final class MowzieGameTests {
                     ScriptedEngine.Received c2 = MowzieKit.census(den.faction, 2);
                     List<ScriptedEngine.Received> r = ConflictKit.campBodies(den.faction, op[0]);
                     check("the adopt's record was journaled again by both holders (" + r.size() + " in all)", r.size() >= 3);
-                    for (int i = 1; i < r.size(); i++)
+                    for (int i = 1; i < r.size(); i++) {
                         check("journaled again #" + i + " (obsSeq " + r.get(i).obsSeq() + ") after the CAMP_OUT (" + out + ") and before census 2 ("
                                 + c2.obsSeq() + ")", r.get(i).obsSeq() > out && r.get(i).obsSeq() < c2.obsSeq());
+                        // A copy is judged by the generation that journaled the record (S4p): this session's own
+                        // admitted it, so the engine has it and drops the copy.
+                        check("copy #" + i + " is of a record the engine has, so dropped", r.get(i).skipped());
+                    }
                     CensusBody b = MowzieKit.bodyOf(c2, id[0]);
                     check("census 2 lists the Frostmaw", b != null);
                     check("by slot 0, generation 1, as the chief and no stray (" + b.flags() + ")", b.slot() == 0 && b.generation() == 1

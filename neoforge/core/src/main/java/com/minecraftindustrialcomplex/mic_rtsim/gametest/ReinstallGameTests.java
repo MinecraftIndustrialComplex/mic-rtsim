@@ -366,16 +366,27 @@ public final class ReinstallGameTests {
         helper.succeed();
     }
 
-    /** {@code mic_rtsim:pending} keeps its life through NBT; a plain list, written before the life existed, reads as life 0 (RG14). */
+    /**
+     * {@code mic_rtsim:pending} keeps its life and each record's generation through NBT; {life, records}, written
+     * before generations, reads with generation 0, and a plain list, written before the life existed, as life 0 (RG14).
+     */
     @GameTest(template = YARD, batch = "reinstall_2", timeoutTicks = 200)
     public static void pendingRecordsKeepTheirEngineLife(GameTestHelper helper) {
         byte[] a = {1, 2, 3}, b = {4, 5};
-        PendingRecords p = PendingRecords.EMPTY.plus(0x5eedL, List.of(a)).plus(0x5eedL, List.of(b));
+        PendingRecords p = PendingRecords.EMPTY.plus(0x5eedL, 11, List.of(a)).plus(0x5eedL, 12, List.of(b));
         net.minecraft.nbt.Tag tag = PendingRecords.CODEC.encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, p).getOrThrow();
         PendingRecords back = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, tag).getOrThrow();
         check("a round trip keeps the life and the records: " + tag, back.life() == 0x5eedL && back.records().size() == 2
-                && Arrays.equals(back.records().get(0), a) && Arrays.equals(back.records().get(1), b));
-        check("records of another life are not carried on", p.plus(7, List.of(a)).records().size() == 1 && p.plus(7, List.of(a)).life() == 7);
+                && Arrays.equals(back.records().get(0), a) && Arrays.equals(back.records().get(1), b)
+                && back.entries().get(0).gen() == 11 && back.entries().get(1).gen() == 12);
+        check("records of another life are not carried on", p.plus(7, 13, List.of(a)).records().size() == 1 && p.plus(7, 13, List.of(a)).life() == 7);
+        net.minecraft.nbt.CompoundTag ungenerated = new net.minecraft.nbt.CompoundTag();
+        ungenerated.putLong("life", 0x5eedL);
+        ungenerated.put("records", com.mojang.serialization.Codec.BYTE_BUFFER.listOf()
+                .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, List.of(java.nio.ByteBuffer.wrap(b))).getOrThrow());
+        PendingRecords u = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, ungenerated).getOrThrow();
+        check("{life, records} reads with generation 0: " + ungenerated, u.life() == 0x5eedL && u.entries().size() == 1
+                && u.entries().get(0).gen() == 0 && Arrays.equals(u.records().get(0), b));
         net.minecraft.nbt.Tag old = com.mojang.serialization.Codec.BYTE_BUFFER.listOf()
                 .encodeStart(net.minecraft.nbt.NbtOps.INSTANCE, List.of(java.nio.ByteBuffer.wrap(a))).getOrThrow();
         PendingRecords o = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, old).getOrThrow();

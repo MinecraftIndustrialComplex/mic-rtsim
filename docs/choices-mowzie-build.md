@@ -1664,6 +1664,52 @@ under its own heading.
     `dropPendingWhenAcked(holder, 0)` after `removeData` in the stale branch of `reassert(Entity)`; not taken. An
     admin can clear them with `/kill @e[type=minecraft:marker,tag=mic_rtsim.record]`. The GameTest discards its own.
 
+- **MZB-652** (main's f361a6f1 merged into M5: SEC-1 S4p, carried records as copies judged by generation;
+  docs/boundary.md section 3.2, DECISIONS.md SEC-1 S4p):
+  - The merge had no textual conflict. What S4p's `PendingRecords` forced: it is `{life, entries}` now, an entry
+    being a record with the generation that journaled it. `with` is gone (`filter` keeps what is left, so
+    MZB-650's `p.with(...)` in `dropPendingWhenAcked` is `p.filter(...)`, still by identity), `plus` takes the
+    generation (`plus(life, gen, records)`, so MZB-651's stamp is that), and `records()` is derived. The Mowzie
+    tests that hand-make a holder's records build entries with the session's generation. The formats: S4p added
+    JOURNAL_GEN 0x0130 and REASSERT 0x0131, the jni engine's meta version 2 and its page table 2 (the closed
+    generations, magic RTJG). The conflict crate is untouched by it: RTC6 with meta version 5 stays above main's
+    RTC5 and 4, and the camp records (0x080F and its neighbours) do not meet the new kinds.
+  - How a camp record carried on a holder is judged. It is carried with the generation of the session that
+    journaled it. When the holder loads (`BridgeEvents`' drain) or its camp's census reaches it first
+    (`ensureReasserted`, MZB-174), the session journals a copy of each, REASSERT(gen, record whole), once per
+    holder and session. The engine admits the REASSERT by its own sequence like any record, then judges the copy
+    by (gen, the record's own sequence): dropped when the generation admitted that sequence, which is the usual
+    case (the pages hold the record, or it was this session's own); applied once, as the record itself under the
+    copy's sequence, when a crash lost it or no page holds its generation. An applied copy then meets the camp
+    engine's own rules as the record would have: a camp it never founded books nothing, an answer for an epoch
+    it has not seen books nothing, an engine op id already heard is a no-op (MZB-651). A REASSERT journaled in an
+    earlier session and replayed now is a replay record (its sequence is below the session's first); a live one
+    after the replay end is not; `conflict::journaled` reads the copy under the REASSERT's sequence, so the
+    notices' "replay is over" test sees it on the right side. The order
+    that MZB-174 gave is unchanged: the copy is journaled before the census, so an answer that is new still
+    reaches the engine before the census whose epoch would make it stale, and one the engine has is dropped
+    without effect. The kept JOURNAL_GEN that goes first (`Journal.pinnedGen`) and the generation blocks are the
+    journal's and the engine's, nothing camp specific.
+  - A fault the check found, in this branch's code: a marker that takes over a body's records (`removeWithMarker`,
+    for the TAKE and REMOVE lines and the SET_OUT paths, and `death`) put them through `carry`, which stamps the current session's
+    generation on every record it is given, the body's earlier ones included. A copy is judged by (gen, s), s the
+    record's own sequence: a record of an earlier session under this session's generation has s below that
+    generation's last sequence (the open generation takes a copy as new only past it, a closed one the same), so
+    the copy is dropped even when the earlier session's pages lost the record, and the record is lost for good,
+    the loss S4p exists to prevent. Fixed: the records travel as `PendingRecords.Entry` (generation and bytes).
+    `Camps.takeRecords` returns entries, `Moved` and `answer`'s `before` hold them, `carryOnCampHolder` takes them
+    and `RtsimSession.carryEntries` keeps each one's generation (`PendingRecords.plusEntries`); only a record
+    journaled now gets this session's (`boundary().gen()`). `carry` for the other callers (a record journaled in
+    this session) is unchanged in effect. A test: `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot` gives the
+    Frostmaw a record of a generation no session has, kills it, and reads the marker's saved pending: three
+    entries, generations now, earlier, now.
+  - Readers look through REASSERT: `ConflictKit.campBodies` lists the copies (applied or dropped) with the
+    originals, by sequence, as it did the re-journaled records before; `aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`
+    now also checks that both copies were dropped (this session's generation admitted the record), and its stale
+    marker check reads the copies too, so a record of another life that was journaled would show.
+  - No choice was needed beyond those: a record too large to wrap is journaled plainly (SC129) and a CAMP_BODIES
+    of a few dozen lines is far below it; the inert marker of MZB-651 stands.
+
 ### M5 design for the implementer
 
 **Where it stands.** Branch `feat/mowzie-m5`, from `feat/mowzie-m3` at 0a5a4c2c; the code is in 5a87527d,

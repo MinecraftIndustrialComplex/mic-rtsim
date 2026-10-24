@@ -305,10 +305,13 @@ public final class RtsimSession {
 
     /**
      * A camp record rides on a body or a marker (MOWZIE.md §4.9): carried as {@link #carryOnEntity}, and the
-     * journal's next file waits for the holder's entity chunk (ledger 22).
+     * journal's next file waits for the holder's entity chunk (ledger 22). The records come with the
+     * generation each was journaled in (docs/boundary.md §3.2, MZB-652): a marker takes over a body's
+     * records from earlier sessions, and a copy of one is judged by the generation that first journaled it,
+     * so it must not be stamped with this session's.
      */
-    public void carryOnCampHolder(Entity holder, java.util.List<byte[]> records, long lastSeq) {
-        carry(holder, records, lastSeq);
+    public void carryOnCampHolder(Entity holder, java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> records, long lastSeq) {
+        carryEntries(holder, records, lastSeq);
         if (holder.level() instanceof ServerLevel level)
             journalData.chunks().dependsOnHolder(level, holder);
     }
@@ -927,12 +930,23 @@ public final class RtsimSession {
         }
     }
 
-    /** Adds records to an entity's pending list, to be dropped once {@code lastSeq} is acknowledged. */
+    /**
+     * Adds records journaled in this session to an entity's pending list, to be dropped once {@code lastSeq}
+     * is acknowledged.
+     */
     private void carry(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> entries = new java.util.ArrayList<>(records.size());
+        for (byte[] r : records)
+            entries.add(new com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry(boundary.gen(), r));
+        carryEntries(holder, entries, lastSeq);
+    }
+
+    /** As {@link #carry}, for records that already carry the generation they were journaled in. */
+    private void carryEntries(Entity holder, java.util.List<com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry> entries, long lastSeq) {
         ensureReasserted(holder); // what it carried from disk goes first, under its own sequence
         asserted.add(holder);
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = holder.getData(RtsimAttachments.PENDING);
-        holder.setData(RtsimAttachments.PENDING, old.plus(engineLife, records));
+        holder.setData(RtsimAttachments.PENDING, old.plusEntries(engineLife, entries));
         dropPendingWhenAcked(holder, lastSeq);
     }
 
@@ -957,14 +971,11 @@ public final class RtsimSession {
                 return; // unloaded: journaled again when it loads
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = e.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p != null) {
-                java.util.List<byte[]> keep = new java.util.ArrayList<>();
-                for (byte[] r : p.records())
-                    if (!acked.contains(r))
-                        keep.add(r);
+                com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep = p.filter(r -> !acked.contains(r));
                 if (keep.isEmpty())
                     e.removeData(RtsimAttachments.PENDING);
-                else if (keep.size() != p.records().size())
-                    e.setData(RtsimAttachments.PENDING, p.with(java.util.List.copyOf(keep)));
+                else if (keep.entries().size() != p.entries().size())
+                    e.setData(RtsimAttachments.PENDING, keep);
                 if (!keep.isEmpty())
                     return;
             }
@@ -974,9 +985,9 @@ public final class RtsimSession {
     }
 
     /**
-     * An entity that carries pending records came back from disk: journal them again (the engine has
-     * maybe never seen them, if the journal on disk was older than the entity's chunk) and drop them
-     * once acknowledged in this session.
+     * An entity that carries pending records came back from disk: journal a copy of each (REASSERT,
+     * docs/boundary.md §3.2; the engine has maybe never seen them, if the journal on disk was older than
+     * the entity's chunk, and applies a copy only then) and drop them once the copies are acknowledged.
      */
     public void reassert(Entity holder) {
         if (!asserted.add(holder))
@@ -990,9 +1001,9 @@ public final class RtsimSession {
             return;
         }
         long last = 0;
-        for (byte[] record : p.records())
-            last = boundary.recommit(record);
-        reasserted += p.records().size();
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last = boundary.reassert(r.gen(), r.bytes());
+        reasserted += p.entries().size();
         dropPendingWhenAcked(holder, last);
     }
 
@@ -1027,11 +1038,11 @@ public final class RtsimSession {
             return;
         }
         java.util.Map<Long, Long> last = new java.util.LinkedHashMap<>();
-        for (byte[] record : p.records())
-            last.put(pendingOp(record), boundary.recommit(record));
+        for (com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.Entry r : p.entries())
+            last.put(pendingOp(r.bytes()), boundary.reassert(r.gen(), r.bytes()));
         for (java.util.Map.Entry<Long, Long> e : last.entrySet())
             dropFromChunkWhenAcked(chunk, e.getKey(), e.getValue());
-        reasserted += p.records().size();
+        reasserted += p.entries().size();
     }
 
     /**
@@ -1064,7 +1075,7 @@ public final class RtsimSession {
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, old.plus(engineLife, boundary.gen(), java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
         dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
@@ -1081,14 +1092,11 @@ public final class RtsimSession {
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p == null)
                 return;
-            java.util.List<byte[]> keep = new java.util.ArrayList<>();
-            for (byte[] r : p.records())
-                if (pendingOp(r) != opId)
-                    keep.add(r);
+            com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords keep = p.filter(r -> pendingOp(r) != opId);
             if (keep.isEmpty())
                 c.removeData(RtsimAttachments.PENDING);
             else
-                c.setData(RtsimAttachments.PENDING, p.with(keep));
+                c.setData(RtsimAttachments.PENDING, keep);
             c.setUnsaved(true);
         });
     }
