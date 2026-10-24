@@ -329,6 +329,8 @@ public final class ConflictRecords {
          * it names no slot (slot 0, generation 0), and its answer names the warrior taken.
          */
         public static final int MASK = 8;
+        /** The chief's slot (the Umvuthi's, MZB-401): {@code u32::MAX} in the engine, -1 as a Java int; outside the pool. */
+        public static final int CHIEF_SLOT = -1;
         /** A line's flags: the slot is the camp's chief; the body holds its crystal. */
         public static final int LINE_CHIEF = 1, LINE_CRYSTAL = 2;
         public static final int FLAG_THRONE = 1;
