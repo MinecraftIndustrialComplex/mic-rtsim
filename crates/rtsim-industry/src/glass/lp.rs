@@ -81,7 +81,8 @@ impl UCaps {
             }
         }
         for (d, dom) in g.domains.iter().enumerate() {
-            if !dom.driven() {
+            // A decoupled part of a shared network keeps its compile row (`solve::domain_state`).
+            if !dom.driven() || dom.shared() && !s.rg.net.contains_key(&(d as u32)) {
                 continue;
             }
             levels[d].extend(possible_rows(s, d as u32, &most));
@@ -132,20 +133,27 @@ impl UCaps {
 /// (a source of a boiler the solve does not drive keeps its row at compile): a row some allowed
 /// source row gives as the speed, where every source has an allowed row no faster and of no other
 /// sign, and the most capacity those rows give carries the stress there. An upper bound: it may
-/// count a row no one state of the sources reaches, never miss one.
+/// count a row no one state of the sources reaches, never miss one. A part of a shared network
+/// counts the sources it owns, the rest of the network as one source at its input's speeds, and
+/// the other parts' stress (`solve::part_stress`).
 fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
     use super::records::domain_flags::STRESS_DISABLED;
     let g = s.g;
     let dom = &g.domains[d as usize];
+    let net = s.rg.net.get(&d).filter(|_| dom.shared());
     // Twice the solve's rounding (`solve::speed_row_at`): a source within it of a row there is
     // within this of the row here, so the bound keeps every row the solve reaches.
     let tol = |v: f64| 2e-6 * v.abs().max(1.0);
     // Per source: its allowed rows as (speed in the reference's frame, capacity); a speed of 0
     // when it gives none.
-    let allowed: Vec<Vec<(f64, f64)>> = dom
+    let mut allowed: Vec<Vec<(f64, f64)>> = dom
         .sources
         .iter()
-        .map(|src| {
+        .enumerate()
+        .map(|(i, src)| {
+            if net.is_some_and(|n| !n.own.get(i).copied().unwrap_or(false)) {
+                return Vec::new();
+            }
             let max = src
                 .driver
                 .filter(|&b| g.drives[b as usize] == Some(d))
@@ -170,6 +178,18 @@ fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
             }
         })
         .collect();
+    // The rest of the network: its speeds fixed by the input, its capacity once.
+    if let Some(n) = net {
+        match (n.fwd > 0.0, n.back > 0.0) {
+            (true, true) => {
+                allowed.push(vec![(n.fwd, n.cap)]);
+                allowed.push(vec![(-n.back, 0.0)]);
+            }
+            (true, false) => allowed.push(vec![(n.fwd, n.cap)]),
+            (false, true) => allowed.push(vec![(-n.back, n.cap)]),
+            (false, false) => allowed.push(vec![(0.0, n.cap)]),
+        }
+    }
     let mut out = Vec::new();
     for (i, row) in dom.levels.iter().enumerate() {
         let v = row.speed();
@@ -197,7 +217,8 @@ fn possible_rows(s: &Solver<'_>, d: u32, most: &[Option<i64>]) -> Vec<u32> {
                 None => fits = false,
             }
         }
-        if fits && (dom.flags & STRESS_DISABLED != 0 || cap >= super::solve::domain_stress(dom, v))
+        if fits
+            && (dom.flags & STRESS_DISABLED != 0 || cap >= super::solve::part_stress(dom, v, net))
         {
             out.push(i as u32);
         }

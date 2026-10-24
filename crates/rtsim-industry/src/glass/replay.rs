@@ -51,7 +51,7 @@ use super::q::Q;
 use super::records::NodeKind;
 use super::report;
 use super::sections::NONE;
-use super::solve::{Regime, Solution, burn};
+use super::solve::{NetInput, Regime, Solution, burn};
 use crate::cluster::{
     Cluster, CycleFire, CyclePiece, MemberSpec, PoolKey, ProcSpec, ProcSpecBody, Run, SpaceSpec,
     Stop, bound_index, bound_part, bound_tag, cycle_fired, cycle_period,
@@ -120,6 +120,9 @@ pub struct Setup {
     /// The declared capacity of every inventory the replay does not cover, for the room a cut
     /// from the simulated side may fill (choice G2-66).
     pub live_decls: BTreeMap<u32, StoreDecl>,
+    /// What the rest of each coupled shared network gives the district's parts of it, by domain
+    /// (SEC-1 S5-2, `glass::net`).
+    pub net: BTreeMap<u32, NetInput>,
 }
 
 /// Counters for the report (since the replay started).
@@ -217,6 +220,9 @@ struct Mark {
     /// The time shift applied here: the pool that fired, and the carry it landed on.
     fire: Option<(PoolKey, u32)>,
     fed: Vec<f64>,
+    /// Every source's row in the regime (flat by `Graph::src_off`), for what a cycle publishes to
+    /// a shared network (choice SC151).
+    src_row: Vec<Option<u32>>,
 }
 
 /// A closed-form cycle running: its pieces' marks (first to last piece, then the repeat).
@@ -293,6 +299,12 @@ struct Part {
     /// Per unit: flags of its stores and controllers that flipped in the last regime build, which
     /// a regime with no fixed point names.
     flips: BTreeMap<u16, u32>,
+    /// What the rest of each coupled shared network gives the domains this part holds (SEC-1
+    /// S5-2): its regimes solve with these.
+    inputs: BTreeMap<u32, NetInput>,
+    /// Every source's row in the regime running (flat by `Graph::src_off`), which the part
+    /// publishes to the shared networks it owns sources of.
+    src_row: Vec<Option<u32>>,
 }
 
 type Levels = BTreeMap<PoolKey, i64>;
@@ -438,6 +450,9 @@ pub struct Replay {
     frozen: Vec<bool>,
     /// Fallbacks that froze units.
     freezes: u32,
+    /// What the rest of each coupled shared network gives the district, by domain (SEC-1 S5-2):
+    /// the engine's sim view, as of the last change.
+    inputs: BTreeMap<u32, NetInput>,
 }
 
 /// Per node: gated off in a replay whose units replay as `on` says (SECTIONS.md §3.5): a
@@ -534,6 +549,9 @@ impl Replay {
             parts.push(whole);
         }
         comp.cache_parts = parts.len();
+        for p in &mut parts {
+            p.set_inputs(comp, &setup.net);
+        }
         let mut rp = Replay {
             started: at,
             parts,
@@ -541,6 +559,7 @@ impl Replay {
             replays,
             frozen: frozen.to_vec(),
             freezes: 0,
+            inputs: setup.net.clone(),
         };
         let mut procs = Vec::with_capacity(rp.parts.len());
         let mut bounds = Vec::new();
@@ -864,6 +883,85 @@ impl Replay {
         }
         Ok(())
     }
+
+    /// What the rest of each coupled shared network gives the district (SEC-1 S5-2), as of the
+    /// last change.
+    pub fn inputs(&self) -> &BTreeMap<u32, NetInput> {
+        &self.inputs
+    }
+
+    /// The rest of the district's shared networks changed what they give it (SEC-1 S5-2): each
+    /// part holding a domain whose input changed rebuilds its regime at `at`, keeping what was
+    /// booked, as after an outside event. A rebuild that changes the rows the part publishes
+    /// counts a breakpoint instead (`glass.breakpointsPerEventMax`): two districts that keep
+    /// changing each other's speeds fall back as oscillating.
+    #[allow(clippy::too_many_arguments)]
+    pub fn on_network(
+        &mut self,
+        comp: &mut Compiled,
+        c: &mut Cluster,
+        inputs: BTreeMap<u32, NetInput>,
+        at: Tick,
+        goods: &dyn GoodLookup,
+        tun: &GlassTunables,
+    ) -> Result<(), Fallback> {
+        self.inputs = inputs;
+        for i in 0..self.parts.len() {
+            if !self.parts[i].set_inputs(comp, &self.inputs) {
+                continue;
+            }
+            let before = self.parts[i].published_all(comp);
+            let steps = self.parts[i].steps;
+            if let Err(f) = self.parts[i].run(comp, c, None, at, goods, tun) {
+                self.recover(i, f, comp, c, at, goods, tun)?;
+                continue;
+            }
+            let p = &mut self.parts[i];
+            if p.published_all(comp) != before {
+                p.steps = steps + 1;
+                if p.steps > tun.breakpoints_per_event_max {
+                    self.recover(i, Fallback::Oscillating, comp, c, at, goods, tun)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows domain `d`'s sources give the rest of its shared network while the district
+    /// replays (SEC-1 S5-2): a fixed source its one row; a driven one its row in the part holding
+    /// its boiler, the least a cycle there runs at (choice SC151), and none while that boiler is
+    /// gated off (its unit does not replay, choice SC152). A boiler no part holds runs in the
+    /// world (a partly loaded district): its row is `live`'s (the check solve's), by source index.
+    pub fn published(&self, comp: &Compiled, d: u32, live: &[Option<u32>]) -> Vec<Option<u32>> {
+        let g = &comp.graph;
+        let Some(dom) = g.domains.get(d as usize) else {
+            return Vec::new();
+        };
+        let off = g.sources_of(d).start;
+        dom.sources
+            .iter()
+            .enumerate()
+            .map(|(i, src)| {
+                let Some(b) = src
+                    .driver
+                    .filter(|&b| g.drives.get(b as usize) == Some(&Some(d)))
+                else {
+                    return src.current;
+                };
+                let Some(p) = self
+                    .parts
+                    .iter()
+                    .find(|p| p.mine.get(b as usize) == Some(&true))
+                else {
+                    return live.get(i).copied().flatten();
+                };
+                if p.gated.get(b as usize) == Some(&true) {
+                    return None;
+                }
+                p.published_row(comp, d, i, off + i)
+            })
+            .collect()
+    }
 }
 
 /// The parts of a district's graph that run apart (choice G2-22): per part, its nodes; and the
@@ -1153,6 +1251,8 @@ impl Part {
             gated: vec![false; n],
             hits: BTreeMap::new(),
             flips: BTreeMap::new(),
+            inputs: BTreeMap::new(),
+            src_row: graph.source_rows_at_compile(),
         };
         // A store below its holding threshold passes on what it receives (GB100), as the
         // compile's own regime read it.
@@ -1194,6 +1294,71 @@ impl Part {
         p.st.empty.retain(|&(inv, _), _| stores.contains_key(&inv));
         p.mine = mine;
         p
+    }
+
+    /// Takes the inputs of the shared domains this part holds (its nodes' domains and the ones its
+    /// boilers drive) from the district's; true when they changed.
+    fn set_inputs(&mut self, comp: &Compiled, all: &BTreeMap<u32, NetInput>) -> bool {
+        let g = &comp.graph;
+        let mut doms = BTreeSet::new();
+        for (v, node) in g.nodes.iter().enumerate() {
+            if self.mine.get(v) != Some(&true) {
+                continue;
+            }
+            doms.extend(node.domain);
+            doms.extend(g.drives[v]);
+        }
+        let new: BTreeMap<u32, NetInput> = all
+            .iter()
+            .filter(|(d, _)| doms.contains(*d))
+            .map(|(&d, n)| (d, n.clone()))
+            .collect();
+        let changed = new != self.inputs;
+        self.inputs = new;
+        changed
+    }
+
+    /// Source `i` of domain `d` (flat index `j`): its row in the regime running, or while a cycle
+    /// runs the least over the cycle's regimes (choice SC151: a shared network's other parts run
+    /// at what the slowest piece gives, so no part runs ahead of the boiler).
+    fn published_row(&self, comp: &Compiled, d: u32, i: usize, j: usize) -> Option<u32> {
+        let Some(cy) = self.cycle.as_ref().filter(|c| !c.marks.is_empty()) else {
+            return self.src_row.get(j).copied().flatten();
+        };
+        let src = &comp.graph.domains[d as usize].sources[i];
+        let key = |r: u32| {
+            src.levels
+                .get(r as usize)
+                .map(|l| (l.speed().abs(), l.capacity))
+        };
+        let mut least: Option<u32> = None;
+        for (k, m) in cy.marks.iter().enumerate() {
+            let r = m.src_row.get(j).copied().flatten()?;
+            let better = match (least, key(r)) {
+                (_, None) => return None,
+                (None, _) => true,
+                (Some(l), Some(kr)) => {
+                    key(l).is_none_or(|kl| kr.0 < kl.0 || (kr.0 == kl.0 && kr.1 < kl.1))
+                }
+            };
+            if k == 0 || better {
+                least = Some(r);
+            }
+        }
+        least
+    }
+
+    /// Every source's published row as this part sees it, for a change test.
+    fn published_all(&self, comp: &Compiled) -> Vec<Option<u32>> {
+        let g = &comp.graph;
+        let mut out = Vec::with_capacity(self.src_row.len());
+        for (d, dom) in g.domains.iter().enumerate() {
+            let off = g.sources_of(d as u32).start;
+            for i in 0..dom.sources.len() {
+                out.push(self.published_row(comp, d as u32, i, off + i));
+            }
+        }
+        out
     }
 
     /// The unit holding inventory `inv`, if one does.
@@ -1513,6 +1678,8 @@ impl Part {
         for b in &self.heaters {
             rg.burning[b.node as usize] = b.phase();
         }
+        // The shared networks as the engine's sim view has them, not the check solve's live one.
+        rg.net.clone_from(&self.inputs);
         rg
     }
 
@@ -2051,6 +2218,7 @@ impl Part {
             .enumerate()
             .map(|(i, (_, s))| (bound_tag(self.id, i as u32 + 1), s.clone()))
             .collect();
+        self.src_row.clone_from(&sol.src_row);
         self.mark(comp, lv, at, fired, room_or_heater);
         Ok((proc, bounds))
     }
@@ -2400,6 +2568,7 @@ impl Part {
             heater: false,
             fire: self.fire,
             fed: self.fed.clone(),
+            src_row: self.src_row.clone(),
         });
     }
 
@@ -2851,7 +3020,8 @@ mod persist_impls {
         room,
         heater,
         fire,
-        fed
+        fed,
+        src_row
     });
     persist_struct!(CycleRun {
         start,
@@ -2893,7 +3063,9 @@ mod persist_impls {
         unit_inv,
         gated,
         hits,
-        flips
+        flips,
+        inputs,
+        src_row
     });
     /// A replay has at least one part ([`Replay::compile`] reads the first).
     impl Persist for Replay {
@@ -2904,6 +3076,7 @@ mod persist_impls {
             self.replays.put(w);
             self.frozen.put(w);
             self.freezes.put(w);
+            self.inputs.put(w);
         }
         fn get(r: &mut Reader<'_>) -> Result<Self> {
             let rp = Replay {
@@ -2913,6 +3086,7 @@ mod persist_impls {
                 replays: Persist::get(r)?,
                 frozen: Persist::get(r)?,
                 freezes: Persist::get(r)?,
+                inputs: Persist::get(r)?,
             };
             if rp.parts.is_empty() {
                 return invalid("glass replay without parts");

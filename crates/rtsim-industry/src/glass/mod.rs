@@ -22,6 +22,7 @@ pub mod check;
 pub mod codec;
 pub mod graph;
 pub mod lp;
+pub mod net;
 pub mod page;
 pub mod q;
 pub mod records;
@@ -105,6 +106,9 @@ pub struct Glass {
     count_held: BTreeMap<DistrictId, (u32, Vec<(u32, u32)>)>,
     /// Districts whose units may have changed since their count set was checked.
     count_dirty: BTreeSet<DistrictId>,
+    /// The shared kinetic networks the compiles make (SEC-1 S5-2). Not saved: rebuilt from the
+    /// compiles ([`Glass::rebuild_nets`]).
+    pub nets: net::Nets,
 }
 
 /// The compile of a held entry Java's count set is not known for (a resend END): the next check
@@ -382,6 +386,9 @@ impl Glass {
         goods: &dyn GoodLookup,
         tun: &GlassTunables,
     ) -> Option<ProbeSet> {
+        // The live view of the district's shared networks (SEC-1 S5-2): what the other parts'
+        // districts' check solves give it, read now.
+        let net = self.net_inputs(district, &mut |id| self.solved_rows(id));
         let dg = self.districts.get_mut(&district)?;
         let revision = dg.compiled.as_ref()?.graph.end.revision;
         if view.revision != revision {
@@ -437,7 +444,8 @@ impl Glass {
         let c = dg.compiled.as_mut()?;
         let solves = c.solves;
         let windows = c.windows_completed;
-        let (probes, demoted) = c.sweep_with(at, view, goods, tun, district_live, &unit_live);
+        let (probes, demoted) =
+            c.sweep_with(at, view, goods, tun, district_live, &unit_live, Some(&net));
         self.stats.solves += u64::from(c.solves - solves);
         if c.windows_completed > windows {
             self.stats.windows_completed += 1;
@@ -830,6 +838,119 @@ impl Glass {
         self.recount_rows();
         // A new session's Java counts nothing until its compiles' sets come.
         self.count_held.clear();
+    }
+
+    /// The rows part `id`'s sources ran at in its district's last check solve, by its domain's
+    /// source index (none without a compile).
+    pub fn solved_rows(&self, id: net::PartId) -> Vec<Option<u32>> {
+        let Some(c) = self
+            .districts
+            .get(&id.district)
+            .and_then(|dg| dg.compiled.as_ref())
+        else {
+            return Vec::new();
+        };
+        if id.domain as usize >= c.graph.domains.len() {
+            return Vec::new();
+        }
+        c.sol
+            .src_row
+            .get(c.graph.sources_of(id.domain))
+            .map_or_else(Vec::new, <[Option<u32>]>::to_vec)
+    }
+
+    /// What the rest of each coupled shared network gives district `d`, by domain, with the
+    /// owners' source rows from `rows` (the live view or the engine's sim view).
+    pub fn net_inputs(
+        &self,
+        d: DistrictId,
+        rows: &mut dyn FnMut(net::PartId) -> Vec<Option<u32>>,
+    ) -> BTreeMap<u32, solve::NetInput> {
+        let mut out = BTreeMap::new();
+        for id in self.nets.parts_of(d) {
+            if let Some(inp) = self.nets.net_of(id).and_then(|n| n.input(id, rows)) {
+                out.insert(id.domain, inp);
+            }
+        }
+        out
+    }
+
+    /// Rebuilds the shared network registry from every compile (SEC-1 S5-2), `dim_of` giving each
+    /// district's dimension (a district the engine does not know yet has no part), `max` being
+    /// `cluster_districts_max`. Then the domain check across districts (SECTIONS.md §3.6): a unit
+    /// whose passed window ran a part at a capacity below its network's stress now goes stale.
+    /// Returns the parts whose status changed, for the log, and the districts with units gone
+    /// stale.
+    pub fn rebuild_nets(
+        &mut self,
+        dim_of: &dyn Fn(DistrictId) -> Option<u32>,
+        max: usize,
+        at: Tick,
+        tun: &GlassTunables,
+    ) -> (Vec<(DistrictId, String)>, Vec<DistrictId>) {
+        let mut parts = Vec::new();
+        for (&d, dg) in self.districts.iter() {
+            let (Some(c), Some(dim)) = (dg.compiled.as_ref(), dim_of(d)) else {
+                continue;
+            };
+            for (i, dom) in c.graph.domains.iter().enumerate() {
+                if dom.shared() {
+                    let id = net::PartId {
+                        district: d,
+                        domain: i as u32,
+                    };
+                    parts.push((id, dim, dom));
+                }
+            }
+        }
+        let nets = net::Nets::build(&parts, max);
+        let status = |n: &net::Nets, id| n.net_of(id).map(|x| (x.status, x.why));
+        let mut notes = Vec::new();
+        for (id, _, _) in &parts {
+            let now = status(&nets, *id);
+            if status(&self.nets, *id) != now
+                && let Some((st, why)) = now
+            {
+                let mut what = format!("shared network part {}: {}", id.domain, st.words());
+                if !why.is_empty() {
+                    what.push_str(&format!(" ({why})"));
+                }
+                notes.push((id.district, what));
+            }
+        }
+        drop(parts);
+        self.nets = nets;
+        let mut by_district: BTreeMap<DistrictId, BTreeMap<u32, (f64, bool)>> = BTreeMap::new();
+        for d in self.districts.keys().copied().collect::<Vec<_>>() {
+            for id in self.nets.parts_of(d) {
+                if let Some(s) = self.nets.net_of(id).and_then(|n| n.stress_of(id)) {
+                    by_district.entry(d).or_default().insert(id.domain, s);
+                }
+            }
+        }
+        let mut stale = Vec::new();
+        for (d, stress) in by_district {
+            // Read first: a district with nothing gone stale keeps its page unmarked.
+            let units = self
+                .districts
+                .get(&d)
+                .and_then(|dg| dg.compiled.as_ref())
+                .map(|c| c.shared_stale(&stress))
+                .unwrap_or_default();
+            if units.is_empty() {
+                continue;
+            }
+            if let Some(c) = self
+                .districts
+                .get_mut(&d)
+                .and_then(|dg| dg.compiled.as_mut())
+            {
+                c.make_stale(&units, at, tun);
+            }
+            self.recount(d, tun);
+            stale.push(d);
+        }
+        (notes, stale)
     }
 
     /// The district is gone.

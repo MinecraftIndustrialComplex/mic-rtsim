@@ -37,7 +37,7 @@ use super::records::{
     DomainLevel, DomainSource, EdgeKind, GraphDomain, GraphEdge, GraphEnd, GraphHead, GraphNode,
     GraphRecipe, Member, NodeKind, RateEntry, Term,
 };
-use super::solve::{GoodBound, Regime, Solution, StoreEdge};
+use super::solve::{GoodBound, NetInput, Regime, Solution, StoreEdge};
 use super::store::{Assembler, Assembly};
 use crate::persist::{Persist, invalid, persist_struct, persist_unit_enum};
 
@@ -342,6 +342,14 @@ persist_struct!(Assembler { asm });
 
 // ---- the solve (solve.rs) -------------------------------------------------------------------
 
+persist_struct!(NetInput {
+    own,
+    fwd,
+    back,
+    cap,
+    stress,
+    tail
+});
 persist_struct!(Regime {
     held,
     room,
@@ -349,7 +357,8 @@ persist_struct!(Regime {
     gate_off,
     derate,
     demoted,
-    burning
+    burning,
+    net
 });
 persist_struct!(GoodBound {
     good,
