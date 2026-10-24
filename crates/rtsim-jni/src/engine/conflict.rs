@@ -152,9 +152,9 @@ pub(super) struct Link {
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
-    /// The kept notices go again once the session's replay has caught up (MZB-31): set by the
-    /// session reset, done at the first record of this session or the simulate point. Not saved.
-    notices_due: bool,
+    /// The engine came back from its pages ([`Link::load`]), not fresh: only such an engine
+    /// honours a replayed BAND_MATERIALIZED (docs/replay-gate.md §5.2, RP-31). Not saved.
+    from_pages: bool,
     /// The conflict's replay end (`replay_done`, then the kept notices) is due: set by its reset
     /// (`begin_replay`), run by [`replay_end`] at the session's replay end, or at once when no
     /// replay runs (docs/replay-gate.md §3.2). Not saved.
@@ -262,7 +262,7 @@ impl Link {
             commands_written: 0,
             band_states: 0,
             deferred: 0,
-            notices_due: false,
+            from_pages: false,
             replay_end_due: false,
             fed: 0,
         }
@@ -327,6 +327,7 @@ impl Link {
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
         let mut l = Link::with_engine(engine, structures, pollution);
         l.restore_diverged = diverged;
+        l.from_pages = true;
         Ok(l)
     }
 
@@ -379,39 +380,41 @@ fn set_enabled(st: &mut State, on: bool) {
     }
 }
 
-/// Bodies of an earlier session (or of before a switch-off) are gone: every party is abstract
-/// again, and TERRITORY goes out again for every faction. The kept notices follow once the
-/// replay has caught up ([`resend_notices_if_due`]).
+/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2): its engine's replay
+/// begins (`begin_replay`, told whether it came back from its pages, RP-31), TERRITORY goes out
+/// again for every faction, and its replay end is due. With no replay running (a switch-on, or a
+/// first camp in the middle of a session) that end runs at once.
 fn reset_if_due(st: &mut State) {
     if st.conflict.reset_due && running(st) {
         st.conflict.reset_due = false;
-        st.conflict.engine.session_start();
-        st.conflict.notices_due = true;
+        let from_pages = st.conflict.from_pages;
+        st.conflict.engine.begin_replay(from_pages);
+        st.conflict.replay_end_due = true;
         st.phase1.taint();
         take_commands(st);
+        if !st.replaying {
+            replay_end(st);
+        }
     }
 }
 
-/// The kept notices to the plugin, once the session's replay has caught up (MZB-31): a
-/// NOTICE_SHOWN journaled last session after the pages' save has cleared its notice by now. A
-/// notice a replayed record made again is dropped from the queue first: what is kept is what
-/// goes.
-fn resend_notices_if_due(st: &mut State) {
-    if !st.conflict.notices_due || !running(st) {
+/// The conflict's replay end (docs/replay-gate.md §3.2), when due and the conflict runs: the
+/// engine's `replay_done` (the bodies of the last session are gone), then the kept notices go
+/// to the plugin (MZB-31): a NOTICE_SHOWN journaled last session after the pages' save has
+/// cleared its notice by now. A notice a replayed record made again is dropped from the queue
+/// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
+pub(super) fn replay_end(st: &mut State) {
+    if !st.conflict.replay_end_due || !running(st) {
         return;
     }
-    st.conflict.notices_due = false;
+    st.conflict.replay_end_due = false;
+    st.conflict.engine.replay_done();
     take_commands(st);
     st.conflict
         .queue
         .retain(|q| q.names.is_some() || !matches!(q.cmd, Cmd::Notice(_)));
     st.conflict.engine.resend_notices();
     take_commands(st);
-}
-
-/// The session's replay end (docs/replay-gate.md §3.2): the kept notices go.
-pub(super) fn replay_end(st: &mut State) {
-    resend_notices_if_due(st);
 }
 
 /// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
@@ -537,10 +540,6 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.ignored += 1;
         return;
     }
-    if wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first {
-        // The replay is over: the first record of this session.
-        resend_notices_if_due(st);
-    }
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -643,14 +642,6 @@ pub(super) fn simulate(st: &mut State) {
         return;
     }
     reset_if_due(st);
-    // The notices (and with them the end of the replay, `replay_done`) wait for the replay to
-    // catch up: Java drains its journal while it fits, so a long one spreads over several
-    // hand-overs, and the bodies the session start kept for the replay are still needed by the
-    // records of the later ones (MZB-141). The first live record is the other trigger
-    // (`journaled`).
-    if st.replay.applied_through().0 + 1 >= st.session_first {
-        resend_notices_if_due(st);
-    }
     let at = shared::hand_over_target(st);
     shared::run_to(st, at);
     feed_districts(st, at);

@@ -245,7 +245,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     assert_eq!(r.c.kept_notices(), vec![n], "kept, unplayed");
     // A session start sends it again, after the faction's territory.
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     r.c.resend_notices();
     r.flush(r.c.now());
     assert_eq!(r.notices_since(mark), vec![n]);
@@ -262,7 +262,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     r.c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
     assert_eq!(r.c.kept_notices(), vec![n]);
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     assert!(r.notices_since(mark).is_empty(), "not before the replay");
     r.c.resend_notices();
     r.flush(r.c.now());
@@ -302,7 +302,7 @@ fn a_notice_is_kept_until_shown_and_resent_at_each_session_start() {
     assert!(r.c.kept_notices().is_empty());
     assert_eq!(r.c.stats.notices_shown, 1);
     let mark = r.cmds.len();
-    r.c.session_start();
+    r.c.begin_replay(true);
     r.c.resend_notices();
     r.flush(r.c.now());
     assert!(r.notices_since(mark).is_empty(), "not resent once shown");
@@ -1693,7 +1693,7 @@ fn despawn_with(r: &Run, band: Handle<Party>, epoch: u32, dead: u32) -> Obs {
 /// A restart: the engine as the pages saved it, loaded again, in its next session.
 fn restarted(r: &Run) -> Conflict {
     let mut c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
-    c.session_start();
+    c.begin_replay(true);
     c
 }
 
@@ -2287,7 +2287,7 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
     let w = World::load(synth::world_config(seed), goods, book, &a.w.save()).unwrap();
     let mut c = Conflict::load(a.c.tun.clone(), a.c.cultures.clone(), &a.c.save()).unwrap();
     synth::define_names(&mut c, &w);
-    c.session_start();
+    c.begin_replay(true);
     let mut b = Run {
         w,
         c,
