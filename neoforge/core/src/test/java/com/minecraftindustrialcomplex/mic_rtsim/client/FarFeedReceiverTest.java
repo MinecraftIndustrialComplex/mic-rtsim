@@ -434,6 +434,27 @@ class FarFeedReceiverTest {
     }
 
     @Test
+    void aResetStartsTheLooksOverBeforeItsRecords() {
+        int[] resets = {0}, heldAtReset = {-1};
+        FarFeedReceiver[] self = new FarFeedReceiver[1];
+        FarFeedReceiver r = self[0] = new FarFeedReceiver(() -> {
+            resets[0]++;
+            heldAtReset[0] = self[0].held();
+        });
+        FarWire.Rec intro = new FarWire.Intro(0, ID, FarKind.DRAGON.wire, 0, 0, 1, 0),
+                roost = new FarWire.Leg(0, FarState.ROOST.wire, 70, 5, 5, 5, 5, 0, 0, 0);
+        r.accept(FarWire.encode(new FarWire.Message(FarWire.RESET, 1, DIM, 0, 64, 0, List.of(intro, roost))));
+        assertEquals(1, resets[0], "a RESET starts the looks over (docs/choices-dh-feed.md DHT70)");
+        assertEquals(0, heldAtReset[0], "after the old objects are gone and before the new ones come");
+        assertEquals(1, r.held());
+        r.accept(FarWire.encode(new FarWire.Message(0, 2, DIM, 0, 64, 0, List.of(roost))));
+        assertEquals(1, resets[0], "a message that is not a RESET does not");
+        r.accept(FarWire.encode(new FarWire.Message(FarWire.RESET, 3, DIM, 0, 64, 0, List.of(intro, roost))));
+        assertEquals(2, resets[0]);
+        assertEquals(0, heldAtReset[0]);
+    }
+
+    @Test
     void aRecordForAHandleNeverIntroducedIsIgnored() {
         send(FarWire.RESET, 1, new FarWire.Leg(3, FarState.FLY.wire, 70, 0, 0, 10, 0, 0, 20, 0),
                 new FarWire.Real(3, 9));
