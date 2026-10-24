@@ -1148,10 +1148,11 @@ under its own heading.
   the Entity object with the position it had) is noted at the chunk of the object's own `chunkPosition()`
   (`holdersRemembered`); the commit-time chunk is the fallback only when the reference is cleared
   (`holdersUnresolved`). `holdersMoved` counts a holder noted in a chunk other than its commit-time one by
-  either path. The reference is weak, so it keeps no entity alive and no chunk loaded (D1). Residue, recorded and
-  not closed (not checked against the vanilla sources): a holder removed in a chunk after walking out of the
-  one the record rode on leaves that earlier chunk unnoted, so a copy of it saved there earlier is not waited
-  for; noting both chunks would cost one more write, and the lead's decision was the object's chunk alone. A public
+  either path. The reference is weak, so it keeps no entity alive and no chunk loaded (D1). Why the earlier chunk
+  need not be noted (the lead's reading): a holder that leaves its record's chunk and is then unloaded is
+  saved with the chunk it unloads from, and its record lives on the entity, so the chunk it stood in at the
+  commit does not matter; a holder that is killed books through its death (CAMP_DEATH), not through the
+  record. A public
   `forgetHolderReferences` clears every reference, for the GameTests only (the state a collected entity
   leaves, which a test cannot reach by waiting for the collector). Tests (core): the existing
   `aRecordsHolderThatWalksIntoTheNextChunkIsNotedWhereItStandsAtTheSave` now clears B's reference after
