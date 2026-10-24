@@ -28,11 +28,14 @@ import java.util.Arrays;
  * ns per sample (median and 99th percentile) and the ns per tick of the sampler's handler (mean and 99th
  * percentile). The budget is 2 microseconds a sample (PLACEHOLDER), 20 per tick at 200 trains. The first window
  * includes the JIT warming up.
+ *
+ * <p>The windows are counted from the circles' placement, which waits for the conflict bridge to come up, so a
+ * late bridge delays them and drops none: {@code SamplerBenchGameTests} ends the run when {@link #done()}.
  */
 public final class SamplerBench {
     public static final boolean ENABLED = Boolean.getBoolean("mic_rtsim.samplerbench");
     public static final int TERRITORIES = Math.max(0, Integer.getInteger("mic_rtsim.samplerbench.territories", 64));
-    /** Windows to run before the bench's GameTest ends the server (0: for ever). */
+    /** Windows to run before the bench's GameTest ends the server (0: no end, until the server is stopped). */
     public static final int WINDOWS = Math.max(0, Integer.getInteger("mic_rtsim.samplerbench.windows", 6));
     public static final int WINDOW = 1200;
     static final int RADIUS = Integer.getInteger("mic_rtsim.samplerbench.radius", 40);
@@ -45,6 +48,16 @@ public final class SamplerBench {
     private static boolean placed;
 
     private SamplerBench() {}
+
+    /** True once {@link #WINDOWS} windows have been reported (never with 0 windows, which runs until stopped). */
+    public static boolean done() {
+        return WINDOWS > 0 && windows >= WINDOWS;
+    }
+
+    /** Where the run stands, for the GameTest's failure when it times out first. */
+    public static String progress() {
+        return windows + " of " + WINDOWS + " windows" + (placed ? "" : ", the circles never placed (the conflict bridge never came up)");
+    }
 
     public static void register() {
         if (!FarTrainBench.ENABLED || FarTrainBench.TRAINS == 0)
