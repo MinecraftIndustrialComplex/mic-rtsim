@@ -42,17 +42,15 @@ public final class ConflictRecords {
     public static final int CAMP_RECONCILE = 0x8808;
 
     /**
-     * M9: the Umvuthana's records. TRADED and CHIEF_PAID carry Java op ids and are journaled; HAVEN_CHEST and
-     * HUNT_APPLIED are journaled too (0x0092 is retired: HAVEN_CHEST was latest-wins there before MZB-446).
-     * HAVEN_CHEST's and HUNT_APPLIED's senders and OWED_HUNT's player are M9c's, so only their layouts are here.
+     * M9: the Umvuthana's records. TRADED and CHIEF_PAID carry Java op ids and are journaled; HAVEN_CHEST is
+     * journaled too (0x0092 is retired: it was latest-wins there before MZB-446). HAVEN_CHEST's sender is M9c's, so
+     * only its layout is here; the hunt records (OWED_HUNT, HUNT_APPLIED) are M9c's whole.
      */
     public static final int TRADED = 0x0810;
     public static final int CHIEF_PAID = 0x0814;
-    public static final int HUNT_APPLIED = 0x0816;
     public static final int HAVEN_CHEST = 0x0817;
-    /** M9: the chief's trade memory at home (a command, aux = traded players t) and the hunts a raid owes. */
+    /** M9: the chief's trade memory at home (a command, aux = traded players t). */
     public static final int CHIEF_BODY = 0x880A;
-    public static final int OWED_HUNT = 0x880C;
 
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
@@ -384,11 +382,6 @@ public final class ConflictRecords {
         public static final int FACTION = 24, DIM = 32, X = 36, Y = 40, Z = 44, FREE = 48, SIZE = 56;
     }
 
-    /** HUNT_APPLIED (journaled, a Java op id; M9c sends it): an owed hunt was applied (MZB-425). */
-    public static final class HuntApplied {
-        public static final int FACTION = 24, DISTRICT = 32, OP_ID = 40, KILLED = 48, SIZE = 56;
-    }
-
     /**
      * CHIEF_BODY (command, aux = traded players t): the chief's trade memory at home (MZB-421). Agent 0 and flags 0
      * at home; {@code flags} 1 is the crystal, M11's. The players follow from {@link #TRADED}, 16 bytes each.
@@ -402,18 +395,11 @@ public final class ConflictRecords {
         }
     }
 
-    /** OWED_HUNT (command; M9c plays it): the animals a raid left hunted in a district (MZB-425). */
-    public static final class OwedHunt {
-        public static final int FACTION = 16, DISTRICT = 24, OP_ID = 32, DIM = 40, COUNT = 44, CENTRE_X = 48, CENTRE_Z = 52,
-                RADIUS = 56, SIZE = 64;
-    }
-
     /** The smallest a command of this kind can be (a shorter one is malformed). */
     public static int minSize(int kind) {
         return switch (kind) {
             case CAMP_RECONCILE -> CampReconcile.LINES;
             case CHIEF_BODY -> ChiefBody.TRADED;
-            case OWED_HUNT -> OwedHunt.SIZE;
             case TERRITORY -> Territory.SIZE;
             case FACTION_NOTICE -> Notice.SIZE;
             case ENVOY_MATERIALIZE -> Envoy.MEMBERS;
