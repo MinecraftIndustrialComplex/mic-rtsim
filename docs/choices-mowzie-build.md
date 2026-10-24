@@ -2971,6 +2971,10 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
 Where the design left a gap the build took the conservative option; each is undoable. Code is in
 `crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
 
+M7 took MZB-348, MZB-349 and MZB-375 to MZB-389 (assigned at the Opus engine review of 0fb08ef5; 390 to
+399 stay spare). The review's fixes are MZB-348, 349 and 375 to 384, after MZB-347 below; 385 to 389 are
+left for the rest of M7.
+
 - **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
   only if its exit is not before the line's reference time. A pass reported late still counts (adds are
   exact in any order: `a_late_pass_counts_as_if_on_time`) but leaves the point where the later pass put
@@ -3027,8 +3031,9 @@ Where the design left a gap the build took the conservative option; each is undo
   before the arrival has fired first). The line comes from the industry's `last_departure_of`, read
   before `l.ingest` (MZB-312); an unwatched train, an arrival with no departure and a self-edge give
   `line: None`. The call is made only if the conflict is running and holds the train. A pass's entry and
-  exit are translated with `phase1::world_tick` (offset 0 in the tests, so the translation is not
-  checked by equality there).
+  exit are translated with `phase1::world_tick`. The tests ran at offset 0, so the translation was
+  not checked by equality; MZB-380 adds a protocol test with a three-day offset that reads the
+  meter's decay reference (the engine reads only the exit; the entry has no reader to assert on).
 - **MZB-346** (bench, MZB-331): `rtsim-cli bench scale --only factions,factions-paged`, full, release,
   base (f6321fa5, built from `git archive` in a scratch target) against M7 (165f1b58) side by side at
   nice 10, machine load 15 to 55. The resident `factions` sweep shows no cost: at 1,024 factions the M7
@@ -3058,6 +3063,12 @@ Where the design left a gap the build took the conservative option; each is undo
   Invasion, push and settled values and only two state hashes moved; `sim conflict` moved only its state
   hashes. The tests: the workspace's 1,411 pass, and the same five fail as before (rtsim-host `gametest_worlds_open_in_the_host_with_their_saved_state`,
   rtsim-view fixtures twice and hashes twice, which need GameTest saves).
+  - **A focus from a source with no district** (MZB-314, `refresh_rates`): on main only a source with a
+    district sets a feud's focus. With the class rule, a continuous source with no district (a bare
+    position, class 0) sets one too, when the feud has none or a class-0 one; a track (class 1) and a
+    district (class 2) are never displaced by a lower class. `sim conflict` reads the same numbers as
+    before M7 (the committed and the regenerated outputs differ only in its state hashes and the new
+    `rail_stale` field).
   - **Bench** (as MZB-346: release, `--only factions,factions-paged`, nice 10, side by side, machine load
     10 to 25). A/A pair (base against itself): paged CPU per day 0.991, 0.996, 0.984 at 1,024, 2,048
     and 4,096 factions, so the A/A spread is 1.6 points. New head (35ca0370) over base f6321fa5, pair 1:
@@ -3065,13 +3076,121 @@ Where the design left a gap the build took the conservative option; each is undo
     is below the A/A spread, against MZB-346's 1.047. The resident `factions` sweep at 1,024: 1.023 and
     0.998. Gate (3% beyond the A/A spread): met. Events (28,375, 56,748, 113,227) and conservation are
     base's; the state hashes differ from base's, as the encoded bytes do by the meter-count byte.
-  - **Bytes**: `save_full` at 1,024 factions is 528,119 against base's 527,088 (+1,031, +0.2%: one byte
-    a faction row for its meter count, and 7 more of which M7's six stats counters are 6, the other
-    byte not traced), against 554,743 before the amendment;
+  - **Bytes**: `save_full` at 1,024 factions is 528,119 against base's 527,088 (+1,031, +0.2% =
+    1,024 + 6 + 1: one byte a faction row for its meter count, six for M7's six stats counters, each a
+    one-byte 0, and one for the count of the held passes' table, empty in this world, which the blob's
+    resident tail ends with (`put_usize(w, self.held.len())` in `persist.rs`)), against 554,743 before
+    the amendment. Since MZB-349 the stats carry a seventh counter (`rail_stale`), so the same figure
+    at a later head should be +1,032 (derived from a zero varint being one byte, not measured);
     at 2,048 1,060,076 against 1,058,021; at 4,096 2,124,451 against 2,120,348. The paged resident
     estimate at 1,024 is 975,888 against base's 943,656 (+3.4%; it was 1,074,208, +13.8%), at 2,048
     1,828,672 against 1,755,120 (+4.2%), and at 4,096 3,528,688 against 3,384,128 (+4.3%): the pointers
     only (the tail, the track and the meter list, 8 bytes each, on a feud, a feud's focus and a row).
+
+#### M7 review fixes (the Opus engine review of 0fb08ef5)
+
+No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this order.
+
+- **MZB-348** (P2-1, a dead track keeps the focus): when a meter's source is removed (the 0 push of
+  `retire_meter`), its actor's feud keeps the focus position and loses `track`, so the class rule of
+  MZB-314 lets a class-0 focus (a wild kill) replace it and the next Raid goes to the kill site, not to
+  a track nobody runs. The review's probe is folded into `tests/rail.rs` (trains, the meter retires,
+  a wild kill, the Raid's target).
+- **MZB-349** (P2-2 and P3-7, the sim's checks): the Invasion rule expects the larger of the last Raid
+  return at or before it plus the dwell, and the 140 crossing, from the last return only (an earlier
+  return no longer excuses it); it holds on every seed. "A meter wakes under 3 times a day" counts every
+  `Ev::Rail` pop, live and stale (new stat `rail_stale`, persisted: the stats blob has seven rail
+  counters). Run 4 asserts the third den's meter `n` is 1.0 right after its first pass. Runs 2 and 3
+  read the projected grievance over the window whether the feud is forgotten or not (a forgotten feud
+  is 0, not an empty window printed as "-0.0"), and the rail runs print the first seed's state hash.
+  Before the stale-wake fix the wakes check failed at 8.85, 24.80, 48.75 and 100.56 pops a day at 4,
+  12, 24 and 50 legs a day; it was not loosened (see MZB-382 for where it stands).
+- **MZB-375** (the replay-end trigger before `rail_call`): rtsim-jni's `conflict::rail_call` runs
+  `resend_notices_if_due` first when the record is this session's first live one
+  (`OBS_SEQ >= session_first`), as `journaled` does before any conflict record. The branch that will own
+  this trigger is `fix/replay-push` (the replay-gate redesign); when it lands, M7's call follows
+  whatever trigger it leaves in `journaled`. The test
+  (`a_session_whose_first_record_is_an_arrival_keeps_its_notice`: 60 passes held across a restart, the
+  arrival first, one kept notice sent once after the territory) passes with and without the call on this
+  branch: the first live conflict record or `simulate` fires the trigger anyway, and `resend_notices`
+  re-adds the kept notices from `feud.notice`, so there was no observable loss here. The call pins the
+  order against a future change to either path; it was not a fix of a failing case.
+- **MZB-376** (P3-3, the booked wake): the meter keeps `wake`, the tick of the wake booked under its
+  `stamp` (zero when none waits). A new wake is booked only when none waits or the new one is earlier;
+  a later one leaves the booked wake, which fires, finds the rate in its band (or pushes) and books the
+  next. The tick is saved with the meter (RTC8 / META 7, M7's own, no bump): in paged mode it cannot be
+  rebuilt at load, since the wheel entry is not tied to a row. A stale pop reads the faction row
+  (`row`, not `row_mut`), so it dirties no page. Before, every leg moved the wake and left the old entry
+  stale: about two stale pops a leg.
+- **MZB-377** (an owned credit skips the gate): the arrival's credit of an owned pass to its line
+  (`credit_only`) leaves the rate as it was, which the gate saw at ingest, so it runs no gate. A meter
+  retired in between has nothing to credit (MZB-343).
+- **MZB-378** (P3-4, the rail bench): `rtsim-cli bench scale --only rail-paged`: dens (each with a line
+  and an owner) at 50 legs a day through the paged engine, 256, 512 and 1,024 dens (256 and 512 under
+  `--quick`; 64 dens fit in the 256 KiB budget). The rows report legs, wakes, stale pops, pushes, page
+  loads and the step time. D1 evidence for MZB-331, 346 and 347, which benched no trains; not a gate.
+  Before (MZB-376 not yet in) against after, `--quick` (3 days after 2 of warmup), release, nice 10, the
+  two binaries run side by side at machine load 24 to 28, so only the ratios mean anything:
+
+  | dens | legs/day | wakes/day | stale pops/day | pushes/day | step ms/day | page loads/day | save KiB | state hash |
+  |------|----------|-----------|----------------|------------|-------------|----------------|----------|------------|
+  | 256 before | 12,788 | 73 | 26,321 | 368.3 | 408.9 | 22,929 | 305.5 | 0a2a9dd3 |
+  | 256 after | 12,788 | 1,004 | 164 | 368.3 | 318.9 (0.78) | 15,287 (0.67) | 205.9 | ce5e9ae4 |
+  | 512 before | 25,599 | 145 | 52,652 | 739.0 | 1,381.7 | 68,141 | 619.3 | 16ae6612 |
+  | 512 after | 25,599 | 2,004 | 315 | 739.0 | 1,069.0 (0.77) | 44,591 (0.65) | 416.2 | 94b07803 |
+
+  The pops a den a day fall from 103 to 4.6 and the pushes do not move. The stale pops (26,321 a day,
+  two a leg) become live wakes (1,004): see MZB-382. The saved wheel is a third smaller (the stale
+  entries were saved too). The page loads fall by a third, not by the stale pops' share, because each
+  of the 12,788 legs a day still loads its den's row page. A single 1,024-den point of the after binary
+  (3 days, quiet machine): 51,193 legs, 4,008 wakes, 614 stale pops and 1,484 pushes a day, 100,566 page
+  loads a day, 1,391 ms a day, a resident peak of 324,120 bytes (the budget is 262,144). The full sweep
+  (10 days) took 729 s for its 256-den point under load 20 to 28 and was not waited for. The same
+  binary gives the same state hashes on every run (ce5e9ae4, 94b07803). The sweep's resident peak is not flat per den: every den takes a leg every 480
+  ticks, so a step dirties nearly every row page, and dirty pages are pinned until the save (the peak is
+  the budget plus a step's changes, which grows with the dens). Measured slopes 0.119 (256 to 512), 0.097
+  (512 to 1,024) and 0.107 (256 to 1,024); the declared slope is 0.15 (`RAIL_RESIDENT_SLOPE`), as the
+  dragons' and herds' sweeps declare theirs. Both contracts pass.
+- **MZB-379** (P3-5, tolerance 0): with a tolerance of 0 nothing is quiet (`r < 0` is never true), so no
+  meter retired: it woke once a day for ever and pushed a vanishing rate. A meter now retires when its
+  rate has fallen to `RETIRE_PER_DAY` and it is quiet or its pushed rate is as low; a dead meter that
+  still holds a pushed rate pushes it down and retires (as at tolerance 2); with no lower band edge the
+  wake is the earlier of the day and the retirement. Frostmaw's tolerance is 2, so `sim mowzie` and
+  `sim conflict` are unchanged by it.
+- **MZB-380** (P3-9, rtsim-jni tests): `a_pass_is_counted_on_the_worlds_clock` (a three-day phase 1 offset;
+  it fails with 61,458 found for 133,458 expected when the exit is not translated) and
+  `a_held_pass_crosses_a_restart_to_the_replayed_arrival` (RAIL_PASS before the save, TRAIN_ARRIVED
+  journaled after it and replayed on the reopen: the rail called once, nothing held, the meter equal to
+  the one before the crash). The entry is translated with the exit and not asserted: nothing reads it.
+- **MZB-381** (results and hashes): `scenario/results/sim-mowzie.json` and `sim-conflict.json` are
+  regenerated. Every state hash moved, for two reasons: the stats blob has a seventh rail counter
+  (MZB-349, a byte), and a meter carries its booked wake (MZB-376, a varint a meter; only the rail runs
+  have meters). Nothing else in `sim conflict` moved. In `sim mowzie` every settled level, rung day,
+  push count and peak is as before; the "wakes a day" figure is not comparable with the committed one,
+  which counted live wakes only (0.93 to 0.97 a day), where it now counts live and stale pops.
+  `RTC8` fixtures regenerate at landing, as the brief said.
+- **MZB-382** (finding: the wakes check still fails): after MZB-376 the pops are 2.09, 5.46, 5.24 and
+  5.22 a day at 4, 12, 24 and 50 legs a day and 5.79 on the trunk (were 8.85, 24.80, 48.75, 100.56 and
+  48.34), so "under 3 a day" passes at 4 legs a day and fails from 12. The remaining pops are live
+  wakes, not stale ones: the wake is the tick the rate would fall to the band's lower edge if no leg
+  came (MZB-306), and in a steady flow a leg always comes, so each wake finds the rate in its band and
+  books the next, `tau ln(1/0.9)` = 0.21 days later at a 10% band: 4.76 a day whatever the rate, once
+  the band is relative (above about 10 legs a day, where `max(0.1 p, 1)` is `0.1 p`). Before the fix
+  every leg moved the wake later, so the live wakes were rare (0.9 a day) and the stale ones were the
+  cost; now the stale ones are rare (a leg in 80) and the live ones are the cost, at 5 row reads a day
+  a meter instead of 100. The check was not loosened. The choices: accept it and change the check to
+  what the design gives (the lead's), or make a live wake that finds nothing to push book a later wake
+  from the observed flow, which moves push times (the cut-service timings of run 2 are asserted to
+  0.2 days) and so is a design change, not a fix.
+- **MZB-383** (note for Java review C, the sampler): a station inside the circle, or within one sample
+  past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is reported when the
+  train leaves the circle, the arrival when it stops), so the pass is held past the arrival it belongs
+  to and credited to the next leg's line. The sampler's GameTest should cover a station that close, or
+  the choice should accept the misattribution.
+- **MZB-384** (the factions bench pair): not rerun. MZB-376 changes the encoding of a meter (a varint)
+  and the in-memory `RailMeter` (8 bytes), and MZB-349 adds a stats byte; no `FactionRow`, `Feud`,
+  `Focus` or source layout moved (the `size_of` pins of MZB-347 pass), and the `factions` sweeps have no
+  meters. The +1,031 of MZB-347 should be +1,032 at this head by the one stats byte (derived, not measured).
 
 ## M8 Lying in wait
 
