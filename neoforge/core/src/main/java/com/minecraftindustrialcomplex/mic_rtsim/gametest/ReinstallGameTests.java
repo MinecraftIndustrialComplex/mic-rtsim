@@ -4,12 +4,14 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallRules;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import net.minecraft.core.BlockPos;
@@ -176,6 +178,17 @@ public final class ReinstallGameTests {
         Path[] aside = new Path[1];
         long[] life = new long[1], dups = new long[1], staleOp = new long[1], counts = new long[2];
         helper.startSequence()
+                .thenExecute(() -> {
+                    // The gap's premise (RG13): rtsim saved this world before it, so the journal no longer holds
+                    // what the old pages included, and the reset's empty pages lose observations. The run's first
+                    // autosave (6,000 ticks after the start) makes that save when the tests before this one took
+                    // longer; after fewer ticks the journal still starts at observation 1, the reset's engine
+                    // replays all of it and does not start over. So the test asks for the save itself.
+                    if (!rtsimSavedBefore())
+                        RtsimTests.engine().requestSaveAtNextStep();
+                })
+                .thenWaitUntil(RtsimTests.io(() -> check("an engine save was acknowledged before the gap: the journal holds "
+                        + journalSpan(), rtsimSavedBefore())))
                 .thenExecute(() -> {
                     cleanUp(server);
                     for (ChunkPos p : new ChunkPos[] {a, c, b}) {
@@ -392,6 +405,20 @@ public final class ReinstallGameTests {
         PendingRecords o = PendingRecords.CODEC.parse(net.minecraft.nbt.NbtOps.INSTANCE, old).getOrThrow();
         check("an old plain list reads as life 0: " + old, o.life() == 0 && o.records().size() == 1 && Arrays.equals(o.records().get(0), a));
         helper.succeed();
+    }
+
+    /**
+     * Whether an acknowledged engine save trimmed the journal (RG13), so pages with no observation would lack some
+     * the journal no longer holds ({@code BoundarySession.observationsLost}).
+     */
+    private static boolean rtsimSavedBefore() {
+        Journal j = RtsimSession.current().boundary().journal();
+        return BoundarySession.observationsLost(0, j.firstSeq(), j.nextObsSeq());
+    }
+
+    private static String journalSpan() {
+        Journal j = RtsimSession.current().boundary().journal();
+        return j.size() == 0 ? "no observation, the next " + j.nextObsSeq() : "observations " + j.firstSeq() + " to " + (j.nextObsSeq() - 1);
     }
 
     /** Leaves no marker, no capture and no moved pages behind, whatever a test did. */
