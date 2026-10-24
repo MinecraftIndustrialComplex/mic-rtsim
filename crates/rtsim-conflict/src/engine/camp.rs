@@ -1150,6 +1150,9 @@ impl Conflict {
             .map(|s| self.line(f, s, ACTION_SET_OUT, agent, epoch))
             .collect();
         self.send_lines(f, lines, at);
+        // The muster is over for this band: its slots have their lines, so the heir that waited for the
+        // muster (`camp_heir`) is looked at again now (MZB-612).
+        self.camp_heir(f, at);
     }
 
     /// A war party's units fell (a casualty, a death by slot): its members' slots follow, those
@@ -2377,13 +2380,26 @@ impl Conflict {
     /// Orders the heir, if it is due: one CAMP_RECONCILE of two lines (MZB-408), MASK of a
     /// warrior at home and SEAT_HEIR of the new chief, in the generation the books derive from the
     /// heir's due tick. Nothing is ordered while the camp is out, while no warrior is home (a body
-    /// with no line), or while the pair is in flight; the camp is looked at again at each census
-    /// and each due tick.
+    /// with no line), while the pair is in flight, or while a band of the camp is still mustering
+    /// (MZB-612: its warriors are left, with no SET_OUT sent yet, and the plugin cannot tell them
+    /// from the ones at home, so a MASK could take one as that band's loss); the camp is looked at
+    /// again at each census, each due tick and the end of each muster (`camp_set_out`, `home`).
     pub(super) fn camp_heir(&mut self, f: u32, at: Tick) {
         let Some(camp) = self.camp(f).filter(|c| c.is_in()) else {
             return;
         };
         if !camp.heir.is_some_and(|h| h.due <= at) || camp.mask.is_some() || camp.seat.is_some() {
+            return;
+        }
+        let mustering = camp.slots.iter().any(|s| {
+            s.state == SlotState::Left
+                && s.line.is_none()
+                && self
+                    .parties
+                    .get(s.party)
+                    .is_some_and(|x| x.phase == Phase::Mustering)
+        });
+        if mustering {
             return;
         }
         let warrior_home = camp
