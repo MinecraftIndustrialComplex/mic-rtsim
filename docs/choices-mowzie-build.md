@@ -2966,15 +2966,15 @@ changed: the camp, the renewal, the chief paths, CHIEF_STATE, any Mowzie plugin 
   site would replace the track focus and the next Raid would raid nothing.
 - The arrival clears the industry's `last_departure`: capture it before `l.ingest` (MZB-312).
 
-### M7 build choices (engine half, steps 1 to 9)
+### M7 build choices (engine half, steps 1 to 9; Java half, steps 10 to 13)
 
 Where the design left a gap the build took the conservative option; each is undoable. Code is in
 `crates/rtsim-conflict/src/engine/rail.rs` unless it says otherwise.
 
 M7 took MZB-348, MZB-349 and MZB-375 to MZB-389 (assigned at the Opus engine review of 0fb08ef5; 390 to
 399 stay spare, and are M7's too if the Java half needs them). The review's fixes are MZB-348, 349 and
-375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 389 are for
-the Java half.
+375 to 384, after MZB-347 below; MZB-385 is the lead's decision on the wakes check; 386 to 389 are the
+Java half's (after MZB-384 below).
 
 - **MZB-334** (a late pass and the line's point): a line's point, y and nearer station are set by a pass
   only if its exit is not before the line's reference time. A pass reported late still counts (adds are
@@ -3201,11 +3201,103 @@ No P1; two P2s and some P3s. Commits on `feat/mowzie-m7` after 0fb08ef5, in this
   past its edge, makes TRAIN_ARRIVED come before that leg's RAIL_PASS (the pass is reported when the
   train leaves the circle, the arrival when it stops), so the pass is held past the arrival it belongs
   to and credited to the next leg's line. The sampler's GameTest should cover a station that close, or
-  the choice should accept the misattribution.
+  the choice should accept the misattribution. **Resolved by MZB-387: accepted, not covered.**
 - **MZB-384** (the factions bench pair): not rerun. MZB-376 changes the encoding of a meter (a varint)
   and the in-memory `RailMeter` (8 bytes), and MZB-349 adds a stats byte; no `FactionRow`, `Feud`,
   `Focus` or source layout moved (the `size_of` pins of MZB-347 pass), and the `factions` sweeps have no
   meters. The +1,031 of MZB-347 should be +1,032 at this head by the one stats byte (derived, not measured).
+
+- **MZB-386** (the Java half's core, step 10): `Territories`, `ConflictBridge` and `RtsimApi` carry what
+  MZB-324 and MZB-325 asked for, with these particulars.
+  - `Territories.anyMinding(signal)` reads a per-bit count (32 ints) kept by `put`, `remove` and `clear`, so
+    a tick with no rail territory costs one array read. `crossing(dim, x0, z0, x1, z1, signal, out)` meets a
+    circle when the segment's nearest point to its centre is within the radius (`Territory.meets`), reads
+    the cells of the segment's box and the wide list (circles over more than 1,024 cells, a bad radius)
+    once each, and allocates nothing.
+  - `ConflictBridge.up()` is true for a live session, not failed, current, with the conflict module on and
+    M1's records taken; `railPass(...)` journals RAIL_PASS at once (as `flushSignals` does a batch) and
+    counts `railPasses`. `RtsimApi` has `territories()`, `conflictUp()` and `railPass(...)`; the Create side
+    reaches the core through them only (D4).
+  - The sampler asks `anyMinding(6)` before `conflictUp()`, the reverse of MZB-320's wording: the first is
+    one array read and the second reads the session, and the result is the same.
+  - The geometry is tested by `TerritoriesGameTests` (six GameTests), not JUnit: the core's unit tests have
+    no Minecraft class on their classpath, and `Territory` holds a `ResourceKey<Level>`.
+- **MZB-387** (the sampler's particulars, step 11, and MZB-383's answer):
+  - Each sample runs in a `try` that catches `RuntimeException`: a train in a state Create's own tick would
+    also trip on loses its segment and open passes, and the sampler warns once per server run and goes on.
+  - The state is dropped (open passes lost, not sent) when no territory minds the rail or the engine side is
+    not up, and when the server stops (`ServerStoppedEvent`, with the counters). A pass open then is a
+    pass the engine never hears of, which is the cheap side of UR-1 (MZB-326): nothing is saved.
+  - A segment that clips a circle keeps the nearer of its two ends as the pass's point, and a pass is kept
+    while the new sample is inside the circle: a train through a circle narrower than 128 blocks that is
+    sampled on each side yields one pass whose point is the nearer sample, on the track.
+  - A train that left Create's list closes its passes at its last sample's time, at the next rebucket.
+  - The sampler's `samples` and `passes` are public counters, and `tracked()` and `clear()` are for the
+    bench and the GameTests.
+  - **MZB-383 is accepted, not covered.** A station inside the circle, or within one sample past its edge,
+    sends TRAIN_ARRIVED before that leg's RAIL_PASS, and the pass is credited to the next leg's line. The
+    synthetic graphs of test 11 hold no station, and test 10's real train runs with no territory. M8's
+    `TrainSampler.arrived` (MZB-366 below) is where a flush of the train's open passes at its stop would
+    go, if the misattribution is judged to matter: it knows the train and the moment it stops. Not built
+    here (it adds a hook to every arrival for a pass that only a station inside a camp's range makes).
+- **MZB-388** (the bench, step 11): `SamplerBench` (with `SamplerBenchGameTests`, `stage.nbt` in its own
+  namespace `mic_rtsim_samplerbench`, and `./gradlew :create:runSamplerBench -PskipJni`) runs
+  `FarTrainBench`'s synthetic trains with 64 territories of radius 40 (half on each of the bench's two
+  rings, minding the rail, under faction keys the engine does not know and so drops) and logs
+  `[samplerbench]` every 1,200 ticks: samples, passes sent, ns per sample (median, p99, max) and ns per tick
+  (mean, p99, max) of the sampler's handler, for 6 windows, then the server stops. It runs only with
+  `-Dmic_rtsim.samplerbench=true`, which keeps a dev client's `/test runall` from starting it. The ordinary
+  GameTest server enables `mic_rtsim_create` and the bench's structure is in another namespace, so the
+  bench is not among its tests. Budget (PLACEHOLDER): 2 microseconds a sample, 20 a tick at 200 trains.
+  - The first run measured nothing: `FarTrainBench` lays 100 trains on each ring (19 and 31 blocks apart)
+    and its default four carriages are 38 blocks long, so Create's train collision crashed all 200 in the
+    first 200 ticks, and the sampler skips a derailed train (a 20 ns return). The run now sets
+    `mic_rtsim.farbench.carriages` to 1 (`-PsamplerCarriages=<n>`; the sampler reads only the first carriage,
+    so the count does not change its cost), and every window logs how many trains are derailed and warns
+    when any is. A bench of derailed trains is the trap; the `far bench: tick N: ... derailed` line shows it too.
+  - Result (`./gradlew :create:runSamplerBench -PskipJni` at the head of the commit that added this line; 200
+    trains of one carriage on the two rings, 64 territories of radius 40, the stub engine, the laptop at
+    load 1.8; 0 trains derailed; about 1,970 passes sent in each window, so the journal writes are in the
+    figures). The first window includes the JIT warming up; ns:
+
+    | window | samples | median a sample | p99 a sample | max a sample | mean a tick | p99 a tick | max a tick |
+    |--------|---------|-----------------|--------------|--------------|-------------|------------|------------|
+    | 1 | 11,827 | 381 | 7,113 | 141,395 | 11,228 | 69,641 | 612,879 |
+    | 2 | 12,000 | 300 | 1,754 | 79,209 | 6,772 | 43,862 | 178,655 |
+    | 3 | 12,000 | 251 | 1,433 | 25,097 | 4,887 | 22,162 | 85,199 |
+    | 4 | 12,000 | 250 | 701 | 24,636 | 3,793 | 12,664 | 28,473 |
+    | 5 | 12,000 | 281 | 771 | 16,301 | 4,202 | 15,199 | 28,554 |
+    | 6 | 12,000 | 311 | 792 | 8,095 | 4,401 | 15,439 | 30,748 |
+
+    Warm (windows 4 to 6): a sample takes about 0.25 to 0.3 microseconds at the median and 0.8 at the
+    99th percentile, against the budget's 2; a tick takes 4 microseconds on average and 15 at the 99th
+    percentile, against 20. The worst tick (30 microseconds) is a tick that sent several passes, and is over
+    the 20 only as a maximum. Both budgets are PLACEHOLDERS, and these figures meet them. The numbers are
+    wall time in a GameTest server that ticks unthrottled, with a JIT that has seen 72,000 samples; a
+    dedicated server with the pack's mods will see more cache misses, which this bench does not model.
+- **MZB-389** (tests 10 and 11, step 12): written and compiled, not run (the GameTest round is the lead's).
+  - Test 11 (`TrainSamplerGameTests`, batch `rail_sampler`, one test with four runs on separate graphs 250
+    blocks apart at a far base). Bends of radius 100, circles of radius 15 placed 10 blocks outside the
+    first bend's midpoint (sagitta about 29: the rail enters the circle and the chord does not) and 29
+    blocks inside the arc on the chord (the chord crosses and the rail does not). Each run verifies the
+    geometry itself before the sampler is trusted (`Run.verify`). The checks are MZB-327's, with the
+    point within 2.5 blocks of the rail.
+  - Test 10 (`RailFrostmawGameTests`, batch `rail_frostmaw_pass`): the real train is built as
+    `RailFixtureGameTests` builds its own. The track is 150 blocks along x at a far base, on a stone floor
+    with the air above cleared (a Frostmaw is 4 by 4 blocks and the terrain is whatever the world made),
+    and all of it is taken out again at the end, so Create's saved graph holds nothing of it. The train is
+    driven by `manualTick` and `speed` 1.0 each tick; its direction is found by running it three ticks. The
+    distance check counts observations, not game time, so it does not depend on whether this test or
+    Create's tick runs first in a server tick; the entity's start is taken three observations after it
+    is placed (it settles on the rail while the train is 30 blocks off). The zombie has fire resistance
+    (a NoAI zombie would burn in daylight and flinch) and ends the run when moved half a block. Hurt,
+    health and drift are recorded each tick and judged at the end; only a derailed or lost train, or a
+    dead entity, ends the test at once (`testInfo.fail`).
+  - Test 10 has no `@GameTestHolder`: `MicRtsimCreate` registers the class from `RegisterGameTestsEvent`
+    on the mod bus when `mowziesmobs` is loaded, so a run without `-PwithMowzie` does not see it and needs no
+    Mowzie jar. It names the Frostmaw by `mowziesmobs:frostmaw` and no Mowzie class. Run it with
+    `./gradlew :create:runGameTestServer -PwithMowzie` (MZB-329; the build compiles and lists its tasks
+    with the property, verified offline).
 
 ## M8 Lying in wait
 
