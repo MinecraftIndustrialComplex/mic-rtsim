@@ -35,9 +35,19 @@ From SESSION_START until the replay end (§3.2):
   REASSERT) that is the copy's own sequence, which S4p's `reasserted()` writes into the inner record
   before dispatching it; the original's sequence plays no part.
 - The engine is **replaying** while the next record it admits is below `session_first`, that is
-  `applied_through + 1 < session_first`. RP keeps one bool, `st.replaying`, holding this predicate's
-  answer wherever a module reads it, and runs the replay end once, when the answer turns false. It is
-  the same definition, latched, not a second one (RP-1).
+  `applied_through + 1 < session_first`. RP keeps one bool, `st.replaying`, that every module reads:
+  set at SESSION_START and cleared by the first of the three triggers (§2.2), which runs the replay
+  end once (RP-1):
+  1. the top of `journaled()`, for a record whose own sequence is at or past `session_first`
+     (`replay_end_before`, which tests the record's `seq`, not `applied_through`);
+  2. the step's top, once `applied_through + 1 >= session_first` (`replay_end_if_due`);
+  3. the SESSION_START arm's end, once `max(applied_through + 1, jf) >= session_first`, Java's
+     journal start counted (`replay_end_at_session_start`, RP-29).
+
+  So the flag is not the predicate latched: with RP-29 it can be false while
+  `applied_through + 1 < session_first` (a journal that starts at or past `session_first` sends
+  nothing below it), and trigger 1 ends it on a record's sequence (after a gap, the first record
+  that comes).
 
 A record dispatched while `st.replaying` is true is a replayed record, and a record dispatched after
 the replay end is not: the replay end runs before the first record at or past `session_first` is
@@ -335,9 +345,11 @@ this branch regenerates them, and deletes the worktree's run-gametest worlds, be
 - `State.replaying: bool`, not saved.
 - **Set** true at the top of the SESSION_START arm (§2.1). Before the first SESSION_START (`start`
   to the first hand-over) it is false: no module has reset yet, and the first SESSION_START sets it.
-- **Cleared** only by the replay end, `shared::replay_end` (§3.2), which runs once a session: at the
-  arm's own end when there is nothing to replay, else at the first trigger that finds
-  `applied_through + 1 >= session_first`.
+- **Cleared** only by the replay end, `shared::replay_end` (§3.2), once a session, by the first of
+  the three triggers (§1.1, §2.2): the top of `journaled()` for a record whose sequence is at or past
+  `session_first`; the step's top once `applied_through + 1 >= session_first`; the SESSION_START
+  arm's end once `max(applied_through + 1, jf) >= session_first` (RP-29). Not the predicate latched:
+  RP-29's journal check can clear it while `applied_through + 1 < session_first`.
 - A module switched on in the middle of a session (MODULES, U10) resets as today
   (`reset_due`, `reset_if_due`); its replay end runs at once when `st.replaying` is false, else at the
   session's replay end.
