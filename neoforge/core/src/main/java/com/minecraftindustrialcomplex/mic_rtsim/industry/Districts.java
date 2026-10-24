@@ -374,7 +374,9 @@ public final class Districts {
             edit(d, IndRecords.Edit.PLACED, player, pos);
             if (be != null)
                 markDirty(level.dimension(), chunk.getPos().toLong());
-        } else if (be != null && industrial(level, be, kindCache())) {
+        } else if (be != null && networkPart(be))
+            editReached(level, chunk.getPos().toLong(), IndRecords.Edit.PLACED, player, pos);
+        if (d == null && be != null && industrial(level, be, kindCache())) {
             // Industrial but no seed, outside any district: a station (whose track graph forms a moment after it
             // is placed) beside one joins it at the next detection (DS-10); it starts none.
             markDirty(level.dimension(), chunk.getPos().toLong());
@@ -385,10 +387,37 @@ public final class Districts {
     void playerBroke(ServerLevel level, BlockPos pos, UUID player) {
         long c = ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4);
         District d = at(level.dimension(), c);
+        BlockEntity broken = level.getBlockEntity(pos);
+        boolean be = broken != null;
         if (d != null)
             edit(d, IndRecords.Edit.BROKEN, player, pos);
-        if (level.getBlockEntity(pos) != null)
+        else if (be && networkPart(broken))
+            editReached(level, c, IndRecords.Edit.BROKEN, player, pos);
+        if (be)
             markDirty(level.dimension(), c);
+    }
+
+    /** Whether a plugin counts {@code be} as a part of a network a compile follows out of its district (SC77). */
+    private static boolean networkPart(BlockEntity be) {
+        for (IndustryPlugin plugin : IndustryApi.PLUGINS)
+            if (plugin.networkPart(be))
+                return true;
+        return false;
+    }
+
+    /**
+     * A player's network part ({@link IndustryPlugin#networkPart}: a kinetic block entity) placed or broken in
+     * chunk {@code c} of no district: an edit of every district whose last compile has a kinetic network
+     * reaching that chunk (SECTIONS.md §3.6, choice SC77). The
+     * position lies in no node box of theirs, so it stales no section; it drops their open windows and
+     * recompiles them, which updates the network's part.
+     */
+    private void editReached(ServerLevel level, long c, int kind, UUID player, BlockPos pos) {
+        for (long id : ind.glass.reachedBy(level.dimension(), c)) {
+            District o = ind.district(id);
+            if (o != null)
+                edit(o, kind, player, pos);
+        }
     }
 
     public void edit(District d, int kind, UUID player, BlockPos pos) {
@@ -404,8 +433,17 @@ public final class Districts {
     }
 
     public void discard(District d, int reason) {
+        discard(d, reason, 0);
+    }
+
+    /**
+     * A discard a station's call made ({@code station}, 0 for none): the engine discards the windows of
+     * the units the station's last {@code IND_STATION_PORTS} named (SECTIONS.md §3.6).
+     */
+    public void discard(District d, int reason, long station) {
         ByteBuffer r = ind.journal(IndRecords.IND_DISCARD, IndRecords.Discard.SIZE, reason);
         r.putLong(IndRecords.Discard.DISTRICT, d.id);
+        r.putLong(IndRecords.Discard.STATION, station);
         ind.commit(r);
     }
 
