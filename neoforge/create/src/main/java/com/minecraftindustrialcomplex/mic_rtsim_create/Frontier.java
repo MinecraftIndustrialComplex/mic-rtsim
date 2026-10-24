@@ -74,10 +74,11 @@ import java.util.concurrent.ThreadLocalRandom;
  *   <li><b>The draw</b> (slice S4c2, choices SC141 to SC143). The far district's replay takes the goods of
  *       packages held toward its frogport: the engine asks ({@code IND_HELD_DRAW}, {@link #heldDraw}) and Java
  *       marks each key drawn and answers {@code CHAIN_DRAWN}. A drawn package circles its boundary conveyor
- *       whatever ticks ahead ({@link #refusesDrawn}), until the engine has it removed (Remove: taken off the
- *       chain, at once or at the conveyor's first tick once it loads, and answered {@code CHAIN_RELEASED}) or
- *       gives it back (Return: held again, and told again). A drawn package a frogport takes off the chain
- *       lands as any held one (its goods go back into the replay's pool first, the engine's).</li>
+ *       whatever ticks ahead ({@link #refusesDrawn}), uncounted by the census ({@link #drawn}), until the engine
+ *       has it removed (Remove: taken off the chain, at once or at the conveyor's first tick once it loads, and
+ *       answered {@code CHAIN_RELEASED}) or gives it back (Return: held again, and told again). A drawn package
+ *       a frogport takes off the chain lands as any held one (the engine puts its goods back into that
+ *       frogport's pool first).</li>
  *   <li><b>The epoch</b> (choice SC136). It starts anywhere (a random nonzero value, so an engine reset that
  *       also lost this state never meets its old keys again), changes at every announce (the engine forgot
  *       what it was told) and reaches the engine in each IND_PACKAGE_STORE. Keys of any other epoch are not
@@ -748,6 +749,18 @@ public final class Frontier {
         return true;
     }
 
+    /**
+     * Whether {@code box} is a package the far replay drew (choice SC141): the census does not count it, its goods
+     * being the replay's until it is removed or given back.
+     */
+    boolean drawn(ItemStack box) {
+        if (drawnCount == 0 || box == null || box.isEmpty())
+            return false;
+        Key k = key(box);
+        Held h = k == null || k.epoch() != epoch ? null : held.get(k.serial());
+        return h != null && h.drawn();
+    }
+
     /** A census found a package keyed {@code k} in a frogport's arriving animation: still held until it lands. */
     void seenLanding(Key k, LongOpenHashSet seen) {
         if (k != null && k.epoch() == epoch && held.containsKey(k.serial()))
@@ -853,12 +866,7 @@ public final class Frontier {
             Industry ind = IndustryApi.current();
             if (ind == null)
                 return false;
-            Frontier f = PackageStores.of(ind).frontier;
-            if (f.drawnCount == 0)
-                return false;
-            Key k = key(box);
-            Held h = k == null || k.epoch() != f.epoch ? null : f.held.get(k.serial());
-            return h != null && h.drawn();
+            return PackageStores.of(ind).frontier.drawn(box);
         } catch (RuntimeException e) {
             return false;
         }
@@ -913,9 +921,12 @@ public final class Frontier {
     private void draw(long serial, Held h) {
         if (!h.drawn()) {
             ServerLevel level = ind.level(h.dim());
-            // Its frogport ticks now: no replay covers it, and the package goes on there.
-            if (level == null || Loaded.ticks(level, h.destination()))
+            // Its frogport ticks now: no replay covers it, and the package goes on there. Held next time, it is told
+            // again, so the engine may ask the draw again.
+            if (level == null || Loaded.ticks(level, h.destination())) {
+                sent.remove(serial);
                 return;
+            }
             putHeld(serial, h.marked(true, false));
             drawn++;
         }

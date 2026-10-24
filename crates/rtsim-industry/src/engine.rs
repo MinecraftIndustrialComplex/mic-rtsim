@@ -4069,6 +4069,10 @@ impl Engine {
                 self.ask_held_draw(id, key.epoch, DrawAction::Draw, vec![key.serial]);
                 return;
             }
+            // Held again: a Draw Java declined (its frogport ticked then) may be asked again.
+            if let Some(key) = p.key {
+                self.draws_asked.remove(&key);
+            }
             let Some(takes) = self.stores.get(&p.store).map(|s| s.takes_hold(p)) else {
                 self.stats.store_records_unknown += 1;
                 return;
@@ -4119,8 +4123,9 @@ impl Engine {
             return;
         }
         // A package the frontier held landed: struck from the held ones, wherever a declaration
-        // moved its key (choice SC137). A drawn one the far replay drew already: back into its
-        // pool first, so the landing takes it there (a duplicate at worst, choice SC143).
+        // moved its key (choice SC137). A drawn one the far replay drew already: back into the
+        // pool of the frogport it landed at first, so the landing takes it there (a duplicate at
+        // worst, choice SC143).
         if p.direction == ChainDirection::In
             && let Some(key) = p.key
         {
@@ -4130,11 +4135,21 @@ impl Engine {
                 s.strike(key);
                 s.counts.held_landed += u64::from(p.packages);
             } else if let Some(id) = self.store_drawing(key, Some(p.store))
-                && let Some(s) = self.stores.get_mut(&id)
-                && let Some((pos, h)) = s.strike_drawn(key)
+                && let Some((pos, h)) = self.stores.get_mut(&id).and_then(|s| s.strike_drawn(key))
             {
-                s.drawn_back(pos, &h);
-                s.counts.held_landed += u64::from(p.packages);
+                let landing = self
+                    .stores
+                    .get(&p.store)
+                    .and_then(|s| s.frogports.get(p.frogport as usize))
+                    .map(|f| f.pos);
+                let (into, pos) = match landing {
+                    Some(l) => (p.store, l),
+                    None => (id, pos),
+                };
+                if let Some(s) = self.stores.get_mut(&into) {
+                    s.drawn_back(pos, &h);
+                    s.counts.held_landed += u64::from(p.packages);
+                }
                 self.removes_asked.remove(&key);
             }
         }
