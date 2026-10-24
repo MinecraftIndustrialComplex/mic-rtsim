@@ -41,6 +41,19 @@ public final class ConflictRecords {
     public static final int CAMP_OUT = 0x0813;
     public static final int CAMP_RECONCILE = 0x8808;
 
+    /**
+     * M9: the Umvuthana's records. TRADED and CHIEF_PAID carry Java op ids and are journaled; HAVEN_CHEST and
+     * HUNT_APPLIED are journaled too (0x0092 is retired: HAVEN_CHEST was latest-wins there before MZB-446).
+     * HAVEN_CHEST's and HUNT_APPLIED's senders and OWED_HUNT's player are M9c's, so only their layouts are here.
+     */
+    public static final int TRADED = 0x0810;
+    public static final int CHIEF_PAID = 0x0814;
+    public static final int HUNT_APPLIED = 0x0816;
+    public static final int HAVEN_CHEST = 0x0817;
+    /** M9: the chief's trade memory at home (a command, aux = traded players t) and the hunts a raid owes. */
+    public static final int CHIEF_BODY = 0x880A;
+    public static final int OWED_HUNT = 0x880C;
+
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
     public static final int ENVOY_MATERIALIZE = 0x8802;
@@ -311,6 +324,11 @@ public final class ConflictRecords {
                 FLAGS = 68, LINES = 72, LINE = 32;
         public static final int L_SLOT = 0, L_GENERATION = 4, L_BODY = 8, L_ACTION = 12, L_FLAGS = 13, L_A = 16, L_B = 24;
         public static final int SPAWN = 1, ADOPT = 2, TAKE = 3, SET_OUT = 4, HAND_BACK = 5, REMOVE = 6, SEAT_HEIR = 7;
+        /**
+         * M9 (MZB-408): the warrior the heir becomes. Always the first line of a pair whose second is a SEAT_HEIR;
+         * it names no slot (slot 0, generation 0), and its answer names the warrior taken.
+         */
+        public static final int MASK = 8;
         /** A line's flags: the slot is the camp's chief; the body holds its crystal. */
         public static final int LINE_CHIEF = 1, LINE_CRYSTAL = 2;
         public static final int FLAG_THRONE = 1;
@@ -328,15 +346,72 @@ public final class ConflictRecords {
                 case HAND_BACK -> "hand back";
                 case REMOVE -> "remove";
                 case SEAT_HEIR -> "seat heir";
+                case MASK -> "mask";
                 default -> "action " + action;
             };
         }
+    }
+
+    // ---- the Umvuthana (M9; docs/boundary.md §9.2 to 9.6) ----------------------------------------
+
+    /**
+     * TRADED (journaled, a Java op id): a masked trade with a grove's minion, {@code nuggets} the gold nuggets on
+     * either side of it (MZB-417).
+     */
+    public static final class Traded {
+        public static final int FACTION = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, NUGGETS = 48, OP_ID = 56, SIZE = 64;
+    }
+
+    /**
+     * CHIEF_PAID (aux = n items, journaled, a Java op id): a payment to a grove's Umvuthi (MZB-418). The slot and
+     * generation are the body's CampMember tag, both 0 with PAID_STRAY.
+     */
+    public static final class ChiefPaid {
+        public static final int FACTION = 24, SLOT = 32, GENERATION = 36, FLAGS = 40, PLAYER_MOST = 48, PLAYER_LEAST = 56,
+                OP_ID = 64, ITEMS = 72;
+        /** A payment to an untagged Umvuthi standing in a grove's footprint. */
+        public static final int PAID_STRAY = 1;
+
+        public static int size(int n) {
+            return ITEMS + ITEM * n;
+        }
+    }
+
+    /** HAVEN_CHEST (journaled; M9c sends it): the chest a grove's tribute goes into, and its free slots (MZB-422). */
+    public static final class HavenChest {
+        public static final int FACTION = 24, DIM = 32, X = 36, Y = 40, Z = 44, FREE = 48, SIZE = 56;
+    }
+
+    /** HUNT_APPLIED (journaled, a Java op id; M9c sends it): an owed hunt was applied (MZB-425). */
+    public static final class HuntApplied {
+        public static final int FACTION = 24, DISTRICT = 32, OP_ID = 40, KILLED = 48, SIZE = 56;
+    }
+
+    /**
+     * CHIEF_BODY (command, aux = traded players t): the chief's trade memory at home (MZB-421). Agent 0 and flags 0
+     * at home; {@code flags} 1 is the crystal, M11's. The players follow from {@link #TRADED}, 16 bytes each.
+     */
+    public static final class ChiefBody {
+        public static final int FACTION = 16, AGENT = 24, EPOCH = 32, HEALTH = 40, FLAGS = 44, TRADED = 48, PLAYER = 16;
+        public static final int CRYSTAL = 1;
+
+        public static int size(int t) {
+            return TRADED + PLAYER * t;
+        }
+    }
+
+    /** OWED_HUNT (command; M9c plays it): the animals a raid left hunted in a district (MZB-425). */
+    public static final class OwedHunt {
+        public static final int FACTION = 16, DISTRICT = 24, OP_ID = 32, DIM = 40, COUNT = 44, CENTRE_X = 48, CENTRE_Z = 52,
+                RADIUS = 56, SIZE = 64;
     }
 
     /** The smallest a command of this kind can be (a shorter one is malformed). */
     public static int minSize(int kind) {
         return switch (kind) {
             case CAMP_RECONCILE -> CampReconcile.LINES;
+            case CHIEF_BODY -> ChiefBody.TRADED;
+            case OWED_HUNT -> OwedHunt.SIZE;
             case TERRITORY -> Territory.SIZE;
             case FACTION_NOTICE -> Notice.SIZE;
             case ENVOY_MATERIALIZE -> Envoy.MEMBERS;
