@@ -155,6 +155,10 @@ pub(super) struct Link {
     /// The kept notices go again once the session's replay has caught up (MZB-31): set by the
     /// session reset, done at the first record of this session or the simulate point. Not saved.
     notices_due: bool,
+    /// The conflict's replay end (`replay_done`, then the kept notices) is due: set by its reset
+    /// (`begin_replay`), run by [`replay_end`] at the session's replay end, or at once when no
+    /// replay runs (docs/replay-gate.md §3.2). Not saved.
+    replay_end_due: bool,
     /// Sources the industry engine's districts set or changed (C2-7, C2-8).
     pub(super) fed: u64,
 }
@@ -259,6 +263,7 @@ impl Link {
             band_states: 0,
             deferred: 0,
             notices_due: false,
+            replay_end_due: false,
             fed: 0,
         }
     }
