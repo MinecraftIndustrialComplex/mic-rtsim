@@ -863,7 +863,9 @@ conservative option at its fork.
   party's alive units of that body kind, by party alone, touching no stack. Today, on main and on S4p,
   such a death is dropped by `party_of`'s exact epoch and the member lives on. Slice C also tests
   MZB-131's live walk-off death of an old epoch while the band is embodied at a new one, first, and
-  fixes it the same way if it fails.
+  fixes it the same way if it fails. Safe because a named generation's new copy was never applied (SEC-1); the
+  gap case (pages older than the journal, boundary.md §3.2's "Known limit") can count a death twice
+  and stays that limit's case.
 - **RP-10** (MZB-138's fold goes; §5.4): the fold of embodied bodies into recalled stacks at the
   session start existed so replayed records found them; RP-5 keeps them embodied instead. The replay
   end drops every recalled stack, as `replay_done` does today.
@@ -898,3 +900,8 @@ conservative option at its fork.
 - **RP-20** (where the end is checked; §2.2): at the top of `journaled()`, after its `save_through`
   block, before S4p's branches and `admitted()`: it sees every kind and reads only the sequence, on
   both branches.
+- **RP-21** (a copy of generation 0; §2.3, SEC-1's review): S4p judges a copy of nonce 0 new every
+  time and records none, so repeats each apply unless an op id stops them. BAND_CASUALTIES has no op
+  id: a copied one of generation 0 is refused and counted, never applied. Loses a death that was
+  really lost (a member lives on); never kills one twice. CHIEF_KILLED (op id) and herds' losses
+  (member key and op id) apply as RP-8 says.

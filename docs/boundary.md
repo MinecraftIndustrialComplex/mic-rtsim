@@ -259,7 +259,7 @@ engine thought embodied is abstract again, with the last state it knew. The DEMA
 of a clean shutdown come later, as journal replay.
 
 That is phase 1's rule. The four modules (conflict, dragons, herds, ships) follow the replay gate
-instead (docs/replay-gate.md, choices RP-1 to RP-20): from SESSION_START until the replay end (the
+instead (docs/replay-gate.md, choices RP-1 to RP-21): from SESSION_START until the replay end (the
 first record at or past `session_first`) they keep the bodies their pages hold embodied, honour a
 replayed *_MATERIALIZED that is not a copy, decide nothing that embodies or moves a body, and drop or
 hold each command kind as their gate says; at the replay end every body still embodied becomes
