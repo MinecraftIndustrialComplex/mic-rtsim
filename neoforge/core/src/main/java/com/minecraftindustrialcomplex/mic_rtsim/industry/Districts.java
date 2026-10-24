@@ -1060,7 +1060,7 @@ public final class Districts {
             long loads0 = IndustryEvents.chunkLoads(), classes0 = CLASSES.getTotalLoadedClassCount();
             int micros = IndustryConfig.get(IndustryConfig.RESCAN_SLICE_MICROS);
             long limit = micros <= 0 ? Long.MAX_VALUE : micros * 1000L;
-            long spent = 0;
+            long spent = 0, tickItemNanos = 0;
             boolean progressed = false, done = false;
             long commitNanos = 0;
             while (true) {
@@ -1074,6 +1074,7 @@ public final class Districts {
                     maxItem = Math.max(maxItem, cost);
                     long dt = System.nanoTime() - r0;
                     rootNanos += dt;
+                    tickItemNanos = Math.max(tickItemNanos, dt);
                     maxItemNanos = Math.max(maxItemNanos, dt);
                 } else if (!queue.isEmpty()) {
                     long w0 = System.nanoTime();
@@ -1082,6 +1083,7 @@ public final class Districts {
                     maxItem = Math.max(maxItem, cost);
                     long dt = System.nanoTime() - w0;
                     walkNanos += dt;
+                    tickItemNanos = Math.max(tickItemNanos, dt);
                     maxItemNanos = Math.max(maxItemNanos, dt);
                 } else {
                     Set<Long> more = full ? Set.of() : grown();
@@ -1127,8 +1129,8 @@ public final class Districts {
             if (!manual && dt > maxSliceNanos) {
                 maxSliceNanos = dt;
                 maxSliceWhat = (done ? spent + " block entities, then the commit " + commitNanos / 1000 + " us" : spent + " block entities")
-                        + ", " + (CLASSES.getTotalLoadedClassCount() - classes0) + " classes and " + (IndustryEvents.chunkLoads() - loads0)
-                        + " chunks loaded meanwhile";
+                        + " (the longest chunk " + tickItemNanos / 1000 + " us), " + (CLASSES.getTotalLoadedClassCount() - classes0) + " classes and "
+                        + (IndustryEvents.chunkLoads() - loads0) + " chunks loaded meanwhile";
             }
             return done;
         }
