@@ -16,7 +16,7 @@ use rtsim_industry::engine::{Engine, Inspection, LineEdge, ProcessPeek};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo, GoodVec};
 use rtsim_industry::obs::StationDecl;
 use rtsim_industry::persist::{
-    self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, Persist,
+    self, CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, Persist,
 };
 use rtsim_industry::threat::Leg;
 use rtsim_industry::tunables::Tunables;
@@ -88,7 +88,7 @@ impl IndustryView {
         let globals = match source.read(gkey) {
             Ok(Some(b)) => b,
             Ok(None) => {
-                for t in [DISTRICT_TABLE, CLUSTER_TABLE, GLASS_TABLE] {
+                for t in [DISTRICT_TABLE, CLUSTER_TABLE, GLASS_TABLE, LEG_TABLE] {
                     if source.table_ids(t).map(|i| !i.is_empty()).unwrap_or(true) {
                         return Err("industry pages without their globals page".into());
                     }
@@ -99,8 +99,22 @@ impl IndustryView {
         };
         let mut hash = Fnv::new();
         hash.page(gkey, &globals);
-        let e = Engine::restore([(gkey, globals.clone())], Tunables::default())
-            .map_err(|e| format!("the industry globals page: {e}"))?;
+        // The booked legs are pages of their own (ID10); the viewer's map draws them.
+        let mut pages = vec![(gkey, globals.clone())];
+        let ids = source
+            .table_ids(LEG_TABLE)
+            .map_err(|e| format!("cannot list the leg pages: {e}"))?;
+        for id in ids {
+            let k = PageKey::new(LEG_TABLE, id);
+            let b = source
+                .read(k)
+                .map_err(|e| format!("cannot read leg page {id}: {e}"))?
+                .ok_or_else(|| format!("leg page {id} is listed and missing"))?;
+            hash.page(k, &b);
+            pages.push((k, b));
+        }
+        let e = Engine::restore(pages, Tunables::default())
+            .map_err(|e| format!("the industry globals and leg pages: {e}"))?;
         let ids = source
             .table_ids(DISTRICT_TABLE)
             .map_err(|e| format!("cannot list the district pages: {e}"))?;

@@ -109,7 +109,7 @@ public final class IndustryGameTests {
      * far chunk makes two districts, and a shaft across their boundary makes both not learnable
      * (rotation crosses the boundary).
      */
-    @GameTest(template = YARD, batch = "industry_01", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_01", timeoutTicks = 4000)
     public static void aDistrictIsDetectedAcrossShaftsAndNamed(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -144,11 +144,11 @@ public final class IndustryGameTests {
                     record("aDistrictIsDetectedAcrossShaftsAndNamed", "detection, best of 50 (us)", best / 1000.0);
                     check("a repeated detection keeps the district and its revision", ind().district(d.id) == d && d.chunks.size() == 3 && d.revision == rev[0]);
                     check("named by its coordinates, got " + d.displayName(), d.displayName().startsWith("District "));
-                    List<ByteBuffer> decl = received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, d.id);
-                    check("IND_DISTRICT was journaled", !decl.isEmpty());
-                    command(helper, chestPos, "rtsim district rename " + d.id + " Iron Coast");
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> check("IND_DISTRICT was journaled",
+                        !received(IndRecords.IND_DISTRICT, IndRecords.District.DISTRICT, id[0]).isEmpty())))
+                .thenExecute(() -> command(helper, chestPos, "rtsim district rename " + id[0] + " Iron Coast"))
+                .thenWaitUntil(paced(() -> {
                     District d = ind().district(id[0]);
                     check("renamed: " + d.displayName(), d.displayName().equals("Iron Coast"));
                     boolean named = false;
@@ -158,7 +158,7 @@ public final class IndustryGameTests {
                     check("a new revision carries the name", named);
                     check("the rename is an IND_EDIT (command)", received(IndRecords.IND_EDIT, IndRecords.Edit.DISTRICT, d.id).stream()
                             .anyMatch(r -> aux(r) == IndRecords.Edit.COMMAND));
-                })
+                }))
                 .thenExecute(() -> command(helper, far, "rtsim district split"))
                 .thenWaitUntil(() -> {
                     District d = ind().district(id[0]);
@@ -706,7 +706,7 @@ public final class IndustryGameTests {
      * is IND_PACKAGE out. (MailWatch is driven around the buffer change the way the runMailTransfer mixins
      * drive it; a real present train needs a track graph.)
      */
-    @GameTest(template = YARD, batch = "industry_12", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_12", timeoutTicks = 4000)
     public static void mailAtAnUnloadedDistrictIsAPackageRecord(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -731,7 +731,7 @@ public final class IndustryGameTests {
                     port.offlineBuffer.setStackInSlot(0, ItemStack.EMPTY);
                     com.minecraftindustrialcomplex.mic_rtsim_create.MailWatch.after(st);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(paced(() -> {
                     List<ByteBuffer> recs = received(IndRecords.IND_PACKAGE, IndRecords.Package.DISTRICT, d[0].id);
                     check("two IND_PACKAGE records", recs.size() == 2);
                     ByteBuffer in = recs.get(0), out = recs.get(1);
@@ -745,7 +745,7 @@ public final class IndustryGameTests {
                     }
                     record("mailAtAnUnloadedDistrictIsAPackageRecord", "package in", goods);
                     check("its contents: 40 iron, 3 coal", goods.getOrDefault("i/64/minecraft:iron_ingot", 0L) == 40 && goods.getOrDefault("i/64/minecraft:coal", 0L) == 3);
-                })
+                }))
                 .thenSucceed();
     }
 

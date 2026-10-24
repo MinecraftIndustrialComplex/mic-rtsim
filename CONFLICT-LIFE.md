@@ -973,15 +973,20 @@ envoy, who says why in person (CL-1).
 **What is news.** Each is a report in rtsim-knowledge (`ReportKind`, appended after `Encroachment`, the
 way that kind was added), made by the conflict engine when the thing happens, with the day, the place
 and the two actors:
-- **A feud opens or climbs:** a camp's anger at a player, a camp or a village reaches a demand or a
-  war band. `who` is the camp, `whom` the target; the severity byte holds the rung.
+- **A feud opens or climbs:** a camp's anger at a player reaches a rung (notice, envoy, scouts, a war
+  band). `who` is the camp, `whom` the player; the severity byte holds the rung. No feud news names
+  the settlers (TALK.md §9.4, TK26).
 - **A pact is sworn, and a pact is broken or betrayed:** `who` the camp that swore or broke, `whom` its
   ally; the foe is a second row of the same kind (flag bit 1, "against") that travels in the same
   packet. A betrayal names the camp that fell on its ally.
-- **A raid, an invasion or a skirmish fell on a target:** `who` the camp, `whom` the target, the
-  severity byte the outcome (held, beaten, plundered), joint or not by a flag.
-- **A chief or a champion fell:** `who` the camp, `whom` the notable (the killer's actor when it was
-  a killing, the camp itself when it was old age or a fever).
+- **A raid, an invasion or a skirmish fell on a target:** `who` the camp, `whom` the target (the
+  village or haven it marched on, else the feud's player), the severity byte the outcome
+  (`report::raid`: 1 held, a watched fight the band left bored or done; 2 beaten, a rout, or an
+  unwatched raid that lost warriors and took nothing; 3 plundered, it took goods or blocks), joint
+  or not by a flag (unused so far). A raid that found nothing is no news.
+- **A chief or a champion fell:** `who` the camp, `whom` the fallen notable, the severity byte how
+  (`report::fell`: 1 died of age, 2 killed in a fight). When a player killed the chief, the
+  Killing report the engine already makes names them. No champion exists yet.
 
 The reasons are the engine's motive and memory codes (2.14), so the text is written when it is read,
 from them and from names.
