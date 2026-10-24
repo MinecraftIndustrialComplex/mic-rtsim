@@ -363,7 +363,7 @@ struct State {
     /// session by `shared::replay_end`. Not saved.
     replaying: bool,
     /// The generation nonce of the copy (REASSERT) being dispatched, `None` otherwise (RP-8).
-    /// fix/replay-push: S4p's reasserted() sets this
+    /// Set by `reasserted()` around its dispatch (on the copy's Apply, RP-50), cleared after.
     applying_copy: Option<u64>,
     /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
