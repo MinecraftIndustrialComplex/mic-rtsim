@@ -5227,7 +5227,38 @@ impl Conflict {
         }
         if !self.replay_from_pages {
             self.raise_floor(m.agent, m.epoch);
+            return;
         }
+        if let Some(p) = Party::of_agent(m.agent).filter(|p| self.parties.contains(*p)) {
+            self.honour(p, m);
+        }
+    }
+
+    /// A replayed BAND_MATERIALIZED on an engine from its pages (docs/replay-gate.md §5.2, RP-6):
+    /// the party is embodied as the last session had it, without the command, so that the
+    /// records of that body that follow count against it. An epoch at or below the party's
+    /// changes nothing: the pages hold it.
+    fn honour(&mut self, p: Handle<Party>, m: &boundary::BandMaterialized) {
+        let x = &mut self.parties[p];
+        if m.epoch <= x.epoch {
+            return;
+        }
+        // The bodies of an older epoch walk off as its recalled stack (MZB-131): that epoch's
+        // records may still come.
+        if x.embodied {
+            x.fold_spawned_into_recalled();
+        }
+        x.epoch = m.epoch;
+        x.embodied = true;
+        x.seen_by = None;
+        x.spawned.clear();
+        x.wave = 0;
+        // An envoy places nothing by the books, as `materialize_envoy` (decided by the
+        // coordinator, 2026-10-24).
+        if x.kind != PartyKind::Envoy {
+            x.spawned = x.units.iter().copied().filter(|e| e.1 > 0).collect();
+        }
+        x.wave = u16::try_from(m.wave).unwrap_or(u16::MAX).saturating_add(1);
     }
 
     /// The player refused the demand or attacked the envoy: unmet now (DEMAND_SETTLED refused),
