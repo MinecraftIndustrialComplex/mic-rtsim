@@ -834,7 +834,8 @@ public final class Camps {
                     | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, m == null ? 0 : m.slot(),
                     m == null ? 0 : m.generation(), e.getUUID()));
-            home++;
+            if (c.kind.pooled(e))
+                home++; // FACTION_FOUND's home bodies are the pool's: a grove's chief slot is outside it (MZB-401)
         }
         // What the chief is read from: the footprint's entities, the camp's bodies loaded elsewhere and the strays found wide.
         List<Entity> view = new ArrayList<>(inside);
@@ -857,7 +858,8 @@ public final class Camps {
             int flags = ConflictRecords.CampCensus.BODY_STRAY | (c.kind.isChief(e) ? ConflictRecords.CampCensus.BODY_CHIEF : 0);
             bodies.add(new CensusBody(s.dictId(Obs.DICT_BODY, c.kind.bodyName(e)), flags, 0, 0, e.getUUID()));
             view.add(e);
-            home++;
+            if (c.kind.pooled(e))
+                home++;
             strays++;
         }
         c.strayWatch = false;
@@ -1666,12 +1668,24 @@ public final class Camps {
      * server player is a real one. Camps only: BAND_CASUALTIES keep {@link ConflictBridge#byKind} (M11 adopts this).
      */
     static ConflictBridge.Credit killer(LivingEntity dead, DamageSource source) {
+        Player pl = playerOf(source);
+        if (pl != null)
+            return new ConflictBridge.Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
+        return ConflictBridge.credit(dead, source); // the kill credit, then the source entity's kind, else none
+    }
+
+    /**
+     * The real player a damage source names (MZB-432): the player itself, else the player owner of an
+     * {@link OwnableEntity} (a tamed wolf); null for a machine ({@code FakePlayer}, MZB-111) and any other source.
+     * A plugin's fight watch reads it with the same rule as the kill credit.
+     */
+    public static Player playerOf(DamageSource source) {
         Entity src = source.getEntity();
         if (src instanceof Player pl && !(pl instanceof FakePlayer))
-            return new ConflictBridge.Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
+            return pl;
         if (src instanceof OwnableEntity o && o.getOwner() instanceof Player owner && !(owner instanceof FakePlayer))
-            return new ConflictBridge.Credit(ConflictRecords.BY_PLAYER, owner.getUUID());
-        return ConflictBridge.credit(dead, source); // the kill credit, then the source entity's kind, else none
+            return owner;
+        return null;
     }
 
     void settleDeaths(long now) {

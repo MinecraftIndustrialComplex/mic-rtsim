@@ -49,6 +49,14 @@ public interface CampKind {
     /** Whether a body is its camp's chief (CAMP_DEATH's chief flag). */
     boolean isChief(Entity e);
 
+    /**
+     * Whether a body counts among FACTION_FOUND's home bodies, the pool's (a den's Frostmaw is its one unit; a grove's
+     * Umvuthi sits in the chief slot, outside the pool: MZB-401).
+     */
+    default boolean pooled(Entity e) {
+        return true;
+    }
+
     /** The chief's fields read from the entities standing in the camp's footprint (all of them, not only bodies). */
     Chief chief(ServerLevel level, Camps.Site site, List<Entity> footprint);
 
