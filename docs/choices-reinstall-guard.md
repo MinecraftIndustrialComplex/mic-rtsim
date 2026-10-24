@@ -51,11 +51,14 @@ its `world/rtsim/` (p2-a with no time limit, p2-b with RG12's), each base forcel
 | p3b, the reinstall rerun's restart | 10 ms | 234 | 9 ms | 0 |
 | p2-a third start, RG15 in | 12.9 ms | 549 | 7.7 ms | 0 |
 | p2-b third start, RG15 in | 1,107 ms | 370 | 1,101 ms | 841 (a vault's handler, RG17) |
+| p2-a fourth start, RG17 in, `world/rtsim/` moved aside again (a first detection) | 15.3 ms | 710 | 11.7 ms | 0 |
+| p2-b fourth start, RG17 in | 11.9 ms | 245, then the 8.6 ms commit | 1.4 ms | 0 |
 
 The time was not cold code, as 10.6 first read it, but chunk loads inside one look at one chunk: the
 detection asks only loaded chunks, and still hundreds of chunks loaded while it looked. Two reads waited
 for a chunk still loading: a fan link's (RG15, the first stack RG12's warning caught) and a vault's item
-handler (RG17, the stack p2-b caught once RG15 was in).
+handler (RG17, the stack p2-b caught once RG15 was in). With both in, neither copy loaded a chunk inside a
+detection step and neither logged RG12's warning.
 
 | Id | Choice | Why |
 |---|---|---|
