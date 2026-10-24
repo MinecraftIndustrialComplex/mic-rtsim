@@ -191,10 +191,16 @@ here first.
 
 **The package store.**
 
-- **Identity.** Java keeps each package store in `IndustryData` (format 3, slice S4): a persisted id
-  given at first sight, its frogports (district, inventory, address filter, the position of the conveyor
-  it serves), the hop counts between those conveyors along the walk, and the chunks of no district the
-  chain passes through (§3.6). It is sent to Rust as a new `IND_PACKAGE_STORE` record when it changes. A
+- **Identity.** Java keeps each package store in `IndustryData` (format 3, slice S4a; `PackageStores`): a
+  persisted id given at first sight, its frogports (district, inventory, address filter, the position of
+  the conveyor it serves) and the hop counts between those conveyors along the walk. The chunks of no
+  district the chain passes through (§3.6) wait for a later slice; S4a keeps none. It is sent to Rust as
+  a new `IND_PACKAGE_STORE` record when it changes, and again at each session's start. A store is found
+  where its frogports are: a district's compile walks each chain network its frogports serve, once per
+  compile, and a package at a frogport on no known store walks its chain, at most once in 1200 ticks per
+  frogport. A frogport in a chunk of no district counts as an owner of its own, so a chain from a
+  district to it is a store. A network of more than 200 frogports stays edges, so its record stays under
+  64 KiB. A
   re-walk that finds the same frogports keeps the id. When a network splits, the piece holding the
   lowest frogport position keeps the id, the rest get new ids, and what the store owes each frogport
   goes with that frogport; when networks merge, the lowest id stays and the contents add. A walk that
@@ -202,19 +208,24 @@ here first.
 - **The compile.** On a package store's network, the compile makes no `CHAIN` edges; each frogport's
   chain side is a port.
 - **Records.** Every package that leaves a frogport of a package store onto the chain, and every one
-  that lands in one, is an `IND_PACKAGE` (the layout of `IndRecords.Package` :353: district, inventory,
-  direction, address, packages, op id, contents) with the new direction `CHAIN_OUT` (3) or `CHAIN_IN`
-  (4), from two mixins at the count points of §2.2. The engine books it into the store and as a port of
-  the district's window. It never books it into `dist.links`: today's IN and OUT path for postbox mail
+  that lands in one, is an `IND_CHAIN_PACKAGE` (journaled, `IndRecords.ChainPackage`: store, district,
+  inventory, direction `CHAIN_OUT` (3) or `CHAIN_IN` (4), the frogport's index in the store, the
+  destination, packages, address, op id, contents; choice SC97). One mixin on `FrogportBlockEntity.tick`
+  wraps the two calls that move a package between a frogport and its chain (PATCHES.md row 78): the
+  export onto the chain, counted when it answers true, and the insert into the frogport's inventory,
+  counted when nothing is left over. The engine books it into the store and as a port of the district's
+  window. It never books it into `dist.links`: today's IN and OUT path for postbox mail
   adds a `LinkKey::Mail` that is never cleared (`engine.rs:2967` to `:2986`, `district.rs:300`), and
   `glass_mode` sends any district with links to the black box (`engine.rs:1591` to `:1599`). A
   package between two frogports of one district on a package store's network is that district's
   `CHAIN_OUT` and `CHAIN_IN`, counted once each way, because the compile has no `CHAIN` edge there.
-- **Routing.** Rust resolves each (exporter frogport, address) to the frogport Create would deliver to:
-  a walk by hops from the exporter's conveyor over the store's last walk, taking the first matching
-  frogport on the least-distance path (so a frogport on the way takes it), `*` filters last, matching
-  as `matchAddress` does. Create breaks ties by advert timing, which Rust cannot know; Rust takes the
-  lowest frogport position. The store keeps one pool per destination frogport and one for packages
+- **Routing.** Java resolves each (exporter frogport, address) to the frogport Create would deliver to
+  and sends it as the record's destination (choice SC100: Java has the walk and Create's own
+  `matchAddress`): the matching frogport of the least distance, hops along the chain from the
+  exporter's conveyor plus 1000 for a `*` filter, as Create's tables count; then the first matching
+  frogport on a least-hop way there, which takes it on the way. Create breaks ties by advert timing,
+  which neither side can know; Java takes the lowest frogport position. A package no frogport matches has
+  no destination (it circles). A `CHAIN_IN`'s destination is the frogport itself. The store keeps one pool per destination frogport and one for packages
   with no route, in goods and in packages, and a `CHAIN_OUT` books into the pool its (exporter,
   address) resolves to. The no-route pool is drawn by no one; at the exporter's reconcile its packages
   are written back into the exporter's inventory, room permitting (Create would have them circling).
@@ -226,8 +237,9 @@ here first.
   pool holds less than that room.
 - **The census.** A player can hang packages on a chain or take them off, and none of that is counted.
   While every chunk of a store ticks, Java counts the packages on its conveyors (looping and travelling,
-  by the destination their address resolves to) once per sweep and sends the count with the sweep;
-  Rust sets the pools to it, and the difference is the store's residue, shown by `/rtsim district
+  by the destination their address resolves to from the conveyor they are on) and in its frogports'
+  arrival animations, every 200 ticks (choice SC99), and sends the count as a latest-wins
+  `IND_STORE_CENSUS`; Rust sets the pools to it, and the difference is the store's residue, shown by `/rtsim district
   sections`. A `CHAIN_IN` beyond its pool takes the pool to zero, never below.
 - **An end that does not replay.** A district on the store that runs the black box or is frozen neither
   books into the store nor draws from it while away; the store keeps what it holds, and the other ends
@@ -258,7 +270,7 @@ lets a reset lose.
   refused at its hand-off; behind them the near side backs up through Create's own gates. A held package
   stays in the world. When the frontier first holds a package it writes a key into the package's
   vanilla `minecraft:custom_data` component (the store's id, the engine's epoch, which every engine
-  reset changes, and a serial) and sends an `IND_PACKAGE` with the new direction `CHAIN_HELD` (5)
+  reset changes, and a serial) and sends an `IND_CHAIN_PACKAGE` with the direction `CHAIN_HELD` (5)
   carrying the key. It is no port: a held package was already its exporter's `CHAIN_OUT`. A
   component type rtsim registered may not decode once rtsim is removed (UNVERIFIED for 1.21.1), so
   the vanilla one is used either way.
@@ -724,17 +736,22 @@ whole (§3.6).
 No migration code (no backward compatibility before release; G2-85). On load:
 
 - **An older `IndustryData` format with districts.** Today an older format only warns and loads the
-  districts, dissolving them as detection reaches them (`IndustryData.java:177` to `:180`). New: Java
-  drops them, and the format change itself resets the industry engine through the host's fresh-start
-  path (the one G2-82 uses), so Rust keeps no district Java no longer has, whether or not a glass page
-  exists. Districts re-derive from the seed attachments at the first detection. Slice S4 brings this
-  in with format 3 (package stores); slice S6's format 4 (join pairs) goes through the same path.
+  districts, dissolving them as detection reaches them. New (format 3, slice S4a; choice SC98): Java
+  drops them on load and keeps the rest (exclusions, merges, patches, the id counter), and at the
+  session's start journals an `IND_DISTRICT_REMOVED` for each dropped id, so Rust drops every district
+  Java no longer has, with its pages, whether or not a glass page exists. The engine itself is not
+  reset. Districts re-derive from the seed attachments at the first detection, under new ids. Slice
+  S6's format 4 (join pairs) goes through the same path.
 - **A glass page with magic `IGL1`** (slice S2, before any format change) drops its district's glass
-  state, as §5 says; after a format reset there is none to restore.
+  state, as §5 says; the removals of a format drop remove the page with its district.
 - The operator sees one line at start: "rtsim industry: the save format changed (SEC-1); learned
   factory state was reset and districts are detected again." Nothing is lost silently, and only the
-  sim's own knowledge is lost (UR-1). The drawn keys of §2.5 name the old engine's epoch, so the
-  packages they hold are released.
+  sim's own knowledge is lost (UR-1).
+- **Plugins' state.** A format drop also drops the plugins' state in `IndustryData` (format 3 is the
+  first to have any). Format 3 has no store to lose; slice S6's format 4 must remove the package stores
+  from the engine as it drops them (or keep them), since the engine keeps its stores in pages and the
+  store ids would start again at 1. The drawn keys of §2.5 name the engine's epoch, which a format drop
+  does not change; a key Java no longer holds is stripped and its package released.
 - No live world runs rtsim (DR-0). GameTest worlds and rtsim-view's fixtures are regenerated after
   landing, as G2-85 did.
 
@@ -1180,6 +1197,16 @@ The options below stay as the record of what was offered.
 | SC81 | `SharedBoilerTwoLinesFactory` (§9.2) stands a millstone line for the crushing line (a crushing wheel needs the item-drop machinery around it), and drives the press through a gearbox off the 128 RPM stage, so the press, its extra presses and the millstone all sit on the boiler's domain. Its edit breaks the press line's input smart chute and places a plain chute there (the node's model changes, so the press section's fingerprint does, and the revision does not; a smart chute placed again with a filter on the only good it moves would change nothing the compile records), and shafts stand from the build where the extra presses go, so a press changes no chunk and the recompile carries the units | the fixture tests two units on one domain and the domain check, which need only two lines that share the boiler's network and nothing else; an edit that changes nothing is cleared by its recompile (SC62), and a new chunk changes the revision, which carries no unit |
 | SC95 | The Create compile claims each portable storage interface with no node (§4.4) when its conveying walk (`TrainWatch.reached`, the walk of `IND_STATION_PORTS`) reaches a district inventory; one that reaches none stays residual | it exposes a docked train's storage, whose change is the station's cargo, booked through `IND_STATION_PORTS`; left to the residual, the mover beside it reached a black box, so every station-fed unit was unbounded and unbooked cargo could not fail its window. An interface that reaches no inventory (onto a belt into a machine) has no port to book its cargo on: claimed, what it fed would rise against a prediction of none and fail every window, so it keeps the black box |
 | SC96 | The section fixtures (§9.2, `SectionsFxGameTests`) are opt-in: `./gametest.sh create -Psec1fx` adds their namespace to the create run | each is a full corpus cycle of several windows; on by default they lengthen every create run on the shared heavy lock, for every session |
+| SC97 | A package store's frogport packages are a new journaled record, `IND_CHAIN_PACKAGE` (0x0419; directions `CHAIN_OUT` 3, `CHAIN_IN` 4, later `CHAIN_HELD` 5), not `IND_PACKAGE` with new directions (SC7's record); it carries the store, the frogport's index in the store and the destination (§2.5) | the engine books it into a store, not a district's mail path, and the destination (SC100) is a field `IND_PACKAGE` does not have; one record kind per path leaves the mail path as it is |
+| SC98 | `IndustryData` format 3 drops an older format's districts on load and journals an `IND_DISTRICT_REMOVED` for each at the session's start, instead of resetting the engine; exclusions, merges, patches and the id counter stay (§6) | the removals reach Rust by the path a dissolved district already takes, need no host hook, and leave the engine's other state alone; new districts never reuse a dropped id |
+| SC99 | A store's census every 200 ticks (TUNABLE, `PackageStores.CENSUS_TICKS`) while every chunk of it ticks, as a latest-wins record of its own (`IND_STORE_CENSUS`, 0x0051), not with a district's sweep | a store belongs to no district, so no sweep carries it; one walk and count a store every 10 s bounds the cost (D1) and keeps the residue fresh enough for `/rtsim district sections` |
+| SC100 | Java resolves a chain package's destination: the matching frogport of the least distance (hops, plus 1000 for a `*` filter), ties to the lowest position, then the first matching frogport on a least-hop way there; the record carries it and Rust books by it | Java has the walk and Create's own `matchAddress`; routing in Rust would need the filters and a glob matcher kept in step with Create's |
+| SC101 | A store's frogports are found by a scan of the loaded chunks of its walk's conveyors and their neighbours, from each district's compile and from a package at a frogport of no known store (at most once in 1200 ticks per frogport, TUNABLE) | a frogport stands within `packagePortRange` (5 blocks) of its conveyor; the scan reads loaded chunks only (§2.8), and the compile already walks the chain |
+| SC102 | A network of more than 200 frogports (TUNABLE, `PackageStores.MAX_PORTS`) is no store: it keeps its `CHAIN` edges, with one warning | its `IND_PACKAGE_STORE` must fit one record (64 KiB: 48 bytes a frogport, 2 a pair) |
+| SC103 | A frogport in a chunk of no district counts as an owner of its own, so a chain from a district to frogports outside every district is a store | packages the district sends there leave it, and as edges they would lead to no node |
+| SC104 | A walk that leaves frogports behind (they now serve another network) walks their network at once, at most 4 deep; a later census or compile carries on past that | each piece of a split gets its store at once, at a bounded cost per call |
+| SC105 | The chunks of no district a store's chain passes through (§2.5, §3.6) wait for a later slice; S4a keeps none | nothing in S4a reads them; §3.6's staleness is their first user |
+| SC106 | Every store is declared again at each session's start (`PackageStores.announce`) | Java keeps no copy of the last declaration across a restart; the engine keeps its stores in pages, so a repeat changes nothing there |
 
 ---
 

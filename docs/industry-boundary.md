@@ -76,6 +76,7 @@ Offsets from the record start; the 8-byte header is `u16 kind, u16 size, u32 aux
 | 0x0043 | (retired: IND_CHANNEL_SAMPLE) | | read as an unknown kind (I13 as corrected, IR13) | |
 | 0x0044 | (retired: IND_LEDGER_REQUEST) | | gone with the ledger (I18 as decided, IR14); read as an unknown kind | |
 | 0x0045 | IND_WATCHED | 1 a player is near enough to fight for real, 0 not | 8 i64 gameTime, 16 u64 district | 24 |
+| 0x0051 | IND_STORE_CENSUS | n goods | 8 i64 gameTime, 16 u64 store, 24 u32 m, 28 u32 zero, 32 m × (u32 destination, u32 packages), then n × (u32 good, u32 destination, i64 amount); a destination is a frogport index of the store's last IND_PACKAGE_STORE, 0xFFFFFFFF for packages with no route; every 200 ticks while every chunk of the store ticks (SECTIONS.md §2.5, choice SC99) | 32 + 8m + 16n |
 
 **Sweeps.** The sampler reads a district's boundary inventories round-robin, K per tick (INDUSTRY.md
 §3.2), numbering each full pass a sweep. Each inventory's contents go in one IND_STOCK_SAMPLE, or in
@@ -116,6 +117,8 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
 | 0x0414 | IND_PACKAGE | n entries | 24 u64 district, 32 u32 inventory, 36 u32 direction (1 in, 2 out), 40 u32 address (NAME), 44 u32 packages, 48 u64 opId (0 none), 56 n × Entry16 | 56 + 16n |
 | 0x0415 | IND_STATION_PORTS | n inventories | 24 u64 station, 32 u64 district, 40 n × u32 inventory (indices of the district's current revision); at a loaded call's departure, when the set changed (choice SG32) | (40 + 4n) rounded up to 8 |
 | 0x0416 | IND_TRAIN_UNWATCHED | 0 | 24 u64 train, 32 u64 station; a watched train called at a station outside every district: the engine ends its leg (choice SG50) | 40 |
+| 0x0418 | IND_PACKAGE_STORE | n frogports | 24 u64 store, 32 u32 dim, 36 u32 zero, 40 u64 into (0 none), 48 n × Frogport48 in position order, then the hops between their conveyors as the upper triangle row by row ((0,1), (0,2) .. (1,2) ..), u16 each, 0xFFFF where the walk did not reach; padded to 8. n = 0: the store is gone and what it held joins `into` (SECTIONS.md §2.5) | 48 + 48n + 2·n(n-1)/2, rounded up to 8 |
+| 0x0419 | IND_CHAIN_PACKAGE | n entries | 24 u64 store, 32 u64 district (0 none), 40 u32 inventory (0xFFFFFFFF none), 44 u32 direction (3 chain out, 4 chain in; 5 kept for the frontier's chain held), 48 u32 frogport (index in the store's last IND_PACKAGE_STORE), 52 u32 destination (a frogport index, 0xFFFFFFFF no route; chain in: the frogport itself), 56 u32 packages, 60 u32 address (NAME), 64 u64 opId (0 none), 72 u64 zero, 80 n × Entry16; a package store's frogport put packages on its chain or took them off (choice SC97) | 80 + 16n |
 | 0x0420 | IND_RECONCILE_RESULT | n entries | 24 u64 opId, 32 u64 district, 40 u32 epoch, 44 u32 dim, 48 i32 chunkX, 52 i32 chunkZ, 56 u32 m blocksDestroyed, 60 u32 blocksSkipped, 64 n × Result24, then m × Pos16 (the blocks broken) | 64 + 24n + 16m |
 | 0x0421 | IND_CARRIAGE_RESULT | n entries | 24 u64 opId, 32 u64 train, 40 n × Result24 (first field: carriage) | 40 + 24n |
 | 0x0430 | IND_SPAWN_SAMPLE | 0 | 24 u64 district, 32 i64 observedTicks, 40 i64 darkBlocks, 48 u32 spawns[4] | 64 |
@@ -128,6 +131,9 @@ the district's latest sweep, so a deposit sampled in an older one reads as gone
   20 u32 reserved, 24 entryCount × Entry16`; 24 + 16n bytes.
 - **Result24:** `0 u32 inventory (or carriage), 4 u32 good, 8 i64 requested, 16 i64 applied`.
 - **Pos16:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 reserved`.
+- **Frogport48** (IND_PACKAGE_STORE): `0 u64 district (0 none), 8 u32 inventory (0xFFFFFFFF none),
+  12 u32 flags (1 its address filter is "*"), 16 i32 x, 20 i32 y, 24 i32 z (the frogport), 28 i32 x,
+  32 i32 y, 36 i32 z (its conveyor), 40 u64 from (the store it came from, 0 none)`.
 - **Block24:** `0 i32 x, 4 i32 y, 8 i32 z, 12 u32 state (BLOCK_STATE), 16 u32 flags (1 perimeter,
   2 roofless, 4 machine, 8 boundary inventory, 16 roof: the top block over a roofed machine within
   roofReachBlocks, OGB-7, 32 subterranean: a machine or inventory under at least 5 blocks of cover,
@@ -187,6 +193,11 @@ sends IND_CHUNK_UNLOADED is read the old way: when no chunk ticks, every chunk c
 **Ports** (INDUSTRY.md §3.3). Everything that crosses the boundary while loaded:
 - train cargo diffs at `Train.arriveAt` and `leaveStation`;
 - train mail at postboxes, as IND_PACKAGE;
+- packages a package store's frogport puts on its chain or takes off it, as IND_CHAIN_PACKAGE
+  (SECTIONS.md §2.5): the engine books each into the store, in the pool of its destination (choice
+  SC100: Java resolves it as Create would route the package), and as a port of the district's window,
+  never as a link. IND_PACKAGE_STORE says which frogports a store has, in which districts; a store's
+  IND_STORE_CENSUS sets its pools to what is on the chain, and the difference is the store's residue;
 - player container sessions (`PlayerContainerEvent.Open` to `Close`, the session's diff);
 - tosses, pickups, and stock blocks broken by players.
 
