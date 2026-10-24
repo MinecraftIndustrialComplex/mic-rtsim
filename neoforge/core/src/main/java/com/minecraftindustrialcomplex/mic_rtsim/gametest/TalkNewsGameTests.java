@@ -302,7 +302,9 @@ public final class TalkNewsGameTests {
      * goblin voice, and a camp mood from the faction block, which only the engine's answer can give.
      * The camp itself is founded in the far area ({@link ConflictKit#farBase}): its territory (radius 400
      * for goblins) would otherwise lie over other tests' arenas, and every block they break in it would
-     * count as a signal against it too.
+     * count as a signal against it too. The camp stays in the reused world when the test ends (the engine
+     * keeps a faction it founded); farBase's slots are 1,024 blocks apart and picked at random, so a camp
+     * left from an earlier run never reaches another test's slot.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 6000, batch = BATCH + "camp", skyAccess = true)
     public static void talkTellsTheCampNewsAndMood(GameTestHelper helper) {
@@ -320,6 +322,7 @@ public final class TalkNewsGameTests {
         Entity[] member = new Entity[1];
         Hunt[] hunt = new Hunt[2];
         FakePlayers.Hearer[] ben = new FakePlayers.Hearer[1];
+        long[] answered = new long[1]; // TalkAsks' answers before the member is first asked
         ConflictKit.onEnd(helper, () -> {
             ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, c.x, c.z);
             for (Mob m : ConflictKit.bridge().bodies(agent))
@@ -365,6 +368,7 @@ public final class TalkNewsGameTests {
                     check("it chats with a player its camp has no quarrel with", Talkers.find(member[0], ben[0]).chats(member[0], ben[0]));
                     TalkHolder h = Talkers.find(member[0], ben[0]).holder(member[0]);
                     check("its holder is the camp: " + h, h != null && h.kind() == TalkHolder.FACTION && h.id() == faction[0]);
+                    answered[0] = TalkAsks.INSTANCE.answered;
                     hunt[0] = new Hunt(level, ben[0], member[0], ".news.raid.");
                 })
                 .thenIdle(SETTLE)
@@ -378,6 +382,7 @@ public final class TalkNewsGameTests {
                     record("talk camp", "talks until it came up", hunt[0].talks);
                     // The goblin voice has only the faction block's moods (TK78): one heard is the engine's answer.
                     hunt[1] = new Hunt(level, ben[0], member[0], ".goblin.mood.");
+                    hunt[1].seen = hunt[0].seen; // only the lines after the news
                     hunt[1].next = level.getGameTime() + WINDOW;
                 })
                 .thenWaitUntil(() -> hunt[1].step())
@@ -385,7 +390,7 @@ public final class TalkNewsGameTests {
                     Said said = hunt[1].found;
                     record("talk camp", "mood line", said.key() + " = " + english(said));
                     record("talk camp", "lines heard", hunt[0].keys + " then " + hunt[1].keys);
-                    check("the engine answered asks", TalkAsks.INSTANCE.answered > 0);
+                    check("the engine answered the member's asks", TalkAsks.INSTANCE.answered > answered[0]);
                 })
                 .thenSucceed();
     }
